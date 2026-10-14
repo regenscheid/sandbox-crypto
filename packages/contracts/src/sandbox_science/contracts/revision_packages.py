@@ -3,24 +3,26 @@
 
 from __future__ import annotations
 
-import re
 from typing import Annotated, Literal, Self
 
 from pydantic import Field, model_validator
 
 from .lockfile_diffs import (
-    Bounded,
     HoldReason,
     LicenseObservation,
     LockfileHeader,
     LockfileSelection,
     Name,
 )
-from .provision_observations import Counter, Observation, PageLimit
-from .revisions import CondaPackage, PipDistribution
+from .model import Counter, StrictContract, check_page
+from .provision_observations import MAX_OBSERVATION_PAGE, Observation, PageLimit
+from .revisions import MAX_LOCKFILE_ENTRIES, CondaPackage, PipDistribution, pep503_name
+
+MAX_PACKAGES = 2 * MAX_LOCKFILE_ENTRIES
+"""Packages one lockfile records: its Conda and its pip entries."""
 
 
-class RevisionPackage(Bounded):
+class RevisionPackage(StrictContract):
     """One recorded package and its declared license, including unchanged packages."""
 
     ecosystem: Literal["conda", "pip"]
@@ -42,7 +44,7 @@ class RevisionPackage(Bounded):
         elif (
             not isinstance(self.package, PipDistribution)
             or self.location != self.package.location
-            or self.name != re.sub(r"[-_.]+", "-", self.package.name).lower()
+            or self.name != pep503_name(self.package.name)
             or self.license.declared != self.package.license
         ):
             raise ValueError("pip identity or declared license does not bind its package")
@@ -56,11 +58,11 @@ class RevisionPackagePage(Observation):
     status: Literal["complete", "held"]
     holds: tuple[HoldReason, ...] = Field(max_length=1)
     header: LockfileHeader | None
-    total: Annotated[int, Field(strict=True, ge=0, le=40_000)] | None
-    offset: Annotated[int, Field(strict=True, ge=0, le=40_000)]
+    total: Annotated[int, Field(strict=True, ge=0, le=MAX_PACKAGES)] | None
+    offset: Annotated[int, Field(strict=True, ge=0, le=MAX_PACKAGES)]
     limit: PageLimit
     next_offset: Counter | None
-    packages: tuple[RevisionPackage, ...] = Field(max_length=8)
+    packages: tuple[RevisionPackage, ...] = Field(max_length=MAX_OBSERVATION_PAGE)
 
     @model_validator(mode="after")
     def _page(self) -> Self:
@@ -86,16 +88,9 @@ class RevisionPackagePage(Observation):
                 raise ValueError("complete inventory needs a proved skipped-zero header")
             if self.total != self.header.conda_packages + self.header.pip_distributions:
                 raise ValueError("total does not bind selected header counts")
-            if self.total is None or self.offset > self.total:
-                raise ValueError("package offset exceeds selected total")
-            end = self.offset + len(self.packages)
-            if (
-                len(self.packages) > self.limit
-                or end > self.total
-                or self.next_offset != (end if end < self.total else None)
-                or (self.next_offset is not None and not self.packages)
-            ):
-                raise ValueError("package continuation mismatch")
+            if self.total is None:
+                raise ValueError("complete inventory needs its total")
+            check_page(self.offset, len(self.packages), self.limit, self.total, self.next_offset)
             keys = tuple((row.ecosystem, row.location or "", row.name) for row in self.packages)
             if keys != tuple(sorted(set(keys))):
                 raise ValueError("package page needs unique canonical ordering")

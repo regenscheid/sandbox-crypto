@@ -62,18 +62,16 @@ async def test_kernel_status_refuses_foreign_or_incoherent_http_response(
         },
     ],
 )
-@pytest.mark.parametrize("lineage", [False, True])
 async def test_kernel_observation_refuses_foreign_or_incoherent_http_response(
-    change: dict[str, object], lineage: bool
+    change: dict[str, object],
 ) -> None:
-    path = "/v1/kernels/lineage" if lineage else "/v1/kernels/observe"
+    path = "/v1/kernels/observe"
     context = ExecutionContext(project_id="p", environment_id="e", session_id="s")
 
     async def observe(request: web.Request) -> web.Response:
         assert await request.json() == {"context": context.model_dump(mode="json")}
         return web.json_response(
             {
-                **({"project_id": "p"} if lineage else {}),
                 "environment_id": "e",
                 "session_id": "s",
                 "observed_at": "2026-10-12T12:00:00Z",
@@ -88,20 +86,13 @@ async def test_kernel_observation_refuses_foreign_or_incoherent_http_response(
         WorkerClient(str(server.make_url("")), "test-secret-kernel-client") as client,
     ):
         with pytest.raises(WorkerAPIError):
-            await (
-                client.observe_kernel_lineage(context)
-                if lineage
-                else client.observe_kernels(context)
-            )
+            await client.observe_kernels(context)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", [200, 503])
-@pytest.mark.parametrize("lineage", [False, True])
-async def test_kernel_observation_bounds_chunked_success_and_error_bodies(
-    status: int, lineage: bool
-) -> None:
-    path = "/v1/kernels/lineage" if lineage else "/v1/kernels/observe"
+async def test_kernel_observation_bounds_chunked_success_and_error_bodies(status: int) -> None:
+    path = "/v1/kernels/observe"
     context = ExecutionContext(project_id="p", environment_id="e", session_id="s")
 
     async def oversized(request: web.Request) -> web.StreamResponse:
@@ -118,19 +109,12 @@ async def test_kernel_observation_bounds_chunked_success_and_error_bodies(
         WorkerClient(str(server.make_url("")), "test-secret-kernel-client") as client,
     ):
         with pytest.raises(WorkerAPIError, match="over 8192 bytes"):
-            await (
-                client.observe_kernel_lineage(context)
-                if lineage
-                else client.observe_kernels(context)
-            )
+            await client.observe_kernels(context)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("lineage", [False, True])
-async def test_kernel_observation_does_not_follow_redirect_or_fallback_to_status(
-    lineage: bool,
-) -> None:
-    path = "/v1/kernels/lineage" if lineage else "/v1/kernels/observe"
+async def test_kernel_observation_does_not_follow_redirect_or_fallback_to_status() -> None:
+    path = "/v1/kernels/observe"
     context = ExecutionContext(project_id="p", environment_id="e", session_id="s")
     targets: list[str] = []
 
@@ -155,11 +139,7 @@ async def test_kernel_observation_does_not_follow_redirect_or_fallback_to_status
             WorkerClient(str(server.make_url("")), "test-secret-kernel-client") as client,
         ):
             with pytest.raises(WorkerAPIError) as error:
-                await (
-                    client.observe_kernel_lineage(context)
-                    if lineage
-                    else client.observe_kernels(context)
-                )
+                await client.observe_kernels(context)
             assert error.value.status == 307
     assert targets == []
 
@@ -170,24 +150,19 @@ async def test_kernel_observation_does_not_follow_redirect_or_fallback_to_status
         WorkerClient(str(server.make_url("")), "test-secret-kernel-client") as client,
     ):
         with pytest.raises(WorkerAPIError) as error:
-            await (
-                client.observe_kernel_lineage(context)
-                if lineage
-                else client.observe_kernels(context)
-            )
+            await client.observe_kernels(context)
         assert error.value.status == 404
     assert targets == []
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("headers_sent", [False, True])
-@pytest.mark.parametrize("lineage", [False, True])
 async def test_kernel_observation_whole_http_deadline_covers_headers_and_body(
-    headers_sent: bool, lineage: bool
+    headers_sent: bool,
 ) -> None:
     import asyncio
 
-    path = "/v1/kernels/lineage" if lineage else "/v1/kernels/observe"
+    path = "/v1/kernels/observe"
     context = ExecutionContext(project_id="p", environment_id="e", session_id="s")
     release = asyncio.Event()
 
@@ -210,11 +185,7 @@ async def test_kernel_observation_whole_http_deadline_covers_headers_and_body(
         try:
             with pytest.raises(WorkerAPIError) as error:
                 await asyncio.wait_for(
-                    (
-                        client.observe_kernel_lineage(context)
-                        if lineage
-                        else client.observe_kernels(context)
-                    ),
+                    client.observe_kernels(context),
                     0.5,
                 )
             assert error.value.kind == "unavailable"

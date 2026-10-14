@@ -6,11 +6,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated
 
-from pydantic import Field, StringConstraints
+from pydantic import Field
 
-from .model import Contract, Identifier
-
-Sha256 = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+from .model import Contract, Identifier, Sha256
 
 
 class ArtifactRef(Contract):

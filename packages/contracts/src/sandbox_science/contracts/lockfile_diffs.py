@@ -6,24 +6,30 @@ from __future__ import annotations
 import re
 from typing import Annotated, Literal, Self
 
-from pydantic import ConfigDict, Field, StringConstraints, model_validator
+from pydantic import Field, StringConstraints, model_validator
 
-from .artifacts import Sha256
-from .model import Contract
-from .provision_observations import Counter, Observation, PageLimit
-from .revisions import CondaPackage, LockfileRef, PipDistribution, Version
+from .model import Counter, Sha256, StrictContract, check_page
+from .provision_observations import MAX_OBSERVATION_PAGE, Observation, PageLimit
+from .revisions import (
+    MAX_LOCKFILE_BYTES,
+    MAX_LOCKFILE_ENTRIES,
+    CondaPackage,
+    LockfileRef,
+    PipDistribution,
+    Version,
+    pep503_name,
+)
 
 Name = Annotated[str, StringConstraints(max_length=256)]
 HoldReason = Literal[
     "lockfile_unrecorded", "blob_missing", "unsupported_format", "skipped_entries", "input_limit"
 ]
 
+MAX_DIFFERENCES = 4 * MAX_LOCKFILE_ENTRIES
+"""Rows a comparison can have: every Conda and pip entry of both sides."""
 
-class Bounded(Contract):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-
-class LockfileSelection(Bounded):
+class LockfileSelection(StrictContract):
     """A selected revision's original byte pin and recorded blob reference."""
 
     revision: Counter
@@ -31,27 +37,27 @@ class LockfileSelection(Bounded):
     lockfile: LockfileRef | None
 
 
-class LockfileHeader(Bounded):
+class LockfileHeader(StrictContract):
     """Verified source bytes/header; not an independent inventory of the guest."""
 
     sha256: Sha256
-    size: Annotated[int, Field(strict=True, ge=1, le=8 * 1024 * 1024)]
+    size: Annotated[int, Field(strict=True, ge=1, le=MAX_LOCKFILE_BYTES)]
     python: Version | None
     platform: (
         Annotated[str, StringConstraints(max_length=128, pattern=r"^[a-z0-9]+(?:-[a-z0-9_]+)?$")]
         | None
     )
-    conda_packages: Annotated[int, Field(strict=True, ge=0, le=20_000)]
-    pip_distributions: Annotated[int, Field(strict=True, ge=0, le=20_000)]
+    conda_packages: Annotated[int, Field(strict=True, ge=0, le=MAX_LOCKFILE_ENTRIES)]
+    pip_distributions: Annotated[int, Field(strict=True, ge=0, le=MAX_LOCKFILE_ENTRIES)]
     skipped: Counter
 
 
-class LockfileHold(Bounded):
+class LockfileHold(StrictContract):
     side: Literal["before", "after"]
     reason: HoldReason
 
 
-class LicenseObservation(Bounded):
+class LicenseObservation(StrictContract):
     declared: Annotated[str, StringConstraints(max_length=256)] | None
     agpl: bool | None = Field(strict=True)
 
@@ -66,7 +72,7 @@ class LicenseObservation(Bounded):
         return self
 
 
-class LockfileDifference(Bounded):
+class LockfileDifference(StrictContract):
     ecosystem: Literal["conda", "pip"]
     name: Name
     location: Literal["prefix", "user"] | None
@@ -99,7 +105,7 @@ class LockfileDifference(Bounded):
                 raise ValueError("Conda identity or declared license mismatch")
             if isinstance(entry, PipDistribution) and (
                 entry.location != self.location
-                or re.sub(r"[-_.]+", "-", entry.name).lower() != self.name
+                or pep503_name(entry.name) != self.name
                 or license_info is None
                 or license_info.declared != entry.license
             ):
@@ -129,14 +135,14 @@ class LockfileDiffPage(Observation):
     before_header: LockfileHeader | None
     after_header: LockfileHeader | None
     header_changes: tuple[Literal["python", "platform"], ...] = Field(max_length=2)
-    total: Annotated[int, Field(strict=True, ge=0, le=80_000)] | None
+    total: Annotated[int, Field(strict=True, ge=0, le=MAX_DIFFERENCES)] | None
     added: Counter | None
     removed: Counter | None
     changed: Counter | None
-    offset: Annotated[int, Field(strict=True, ge=0, le=80_000)]
+    offset: Annotated[int, Field(strict=True, ge=0, le=MAX_DIFFERENCES)]
     limit: PageLimit
     next_offset: Counter | None
-    differences: tuple[LockfileDifference, ...] = Field(max_length=8)
+    differences: tuple[LockfileDifference, ...] = Field(max_length=MAX_OBSERVATION_PAGE)
 
     @model_validator(mode="after")
     def _page(self) -> Self:
@@ -189,14 +195,7 @@ class LockfileDiffPage(Observation):
                 or self.changed is None
             ):
                 raise ValueError("complete comparison needs totals")
-            if self.total != self.added + self.removed + self.changed or self.offset > self.total:
+            if self.total != self.added + self.removed + self.changed:
                 raise ValueError("comparison totals mismatch")
-            end = self.offset + len(self.differences)
-            if (
-                len(self.differences) > self.limit
-                or end > self.total
-                or (self.next_offset != (end if end < self.total else None))
-                or (self.next_offset is not None and not self.differences)
-            ):
-                raise ValueError("comparison continuation mismatch")
+            check_page(self.offset, len(self.differences), self.limit, self.total, self.next_offset)
         return self

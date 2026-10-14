@@ -19,6 +19,7 @@ from collections.abc import Callable
 from typing import Final
 
 from .errors import ClassificationError
+from .names import pep503
 from .operations import PackageOperation
 
 SANDBOX_HEADER: Final = "X-Sandbox-Science-Sandbox"
@@ -135,10 +136,6 @@ def _pypi(rest: str) -> PackageOperation | None:
     return None
 
 
-def _pypi_normalize(name: str) -> str:
-    return re.sub(r"[-_.]+", "-", name).lower()
-
-
 def _pypi_file_belongs(project: str, filename: str) -> bool:
     """Whether a distribution (or its metadata file) is one of ``project``'s files.
 
@@ -147,10 +144,10 @@ def _pypi_file_belongs(project: str, filename: str) -> bool:
     """
     name = filename.removesuffix(".metadata")
     if name.endswith(".whl"):
-        return _pypi_normalize(name.split("-", 1)[0]) == project
+        return pep503(name.split("-", 1)[0]) == project
     for suffix in _PYPI_SDIST_SUFFIXES:
         if name.endswith(suffix):
-            stem = _pypi_normalize(name.removesuffix(suffix))
+            stem = pep503(name.removesuffix(suffix))
             version = stem.removeprefix(f"{project}-")
             return version != stem and version[:1].isdigit()
     return False

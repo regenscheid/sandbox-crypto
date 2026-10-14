@@ -6,20 +6,17 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
-from datetime import datetime
 from typing import Annotated, Literal, Self
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import AwareDatetime, Field, field_validator, model_validator
 
-from .model import Contract, Identifier
+from .model import Contract, Counter, Identifier, Sha256
 from .worker import TERMINAL_STATES, ExecutionState
 
 MAX_REPORT_BYTES = 16 * 1024
 MAX_REPORT_ENTRIES = 64
 MAX_MARKER_BYTES = 12 * 1024
 MAX_PAGE_BYTES = 64 * 1024
-Counter = Annotated[int, Field(strict=True, ge=0, le=2**63 - 1)]
-Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64)]
 Short = Annotated[str, Field(max_length=256)]
 Flag = Annotated[bool, Field(strict=True)]
 Scope = Literal["session", "shared"]
@@ -65,7 +62,7 @@ class OutputStat(Contract):
 
     mtime_ns: Annotated[int, Field(strict=True, ge=-(2**63), le=2**63 - 1)]
     size: Counter
-    inode: Counter
+    inode: Annotated[int, Field(strict=True, ge=0, le=2**64 - 1)]
 
 
 class OutputObservation(OutputPath):
@@ -143,7 +140,7 @@ class OutputBinding(OutputScope):
     execution_id: Identifier
     attempt_id: Identifier
     operation_id: Identifier
-    request_sha256: Digest | None
+    request_sha256: Sha256 | None
     kind: Literal["shell", "cell", "job", "pdf"]
     actor: Identifier
     policy_revision: Short | None = None
@@ -181,18 +178,11 @@ class OutputMarker(Contract):
     binding: OutputBinding
     seq: Counter | None
     state: ExecutionState
-    received_at: datetime
-    report_sha256: Digest | None = None
+    received_at: AwareDatetime
+    report_sha256: Sha256 | None = None
     gap: Gap | None = None
     mutation_coverage: Literal["incomplete", "unavailable"]
     potentially_partial: Flag
-
-    @field_validator("received_at")
-    @classmethod
-    def _time(cls, value: datetime) -> datetime:
-        if value.tzinfo is None:
-            raise ValueError("observation time must include timezone")
-        return value
 
     @model_validator(mode="after")
     def _terminal(self) -> Self:
@@ -213,8 +203,8 @@ class OutputRecord(Contract):
 class OutputPage(OutputScope):
     """Internal scoped page; sequence numbers never reveal another scope's activity."""
 
-    stream_id: Digest
-    baseline: datetime
+    stream_id: Sha256
+    baseline: AwareDatetime
     history: Literal["feature_baseline_only"] = "feature_baseline_only"
     target: Counter
     next_after: Counter
@@ -223,7 +213,7 @@ class OutputPage(OutputScope):
 
     @model_validator(mode="after")
     def _bound(self) -> Self:
-        if self.baseline.tzinfo is None or self.next_after > self.target:
+        if self.next_after > self.target:
             raise ValueError("invalid observation page metadata")
         if len(self.model_dump_json().encode()) > MAX_PAGE_BYTES:
             raise ValueError("observation page exceeds byte limit")

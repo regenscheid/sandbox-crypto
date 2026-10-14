@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from .errors import ClassificationError
 from .hosts import normalize_host
+from .names import pep503
 
 Scheme = Literal["http", "https"]
 GitService = Literal["upload-pack", "receive-pack"]
@@ -238,7 +239,7 @@ class PackageOperation:
             if problem is not None:
                 raise ClassificationError(f"invalid Go module path {self.name!r}: {problem}")
         if self.ecosystem == "pypi":
-            object.__setattr__(self, "name", re.sub(r"[-_.]+", "-", self.name).lower())
+            object.__setattr__(self, "name", pep503(self.name))
         elif self.ecosystem == "cargo":
             object.__setattr__(self, "name", self.name.lower().replace("_", "-"))
 

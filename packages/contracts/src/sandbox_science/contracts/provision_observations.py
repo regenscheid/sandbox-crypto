@@ -3,15 +3,26 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Annotated, Literal, Self
 
-from pydantic import ConfigDict, Field, field_validator, model_validator
+from pydantic import AwareDatetime, Field, field_validator, model_validator
 
-from .artifacts import Sha256
 from .environments import PolicyRevision
-from .model import Contract, Identifier
+from .model import (
+    MAX_COUNTER,
+    Contract,
+    Counter,
+    Identifier,
+    Sha256,
+    StrictContract,
+    check_page,
+)
 from .provisioning import (
+    MAX_CHANGES,
+    MAX_EXECUTIONS,
+    MAX_FILES,
+    MAX_NOTES,
+    MAX_QUEUED,
     CatalogRef,
     ProvisionOutcome,
     ProvisionRequest,
@@ -22,8 +33,10 @@ from .provisioning import (
     Text,
 )
 from .revisions import (
+    MAX_COMMANDS,
     MAX_LOCKFILE_BYTES,
     MAX_LOCKFILE_ENTRIES,
+    MAX_PROBES,
     Fingerprint,
     LockfileRef,
     ProbeResult,
@@ -32,25 +45,17 @@ from .worker import ErrorKind
 
 MAX_OBSERVATION_BYTES = 64 * 1024
 MAX_OBSERVATION_PAGE = 8
-Counter = Annotated[int, Field(strict=True, ge=0, le=2**62)]
-Position = Annotated[int, Field(strict=True, ge=-1, le=2**62)]
+MAX_RETAINED_REVISIONS = 512
+Position = Annotated[int, Field(strict=True, ge=-1, le=MAX_COUNTER)]
 PageLimit = Annotated[int, Field(strict=True, ge=1, le=MAX_OBSERVATION_PAGE)]
 
 
-class Observation(Contract):
+class Observation(StrictContract):
     """Exact authenticated scope and worker control receipt time, not guest freshness."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     project_id: Identifier
     environment_id: Identifier
-    observed_at: datetime
-
-    @field_validator("observed_at")
-    @classmethod
-    def _aware(cls, value: datetime) -> datetime:
-        if value.tzinfo is None or value.utcoffset() is None:
-            raise ValueError("observation time needs a timezone")
-        return value
+    observed_at: AwareDatetime
 
 
 class AdmissionSummary(Contract):
@@ -90,29 +95,22 @@ class ProvisionSummary(Contract):
     planned_revision: Counter | None
     revision_before: Counter | None
     revision_after: Counter | None
-    permission_request: Annotated[int, Field(strict=True, ge=1, le=2**62)] | None
-    submitted_at: datetime
-    started_at: datetime | None
-    ended_at: datetime | None
-    files_total: Annotated[int, Field(strict=True, ge=0, le=2000)]
-    changes_total: Annotated[int, Field(strict=True, ge=0, le=4000)]
-    probes_total: Annotated[int, Field(strict=True, ge=0, le=64)]
-    executions_total: Annotated[int, Field(strict=True, ge=0, le=128)]
-    notes_total: Annotated[int, Field(strict=True, ge=0, le=32)]
-
-    @field_validator("submitted_at", "started_at", "ended_at")
-    @classmethod
-    def _times(cls, value: datetime | None) -> datetime | None:
-        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
-            raise ValueError("operation time needs a timezone")
-        return value
+    permission_request: Annotated[int, Field(strict=True, ge=1, le=MAX_COUNTER)] | None
+    submitted_at: AwareDatetime
+    started_at: AwareDatetime | None
+    ended_at: AwareDatetime | None
+    files_total: Annotated[int, Field(strict=True, ge=0, le=MAX_FILES)]
+    changes_total: Annotated[int, Field(strict=True, ge=0, le=MAX_CHANGES)]
+    probes_total: Annotated[int, Field(strict=True, ge=0, le=MAX_PROBES)]
+    executions_total: Annotated[int, Field(strict=True, ge=0, le=MAX_EXECUTIONS)]
+    notes_total: Annotated[int, Field(strict=True, ge=0, le=MAX_NOTES)]
 
 
 class ProvisionObservation(Observation):
     gate: AdmissionSummary
     current_revision: Counter | None
-    queue_total: Annotated[int, Field(strict=True, ge=0, le=32)]
-    operations: tuple[ProvisionSummary, ...] = Field(max_length=32)
+    queue_total: Annotated[int, Field(strict=True, ge=0, le=MAX_QUEUED)]
+    operations: tuple[ProvisionSummary, ...] = Field(max_length=MAX_QUEUED)
 
     @model_validator(mode="after")
     def _queue(self) -> Self:
@@ -157,7 +155,7 @@ class ProvisionDetail(Observation):
 class ProvisionFilePage(Observation):
     provision_id: Identifier
     seq: Counter
-    total: Annotated[int, Field(strict=True, ge=0, le=2000)]
+    total: Annotated[int, Field(strict=True, ge=0, le=MAX_FILES)]
     offset: Counter
     limit: PageLimit
     next_offset: Counter | None
@@ -165,16 +163,7 @@ class ProvisionFilePage(Observation):
 
     @model_validator(mode="after")
     def _page(self) -> Self:
-        page_end = self.offset + len(self.files)
-        if (
-            self.offset > self.total
-            or len(self.files) > self.limit
-            or page_end > self.total
-            or self.next_offset != (page_end if page_end < self.total else None)
-        ):
-            raise ValueError("file page does not bind its exact range")
-        if page_end < self.total and not self.files:
-            raise ValueError("nonterminal page must make progress")
+        check_page(self.offset, len(self.files), self.limit, self.total, self.next_offset)
         return self
 
 
@@ -185,11 +174,11 @@ class RevisionSummary(Contract):
     managed: bool | None = Field(strict=True)
     changed_by: Identifier | None
     operation: Identifier | None
-    recorded_at: datetime
+    recorded_at: AwareDatetime
     lockfile: LockfileRef | None
-    commands_total: Annotated[int, Field(strict=True, ge=0, le=8)]
+    commands_total: Annotated[int, Field(strict=True, ge=0, le=MAX_COMMANDS)]
     omitted_commands: Counter
-    probes_total: Annotated[int, Field(strict=True, ge=0, le=64)]
+    probes_total: Annotated[int, Field(strict=True, ge=0, le=MAX_PROBES)]
 
     @field_validator("lockfile")
     @classmethod
@@ -202,16 +191,9 @@ class RevisionSummary(Contract):
             raise ValueError("lockfile reference exceeds retained bounds")
         return value
 
-    @field_validator("recorded_at")
-    @classmethod
-    def _aware(cls, value: datetime) -> datetime:
-        if value.tzinfo is None or value.utcoffset() is None:
-            raise ValueError("revision time needs a timezone")
-        return value
-
 
 class RevisionSummaryPage(Observation):
-    retained_total: Annotated[int, Field(strict=True, ge=0, le=512)]
+    retained_total: Annotated[int, Field(strict=True, ge=0, le=MAX_RETAINED_REVISIONS)]
     first_retained: Counter | None
     target: Counter | None
     after: Position
@@ -256,7 +238,7 @@ class RevisionSummaryPage(Observation):
 class RevisionProbePage(Observation):
     revision: Counter
     record_sha256: Sha256
-    total: Annotated[int, Field(strict=True, ge=0, le=64)]
+    total: Annotated[int, Field(strict=True, ge=0, le=MAX_PROBES)]
     offset: Counter
     limit: PageLimit
     next_offset: Counter | None
@@ -264,16 +246,7 @@ class RevisionProbePage(Observation):
 
     @model_validator(mode="after")
     def _page(self) -> Self:
-        page_end = self.offset + len(self.probes)
-        if (
-            self.offset > self.total
-            or len(self.probes) > self.limit
-            or page_end > self.total
-            or self.next_offset != (page_end if page_end < self.total else None)
-        ):
-            raise ValueError("probe page does not bind its exact range")
-        if page_end < self.total and not self.probes:
-            raise ValueError("nonterminal page must make progress")
+        check_page(self.offset, len(self.probes), self.limit, self.total, self.next_offset)
         if any(
             probe.revision is not None and probe.revision != self.revision for probe in self.probes
         ):

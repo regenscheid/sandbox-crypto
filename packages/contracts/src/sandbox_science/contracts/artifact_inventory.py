@@ -3,22 +3,18 @@
 
 from __future__ import annotations
 
-import re
 from datetime import datetime
 from typing import Annotated, Literal, Self
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import AwareDatetime, Field, field_validator, model_validator
 
 from .artifacts import ArtifactRef
 from .context import ExecutionContext
-from .model import Contract, Identifier
+from .model import Contract, Counter, Identifier, Revision, Sha256
 from .worker import MediaType
 
 MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
-Counter = Annotated[int, Field(strict=True, ge=0, le=2**63 - 1)]
-RevisionNumber = Annotated[int, Field(strict=True, ge=1, le=2**63 - 1)]
 ShortText = Annotated[str, Field(max_length=256)]
-Digest = Annotated[str, Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]+$")]
 
 
 def artifact_path(value: str) -> str:
@@ -38,31 +34,18 @@ class ArtifactSnapshot(ArtifactRef):
     """Strictly validated worker metadata, without changing the legacy worker schema."""
 
     size: Counter
-    sha256: Digest
+    sha256: Sha256
     media_type: MediaType
     source_path: Annotated[str, Field(min_length=1, max_length=4096)]
+    created_at: AwareDatetime
 
     _path = field_validator("source_path")(artifact_path)
-
-    @field_validator("sha256")
-    @classmethod
-    def _digest(cls, value: str) -> str:
-        if re.fullmatch(r"[0-9a-f]{64}", value) is None:
-            raise ValueError("invalid SHA-256")
-        return value
 
     @field_validator("media_type")
     @classmethod
     def _media(cls, value: str) -> str:
         if any(ord(c) < 32 or ord(c) == 127 for c in value):
             raise ValueError("invalid media type")
-        return value
-
-    @field_validator("created_at")
-    @classmethod
-    def _time(cls, value: datetime) -> datetime:
-        if value.tzinfo is None or value.utcoffset() is None:
-            raise ValueError("snapshot time must include timezone")
         return value
 
 
@@ -72,8 +55,8 @@ class ArtifactRevisionRef(Contract):
     mode: Literal["pinned"] = "pinned"
     artifact_id: Identifier
     project_id: Identifier
-    revision: RevisionNumber
-    sha256: Digest
+    revision: Revision
+    sha256: Sha256
     size: Counter
     media_type: MediaType
 
@@ -84,8 +67,8 @@ class ArtifactLink(Contract):
     artifact_id: Identifier
     project_id: Identifier
     mode: Literal["pinned", "latest"]
-    revision: RevisionNumber | None = None
-    sha256: Digest | None = None
+    revision: Revision | None = None
+    sha256: Sha256 | None = None
 
     @model_validator(mode="after")
     def _mode(self) -> Self:
@@ -105,7 +88,7 @@ class ArtifactPublicationSource(Contract):
     tool_call: Annotated[str, Field(min_length=1, max_length=128)]
     alias: ShortText | None = None
     model: ShortText | None = None
-    worker_endpoint_sha256: Digest
+    worker_endpoint_sha256: Sha256
     observed_inputs: Literal["unknown"] = "unknown"
     producer: Literal["unknown"] = "unknown"
 
@@ -113,7 +96,7 @@ class ArtifactPublicationSource(Contract):
 class ArtifactRevision(Contract):
     reference: ArtifactRevisionRef
     path: Annotated[str, Field(min_length=1, max_length=4352)]
-    parent: RevisionNumber | None
+    parent: Revision | None
     created_at: datetime
     publication: ArtifactPublicationSource
     worker_snapshot: ArtifactSnapshot
@@ -136,7 +119,7 @@ class ArtifactReceipt(Contract):
 
 
 class ArtifactEvent(Contract):
-    seq: RevisionNumber
+    seq: Revision
     project_id: Identifier
     kind: Literal["artifact.revision_created", "artifact.reproduced"]
     revision: ArtifactRevisionRef

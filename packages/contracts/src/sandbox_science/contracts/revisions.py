@@ -16,13 +16,19 @@ plain ``http(s)`` or ``file`` URL with an ASCII host, so a look-alike host shows
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Annotated, Final, Literal
 
 from pydantic import Field, StringConstraints
 
-from .artifacts import Sha256
-from .model import Contract, Identifier
+from .model import Contract, Identifier, Sha256
+
+
+def pep503_name(name: str) -> str:
+    """A pip distribution's name as PEP 503 compares it (``policy.names.pep503`` too)."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
 
 MAX_LOCKFILE_ENTRIES: Final = 20_000
 """Entries in each section of a lockfile."""

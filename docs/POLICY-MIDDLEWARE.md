@@ -20,6 +20,8 @@ The middleware runs before OpenShell injects credentials and cannot tell which r
 
 ## Results
 
+The reason codes of the library's decisions are defined once, in `policy/reasons.py`; the MCP proxy returns the same codes, and the worker recognizes `approval_required` in a sandbox's output.
+
 | Library decision | OpenShell result | Reason code | Record |
 | --- | --- | --- | --- |
 | `allow` | allow | | |

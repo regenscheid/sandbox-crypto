@@ -50,6 +50,7 @@ from sandbox_science.package_cache.adapter import (
     Route,
     Static,
 )
+from sandbox_science.policy.names import pep503
 
 JSON_TYPE: Final = "application/vnd.pypi.simple.v1+json"
 HTML_TYPE: Final = "application/vnd.pypi.simple.v1+html"
@@ -66,7 +67,6 @@ _API_MINOR: Final = 4
 """The rewrite keeps the fields of API versions up to 1.4 (PEP 792)."""
 
 _PROJECT_NAME_RE: Final = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?", re.ASCII)
-_SEPARATORS_RE: Final = re.compile(r"[-_.]+")
 _PAGE_RE: Final = re.compile(rf"(?P<name>{_PROJECT_NAME_RE.pattern})/", re.ASCII)
 _FILE_NAME: Final = r"[A-Za-z0-9][A-Za-z0-9._+!-]*"
 _FILE_NAME_RE: Final = re.compile(_FILE_NAME, re.ASCII)
@@ -129,7 +129,7 @@ _NOT_ACCEPTABLE: Final = Static(
 
 def normalize_name(name: str) -> str:
     """Normalize a project name as PEP 503 does: lower case, runs of ``-_.`` become ``-``."""
-    return _SEPARATORS_RE.sub("-", name).lower()
+    return pep503(name)
 
 
 def is_distribution_of(filename: str, project: str) -> bool:

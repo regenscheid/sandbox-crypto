@@ -61,7 +61,10 @@ from sandbox_science.contracts import (
     new_id,
 )
 from sandbox_science.contracts.provisioning import (
+    MAX_CHANGES,
     MAX_FILES,
+    MAX_NOTES,
+    MAX_QUEUED,
     MAX_TEXT,
     InstallerLabel,
     InstallerStep,
@@ -73,6 +76,7 @@ from sandbox_science.contracts.worker import MAX_TIMEOUT_SECONDS
 from sandbox_science.policy import Action, HardFloor, LoadedPolicy, PoolCeiling
 from sandbox_science.policy.approvals import VALID_UNTIL, RequestKey
 from sandbox_science.policy.ceiling import effective_resources
+from sandbox_science.policy.reasons import APPROVAL_REQUIRED
 
 from . import installer_records, resolution
 from .catalog import CapabilitySpec, Catalog, ProbeSpec
@@ -105,14 +109,8 @@ GRANT_MARGIN: Final = timedelta(minutes=30)
 own deadline (``valid_until``), which holds even if the worker fails to withdraw it."""
 MAX_WAIT: Final = 60.0
 """The longest a client may ask ``wait`` to wait for a change."""
-MAX_QUEUED: Final = 32
-"""Operations an environment may have that have not finished; more are refused for now."""
 ERROR_TEXT: Final = 1500
 """Characters of a step's output an error quotes."""
-MAX_NOTES: Final = 32
-"""Notes a record holds (``ProvisionOperation.notes``)."""
-MAX_CHANGES: Final = 2 * MAX_FILES
-"""Package changes a record holds (``ProvisionOperation.changes``)."""
 _PROBE_ID: Final = re.compile(r"[^a-z0-9:._-]")
 _STAGES: Final[dict[ProvisionState, Stage]] = {
     ProvisionState.QUEUED: "queue",
@@ -1458,7 +1456,7 @@ class Provisioner:
                 ),
             )
         next_step = "Nothing was installed."
-        if stage == "download" and ("403" in text or "approval_required" in text):
+        if stage == "download" and ("403" in text or APPROVAL_REQUIRED in text):
             next_step = (
                 "A download was refused: the install wanted a file outside the decided set, "
                 "as when the index changed meanwhile. Request the install again."
@@ -1829,7 +1827,7 @@ def _step_error(execution: Execution, what: str) -> ErrorInfo:
     else:
         code = result.exit_code if result is not None else None
         kind, summary = ErrorKind.EXCEPTION, f"{what} exited with {code}"
-    if "approval_required" in stderr or "approval_required" in stdout:
+    if APPROVAL_REQUIRED in stderr or APPROVAL_REQUIRED in stdout:
         kind = ErrorKind.POLICY_DENIED
     detail = _tail((stderr.strip() + "\n" + stdout.strip()).strip(), ERROR_TEXT)
     return ErrorInfo(kind=kind, message=f"{summary}: {detail}" if detail else summary)

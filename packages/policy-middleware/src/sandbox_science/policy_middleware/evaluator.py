@@ -29,7 +29,6 @@ from sandbox_science.policy import (
     HardFloor,
     HttpOperation,
     HttpRequest,
-    Layer,
     LoadedPolicy,
     Operation,
     PackageOperation,
@@ -43,6 +42,16 @@ from sandbox_science.policy import (
 from sandbox_science.policy.approvals import Approvals, RequestKey
 from sandbox_science.policy.openshell import CREDENTIAL_PORT
 from sandbox_science.policy.package_requests import SANDBOX_HEADER
+from sandbox_science.policy.reasons import (
+    APPROVAL_DENIED,
+    APPROVAL_REQUIRED,
+    AUDIT_UNAVAILABLE,
+    DESTINATION_FORBIDDEN,
+    ESCALATION_TIMED_OUT,
+    LAYER_CODES,
+    POLICY_UNAVAILABLE,
+    REQUEST_UNCLASSIFIABLE,
+)
 
 from .archives import MAX_PACKAGES, ArchiveLookup
 from .errors import MiddlewareError, StoreError
@@ -55,30 +64,12 @@ _log = logging.getLogger(__name__)
 
 # Reason codes OpenShell returns to the sandbox with a denial. The agent reads
 # them, so each names what the agent can do about the denial.
-APPROVAL_REQUIRED: Final = "approval_required"
-"""An escalate rule matched; the request is pending approval and may be retried after it."""
-APPROVAL_DENIED: Final = "approval_denied"
-"""An operator denied the permission request this escalation matches."""
-ESCALATION_TIMED_OUT: Final = "escalation_timed_out"
-"""Nobody answered the permission request within its rule's escalation timeout."""
-POLICY_DENIED: Final = "policy_denied"
-"""A project rule or the policy's default denies the request."""
-POOL_CEILING_DENIED: Final = "pool_ceiling_denied"
-"""The worker pool's ceiling denies the destination."""
-DESTINATION_FORBIDDEN: Final = "destination_forbidden"
-"""The hard floor denies the destination."""
-REQUEST_UNCLASSIFIABLE: Final = "request_unclassifiable"
-"""The request is ambiguous or unsupported (including WebSocket and other upgrades)."""
 GIT_REQUEST_INVALID: Final = "git_request_invalid"
 """A git fetch whose body is not a well-formed upload-pack request."""
-AUDIT_UNAVAILABLE: Final = "audit_unavailable"
-"""An alert rule matched but the alert could not be recorded."""
 SANDBOX_UNBOUND: Final = "sandbox_unbound"
 """The orchestrator has not bound the sandbox to a policy revision."""
 POLICY_STALE: Final = "policy_stale"
 """The sandbox's compiled policy names a revision other than the one it is bound to."""
-POLICY_UNAVAILABLE: Final = "policy_unavailable"
-"""The bound policy revision cannot be loaded."""
 CONFIG_INVALID: Final = "config_invalid"
 """The middleware entry's config is malformed or names another policy."""
 CREDENTIAL_UNENCRYPTED: Final = "credential_unencrypted"
@@ -87,13 +78,6 @@ CREDENTIAL_UNENCRYPTED: Final = "credential_unencrypted"
 REASON_CODE_RE: Final = re.compile(r"[a-z][a-z0-9_]{0,63}")
 """OpenShell's format for reason codes; anything else is a middleware failure."""
 
-_LAYER_CODES: Final[Mapping[Layer, str]] = {
-    "classification": REQUEST_UNCLASSIFIABLE,
-    "floor": DESTINATION_FORBIDDEN,
-    "ceiling": POOL_CEILING_DENIED,
-    "policy": POLICY_DENIED,
-    "default": POLICY_DENIED,
-}
 _URL_SCHEMES: Final = {"http": "http", "https": "https", "ws": "http", "wss": "https"}
 _DEFAULT_PORTS: Final = {"http": 80, "https": 443}
 # OpenShell labels the scheme by how a request reached its proxy, not by
@@ -380,7 +364,7 @@ class PolicyMiddleware:
         findings: tuple[Finding, ...]
         match decision.action:
             case Action.DENY:
-                return _deny(_LAYER_CODES[decision.layer], decision.reason, decision)
+                return _deny(LAYER_CODES[decision.layer], decision.reason, decision)
             case Action.ESCALATE:
                 answered = self._escalation(facts, loaded, decision, operation)
                 if isinstance(answered, Verdict):
