@@ -13,7 +13,7 @@ from sandbox_science.contracts import (
     KernelInfo,
     KernelObservation,
 )
-from sandbox_science.orchestrator.kernel_check import FRAMING
+from sandbox_science.orchestrator.notices import KERNELS
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolCall
 from sandbox_science.orchestrator.tools import Toolbox
@@ -59,9 +59,9 @@ def turn() -> ModelTurn:
 
 def kernel_notices(messages: list[dict[str, object]]) -> list[list[dict[str, object]]]:
     return [
-        json.loads(str(m["content"]).removeprefix(FRAMING))
+        json.loads(str(m["content"]).removeprefix(KERNELS.text))
         for m in messages
-        if m["role"] == "user" and str(m["content"]).startswith(FRAMING)
+        if m["role"] == "user" and str(m["content"]).startswith(KERNELS.text)
     ]
 
 
