@@ -225,9 +225,10 @@ class RunState:
         """Refuse queued messages, such as for a spent budget (RS-6)."""
         self._set_state(project, session, ids, "refused", reason)
 
-    def hold(self, project: str, session: str, ids: list[str]) -> None:
-        """Hold the queued messages an interrupted run saw, until the user resumes (RS-12)."""
-        self._set_state(project, session, ids, "held", None)
+    def hold(self, project: str, session: str, ids: list[str], reason: str | None = None) -> None:
+        """Hold queued messages until the user resumes or writes again (RS-12), such as
+        those an interrupted run saw, or a failing session's."""
+        self._set_state(project, session, ids, "held", reason)
 
     def resume(self, project: str, session: str) -> int:
         """Queue the session's held messages again; how many."""
@@ -316,6 +317,22 @@ class RunState:
             started_at=datetime.fromisoformat(found[1]),
             renewed_at=datetime.fromtimestamp(found[2], UTC),
         )
+
+    def reap(self, dead: DeadLease) -> bool:
+        """Remove a dead lease, if it is still dead; whether it was."""
+        with self.control.write() as tx:
+            cursor = tx.sql.execute(
+                "DELETE FROM run_leases WHERE project_id = ? AND session_id = ? AND holder = ? "
+                "AND run = ? AND renewed_at <= ?",
+                (
+                    dead.project,
+                    dead.session,
+                    dead.holder,
+                    dead.run,
+                    self._now().timestamp() - self.lease_seconds,
+                ),
+            )
+            return cursor.rowcount == 1
 
     def dead(self) -> list[DeadLease]:
         """Leases whose holders stopped renewing them."""
@@ -409,20 +426,15 @@ class RunState:
             ).fetchone()
         return int(saved) + int(unsaved)
 
-    def run_messages(self, project: str, session: str, run: str) -> list[str]:
-        """The messages a run offered: those it started with and its ``user`` events'."""
+    def offered_to(self, project: str, session: str, run: str) -> list[str]:
+        """The queued messages ``run`` was offered last: what it saw and did not answer."""
         with self.control.read() as tx:
             rows = tx.sql.execute(
-                "SELECT kind, data FROM run_events WHERE project_id = ? AND session_id = ? "
-                "AND run = ? AND kind IN ('started', 'user')",
+                "SELECT message_id FROM session_messages WHERE project_id = ? "
+                "AND session_id = ? AND offered = ? AND state = 'queued' ORDER BY number",
                 (project, session, run),
             ).fetchall()
-        found: set[str] = set()
-        for kind, data in rows:
-            value = json.loads(data)
-            ids = value.get("message_ids") if kind == "started" else [value.get("message_id")]
-            found.update(str(item) for item in ids or [] if isinstance(item, str))
-        return sorted(found)
+        return [message_id for (message_id,) in rows]
 
     # --- Run events ------------------------------------------------------------------
 

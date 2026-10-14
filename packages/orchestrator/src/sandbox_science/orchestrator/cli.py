@@ -45,6 +45,7 @@ import argparse
 import asyncio
 import json
 import math
+import signal
 import sys
 from collections.abc import Callable
 from contextlib import AsyncExitStack
@@ -293,7 +294,18 @@ async def _serve(args: argparse.Namespace) -> int:
         )
         harness = _harness(args, client, main, stores, stack, interruption)
         print(f"serving the sessions of {args.state_dir}", file=sys.stderr)
-        await RunService(harness, poll=args.poll).serve()
+        serving = asyncio.ensure_future(RunService(harness, poll=args.poll).serve())
+        # SIGTERM stops it as Ctrl-C does: runs in progress end interrupted.
+        loop = asyncio.get_running_loop()
+        loop.add_signal_handler(signal.SIGTERM, serving.cancel)
+        try:
+            await serving
+        except asyncio.CancelledError:
+            if (current := asyncio.current_task()) is not None and current.cancelling():
+                raise  # Ctrl-C
+            print("stopped: runs in progress end interrupted", file=sys.stderr)
+        finally:
+            loop.remove_signal_handler(signal.SIGTERM)
     return 0
 
 

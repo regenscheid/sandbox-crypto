@@ -659,6 +659,8 @@ def _run_service_control(schema: Schema) -> None:
     main_tokens INTEGER NOT NULL CHECK (main_tokens BETWEEN 0 AND 1000000000000),
     updated_at TEXT NOT NULL
 ) STRICT""",
+        # What a project's runs spent: their assistant events, by run name (RS-6a).
+        "CREATE INDEX run_events_by_kind ON run_events (project_id, kind, run)",
     ):
         schema.execute(statement)
 
