@@ -39,9 +39,33 @@ its actual wait through repeated cancellation. The original caller interruption
 is preserved; a CLI timeout remains `unavailable`. Reaping the CLI does not prove
 that a gateway mutation had no effect, and does not authorize an automatic retry.
 
+## Selected child controller API
+
+Explicitly enabled control-service clients use the authenticated
+[original selected-run API](DELEGATED-RUN-TRANSPORT.md) at
+`POST /v1/run-kernels/{enroll,submit,get,events,cancel,observe,close,restart}`.
+`run_controller` defaults to false; the pool token and ordinary project clients
+inherit no selected-run permission. Restart needs its separate `run_restart`
+permission. Every operation binds the original canonical scope, immutable VM and
+daemon incarnation, and reads/controls name the exact original attempt. Legacy
+execution routes cannot adopt selected execution IDs. Passive reads may perform
+bounded authentication/history SQL reads but never wake or touch activity.
+
+The [restricted child controller](DELEGATED-CHILD-CONTROLLER.md) supplies the
+original prompt, positive tools, canonical attempt journal and explicit model
+budgets. The worker trusts the authenticated controller's canonical attribution;
+it does not authenticate the control application's database. Worker shutdown
+drains host owners and detaches healthy eligible daemon bridges; it does not
+close those guest kernels or replace enrollment. Queued or unrecoverable attempts
+may retain the ordinary LOST outcome. Changed original binding, lost acknowledgement or unsupported
+peer holds without re-enrollment, retry or MAIN fallback. Live composition
+acceptance remains a separate gate from the local synthetic-guest tests.
+
+[OpenShell Lab34](../.agents/docs/agent-reports/babbage-openshell-lab-34-2026-10-13.md) validates the explicitly configured controller and authenticated routes with a scripted model and actual guest kernels, including worker reconnect, cancellation, stopped passive reads and old-incarnation refusal. Source/full gates and complete owned teardown are independently reviewed; automatic parent launch and a real provider pilot remain separate.
+
 ## Worker API
 
-Every route needs `Authorization: Bearer <token>`: the pool's own token, which acts for every project, or a client's, which acts only for the projects its settings list ([clients](#clients-limited-to-projects)). Bodies are the JSON forms of the `sandbox_science.contracts` models. Errors return a `WorkerErrorResponse` carrying an error kind from the spec, with status 400, 403, 404, 409, 422, 500, 503 or 504 as the kind implies. The routes that name an execution, an artifact or a provisioning operation take an optional `project_id` query parameter; when it is given, one of another project is `not_found`.
+Ordinary routes need `Authorization: Bearer <token>`: the pool's own token, which acts for every project, or a client's, which acts only for the projects its settings list ([clients](#clients-limited-to-projects)). Bodies are the JSON forms of the `sandbox_science.contracts` models. Errors return a `WorkerErrorResponse` carrying an error kind from the spec, with status 400, 403, 404, 409, 422, 500, 503 or 504 as the kind implies. The routes that name an execution, an artifact or a provisioning operation take an optional `project_id` query parameter; when it is given, one of another project is `not_found`.
 
 | Route | Request → response |
 | --- | --- |
