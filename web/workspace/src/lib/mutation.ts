@@ -115,6 +115,14 @@ function forget(key: string): void {
 }
 
 /**
+ * Forget the ID kept for a change that failed and was then given up (its draft changed),
+ * so that the same change written later is a new one, not a retry of the old.
+ */
+export async function forgetWrite(kind: string, scope: string, body: unknown): Promise<void> {
+  forget(await operationKey(kind, scope, body));
+}
+
+/**
  * Send `body` with an operation ID through `send`; resolves with the answer or throws
  * its `ApiError`. The ID is kept until a result, so a retry of the same change reuses it.
  */

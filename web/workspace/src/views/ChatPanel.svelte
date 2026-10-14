@@ -10,17 +10,20 @@
   import {
     ChatFeed,
     chatApi,
-    chatEntries,
+    forgetMessage,
+    MAX_MESSAGE_BYTES,
+    messageBytes,
     messageState,
     pendingMessages,
     sendMessage,
     thinking,
     type ChatView,
+    type WatchedRun,
   } from '../lib/chat';
   import { chatDrafts } from '../lib/drafts';
-  import Markdown from '../lib/Markdown.svelte';
   import { initialPoll, Poller, type PollState } from '../lib/poller';
   import { idle, submit } from '../lib/submit';
+  import ChatRun from './ChatRun.svelte';
   import ErrorMessage from './ErrorMessage.svelte';
   import PollStatus from './PollStatus.svelte';
 
@@ -29,25 +32,31 @@
   const scope = untrack(() => `${projectId}:${sessionId}`);
   let draft = $state(chatDrafts.load(scope).draft ?? { text: '' });
   let persisted = $state(true);
+  /** The text of a send that failed: its ID is kept for a retry until the draft changes. */
+  let failed: string | null = null;
   let view = $state<PollState<ChatView>>(initialPoll());
+  let feed: ChatFeed | null = null;
   const sending = $state(idle());
   const asking = $state(idle());
   const chat = $derived(view.data);
-  const entries = $derived(chatEntries(chat?.run?.events ?? []));
+  const current = $derived(chat?.runs.at(-1));
+  const earlier = $derived(chat?.runs.slice(0, -1) ?? []);
   // Messages not yet in a run's transcript: queued, held or refused.
-  const waiting = $derived(chat ? pendingMessages(chat.messages, chat.run) : []);
+  const waiting = $derived(chat ? pendingMessages(chat.messages, chat.runs) : []);
   const held = $derived(waiting.some((message) => message.state === 'held'));
+  const bytes = $derived(messageBytes(draft.text));
 
   $effect(() => {
     const project = projectId,
       session = sessionId;
     view = initialPoll();
-    const feed = new ChatFeed({
+    const reading = new ChatFeed({
       messages: (after, signal) => chatApi.messages(project, session, after, signal),
       events: (run, after, signal) => chatApi.events(project, session, run, after, signal),
     });
+    feed = reading;
     const poller = new Poller(
-      (signal) => feed.read(signal),
+      (signal) => reading.read(signal),
       (value) => {
         view = value;
       },
@@ -58,18 +67,32 @@
   $effect(() => {
     if (draft.text) persisted = chatDrafts.save(scope, $state.snapshot(draft));
     else chatDrafts.clear(scope);
+    // A changed draft gives up the failed send: the same text later is a new message.
+    if (failed !== null && draft.text !== failed) {
+      void forgetMessage(projectId, sessionId, failed);
+      failed = null;
+    }
   });
 
+  function runState(run: WatchedRun): string {
+    if (run.state === 'active') return 'running';
+    return run.state === 'ended' ? 'ended' : 'interrupted, without a record';
+  }
   async function send() {
-    await submit(sending, async () => {
-      await sendMessage(projectId, sessionId, draft.text);
-      draft.text = '';
+    const text = draft.text;
+    const sent = await submit(sending, async () => {
+      await sendMessage(projectId, sessionId, text);
     });
+    failed = sent ? null : text;
+    if (sent) {
+      // Writing again also queues held messages: read them again.
+      feed?.recheck();
+      if (draft.text === text) draft.text = '';
+    }
   }
   async function resume() {
-    await submit(asking, async () => {
-      await chatApi.resume(projectId, sessionId);
-    });
+    if (await submit(asking, () => chatApi.resume(projectId, sessionId).then(() => undefined)))
+      feed?.recheck();
   }
   async function cancel(run: string) {
     await submit(asking, async () => {
@@ -91,49 +114,22 @@
       {#if chat.service}The run service is running.{:else}The run service is not running: messages
         wait until it starts.{/if}
     </p>
-    {#if chat.run}
+    {#each earlier as run (run.run)}
+      <details>
+        <summary>Run <code>{run.run}</code>: {runState(run)}</summary>
+        <ChatRun {run} />
+      </details>
+    {/each}
+    {#if current}
       <p>
-        Run <code>{chat.run.run}</code>:
-        {chat.run.state === 'active'
-          ? 'running'
-          : chat.run.state === 'ended'
-            ? 'ended'
-            : 'interrupted, without a record'}.
-        {#if chat.lease && chat.lease.run === chat.run.run}<button
+        Run <code>{current.run}</code>: {runState(current)}.
+        {#if chat.lease && chat.lease.run === current.run}<button
             disabled={asking.busy}
-            onclick={() => cancel(chat.run!.run)}>Cancel run</button
+            onclick={() => cancel(current.run)}>Cancel run</button
           >{/if}
       </p>
-      <ol class="transcript">
-        {#each entries as entry (entry.seq)}
-          <li>
-            {#if entry.kind === 'user'}
-              <h3>You</h3>
-              <Markdown source={entry.text} />
-            {:else if entry.kind === 'assistant'}
-              <h3>Agent</h3>
-              {#if entry.text}<Markdown source={entry.text} />{/if}
-              {#if entry.usage}<p class="muted">{entry.usage}</p>{/if}
-              {#each entry.calls as call, index (index)}
-                <details>
-                  <summary>Calls <code>{call.name}</code></summary>
-                  <pre>{call.arguments}</pre>
-                </details>
-              {/each}
-            {:else if entry.kind === 'tool'}
-              <details>
-                <summary><code>{entry.name}</code>: {entry.outcome}</summary>
-                <pre>{entry.result}</pre>
-              </details>
-            {:else if entry.kind === 'note'}
-              <p class:problem={entry.problem} class="muted">{entry.text}</p>
-            {:else}
-              <p class="muted">{entry.text}</p>
-            {/if}
-          </li>
-        {/each}
-      </ol>
-      {#if thinking(chat.run)}<p role="status">The agent is thinking…</p>{/if}
+      <ChatRun run={current} />
+      {#if thinking(current)}<p role="status">The agent is thinking…</p>{/if}
     {/if}
     {#if waiting.length}
       <ul class="messages">
@@ -153,10 +149,17 @@
       >Message to the main agent<textarea
         aria-label="Message to the main agent"
         bind:value={draft.text}
-        rows="4"
-        maxlength="65536"></textarea></label
+        rows="4"></textarea></label
     >
-    <button disabled={sending.busy || !draft.text.trim()} onclick={send}>Send</button>
+    {#if bytes > MAX_MESSAGE_BYTES}<p role="alert">
+        The message is {bytes.toLocaleString('en-US')} bytes; a message holds at most {MAX_MESSAGE_BYTES.toLocaleString(
+          'en-US',
+        )}.
+      </p>{/if}
+    <button
+      disabled={sending.busy || !draft.text.trim() || bytes > MAX_MESSAGE_BYTES}
+      onclick={send}>Send</button
+    >
     {#if sending.error}<ErrorMessage error={sending.error} />{/if}
     {#if !persisted}<p role="alert">
         Browser storage is unavailable. Keep this tab open or copy your message.
@@ -171,26 +174,9 @@
     border-top: 1px solid var(--border, #9996);
     margin-top: 1rem;
   }
-  .transcript {
-    list-style: none;
-    padding: 0;
-  }
-  .transcript li {
-    margin: 0.6rem 0;
-  }
-  .transcript h3 {
-    font-size: 1rem;
-    margin: 0;
-  }
   .text {
     white-space: pre-wrap;
     overflow-wrap: anywhere;
-  }
-  pre {
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    max-height: 20rem;
-    overflow: auto;
   }
   textarea {
     width: 100%;
@@ -198,8 +184,5 @@
   }
   label {
     display: block;
-  }
-  .problem {
-    color: var(--problem, #b3261e);
   }
 </style>

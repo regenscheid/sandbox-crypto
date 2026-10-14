@@ -4,6 +4,10 @@ import type { EventPage, MessageListing } from './api-types';
 import { ApiError } from './http';
 import {
   ChatFeed,
+  forgetMessage,
+  MAX_MESSAGE_BYTES,
+  MAX_RUNS,
+  messageBytes,
   chatEntries,
   messageState,
   PAGE,
@@ -100,16 +104,16 @@ describe("a session's chat, polled", () => {
     state.lease = 'r1';
     state.events.set('r1', [event(1, 'started'), event(2, 'model')]);
     let view = await feed.read();
-    expect(view.run?.events.map((item) => item.seq)).toEqual([1, 2]);
-    expect(thinking(view.run)).toBe(true);
+    expect(view.runs.at(-1)?.events.map((item) => item.seq)).toEqual([1, 2]);
+    expect(thinking(view.runs.at(-1))).toBe(true);
     state.events.get('r1')!.push(event(3, 'assistant', { text: 'Hi', tool_calls: [] }));
     view = await feed.read();
     expect(asked.filter((item) => item.startsWith('events'))).toEqual([
       'events r1 0',
       'events r1 2',
     ]);
-    expect(view.run?.events.map((item) => item.seq)).toEqual([1, 2, 3]);
-    expect(thinking(view.run)).toBe(false);
+    expect(view.runs.at(-1)?.events.map((item) => item.seq)).toEqual([1, 2, 3]);
+    expect(thinking(view.runs.at(-1))).toBe(false);
   });
 
   it('asks no more of a run that ended once its events are read', async () => {
@@ -132,7 +136,8 @@ describe("a session's chat, polled", () => {
     ];
     state.runState.set('r2', 'interrupted');
     const view = await feed.read();
-    expect(view.run).toMatchObject({ run: 'r2', state: 'interrupted' });
+    expect(view.runs.map((run) => run.run)).toEqual(['r1', 'r2']);
+    expect(view.runs.at(-1)).toMatchObject({ run: 'r2', state: 'interrupted' });
     expect(view.service).toBe(true);
   });
 
@@ -147,12 +152,95 @@ describe("a session's chat, polled", () => {
       return answer(run, after);
     };
     const first = await feed.read();
-    expect(first.run).toMatchObject({ run: 'r1', events: [] });
+    expect(first.runs.at(-1)).toMatchObject({ run: 'r1', events: [] });
     known = true;
     state.events.set('r1', [event(1, 'started')]);
     const second = await feed.read();
-    expect(second.run?.events).toEqual([event(1, 'started')]);
+    expect(second.runs.at(-1)?.events).toEqual([event(1, 'started')]);
     expect(asked.filter((item) => item.startsWith('events'))).toEqual(['events r1 0']);
+  });
+
+  it('keeps showing a run the user cancelled, whose message is now held', async () => {
+    const { state, feed } = server();
+    state.messages = [message(1, 'delivered', 'r1'), message(2, 'queued', 'r2')];
+    state.events.set('r1', [event(1, 'started'), event(2, 'stopped', { stopped: 'answered' })]);
+    state.runState.set('r1', 'ended');
+    state.lease = 'r2';
+    state.events.set('r2', [event(1, 'started'), event(2, 'model', { turn: 1 })]);
+    await feed.read();
+    state.messages = [message(1, 'delivered', 'r1'), message(2, 'held', 'r2')];
+    state.events.get('r2')!.push(event(3, 'stopped', { stopped: 'cancelled' }));
+    state.runState.set('r2', 'ended');
+    state.lease = null;
+    const view = await feed.read();
+    expect(view.runs.map((run) => run.run)).toEqual(['r1', 'r2']);
+    expect(view.runs.at(-1)?.events.at(-1)?.kind).toBe('stopped');
+  });
+
+  it("reads a run's last answer before the next run is shown below it", async () => {
+    const { state, feed } = server();
+    state.messages = [message(1, 'queued', 'r1')];
+    state.lease = 'r1';
+    state.events.set('r1', [event(1, 'started'), event(2, 'user', { message_id: 'm1' })]);
+    await feed.read();
+    // Between two polls r1 answers and ends, and the next message starts r2.
+    state.events
+      .get('r1')!
+      .push(
+        event(3, 'assistant', { text: 'answer 1' }),
+        event(4, 'stopped', { stopped: 'answered' }),
+      );
+    state.runState.set('r1', 'ended');
+    state.messages = [message(1, 'delivered', 'r1'), message(2, 'queued', 'r2')];
+    state.lease = 'r2';
+    state.events.set('r2', [event(1, 'started')]);
+    const view = await feed.read();
+    expect(view.runs.map((run) => [run.run, run.events.length])).toEqual([
+      ['r1', 4],
+      ['r2', 1],
+    ]);
+  });
+
+  it(`shows at most ${MAX_RUNS} runs, the newest`, async () => {
+    const { state, feed } = server();
+    state.messages = Array.from({ length: MAX_RUNS + 2 }, (_, index) =>
+      message(index + 1, 'delivered', `r${index + 1}`),
+    );
+    const view = await feed.read();
+    expect(view.runs.map((run) => run.run)).toEqual(
+      Array.from({ length: MAX_RUNS }, (_, index) => `r${index + 3}`),
+    );
+  });
+
+  it('asks no more of a run that no longer holds the session without ending', async () => {
+    const { state, asked, feed } = server();
+    state.lease = 'r1';
+    state.events.set('r1', [event(1, 'started')]);
+    await feed.read();
+    state.lease = null;
+    state.runState.set('r1', 'interrupted');
+    await feed.read();
+    await feed.read();
+    expect(asked.filter((item) => item.startsWith('events'))).toEqual([
+      'events r1 0',
+      'events r1 1',
+    ]);
+  });
+
+  it('does not keep reading held messages, until asked to after a resume or a message', async () => {
+    const { state, asked, feed } = server();
+    state.messages = [message(1, 'held', 'r1'), message(2, 'delivered', 'r2')];
+    state.runState.set('r1', 'ended');
+    state.runState.set('r2', 'ended');
+    await feed.read();
+    await feed.read();
+    feed.recheck();
+    await feed.read();
+    expect(asked.filter((item) => item.startsWith('messages'))).toEqual([
+      'messages 0',
+      'messages 2',
+      'messages 0',
+    ]);
   });
 
   it('moves to a new run once it holds the session', async () => {
@@ -162,7 +250,7 @@ describe("a session's chat, polled", () => {
     state.lease = 'r2';
     state.events.set('r2', [event(1, 'started')]);
     const view = await feed.read();
-    expect(view.run).toMatchObject({ run: 'r2', events: [event(1, 'started')] });
+    expect(view.runs.at(-1)).toMatchObject({ run: 'r2', events: [event(1, 'started')] });
   });
 });
 
@@ -232,11 +320,11 @@ describe('the transcript of a run', () => {
         message(3, 'held', 'r0'),
         message(4, 'delivered', 'r0'),
       ],
-      run,
+      [run],
     );
     expect(listed.map((item) => item.message_id)).toEqual(['m2', 'm3']);
     const held = { ...message(1, 'held', 'r1') };
-    expect(pendingMessages([held], run)).toEqual([held]); // a held one stays, with Resume
+    expect(pendingMessages([held], [run])).toEqual([held]); // a held one stays, with Resume
   });
 
   it("says what each message's state means", () => {
@@ -245,11 +333,18 @@ describe('the transcript of a run', () => {
       "Refused: the project's model budget is spent",
     );
     expect(messageState(message(1, 'held', 'r1'))).toBe(
-      'Held: the run that saw it was interrupted',
+      'Held: its run was cancelled or interrupted before answering it. Resume, or write again, to queue it once more',
     );
-    expect(messageState({ ...message(1, 'held', 'r1'), reason: '5 runs failed in a row' })).toBe(
-      'Held: 5 runs failed in a row',
+    expect(messageState({ ...message(1, 'held', 'r1'), reason: 'failed' })).toMatch(
+      /^Held: this session's runs failed several times in a row\. Resume, or write again/,
     );
+  });
+});
+
+describe('a message to send', () => {
+  it('is measured in UTF-8 bytes, as the server counts it', () => {
+    expect(messageBytes('é')).toBe(2);
+    expect(messageBytes('x'.repeat(MAX_MESSAGE_BYTES))).toBe(MAX_MESSAGE_BYTES);
   });
 });
 
@@ -282,16 +377,29 @@ describe('sending a message', () => {
     await sendMessage('p1', 's1', 'Hello', send);
     expect((sent[2] as { message_id: string }).message_id).not.toBe(first!.message_id);
   });
+
+  it('forgets the kept ID of a failed message given up, so the same text later is new', async () => {
+    const sent: { message_id: string }[] = [];
+    const failing = async (body: { message_id: string; text: string }) => {
+      sent.push(body);
+      throw new Error('no answer');
+    };
+    await expect(sendMessage('p1', 's1', 'yes', failing)).rejects.toThrow();
+    await forgetMessage('p1', 's1', 'yes');
+    await expect(sendMessage('p1', 's1', 'yes', failing)).rejects.toThrow();
+    expect(sent[1]!.message_id).not.toBe(sent[0]!.message_id);
+  });
 });
 
 describe('the chat panel', () => {
   it('renders no text as HTML: the Markdown component is its only renderer', () => {
-    const views = import.meta.glob('../views/ChatPanel.svelte', {
+    const views = import.meta.glob(['../views/ChatPanel.svelte', '../views/ChatRun.svelte'], {
       query: '?raw',
       import: 'default',
       eager: true,
     });
-    const source = String(Object.values(views)[0] ?? '');
+    const source = Object.values(views).map(String).join('\n');
+    expect(Object.keys(views)).toHaveLength(2);
     expect(source).toContain('<Markdown');
     expect(source).not.toContain('{@html');
   });

@@ -15,7 +15,7 @@ import type {
   RunLease,
 } from './api-types';
 import { ApiError, get, post } from './http';
-import { guardedWrite } from './mutation';
+import { forgetWrite, guardedWrite } from './mutation';
 
 export type { ChatMessage, RunEvent, RunLease };
 
@@ -61,7 +61,23 @@ export function sendMessage(
   );
 }
 
-/** The run shown: the one holding the session, or the last one the messages name. */
+/**
+ * Give up a message whose sending failed: the user changed the draft. The same text
+ * written later, such as a second "yes", is then a new message, not a retry of this one.
+ */
+export function forgetMessage(project: string, session: string, text: string): Promise<void> {
+  return forgetWrite('chat-message', `${project}:${session}`, { text });
+}
+
+/** The most a message may hold, in UTF-8 bytes (RS-4). */
+export const MAX_MESSAGE_BYTES = 65536;
+
+/** A message's size as the server counts it: UTF-8 bytes. */
+export function messageBytes(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
+
+/** A run the panel shows: its state and the events read so far. */
 export interface WatchedRun {
   run: string;
   state: EventPage['state'];
@@ -75,7 +91,8 @@ export interface ChatView {
   lease: RunLease | null;
   /** Whether the run service is running; without it, messages wait. */
   service: boolean;
-  run: WatchedRun | null;
+  /** The runs shown, oldest first; the last is the current one (RS-16). */
+  runs: WatchedRun[];
 }
 
 /** What one poll needs from the server, for one session. */
@@ -84,27 +101,41 @@ export interface ChatReads {
   events(run: string, after: number, signal?: AbortSignal): Promise<EventPage>;
 }
 
-const settled = (message: ChatMessage) =>
-  message.state === 'delivered' || message.state === 'refused';
+/** The most runs the panel shows; earlier ones are in the session's run list. */
+export const MAX_RUNS = 5;
+
+/** A message no run will change by itself: delivered, refused, or held until resumed. */
+const settled = (message: ChatMessage) => message.state !== 'queued';
 
 /**
  * A session's chat as one poll reads it (`Poller`, poller.ts). Each read adds what is new:
- * messages from the oldest one not yet settled (a queued or held message can still change
- * state), and the watched run's events after the last one read. A run that has ended and
- * whose events are all read is not asked again.
+ * messages from the oldest queued one, and the events of every run shown that may still
+ * write some. The runs shown are those the messages name (the run that last offered each,
+ * so a cancelled or interrupted run stays) and the one holding the session, oldest first,
+ * at most `MAX_RUNS`: a run that ends between two polls is read to its end before the next
+ * one is shown below it. A run is not asked again once it has ended and its events are
+ * read, or once it no longer holds the session without having ended (interrupted).
  */
 export class ChatFeed {
   #messages = new Map<string, ChatMessage>();
-  #run: WatchedRun | null = null;
-  /** The watched run has ended and all its events are read. */
-  #finished = false;
+  #runs = new Map<string, WatchedRun>();
+  /** Runs whose events are all read and that will write no more. */
+  #finished = new Set<string>();
   #lease: RunLease | null = null;
   #service = false;
+  /** Read held messages again: a resume, or a new message, queues them. */
+  #recheck = false;
 
   constructor(private readonly reads: ChatReads) {}
 
+  /** Read held messages again at the next poll (after Resume, or a message sent). */
+  recheck(): void {
+    this.#recheck = true;
+  }
+
   async read(signal?: AbortSignal): Promise<ChatView> {
     let after = this.#messageCursor();
+    this.#recheck = false;
     for (let page = 0; page < PAGES_PER_READ; page++) {
       const listing = await this.reads.messages(after, signal);
       this.#lease = listing.run;
@@ -113,57 +144,64 @@ export class ChatFeed {
       if (listing.messages.length < PAGE) break;
       after = listing.messages.at(-1)!.number;
     }
-    // The run holding the session; else the newest a message names, which may have run
-    // and ended between two polls; else the one already shown.
-    const wanted = this.#lease?.run ?? this.#lastRun() ?? this.#run?.run ?? null;
-    if (wanted !== null && wanted !== this.#run?.run) {
-      this.#run = { run: wanted, state: 'active', events: [] };
-      this.#finished = false;
-    }
-    const run = this.#run;
-    for (let page = 0; run && !this.#finished && page < PAGES_PER_READ; page++) {
-      let found: EventPage;
-      try {
-        found = await this.reads.events(run.run, run.events.at(-1)?.seq ?? 0, signal);
-      } catch (caught) {
-        // A run the session names before it has written anything is not known yet: read
-        // again at the next poll, rather than end the whole chat as missing.
-        if (caught instanceof ApiError && caught.status === 404) break;
-        throw caught;
-      }
-      run.state = found.state;
-      run.events = [...run.events, ...found.events];
-      if (found.events.length < PAGE) {
-        this.#finished = found.state === 'ended';
-        break;
+    this.#follow();
+    for (const run of this.#runs.values()) {
+      if (this.#finished.has(run.run)) continue;
+      for (let page = 0; page < PAGES_PER_READ; page++) {
+        let found: EventPage;
+        try {
+          found = await this.reads.events(run.run, run.events.at(-1)?.seq ?? 0, signal);
+        } catch (caught) {
+          // A run the session names before it has written anything is not known yet:
+          // read again at the next poll, rather than end the whole chat as missing.
+          if (caught instanceof ApiError && caught.status === 404) break;
+          throw caught;
+        }
+        run.state = found.state;
+        run.events = [...run.events, ...found.events];
+        if (found.events.length < PAGE) {
+          const holding = this.#lease?.run === run.run;
+          if (found.state === 'ended' || (found.state === 'interrupted' && !holding))
+            this.#finished.add(run.run);
+          break;
+        }
       }
     }
     return this.#view();
   }
 
-  /** From the oldest message that may still change; every message is read once at first. */
+  /** Add the runs the messages and the lease name, in the order they first appear. */
+  #follow(): void {
+    const named = [...this.#messages.values()]
+      .sort((a, b) => a.number - b.number)
+      .map((message) => message.run)
+      .filter((run): run is string => run !== null);
+    if (this.#lease) named.push(this.#lease.run);
+    for (const run of named)
+      if (!this.#runs.has(run)) this.#runs.set(run, { run, state: 'active', events: [] });
+    while (this.#runs.size > MAX_RUNS) {
+      const oldest = this.#runs.keys().next().value!;
+      this.#runs.delete(oldest);
+      this.#finished.delete(oldest);
+    }
+  }
+
+  /** From the oldest queued message (or held one, when asked to recheck them). */
   #messageCursor(): number {
     let last = 0;
     let open: number | null = null;
     for (const message of this.#messages.values()) {
       last = Math.max(last, message.number);
-      if (!settled(message)) open = Math.min(open ?? message.number, message.number);
+      const changing = !settled(message) || (this.#recheck && message.state === 'held');
+      if (changing) open = Math.min(open ?? message.number, message.number);
     }
     return open === null ? last : open - 1;
   }
 
-  /** The run of the newest message that names one: the last conversation, after a reload. */
-  #lastRun(): string | null {
-    let newest: ChatMessage | null = null;
-    for (const message of this.#messages.values())
-      if (message.run && (!newest || message.number > newest.number)) newest = message;
-    return newest?.run ?? null;
-  }
-
   #view(): ChatView {
     const messages = [...this.#messages.values()].sort((a, b) => a.number - b.number);
-    const run = this.#run && { ...this.#run, events: [...this.#run.events] };
-    return { messages, lease: this.#lease, service: this.#service, run };
+    const runs = [...this.#runs.values()].map((run) => ({ ...run, events: [...run.events] }));
+    return { messages, lease: this.#lease, service: this.#service, runs };
   }
 }
 
@@ -299,7 +337,7 @@ export function chatEntries(events: readonly RunEvent[]): ChatEntry[] {
 }
 
 /** Whether the run is in a model call now: active, and its last event began one. */
-export function thinking(run: WatchedRun | null): boolean {
+export function thinking(run: WatchedRun | null | undefined): boolean {
   return run?.state === 'active' && run.events.at(-1)?.kind === 'model';
 }
 
@@ -310,12 +348,12 @@ export function thinking(run: WatchedRun | null): boolean {
  */
 export function pendingMessages(
   messages: readonly ChatMessage[],
-  run: WatchedRun | null,
+  runs: readonly WatchedRun[],
 ): ChatMessage[] {
   const shown = new Set(
-    (run?.events ?? [])
-      .filter((event) => event.kind === 'user')
-      .map((event) => event.data['message_id']),
+    runs.flatMap((run) =>
+      run.events.filter((event) => event.kind === 'user').map((event) => event.data['message_id']),
+    ),
   );
   return messages.filter(
     (message) =>
@@ -331,8 +369,15 @@ export function messageState(message: ChatMessage): string {
       return 'Queued';
     case 'delivered':
       return `Delivered to ${message.run ?? 'a run'}`;
-    case 'held':
-      return `Held: ${message.reason ?? 'the run that saw it was interrupted'}`;
+    case 'held': {
+      const why =
+        message.reason === null
+          ? 'its run was cancelled or interrupted before answering it'
+          : message.reason === 'failed'
+            ? "this session's runs failed several times in a row"
+            : message.reason;
+      return `Held: ${why}. Resume, or write again, to queue it once more`;
+    }
     case 'refused':
       return message.reason === 'budget'
         ? "Refused: the project's model budget is spent"
