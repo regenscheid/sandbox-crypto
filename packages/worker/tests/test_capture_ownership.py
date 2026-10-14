@@ -350,3 +350,72 @@ async def test_pipe_drain_error_waits_for_actual_process_reap() -> None:
     finally:
         finished.set()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_the_managers_capture_settings_govern_publication_when_changed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``capture_ack_timeout`` and ``max_artifact_size`` are the manager's public settings:
+    a change after it starts governs the next cleanup and capture."""
+    store = Store(tmp_path / "worker.sqlite3")
+    worker = manager(store, tmp_path)
+    await worker.start()
+    await worker.capabilities("env1")
+    channel = view(worker).channel("env1")
+    lease = store.reserve_capture(new_id("pub"), "env1")
+    lease = store.dispatch_capture(lease, channel.incarnation, new_id("cap"))
+    store.finish_capture(lease, certain=False)
+    (tmp_path / "environments" / "env1" / "project" / "big.bin").write_bytes(b"x" * 512)
+
+    async def silent(op: str, **fields: Any) -> dict[str, Any]:
+        await asyncio.Event().wait()
+        raise AssertionError
+
+    original = channel.request
+    monkeypatch.setattr(channel, "request", silent)
+    worker.capture_ack_timeout = 0.05
+    try:
+        await asyncio.wait_for(view(worker).reconcile_captures("env1", channel), 1)
+        monkeypatch.setattr(channel, "request", original)
+        worker.max_artifact_size = 100
+        with pytest.raises(WorkerError):
+            await worker.publish(PublishRequest(context=CONTEXT, path="big.bin"))
+    finally:
+        monkeypatch.setattr(channel, "request", original)
+        await worker.close()
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_a_failing_store_never_leaves_a_publication_owning_its_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once a publication's task exists, its done callback releases its ownership, so
+    the environment can still suspend, even when the store fails while it runs."""
+    store = Store(tmp_path / "worker.sqlite3")
+    worker = manager(store, tmp_path)
+    await worker.start()
+    await worker.capabilities("env1")
+    leases = store.capture_leases
+    calls = 0
+
+    def failing() -> Any:
+        nonlocal calls
+        calls += 1
+        if calls > 1:  # the reservation reads it first
+            raise sqlite3.OperationalError("disk I/O error")
+        return leases()
+
+    monkeypatch.setattr(store, "capture_leases", failing)
+    try:
+        with pytest.raises((WorkerError, sqlite3.Error)):
+            await worker.publish(PublishRequest(context=CONTEXT, path="missing.txt"))
+        await asyncio.sleep(0)
+        assert view(worker).captures() == 0
+        monkeypatch.setattr(store, "capture_leases", leases)
+        assert await worker.release_if_idle("env1", float("inf"))
+    finally:
+        monkeypatch.setattr(store, "capture_leases", leases)
+        await worker.close()
+        store.close()

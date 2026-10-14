@@ -19,6 +19,7 @@ import logging
 import math
 import mimetypes
 import re
+import sqlite3
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -68,8 +69,8 @@ class Publication:
         usability: Usability,
         *,
         clock: Clock,
-        max_artifact_size: int,
-        ack_timeout: float,
+        max_artifact_size: Callable[[], int],
+        ack_timeout: Callable[[], float],
     ) -> None:
         self.store = store
         self.blobs = blobs
@@ -77,18 +78,17 @@ class Publication:
         self.usability = usability
         self.clock = clock
         self.max_artifact_size = max_artifact_size
+        """The largest artifact, as the manager's setting gives it when a capture reads."""
         self.ack_timeout = ack_timeout
-        """Seconds the executor gets to confirm it cleaned up a cancelled capture."""
-        self._tasks: set[asyncio.Task[ArtifactRef]] = set()
+        """Seconds the executor gets to confirm it cleaned up a cancelled capture, as the
+        manager's setting gives it when one is asked."""
         self._owners: dict[asyncio.Task[ArtifactRef], _Owner] = {}
+        """Each publication's task, with its lease, until its work on the worker's side ends."""
         self._pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="artifact-blob")
-        self.counts: dict[str, int] = {}
-        """Captures holding admission, by environment, as last counted."""
-        self.recount()
 
     def running(self) -> int:
         """Publications whose work on the worker's side has not ended."""
-        return len(self._tasks)
+        return len(self._owners)
 
     def holds(self, environment_id: str) -> bool:
         """Whether a publication from the environment is running."""
@@ -111,7 +111,7 @@ class Publication:
 
     async def close(self) -> None:
         """Cancel every publication, wait for it, then stop the blob threads."""
-        tasks = list(self._tasks)
+        tasks = list(self._owners)
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -124,7 +124,6 @@ class Publication:
         """The original sandbox of that incarnation is proven stopped: its captures' guest
         cleanup no longer holds admission."""
         self.store.fenced_captures(environment_id, incarnation, sandbox, sandbox_id)
-        self.recount()
 
     def confirm_cleanup(self, environment_id: str, sandbox: str, sandbox_id: str) -> None:
         """Trusted lifecycle callback after proof of this exact original VM's deletion.
@@ -138,17 +137,6 @@ class Publication:
                 sandbox_id,
             ):
                 self.store.fenced_captures(environment_id, lease.incarnation, sandbox, sandbox_id)
-        self.recount()
-
-    def recount(self) -> None:
-        """Count the captures holding admission again, by environment, from the store."""
-        counts: dict[str, int] = {}
-        try:
-            for lease in self.store.capture_leases():
-                counts[lease.environment_id] = counts.get(lease.environment_id, 0) + 1
-        except ValueError:
-            counts = {"unknown-corrupt-state": 4}
-        self.counts = counts
 
     async def reconcile(self, environment_id: str, channel: ExecutorChannel) -> None:
         """Only held host-drained leases can receive same-incarnation cleanup ACKs.
@@ -173,13 +161,12 @@ class Publication:
             ):
                 continue
             try:
-                async with asyncio.timeout(self.ack_timeout):
+                async with asyncio.timeout(self.ack_timeout()):
                     reply = await channel.request("capture_cancel", capture_id=lease.capture_id)
                 if reply.get("capture_id") == lease.capture_id and reply.get("cleaned") is True:
                     self.store.acknowledge_capture(lease)
             except (WorkerError, TimeoutError, ValueError):
                 _log.warning("capture cleanup remains unknown; durable admission held")
-        self.recount()
 
     async def publish(self, request: PublishRequest, timeout: float) -> ArtifactRef:
         """Admit four durable publications, two per environment, without queued work.
@@ -197,21 +184,19 @@ class Publication:
             raise WorkerError(ErrorKind.UNAVAILABLE, str(exc)) from exc
         owner = _Owner(lease)
         task = asyncio.create_task(self._publish(request, deadline, owner))
-        self._tasks.add(task)
-        self._owners[task] = owner
-        self.recount()
 
         def finished(done: asyncio.Task[ArtifactRef]) -> None:
-            self._tasks.discard(done)
             self._owners.pop(done)
             try:
                 self.store.finish_capture(owner.lease, certain=owner.certain)
-            except ValueError:
+            except (ValueError, sqlite3.Error):
                 _log.error("capture completion cannot release displaced admission; held")
-            self.recount()
             if not done.cancelled():
                 done.exception()
 
+        # Owned from the moment it exists: nothing may fail between here and the
+        # callback that releases its lease, or the environment could never suspend.
+        self._owners[task] = owner
         task.add_done_callback(finished)
         try:
             return await asyncio.shield(task)
@@ -351,7 +336,7 @@ class Publication:
                 path=reading.path,
                 offset=offset,
                 length=MAX_READ_BYTES,
-                max_bytes=min(capture.MAX_BYTES, self.max_artifact_size),
+                max_bytes=min(capture.MAX_BYTES, self.max_artifact_size()),
                 hash=hashed,
                 timeout=remaining,
                 reply_timeout=None,
@@ -367,11 +352,11 @@ class Publication:
 
             async def cleanup() -> None:
                 try:
-                    async with asyncio.timeout(self.ack_timeout):
+                    async with asyncio.timeout(self.ack_timeout()):
                         cancelled = await channel.request(
                             "capture_cancel",
                             capture_id=capture_id,
-                            reply_timeout=self.ack_timeout,
+                            reply_timeout=self.ack_timeout(),
                         )
                     if (
                         cancelled.get("capture_id") == capture_id
@@ -419,7 +404,7 @@ class Publication:
             if not isinstance(encoded, str) or len(encoded) > 4 * ((MAX_READ_BYTES + 2) // 3):
                 raise ValueError("range encoding exceeds its bound")
             data = base64.b64decode(encoded, validate=True)
-            limit = min(capture.MAX_BYTES, self.max_artifact_size)
+            limit = min(capture.MAX_BYTES, self.max_artifact_size())
             size = integer(reply.get("size"), 0, limit)
             start = integer(reply.get("offset"), 0, capture.MAX_BYTES)
             sha256, stamp = reply.get("sha256"), reply.get("stamp")

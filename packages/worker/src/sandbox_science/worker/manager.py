@@ -306,8 +306,9 @@ class ExecutionManager:
             self._connections,
             self._usability,
             clock=clock,
-            max_artifact_size=max_artifact_size,
-            ack_timeout=capture_ack_timeout,
+            # Read when used, as these settings are public and may change.
+            max_artifact_size=lambda: self.max_artifact_size,
+            ack_timeout=lambda: self.capture_ack_timeout,
         )
         self._streams_ended = False
         self._pollers: dict[str, tuple[ExecutorChannel, asyncio.Task[Any]]] = {}

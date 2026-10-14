@@ -132,8 +132,11 @@ class ManagerView:
         return self.manager._publication.running()
 
     def capture_counts(self) -> dict[str, int]:
-        """Captures holding admission, by environment."""
-        return dict(self.manager._publication.counts)
+        """Captures holding admission, by environment, as the store records them."""
+        counts: dict[str, int] = {}
+        for lease in self.manager.store.capture_leases():
+            counts[lease.environment_id] = counts.get(lease.environment_id, 0) + 1
+        return counts
 
     async def reconcile_captures(self, environment_id: str, channel: ExecutorChannel) -> None:
         """Ask the executor to confirm the cleanup of held captures, as a reconnect does."""
