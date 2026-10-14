@@ -28,6 +28,7 @@ describe('document editing', () => {
     });
     expect(startDraft(first, 'b2')).toMatchObject({ base: 3, text: 'B', block: 'b2' });
     expect(startDraft(first, 'gone').text).toBe('');
+    expect(startDraft(first, null, 'Fix the typo').reason).toBe('Fix the typo');
   });
   it('sends a source edit, or a patch that replaces only its block', () => {
     expect(draftChange({ ...startDraft(first, null), text: 'new' })).toEqual({
@@ -43,9 +44,27 @@ describe('document editing', () => {
       operations: [{ op: 'replace', block: 'b1', markdown: 'A2' }],
     });
   });
+  it('keeps the order of every body, since the operation key hashes its JSON text', () => {
+    const shown = revision(2, 'old', []);
+    (shown.document as { head: number }).head = 4;
+    expect(JSON.stringify(draftChange({ ...startDraft(first, null), text: 'new' }))).toBe(
+      '{"action":"source","base":3,"reason":"User edit","text":"new"}',
+    );
+    expect(JSON.stringify(draftChange({ ...startDraft(first, 'b1'), text: 'A2' }))).toBe(
+      '{"action":"patch","base":3,"reason":"User edit",' +
+        '"operations":[{"op":"replace","block":"b1","markdown":"A2"}]}',
+    );
+    expect(JSON.stringify(documentAction(shown, 'promote', 'notes'))).toBe(
+      '{"action":"promote","base":4,"reason":"Move workbook document to project","name":"notes"}',
+    );
+    expect(JSON.stringify(documentAction(shown, 'revert', 'notes'))).toBe(
+      '{"action":"revert","base":4,"reason":"Restore revision 2","target":2}',
+    );
+  });
   it('ends the draft only when the change was applied or changed nothing', () => {
     for (const outcome of ['applied', 'unchanged']) expect(saved({ outcome } as never)).toBe(true);
-    for (const outcome of ['conflict', 'proposed']) expect(saved({ outcome } as never)).toBe(false);
+    for (const outcome of ['conflicted', 'refused', 'suggested'])
+      expect(saved({ outcome } as never)).toBe(false);
   });
   it('resolves a block conflict on the same block, keeping the user text visible', () => {
     const newer = revision(5, 'A\n\nB changed', [

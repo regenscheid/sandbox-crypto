@@ -42,7 +42,9 @@
     if (open) persisted = documentDrafts.save(scope, { base, text, reason, block, retained });
   });
   function begin(selectedBlock: string | null) {
-    ({ block, text, base } = startDraft(found, selectedBlock));
+    // The whole new draft: an earlier resolution's retained text does not carry over.
+    ({ base, text, reason, block, retained } = startDraft(found, selectedBlock, reason));
+    current = null;
     result = null;
     error = null;
     open = true;

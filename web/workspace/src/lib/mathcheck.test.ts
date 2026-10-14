@@ -47,19 +47,28 @@ describe('isolated math check shares the GUI renderer', () => {
 describe('the server-side math checker bundles no browser client', () => {
   it('reaches neither the API client nor the model repairs through value imports', () => {
     // This directory's modules as text; type-only imports vanish from the bundle, and
-    // every other relative import is followed.
+    // every other relative import or re-export is followed, with or without `from`. The
+    // build's own module graph is checked in server/math-bundle-browser-free.test.mjs.
     const sources = import.meta.glob('./*.ts', { query: '?raw', import: 'default', eager: true });
     const seen = new Set<string>();
     const walk = (file: string): void => {
       if (seen.has(file)) return;
       seen.add(file);
       const source = String(sources[file] ?? '');
-      for (const match of source.matchAll(/^import (?!type )[^;]*?from '(\.\/[^']+)';/gms))
-        walk(`${match[1]}.ts`);
+      const relative =
+        /^(?:import|export)(?!\s+type\b)[^;'"]*?(?:\bfrom\s*)?['"](\.{1,2}\/[^'"]+)['"]/gms;
+      for (const match of source.matchAll(relative)) walk(`${match[1]}.ts`);
     };
     walk('./mathcheck.ts');
-    expect(seen).toContain('./mathrepair.ts');
-    for (const browserOnly of ['api', 'http', 'session', 'modelRepairs', 'pageRepairs'])
+    expect(seen).toContain('./texRepairs.ts');
+    for (const browserOnly of [
+      'api',
+      'http',
+      'session',
+      'modelRepairs',
+      'pageRepairs',
+      'mathrepair',
+    ])
       expect(seen).not.toContain(`./${browserOnly}.ts`);
   });
 });
