@@ -1273,10 +1273,23 @@ def _reap(pids: Iterable[int]) -> None:
 
 
 def _sockets_work() -> bool:
-    """Whether this process may bind a Unix socket, as a kernel's client must."""
+    """Whether this process may use an abstract Unix socket as a kernel's client does.
+
+    ZeroMQ connects the executor to the kernel's channels, so the probe binds, listens,
+    connects and accepts. Any refusal counts as no: the executor then stays dumpable
+    rather than lose its kernels.
+    """
+    name = "\0ss-probe-" + secrets.token_hex(16)
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
-            probe.bind("\0ss-probe-" + secrets.token_hex(16))
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+            server.bind(name)
+            server.listen(1)
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(5)
+                client.connect(name)
+                server.settimeout(5)
+                accepted, _ = server.accept()
+                accepted.close()
     except OSError:
         return False
     return True

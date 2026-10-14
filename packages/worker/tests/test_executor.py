@@ -867,6 +867,18 @@ def test_unix_sockets_work_here() -> None:
     assert executor._sockets_work()
 
 
+@pytest.mark.parametrize("call", ["bind", "listen", "connect", "accept"])
+def test_a_refused_socket_call_makes_the_probe_say_no(
+    monkeypatch: pytest.MonkeyPatch, call: str
+) -> None:
+    # A sandbox may refuse any of the calls a kernel's client makes, not only bind.
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(socket.socket, call, refuse)
+    assert executor._sockets_work() is False
+
+
 def test_pdf_requests_become_the_helpers_command_line() -> None:
     argv = executor.pdf_argv(
         {
