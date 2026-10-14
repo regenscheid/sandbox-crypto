@@ -33,7 +33,7 @@ import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Final, NoReturn, cast, get_args
+from typing import Final, cast, get_args
 
 from aiohttp import hdrs, web
 
@@ -51,6 +51,7 @@ from sandbox_science.policy.approvals import (
     Denied,
     RecordLike,
     RequestKey,
+    Resolution,
     TimedOut,
     Unrecorded,
     Waiting,
@@ -106,8 +107,8 @@ CLIENT_INFO: Final[JsonObject] = {"name": "sandbox-science-mcp-proxy", "version"
 SESSION_ID: Final = "Mcp-Session-Id"
 PROTOCOL_VERSION: Final = "MCP-Protocol-Version"
 MAX_LIST_PAGES: Final = 32
-_RECORDING_LOCKS: Final = 64
 """Pages of ``tools/list`` the proxy reads to learn a server's tools."""
+_RECORDING_LOCKS: Final = 64
 MAX_RECORDED_TEXT: Final = 256
 MAX_RESPONSE_BYTES: Final = 32 * 1024 * 1024
 """The most of one answer the proxy reads, whatever ``max_response_bytes`` the policy sets."""
@@ -689,55 +690,62 @@ class McpProxy:
             call.tool or "",
             hashlib.sha256(params).hexdigest(),
         )
-        now = self._now()
         await self._refresh_approvals()
-        match self._approvals.resolve(key, now):
-            case Denied(answer):
-                raise RefusalError(
-                    APPROVAL_DENIED,
-                    f"permission request {answer.request_seq} was denied",
-                    data={"request": answer.request_seq},
-                )
-            case Approved(answer):
-                payload = {
-                    **call.finding(decision),
-                    "approval_seq": answer.seq,
-                    "request_seq": answer.request_seq,
-                }
-                try:
-                    await self._events.record("approved", payload)
-                except Exception as exc:
-                    _log.exception("could not record an approved call")
+        resolution = self._approvals.resolve(key, self._now())
+        # At most twice: inside its lock, an escalation records the request or returns
+        # how it stands, never Unrecorded.
+        while True:
+            match resolution:
+                case Denied(answer):
                     raise RefusalError(
-                        AUDIT_UNAVAILABLE, "the approved call could not be recorded"
-                    ) from exc
-            case Unrecorded():
-                await self._escalate(call, decision, key)
-            case Waiting(pending):
-                raise RefusalError(
-                    APPROVAL_REQUIRED,
-                    f"{decision.reason} (permission request {pending.seq}, still waiting)",
-                    data={"request": pending.seq},
-                )
-            case TimedOut(pending) if pending.on_timeout == "alert":
-                try:
-                    await self._events.record(
-                        "alert", {**call.finding(decision), "timed_out_request": pending.seq}
+                        APPROVAL_DENIED,
+                        f"permission request {answer.request_seq} was denied",
+                        data={"request": answer.request_seq},
                     )
-                except Exception as exc:
-                    _log.exception("could not record an alert")
+                case Approved(answer):
+                    payload = {
+                        **call.finding(decision),
+                        "approval_seq": answer.seq,
+                        "request_seq": answer.request_seq,
+                    }
+                    try:
+                        await self._events.record("approved", payload)
+                    except Exception as exc:
+                        _log.exception("could not record an approved call")
+                        raise RefusalError(
+                            AUDIT_UNAVAILABLE, "the approved call could not be recorded"
+                        ) from exc
+                    return
+                case Unrecorded():
+                    # Answered or recorded meanwhile: decided as any other call is.
+                    resolution = await self._escalate(call, decision, key)
+                    continue
+                case Waiting(pending):
                     raise RefusalError(
-                        AUDIT_UNAVAILABLE, "the alert could not be recorded"
-                    ) from exc
-            case TimedOut(pending):
-                raise RefusalError(
-                    ESCALATION_TIMED_OUT,
-                    f"permission request {pending.seq} was not answered in time",
-                    data={"request": pending.seq},
-                )
-            case _:
-                # A state this code does not know refuses: only the cases above proceed.
-                raise RefusalError(ESCALATION_TIMED_OUT, "the permission request is undecided")
+                        APPROVAL_REQUIRED,
+                        f"{decision.reason} (permission request {pending.seq}, still waiting)",
+                        data={"request": pending.seq},
+                    )
+                case TimedOut(pending) if pending.on_timeout == "alert":
+                    try:
+                        await self._events.record(
+                            "alert", {**call.finding(decision), "timed_out_request": pending.seq}
+                        )
+                    except Exception as exc:
+                        _log.exception("could not record an alert")
+                        raise RefusalError(
+                            AUDIT_UNAVAILABLE, "the alert could not be recorded"
+                        ) from exc
+                    return
+                case TimedOut(pending):
+                    raise RefusalError(
+                        ESCALATION_TIMED_OUT,
+                        f"permission request {pending.seq} was not answered in time",
+                        data={"request": pending.seq},
+                    )
+                case _:
+                    # A state this code does not know refuses: only the cases above proceed.
+                    raise RefusalError(ESCALATION_TIMED_OUT, "the permission request is undecided")
 
     def prime_approvals(self) -> None:
         """Read the permission requests and answers already stored, before serving, so that
@@ -758,20 +766,17 @@ class McpProxy:
         if self._requests is not None:
             await asyncio.to_thread(self._load_approvals)
 
-    async def _escalate(self, call: Call, decision: Decision, key: RequestKey) -> NoReturn:
+    async def _escalate(self, call: Call, decision: Decision, key: RequestKey) -> Resolution:
         """Record a permission request for ``key``, once, and refuse the call: an identical
         call handled at the same time waits on its fingerprint's lock, then finds the
-        request recorded and waits on it instead."""
+        request recorded. A request answered or recorded meanwhile is returned for the
+        caller to decide."""
         fingerprint = key.fingerprint()
         async with self._recording[int(fingerprint[:8], 16) % _RECORDING_LOCKS]:
             await self._refresh_approvals()
-            pending = self._approvals.pending(key)
-            if pending is not None:
-                raise RefusalError(
-                    APPROVAL_REQUIRED,
-                    f"{decision.reason} (permission request {pending.seq}, still waiting)",
-                    data={"request": pending.seq},
-                )
+            resolution = self._approvals.resolve(key, self._now())
+            if not isinstance(resolution, Unrecorded):
+                return resolution
             try:
                 seq = await self._events.record(
                     "escalation", {**call.finding(decision), "target": key.payload()}
