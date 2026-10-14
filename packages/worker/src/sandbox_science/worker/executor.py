@@ -43,7 +43,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final, Protocol, cast
 
 
 async def _owned[T](work: Awaitable[T], cancelled: Callable[[], None] | None = None) -> T:
@@ -147,6 +147,28 @@ _spawned: set[int] = set()
 
 Message = dict[str, Any]
 Send = Callable[[Message], Awaitable[None]]
+
+
+class Clock(Protocol):
+    """Time for stopping idle kernels; the worker's tests pass a fake one.
+
+    The same shape as ``sandbox_science.contracts.Clock``, which the executor cannot
+    import: it runs with the standard library only.
+    """
+
+    def monotonic(self) -> float: ...
+
+    async def sleep(self, seconds: float) -> None: ...
+
+
+class _SystemClock:
+    def monotonic(self) -> float:
+        return time.monotonic()
+
+    async def sleep(self, seconds: float) -> None:
+        await asyncio.sleep(seconds)
+
+
 Leader = tuple[int, int]
 """A session leader's process ID and start time."""
 
@@ -1462,8 +1484,10 @@ class Executor:
         subreaper: bool = False,
         protected: bool = False,
         kernel_idle: float | None = None,
+        clock: Clock | None = None,
     ) -> None:
         self.root = root
+        self.clock: Clock = clock or _SystemClock()
         self.captures = capture.Pool(root)
         self.owner_prefix = ""
         self.kernel_idle = kernel_idle
@@ -2471,7 +2495,9 @@ class Executor:
         key = (session, language)
         if key not in self.kernels:
             cwd = self.directory(session, ".")
-            self.kernels[key] = Kernel(session, language, cwd, self.environment(session))
+            kernel = Kernel(session, language, cwd, self.environment(session))
+            kernel.last_used = self.clock.monotonic()
+            self.kernels[key] = kernel
         return self.kernels[key]
 
     async def op_cell(self, request: Message) -> None:
@@ -2550,7 +2576,7 @@ class Executor:
         finally:
             running.queued = False
             self.running.pop(execution, None)
-            kernel.last_used = time.monotonic()
+            kernel.last_used = self.clock.monotonic()
             if ran_on is None and kernel.generation:
                 ran_on = kernel.info()
             result.update(
@@ -2806,15 +2832,15 @@ class Executor:
         """Stop kernels unused for ``idle`` seconds; the session's next cell reports lost state."""
         interval = max(0.2, min(30.0, idle / 2))
         while True:
-            await asyncio.sleep(interval)
+            await self.clock.sleep(interval)
             for kernel in tuple(self.kernels.values()):
-                if kernel.manager is None or time.monotonic() - kernel.last_used < idle:
+                if kernel.manager is None or self.clock.monotonic() - kernel.last_used < idle:
                     continue
                 async with kernel.control:
                     busy = any(running.kernel is kernel for running in self.running.values())
                     if kernel.manager is None or busy:
                         continue
-                    if time.monotonic() - kernel.last_used < idle:
+                    if self.clock.monotonic() - kernel.last_used < idle:
                         continue
                     await kernel.stop()
                     kernel.state_lost = True

@@ -25,10 +25,12 @@ from sandbox_science.contracts import (
     ShellRequest,
 )
 from sandbox_science.policy.model import Resources
+from sandbox_science.testing import FakeClock, eventually
 from sandbox_science.worker import executor
 from sandbox_science.worker.app import create_app
 from sandbox_science.worker.errors import WorkerError
 from sandbox_science.worker.manager import ExecutionManager
+from sandbox_science.worker.timeouts import ManagerTimeouts
 
 from .harness import Harness, running, view
 
@@ -407,10 +409,14 @@ async def test_cancelling_pump_waits_for_actual_log_write(
 
 @pytest.mark.asyncio
 async def test_unacknowledged_cancel_cannot_hang_session_close(
-    jobs: ExecutionManager, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from sandbox_science.worker import manager as manager_module
+    timeouts = ManagerTimeouts(cancel_grace=0.05)
+    async with await Harness.start(tmp_path / "worker", timeouts=timeouts) as worker:
+        await _unacknowledged_cancel(worker.manager, monkeypatch)
 
+
+async def _unacknowledged_cancel(jobs: ExecutionManager, monkeypatch: pytest.MonkeyPatch) -> None:
     job, _ = await jobs.submit(request("stuck-cancel", "printf alive; sleep 60"))
     await running(jobs, job.execution_id)
     live = view(jobs).live(job.execution_id)
@@ -424,7 +430,6 @@ async def test_unacknowledged_cancel_cannot_hang_session_close(
         return await original(op, **fields)
 
     monkeypatch.setattr(channel, "request", refuse_cancel)
-    monkeypatch.setattr(manager_module, "CANCEL_GRACE", 0.05)
     await asyncio.wait_for(jobs.close_session(SessionCloseRequest(context=CONTEXT)), 10)
     assert jobs.get(job.execution_id).state is ExecutionState.LOST
     assert channel.closed
@@ -448,10 +453,17 @@ async def test_completed_job_summary_and_list_never_duplicate_large_output(
 
 @pytest.mark.asyncio
 async def test_direct_cancel_has_completion_deadline(
-    jobs: ExecutionManager, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from sandbox_science.worker import manager as manager_module
+    # The cancel's own deadline passes only when the test moves the clock.
+    clock = FakeClock()
+    async with await Harness.start(tmp_path / "worker", clock=clock) as worker:
+        await _cancel_deadline(worker.manager, clock, monkeypatch)
 
+
+async def _cancel_deadline(
+    jobs: ExecutionManager, clock: FakeClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
     job, _ = await jobs.submit(request("ack-without-end", "sleep 60"))
     await running(jobs, job.execution_id)
     live = view(jobs).live(job.execution_id)
@@ -465,9 +477,13 @@ async def test_direct_cancel_has_completion_deadline(
         return await original(op, **fields)
 
     monkeypatch.setattr(channel, "request", acknowledge_cancel)
-    monkeypatch.setattr(manager_module, "CANCEL_GRACE", 0.05)
+    sleeping = clock.sleepers  # the execution's own watchdog
     execution = await jobs.cancel(job.execution_id)
     assert execution.state is ExecutionState.CANCELLING
+    await eventually(lambda: clock.sleepers == sleeping + 1)
+    clock.advance(jobs.timeouts.cancel_grace - 1)
+    assert jobs.get(job.execution_id).state is ExecutionState.CANCELLING
+    clock.advance(1)
     final = await asyncio.wait_for(jobs.wait(job.execution_id), 10)
     assert final.state is ExecutionState.LOST
     assert live.cancel_watchdog is not None

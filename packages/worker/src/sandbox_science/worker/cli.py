@@ -188,7 +188,9 @@ async def serve(settings: Settings) -> None:
             interval = environments.settings.admission_interval
             background.append(asyncio.create_task(DraftWatcher(environments, interval).run()))
         if environments is not None and environments.settings.suspend_after is not None:
-            suspender = Suspender(environments, manager, environments.settings.suspend_after)
+            suspender = Suspender(
+                environments, manager, environments.settings.suspend_after, clock=manager.clock
+            )
             background.append(asyncio.create_task(suspender.run()))
         await stopping.wait()
         _log.info("stopping")

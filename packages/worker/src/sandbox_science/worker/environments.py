@@ -41,16 +41,17 @@ import re
 import secrets
 import sqlite3
 import threading
-import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Final, NoReturn, cast
 
 from pydantic import ValidationError
 
 from sandbox_science.contracts import (
+    SYSTEM_CLOCK,
+    Clock,
     EnvironmentInfo,
     EnvironmentRequest,
     EnvironmentState,
@@ -100,10 +101,7 @@ MAX_SANDBOX_NAME: Final = 19
 """OpenShell's limit on a sandbox's name (``MAX_ROUTABLE_NAME_LEN``)."""
 _ANSI: Final = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _SANDBOX_COMMAND: Final = ("sleep", "infinity")
-_POLL_SECONDS: Final = 1.0
 _POLICY_TIMEOUT: Final = 120
-_RESUME_TIMEOUT: Final = 180.0
-_START_BACKOFF: Final = 60.0
 _DEAD_PHASES: Final = frozenset({"Error", "Deleting", "Completed"})
 """OpenShell sandbox phases from which no sandbox becomes ready."""
 MAX_POLICY_YAML: Final = 320 * 1024
@@ -218,7 +216,8 @@ class OpenShellCli:
 class EnvironmentRecords:
     """The worker's record of the environments it manages, in its own SQLite file."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, clock: Clock = SYSTEM_CLOCK) -> None:
+        self.clock = clock
         path.parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self._db.execute("PRAGMA journal_mode=WAL")
@@ -319,7 +318,7 @@ class EnvironmentRecords:
         made after a time never misses one recorded later.
         """
         with self._lock:
-            now = datetime.now(UTC)
+            now = self.clock.now()
             admissions = [replace(admission, decided_at=now) for admission in admissions]
             self._db.executemany(
                 "INSERT INTO admissions"
@@ -406,8 +405,21 @@ class Environments:
         settings: EnvironmentSettings,
         state_dir: Path,
         cli_env: dict[str, str],
+        *,
+        clock: Clock = SYSTEM_CLOCK,
+        poll_seconds: float = 1.0,
+        resume_timeout: float = 180.0,
+        start_backoff: float = 60.0,
     ) -> None:
         self.settings = settings
+        self.clock = clock
+        """Stamps the environments' records and times the backoff after a failed start."""
+        self.poll_seconds = poll_seconds
+        """Between looks at a sandbox that is starting or stopping."""
+        self.resume_timeout = resume_timeout
+        """The longest a stopped sandbox may take to start or stop, within ``create_timeout``."""
+        self.start_backoff = start_backoff
+        """After a failed start, uses fail at once for this long instead of starting again."""
         self.handmade_sandboxes = frozenset(backend.sandboxes)
         self.cli = OpenShellCli(backend, cli_env)
         self.store = PolicyStore(settings.policy_store)
@@ -418,7 +430,7 @@ class Environments:
         except PolicyLoadError as exc:
             raise WorkerError(ErrorKind.UNAVAILABLE, f"environment settings: {exc}") from exc
         self.root = state_dir / "environments"
-        self.records = EnvironmentRecords(state_dir / "environments.sqlite3")
+        self.records = EnvironmentRecords(state_dir / "environments.sqlite3", clock)
         self.release: Release | None = None
         """Stops the environment's executor; the execution manager sets it."""
         self.release_idle: ReleaseIdle | None = None
@@ -543,7 +555,7 @@ class Environments:
             name = new_sandbox_name()
             while self.records.sandbox_taken(name):
                 name = new_sandbox_name()
-            now = datetime.now(UTC)
+            now = self.clock.now()
             info = EnvironmentInfo(
                 environment_id=request.environment_id,
                 project_id=request.project_id,
@@ -569,7 +581,7 @@ class Environments:
                 await self._discard(name)
                 self.records.save(
                     info.model_copy(
-                        update={"state": EnvironmentState.DELETED, "updated_at": datetime.now(UTC)}
+                        update={"state": EnvironmentState.DELETED, "updated_at": self.clock.now()}
                     )
                 )
                 raise
@@ -577,7 +589,7 @@ class Environments:
                 update={
                     "sandbox_id": sandbox_id,
                     "state": EnvironmentState.READY,
-                    "updated_at": datetime.now(UTC),
+                    "updated_at": self.clock.now(),
                 }
             )
             self.records.save(ready)
@@ -617,7 +629,7 @@ class Environments:
                     "policy": revision,
                     "findings": _findings(compiled),
                     "admitted_hosts": admitted,
-                    "updated_at": datetime.now(UTC),
+                    "updated_at": self.clock.now(),
                 }
             )
             self.records.save(revised)
@@ -656,7 +668,7 @@ class Environments:
                     update={
                         "findings": _findings(compiled),
                         "admitted_hosts": admitted,
-                        "updated_at": datetime.now(UTC),
+                        "updated_at": self.clock.now(),
                     }
                 )
                 self.records.save(info)
@@ -668,7 +680,7 @@ class Environments:
         self, environment_id: str, requests: Sequence[tuple[str, int]], reason: str
     ) -> list[Admission]:
         """Record hosts as refused without deciding them, after admission kept failing."""
-        now = datetime.now(UTC)
+        now = self.clock.now()
         decisions = {
             (_name(host), port): Admission(_name(host), port, False, reason, now)
             for host, port in requests
@@ -715,7 +727,7 @@ class Environments:
         self.records.forget(environment_id)
         self._start_failures.pop(environment_id, None)
         deleted = info.model_copy(
-            update={"state": EnvironmentState.DELETED, "updated_at": datetime.now(UTC)}
+            update={"state": EnvironmentState.DELETED, "updated_at": self.clock.now()}
         )
         self.records.save(deleted)
         _log.info("deleted sandbox %s of environment %s", info.sandbox, environment_id)
@@ -776,7 +788,7 @@ class Environments:
             # use reads the sandbox's actual phase, and starts it or carries on.
             self.records.save(
                 info.model_copy(
-                    update={"state": EnvironmentState.STOPPED, "updated_at": datetime.now(UTC)}
+                    update={"state": EnvironmentState.STOPPED, "updated_at": self.clock.now()}
                 )
             )
             try:
@@ -831,7 +843,7 @@ class Environments:
             await self.cli.run("sandbox", "stop", info.sandbox)
             # A command acknowledgement alone is not proof the old processes stopped.
             try:
-                async with asyncio.timeout(min(self.settings.create_timeout, _RESUME_TIMEOUT)):
+                async with asyncio.timeout(min(self.settings.create_timeout, self.resume_timeout)):
                     while True:
                         document = await self.cli.sandbox(info.sandbox)
                         if document is None or document.get("id") != info.sandbox_id:
@@ -845,7 +857,7 @@ class Environments:
                             raise WorkerError(
                                 ErrorKind.UNAVAILABLE, "sandbox failed while stopping"
                             )
-                        await asyncio.sleep(_POLL_SECONDS)
+                        await asyncio.sleep(self.poll_seconds)
             except TimeoutError as exc:
                 raise WorkerError(
                     ErrorKind.UNAVAILABLE, "sandbox did not confirm stopping; replacement refused"
@@ -853,7 +865,7 @@ class Environments:
             # Record only a confirmed stop: the startup loss check treats STOPPED as
             # proof cleanup happened. A crash before this is recovered from live phase.
             stopped = info.model_copy(
-                update={"state": EnvironmentState.STOPPED, "updated_at": datetime.now(UTC)}
+                update={"state": EnvironmentState.STOPPED, "updated_at": self.clock.now()}
             )
             self.records.save(stopped)
             self._start_failures.pop(environment_id, None)
@@ -884,20 +896,20 @@ class Environments:
             # A worker may have stopped after the VM stopped but before persisting
             # STOPPED. Its live phase recovers that gap without starting another VM.
             info = info.model_copy(
-                update={"state": EnvironmentState.STOPPED, "updated_at": datetime.now(UTC)}
+                update={"state": EnvironmentState.STOPPED, "updated_at": self.clock.now()}
             )
             self.records.save(info)
         if info.state is not EnvironmentState.STOPPED:
             return info
         failed = self._start_failures.get(info.environment_id)
-        if failed is not None and time.monotonic() - failed[0] < _START_BACKOFF:
+        if failed is not None and self.clock.monotonic() - failed[0] < self.start_backoff:
             raise WorkerError(
                 ErrorKind.UNAVAILABLE,
                 f"sandbox {info.sandbox} failed to start a moment ago ({failed[1]}); "
                 "try again later",
             )
-        started = datetime.now(UTC)
-        timeout = min(self.settings.create_timeout, _RESUME_TIMEOUT)
+        started = self.clock.now()
+        timeout = min(self.settings.create_timeout, self.resume_timeout)
         try:
             document = await self.cli.sandbox(info.sandbox)
             if pinned and (document is None or document.get("id") != info.sandbox_id):
@@ -912,7 +924,7 @@ class Environments:
                 await self.cli.run("sandbox", "start", info.sandbox, timeout=timeout)
             sandbox_id = await self._wait_ready(info.sandbox, timeout)
         except WorkerError as error:
-            self._start_failures[info.environment_id] = (time.monotonic(), error.message)
+            self._start_failures[info.environment_id] = (self.clock.monotonic(), error.message)
             raise
         self._start_failures.pop(info.environment_id, None)
         if sandbox_id != info.sandbox_id:
@@ -925,7 +937,7 @@ class Environments:
                 info, f"sandbox {info.sandbox} came back as {sandbox_id}, not {info.sandbox_id}"
             )
         ready = info.model_copy(
-            update={"state": EnvironmentState.READY, "updated_at": datetime.now(UTC)}
+            update={"state": EnvironmentState.READY, "updated_at": self.clock.now()}
         )
         self.records.save(ready)
         seconds = (ready.updated_at - started).total_seconds()
@@ -942,7 +954,7 @@ class Environments:
         self.records.forget(info.environment_id)
         self.records.save(
             info.model_copy(
-                update={"state": EnvironmentState.DELETED, "updated_at": datetime.now(UTC)}
+                update={"state": EnvironmentState.DELETED, "updated_at": self.clock.now()}
             )
         )
         # This can be the provisioning task itself, through backend.prepare. It
@@ -961,7 +973,7 @@ class Environments:
 
     def _decide(self, policy: LoadedPolicy, requests: Iterable[tuple[str, int]]) -> list[Admission]:
         """Whether the policy could allow a request to each host and port, once each."""
-        now = datetime.now(UTC)
+        now = self.clock.now()
         decisions: dict[tuple[str, int], Admission] = {}
         for host, port in requests:
             name = _name(host)
@@ -1123,7 +1135,7 @@ class Environments:
                 raise WorkerError(
                     ErrorKind.UNAVAILABLE, f"sandbox {name} was not ready after {limit:.0f} s"
                 )
-            await asyncio.sleep(_POLL_SECONDS)
+            await asyncio.sleep(self.poll_seconds)
 
     async def _live_filesystem(self, name: str) -> FilesystemPolicy:
         document = await self.cli.json("policy", "get", name, "--base")

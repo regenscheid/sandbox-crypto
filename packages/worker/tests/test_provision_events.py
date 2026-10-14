@@ -25,7 +25,7 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.event_store import StoreReader, verify_store
 from sandbox_science.policy.approvals import Approvals
-from sandbox_science.worker import provisioner as provisioner_module
+from sandbox_science.testing import FakeClock
 from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.catalog import Catalog
 from sandbox_science.worker.manager import ExecutionManager
@@ -248,7 +248,7 @@ async def test_production_run_emits_original_saved_transitions_without_effect_in
         policies=None,
         permissions=permission,
         cache=None,
-        clock=lambda: NOW,
+        clock=FakeClock(NOW),
     )
     source = record()
     store.insert_provision(source, "a" * 64)
@@ -300,7 +300,7 @@ async def test_startup_classifies_original_unfinished_once_without_backfill(tmp_
         policies=None,
         permissions=permission,
         cache=None,
-        clock=lambda: NOW,
+        clock=FakeClock(NOW),
     )
     store.insert_provision(record(), "a" * 64)
     try:
@@ -344,7 +344,7 @@ async def test_observation_failures_do_not_change_original_operation_outcome_or_
         policies=None,
         permissions=permission,
         cache=None,
-        clock=lambda: NOW,
+        clock=FakeClock(NOW),
     )
     source = record()
     store.insert_provision(source, "a" * 64)
@@ -368,7 +368,6 @@ async def test_observation_failures_do_not_change_original_operation_outcome_or_
 async def test_terminal_observation_releases_queue_before_append_but_remains_owned(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, has_following: bool
 ):
-    monkeypatch.setattr(provisioner_module, "RETAIN", 0)
     entered = threading.Event()
     release = threading.Event()
 
@@ -394,7 +393,8 @@ async def test_terminal_observation_releases_queue_before_append_but_remains_own
         policies=None,
         permissions=permission,
         cache=None,
-        clock=lambda: NOW,
+        clock=FakeClock(NOW),
+        retain=0,
     )
     source = record()
     store.insert_provision(source, "a" * 64)
@@ -484,7 +484,7 @@ async def test_actual_operation_close_retains_original_cancellation_and_store_un
         policies=None,
         permissions=permission,
         cache=None,
-        clock=lambda: NOW,
+        clock=FakeClock(NOW),
     )
     source = record()
     store.insert_provision(source, "a" * 64)

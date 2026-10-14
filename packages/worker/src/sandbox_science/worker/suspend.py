@@ -27,11 +27,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
-from datetime import UTC, datetime
 from typing import Final
 
-from sandbox_science.contracts import EnvironmentInfo
+from sandbox_science.contracts import SYSTEM_CLOCK, Clock, EnvironmentInfo
 
 from .environments import Environments
 from .errors import WorkerError
@@ -41,8 +39,6 @@ _log = logging.getLogger(__name__)
 
 BUSY_SHARE: Final = 0.02
 """CPU seconds per second, summed over an environment's kernels, that count as use."""
-SAMPLE_TIMEOUT: Final = 15.0
-"""How long one environment's sample may take."""
 CONCURRENCY: Final = 8
 """Environments sampled at once."""
 
@@ -57,12 +53,18 @@ class Suspender:
         after: float,
         *,
         interval: float | None = None,
+        sample_timeout: float = 15.0,
+        clock: Clock = SYSTEM_CLOCK,
     ) -> None:
         self.environments = environments
         self.manager = manager
         self.after = after
         self.interval = interval if interval is not None else max(5.0, min(60.0, after / 4))
-        self.started = time.monotonic()
+        self.sample_timeout = sample_timeout
+        """How long one environment's sample may take."""
+        self.clock = clock
+        """The manager's clock, which its activity reports use too."""
+        self.started = clock.monotonic()
         self._samples: dict[str, tuple[float, float, str | None]] = {}
         """Environment to the last (time, CPU seconds, executor) its executor reported."""
         self._busy: dict[str, float] = {}
@@ -71,7 +73,7 @@ class Suspender:
     async def run(self) -> None:
         """Check every ready environment until cancelled."""
         while True:
-            await asyncio.sleep(self.interval)
+            await self.clock.sleep(self.interval)
             try:
                 await self.check()
             except Exception:
@@ -81,7 +83,7 @@ class Suspender:
     async def check(self) -> list[str]:
         """Suspend the environments idle for ``after`` seconds; return their IDs.
 
-        Environments are sampled concurrently, each within ``SAMPLE_TIMEOUT``, so that
+        Environments are sampled concurrently, each within ``sample_timeout``, so that
         an executor that stopped answering holds up no other environment.
         """
         ready = self.environments.records.ready()
@@ -93,7 +95,7 @@ class Suspender:
         async def idle(info: EnvironmentInfo) -> bool:
             async with limit:
                 try:
-                    return await asyncio.wait_for(self._idle(info), SAMPLE_TIMEOUT)
+                    return await asyncio.wait_for(self._idle(info), self.sample_timeout)
                 except TimeoutError:
                     return False
                 except Exception:
@@ -108,7 +110,7 @@ class Suspender:
                 continue
             try:
                 if not await self.environments.suspend(
-                    environment_id, time.monotonic() - self.after
+                    environment_id, self.clock.monotonic() - self.after
                 ):
                     continue
             except WorkerError as error:
@@ -127,7 +129,7 @@ class Suspender:
     async def _idle(self, info: EnvironmentInfo) -> bool:
         environment_id = info.environment_id
         activity = await self.manager.activity(environment_id)
-        now = time.monotonic()
+        now = self.clock.monotonic()
         if activity is None:
             return False  # its executor could not say what it is doing
         if activity.running:
@@ -150,7 +152,7 @@ class Suspender:
                 return False
         # Idle time counts from the environment's last change too: created, resumed,
         # revised or given admitted hosts.
-        age = (datetime.now(UTC) - info.updated_at).total_seconds()
+        age = (self.clock.now() - info.updated_at).total_seconds()
         last = max(
             self.started,
             now - max(age, 0.0),

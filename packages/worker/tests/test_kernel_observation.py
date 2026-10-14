@@ -17,6 +17,7 @@ from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerCli
 from sandbox_science.worker import manager as manager_module
 from sandbox_science.worker.channel import ExecutorChannel, Message
 from sandbox_science.worker.errors import WorkerError
+from sandbox_science.worker.timeouts import ManagerTimeouts
 
 from .harness import CONTEXT, TOKEN, Harness, view
 
@@ -244,27 +245,28 @@ async def test_global_and_per_environment_admission_owned_until_cancellation(
 
 @pytest.mark.parametrize("observe_method", ["observe_kernels", "observe_kernel_lineage"])
 async def test_whole_deadline_includes_actual_channel_write_lock(
-    observer: Harness, monkeypatch: pytest.MonkeyPatch, observe_method: str
+    tmp_path: Path, observe_method: str
 ) -> None:
-    await observer.run("observe-open", kind="shell", script="true")
-    manager = observer.manager
-    environment = view(manager).connection("env1")
-    channel = environment.channel
-    assert channel is not None
-    before = environment.last_used
-    monkeypatch.setattr(manager_module, "KERNEL_OBSERVATION_TIMEOUT", 0.05)
-    await channel._write_lock.acquire()
-    try:
-        with pytest.raises(WorkerError) as error:
-            await asyncio.wait_for(getattr(manager, observe_method)(REQUEST), 0.5)
-        assert error.value.kind == "unavailable"
-        assert channel._pending == {}
-        assert not channel.closed
-    finally:
-        channel._write_lock.release()
-    assert environment.last_used == before
-    assert view(manager).observations() == {}
-    assert (await getattr(manager, observe_method)(REQUEST)).kernels == ()
+    # The write lock stays held, so the observation's own deadline is its only way out.
+    timeouts = ManagerTimeouts(kernel_observation=0.05)
+    async with await Harness.start(tmp_path / "worker", timeouts=timeouts) as observer:
+        await observer.run("observe-open", kind="shell", script="true")
+        manager = observer.manager
+        environment = view(manager).connection("env1")
+        channel = view(manager).channel("env1")
+        before = environment.last_used
+        await channel._write_lock.acquire()
+        try:
+            with pytest.raises(WorkerError) as error:
+                await asyncio.wait_for(getattr(manager, observe_method)(REQUEST), 10)
+            assert error.value.kind == "unavailable"
+            assert channel._pending == {}
+            assert not channel.closed
+        finally:
+            channel._write_lock.release()
+        assert environment.last_used == before
+        assert view(manager).observations() == {}
+        assert (await getattr(manager, observe_method)(REQUEST)).kernels == ()
 
 
 @pytest.mark.parametrize(
