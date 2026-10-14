@@ -1,6 +1,6 @@
 # Run service: GUI chat and live run events
 
-Date: 2026-10-14. **Status: Approved; not built.** The owner decided the outline (refactoring plan, decision 5): a small orchestrator run service, one active run per session, messages queued to the run's next safe point, a new run carries earlier tasks and final answers, and a message may start a run within the project's model budget. The open questions below were decided on 2026-10-14 by the coordinator under the owner's autonomy mandate, each as recommended. Conventions in the [index](README.md).
+Date: 2026-10-14. **Status: Approved; not built.** The owner decided the outline (refactoring plan, decision 5): a small orchestrator run service, one active run per session, messages queued to the run's next safe point, a new run carries earlier tasks and final answers, and a message may start a run within the project's model budget. The questions below were decided on 2026-10-14 by the coordinator under the owner's autonomy mandate, each as recommended. Conventions in the [index](README.md).
 
 ## Scope
 
