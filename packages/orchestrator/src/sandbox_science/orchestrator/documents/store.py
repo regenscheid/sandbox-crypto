@@ -5,7 +5,7 @@
 their block maps, the patches agents submitted (applied, rejected, refused or waiting as
 suggestions), the operation IDs that make retries safe, and the events the changes
 produced (LD-39). More than one process writes it: each harness run, and the workspace
-server once user edits come (slice 2). So every change is one ``BEGIN IMMEDIATE``
+server for the user's edits. So every change is one ``BEGIN IMMEDIATE``
 transaction, which takes SQLite's write lock before it reads the current revision, and
 commits the revision, the patch, the operation ID and the events together, or nothing.
 The database uses write-ahead logging, so readers never wait for a writer, and

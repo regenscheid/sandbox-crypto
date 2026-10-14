@@ -60,8 +60,8 @@
     {
       "path": "../../docs/DISPLAY-REPAIR-PROVENANCE.md",
       "category": "implementation-boundary",
-      "bytes": 6460,
-      "sha256": "266f42648acad9332b25c704f9658ae560a1407c722491a8b5afc72e414b0c85"
+      "bytes": 5898,
+      "sha256": "e9196abb5191016f1701e0d124522030d917d73c17a81cdd08a84a1db7e0fae5"
     },
     {
       "path": "archive/DOCUMENT-EXPORTS.md",
@@ -72,32 +72,32 @@
     {
       "path": "../../docs/FINDING-PROSE-MATH.md",
       "category": "implementation-boundary",
-      "bytes": 7327,
-      "sha256": "55126b3baf4eec548b8321689a69c6667de3a34a641c62009ac1f64620b34c9c"
+      "bytes": 6145,
+      "sha256": "234e664f30e725f3c07e3c7302cba9bd9d43f6e57a6a01dfb64121caad5876d5"
     },
     {
       "path": "../../docs/KERNEL-NOTICE-DELIVERY.md",
       "category": "implementation-boundary",
-      "bytes": 9786,
-      "sha256": "4413775a3eca5d90331d935786a0ef5b696cbae447f3469523ab8c3771d2186b"
+      "bytes": 9860,
+      "sha256": "414f44641c40b74d904eec592b34c3ef035dcf802c410b219a52b76bb849a160"
     },
     {
       "path": "../../docs/KERNEL-NOTICE-LINEAGE.md",
       "category": "implementation-boundary",
-      "bytes": 7759,
-      "sha256": "d47e7179506f02c6573c286251749bbe6017143525a52aae0568935af5959d5b"
+      "bytes": 6036,
+      "sha256": "9cee59c470fb1e812127dc5f06afeb915853c42bb8cbcb226a72918983d1f9e2"
     },
     {
       "path": "../../docs/KERNEL-NOTICES.md",
       "category": "implementation-boundary",
-      "bytes": 10169,
-      "sha256": "b04720539bee4251746f72f18fd2fdb1adce8a20998f83ff843d0e017f692015"
+      "bytes": 8410,
+      "sha256": "cbe9910e5539a5b80c8a12cb30f17aa09070ca9f7c239b689c509b5165dc7dc9"
     },
     {
       "path": "../../docs/KERNEL-REVISIONS.md",
       "category": "implementation-boundary",
-      "bytes": 12221,
-      "sha256": "7a736b1d5566a77e8a8b86921546bc6c9596a18700813592493a17c55e885143"
+      "bytes": 9930,
+      "sha256": "9a2318db46a53badb625d614810a37a22a3ec597d0e1a7cc15f7ddd243fdb91e"
     },
     {
       "path": "../../docs/LOCKFILE-DIFF-WORKSPACE.md",
@@ -120,26 +120,26 @@
     {
       "path": "../../docs/MAIN-PROMPT-PROVENANCE.md",
       "category": "implementation-boundary",
-      "bytes": 8217,
-      "sha256": "d1ce9dca503f6ac2227ac4ded92c9073aa0eb2d6c8ff573f72e097e239e9b73a"
+      "bytes": 7676,
+      "sha256": "6de9723e4c7b79c636be71bb0f1eca5cb9dab6646864d6caf1ca776ced0af15c"
     },
     {
       "path": "../../docs/ORCHESTRATOR-PROMPTS.md",
       "category": "implementation-design",
-      "bytes": 49856,
-      "sha256": "9e8acdc248e70308a8e2ab8a36e908d791ca9a3a6bb4709cd27b00f5db41addb"
+      "bytes": 35626,
+      "sha256": "a5dbae88f494ed77fff7c1247c1a6e36a53aee3401abed39885867d2ed476525"
     },
     {
       "path": "../../docs/PILOT-COMPUTATIONS.md",
       "category": "implementation-boundary",
-      "bytes": 3569,
-      "sha256": "feaae5a5adbb178a1aad84a42329d8e94084af03b70dba7dd5ada322ecc7988e"
+      "bytes": 2952,
+      "sha256": "cfb33d083d6f22895e69a74f4e8fda8cd1b9b7c67e28c28864cc8380e0e8aaaf"
     },
     {
       "path": "../../docs/PROJECT-MACROS.md",
       "category": "implementation-boundary",
-      "bytes": 9784,
-      "sha256": "b86fa8d38f48d690da3f1465853371747e1e11fd193036e5fc815de86f84e0f9"
+      "bytes": 7427,
+      "sha256": "5d901217c4b3fc44b18f30096d7c72eeb7584ed9221494045de2cb5704cdb4cf"
     },
     {
       "path": "../../docs/PROVISIONING-OBSERVATIONS.md",
@@ -162,8 +162,8 @@
     {
       "path": "../../docs/REVIEWER-PROMPT-PROVENANCE.md",
       "category": "implementation-boundary",
-      "bytes": 7696,
-      "sha256": "d05b95d54cf92b3667eb18ba73ec125cb8def3dc564a9c1c8e8f3e6191ec0c4b"
+      "bytes": 7572,
+      "sha256": "62f4dc46386c0fcde3e76f3a8e7f1733e652349d775b77ae1b02a8ccfc792a01"
     },
     {
       "path": "archive/RUN-KERNEL-DISPATCH.md",
@@ -180,8 +180,8 @@
     {
       "path": "../../docs/SESSION-PLAN-EDITING.md",
       "category": "implementation-boundary",
-      "bytes": 9390,
-      "sha256": "d3a322b2a516e9aefabe0e95c7f5796f383c6bf8bf3142570a60fcce2b6f5bcf"
+      "bytes": 8742,
+      "sha256": "da52d5398a9d6383ca945bb797186fa36bd980a46ac549bbd8aa0a4e41c88aba"
     },
     {
       "path": "../../docs/SESSION-PLAN-EDITOR.md",
@@ -198,20 +198,20 @@
     {
       "path": "../../docs/SESSION-PLANS.md",
       "category": "implementation-boundary",
-      "bytes": 12012,
-      "sha256": "24a38a2150e9fb921a4fbfc1787770e2ba46ec411062e93cbeefe5ef61ec4d7e"
+      "bytes": 11671,
+      "sha256": "79eea9ab878135a906e49cc1f985bbb83f1b130f66cdf01f337f81945f2a59dd"
     },
     {
       "path": "../../docs/STOCK-RESEARCH-PROMPTS.md",
       "category": "implementation-boundary",
-      "bytes": 6838,
-      "sha256": "ba7bc15d43c993e9d4c60075913c3c545af1c3d4024fcfee7954d603be31e03a"
+      "bytes": 6187,
+      "sha256": "d53185da61c4ddf57d4998f185cd43b93fd77adbe52f1e6c7557db939ec85bec"
     },
     {
       "path": "../../docs/WATCHER-PROMPT-PROVENANCE.md",
       "category": "implementation-boundary",
-      "bytes": 6644,
-      "sha256": "937a80de8a8f240741fd02dd262cb95600c779a9c830a7ebe0027c30053fc334"
+      "bytes": 6571,
+      "sha256": "dabe0d496f67b4560255257d4c759f6aa9fe29e7fb955d3a8c8ed8f57be95b9d"
     },
     {
       "path": "../../docs/WORKSPACE-KERNELS.md",

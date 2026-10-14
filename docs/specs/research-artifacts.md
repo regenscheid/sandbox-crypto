@@ -1,6 +1,6 @@
 # Research artifacts
 
-Date: 2026-10-11. **Status: Approved as drafted (2026-10-11, by the user), with RA-6 amended for the shared files' sync (D79), and RA-1 and RA-24 amended for living documents later the same day.** Open questions 1 and 3 are settled as proposed; the others are settled as the implementation reaches them, and recorded here. W0 behavior specification; conventions in the [index](README.md).
+Date: 2026-10-11. **Status: Approved as drafted (2026-10-11, by the user), with RA-6 amended for the shared files' sync (D79), and RA-1 and RA-24 amended for living documents later the same day.** Open questions 1 and 3 are settled as proposed; the others are settled as the implementation reaches them, and recorded here. W0 behavior specification; conventions in the [index](README.md). As built: [immutable artifact inventory](../ARTIFACTS.md) (explicit publication only).
 
 ## Scope
 

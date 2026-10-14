@@ -52,8 +52,9 @@ what to do next.
 
 Watcher calls reserve their budget before contacting the model. The default
 is 60 calls per project in a rolling hour (`--watcher-calls-per-hour`), shared
-across processes and runs. Requests, answers, requested alias, resolved model
-and token usage when supplied by the gateway are kept in the control store.
+across processes and runs. Requests, answers, requested alias, resolved model,
+token usage when supplied by the gateway, and the
+[prompt provenance](WATCHER-PROMPT-PROVENANCE.md) are kept in the control store.
 A failed or interrupted request still spends its reservation. Exhaustion
 stops further check-ins until reservations leave the hour; the jobs keep
 running. This is a durable role call budget, not the future project-wide
@@ -110,4 +111,4 @@ Still pending:
   actually start a session turn; detached completion is a next-turn notice.
 - GUI chat and a live CLI inbox. The tested async message boundary can already
   interrupt a wait without cancelling jobs.
-- Project-persisted watcher settings. This slice uses explicit CLI settings.
+- Project-persisted watcher settings. The harness takes them from CLI options.

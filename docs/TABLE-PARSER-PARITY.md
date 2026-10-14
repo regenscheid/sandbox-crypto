@@ -10,7 +10,7 @@ upstream line maps, alignment, escaped pipes, termination rules and the limit of
 JavaScript trims U+FEFF, which Python does not trim. Python trims U+001C through
 U+001F and U+0085, which JavaScript does not trim. These differences could make one
 parser find a table and the other a paragraph, change a table's end, or shift a
-cell's formula offsets. Table source provenance now uses the same JavaScript trim
+cell's formula offsets. Table source provenance uses the same JavaScript trim
 as the corrected rule. Source offsets remain code points into the exact saved text;
 an escaped pipe keeps its original source location even though its backslash is
 absent from the inline token's content.
@@ -19,7 +19,7 @@ This changes no browser renderer or save normalization. In particular, save stil
 normalizes CRLF/CR to LF and removes one leading byte-order mark, while internal
 U+FEFF and other Unicode characters remain in the saved source. Other Markdown and
 math rules keep their existing whitespace definitions. Profile 2 also preserves
-the browser math rules' existing escape boundary in a cell that now retains Python
+the browser math rules' existing escape boundary in a cell that retains Python
 whitespace: an opening delimiter reads backward from the first non-Python-space
 character to the last non-Python-space character. This can suppress an apparent
 formula when that last character is a backslash. Image descriptions keep their
@@ -60,10 +60,8 @@ and browser attachment of server block/math IDs. It includes Unicode row/cell
 edges, lists, quotes, theorem containers, code, ordinary prose and astral text.
 This is a bounded regression corpus, not an exhaustive proof of parser equivalence.
 
-Local validation passed 1,007 affected Python cases and all 571 web tests, including
-the differential corpus, with zero Svelte/TypeScript check errors or warnings.
-These checks cover saved-history reads, ordinary edits and exact revert under
-both profiles; they do not claim an automatic migration of immutable snapshots.
+The tests cover saved-history reads, ordinary edits and exact revert under both
+profiles; immutable snapshots are never migrated.
 
 Run the focused checks from the repository root:
 
@@ -76,9 +74,4 @@ The browser differential test invokes the bounded local
 [server projection utility](../scripts/document_parser_parity.py) through `uv`.
 It requires the existing locked Python and npm dependencies; web CI sets up its
 existing pinned uv/Python action before running npm tests. No model, worker,
-service, VM or network peer participates. Independent review, final combined
-validation and delivery remain root-owned gates.
-
-## Final integration gates
-
-Root final combined gates on signed `9419abec` passed 9,817 Python tests (43 opt-in skips, two existing serializer warnings), 571 web tests including the 1,076-source differential corpus, 24 post-build math cases, both production builds and locked/static/license/protocol checks. Source/test/helper/configuration stayed unchanged; subsequent edits describe acceptance and tracking only. PR #94 merged at actual main `12ddc60` after all four fresh exact-head checks passed on signed `5418ae3` (run `38304095754`).
+service, VM or network peer participates.

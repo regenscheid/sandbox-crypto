@@ -1,18 +1,22 @@
 # Internal session plans and progress
 
-Date: 2026-10-12. This is an internal control-store prerequisite for the
-[plans and delegation specification](specs/plans-and-delegation.md), principally
-PD-1–5 and PD-7–9. It records plans and attributed assertions. It does not start a
-planner, offer model tools, enforce an approval gate, schedule delegation, notify
-an agent, or expose a workspace API or view. Those integrations remain separate.
+The session plan core records each session's versioned plan and the attributed
+progress assertions against it, implementing PD-1–5 and PD-7–9 of the
+[plans and delegation specification](specs/plans-and-delegation.md). It is an
+internal library in the control store. Its callers are the MAIN
+[plan tools](ORCHESTRATOR-PROMPTS.md#implemented-stateful-main-planning-tools), the
+read-only [workspace view](SESSION-PLAN-WORKSPACE.md) and USER
+[body editing](SESSION-PLAN-EDITING.md). The core itself starts no planner, enforces
+no approval gate and schedules no delegation.
 
 `SessionPlans` in
 [`session_plans.py`](../packages/orchestrator/src/sandbox_science/orchestrator/session_plans.py)
 borrows an already owned `DocumentStore`. Its synchronous operations use that
 store's lock, consistent reads and `BEGIN IMMEDIATE`/FULL-durability write
-transactions. It never closes the connection or creates a thread. A future async
-caller must own and drain its actual admitted threaded calls before closing the
-borrowed store; cancelling a coroutine would not prove its SQL work stopped.
+transactions. It never closes the connection or creates a thread. An async
+caller must own and drain its admitted threaded calls before closing the borrowed
+store, since cancelling a coroutine does not prove its SQL work stopped; the plan
+tools do so.
 
 ## Authority and identity
 
@@ -107,12 +111,13 @@ These outcomes and evidence references are assertions. Typed artifact references
 pin revision/digest; execution references pin an attempt; ledger references pin a
 revision. They are same-project claims, with no resource lookup, verification,
 parser, read grant, worker access or reviewer execution. No consistency reviewer
-checks these completion claims in this prerequisite.
+checks these completion claims.
 
 `awaiting_approval` and `active` are workflow records only. The store permits trusted
 USER/MAIN status bookkeeping; it does not implement PD-6's exact-version USER
-approval, revoke execution grants, or enforce an execution barrier. A future tool
-adapter must not turn status alone into approval or execution authority.
+approval, revoke execution grants, or enforce an execution barrier. Callers must
+not turn status alone into approval or execution authority; the plan tools refuse
+to activate an `awaiting_approval` plan.
 
 ## Bounded reads, retention and failures
 
@@ -170,20 +175,13 @@ failure. The schema is internal version 1. Writable construction initializes onl
 its separate namespace; a readonly older control store reports that this history
 is not initialized and is never migrated by a read. A partial namespace is
 corrupt/unavailable for both readers and writers, rather than an empty history.
-Plan versions are internal records; canonical artifact-inventory publication is
-also a separate follow-on.
+Plan versions are internal records; they are not published to the artifact
+inventory.
 
-## Validation boundary
+## Tests
 
-Focused local tests cover attributed USER edits and stale CAS; stable/changed and
-removed steps; delegated track/version fences; workflow/progress races; explicit
-outcomes; exact restart replay and scoped cursors; transactional quotas and
-rollback; corruption/allocation bounds; immutable history and readonly behavior.
-These synthetic control-store tests establish no automatic planning, GUI/live
-progress, approval enforcement, delegation scheduler or OpenShell behavior. Root
-integration, independent review and combined delivery gates remain separate.
-
-Local Python 3.13.15 validation: **80 focused tests passed**; **163 affected tests
-passed** including those 80 plus the existing DocumentStore and KernelNotices
-suites. Ruff/format checks and whole-orchestrator Pyright passed. These are local
-source checks, not full combined pre-push gates or delivered runtime integration.
+Local tests cover attributed USER edits and stale CAS; stable, changed and
+removed steps; delegated track and version fences; workflow and progress races;
+explicit outcomes; exact restart replay and scoped cursors; transactional quotas
+and rollback; corruption and allocation bounds; immutable history and readonly
+behavior. They are synthetic control-store tests.

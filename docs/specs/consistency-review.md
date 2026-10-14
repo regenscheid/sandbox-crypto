@@ -1,12 +1,12 @@
 # Automatic consistency review
 
-Date: 2026-10-11. **Status: Approved as drafted (2026-10-11, by the user), with CR-10 and CR-28 amended for living documents and the ledger, and `math` findings added (CR-36 to CR-38, D82), later the same day.** Open questions 2–5 and 7 are settled as proposed. The CR-10 defaults stand until the user's own CScience settings are known (question 1); questions 6 and 8 remain open. W0 behavior specification; conventions in the [index](README.md).
+Date: 2026-10-11. **Status: Approved as drafted (2026-10-11, by the user), with CR-10 and CR-28 amended for living documents and the ledger, and `math` findings added (CR-36 to CR-38, D82), later the same day.** Open questions 2–5 and 7 are settled as proposed. The CR-10 defaults stand until the user's own CScience settings are known (question 1); questions 6 and 8 remain open. W0 behavior specification; conventions in the [index](README.md). As built: [consistency review](../CONSISTENCY-REVIEW.md).
 
 ## Scope
 
 The automatic consistency review checks an agent's claims against recorded evidence while the agent works and when it finishes, and follows each finding through the author's response to confirmation or another outcome. It behaves like CScience's review (D35, confirmed): checkpoint and terminal scheduling, a constrained reviewer, findings with severity, author responses and claimed-fix confirmation.
 
-Out of scope: mathematical verification and reproduction, a separate role that may run code (D27, proposed extension); action and security monitoring ([monitoring](../MONITORING.md)); the rubric and prompts, written independently when W4 builds this (D56); promotion of results into the ledger ([research workspace](../RESEARCH-WORKSPACE.md)).
+Out of scope: mathematical verification and reproduction, a separate role that may run code (D27, proposed extension); action and security monitoring ([monitoring](../MONITORING.md)); the rubric and prompts, written independently (D56); promotion of results into the ledger ([research workspace](../RESEARCH-WORKSPACE.md)).
 
 Terms:
 

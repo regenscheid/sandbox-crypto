@@ -1,26 +1,24 @@
 # Opt-in planning and progress evaluation
 
 The [`planning_progress_evaluation.py`](../.agents/labs/planning_progress_evaluation.py)
-helper measures a fixed synthetic task through the existing production
-`run_task`, `PlanTools` and canonical `SessionPlans` reader. It changes no
-planner, prompt, tool grant or product runtime. The existing plan tools,
-durable progress and viewer/editor are already implemented; see
-[session plans](SESSION-PLANS.md), [plan tools](../packages/orchestrator/src/sandbox_science/orchestrator/plan_tools.py) and
-[the workspace reader](SESSION-PLAN-WORKSPACE.md).
+lab helper measures a fixed synthetic task through the production `run_task`,
+`PlanTools` and canonical `SessionPlans` reader. It changes no planner, prompt,
+tool grant or product runtime. The plan tools, durable progress and viewer/editor
+it measures are described in [session plans](SESSION-PLANS.md),
+[MAIN plan tools](ORCHESTRATOR-PROMPTS.md#implemented-stateful-main-planning-tools)
+and [the workspace reader](SESSION-PLAN-WORKSPACE.md).
 
-Root ran the positive and deliberately missing-progress scripted controls on
-2026-10-13 through the production local path. The positive met the evaluator's
-criteria; the negative correctly failed its progress criterion. Both fixtures
-were removed, with independent source/result and cleanup review. The
-[calibration report](../.agents/docs/agent-reports/planning-evaluation-2026-10-13.md)
-records exact source, budgets, exit-evidence qualifications and retained failures.
-No real model pilot has run. That separate pilot remains blocked on
-root-provided existing model configuration and an explicitly selected finite
-budget. The helper adds no approval gate or provider configuration discovery.
+A positive and a deliberately missing-progress scripted control have been run: the
+positive met the criteria and the negative failed its progress criterion, as
+intended ([calibration report](../.agents/docs/agent-reports/planning-evaluation-2026-10-13.md)).
+No real-model pilot has been run; it needs an existing model configuration and an
+explicitly chosen finite budget. The helper adds no approval gate and does not
+discover provider configuration.
 
-The helper and calibration archive were delivered as [PR #112](https://github.com/regenscheid/sandbox-crypto/pull/112)
-at `0bc82b3` after independent review and all four fresh CI checks. The accepted
-report/archive retain their original calibration source pins and qualifications.
+The helper pins the byte hashes of ten production files as they were at
+calibration. Four of them (`loop.py`, `plan_tools.py`, `session_plans.py` and
+`documents/store.py`) have changed since, so the active modes refuse on the
+current source until the pins are updated and the controls rerun.
 
 ## Default and active modes
 
@@ -34,13 +32,11 @@ python -I .agents/labs/planning_progress_evaluation.py
 
 Active modes require an absolute repository path, its exact signed clean Git
 head, a fresh absolute exclusive public output path and all five budget
-arguments. Ten installed production files must match the reviewed byte hashes;
-loaded modules must also resolve to that repository. No changes to the pinned
-production inputs are accepted by this helper.
+arguments. Ten installed production files must match the pinned byte hashes;
+loaded modules must also resolve to that repository.
 
-Root ran the two small scripted controls against the same production path,
-each with a new output file. A future repeat must also use fresh outputs. For
-example, the positive control's eight calls include its final answer:
+Each run needs a new output file. For example, the positive control's eight
+calls include its final answer:
 
 ```bash
 uv run --no-sync python .agents/labs/planning_progress_evaluation.py calibrate \
@@ -52,17 +48,16 @@ uv run --no-sync python .agents/labs/planning_progress_evaluation.py calibrate \
 
 The `missing-progress` control deliberately omits in-progress assertions and
 must fail the progress criterion. It is a calibration of the evaluator, not a
-successful planning result. Root owns active controls; the helper author and
-independent reviewers did not replay the calibration.
+successful planning result.
 
-`pilot` uses the same fixed task and production path with a root-selected
+`pilot` uses the same fixed task and production path with an operator-selected
 existing model configuration. The private configuration must be a current-user
 owned, non-symlink, mode-0600 regular file of at most 8 KiB, with exactly
 `base_url`, `model` and an absolute `api_key_file`. The credential file has the
 same ownership/type/mode requirements and a 4 KiB bound. HTTPS is accepted;
 plain HTTP is restricted to loopback. Redirects are disabled. Neither private
-file, its contents nor its hash is exported or printed. Root must retain these
-private files outside the repository and public evidence.
+file, its contents nor its hash is exported or printed. Keep these private
+files outside the repository and public evidence.
 
 ## Task, authority and observations
 
@@ -114,8 +109,7 @@ setup/publication failure.
 
 This helper proves no actual worker-start/progress ordering, live USER-edit
 race, browser delivery, saved `RunRecord`/notice ACK behavior, scientific
-correctness, provider wire receipt or durable call/spend accounting. Root owns
-any future calibration, one small finite model pilot before broader cases,
-evidence review and complete cleanup. The completed scripted controls establish
-the local measurement path and its deliberate negative, rather than model
-adherence to planning guidance.
+correctness, provider wire receipt or durable call/spend accounting. The
+scripted controls establish the local measurement path and its deliberate
+negative, not model adherence to planning guidance. A small finite model pilot
+should precede any broader cases.

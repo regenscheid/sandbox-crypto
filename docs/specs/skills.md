@@ -1,6 +1,6 @@
 # Skills
 
-Date: 2026-10-11. **Status: Draft, to review with the user.** W0 behavior specification; conventions in the [index](README.md).
+Date: 2026-10-11. **Status: Draft, to review with the user.** W0 behavior specification; conventions in the [index](README.md). Nothing in it is built yet.
 
 ## Scope
 

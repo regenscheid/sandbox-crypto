@@ -1,14 +1,15 @@
 # Durable text math checks
 
-Document revisions now connect durable save scheduling, the isolated renderer,
-mechanical findings and closing-round delivery (D82, document portion of LD-53
-to LD-55 and CR-36 to CR-38). [Comments and replies](COMMENT-MATH.md) add immutable body revisions under the
-same checker and delivery bounds. [MAIN explanation fields](FINDING-PROSE-MATH.md)
-also use those bounds. Ledger entries and other finding prose remain outside
-these slices. The renderer remains unavailable until configured by the
-operator; an unavailable check never establishes rejection or a fix.
+Saved document revisions are checked for math that KaTeX rejects, through durable
+save scheduling, an isolated renderer, mechanical findings and closing-round delivery
+(D82, document portion of LD-53 to LD-55 and CR-36 to CR-38).
+[Comments and replies](COMMENT-MATH.md) and [MAIN explanation fields](FINDING-PROSE-MATH.md)
+use the same checker and bounds. Ledger entries and other finding prose are not
+checked. The renderer is unavailable until the operator configures it; an
+unavailable check never establishes rejection or a fix.
 
-`orchestrator.mathcheck.MathChecker` runs one formula in a fresh Node process.
+`orchestrator.mathcheck.MathChecker` runs one formula in a fresh Node process;
+`check_many` runs a batch as one process per formula.
 It imports the same pinned KaTeX 0.18.9, options, bounded effective project/document macros
 and deterministic repair rules as the workspace GUI. Formula text is JSON
 data; it never selects JavaScript, a shell command, a path or a network endpoint.
@@ -38,9 +39,9 @@ dependency lockfile; no second KaTeX installation is introduced. Renderer and
 launcher runtime bytes are unchanged by the notice emission.
 
 The service operator supplies absolute paths to Node, the launcher and bundle
-when constructing `MathChecker`. Node 22.12 or newer is required; acceptance
-uses 24.20.0, the existing web CI runtime. Node is not bundled into Python
-wheels or the orchestrator image by this slice. No save hook or fallback
+when constructing `MathChecker`. Node 22.12 or newer is required; the web CI
+job uses 24.20.0. Node is not bundled into Python wheels or the orchestrator
+image. No save hook or fallback
 silently enables the checker when those paths are absent.
 
 The persistent harness accepts `--math-node`, `--math-launcher` and
@@ -96,7 +97,13 @@ queue on every save. Writer preparation and admission reconcile targets
 monotonically with authoritative document heads, including revisions written by
 an older writer. Read-only workspace requests never migrate or advance state.
 
-Every parsed span is checked on each saved revision under its effective macros.
+Each saved revision is checked in turn and in full. The checker claims a
+document's revisions one after another, from the oldest unchecked one to the
+current one, and renders every parsed span of each under its effective macros,
+whether or not the formula changed; results of earlier revisions are not reused.
+Only the current revision's results can raise, reflag or close findings; older
+results stay as observations. D82 as amended on 2026-10-14 (check only the current
+revision when the checker reaches it, one Node process per batch) is not built yet.
 Document front matter overrides the bounded [project setting](PROJECT-MACROS.md).
 An unchanged formula is therefore checked again after a front-matter or project
 macro change. A document revision atomically pins its save-time project setting;
@@ -164,6 +171,13 @@ staging record, and a stale save callback cannot decide another run's claim.
 This never invents an additional renderer rejection. Saved summary counts describe
 the closing boundary before this save finalization.
 
+[Project macros](PROJECT-MACROS.md) pin document/comment effective contexts
+and MAIN explanations' agreed original anchor contexts. Contradictory or unknown explanation contexts stay held and allow
+only an inconclusive reviewer outcome; they cannot prove a mechanical fix or
+scientific confirmation. Exact checked context remains available even where a
+thread history uses explicitly diagnostic rendering. Renderer configuration
+remains operator-owned and unavailable by default.
+
 ## Queue and history budgets
 
 At most two globally active attempts are admitted. Each step renders at most
@@ -193,8 +207,8 @@ The workspace's authenticated session routes list **project-wide** checks, so
 USER/no-session evidence is visible. A valid project/session pair is required;
 cross-project access and foreign finding decisions remain refused. The panel
 shows unavailable counts, held/pending revisions, escaped mechanical evidence and
-ownership proof. Saved run summaries disclose pending work; live push updates are
-still absent.
+ownership proof. Saved run summaries disclose pending work; there are no live push
+updates.
 
 ## Disposable browser fixture
 
@@ -204,56 +218,13 @@ temporary synthetic state and exercises actual local KaTeX, with no model or
 worker calls. It includes agent and USER failures, preserved block ownership,
 accepted/removal resolution, unavailable evidence and two failing reflags.
 `fix`, `unavailable` and `reopen` subcommands require that marker before opening
-a writer; `reopen` supports concurrent USER CAS/draft checks. Native browser
-acceptance is recorded separately from unit/static checks.
+a writer; `reopen` supports concurrent USER CAS/draft checks.
 
 ## Validation boundary
 
-Independent review covers populated legacy migrations and rollback, historical
-ownership, stale/unavailable/configuration retries, bounded corrupt-state reads,
-actual-work cancellation, closing-round delivery and failed-save/ACK races.
-[Native browser acceptance](../.agents/docs/agent-reports/document-math-2026-10-12.md)
-uses actual local KaTeX 0.18.9 and Node 24.20.0 with synthetic documents, no
-provider or worker calls, and retained USER drafts through concurrent CAS changes.
-All disposable browser state was removed. Rebuilt production GUI bytes match
-the archived acceptance assets.
-
-Artifact integration required three `None` defaults in a manually constructed
-CLI test namespace. Its cleanup assertions and timeouts are unchanged. The
-combined affected publication/math/migration/workspace API suite then passed
-68 tests; this fixture correction changes no product, GUI or fixture-builder
-behavior.
-
-Final combined validation passed 9,459 Python tests (43 opt-in skips) on Python
-3.13.15, 434 web tests, locked dependency installation, formatting, lint, strict
-Python/Svelte/TypeScript checks, Python/npm license checks, protocol generation
-and both GUI/math builds. The actual Node boundary runs against the built math
-bundle. The supported Python 3.12 matrix remains unchanged; fresh PR CI and merge
-are separate delivery gates. Comment/reply checks have their own additive
-[slice and validation boundary](COMMENT-MATH.md). Ledger, excluded finding prose,
-idle scheduling and automatic history compaction remain open.
-
-The additive comment/reply slice also corrected shared dependency-only reflag
-accounting: macro/renderer changes refresh evidence but only a new proved failing
-block edit spends an author opportunity. Final signed `77ecc171` passed independent
-review, 78 focused document/comment cases and all combined gates (9,631 Python
-tests, 43 opt-in skips, two existing warnings; 441 web and 24 post-build math checks).
-Fresh [comment/reply browser acceptance](../.agents/docs/agent-reports/comment-math-2026-10-12.md)
-passed against the frozen source/helper; all disposable state was removed. This
-extends durable source coverage to comments/replies. PR #87 merged at `d2b133f`
-after all three fresh CI checks passed on `16bb1308`. Ledger, model repair
-proposals and idle dispatch remain open.
-
-The additive [MAIN explanation math slice](FINDING-PROSE-MATH.md) checks only
-agent MAIN fix/rebut explanation source. Its ordinary corrections preserve the
-original scientific action/evidence, use exact body and finding CAS, and fence
-stale reviewer snapshots independently. The workspace history is read-only;
-ledger and reviewer/USER/platform diagnostic prose remain outside this slice.
-
-The subsequent [project-macro slice](PROJECT-MACROS.md#verification-boundary)
-pins document/comment effective contexts and MAIN explanations' agreed original
-anchor contexts. Contradictory or unknown explanation contexts stay held and allow
-only an inconclusive reviewer outcome; they cannot prove a mechanical fix or
-scientific confirmation. Exact checked context remains available even where a
-thread history uses explicitly diagnostic rendering. Renderer configuration
-remains operator-owned and unavailable by default.
+Tests cover legacy migrations and rollback, historical ownership,
+stale/unavailable/configuration retries, bounded corrupt-state reads, actual-work
+cancellation, closing-round delivery and failed-save/ACK races. Checked in the
+browser with actual local KaTeX 0.18.9 and Node 24.20.0 on synthetic documents in
+[document math acceptance](../.agents/docs/agent-reports/document-math-2026-10-12.md)
+and [comment math acceptance](../.agents/docs/agent-reports/comment-math-2026-10-12.md).
