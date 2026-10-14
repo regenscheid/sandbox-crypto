@@ -12,7 +12,7 @@ import pytest
 
 from sandbox_science.contracts import ErrorKind, ProbeFacts
 from sandbox_science.contracts.worker import SentinelState
-from sandbox_science.worker import executor
+from sandbox_science.worker import sandbox_setup
 from sandbox_science.worker.channel import ExecutorChannel, Message
 from sandbox_science.worker.errors import WorkerError
 from sandbox_science.worker.isolation import assess, failed, probe, sentinel_result
@@ -149,8 +149,8 @@ class FakeChannel(ExecutorChannel):
 def _beside_the_worker(paths: list[str]) -> Message:
     """What an executor on the worker's own host would say."""
     return {
-        "facts": executor.probe_facts(),
-        "sentinels": {path: executor.sentinel_state(path) for path in paths},
+        "facts": sandbox_setup.probe_facts(),
+        "sentinels": {path: sandbox_setup.sentinel_state(path) for path in paths},
     }
 
 
