@@ -247,6 +247,48 @@ async def test_concurrent_requests_for_one_expression_share_one_call() -> None:
     assert model.asked == ["x_i_j"]
 
 
+@pytest.mark.asyncio
+async def test_a_waiter_cancelled_does_not_cancel_the_shared_call() -> None:
+    model = HeldModel()
+    service = MathRepairService(model, reviewer="rev")
+    one = asyncio.create_task(service.repair(request("x_i"), "s1"))
+    await eventually(lambda: model.answering == 1)
+    two = asyncio.create_task(service.repair(request("x_i"), "s2"))
+    await asyncio.sleep(0)  # the second request joins the first's call
+    one.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await one
+    model.release.set()
+    shared = await two
+    kept = await service.repair(request("x_i"), "s3")
+    await service.close()
+    assert shared.tex == "x_i}"
+    assert kept.cached
+    assert model.asked == ["x_i"]
+
+
+@pytest.mark.asyncio
+async def test_close_cancels_active_and_queued_calls_and_keeps_nothing() -> None:
+    model = HeldModel()
+    service = MathRepairService(model, reviewer="rev")
+    tasks = [
+        asyncio.create_task(service.repair(request(f"x{i}"), "s")) for i in range(MAX_ACTIVE + 1)
+    ]
+    await eventually(lambda: model.answering == MAX_ACTIVE)
+    await service.close()
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    assert all(isinstance(result, asyncio.CancelledError) for result in results)
+    assert model.answering == 0
+    assert len(model.asked) == MAX_ACTIVE  # the queued one never reached the model
+    # Nothing was kept: the same expression asks the model again.
+    model.release.set()
+    again = await service.repair(request("x0"), "s")
+    assert not again.cached
+    assert again.tex == "x0}"
+    assert len(model.asked) == MAX_ACTIVE + 1
+    await service.close()
+
+
 def test_invalid_requests_are_refused() -> None:
     with pytest.raises(RepairRequestError, match="must be an object"):
         parse_request(None)
@@ -540,7 +582,7 @@ async def test_the_endpoint_answers_with_the_repair(repairing: TestClient[Any, A
 async def test_the_endpoint_refuses_what_it_cannot_read(repairing: TestClient[Any, Any]) -> None:
     await login(repairing)
     cases = [
-        (b"{not json", "not JSON"),
+        (b"{not json", "invalid math repair request"),
         (b"[1, 2]", "must be an object"),
         (b'{"tex": ""}', "non-empty tex"),
         (b'{"tex": "' + b"x" * 4001 + b'"}', "exceeds 4000"),

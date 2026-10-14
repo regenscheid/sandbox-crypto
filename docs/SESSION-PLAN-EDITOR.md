@@ -53,7 +53,9 @@ After an earlier unknown outcome, a later 404 or 409 does not prove the earlier
 write absent. Closed sessions can refuse before replay.
 
 Operation replay is scoped to the workspace's one USER, the same for every login,
-so a retained request replays after signing in again. After a fresh current read, the USER can explicitly continue from current text while
+so a retained request replays after signing in again. A save recorded before that
+change carries another author, so its retry conflicts instead of replaying, and it
+never applies twice. After a fresh current read, the USER can explicitly continue from current text while
 keeping one exact earlier save labeled unresolved. This does not prove failure,
 merge earlier changes, or fabricate an acknowledgment. A new intent gets a new
 operation ID. A second unresolved outcome cannot evict the retained predecessor;
