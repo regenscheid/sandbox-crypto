@@ -156,6 +156,9 @@ async def _closing(hooks: Sequence[TurnHook], transcript: Transcript, answer: st
     for hook in [*vetoes, *(hook for hook in hooks if not hook.veto)]:
         decision = await _ask(hook, transcript, answer)
         if decision != "accept" and decision != "respond":
+            if respond and decision == "turn":
+                # Findings asked for earlier in this closing go out with the turn: a round.
+                transcript.response_rounds += 1
             return decision == "turn"
         respond = respond or decision == "respond"
     if respond:
@@ -171,25 +174,31 @@ async def _closing(hooks: Sequence[TurnHook], transcript: Transcript, answer: st
 
 
 async def _ask(hook: TurnHook, transcript: Transcript, answer: str | None) -> Decision:
-    """One hook's closing, as the loop grants it. A continue or a response round that
-    brings no notices, or that the run has no room for, is an accept."""
+    """One hook's closing, as the loop grants it, with its notices added.
+
+    A continue or a response round that brings no notices, or that the run has no room
+    for, is an accept, and its notices are not added: no model would see them.
+    """
     closing = await hook.closing(transcript, answer)
-    _offer(transcript, closing.notices)
     match closing.action:
         case "stop":
             transcript.stopped = closing.stopped
-            return "stop"
+            decision: Decision = "stop"
         case "retry" if transcript.turns_left <= 0:
             transcript.stopped = closing.stopped
-            return "stop"
+            decision = "stop"
         case "retry":
-            return "turn"
+            decision = "turn"
         case "continue" if closing.notices and transcript.turns_left > 0:
-            return "turn"
+            decision = "turn"
         case "respond" if closing.notices and transcript.can_respond:
-            return "respond"
+            decision = "respond"
+        case "accept":
+            decision = "accept"
         case _:
             return "accept"
+    _offer(transcript, closing.notices)
+    return decision
 
 
 async def _attach(
@@ -197,9 +206,11 @@ async def _attach(
 ) -> None:
     """Notices at the tool point ride on its result, which keeps its head and tail.
 
-    Each notice has a key of its own beside ``tool_result``, and together they take at
-    most half of ``limit``. A notice that fails these, or a hook that fails here, offers
-    nothing: its notices wait for a later safe point or run, and the result stands.
+    Each notice has a key of its own, not one the tool's record uses, and together they
+    take at most half of ``limit``. A hook that fails here offers nothing, and its
+    notices wait for a later safe point. A notice that fails these checks is not
+    attached or offered, so it is never acknowledged: a source that marks what it hands
+    out, as job notices do, gives it to the next run. Either way the result stands.
     """
     if outcome.whole:
         return
@@ -211,7 +222,8 @@ async def _attach(
             _log.exception("the %s notices failed; they wait for a later safe point", hook.name)
     extra: dict[str, object] = {}
     for notice in found:
-        if notice.framing in extra or notice.framing in {"tool_result", *outcome.record}:
+        taken = {"tool_result", "tool", "arguments", *outcome.record}
+        if notice.framing in extra or notice.framing in taken:
             _log.error("a %s notice's key %r is taken; not attached", notice.source, notice.framing)
         elif len(dump({**extra, notice.framing: notice.payload})) > limit // 2:
             _log.warning("a %s notice is too long to attach; not attached", notice.source)

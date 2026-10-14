@@ -14,7 +14,8 @@ loop alone applies the delivery rules:
   Hooks check this too, before doing work for a turn that cannot come.
 - Notices at the ``tool`` point ride on the tool result, bounded with it, each under
   a key of its own. A hook that fails there, or a notice whose key is taken or that is
-  too long, offers nothing: the result stands and the notice waits.
+  too long, offers nothing: the result stands and the notice waits for a later safe
+  point, or for the next run if its hook already counted it as handed out.
 
 Hooks run in a fixed order, which is the order their notices reach the model. A veto
 hook is asked about a closing answer first, and again after every hook accepted it.

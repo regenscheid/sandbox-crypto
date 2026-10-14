@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 from datetime import UTC, datetime
-from typing import cast
+from typing import Literal, cast
 
 import pytest
 
@@ -60,6 +60,16 @@ async def test_notices_at_a_tool_point_keep_their_payloads_and_the_result() -> N
     assert "error" in json.loads(seen["tool_result"])
     assert transcript.delivered_ids("a") == {"a-1"}
     assert transcript.delivered_ids("b") == transcript.delivered_ids("c") == frozenset()
+
+
+@pytest.mark.parametrize("key", ["tool", "arguments"])
+async def test_a_notice_cannot_take_a_key_of_the_tool_record(key: str) -> None:
+    hook = AtTool("a", key, "replaced")
+    model = ScriptedModel([call(), ModelTurn("done")])
+    transcript = await run_task(model, toolbox(), "go", run_id="r", hooks=[hook])
+    (record,) = transcript.tool_records
+    assert (record["tool"], record["arguments"]) == ("no_such_tool", "{}")
+    assert transcript.delivered_ids("a") == frozenset()
 
 
 async def test_a_notice_too_long_for_a_tool_result_is_not_attached() -> None:
@@ -239,3 +249,41 @@ async def test_a_veto_is_asked_first_and_can_stop_the_run_without_an_answer() ->
     transcript = await run_task(model, toolbox(), "go", run_id="r", hooks=[later, veto])
     assert (transcript.stopped, transcript.final_text) == ("user_message", None)
     assert (veto.closings, later.asked) == (2, 0)
+
+
+class Asks(TurnHook):
+    """Continues or asks for a response round at every closing, leaving the loop alone
+    to decide whether the run has room for it."""
+
+    def __init__(self, name: str, action: Literal["continue", "respond"]) -> None:
+        self.name = name
+        self.action: Literal["continue", "respond"] = action
+        self.closings = 0
+
+    async def closing(self, run: RunView, answer: str | None) -> Closing:
+        self.closings += 1
+        notice = Notice(self.name, (f"{self.name}-{self.closings}",), "New: ", [1])
+        return Closing(self.action, (notice,))
+
+
+@pytest.mark.parametrize("action", ["continue", "respond"])
+async def test_a_closing_the_run_has_no_room_for_adds_nothing_after_the_answer(
+    action: Literal["continue", "respond"],
+) -> None:
+    model = ScriptedModel([ModelTurn("answer")])
+    hook = Asks("a", action)
+    transcript = await run_task(model, toolbox(), "go", run_id="r", max_turns=1, hooks=[hook])
+    assert transcript.final_text == "answer"
+    assert transcript.messages[-1] == {"role": "assistant", "content": "answer"}
+    assert transcript.delivered_ids("a") == frozenset()
+
+
+async def test_findings_that_go_out_with_a_later_continue_count_as_a_response_round() -> None:
+    responds, continues = Asks("r", "respond"), Asks("c", "continue")
+    model = ScriptedModel([ModelTurn(str(i)) for i in range(5)])
+    transcript = await run_task(
+        model, toolbox(), "go", run_id="r", max_turns=5, hooks=[responds, continues]
+    )
+    assert transcript.response_rounds == 2
+    assert transcript.delivered_ids("r") == {"r-1", "r-2"}
+    assert transcript.final_text == "4"
