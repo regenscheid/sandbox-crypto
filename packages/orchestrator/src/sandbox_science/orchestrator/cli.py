@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import math
 import sys
@@ -133,6 +134,16 @@ async def _close(model: ChatModel) -> None:
 
 
 async def _run(args: argparse.Namespace) -> int:
+    """``_run_with`` the state directory's project store, closed when the run is kept."""
+    projects = ProjectStore(args.state_dir) if args.state_dir is not None else None
+    try:
+        return await _run_with(args, projects)
+    finally:
+        if projects is not None:
+            projects.close()
+
+
+async def _run_with(args: argparse.Namespace, projects: ProjectStore | None) -> int:
     """Run one task against the worker, then save its record and acknowledge its notices.
 
     The session is resolved and the worker's isolation checked before the stores open
@@ -155,7 +166,6 @@ async def _run(args: argparse.Namespace) -> int:
     minimum: int | None = None if args.allow_unisolated else args.min_isolation_tier
     finished: Finished | None = None
     state_dir: Path | None = args.state_dir
-    projects = ProjectStore(state_dir) if state_dir is not None else None
     interruption = Interruption()
     try:
         async with AsyncExitStack() as stack:
@@ -242,7 +252,11 @@ async def _closed(documents: DocumentStore) -> None:
 
 
 async def _project(args: argparse.Namespace) -> int:
-    store = ProjectStore(args.state_dir)
+    with contextlib.closing(ProjectStore(args.state_dir)) as store:
+        return await _project_action(args, store)
+
+
+async def _project_action(args: argparse.Namespace, store: ProjectStore) -> int:
     match args.action:
         case "create":
             record, created = store.create(args.project, args.profile, args.policy)
@@ -296,7 +310,11 @@ async def _project(args: argparse.Namespace) -> int:
 
 
 async def _session(args: argparse.Namespace) -> int:
-    store = ProjectStore(args.state_dir)
+    with contextlib.closing(ProjectStore(args.state_dir)) as store:
+        return await _session_action(args, store)
+
+
+async def _session_action(args: argparse.Namespace, store: ProjectStore) -> int:
     session = store.get(args.project).sessions.get(args.session)
     if session is None:
         print(f"error: project {args.project} has no session {args.session}", file=sys.stderr)
@@ -314,8 +332,8 @@ async def _session(args: argparse.Namespace) -> int:
 
 def _document(args: argparse.Namespace) -> int:
     """The user's document commands, on the control store in the state directory."""
-    projects = ProjectStore(args.state_dir)
-    project = projects.get(args.project)
+    with contextlib.closing(ProjectStore(args.state_dir, readonly=True)) as projects:
+        project = projects.get(args.project)
     store = DocumentStore(store_path(args.state_dir), producer="harness-cli")
     try:
         match args.action:

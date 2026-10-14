@@ -125,7 +125,7 @@ async def test_actual_inputs_select_exact_framing_without_adding_tools(
         verify_retained(pin, calls[0])
         assert kept(transcript, context).prompt_provenance == pin
     finally:
-        adapter.close()
+        adapter.projects.close()
         documents.close()
 
 

@@ -224,7 +224,7 @@ async def create(
     worker = WorkerClient(str(server.make_url("/")).rstrip("/"), "test-secret-provisioning-peer")
     client = await aiohttp_client(
         create_app(
-            ProjectStore(state_dir),
+            ProjectStore(state_dir, readonly=True),
             static_dir,
             login_token=TOKEN,
             job_worker=worker,
@@ -499,7 +499,9 @@ async def test_the_view_names_a_worker_of_another_version_with_the_upgrade_hint(
     server = await aiohttp_server(application)
     worker = WorkerClient(str(server.make_url("/")).rstrip("/"), "test-secret-provisioning-peer")
     client = await aiohttp_client(
-        create_app(ProjectStore(state_dir), static_dir, login_token=TOKEN, job_worker=worker)
+        create_app(
+            ProjectStore(state_dir, readonly=True), static_dir, login_token=TOKEN, job_worker=worker
+        )
     )
     assert (
         await client.get("/login", params={"token": TOKEN}, allow_redirects=False)

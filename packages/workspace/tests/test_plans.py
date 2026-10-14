@@ -71,7 +71,7 @@ def seed(inventory, *, project="p1", session="a"):
 async def create(aiohttp_client, state_dir, static_dir, *, login=True, **kwargs):
     client = await aiohttp_client(
         create_app(
-            ProjectStore(state_dir),
+            ProjectStore(state_dir, readonly=True),
             static_dir,
             login_token=TOKEN,
             **kwargs,

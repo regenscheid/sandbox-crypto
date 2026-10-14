@@ -93,7 +93,7 @@ def fixture(tmp_path):
             scope=PlanScope(project_id="p", session_id="s"), role="user", user_id="u"
         ),
     )
-    adapter.close()
+    adapter.projects.close()
     documents.close()
 
 
@@ -694,13 +694,6 @@ async def test_cli_cancelled_constructor_closes_owner_published_before_thread_re
     def factory(*args, **kwargs):
         owner = original(*args, **kwargs)
         owners.append(owner)
-        close = owner.close
-
-        def closing() -> None:
-            closed.append("owner")
-            close()
-
-        owner.close = closing
         entered.set()
         assert release.wait(5)
         return owner
@@ -770,7 +763,7 @@ async def test_cli_cancelled_constructor_closes_owner_published_before_thread_re
     with pytest.raises(asyncio.CancelledError):
         await task
     assert len(owners) == 1
-    assert closed == ["owner", "client"]
+    assert closed == ["client"]
     assert projects.runs("p", "s") == []
 
 

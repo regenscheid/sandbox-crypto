@@ -293,6 +293,7 @@ class ProjectStore:
     def __init__(self, state_dir: Path, *, readonly: bool = False) -> None:
         self.root = state_dir / "projects"
         """Where the projects' lock files are."""
+        self.readonly = readonly
         self.control = ControlStore(store_path(state_dir), readonly=readonly)
 
     def close(self) -> None:
@@ -300,7 +301,7 @@ class ProjectStore:
 
     def get(self, project_id: str) -> ProjectRecord:
         self._checked(project_id)
-        if self.control.missing:
+        if self._unmade():
             raise self._absent(project_id)
         with self.control.read() as tx:
             return self._project(tx.sql, project_id)
@@ -419,12 +420,15 @@ class ProjectStore:
             return closed
 
     def project_ids(self) -> list[str]:
-        """The IDs of the projects recorded here, sorted."""
-        if self.control.missing:
-            return []
-        with self.control.read() as tx:
-            rows = tx.sql.execute("SELECT project_id FROM projects ORDER BY project_id")
-            return [project_id for (project_id,) in rows]
+        """The IDs of the projects recorded here, sorted, with those recorded only in an
+        earlier JSON file, whose lookup says so."""
+        found: set[str] = set()
+        if not self._unmade():
+            with self.control.read() as tx:
+                found.update(row[0] for row in tx.sql.execute("SELECT project_id FROM projects"))
+        earlier = (path for path in self.root.glob("*.json") if path.is_file())
+        found.update(name for path in earlier if _is_identifier(name := path.stem))
+        return sorted(found)
 
     def save_run(self, record: RunRecord) -> RunEntry:
         """Keep a run of one of the project's sessions; the record is written once."""
@@ -465,7 +469,7 @@ class ProjectStore:
     def runs(self, project_id: str, session_id: str) -> list[RunEntry]:
         """The runs a session keeps, oldest first."""
         self._checked(project_id, session_id)
-        if self.control.missing:
+        if self._unmade():
             return []
         with self.control.read() as tx:
             rows = tx.sql.execute(
@@ -473,7 +477,15 @@ class ProjectStore:
                 "session_id = ? ORDER BY name",
                 (project_id, session_id),
             ).fetchall()
-        return [RunEntry(name=name, run_id=run, started_at=started) for name, run, started in rows]
+        try:
+            return [
+                RunEntry(name=name, run_id=run, started_at=started) for name, run, started in rows
+            ]
+        except ValidationError as exc:
+            raise ProjectError(
+                ErrorKind.INTERNAL,
+                f"the run list of {project_id}/{session_id} is damaged: {str(exc)[:300]}",
+            ) from exc
 
     def run(
         self, project_id: str, session_id: str, name: str, *, max_bytes: int | None = None
@@ -485,7 +497,7 @@ class ProjectStore:
         missing = ProjectError(
             ErrorKind.NOT_FOUND, f"session {session_id!r} of {project_id!r} has no run {name!r}"
         )
-        if self.control.missing:
+        if self._unmade():
             raise missing
         with self.control.read() as tx:
             key = (project_id, session_id, name)
@@ -523,6 +535,10 @@ class ProjectStore:
                 yield
             finally:
                 fcntl.flock(handle, fcntl.LOCK_UN)
+
+    def _unmade(self) -> bool:
+        """Whether there is no control store to read yet: a read never makes one."""
+        return self.control.missing or not self.control.path.exists()
 
     def _project(self, db: sqlite3.Connection, project_id: str) -> ProjectRecord:
         row = db.execute(

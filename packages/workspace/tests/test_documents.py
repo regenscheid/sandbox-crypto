@@ -77,7 +77,7 @@ def documents(state_dir: Path) -> dict[str, str]:
 async def client(
     aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
 ) -> TestClient[Any, Any]:
-    app = create_app(ProjectStore(state_dir), static_dir, login_token=TOKEN)
+    app = create_app(ProjectStore(state_dir, readonly=True), static_dir, login_token=TOKEN)
     found = await aiohttp_client(app)
     response = await found.get("/login", params={"token": TOKEN}, allow_redirects=False)
     assert response.status == 303
@@ -199,7 +199,7 @@ async def test_another_projects_document_is_not_found(
 async def test_documents_need_the_session(
     aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path, documents: dict[str, str]
 ) -> None:
-    app = create_app(ProjectStore(state_dir), static_dir, login_token=TOKEN)
+    app = create_app(ProjectStore(state_dir, readonly=True), static_dir, login_token=TOKEN)
     anonymous = await aiohttp_client(app)
     for path in (
         "/api/v0/projects/p1/documents",
@@ -492,7 +492,7 @@ async def test_comments_require_auth_same_origin_and_expected_revision(
         "operation_id": "c",
     }
     anonymous = await aiohttp_client(
-        create_app(ProjectStore(state_dir), static_dir, login_token=TOKEN)
+        create_app(ProjectStore(state_dir, readonly=True), static_dir, login_token=TOKEN)
     )
     assert (await anonymous.get(path)).status == 401
     assert (

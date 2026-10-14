@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import gc
 import re
 import sqlite3
 import threading
+import warnings
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -19,6 +21,9 @@ from sandbox_science.contracts import (
     ErrorKind,
     ExecutionContext,
 )
+from sandbox_science.orchestrator.consistency.store import ReviewStore
+from sandbox_science.orchestrator.control import migrations, store_path
+from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.projects import (
     ProjectError,
     ProjectRecord,
@@ -413,3 +418,103 @@ def test_a_read_only_store_reads_without_making_the_database(tmp_path: Path) -> 
     assert reader.runs("p1", "a") == []
     reader.close()
     writer.close()
+
+
+def _v2_store(state: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A control store as the code before projects moved in made it: version 2."""
+    with monkeypatch.context() as old:
+        old.setattr(migrations, "MIGRATIONS", migrations.MIGRATIONS[:1])
+        old.setattr(migrations, "VERSION", migrations.BASELINE)
+        store = DocumentStore(store_path(state))
+        store.initialize()
+        store.close()
+
+
+def test_a_v2_store_migrates_once_and_keeps_its_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _v2_store(tmp_path, monkeypatch)
+    database = sqlite3.connect(store_path(tmp_path))
+    database.execute("INSERT INTO job_runs (project) VALUES ('kept')")  # data that stays
+    database.commit()
+    database.close()
+    store = ProjectStore(tmp_path)
+    store.create("p1", "minimal", POLICY)
+    store.close()
+    again = ProjectStore(tmp_path)  # a second open runs nothing
+    assert again.project_ids() == ["p1"]
+    again.close()
+    database = sqlite3.connect(store_path(tmp_path))
+    assert database.execute("PRAGMA user_version").fetchone() == (migrations.VERSION,)
+    assert database.execute("PRAGMA application_id").fetchone() == (migrations.APPLICATION_ID,)
+    assert database.execute("SELECT project FROM job_runs").fetchall() == [("kept",)]
+    database.close()
+
+
+def test_a_failed_projects_step_leaves_the_v2_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _v2_store(tmp_path, monkeypatch)
+    projects_step = migrations.MIGRATIONS[1]
+
+    def failing(schema: migrations.Schema) -> None:
+        projects_step(schema)
+        schema.execute("SELECT no_such_function()")
+
+    with monkeypatch.context() as broken:
+        broken.setattr(migrations, "MIGRATIONS", (migrations.MIGRATIONS[0], failing))
+        store = ProjectStore(tmp_path)
+        with pytest.raises(sqlite3.OperationalError):
+            store.project_ids()
+        store.close()
+    database = sqlite3.connect(store_path(tmp_path))
+    assert database.execute("PRAGMA user_version").fetchone() == (migrations.BASELINE,)
+    assert database.execute("SELECT 1 FROM sqlite_master WHERE name='projects'").fetchone() is None
+    database.close()
+
+
+def test_a_damaged_run_list_is_a_project_error(session_store: ProjectStore) -> None:
+    session_store.save_run(run_record())
+    database = sqlite3.connect(session_store.control.path)
+    database.execute("DROP TRIGGER runs_no_update")
+    database.execute("UPDATE runs SET started_at = 'garbage'")
+    database.commit()
+    database.close()
+    with pytest.raises(ProjectError) as damaged:
+        session_store.runs("p1", "a")
+    assert damaged.value.kind is ErrorKind.INTERNAL
+
+
+def test_projects_recorded_only_in_json_files_are_listed(store: ProjectStore) -> None:
+    store.create("p1", "minimal", POLICY)
+    (store.root / "old.json").write_text("{}")
+    assert store.project_ids() == ["old", "p1"]
+    with pytest.raises(ProjectError, match="create the project again"):
+        store.get("old")
+
+
+def test_a_session_lookup_leaves_no_connection_open(tmp_path: Path) -> None:
+    writer = ProjectStore(tmp_path)
+    writer.create("p1", "minimal", POLICY)
+    writer.open_session("p1", "a", dedicated=False)
+    writer.close()
+    documents = DocumentStore(store_path(tmp_path), readonly=True)
+    gc.collect()  # what earlier tests left behind is not this test's
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        for _ in range(3):
+            ReviewStore(documents).scope("p1", "a")  # as each workspace review request does
+        gc.collect()
+    documents.close()
+    assert [w for w in caught if issubclass(w.category, ResourceWarning)] == []
+
+
+def test_a_read_never_makes_the_control_store(tmp_path: Path) -> None:
+    store = ProjectStore(tmp_path)  # a writer, as the harness has it
+    assert store.project_ids() == []
+    with pytest.raises(ProjectError) as missing:
+        store.get("p1")
+    assert missing.value.kind is ErrorKind.NOT_FOUND
+    assert store.runs("p1", "a") == []
+    store.close()
+    assert not store_path(tmp_path).exists()

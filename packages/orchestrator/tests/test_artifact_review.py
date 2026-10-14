@@ -684,7 +684,7 @@ async def test_scoped_api_reads_and_exact_artifact_fix_claim(state, tmp_path: Pa
     static.mkdir()
     (static / "index.html").write_text("<!doctype html><title>Synthetic</title>")
     async with TestClient(
-        TestServer(workspace_app(ProjectStore(tmp_path), static, login_token=TOKEN))
+        TestServer(workspace_app(ProjectStore(tmp_path, readonly=True), static, login_token=TOKEN))
     ) as client:
         assert (
             await client.get("/login", params={"token": TOKEN}, allow_redirects=False)

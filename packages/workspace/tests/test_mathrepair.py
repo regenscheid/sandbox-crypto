@@ -404,7 +404,9 @@ async def test_an_undecodable_answer_is_kept_not_a_500(
 
     gateway.answer = answer
     service = gateway_service(gateway.url, "rev", KEY)
-    app = create_app(ProjectStore(state_dir), static_dir, login_token=TOKEN, math_repair=service)
+    app = create_app(
+        ProjectStore(state_dir, readonly=True), static_dir, login_token=TOKEN, math_repair=service
+    )
     client = await aiohttp_client(app)
     await login(client)
     statuses: list[int] = []
@@ -492,7 +494,9 @@ async def repairing(
         reviewer="rev",
         session_limit=3,
     )
-    app = create_app(ProjectStore(state_dir), static_dir, login_token=TOKEN, math_repair=service)
+    app = create_app(
+        ProjectStore(state_dir, readonly=True), static_dir, login_token=TOKEN, math_repair=service
+    )
     return await aiohttp_client(app)
 
 
@@ -599,7 +603,7 @@ async def test_without_a_reviewer_the_endpoint_says_so(
     aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
 ) -> None:
     client = await aiohttp_client(
-        create_app(ProjectStore(state_dir), static_dir, login_token=TOKEN)
+        create_app(ProjectStore(state_dir, readonly=True), static_dir, login_token=TOKEN)
     )
     await login(client)
     response = await client.post(

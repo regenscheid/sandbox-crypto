@@ -77,16 +77,21 @@ def project(root: Path) -> ProjectStore:
 
 
 async def test_a_refused_worker_is_refused_before_the_stores_open_or_scripts_are_read(
-    run, capsys: pytest.CaptureFixture[str]
+    run, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     projects = project(run.root)
+
+    def unopened(*args: object, **kwargs: object) -> None:
+        raise AssertionError("a store opened before the run was admitted")
+
+    monkeypatch.setattr(cli, "DocumentStore", unopened)
+    monkeypatch.setattr(cli, "JobState", unopened)
     args = run.arguments(watcher_script=run.root / "missing.json")
     assert await cli._run(args) == 2
     assert capsys.readouterr().err == (
         "error: the worker offers no isolation evidence. At least tier 3 is required "
         "(--allow-unisolated for development)\n"
     )
-    assert not (run.root / STORE).exists()
     assert projects.runs("p", "s") == []
     assert run.closed == ["model:main", "client"]
 

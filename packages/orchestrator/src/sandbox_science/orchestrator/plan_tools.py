@@ -183,7 +183,6 @@ class PlanTools:
             context.project_id, context.session_id
         )
         if self.snapshot.context != self.registry_context:
-            projects.close()
             raise DocumentError(POLICY_DENIED, "planning context differs from the recorded session")
         self.invalid = False
         self.cursor = 0
@@ -192,10 +191,6 @@ class PlanTools:
         self.held = False
         self.pending_read: Pin | None = None
         self.last_notice: tuple[Pin | None, bool, bool] | None = None
-
-    def close(self) -> None:
-        """Close the project store this owner was given."""
-        self.projects.close()
 
     def _owned(self, action: Callable[[], _T]) -> _T:
         if self.invalid:

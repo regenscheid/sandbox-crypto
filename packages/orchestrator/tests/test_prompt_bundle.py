@@ -218,7 +218,7 @@ async def test_real_stateful_plan_capabilities_match_actual_model_input(tmp_path
         assert provenance.tools.names == tuple(tool.name for tool in expected)
         assert record(transcript, context=context).prompt_provenance == provenance
     finally:
-        adapter.close()
+        adapter.projects.close()
         documents.close()
 
 

@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: MIT
 """The control store's connection and transactions.
 
-``<state-dir>/control.sqlite3`` holds the documents, comments, reviews, plans, artifacts
-and math checks. Each of those has a repository that keeps its own SQL and runs it in a
+``<state-dir>/control.sqlite3`` holds the projects with their sessions and runs, and the
+documents, comments, reviews, plans, artifacts, jobs and math checks. Each of those has a
+repository that keeps its own SQL and runs it in a
 transaction it gets from the one ``ControlStore`` it was given: ``write()`` for a change
 and ``read()`` for a consistent view. More than one process writes the file (each harness
 run, and the workspace server), so a change is one ``BEGIN IMMEDIATE`` transaction, which

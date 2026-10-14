@@ -98,7 +98,7 @@ def payload(ref, *, operation="user-edit", description="USER refined ∀ claim")
 
 async def create(aiohttp_client, state_dir, static_dir, *, login=True, **kwargs):
     client = await aiohttp_client(
-        create_app(ProjectStore(state_dir), static_dir, login_token=TOKEN, **kwargs)
+        create_app(ProjectStore(state_dir, readonly=True), static_dir, login_token=TOKEN, **kwargs)
     )
     if login:
         assert (
@@ -427,4 +427,4 @@ async def test_actual_http_user_edit_requires_successful_main_current_read(
         assert journal.compact_current(authority()).version.author.role == "user"
         assert len(projects.runs("p1", "a")) == 2
     finally:
-        adapter.close()
+        adapter.projects.close()

@@ -174,7 +174,7 @@ async def test_general_pilot_is_offered_once_with_unchanged_tools_and_phase_orde
         )
         verify_retained(pin, calls[0])
     finally:
-        adapter.close()
+        adapter.projects.close()
         documents.close()
 
 

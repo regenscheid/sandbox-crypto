@@ -29,7 +29,7 @@ from sandbox_science.orchestrator.documents.errors import (
     POLICY_DENIED,
     DocumentError,
 )
-from sandbox_science.orchestrator.projects import ProjectError, ProjectStore
+from sandbox_science.orchestrator.projects import ProjectError, recorded
 
 from .models import ReviewConfig, ReviewOutcome, ReviewType, Scope
 from .prompt_bundle import (
@@ -102,7 +102,6 @@ class ReviewStore:
         artifacts: ArtifactInventory | None = None,
     ) -> None:
         self.documents, self.clock, self.artifacts = documents, clock, artifacts
-        self._projects = ProjectStore(documents.path.parent, readonly=True)
         if artifacts is None and not documents.control.missing:
             self.artifacts = ArtifactInventory(documents)
         if artifacts is not None and artifacts.documents is not documents:
@@ -114,7 +113,7 @@ class ReviewStore:
         except ValidationError:
             raise DocumentError(INVALID_REQUEST, "invalid review scope") from None
         try:
-            found = self._projects.get(project)
+            found = recorded(self.documents.path.parent, project)
         except ProjectError:
             raise DocumentError(NOT_FOUND, "no such review project") from None
         if session not in found.sessions:

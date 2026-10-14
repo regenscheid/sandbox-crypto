@@ -76,7 +76,7 @@ async def create(
 ) -> TestClient[Any, Any]:
     client = await aiohttp_client(
         create_app(
-            ProjectStore(state_dir),
+            ProjectStore(state_dir, readonly=True),
             static_dir,
             login_token=TOKEN,
             job_worker=cast(WorkerClient, worker),

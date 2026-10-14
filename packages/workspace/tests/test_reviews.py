@@ -59,7 +59,9 @@ def review_data(state_dir: Path):
 
 @pytest_asyncio.fixture
 async def client(aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path):
-    found = await aiohttp_client(create_app(ProjectStore(state_dir), static_dir, login_token=TOKEN))
+    found = await aiohttp_client(
+        create_app(ProjectStore(state_dir, readonly=True), static_dir, login_token=TOKEN)
+    )
     assert (await found.get("/login", params={"token": TOKEN}, allow_redirects=False)).status == 303
     return found
 

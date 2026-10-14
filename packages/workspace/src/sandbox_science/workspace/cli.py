@@ -213,7 +213,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     login_token = secrets.token_urlsafe(32)
     try:
         app = create_app(
-            ProjectStore(args.state_dir),
+            ProjectStore(args.state_dir, readonly=True),
             args.static,
             login_token=login_token,
             check_host=loopback,
