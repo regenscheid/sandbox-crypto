@@ -266,15 +266,17 @@ async def test_legacy_proven_original_and_shared_quotas(stores):
     assert ResponseBodies(reviews).get("p", "s", finding, decision)["body"] == "$y$"
 
 
-def test_corrupt_raw_body_bounded_before_parse(stores):
+def test_an_oversized_body_is_refused_when_written(stores):
     _, reviews, _ = stores
-    finding, decision = response(reviews)
-    with reviews.documents.control.write() as tx:
-        db = tx.sql
-        db.execute("DROP TRIGGER review_response_bodies_update")
-        db.execute("UPDATE review_response_bodies SET body=?", ("x" * (20 * 1024 * 1024),))
-    with pytest.raises(DocumentError, match="bounds"):
-        ResponseBodies(reviews).get("p", "s", finding, decision)
+    response(reviews)
+    refused = pytest.raises(sqlite3.IntegrityError, match="CHECK")
+    with refused, reviews.documents.control.write() as tx:
+        tx.sql.execute(
+            "INSERT INTO review_response_bodies SELECT source,finding_id,decision_revision,"
+            "revision+1,?,sha256,block_map,author,owners,next_block,next_span,"
+            "identity_floor,held FROM review_response_bodies",
+            ("x" * 40000,),
+        )
 
 
 @pytest.mark.asyncio
@@ -448,9 +450,8 @@ async def test_ordinary_tool_uses_trusted_main_context_and_bounded_reads(stores)
     )
 
 
-def test_response_replay_receipt_is_bounded_and_binds_its_immutable_revision(stores):
+def test_response_replay_receipt_binds_its_immutable_revision(stores):
     import json
-    import tracemalloc
 
     docs, reviews, _ = stores
     finding, decision = response(reviews)
@@ -482,17 +483,43 @@ def test_response_replay_receipt_is_bounded_and_binds_its_immutable_revision(sto
             )
         with pytest.raises(DocumentError, match="immutable body"):
             api.edit("p", "s", payload, MAIN)
-    with docs.control.write() as tx:
-        db = tx.sql
-        db.execute(
-            "UPDATE review_operations SET result=? WHERE operation_id='first'",
-            (json.dumps({**expected, "body": "x" * (20 * 1024 * 1024)}),),
-        )
-    tracemalloc.start()
-    try:
-        with pytest.raises(DocumentError, match="bounds"):
-            api.edit("p", "s", payload, MAIN)
-        assert tracemalloc.get_traced_memory()[1] < 300000
-    finally:
-        tracemalloc.stop()
     assert api.get("p", "s", finding, decision)["body"] == "$y$"
+
+
+def test_the_response_checks_keep_a_response_and_its_body(tmp_path, monkeypatch):
+    from sandbox_science.orchestrator.consistency.store import ReviewStore
+    from sandbox_science.orchestrator.control import migrations
+    from sandbox_science.orchestrator.documents import DocumentStore, store_path
+    from sandbox_science.orchestrator.projects import ProjectStore
+
+    with monkeypatch.context() as old:  # a store from before version 5
+        old.setattr(migrations, "MIGRATIONS", migrations.MIGRATIONS[:3])
+        old.setattr(migrations, "VERSION", migrations.BASELINE + 2)
+        projects = ProjectStore(tmp_path)
+        projects.create("p", "minimal", "sha256:" + "a" * 64)
+        projects.open_session("p", "s", dedicated=False)
+        projects.close()
+        docs = DocumentStore(store_path(tmp_path))
+        reviews = ReviewStore(docs, clock=lambda: 1000.0)
+        finding, decision = response(reviews)
+        before = ResponseBodies(reviews).get("p", "s", finding, decision)
+        docs.close()
+    docs = DocumentStore(store_path(tmp_path))
+    docs.initialize()  # the writer brings the store to the current version
+    try:
+        after = ResponseBodies(ReviewStore(docs, clock=lambda: 1000.0)).get(
+            "p", "s", finding, decision
+        )
+        assert after == before
+        with docs.control.read() as tx:
+            assert tx.sql.execute("PRAGMA user_version").fetchone() == (migrations.VERSION,)
+    finally:
+        docs.close()
+
+
+def test_a_response_explanation_at_its_byte_limit_is_kept(stores) -> None:
+    _, reviews, _ = stores
+    finding, decision = response(reviews)
+    body = "\U0001d465" * 8192  # 8192 characters, 32768 bytes: the model's and the table's
+    edit(reviews, finding, decision, body)
+    assert ResponseBodies(reviews).get("p", "s", finding, decision)["body"] == body
