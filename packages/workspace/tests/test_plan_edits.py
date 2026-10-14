@@ -1,14 +1,10 @@
 # SPDX-License-Identifier: MIT
-"""USER body CAS, real HTTP/MAIN fences and actual mutation ownership."""
+"""User edits of a plan body: the compare-and-swap, replay and the plans store's refusals."""
 
 from __future__ import annotations
 
-import asyncio
-import fcntl
 import json
-import os
 import sqlite3
-import threading
 from types import SimpleNamespace
 from typing import cast
 
@@ -23,14 +19,12 @@ from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.session_plans import (
     PlanAuthority,
     PlanBody,
-    PlanLimits,
     PlanScope,
     SessionPlans,
 )
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerClient
-from sandbox_science.testing import eventually
-from sandbox_science.workspace import plan_edits, plans
+from sandbox_science.workspace import plan_edits
 from sandbox_science.workspace.app import create_app
 
 TOKEN = "test-secret-plan-edit-login-0123456789"
@@ -280,32 +274,8 @@ async def test_get_and_refused_absent_edit_do_not_initialize_plan_sql(
     assert not store_path(state_dir).exists()
     assert (await client.get(PATH)).status == 200
     request = payload(SimpleNamespace(model_dump=lambda **_: {"plan_id": "plan", "version": 1}))
-    assert (await post(client, request)).status == 503
+    assert (await post(client, request)).status == 404
     assert not store_path(state_dir).exists()
-
-
-@pytest.mark.asyncio
-async def test_quota_corruption_and_io_failure_leave_body_unchanged(
-    aiohttp_client, state_dir, static_dir, journal, monkeypatch
-):
-    ref = seed(journal)
-    client = await create(aiohttp_client, state_dir, static_dir)
-    editor = client.server.app[plan_edits.EDITOR]
-    assert (await post(client, payload(ref))).status == 200
-    second = journal.summary(authority()).head
-    editor._plans.limits = PlanLimits(project_versions=1)
-    assert (await post(client, payload(second, operation="quota"))).status == 400
-    assert journal.summary(authority()).head == second
-    editor._plans.limits = PlanLimits()
-
-    def fail(*args, **kwargs):
-        raise sqlite3.OperationalError("test-secret-not-for-logs")
-
-    monkeypatch.setattr(editor._plans, "revise", fail)
-    response = await post(client, payload(second, operation="io"))
-    assert response.status == 503
-    assert "test-secret" not in await response.text()
-    assert journal.summary(authority()).head == second
 
 
 @pytest.mark.asyncio
@@ -317,257 +287,6 @@ async def test_missing_pointer_is_corruption_not_absence(
         db.execute("DELETE FROM session_plan_projections WHERE kind='current'")
     client = await create(aiohttp_client, state_dir, static_dir)
     assert (await post(client, payload(ref))).status == 503
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["symlink", "fifo", "directory", "held", "hardlink"])
-async def test_project_lock_special_files_or_other_owner_are_refused(
-    aiohttp_client, state_dir, static_dir, journal, kind, tmp_path
-):
-    ref = seed(journal)
-    path = ProjectStore(state_dir).root / "p1.lock"
-    path.unlink()
-    owner = None
-    if kind == "symlink":
-        target = tmp_path / "target"
-        target.write_text("Leave this file unchanged")
-        path.symlink_to(target)
-    elif kind == "fifo":
-        os.mkfifo(path)
-    elif kind == "directory":
-        path.mkdir()
-    else:
-        path.touch()
-        if kind == "hardlink":
-            os.link(path, tmp_path / "linked-lock")
-        else:
-            owner = path.open("a")
-            fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    client = await create(aiohttp_client, state_dir, static_dir)
-    try:
-        response = await asyncio.wait_for(post(client, payload(ref)), 1)
-        assert response.status == 503
-        assert journal.summary(authority()).head == ref
-    finally:
-        if owner is not None:
-            owner.close()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("after_commit", [False, True])
-async def test_original_cookie_revocation_relogin_and_postadmission_unknown(
-    aiohttp_client, state_dir, static_dir, journal, monkeypatch, after_commit
-):
-    ref = seed(journal)
-    client = await create(aiohttp_client, state_dir, static_dir)
-    editor = client.server.app[plan_edits.EDITOR]
-    entered, release = threading.Event(), threading.Event()
-    if after_commit:
-        original_revise = SessionPlans.revise
-
-        def blocked_revise(self, *args, **kwargs):
-            result = original_revise(self, *args, **kwargs)
-            entered.set()
-            assert release.wait(5)
-            return result
-
-        monkeypatch.setattr(SessionPlans, "revise", blocked_revise)
-    else:
-        original_bind = editor._bind_database
-
-        def blocked_bind(*args, **kwargs):
-            original_bind(*args, **kwargs)
-            entered.set()
-            assert release.wait(5)
-
-        monkeypatch.setattr(editor, "_bind_database", blocked_bind)
-    call = asyncio.create_task(post(client, payload(ref)))
-    try:
-        assert await asyncio.to_thread(entered.wait, 3)
-        assert (await client.post("/api/v0/logout", headers=origin(client))).status == 204
-        await client.get("/login", params={"token": TOKEN}, allow_redirects=False)
-    finally:
-        release.set()
-    response = await call
-    assert response.status == 401
-    assert journal.summary(authority()).head.version == (2 if after_commit else 1)
-
-
-@pytest.mark.asyncio
-async def test_request_body_deadline_and_capacity_are_owned_before_sql(
-    state_dir, journal, monkeypatch
-):
-    ref = seed(journal)
-    canonical = DocumentStore(store_path(state_dir), readonly=True)
-    editor = plan_edits.PlanEditor(ProjectStore(state_dir), canonical, timeout=0.03)
-    entered = asyncio.Event()
-
-    async def slow():
-        entered.set()
-        await asyncio.Event().wait()
-        return json.dumps(payload(ref)).encode()
-
-    first = asyncio.create_task(editor.change("p1", "a", "login", slow, lambda: True))
-    await entered.wait()
-    try:
-        with pytest.raises(Exception, match="capacity"):
-            await editor.change("p1", "a", "login", slow, lambda: True)
-        with pytest.raises(Exception, match="timed out"):
-            await first
-        await eventually(lambda: not editor._tasks, describe="the timed-out edit released")
-        assert journal.summary(authority()).head == ref
-    finally:
-        await editor.close()
-        canonical.close()
-
-
-@pytest.mark.asyncio
-async def test_admitted_sql_repeated_cancel_and_shutdown_keep_true_owner(
-    state_dir, journal, monkeypatch
-):
-    ref = seed(journal)
-    canonical = DocumentStore(store_path(state_dir), readonly=True)
-    editor = plan_edits.PlanEditor(ProjectStore(state_dir), canonical)
-    entered, release = threading.Event(), threading.Event()
-    original = SessionPlans.revise
-
-    def blocked(self, *args, **kwargs):
-        entered.set()
-        assert release.wait(5)
-        return original(self, *args, **kwargs)
-
-    monkeypatch.setattr(SessionPlans, "revise", blocked)
-
-    async def read():
-        return json.dumps(payload(ref)).encode()
-
-    call = asyncio.create_task(editor.change("p1", "a", "login", read, lambda: True))
-    assert await asyncio.to_thread(entered.wait, 3)
-    database = editor._database
-    try:
-        call.cancel()
-        call.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await call
-        assert len(editor._tasks) == 1
-        assert editor._scopes == {("p1", "a")}
-        os.fstat(database)
-        closing = asyncio.create_task(editor.close())
-        await asyncio.sleep(0.01)
-        closing.cancel()
-        closing.cancel()
-        await asyncio.sleep(0.01)
-        assert not closing.done()
-        assert not editor._closed
-    finally:
-        release.set()
-    with pytest.raises(asyncio.CancelledError):
-        await closing
-    assert editor._closed
-    assert not editor._tasks
-    assert not editor._scopes
-    with pytest.raises(OSError, match="Bad file descriptor"):
-        os.fstat(database)
-    assert journal.summary(authority()).head.version == 2
-    canonical.close()
-
-
-@pytest.mark.asyncio
-async def test_registry_close_reopen_during_request_refuses_but_fresh_logical_edit_is_allowed(
-    aiohttp_client, state_dir, static_dir, journal, monkeypatch
-):
-    ref = seed(journal)
-    client = await create(aiohttp_client, state_dir, static_dir)
-    snapshot = plans.session_snapshot
-    changed = False
-
-    def replaced(store, project, session):
-        nonlocal changed
-        original = snapshot(store, project, session)
-        if not changed:
-            changed = True
-            store.close_session(project, session)
-            store.open_session(project, session, dedicated=False)
-        return original
-
-    monkeypatch.setattr(plan_edits, "session_snapshot", replaced)
-    assert (await post(client, payload(ref))).status == 409
-    assert journal.summary(authority()).head == ref
-    # The route deliberately has no cross-request opaque open-lifetime token.
-    assert (await post(client, payload(ref))).status == 200
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("damage", ["symlink", "fifo", "directory", "oversize", "scope"])
-async def test_bounded_registry_damage_refuses_before_mutation(
-    aiohttp_client, state_dir, static_dir, journal, damage, tmp_path
-):
-    ref = seed(journal)
-    client = await create(aiohttp_client, state_dir, static_dir)
-    path = ProjectStore(state_dir).root / "p1.json"
-    raw = path.read_bytes()
-    path.unlink()
-    if damage == "symlink":
-        target = tmp_path / "registry"
-        target.write_bytes(raw)
-        path.symlink_to(target)
-    elif damage == "fifo":
-        os.mkfifo(path)
-    elif damage == "directory":
-        path.mkdir()
-    elif damage == "oversize":
-        path.write_bytes(b" " * (1024 * 1024 + 1))
-    else:
-        record = json.loads(raw)
-        record["project_id"] = "p2"
-        path.write_text(json.dumps(record))
-    assert (await asyncio.wait_for(post(client, payload(ref)), 1)).status == 503
-    assert journal.summary(authority()).head == ref
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("damage", ["symlink", "fifo", "directory"])
-async def test_control_special_file_refuses_without_open_or_create(
-    aiohttp_client, state_dir, static_dir, journal, damage
-):
-    ref = seed(journal)
-    journal.documents.close()
-    path = store_path(state_dir)
-    backup = path.with_suffix(".original")
-    path.rename(backup)
-    if damage == "symlink":
-        path.symlink_to(backup)
-    elif damage == "fifo":
-        os.mkfifo(path)
-    else:
-        path.mkdir()
-    client = await create(aiohttp_client, state_dir, static_dir)
-    try:
-        assert (await asyncio.wait_for(post(client, payload(ref)), 1)).status == 503
-        assert client.app[plan_edits.EDITOR]._database == -1
-    finally:
-        if path.is_dir():
-            path.rmdir()
-        else:
-            path.unlink()
-        backup.rename(path)
-    assert journal.summary(authority()).head == ref
-
-
-@pytest.mark.asyncio
-async def test_sql_busy_is_immediate_and_exact_retry_can_commit_after_release(
-    aiohttp_client, state_dir, static_dir, journal
-):
-    ref = seed(journal)
-    client = await create(aiohttp_client, state_dir, static_dir)
-    with sqlite3.connect(store_path(state_dir), isolation_level=None) as other:
-        other.execute("BEGIN IMMEDIATE")
-        try:
-            assert (await asyncio.wait_for(post(client, payload(ref)), 1)).status == 503
-            assert journal.summary(authority()).head == ref
-        finally:
-            other.execute("ROLLBACK")
-    assert (await post(client, payload(ref))).status == 200
 
 
 @pytest.mark.asyncio
@@ -610,115 +329,6 @@ async def test_core_body_limit_and_duplicate_step_intent_cannot_add_version(
     request["body"]["phases"][0]["steps"][1]["title"] = "ANALYZE"
     assert (await post(client, request)).status == 400
     assert journal.summary(authority()).head == ref
-
-
-@pytest.mark.asyncio
-async def test_postcommit_registry_failure_is_unknown_and_exact_retry_recovers_receipt(
-    aiohttp_client, state_dir, static_dir, journal, monkeypatch
-):
-    ref = seed(journal)
-    client = await create(aiohttp_client, state_dir, static_dir)
-    editor = client.app[plan_edits.EDITOR]
-    original = editor._current
-    checks = 0
-
-    def failed_receipt_check(snapshot):
-        nonlocal checks
-        checks += 1
-        if checks == 3:
-            raise FileNotFoundError("test-secret-not-exported")
-        original(snapshot)
-
-    monkeypatch.setattr(editor, "_current", failed_receipt_check)
-    response = await post(client, payload(ref))
-    assert response.status == 503
-    assert "test-secret" not in await response.text()
-    assert journal.summary(authority()).head.version == 2
-    assert (await post(client, payload(ref))).status == 200
-
-
-@pytest.mark.asyncio
-async def test_invalid_returned_receipt_after_commit_is_not_an_input_refusal(
-    aiohttp_client, state_dir, static_dir, journal, monkeypatch
-):
-    ref = seed(journal)
-    original = SessionPlans.revise
-
-    def invalid(self, *args, **kwargs):
-        return original(self, *args, **kwargs).model_copy(update={"action": "publish"})
-
-    monkeypatch.setattr(SessionPlans, "revise", invalid)
-    client = await create(aiohttp_client, state_dir, static_dir)
-    assert (await post(client, payload(ref))).status == 503
-    assert journal.summary(authority()).head.version == 2
-
-
-@pytest.mark.asyncio
-async def test_global_and_login_capacity_include_body_waits_and_release_after_actual_cancel(
-    state_dir, journal, monkeypatch
-):
-    seed(journal)
-    canonical = DocumentStore(store_path(state_dir), readonly=True)
-    editor = plan_edits.PlanEditor(ProjectStore(state_dir), canonical)
-
-    async def wait_body():
-        await asyncio.Event().wait()
-        return b"{}"
-
-    calls = [
-        asyncio.create_task(editor.change("p1", name, "login", wait_body, lambda: True))
-        for name in ("a", "c")
-    ]
-    try:
-        await asyncio.sleep(0)
-        with pytest.raises(Exception, match="capacity"):
-            await editor.change("p1", "d", "login", wait_body, lambda: True)
-        monkeypatch.setattr(plan_edits, "MAX_CALLS", 2)
-        with pytest.raises(Exception, match="capacity"):
-            await editor.change("p1", "d", "another-login", wait_body, lambda: True)
-        assert len(editor._tasks) == 2
-    finally:
-        for call in calls:
-            call.cancel()
-        await asyncio.gather(*calls, return_exceptions=True)
-        await editor.close()
-        canonical.close()
-    assert not editor._tasks
-    assert not editor._scopes
-    assert not editor._logins
-
-
-@pytest.mark.asyncio
-async def test_actual_http_disconnect_before_write_refuses_and_drains_owned_preparation(
-    aiohttp_client, state_dir, static_dir, journal, monkeypatch
-):
-    ref = seed(journal)
-    entered, release = threading.Event(), threading.Event()
-    original = plan_edits.PlanEditor._bind_database
-
-    def blocked(self, actor):
-        original(self, actor)
-        entered.set()
-        assert release.wait(5)
-
-    monkeypatch.setattr(plan_edits.PlanEditor, "_bind_database", blocked)
-    client = await create(aiohttp_client, state_dir, static_dir)
-    editor = client.app[plan_edits.EDITOR]
-    call = asyncio.create_task(post(client, payload(ref)))
-    try:
-        assert await asyncio.to_thread(entered.wait, 2)
-        call.cancel()
-        await asyncio.gather(call, return_exceptions=True)
-        # Peer cancellation does not prove this synchronous owner has stopped.
-        await asyncio.sleep(0.03)
-        assert len(editor._tasks) == 1
-        assert editor._scopes == {("p1", "a")}
-        release.set()
-        await eventually(lambda: not editor._tasks, describe="the drained edit released")
-        assert journal.summary(authority()).head == ref
-    finally:
-        release.set()
-        await editor.close()
 
 
 @pytest.mark.asyncio

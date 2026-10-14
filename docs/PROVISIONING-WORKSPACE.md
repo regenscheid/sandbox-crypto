@@ -7,10 +7,9 @@ view's [Environments panel](PROVISIONING-WORKSPACE-VIEW.md) shows it. It does no
 submit work, approve permissions, cancel an operation, rebuild an environment or
 resume a guest.
 
-All routes require the original authenticated workspace login. The server selects
-its configured `job_worker`; the browser cannot supply a worker address, token,
-execution context or project policy. An environment must occur in the bounded
-canonical project registry. The shared environment can contain operations from
+All routes require the workspace login. The server selects its configured
+`job_worker`; the browser cannot supply a worker address, token, execution
+context or project policy. An environment must occur in the project record. The shared environment can contain operations from
 several sessions in that project. Closed logical sessions can still identify their
 dedicated environment for retained read-only history; this never reopens them.
 
@@ -26,9 +25,7 @@ dedicated environment for retained read-only history; this never reopens them.
 | `.../lockfile-diff?before=N&before_pin=SHA&after=N&after_pin=SHA&offset=0&limit=8` | The differences between two pinned retained lockfiles ([details](LOCKFILE-DIFF-WORKSPACE.md)) |
 
 Success forwards the strict bounded worker DTO without adding session ownership or
-changing the meaning of its fields. The proxy checks returned project/environment,
-operation ID/sequence, revision window, offset/limit and selected record hash against
-the original request. Unknown revisions, declared licenses and missing lockfile
+changing the meaning of its fields. Unknown revisions, declared licenses and missing lockfile
 references remain unknown. Retained history is not a complete immutable archive.
 Functional and import checks remain distinct records. Viewing a permission-request
 number and its resolved files does not permit answering it or accessing the policy
@@ -43,9 +40,10 @@ Only the listed query fields are accepted, without duplicates or request bodies.
 Counters are canonical decimal integers within the companion contract's `2**62`
 bound; page limits are 1 through 8. Invalid selection is 400, missing/foreign scope
 is 404, stale sequence/hash selection is 409, unconfigured/unsupported observations
-are 422, and unavailable transport, corruption or bounds are 503. Success and errors
-are `no-store`. Proxy errors include their own receipt-time `observed_at`; the
-workspace's existing authentication guard can reject a request before this route.
+are 422, and unavailable transport, a timeout, a damaged project record, corruption
+or bounds are 503. Success and errors are `no-store`. Route errors include their
+own receipt-time `observed_at`; the workspace's authentication guard can reject a
+request before this route.
 An error is never converted into an empty queue or a successful observation.
 
 ## Recorded packages at a selected revision
@@ -72,49 +70,27 @@ with 8 MiB lockfiles, 16 KiB entry records, 16 MiB index accounting and 64 KiB
 responses. Reads perform no guest work or keepalive. Checked on OpenShell in
 [Lab32](../.agents/docs/agent-reports/babbage-openshell-lab-32-2026-10-13.md).
 
-## Receipt-time authority and actual ownership
+## Server
 
-The project reader refuses final symlinks and special files, preflights regular-file
-size, and reads at most one MiB plus one byte before parsing. At most 64 distinct
-recorded environments are admitted; larger registries are refused rather than
-silently clipped. Session IDs, shared-environment bindings and timezone-aware
-registry times are validated. Original project/root descriptors remain held while
-the worker request runs. A fresh bounded read must match their file/directory
-identity, original digest and typed registry. Supported registry mutations replace
-the file atomically, so a full close/reopen and identical-byte restore still fails
-this check. Any concurrent project-record replacement is conservatively unavailable,
-including an unrelated session change. This proves continuity at receipt, not an
-atomic guarantee over a later mutation or against arbitrary trusted-host tampering.
-The final owned proof also reopens the canonical directory and project pathname
-without following links and compares both to the retained descriptors. Agreement
-between two old held descriptors alone cannot authorize a replaced canonical root.
+A route checks its IDs and selection, reads the project record with
+`ProjectStore.get` in a thread, and checks that the environment is one of the
+project's. It then asks the worker under the six-second call timeout of
+`Timeouts`, or the ten-second comparison timeout for a lockfile comparison or a
+package page. Errors go through the workspace's one error mapping
+([workspace](WORKSPACE.md#errors-and-records)), with `observed_at` added.
 
 `WorkerClient.observation_transport()` provides a private in-memory bounded copy of
 the configured endpoint and headers and a borrowed shared HTTP session. Its values
 are hidden from repr and are never serialized or persisted. The observer copies
-headers for its request and rechecks the original client/config/session identity
-afterward. It never closes the borrowed session. Ordinary WorkerClient APIs keep
-their existing defaults and behavior.
+headers for its request and never closes the borrowed session. Ordinary
+WorkerClient APIs keep their existing defaults and behavior.
 
 Each worker read has a five-second whole-call timeout, refuses redirects and
 compressed bodies, and independently caps the streamed response at 64 KiB and 256
-chunks before strict JSON parsing. The full workspace response also fits 64 KiB or
-is refused. No active status/reconnect/create fallback is available.
-Success JSON is decoded as strict UTF-8 and checked for duplicate object keys
-(including escaped-equivalent keys) before Pydantic can normalize a repeated scope,
-sequence or policy action. Non-JSON numeric constants are refused as well.
-
-The proxy responds within a six-second caller budget. It has immediate admission
-limits of eight calls globally, two per original login and one per project/environment
-scope, including local environment-list reads. A private two-thread pool owns
-bounded registry work; queued and running work both retain their admission. Browser
-disconnect or cancellation is not proof that admitted work has finished. Timed-out
-or repeatedly cancelled callers leave actual tasks, descriptors and slots owned
-until drain. A blocked regular-file read can outlive the response budget; no forced
-filesystem-interruption guarantee is made. Shutdown stops admission and drains
-these owners before closing the shared worker client, including when cancellation
-is raised after the proxy finishes cleanup. No lifecycle lock is held across a
-network request.
+chunks before strict JSON parsing. No active status/reconnect/create fallback is
+available. Success JSON is decoded as strict UTF-8 and checked for duplicate object
+keys (including escaped-equivalent keys) before Pydantic can normalize a repeated
+scope, sequence or policy action. Non-JSON numeric constants are refused as well.
 
 ## Scope
 
@@ -127,10 +103,9 @@ are outside this API. The wider workspace boundary is described in
 
 The tests (`packages/workspace/tests/test_provisioning.py`, `test_lockfile_diffs.py`,
 `test_revision_packages.py`) use synthetic records, disposable files and in-process
-HTTP peers. They cover exact pages, unknown fields, scope, sequence, window and hash
-mismatches, authentication and registry replacement, size, chunk and deadline
-refusal, no redirect or fallback, admission, thread and descriptor lifetime and
-shutdown under repeated cancellation. The viewer was checked against a real worker
+HTTP peers; `test_routes_provisioning.py` pins the routes' status codes and
+shapes. They cover exact pages, unknown fields, authentication, size, chunk and
+deadline refusal, and no redirect or fallback. The viewer was checked against a real worker
 in [Lab30](../.agents/docs/agent-reports/babbage-openshell-lab-30-2026-10-13.md),
 and the lockfile comparison in [Lab31](../.agents/docs/agent-reports/babbage-openshell-lab-31-2026-10-13.md).
 

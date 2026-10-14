@@ -399,8 +399,6 @@ async def test_damaged_project_record_is_unavailable_for_provisioning(
         else observations(environment, "broken")
     )
     response = await client.get(path)
-    # E-02 changes this to the shared mapping of a damaged record (the jobs routes
-    # answer 500 for the same record today).
     await error_of(response, 503, "unavailable")
     assert str(state_dir) not in await response.text()
     assert worker.calls == []

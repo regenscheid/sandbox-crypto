@@ -7,6 +7,7 @@ keeps it: the observation's shape, the status codes, no-store and the guards.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -197,8 +198,6 @@ async def test_damaged_project_record_is_unavailable(
     url = await fake_worker(aiohttp_server, worker)
     client = await workspace(aiohttp_client, state_dir, static_dir, worker_url=url)
     response = await client.get(kernels(project="broken"))
-    # E-02 changes this to the shared mapping of a damaged record (the jobs routes
-    # answer 500 for the same record today).
     await error_of(response, 503, "unavailable")
     assert_no_leak(await response.text(), str(state_dir))
     assert worker.calls == []
@@ -255,3 +254,14 @@ async def test_the_route_is_read_only(
     )
     assert response.status == 405
     assert worker.calls == []
+
+
+async def test_concurrent_reads_of_one_session_all_answer(
+    aiohttp_client: ClientFactory, aiohttp_server: ServerFactory, state_dir: Path, static_dir: Path
+) -> None:
+    # Two tabs on one session poll at once; neither is refused.
+    worker = FakeWorker()
+    url = await fake_worker(aiohttp_server, worker)
+    client = await workspace(aiohttp_client, state_dir, static_dir, worker_url=url)
+    responses = await asyncio.gather(*(client.get(kernels()) for _ in range(4)))
+    assert [response.status for response in responses] == [200] * 4

@@ -39,16 +39,12 @@ def _invalid_constant(value: str) -> Never:
 
 
 class ProvisionObserver:
-    """One exact configured binding and an owned read-only request at a time."""
+    """Read-only requests through the configured worker's address, token and session."""
 
     def __init__(self, worker: WorkerClient, timeouts: Timeouts = TIMEOUTS) -> None:
         self.worker = worker
         self.timeouts = timeouts
         self.binding = worker.observation_transport()
-
-    def current(self) -> bool:
-        """Whether this same client still owns the original configured transport."""
-        return self.worker.matches_observation_transport(self.binding)
 
     async def get(self, path: str, params: dict[str, str], model: type[T]) -> T:
         """Read one bounded strict DTO; request cancellation closes its HTTP owner."""

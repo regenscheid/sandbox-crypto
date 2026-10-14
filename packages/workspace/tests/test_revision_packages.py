@@ -6,20 +6,14 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
-import os
-import threading
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
 from urllib.parse import urlencode
 
 import pytest
 from aiohttp import web
 
-from sandbox_science.contracts import ErrorKind
 from sandbox_science.contracts.revision_packages import RevisionPackagePage
-from sandbox_science.orchestrator.projects import ProjectError, ProjectStore
-from sandbox_science.workspace import provisioning
 from sandbox_science.workspace.api import Timeouts
 
 from .test_provisioning import ClientFactory, Peer, ServerFactory, create, url
@@ -206,10 +200,6 @@ async def test_query_requires_exact_pin_and_bounded_canonical_page_before_peer(
 @pytest.mark.parametrize(
     "damage",
     [
-        "revision",
-        "pin",
-        "offset",
-        "limit",
         "header",
         "ref",
         "held-total",
@@ -217,8 +207,6 @@ async def test_query_requires_exact_pin_and_bounded_canonical_page_before_peer(
         "float",
         "license",
         "pip-license",
-        "scope",
-        "environment",
         "duplicate",
         "nested-duplicate",
         "large",
@@ -237,23 +225,12 @@ async def test_strict_response_echo_header_ref_license_page_and_raw_bounds(
         aiohttp_client, aiohttp_server, state_dir, static_dir, peer
     )
     value = payload(environment, "held" if damage == "held-total" else "populated")
-    if damage in {"revision", "pin", "ref"}:
+    if damage == "ref":
         selected = value["selection"]
         assert isinstance(selected, dict)
-        if damage == "ref":
-            ref = selected["lockfile"]
-            assert isinstance(ref, dict)
-            ref["sha256"] = "f" * 64
-        else:
-            selected["revision" if damage == "revision" else "record_sha256"] = (
-                2 if damage == "revision" else "f" * 64
-            )
-    elif damage == "offset":
-        rows = value["packages"]
-        assert isinstance(rows, list)
-        value.update(offset=1, packages=rows[1:])
-    elif damage == "limit":
-        value["limit"] = 7
+        ref = selected["lockfile"]
+        assert isinstance(ref, dict)
+        ref["sha256"] = "f" * 64
     elif damage == "header":
         header = value["header"]
         assert isinstance(header, dict)
@@ -324,39 +301,6 @@ async def test_errors_preserve_stale_unsupported_unavailable_without_fallback(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["logout", "root", "config"])
-async def test_original_login_canonical_root_and_worker_binding_rechecked(
-    aiohttp_client: ClientFactory,
-    aiohttp_server: ServerFactory,
-    state_dir: Path,
-    static_dir: Path,
-    change: str,
-) -> None:
-    peer = PackagePeer()
-    peer.blocked = True
-    client, worker, environment = await create(
-        aiohttp_client, aiohttp_server, state_dir, static_dir, peer
-    )
-    call = asyncio.create_task(
-        client.get(url(environment) + "/revisions/1/packages", params=query())
-    )
-    await peer.entered.wait()
-    if change == "logout":
-        origin = str(client.make_url("/")).rstrip("/")
-        assert (await client.post("/api/v0/logout", headers={"Origin": origin})).status == 204
-    elif change == "root":
-        root = state_dir / "projects"
-        root.rename(state_dir / "old-projects")
-        root.mkdir()
-        for p in (state_dir / "old-projects").glob("*.json"):
-            (root / p.name).write_bytes(p.read_bytes())
-    else:
-        worker.base_url = "http://127.0.0.1:1"
-    peer.release.set()
-    assert (await call).status == (401 if change == "logout" else 503)
-
-
-@pytest.mark.asyncio
 async def test_shared_extended_budget_does_not_change_ordinary_read_timeout(
     aiohttp_client: ClientFactory,
     aiohttp_server: ServerFactory,
@@ -386,84 +330,3 @@ async def test_shared_extended_budget_does_not_change_ordinary_read_timeout(
     peer.entered.clear()
     assert (await client.get(url(environment))).status == 503
     peer.release.set()
-
-
-@pytest.mark.asyncio
-async def test_package_deadline_retains_same_physical_lane_and_file_descriptors(
-    state_dir: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    entered, release = threading.Event(), threading.Event()
-    original = provisioning.project_snapshot
-    snapshots: list[provisioning.ProjectSnapshot] = []
-
-    def blocked(store: ProjectStore, project: str) -> provisioning.ProjectSnapshot:
-        result = original(store, project)
-        snapshots.append(result)
-        entered.set()
-        release.wait()
-        return result
-
-    monkeypatch.setattr(provisioning, "project_snapshot", blocked)
-    proxy = provisioning.ProvisionProxy(
-        ProjectStore(state_dir), None, timeouts=Timeouts(comparison=0.02)
-    )
-    environment = ProjectStore(state_dir).get("p1").default_environment_id
-    wanted = provisioning.Selection("packages", revision=1, pin=PIN)
-    call = asyncio.create_task(proxy.read("p1", environment, wanted, "login", lambda: True))
-    assert await asyncio.to_thread(entered.wait, 5)
-    try:
-        with pytest.raises(ProjectError, match="timed out"):
-            await call
-        assert len(proxy._tasks) == 1
-        for other in [
-            provisioning.Selection("summary"),
-            provisioning.Selection(
-                "lockfile-diff", before=1, before_pin=PIN, after=1, after_pin=PIN
-            ),
-        ]:
-            with pytest.raises(ProjectError, match="capacity"):
-                await proxy.read("p1", environment, other, "other", lambda: True)
-        close = asyncio.create_task(proxy.close())
-        await asyncio.sleep(0)
-        close.cancel()
-        await asyncio.sleep(0)
-        close.cancel()
-        await asyncio.sleep(0)
-        assert not close.done()
-        os.fstat(snapshots[0]._descriptor)
-        release.set()
-        with pytest.raises(asyncio.CancelledError):
-            await close
-        assert not proxy._tasks
-        assert not proxy._scopes
-        with pytest.raises(OSError, match="Bad file descriptor"):
-            os.fstat(snapshots[0]._descriptor)
-    finally:
-        release.set()
-        await proxy.close()
-
-
-@pytest.mark.parametrize(
-    "fields",
-    [
-        {"revision": True},
-        {"revision": 1.0},
-        {"pin": "bad"},
-        {"offset": True},
-        {"offset": 40_001},
-        {"offset": "1"},
-        {"limit": False},
-    ],
-)
-def test_direct_selection_refuses_untyped_copied_scalars(fields: dict[str, object]) -> None:
-    values = {"revision": 1, "pin": PIN, **fields}
-    with pytest.raises(ProjectError) as caught:
-        provisioning.Selection(
-            "packages",
-            revision=cast(int, values["revision"]),
-            pin=cast(str, values["pin"]),
-            offset=cast(int, values.get("offset", 0)),
-            limit=cast(int, values.get("limit", 8)),
-        )
-    assert caught.value.kind == ErrorKind.INVALID_REQUEST

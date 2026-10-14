@@ -30,9 +30,9 @@ route, and gets ``index.html``.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import hmac
-import logging
 import secrets
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
@@ -44,12 +44,13 @@ from aiohttp import hdrs, web
 from sandbox_science.contracts import ErrorKind
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.jobstate import JobState
-from sandbox_science.orchestrator.projects import ProjectError, ProjectStore
+from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
 from . import (
     api,
     documents,
+    errors,
     jobs,
     kernels,
     plan_edits,
@@ -58,14 +59,14 @@ from . import (
     provisioning,
     reviews,
 )
+from .context import CONTEXT, WorkspaceContext
+from .errors import json_error
 from .mathrepair import (
     MathRepairService,
     RepairRequestError,
     SessionLimitError,
     parse_request,
 )
-
-_log = logging.getLogger(__name__)
 
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 
@@ -117,13 +118,6 @@ CONTENT_TYPES: Final = {
 """The only types served. Vite names built assets by their content's hash, so files
 under ``assets/`` are cached for a year and everything else is revalidated."""
 
-_STATUS: Final = {
-    ErrorKind.INVALID_REQUEST: 400,
-    ErrorKind.POLICY_DENIED: 403,
-    ErrorKind.NOT_FOUND: 404,
-    ErrorKind.UNSUPPORTED: 422,
-}
-
 
 class Sessions:
     """The login token, and the browser sessions it opened, kept by their cookies' digests.
@@ -162,15 +156,6 @@ class Sessions:
 
 def _digest(value: str) -> bytes:
     return hashlib.sha256(value.encode("utf-8", "surrogateescape")).digest()
-
-
-def json_error(status: int, kind: ErrorKind, message: str) -> web.Response:
-    """An API error: ``{"error": {"kind", "message"}}``, as the worker API's errors are."""
-    return web.json_response(
-        {"error": {"kind": kind.value, "message": message}},
-        status=status,
-        headers={hdrs.CACHE_CONTROL: "no-store"},
-    )
 
 
 def is_api(path: str) -> bool:
@@ -226,23 +211,27 @@ def create_app(
     the page is told that there is no reviewer model to repair math. Without
     ``document_store``, the documents are read from the control store in the state
     directory of ``store``, with a read-only connection for views and a separate lazy
-    writer for explicit user changes."""
+    writer for explicit user changes. The application closes ``job_worker``."""
     sessions = Sessions(login_token)
     files = StaticFiles(static_dir)
     repairs = math_repair if math_repair is not None else MathRepairService()
     if document_store is None:
         state_dir = store.root.parent
         document_store = DocumentStore(store_path(state_dir), producer="workspace", readonly=True)
+    writer = DocumentStore(document_store.path, producer="workspace")
+
+    def principal(request: web.Request) -> str:
+        return _digest(request.cookies.get(cookie_name(request), "")).hex()
 
     @web.middleware
     async def guard(request: web.Request, handler: Handler) -> web.StreamResponse:
         host = request.headers.get(hdrs.HOST, "").lower()
         if check_host and host not in _own_hosts(request):
-            return web.Response(status=403, text="This server answers only to its own address.")
+            return _refusal("This server answers only to its own address.")
         if request.method not in SAFE_METHODS:
             origin = request.headers.get(hdrs.ORIGIN, "").lower()
             if not host or origin != f"{request.scheme}://{host}":
-                return web.Response(status=403, text="A request from another origin is refused.")
+                return _refusal("A request from another origin is refused.")
         if is_api(request.path):
             if not sessions.valid(request.cookies.get(cookie_name(request))):
                 return json_error(
@@ -252,21 +241,14 @@ def create_app(
                 )
             try:
                 return await handler(request)
-            except ProjectError as error:
-                return json_error(_STATUS.get(error.kind, 500), error.kind, error.message)
             except web.HTTPException:
                 raise
-            except Exception:
-                _log.exception("workspace API request failed")
-                return json_error(500, ErrorKind.INTERNAL, "internal workspace error")
+            except Exception as caught:
+                return errors.to_response(caught)
         return await handler(request)
 
     async def secure(request: web.Request, response: web.StreamResponse) -> None:
         response.headers.update(SECURITY_HEADERS)
-        if request.match_info.route.name in {plans.ROUTE_NAME, plan_edits.ROUTE_NAME}:
-            response.headers[hdrs.CACHE_CONTROL] = "no-store"
-        if (request.match_info.route.name or "").startswith(provisioning.ROUTE_PREFIX):
-            response.headers[hdrs.CACHE_CONTROL] = "no-store"
 
     async def login(request: web.Request) -> web.StreamResponse:
         session = sessions.login(request.query.get("token", ""))
@@ -309,9 +291,8 @@ def create_app(
         if wanted.project:
             store.get(wanted.project)
         # The guard checked the session; its cookie's digest names it to the service.
-        session = _digest(request.cookies.get(cookie_name(request), "")).hex()
         try:
-            answer = await repairs.repair(wanted, session)
+            answer = await repairs.repair(wanted, principal(request))
         except SessionLimitError as error:
             return json_error(429, ErrorKind.UNAVAILABLE, str(error))
         return web.json_response(answer.to_json(), headers={hdrs.CACHE_CONTROL: "no-store"})
@@ -319,81 +300,54 @@ def create_app(
     async def no_route(request: web.Request) -> web.StreamResponse:
         return json_error(404, ErrorKind.NOT_FOUND, f"no API route {request.path}")
 
-    async def close_repairs(app: web.Application) -> None:
-        await repairs.close()
-
-    async def close_job_worker(app: web.Application) -> None:
-        try:
-            await app[plan_edits.EDITOR].close()
-        finally:
-            try:
-                await app[plans.READER].close()
-            finally:
-                try:
-                    await app[provisioning.PROXY].close()
-                finally:
-                    try:
-                        await app[kernels.PROXY].close()
-                    finally:
-                        if job_worker is not None:
-                            await job_worker.close()
-
-    async def close_documents(app: web.Application) -> None:
-        app[documents.DOCUMENTS].close()
-        app[documents.WRITER].close()
+    async def close(app: web.Application) -> None:
+        # Every step runs even when one before it fails.
+        async with contextlib.AsyncExitStack() as stack:
+            stack.push_async_callback(repairs.close)
+            if job_worker is not None:
+                stack.push_async_callback(job_worker.close)
+            stack.callback(document_store.close)
+            stack.callback(writer.close)
 
     app = web.Application(middlewares=[guard], client_max_size=64 * 1024)
     app[api.STORE] = store
     app[api.MAX_RUN] = max_run_bytes
     app[documents.DOCUMENTS] = document_store
-    app[documents.WRITER] = DocumentStore(document_store.path, producer="workspace")
+    app[documents.WRITER] = writer
+    app[CONTEXT] = WorkspaceContext(
+        projects=store,
+        documents=document_store,
+        writer=writer,
+        worker=job_worker,
+        job_state=job_state,
+        timeouts=timeouts,
+        principal=principal,
+    )
     app.on_response_prepare.append(secure)
-    app.on_cleanup.append(close_repairs)
-    app.on_cleanup.append(close_documents)
-    app.on_cleanup.append(close_job_worker)
-    api.add_routes(app)
-    documents.add_routes(app)
-    project_settings.add_routes(app)
-    reviews.add_routes(app)
-    jobs.add_routes(app, job_worker, job_state)
-    kernels.add_routes(
-        app,
-        store,
-        job_worker,
-        lambda request: _digest(request.cookies.get(cookie_name(request), "")).hex(),
-        lambda request: sessions.valid(request.cookies.get(cookie_name(request))),
-        timeouts,
-    )
-    provisioning.add_routes(
-        app,
-        store,
-        job_worker,
-        lambda request: _digest(request.cookies.get(cookie_name(request), "")).hex(),
-        lambda request: sessions.valid(request.cookies.get(cookie_name(request))),
-        timeouts,
-    )
-    plans.add_routes(
-        app,
-        store,
-        document_store,
-        lambda request: _digest(request.cookies.get(cookie_name(request), "")).hex(),
-        lambda request: sessions.valid(request.cookies.get(cookie_name(request))),
-        timeouts,
-    )
-    plan_edits.add_routes(
-        app,
-        store,
-        document_store,
-        lambda request: _digest(request.cookies.get(cookie_name(request), "")).hex(),
-        lambda request: sessions.valid(request.cookies.get(cookie_name(request))),
-        timeouts,
-    )
+    app.on_cleanup.append(close)
+    for feature in (
+        api,
+        documents,
+        project_settings,
+        reviews,
+        jobs,
+        kernels,
+        provisioning,
+        plans,
+        plan_edits,
+    ):
+        feature.add_routes(app)
     app.router.add_post("/api/v0/logout", logout)
     app.router.add_post("/api/v0/math-repair", repair_math)
     app.router.add_get("/api/{tail:.*}", no_route)
     app.router.add_get("/login", login)
     app.router.add_get("/{path:.*}", files.handle)
     return app
+
+
+def _refusal(text: str) -> web.Response:
+    """A refusal by the guard, before any route; never cached."""
+    return web.Response(status=403, text=text, headers={hdrs.CACHE_CONTROL: "no-store"})
 
 
 class StaticFiles:

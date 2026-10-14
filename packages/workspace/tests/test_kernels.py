@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: MIT
-"""Passive HTTP proxy, trusted registry authority and cancellation-owned cleanup."""
+"""The kernel observation route with a stub worker and with the real worker client."""
 
 from __future__ import annotations
 
 import asyncio
-import json
-import os
-import threading
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,9 +14,8 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext, KernelInfo, KernelObservation
-from sandbox_science.orchestrator.projects import ProjectError, ProjectStore
+from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
-from sandbox_science.testing import eventually
 from sandbox_science.workspace import kernels
 from sandbox_science.workspace.api import TIMEOUTS, Timeouts
 from sandbox_science.workspace.app import create_app
@@ -52,27 +48,16 @@ def observation(context: ExecutionContext) -> KernelObservation:
 class Worker:
     def __init__(self) -> None:
         self.calls: list[ExecutionContext] = []
-        self.entered = asyncio.Event()
-        self.release = asyncio.Event()
-        self.blocked = False
         self.error: ErrorKind | None = None
         self.empty = False
         self.closed = False
-        self.cancelled = False
 
     async def observe_kernels(self, context: ExecutionContext) -> KernelObservation:
         self.calls.append(context)
-        self.entered.set()
-        try:
-            if self.blocked:
-                await self.release.wait()
-            if self.error:
-                raise WorkerAPIError(self.error, "synthetic unavailable")
-            result = observation(context)
-            return result.model_copy(update={"kernels": ()}) if self.empty else result
-        except asyncio.CancelledError:
-            self.cancelled = True
-            raise
+        if self.error:
+            raise WorkerAPIError(self.error, "synthetic unavailable")
+        result = observation(context)
+        return result.model_copy(update={"kernels": ()}) if self.empty else result
 
     async def close(self) -> None:
         self.closed = True
@@ -178,126 +163,6 @@ async def test_unavailable_does_not_become_empty_or_fallback(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("invalid", ["scope", "duplicate", "revision", "timestamp", "generation"])
-async def test_unvalidated_model_copy_cannot_escape_response_validation(
-    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path, invalid: str
-) -> None:
-    class InvalidWorker(Worker):
-        async def observe_kernels(self, context: ExecutionContext) -> KernelObservation:
-            value = await super().observe_kernels(context)
-            if invalid == "scope":
-                return value.model_copy(update={"environment_id": "another"})
-            if invalid == "duplicate":
-                return value.model_copy(update={"kernels": value.kernels * 2})
-            if invalid == "revision":
-                return value.model_copy(update={"current_revision": 3})
-            if invalid == "timestamp":
-                return value.model_copy(update={"observed_at": datetime(2026, 10, 12)})
-            return value.model_copy(
-                update={"kernels": (value.kernels[0].model_copy(update={"generation": True}),)}
-            )
-
-    client = await create(aiohttp_client, state_dir, static_dir, InvalidWorker())
-    response = await client.get(PATH)
-    assert response.status == 503
-    assert "kernels" not in await response.json()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["close", "aba", "identical-aba", "rebind", "policy"])
-async def test_delayed_reply_cannot_survive_registry_transition(
-    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path, change: str
-) -> None:
-    worker = Worker()
-    worker.blocked = True
-    client = await create(aiohttp_client, state_dir, static_dir, worker)
-    call = asyncio.create_task(client.get(PATH))
-    await worker.entered.wait()
-    store = ProjectStore(state_dir)
-    original = (store.root / "p1.json").read_bytes()
-    if change in {"close", "aba", "identical-aba"}:
-        store.close_session("p1", "a")
-        if change != "close":
-            store.open_session("p1", "a", dedicated=False)
-        if change == "identical-aba":
-            path = store.root / "restored"
-            path.write_bytes(original)
-            os.replace(path, store.root / "p1.json")
-    elif change == "policy":
-        store.set_policy("p1", "sha256:" + "b" * 64)
-    else:
-        value = json.loads(original)
-        value["sessions"]["a"]["environment_id"] = "other-environment"
-        (store.root / "p1.json").write_text(json.dumps(value))
-    worker.release.set()
-    response = await call
-    assert response.status == 503
-    assert "kernels" not in await response.json()
-
-
-@pytest.mark.asyncio
-async def test_logout_revokes_the_original_inflight_cookie(
-    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
-) -> None:
-    worker = Worker()
-    worker.blocked = True
-    client = await create(aiohttp_client, state_dir, static_dir, worker)
-    call = asyncio.create_task(client.get(PATH))
-    await worker.entered.wait()
-    origin = str(client.make_url("/")).rstrip("/")
-    assert (await client.post("/api/v0/logout", headers={"Origin": origin})).status == 204
-    await client.get("/login", params={"token": TOKEN}, allow_redirects=False)
-    worker.release.set()
-    assert (await call).status == 401
-    assert (await client.get(PATH)).status == 200
-
-
-@pytest.mark.asyncio
-async def test_http_disconnect_is_not_remote_cleanup_proof(
-    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
-) -> None:
-    worker = Worker()
-    worker.blocked = True
-    client = await create(aiohttp_client, state_dir, static_dir, worker)
-    proxy = client.app[kernels.PROXY]
-    call = asyncio.create_task(client.get(PATH))
-    try:
-        await worker.entered.wait()
-        call.cancel()
-        await asyncio.gather(call, return_exceptions=True)
-        # Default aiohttp handling continues the admitted server read after the
-        # peer disappears; no global handler_cancellation switch is introduced.
-        await asyncio.sleep(0)
-        assert len(proxy._tasks) == 1
-        assert not worker.cancelled
-        worker.release.set()
-        await eventually(lambda: not proxy._tasks, describe="the admitted read finished")
-        assert not proxy._tasks
-        assert (await client.get(PATH)).status == 200
-    finally:
-        worker.release.set()
-        await asyncio.gather(call, return_exceptions=True)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("damage", ["project", "session", "oversize"])
-async def test_bounded_damaged_registry_cannot_dispatch(
-    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path, damage: str
-) -> None:
-    worker = Worker()
-    client = await create(aiohttp_client, state_dir, static_dir, worker)
-    path = state_dir / "projects" / "p1.json"
-    data = json.loads(path.read_text())
-    if damage == "project":
-        data["project_id"] = "p2"
-    elif damage == "session":
-        data["sessions"]["a"]["session_id"] = "c"
-    path.write_text("x" * (1024 * 1024 + 1) if damage == "oversize" else json.dumps(data))
-    assert (await client.get(PATH)).status == 503
-    assert worker.calls == []
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["valid", "scope", "duplicate", "large", "redirect", "slow"])
 async def test_real_worker_client_http_composition(
     aiohttp_client: ClientFactory,
@@ -352,127 +217,3 @@ async def test_real_worker_client_http_composition(
         result = kernels.WorkspaceObservation.model_validate(await response.json())
         assert result.kernels[0].revision_status == "predates"
         assert "test-secret" not in await response.text()
-
-
-@pytest.mark.asyncio
-async def test_admission_is_immediate_bounded_and_released_on_rpc_cancel(
-    state_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    worker = Worker()
-    worker.blocked = True
-    store = ProjectStore(state_dir)
-    store.open_session("p1", "d", dedicated=False)
-    proxy = kernels.KernelProxy(store, cast(WorkerClient, worker))
-    first = asyncio.create_task(proxy.observe("p1", "a", "login", lambda: True))
-    second = asyncio.create_task(proxy.observe("p1", "c", "login", lambda: True))
-    await worker.entered.wait()
-    try:
-        with pytest.raises(ProjectError) as error:
-            await proxy.observe("p1", "d", "login", lambda: True)
-        assert error.value.kind is ErrorKind.UNAVAILABLE
-        with pytest.raises(ProjectError):
-            await proxy.observe("p1", "a", "other-login", lambda: True)
-        monkeypatch.setattr(kernels, "MAX_CALLS", 2)
-        with pytest.raises(ProjectError):
-            await proxy.observe("p1", "d", "other-login", lambda: True)
-        assert len(proxy._tasks) == 2
-        first.cancel()
-        second.cancel()
-        await asyncio.gather(first, second, return_exceptions=True)
-        await proxy.close()
-        assert not proxy._tasks
-        assert not proxy._scopes
-        assert not proxy._logins
-        assert worker.cancelled
-    finally:
-        worker.release.set()
-        await proxy.close()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("cancel", [False, True])
-async def test_thread_work_retains_admission_through_timeout_or_repeated_cancel_and_close(
-    state_dir: Path, monkeypatch: pytest.MonkeyPatch, cancel: bool
-) -> None:
-    entered, release = threading.Event(), threading.Event()
-    store = ProjectStore(state_dir)
-    original = store.session_snapshot
-
-    def blocked(project: str, session: str):
-        entered.set()
-        assert release.wait(5)
-        return original(project, session)
-
-    monkeypatch.setattr(store, "session_snapshot", blocked)
-    worker = Worker()
-    proxy = kernels.KernelProxy(store, cast(WorkerClient, worker), timeout=0.05)
-    call = asyncio.create_task(proxy.observe("p1", "a", "login", lambda: True))
-    closing: asyncio.Task[None] | None = None
-    try:
-        assert await asyncio.to_thread(entered.wait, 2)
-        if cancel:
-            call.cancel()
-            call.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await call
-        else:
-            with pytest.raises(ProjectError) as error:
-                await call
-            assert error.value.kind is ErrorKind.UNAVAILABLE
-        assert len(proxy._tasks) == 1
-        with pytest.raises(ProjectError):
-            await proxy.observe("p1", "a", "another-login", lambda: True)
-        # This private file executor cannot monopolize the default worker pool.
-        assert await asyncio.wait_for(asyncio.to_thread(lambda: 7), 0.2) == 7
-        closing = asyncio.create_task(proxy.close())
-        await asyncio.sleep(0)
-        closing.cancel()
-        await asyncio.sleep(0)
-        closing.cancel()
-        await asyncio.sleep(0)
-        assert not closing.done()
-        assert not proxy._closed
-        assert worker.calls == []
-    finally:
-        release.set()
-        if closing:
-            await asyncio.gather(closing, return_exceptions=True)
-        await proxy.close()
-    assert proxy._closed
-    assert not proxy._tasks
-
-
-@pytest.mark.asyncio
-async def test_app_cleanup_drains_file_owner_before_shared_client_close(
-    aiohttp_client: ClientFactory,
-    state_dir: Path,
-    static_dir: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    worker = Worker()
-    client = await create(aiohttp_client, state_dir, static_dir, worker)
-    proxy = client.app[kernels.PROXY]
-    entered, release = threading.Event(), threading.Event()
-    original = proxy.store.session_snapshot
-
-    def blocked(project: str, session: str):
-        entered.set()
-        assert release.wait(5)
-        return original(project, session)
-
-    monkeypatch.setattr(proxy.store, "session_snapshot", blocked)
-    call = asyncio.create_task(proxy.observe("p1", "a", "login", lambda: True))
-    assert await asyncio.to_thread(entered.wait, 2)
-    call.cancel()
-    await asyncio.gather(call, return_exceptions=True)
-    closing = asyncio.create_task(client.close())
-    try:
-        await asyncio.sleep(0.02)
-        assert not closing.done()
-        assert not worker.closed
-    finally:
-        release.set()
-        await closing
-    assert worker.closed
-    assert proxy._closed
-    assert not proxy._tasks
