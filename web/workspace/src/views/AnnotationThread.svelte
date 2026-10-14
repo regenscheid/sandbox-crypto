@@ -3,7 +3,8 @@
   import { untrack } from 'svelte';
   import { api, type CommentEntry, type CommentThread, type Session } from '../lib/api';
   import { describeAuthor } from '../lib/authors';
-  import { afterPost, EarlierEntries, threadChange, threadEntries } from '../lib/commentThreads';
+  import { afterPost, earlierEntries, threadChange, threadEntries } from '../lib/commentThreads';
+  import { Earlier } from '../lib/earlier';
   import { replyDrafts } from '../lib/drafts';
   import { guardedWrite } from '../lib/mutation';
   import type { MacroSet } from '../lib/macros';
@@ -40,10 +41,12 @@
   );
   const posting = $state(idle());
   const read = $state(emptyList<CommentEntry[], number>());
-  const earlier = new EarlierEntries(
+  const earlier = new Earlier(
     read,
-    () => thread,
-    (before) => api.commentThread(projectId, documentId, thread.thread_id, before),
+    earlierEntries(
+      () => thread,
+      (before) => api.commentThread(projectId, documentId, thread.thread_id, before),
+    ),
   );
   let persisted = $state(true);
   let historyRevision = initial.revision;
@@ -114,8 +117,9 @@
     {#if thread.attachment.status === 'stale'}<h4>Current text (bounded excerpt)</h4>
       <pre>{thread.attachment.current}</pre>{/if}
   </details>
-  {#if earlier.available(thread)}<button disabled={busy} onclick={() => earlier.read()}
-      >Load earlier thread entries</button
+  {#if earlier.available(thread.entries_before !== null)}<button
+      disabled={busy}
+      onclick={() => earlier.read()}>Load earlier thread entries</button
     >{/if}
   {#each threadEntries(earlier.entries(), thread.entries) as entry (entry.entry_id)}
     <div class="entry">

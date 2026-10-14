@@ -6,10 +6,11 @@ import {
   bodyCorrection,
   correctionDraft,
   correctionOutdated,
-  EarlierEntries,
+  earlierEntries,
   threadChange,
   threadEntries,
 } from './commentThreads';
+import { Earlier } from './earlier';
 import { emptyList } from './pagedList';
 
 const entry = (id: string) => ({ entry_id: id }) as CommentEntry;
@@ -55,12 +56,20 @@ describe("a thread's earlier entries", () => {
       asked.push(before);
       return new Promise<CommentThread>((resolve) => pages.push({ resolve }));
     };
-    return { asked, pages, state, history: new EarlierEntries(state, () => current, read) };
+    return {
+      asked,
+      pages,
+      state,
+      history: new Earlier(
+        state,
+        earlierEntries(() => current, read),
+      ),
+    };
   }
 
   it('reads back from the oldest entry shown, a page at a time, oldest first', async () => {
     const { asked, pages, history } = earlier(thread(5, 10, ['e10']));
-    expect(history.available(thread(5, 10))).toBe(true);
+    expect(history.available(true)).toBe(true);
     const first = history.read();
     pages[0]!.resolve(thread(5, 8, ['e8', 'e9']));
     await first;
@@ -69,12 +78,15 @@ describe("a thread's earlier entries", () => {
     await second;
     expect(asked).toEqual([10, 8]);
     expect(history.entries().map((item) => item.entry_id)).toEqual(['e6', 'e7', 'e8', 'e9']);
-    expect(history.available(thread(5, 10))).toBe(false);
+    expect(history.available(true)).toBe(false);
   });
 
-  it('has nothing to read when the thread shows its first entry', () => {
-    const { history } = earlier(thread(5, null));
-    expect(history.available(thread(5, null))).toBe(false);
+  it('has nothing to read when the thread shows its first entry', async () => {
+    const { asked, history } = earlier(thread(5, null));
+    expect(history.available(false)).toBe(false);
+    await history.read(); // asks the server nothing
+    expect(asked).toEqual([]);
+    expect(history.entries()).toEqual([]);
   });
 
   it('starts again for a new thread revision, dropping a page on its way', async () => {
