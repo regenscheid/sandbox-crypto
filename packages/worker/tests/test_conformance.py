@@ -3,7 +3,9 @@
 
 The tests reach the worker only through its HTTP API, so they check any backend
 adapter without the harness (docs/specs/tools.md, "Acceptance fixtures"). By
-default they run against a worker with the local backend, which the suite starts.
+default they run against workers with the local backend, which the suite starts:
+one over the stdio transport and one over the sandbox daemon, which production
+uses.
 To check a worker that is already running, such as one with the OpenShell backend
 in a lab, set SS_CONFORMANCE_WORKER_URL, SS_CONFORMANCE_TOKEN_FILE and
 SS_CONFORMANCE_ENVIRONMENT (docs/WORKER.md, "Conformance suite"); the local runs
@@ -29,21 +31,16 @@ from typing import Any
 import aiohttp
 import pytest
 import pytest_asyncio
-from aiohttp.test_utils import TestServer
 
 from sandbox_science.contracts import Capabilities, Execution, Location, new_id
 from sandbox_science.contracts.worker import MAX_EVENT_BYTES
-from sandbox_science.worker.app import create_app
-from sandbox_science.worker.artifacts import Blobs
-from sandbox_science.worker.backends import LocalBackend
-from sandbox_science.worker.manager import ExecutionManager
-from sandbox_science.worker.settings import LocalBackendSettings
-from sandbox_science.worker.store import Store
+
+from .harness import Harness
 
 URL_VARIABLE = "SS_CONFORMANCE_WORKER_URL"
 TOKEN_VARIABLE = "SS_CONFORMANCE_TOKEN_FILE"
 ENVIRONMENT_VARIABLE = "SS_CONFORMANCE_ENVIRONMENT"
-LOCAL_TOKEN = "c" * 40
+LOCAL = ("local-stdio", "local-daemon")
 
 pytestmark = pytest.mark.asyncio
 
@@ -159,7 +156,7 @@ def _running_worker() -> tuple[str, str, str] | None:
 RUNNING = _running_worker()
 if RUNNING is None:
     TARGETS = [
-        "local",
+        *LOCAL,
         pytest.param(
             "external",
             marks=pytest.mark.skip(
@@ -170,8 +167,11 @@ if RUNNING is None:
     ]
 else:
     TARGETS = [
-        pytest.param(
-            "local", marks=pytest.mark.skip(reason=f"checking the worker at {RUNNING[0]} instead")
+        *(
+            pytest.param(
+                local, marks=pytest.mark.skip(reason=f"checking the worker at {RUNNING[0]} instead")
+            )
+            for local in LOCAL
         ),
         "external",
     ]
@@ -186,25 +186,9 @@ async def worker(request: pytest.FixtureRequest, tmp_path: Path) -> AsyncIterato
         async with aiohttp.ClientSession() as http:
             yield Target("external", http, url, token, environment_id)
         return
-    store = Store(tmp_path / "worker.sqlite3")
-    manager = ExecutionManager(
-        store,
-        LocalBackend(LocalBackendSettings(), tmp_path),
-        Blobs(tmp_path / "artifacts"),
-        pool_id="conformance",
-        max_artifact_size=1 << 20,
-        state_dir=tmp_path,
-    )
-    await manager.start()
-    server = TestServer(create_app(manager, LOCAL_TOKEN))
-    await server.start_server()
-    try:
-        async with aiohttp.ClientSession() as http:
-            yield Target("local", http, str(server.make_url("")), LOCAL_TOKEN, "env1")
-    finally:
-        await server.close()
-        await manager.close()
-        store.close()
+    daemon = request.param == "local-daemon"
+    async with await Harness.start(tmp_path, daemon=daemon, pool_id="conformance") as local:
+        yield Target("local", local.http, local.url, local.token, "env1")
 
 
 # Shell calls.
