@@ -491,6 +491,9 @@ class PolicyMiddleware:
                     f"permission request {pending.seq} was not answered within {minutes} minutes"
                 )
                 return _deny(ESCALATION_TIMED_OUT, reason, decision)
+            case _:
+                # A state this code does not know refuses: only the cases above proceed.
+                return _deny(ESCALATION_TIMED_OUT, "the permission request is undecided", decision)
 
     def _monitor_findings(
         self, facts: HttpRequestFacts, loaded: LoadedPolicy

@@ -432,6 +432,18 @@ async def test_an_escalated_tool_is_held_and_recorded_as_pending(harness: Harnes
     assert "secret-ish" not in repr(harness.sink.events)
 
 
+async def test_a_resolution_the_proxy_does_not_know_refuses_the_call(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = await harness.initialize()
+    first = await harness.tool(session, "crawl", {"url": "https://example.org/a"})
+    assert reason(first) == "approval_required"
+    monkeypatch.setattr(Approvals, "resolve", lambda self, key, now: object())
+    again = await harness.tool(session, "crawl", {"url": "https://example.org/a"})
+    assert reason(again) == "escalation_timed_out"
+    assert harness.fake.tool_calls() == []
+
+
 async def test_an_escalation_that_cannot_be_recorded_is_not_left_pending(
     harness: Harness,
 ) -> None:

@@ -746,6 +746,9 @@ class McpProxy:
                     f"permission request {pending.seq} was not answered in time",
                     data={"request": pending.seq},
                 )
+            case _:
+                # A state this code does not know refuses: only the cases above proceed.
+                raise RefusalError(ESCALATION_TIMED_OUT, "the permission request is undecided")
 
     def _target(self, server: McpServer, session: Session | None) -> Target:
         return Target(

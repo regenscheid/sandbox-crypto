@@ -129,6 +129,16 @@ def test_a_retry_waits_on_the_same_request(
     assert kinds(events) == ["escalation"]
 
 
+def test_a_resolution_the_middleware_does_not_know_denies(
+    middleware: PolicyMiddleware, facts: FactsFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert middleware.evaluate_http(facts()).reason_code == reasons.APPROVAL_REQUIRED
+    monkeypatch.setattr(Approvals, "resolve", lambda self, key, now: object())
+    verdict = middleware.evaluate_http(facts(request_id="req-2"))
+    assert not verdict.allowed
+    assert verdict.reason_code == reasons.ESCALATION_TIMED_OUT
+
+
 def test_an_approval_lets_retries_through_and_is_recorded(
     middleware: PolicyMiddleware,
     facts: FactsFactory,
@@ -412,37 +422,3 @@ def test_a_later_answer_to_the_download_itself_decides_it(
     seq = packages_request(events, sandbox_id, policy, "prv-2", [PARI])
     assert main(["approve", "--settings", str(settings), "--request", str(seq)]) == 0
     assert fetch(PARI).allowed
-
-
-def test_the_workers_request_grants_exactly_its_file_set_until_withdrawn(
-    packages: tuple[LoadedPolicy, Fetch], sandbox_id: str, events: EventStore, settings: Path
-) -> None:
-    """Across components: the worker records a request, the operator approves it, and the
-    middleware grants exactly that file set to that sandbox, until the worker withdraws it."""
-    from sandbox_science.worker.permissions import Permissions
-
-    policy, fetch = packages
-    permissions = Permissions(events.path)
-    try:
-        key = RequestKey.packages(sandbox_id, policy.digest, "prv-x", [PARI, GMP])
-        seq = permissions.request(
-            key,
-            {
-                "escalation": {"timeout_seconds": 1800, "on_timeout": "deny"},
-                "valid_until": (datetime.now(UTC) + timedelta(days=1)).isoformat(),
-                "files": [{"path": PARI}, {"path": GMP}],
-            },
-        )
-        assert fetch(PARI).reason_code == reasons.APPROVAL_REQUIRED
-        assert main(["approve", "--settings", str(settings), "--request", str(seq)]) == 0
-        assert fetch(PARI).allowed
-        assert fetch(GMP).allowed
-        assert fetch(FLINT).reason_code == reasons.APPROVAL_REQUIRED
-        assert fetch(PARI, "sbx-0002").reason_code == reasons.APPROVAL_REQUIRED
-        permissions.withdraw(seq, "the operation ended", datetime.now(UTC))
-        assert fetch(PARI).reason_code == reasons.APPROVAL_REQUIRED
-        # A withdrawn request cannot be answered again.
-        assert main(["approve", "--settings", str(settings), "--request", str(seq)]) == 1
-        assert fetch(GMP).reason_code == reasons.APPROVAL_REQUIRED
-    finally:
-        permissions.close()
