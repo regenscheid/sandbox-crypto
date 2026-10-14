@@ -46,9 +46,8 @@ environment head advances.
 ## Shared transport
 
 `ProvisionObserver.get_packages` reuses the existing capped observer transport:
-64 KiB before parsing, at most 256 body chunks, duplicate-key rejection at every
-JSON depth, strict JSON DTO validation, no redirect/decompression and a nine-second
-whole-call timeout. It borrows the existing public WorkerClient observation
+64 KiB before parsing, strict JSON DTO validation, no redirect/decompression and a
+nine-second whole-call timeout. It borrows the existing public WorkerClient observation
 snapshot; endpoint/header/session metadata stays private in memory. It never
 closes the shared client session. Ordinary observation calls retain their existing
 five-second budget; comparison and package reads share the extended worker budget.
@@ -63,8 +62,7 @@ mutation or guest.
 The tests (`packages/workspace/tests/test_revision_packages.py`) use an isolated
 synthetic HTTP peer and temporary project records, never a worker or guest. They
 cover populated, empty and held forwarding, unchanged AGPL and unknown licenses,
-explicit canonical selection, refusal of duplicate keys, strict types and
-incoherent headers and references, redirect, oversize and error handling, and
+explicit canonical selection, strict types, incoherent headers and references, redirect, oversize and error handling, and
 short continuations. The pages
 were checked against a real worker and browser in
 [Lab32](../.agents/docs/agent-reports/babbage-openshell-lab-32-2026-10-13.md).

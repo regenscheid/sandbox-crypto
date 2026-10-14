@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: MIT
-"""Capped read-only provisioning transport using the operator-configured worker.
+"""Read-only provisioning observations from the operator-configured worker.
 
-The ordinary WorkerClient API keeps its existing behavior. These observations copy
-the configured target/headers, never follow redirects, and never use active status.
+The observations use the WorkerClient's address, token and HTTP session, never follow
+redirects, and never use active status. An answer is read up to 64 KiB and validated
+against its contract model.
 """
 
 from __future__ import annotations
 
-import json
-from typing import Final, Never, TypeVar
+from typing import Final, TypeVar
 
 import aiohttp
 from pydantic import BaseModel, ValidationError
@@ -26,21 +26,7 @@ from sandbox_science.orchestrator.worker_client import (
 from .api import TIMEOUTS, Timeouts
 
 MAX_BYTES: Final = 64 * 1024
-MAX_CHUNKS: Final = 256
 T = TypeVar("T", bound=BaseModel)
-
-
-def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    value: dict[str, object] = {}
-    for key, child in pairs:
-        if key in value:
-            raise ValueError("duplicate observation field")
-        value[key] = child
-    return value
-
-
-def _invalid_constant(value: str) -> Never:
-    raise ValueError("invalid observation number")
 
 
 class ProvisionObserver:
@@ -75,17 +61,9 @@ class ProvisionObserver:
                 timeout=aiohttp.ClientTimeout(total=timeout),
             ) as response:
                 await check_protocol(response)
-                # A claimed length is only an early refusal, never a substitute
-                # for the independent streaming byte and chunk counters.
-                if response.content_length is not None and response.content_length > MAX_BYTES:
-                    raise WorkerAPIError(
-                        ErrorKind.UNAVAILABLE, "worker observation exceeds its bound"
-                    )
                 payload = bytearray()
-                chunks = 0
                 async for chunk in response.content.iter_chunked(8192):
-                    chunks += 1
-                    if chunks > MAX_CHUNKS or len(payload) + len(chunk) > MAX_BYTES:
+                    if len(payload) + len(chunk) > MAX_BYTES:
                         raise WorkerAPIError(
                             ErrorKind.UNAVAILABLE, "worker observation exceeds its bound"
                         )
@@ -115,15 +93,6 @@ class ProvisionObserver:
                     raise WorkerAPIError(
                         ErrorKind.UNAVAILABLE, "worker observation is not plain JSON"
                     )
-                # Check raw object uniqueness before Pydantic can normalize an
-                # ambiguous action/scope/pin to its last occurrence. Parsing is
-                # independently bounded above; retain the original JSON bytes
-                # for strict JSON-mode tuple/date/enum validation afterward.
-                json.loads(
-                    payload.decode("utf-8", "strict"),
-                    object_pairs_hook=_unique_object,
-                    parse_constant=_invalid_constant,
-                )
                 return model.model_validate_json(payload, strict=True)
         except (aiohttp.ClientError, TimeoutError, RuntimeError) as error:
             raise WorkerAPIError(

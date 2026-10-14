@@ -1,27 +1,16 @@
 // SPDX-License-Identifier: MIT
 /** Passive observations only; these helpers never start, reconnect or restart a kernel. */
+import type { KernelInfo, WorkspaceObservation } from './api-types';
 import { get, inScope } from './http';
+
+export type { KernelInfo };
+/** The worker's observation of a session's kernels, with its project. */
+export type KernelObservation = WorkspaceObservation;
 
 export interface KernelScope {
   projectId: string;
   sessionId: string;
   environmentId: string;
-}
-export interface KernelInfo {
-  kernel_id: string;
-  language: 'python' | 'sage';
-  generation: number;
-  start_revision: number | null;
-  current_revision: number | null;
-  revision_status: 'current' | 'predates' | 'unknown';
-}
-export interface KernelObservation {
-  project_id: string;
-  environment_id: string;
-  session_id: string;
-  current_revision: number | null;
-  kernels: KernelInfo[];
-  observed_at: string;
 }
 
 /** Only the exact loaded, open session mounts the panel. */
