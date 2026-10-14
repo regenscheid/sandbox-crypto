@@ -1,25 +1,21 @@
 # Worker service
 
-The selected-revision [recorded package inventory](PROVISIONING-WORKSPACE.md#recorded-packages-at-a-selected-revision)
-adds `GET /v1/environments/{id}/provisioning/observations/revisions/{n}/packages`
-with required `project_id` and exact raw-record `pin`, plus `offset` and `limit`
-(at most eight). Strict `RevisionPackagePage` metadata includes unchanged/base/
-unmanaged entries and declared Conda and optional [pip licenses](PIP-LOCKFILE-LICENSES.md).
-Missing or ambiguous pip declarations remain unknown.
-The existing comparison reader owns its bounded thread/descriptor lane through
-cancellation. Reads perform no guest execution, wake, mutation or permission
-answer. Lab32 acceptance is delivered in PR #113; its frozen evidence is unchanged.
-The additive pip declaration path is separately component-validated, with no new
-install or guest-runtime claim.
-
 The worker service runs research code for the orchestrator. It is trusted infrastructure, one per worker pool, outside every research sandbox. It starts an executor inside each sandbox and talks to it. The orchestrator reaches it only through the worker API, so the harness has no local execution path ([architecture](ARCHITECTURE.md)). [Execution tools](specs/tools.md) defines the behavior. The code is in `packages/worker` (`sandbox_science.worker`), the shared types in `packages/contracts`, and the orchestrator's client in `packages/orchestrator`.
+
+Contents:
+- [Components](#components) and the [worker API](#worker-api), with [clients limited to projects](#clients-limited-to-projects) and [compatibility](#compatibility)
+- [Behavior worth knowing](#behavior-worth-knowing), [background jobs](#background-jobs) and [leftover processes](#leftover-processes)
+- Isolation and OpenShell: [isolation tiers](#isolation-tiers), [running under OpenShell](#running-under-openshell), [environments](#environments), [admission on demand](#admission-on-demand), [idle suspension](#idle-suspension)
+- Data and packages: [shared data across environments](#shared-data-across-environments), [package commands](#package-commands), [provisioning operations](#provisioning-operations), [PDFs](#pdfs), [bounded artifact capture](#bounded-artifact-capture), [worker-local output observations](#worker-local-output-observations)
+- The sandbox side: [executor protocol](#executor-protocol), [sandbox daemon and recovery](#sandbox-daemon-and-recovery)
+- [Settings](#settings), [conformance suite](#conformance-suite), [not built](#not-built), and the parked [document catalog prerequisite](#document-catalog-prerequisite)
 
 ## Components
 
 ```mermaid
 flowchart LR
   O[Orchestrator / harness] -->|worker API: HTTP + bearer token| W[Worker service]
-  W -->|stdin/stdout JSON lines| E[Executor in the sandbox]
+  W -->|JSON lines over the sandbox bridge| E[Executor in the sandbox]
   E --> K[Jupyter kernels]
   E --> S[Shell commands]
   W --> D[(SQLite: executions, events, kernels, artifacts)]
@@ -28,10 +24,11 @@ flowchart LR
 
 - **Worker service** (`app.py`, `manager.py`): the HTTP API, idempotent submission, event numbering and persistence, cancellation, watchdogs, file operations and publication.
 - **Provisioning** (`provisioner.py`, with `resolution.py`, `permissions.py`, `catalog.py` and the catalog `capabilities.toml`): operations that install a capability or packages into an environment on an agent's request, one at a time in each environment ([provisioning operations](#provisioning-operations)).
-- **Executor** (`executor.py`, with `provisioning.py` beside it): two files that depend only on the standard library and, for kernels, `jupyter_client` and `ipykernel`, so the worker can copy them into any sandbox that has Python. The executor runs shell commands in sessions of their own and kernels through the Jupyter protocol (D41), ends what a command leaves running ([leftover processes](#leftover-processes)), and handles the file operations. It offers each language whose kernelspec its interpreter's Jupyter installation finds: `python3` for Python and `sagemath`, SageMath's own kernel, for Sage. Platform code never imports Sage; Sage's kernel preparses Sage syntax itself. `provisioning.py` makes package commands take turns and records what they change ([package commands](#package-commands)).
+- **Executor** (`executor.py`, with `daemon.py`, `capture.py`, `pdfhelper.py` and `provisioning.py` beside it): five files that depend only on the standard library and, for kernels, `jupyter_client` and `ipykernel` (the PDF helper also needs pdf_oxide), so the worker can copy them into any sandbox that has Python. The OpenShell backend uploads them to `executor_dir`, with the scheduler shim `libsandbox-science-sched.so`, built from `shim/sched_self.c`, when `sched_shim` is on ([running under OpenShell](#running-under-openshell)). `daemon.py` keeps the executor alive across worker restarts ([sandbox daemon and recovery](#sandbox-daemon-and-recovery)), `capture.py` reads files for publication ([bounded artifact capture](#bounded-artifact-capture)) and `pdfhelper.py` runs [PDF operations](#pdfs). The executor runs shell commands in sessions of their own and kernels through the Jupyter protocol (D41), ends what a command leaves running ([leftover processes](#leftover-processes)), and handles the file operations. It offers each language whose kernelspec its interpreter's Jupyter installation finds: `python3` for Python and `sagemath`, SageMath's own kernel, for Sage. Platform code never imports Sage; Sage's kernel preparses Sage syntax itself. `provisioning.py` makes package commands take turns and records what they change ([package commands](#package-commands)).
 - **Backends** (`backends.py`) start executors:
   - **`openshell`** copies the executor and its helpers into a configured sandbox with `openshell sandbox upload`, and runs it with `openshell sandbox exec --no-tty --no-login-shell`. Its required `isolation_tier` setting declares the tier the gateway's driver gives: 3 for the VM driver on babbage (D43).
   - **`local`** runs the executor as a plain subprocess of the worker. It has **no isolation**: it declares tier 0, and its probe shows why. It exists for development and tests, and the harness refuses it unless told otherwise (`--allow-unisolated`).
+- **Other worker modules**: `store.py` (the SQLite state), `channel.py` (one executor connection), `environments.py`, `admission.py` and `suspend.py` (sandboxes the worker manages), `isolation.py` (the tier probe), `shared_sync.py` (shared data), `revisions.py` and `package_gate.py` (package revisions and the recovery fence), `artifacts.py` (artifact blobs), `package_clients.py` (package-cache configuration), the read-only views `provision_observations.py`, `lockfile_diffs.py`, `kernel_revisions.py` and `output_observations.py`, the provisioning records `installer_records.py` and `provision_events.py`, and the parked `documents_catalog.py`.
 
 Environment lifecycle commands run through `OpenShellCli`. On timeout or caller
 cancellation, cleanup tolerates a CLI process that has already exited and retains
@@ -41,7 +38,7 @@ that a gateway mutation had no effect, and does not authorize an automatic retry
 
 ## Worker API
 
-Ordinary routes need `Authorization: Bearer <token>`: the pool's own token, which acts for every project, or a client's, which acts only for the projects its settings list ([clients](#clients-limited-to-projects)). Bodies are the JSON forms of the `sandbox_science.contracts` models. Errors return a `WorkerErrorResponse` carrying an error kind from the spec, with status 400, 403, 404, 409, 422, 500, 503 or 504 as the kind implies. The routes that name an execution, an artifact or a provisioning operation take an optional `project_id` query parameter; when it is given, one of another project is `not_found`.
+Every route needs `Authorization: Bearer <token>`: the pool's own token, which acts for every project, or a client's, which acts only for the projects its settings list ([clients](#clients-limited-to-projects)). Bodies are the JSON forms of the `sandbox_science.contracts` models. Errors return a `WorkerErrorResponse` carrying an error kind from the spec, with status 400, 403, 404, 409, 422, 500, 503 or 504 as the kind implies; a missing or wrong token gets 401 (`policy_denied`). The routes that name an execution, an artifact or a provisioning operation take an optional `project_id` query parameter; when it is given, one of another project is `not_found`. The table lists every route the worker registers, but the [document catalog's](#document-catalog-prerequisite); `test_docs_inventory.py` checks that.
 
 | Route | Request → response |
 | --- | --- |
@@ -54,11 +51,15 @@ Ordinary routes need `Authorization: Bearer <token>`: the pool's own token, whic
 | `GET /v1/jobs/{id}` | → `JobStatus`: execution, bounded current stdout/stderr head and tail, observed process CPU seconds and resident-memory bytes; finished jobs use their stored result. The optional `project_id` query has the same meaning as on execution routes |
 | `POST /v1/kernels/status` | `KernelStatusRequest` → `KernelListing`: only that session's running kernels and retained start/current revisions. Uses the normal managed connection lifecycle; starts no kernel or research command |
 | `POST /v1/kernels/observe` | `KernelStatusRequest` → `KernelObservation`: existing healthy connection only, with a worker receipt timestamp. No open/wake/reconnect, activity touch or busy count; unavailable is distinct from a connected empty session. Immediate global 8/per-environment 1 admission and a whole-RPC two-second deadline ([kernel observations](KERNEL-REVISIONS.md#existing-connection-observations)) |
+| `POST /v1/kernels/lineage` | `KernelStatusRequest` → `KernelLineageObservation`: the same passive observer as `observe`, reporting each kernel's retained original birth as `proved`, or its lineage as unknown, beside the current revision ([kernel lineage](KERNEL-NOTICE-LINEAGE.md)) |
 | `POST /v1/kernels/restart` | `KernelRestartRequest` → `KernelInfo`, with the new generation. A cell running on the kernel ends, `cancelled` |
 | `POST /v1/sessions/close` | `SessionCloseRequest` → `SessionClosed`: stops the session's kernels in that environment and lists them. Running cells end `cancelled` ("the session was closed"), queued ones never start, and the next cell starts a new generation that reports `state_lost`. Jobs are cancelled and reaped; files and foreground shell calls are untouched, and an environment without an executor starts none |
-| `POST /v1/files/read`, `/write`, `/list` | `ReadFileRequest` → `FileContent`; `WriteFileRequest` → `WriteFileResult`; `ListFilesRequest` → `FileListing` |
+| `POST /v1/files/read` | `ReadFileRequest` → `FileContent` |
+| `POST /v1/files/write` | `WriteFileRequest` → `WriteFileResult` |
+| `POST /v1/files/list` | `ListFilesRequest` → `FileListing` |
 | `POST /v1/artifacts` | `PublishRequest` → `ArtifactRef` (201). A `media_type` must be `type/subtype`, with optional `; name=value` parameters |
-| `GET /v1/artifacts/{id}`, `/content` | → `ArtifactRef`, or the bytes with `X-Content-SHA256`, as a download (`Content-Disposition: attachment`, `nosniff` and a sandboxing content security policy), so no media type turns them into a page |
+| `GET /v1/artifacts/{id}` | → `ArtifactRef` |
+| `GET /v1/artifacts/{id}/content` | → the bytes, with `X-Content-SHA256`, as a download (`Content-Disposition: attachment`, `nosniff` and a sandboxing content security policy), so no media type turns them into a page |
 | `POST /v1/environments` | `EnvironmentRequest` → `EnvironmentInfo`: 201 when created, 200 when the same environment exists, 409 when it exists with another project, profile or policy ([environments](#environments)) |
 | `GET /v1/environments/{id}` | → `EnvironmentInfo` |
 | `POST /v1/environments/{id}/policy` | `PolicyRevisionRequest` → `EnvironmentInfo` under the new revision |
@@ -67,16 +68,22 @@ Ordinary routes need `Authorization: Bearer <token>`: the pool's own token, whic
 | `GET /v1/environments/{id}/revisions?after=N&limit=M` | → `RevisionHistory`: a page of the environment's revisions after revision `N` (default -1), oldest first, each with how its change came and its lockfile ([package commands](#package-commands)): at most `M` (1 to 100, the default) and 4 MiB of JSON. `next_after` is the `after` of the next page, while there is one. It works for any environment that ran something; a client limited to projects sees only its projects' environments, and none of the revisions recorded under an ID before the worker created its environment |
 | `GET /v1/environments/{id}/revisions/{n}/lockfile` | → the revision's `Lockfile` as JSON, at most 8 MiB, with `X-Content-SHA256`; `not_found` while it has none |
 | `GET /v1/environments/{id}/provisioning?project_id=P` | → `ProvisioningQueue`: the environment's provisioning operations that have not finished, in request order, and whether its packages are `ready`, `changing` or `needs_recovery` ([provisioning operations](#provisioning-operations)). The same access as the revisions route; with `project_id`, an environment that is not that project's is `not_found`, as the harness asks |
+| `GET /v1/environments/{id}/provisioning/observations?project_id=P` | → `ProvisionObservation`: the package admission gate (`ready`, `hold` or `needs_recovery`), the current revision and summaries of the unfinished operations (at most 32). The observation routes need `project_id` and read only the worker's records: they start, wake or ask nothing of a sandbox or the provisioner. They see only records made since the environment was created, answer at most 64 KiB of JSON with `Cache-Control: no-store`, and return 409 when a pinned selection changed ([provisioning observations](PROVISIONING-OBSERVATIONS.md)) |
+| `GET /v1/environments/{id}/provisioning/observations/operations/{provision_id}?seq=N` | → `ProvisionDetail`: the operation's current retained record; with `seq`, exactly that sequence |
+| `GET /v1/environments/{id}/provisioning/observations/operations/{provision_id}/files?seq=N&offset=O&limit=L` | → `ProvisionFilePage`: the operation's resolved files at sequence `seq`, with their declared licenses and policy decisions, at most 8 a page |
+| `GET /v1/environments/{id}/provisioning/observations/revisions?after=N&limit=L&target=T` | → `RevisionSummaryPage`: a window of retained revision summaries, at most 8 a page; the first read picks the newest revision as `target` |
+| `GET /v1/environments/{id}/provisioning/observations/revisions/{revision}/probes?pin=SHA&offset=O&limit=L` | → `RevisionProbePage`: the probes of the revision record whose SHA-256 is `pin`, at most 8 a page |
+| `GET /v1/environments/{id}/provisioning/observations/lockfile-diff?before=N&before_pin=SHA&after=M&after_pin=SHA&offset=O&limit=L` | → `LockfileDiffPage`: the differences between two exactly pinned retained lockfiles, at most 8 a page ([lockfile differences](LOCKFILE-DIFFERENCES.md)) |
+| `GET /v1/environments/{id}/provisioning/observations/revisions/{revision}/packages?pin=SHA&offset=O&limit=L` | → `RevisionPackagePage`: the packages recorded at one pinned revision, unchanged, base and unmanaged ones included, with declared Conda and pip [licenses](PIP-LOCKFILE-LICENSES.md); a missing or ambiguous pip declaration stays unknown. At most 8 a page ([revision packages](REVISION-PACKAGES.md)) |
 | `POST /v1/provisioning` | `ProvisionRequest` → `ProvisionOperation`: 201 when created, 200 for an operation ID the project used with the same request, 409 with another. A capability the catalog lacks is `invalid_request`; an environment the worker does not govern, `unsupported` |
 | `GET /v1/provisioning/{id}?after=N&wait=S` | → `ProvisionOperation`. With `after`, it answers once the record's `seq` passes `N`, the operation finishes, or `S` seconds (at most 60) pass |
 | `POST /v1/provisioning/{id}/cancel` | → `ProvisionOperation`: a waiting operation ends at once; a running step is cancelled like any execution |
 
-The harness can ingest explicit publication into the separate [immutable control
-inventory](ARTIFACTS.md), retaining the worker reference alongside its pinned control
-revision. This adds no worker route or runtime change. The control transfer checks
-exact project/hash/size and keeps unknown publication outcomes held. Worker
-`produced_by` is retained only as an unproven last-writer hint; reading mutable source
-ranges does not establish atomic snapshot or writer-closure semantics.
+The harness can copy a published artifact into the control store's separate [immutable
+inventory](ARTIFACTS.md), keeping the worker reference beside its pinned control
+revision. The transfer checks the exact project, hash and size, and keeps an unknown
+publication outcome held. A worker's `produced_by` is only an unproven last-writer hint;
+reading mutable source ranges establishes no atomic snapshot and no writer closure.
 
 ### Clients limited to projects
 
@@ -88,7 +95,7 @@ For such a client:
 - An execution, artifact, provisioning operation or environment of another project is `not_found`, whatever the route: its state, events, results, files and policy are out of reach, and so is cancelling it.
 - The client may use only the environments the worker created for its projects, and not once they are deleted. An environment of another project, or a sandbox made by hand, is `not_found`. Clients therefore need `[openshell.environments]`: only the environments the worker creates are known to belong to a project.
 - Its projects may have at most `max_environments` environments at once (8 unless the entry says otherwise), deleted ones aside, since each is a sandbox, a VM with the VM driver. Beyond that, creating one is `policy_denied` until one is deleted. Concurrent requests cannot pass the limit together.
-- It may create or revise environments only under the policy revisions an operator granted to the project: `sandbox-science-worker policy add --project p1 policy.yaml`. A revision not granted gets the same `not_found` as one never stored, so a client learns nothing of other projects' revisions, and cannot borrow another project's credential providers by naming its revision.
+- It may create or revise environments only under the policy revisions an operator granted to the project: `sandbox-science-worker policy add --settings worker.toml --project p1 policy.yaml`. A revision not granted gets the same `not_found` as one never stored, so a client learns nothing of other projects' revisions, and cannot borrow another project's credential providers by naming its revision.
 
 An environment ID stays with the project that first created it, even once the environment is deleted: creating it for another project is a `conflict`, from any token, with the same answer as for a sandbox made by hand, which names no project. Before an executor runs in an environment's sandbox, the worker checks that the sandbox is still the one it created (its OpenShell ID), and gives the environment up otherwise. Whatever a request was checked against therefore belongs to the same project when it runs, however long it waits for the environment (a revision, a resume, a deletion). For the same reason, the worker never creates an environment under an ID the settings map to a sandbox made by hand, and an ID the worker created never falls back to that map. Only the pool's own token may use sandboxes made by hand; with it, a request that names a worker's environment with another project is a `conflict`. Operation IDs are kept per project, so no project meets, or takes, another's.
 
@@ -96,51 +103,14 @@ Environment IDs are still shared by the whole pool, so a client can take an ID b
 
 Every request that may change something (all but `GET` and the file reads) is logged with the route it matched, the caller's name and the answer's status, never with the path it sent. Closing a session where no environment of the project is left stops nothing and answers with no kernels.
 
-## Document catalog prerequisite
+### Compatibility
 
-The worker can receive a control-owned document catalog in `documents-catalog.sqlite3` (`documents_catalog.py`; shared messages in `contracts/documents.py`). This is durable staging and catalog validation only. It writes no environment files, advances no environment's written revision, and advertises no mirror capability. It is parked: nothing in production calls it. The control-side client and delivery code that fed it were removed from main and are kept on the tag `archive/document-sync-2026-10`. LD-49 to LD-52 and fixtures LD-F12 and LD-F23 to LD-F27 remain open. Environment publication must first enforce the conservative hold whenever writer state is uncertain; direct-edit capture/acknowledgement and `ss-doc` remain separate work.
+Every contract model refuses fields it does not know, in requests and responses alike (`Contract` in `packages/contracts`, `extra="forbid"`). A new field therefore needs the side that reads it upgraded first:
 
-The [writer-guard investigation](../.agents/docs/agent-reports/document-writer-guard-2026-10-12.md) identifies a protected-filesystem feasibility prerequisite before runtime replacement/removal can be enabled. Existing `/proc` checks cannot prove all arbitrary writers closed, and notification counters do not supply that proof. FUSE is a proposed setup boundary requiring independent implementation and OpenShell validation of handle/mmap lifetime, namespace races, bounded admission and monitor/controller failure; it is not an advertised worker capability. Lab20's verified VM recycle terminates old processes and loses kernel memory, so it is not the ordinary document synchronization mechanism.
+- **Responses.** A field the worker sends, in a result, a record or its capabilities, needs every client that parses worker responses upgraded before the workers: the orchestrators, and the workspace, which reads jobs, kernels and provisioning observations through the orchestrator's client.
+- **Requests.** A field a client sends needs the workers upgraded first.
 
-Catalog routes require the pool token or a project-scoped client with the explicit boolean `document_catalog = true`. Existing clients default to denial, including status reads. An enabled client sees only its configured projects; other projects return `not_found`. No deployed configuration enables a client automatically. Permission and project checks precede body reads. Metadata requests are limited to 64 KiB and content requests to 352 KiB, including chunked requests, before JSON decoding. All counters are exact JSON integers, digests are lowercase 64-character SHA-256, and unknown fields are refused.
-
-All routes below start with `/v1/document-catalog/{project_id}` and return `CatalogStatus`:
-
-| Method and suffix | Request and behavior |
-| --- | --- |
-| `GET` with no suffix | Current committed cursor, target digest and counts, plus explicitly pending staging progress |
-| `POST /snapshots` | `CatalogSnapshot`: reserve one pending generation for this project without changing membership |
-| `POST /pages` | `CatalogSnapshotPage`: contiguous metadata pages, at most 64 live entries, ordered strictly by document ID |
-| `POST /deltas` | `CatalogDelta`: at most 64 contiguous project sequence changes against the exact current cursor, including tombstones; declares the complete resulting target |
-| `POST /content` | `CatalogContentChunk`: canonical base64 for a declared target digest, in aligned contiguous 256 KiB chunks, with only the final chunk shorter |
-| `POST /commit` | The exact `CatalogSnapshot` target: verify the complete target and atomically replace the catalog, retain a receipt and discard staging |
-
-An entry names its document ID, immutable revision, project/session scope, session where applicable, name, digest and UTF-8 byte length. Its path is derived as `documents/<name>.md` or `documents/sessions/<session_id>/<name>.md`; callers cannot supply paths. Content is at most 1 MiB per document, valid UTF-8 without NUL. Empty content uses SHA-256 of the empty byte string and requires no chunk. Content already retained for the same project/digest can be reused; there is no cross-project content lookup.
-
-The version-one manifest is UTF-8 bytes: one compact JSON header with sorted keys and a terminating newline, then the same encoding of each complete live `PublicationEntry`, in strictly increasing document-ID order. All entry fields, including null/default fields, are present. The header contains `protocol: 1`, `project_id`, `catalog_seq`, `entry_count` and `total_content_bytes`. Paths must be unique. `manifest_sha256()` and `canonical_entry()` provide this encoding. The generation ID must be `catalog-<catalog_seq>-<manifest_sha256>`. Catalog sequence orders publication independently of immutable document revision; a promotion may change scope/path without changing the revision's bytes. Deltas carry their own contiguous changes and must produce the declared complete live manifest. Tombstones never appear in a snapshot's target.
-
-Only a complete, verified commit changes membership. Missing pages/chunks, wrong counts or aggregate bytes, digest mismatches, revision rollback, an immutable revision with different bytes, an inexact delta base, and path collisions all leave the previous catalog intact. An omitted document is removed from current catalog membership only at commit. Its durable identity high-water record survives removal, so a later live reintroduction needs a newer revision; delta tombstones retain their actual revision. History has an explicit identity quota and is never silently evicted. These catalog removals delete no sandbox files.
-
-SQLite `FULL` transactions commit the catalog, content membership, revision high-water records and receipt together. Pending pages/chunks survive worker restarts. Identical pending page/chunk retries return `replayed`; altered retries conflict. The most recent 32 committed generation receipts per project retain the original acknowledgement. Status always reports the actual current catalog, while `acknowledged` identifies the committed target a replay refers to, which may be older. Snapshot/delta retries must use the original payload; commit retries use the exact target. After receipt eviction an old generation remains stale and is never reapplied. Page/chunk routes address pending staging only, and return `not_found` after completion or expiry; retry the original begin/delta or commit to recover its receipt.
-
-The optional `[document_catalog]` settings configure logical retained-data bounds:
-
-| Setting | Default |
-| --- | --- |
-| `max_entries`, `max_project_bytes` | 10,000 current entries/project, 256 MiB declared content/project |
-| `max_total_entries`, `max_total_bytes` | 100,000 current entries and 4 GiB declared content across the worker |
-| `max_staged_entries`, `max_staged_bytes` | 20,000 declared target entries and 512 MiB declared content across pending generations |
-| `max_projects`, `max_retained_identities` | 1,024 project catalogs and 100,000 revision high-water identities across the worker |
-| `staging_seconds`, `receipts_per_project` | 900-second fixed staging lifetime, 32 committed receipts/project |
-| `max_pending_requests` | 8 admitted catalog operations, including queued/running SQL |
-
-Reservation is transactional across connections. Stage expiry releases metadata and chunks even when the next request is refused. Tightened limits hold over-budget staging rather than allowing a continued upload or commit; current status stays readable, and a replacement must fit current aggregate quotas. Historical identity capacity is retained until a future explicit retirement mechanism exists. These bounds cover logical content/counts, not filesystem high-water usage, WAL size or process RSS; SQLite may retain freed pages. The protocol ceilings are 10,000 entries and 1 GiB declared content per target. Delta staging additionally retains at most 64 changed revision records for tombstones. Catalog SQL uses one private thread with bounded admission, so lock waiters do not consume the worker's default I/O thread pool. A disconnected caller does not cancel an admitted transaction; application cleanup drains it before closing the database.
-
-Catalog prerequisite acceptance after integrating the math and consistency changes passed
-9,253 Python tests (43 opt-in skips), 429 web tests, strict/static/license/protocol checks
-and both production builds. Independent adversarial review covered retained identities,
-old receipt replay, stage expiry, project/authentication denial and cancellation while SQL
-commits remain owned. These tests establish the catalog boundary, not sandbox publication.
+Nothing checks versions. `Capabilities.protocol` carries `PROTOCOL_VERSION` (1), but no client reads it, and a mismatch shows only as an `internal` "unexpected worker response" error from the client. In practice the orchestrators, the workspace and the workers are upgraded together. A policy that uses a new policy field, such as `packages.agpl_exceptions`, needs a policy library that knows it in the worker, the policy middleware and the MCP proxy.
 
 ## Behavior worth knowing
 
@@ -161,98 +131,13 @@ commits remain owned. These tests establish the catalog boundary, not sandbox pu
 - **Kernel generations.** A kernel's globals and generation survive worker and bridge restarts in the same daemon incarnation. A new daemon, sandbox restart, explicit kernel restart or lifecycle shutdown loses that state. The next result reports `state_lost`, and the generation keeps counting up from the last one the worker reported.
 - **Kernels.** An interrupted cell ends `cancelled` (or `timed_out`), with the kernel's own error, `KeyboardInterrupt` for Python. A cell cancelled while its kernel starts never runs. A restart does not wait for the running cell: that cell ends `cancelled`, and queued cells run on the new kernel.
 - **Watchdog.** An execution still running 30 seconds past its own limit is cancelled by the worker. If no result follows within another 60 seconds, it is reported `lost`.
-- **Written files.** The executor lists regular files in the session workspace and shared area before/after each attempt. The result names stat differences (`written_files`, at most 1,000), preserving its existing API. Concurrent attempts can contribute them; this is neither all mutation history nor producer proof. A separately bounded raw-byte sidecar now supports the [worker-local terminal journal](ARTIFACTS.md#worker-local-terminal-observations).
+- **Written files.** The executor lists regular files in the session workspace and shared area before/after each attempt. The result names stat differences (`written_files`, at most 1,000), preserving its existing API. Concurrent attempts can contribute them; this is neither all mutation history nor producer proof. A separately bounded raw-byte sidecar also feeds the [worker-local terminal journal](#worker-local-output-observations).
 - **Publication** reads the file through the executor in ranges. The executor hashes the whole file once, with the first range. The ranges must start where asked and add up to exactly the size first reported, within the size limit, the size must not change between ranges, and the stored bytes must hash as first reported. `produced_by` is an unproven recent scoped last-writer hint, never actual-producer lineage. Session files consider only that session's attempts; shared files consider the project's scoped attempts. A file written through the file API has no proven producer. (Modification times could not do this: in lab 4, the guest kernel's coarse clock gave a cell and the next shell call the same time.)
 - **Paths.**
   - Session workspaces are `<project root>/sessions/<session>`; the shared area is `<project root>/shared`.
   - The file tools refuse absolute paths, `..` and paths through symlinks. They open one directory at a time, relative to the last, without following a symlink, the workspace and the shared area themselves included.
   - Reads refuse anything but a regular file without waiting for it (a FIFO, say), and hash in a thread, so a large file does not hold up other sessions.
   - Writes to the shared area need `expected_sha256` or `create_only`.
-
-## Worker-local output observations
-
-`contracts/output_observations.py` and `worker/output_observations.py` retain only
-already-observed regular stat differences, regular observations and `not_seen_after`
-omissions, independently of `Result.written_files`. Raw byte paths are tagged by root
-before printable aliases. Each scan's added raw bookkeeping is capped at 256 entries
-and 64 KiB; normalized reports at 64 entries/16 KiB. The legacy stat walk and its
-pending directory lists remain unchanged; no complete mutation or hard I/O bound is
-claimed. Links/special files are unavailable and absence is not a deletion.
-
-The accepted request and exact original dispatch incarnation/known immutable VM pair
-are pinned before send. Missing or corrupt derived bindings cannot suppress canonical
-daemon recovery or borrow today's endpoint. Terminal detail/gap, final execution/events
-and source acknowledgement share one FULL-synchronous transaction. Invalid sidecars,
-detail quotas or damaged derived counters retain honest gaps without changing healthy
-completion. Untrustworthy sequence state leaves an unsequenced invalid marker and makes
-that scoped history unavailable; whole-store SQLite I/O failure remains a durability
-failure. The trusted host receipt timestamp is separate from untrusted source-monotonic
-scan intervals and execution end time.
-
-Internal `Store.observation_page(OutputScope(...), after=..., target=..., stream_id=...)`
-returns at most 32 records/64 KiB using clipped typed SQL projections. Sequences/floors
-are local to project/session/environment, target pins support bounded replay and stream
-identity detects resets. One fixed marker/binding follows each execution. Detail has
-4,096-report/32 MiB global and 8 MiB project caps with at most 64 evictions per finish;
-markers preserve quota/eviction gaps. The explicit feature baseline excludes old
-terminal history; no startup backfill is attempted. Logical detail quotas do not bound
-existing execution history, SQLite/WAL allocation or RSS. Original producer and observed
-inputs remain unknown; accepted actor is informational.
-
-There is no public journal route, capability, capture or automatic artifact/reviewer
-consumer. Independently reviewed signed `35863776` passed all integrated gates
-(9,714 Python/43 opt-in skips, 441 web and 24 post-build math cases) and root-owned
-[OpenShell Lab24](../.agents/docs/agent-reports/babbage-openshell-lab-24-2026-10-12.md).
-The real run retained nineteen markers/eighteen reports, known partial files,
-raw path/root distinctions and explicit truncation/missing coverage. The same
-attempt and Python kernel survived graceful worker restart; PDF was unavailable.
-Complete teardown was verified at 14:59:02.325873 UTC. Corruption/quota/namespace
-races remain local hostile proof; fresh PR CI is still required before merge.
-See [the full boundary and remaining prerequisites](ARTIFACTS.md#worker-local-terminal-observations).
-
-## Bounded artifact capture
-
-`POST /v1/artifacts` requires executor `artifact_capture_protocol=1`; ordinary file
-reads retain their existing protocol. Internal `capture_read` carries a fresh
-`cap-` ID, scoped path/session, exact offset/range/byte cap, hash flag and remaining
-budget. `capture_cancel` addresses only that owned helper. Both successful protocol
-replies carry the exact ID and explicit `cleaned: true` only after actual cleanup
-or a no-helper pre-admission refusal. Capture-specific failure data is bounded;
-generic executor errors confer no cleanup proof. Active duplicate IDs cannot claim
-cleanup. Recent cancellation tombstones are bounded and IDs are never retry tokens.
-
-The fixed sandbox Python `-I -S` helper streams the initial hash under a preflight
-and growth byte cap, reads only regular nofollow sources, retains at most 8 MiB and
-checks its opened file identity. Publication verifies all range stamps/sizes and
-the final copied-byte hash. No rich code/import/renderer or researcher environment
-is loaded. Source paths remain mutable; this is exact retained content, not proof
-of writer closure, a producer, an atomic path snapshot or complete output inventory.
-
-Four FULL-durable publication leases globally, two per environment, reserve before
-dispatch; two actual helpers per executor have no queue. The default 30-second
-operation budget includes waits and host blob work. It is distinct from the one-second
-cleanup-ACK attempt and actual TERM/KILL/drain lifetime. Unkillable filesystem waits
-retain guest ownership/capacity. Host threads remain owned before FD close/reuse.
-Temporary helpers cancel on daemon bridge detach; research jobs/kernels retain their
-existing survival semantics. Environment release and worker shutdown drain host work.
-
-Unknown cleanup persists a bounded held lease across restart. Exact same-incarnation
-ACK may reconcile a host-drained hold; confirmed original-VM deletion or the existing
-verified recycle fence can mark matching guest ownership clean. Neither a logical
-environment deletion, observed replacement, blank legacy binding nor a new incarnation
-is proof. Active host leases remain counted until their actual work ends. Corrupt
-leases fail closed; crashed foreign active owners need explicit operator investigation
-because guest proof cannot prove their host threads exited. No automatic repair or
-new VM recycle trigger is added. See [capture limits and recovery](ARTIFACTS.md#bounded-worker-capture-prerequisite)
-for exact bounds and client-disconnect semantics. Independent review cleared signed
-freeze `b535856`; root-owned [OpenShell Lab22](../.agents/docs/agent-reports/babbage-openshell-lab-22-2026-10-12.md)
-passed exact binary/empty retention, prompt oversize/symlink/FIFO refusal and healthy
-publication/read/execution access on Python 3.14.8 with a disposable 1 MiB limit.
-Independent inspection found zero capture leases/helpers, and complete teardown was
-verified. Lost transport, blocked host work and corrupt-state cases remain local hostile
-evidence. Exact source `ea31757` merged as PR #86 at `9c07725` after all three
-fresh CI checks passed (run `38251872668`, 13:01:50 UTC); both Lab22/Lab23 archives
-are preserved.
 
 ## Background jobs
 
@@ -494,21 +379,18 @@ Package managers run from a shell call or a kernel take turns in their environme
   - The executor sends a lockfile with each attempt's last change. The worker keeps one for each attempt and checks at most 4 for each execution, those it asks for when the execution starts and ends included. A revision left without one gets the current lockfile asked for, in the background (`lockfile`), while it is current; revision 0 gets its own when the first execution starts.
   - Each environment keeps its newest 500 revisions, and lockfiles for its newest 50 in 64 MiB at most. A lockfile no revision names is deleted, and a worker deletes those a crash left when it starts.
   - Deleting an environment, or the worker giving one up because its sandbox is gone or came back as another, deletes its revisions and their lockfiles; and when the worker creates an environment, it forgets the revisions recorded under its ID before (D78): a sandbox made by hand, or an earlier environment of the ID, had them. The store thus holds at most an environment's share for each environment the worker keeps. There is no quota across environments: one would let an environment's executor push out, or shut out, another project's lockfiles.
-- **On babbage.** [Lab 17](../.agents/docs/agent-reports/babbage-openshell-lab-17-2026-10-11.md) ran package commands in OpenShell VM sandboxes with the real pip and micromamba through the package cache: turns, the wait before an attempt and its time limit, cancellation, `%pip` in a kernel through the hook, the death signal under OpenShell's seccomp filter, and lockfiles that name `conda-forge`, never the cache.
-- **Upgrading.** Contracts refuse fields they do not know, so an orchestrator older than this change refuses a result that carries `overlapping_change`. Upgrade the orchestrators before the workers.
+- **On babbage.** Checked in OpenShell VM sandboxes with the real pip and micromamba through the package cache in [lab 17](../.agents/docs/agent-reports/babbage-openshell-lab-17-2026-10-11.md).
 
 What it does not do:
 - **Bypasses.** A manager run by its full path, from a `PATH` without the wrappers, by a Python started with `-I` or `-E` (which ignore `PYTHONPATH`), or as the `conda` shell function of a sourced `conda.sh` (which points `CONDA_EXE` at the real binary), takes no turn. Its change shows as unmanaged after the attempt. Only the prefix's own Python is hooked: a venv's Python changes its venv, not the environment.
 - **Attribution.** With attempts running side by side, an unmanaged change counts against the first attempt to see it. A record names the attempt from the mark of its call or kernel, which research code can copy, and research code can write records itself. The lock serializes cooperating commands within one sandbox; it is no boundary, and the records are as trustworthy as the sandbox. The worker bounds what it accepts: 64 revisions an execution, past which the state it leaves is one revision of unknown cause, and lockfiles that validate.
-- **Kernel revisions** (CP-12). [Kernel start tracking](KERNEL-REVISIONS.md) records each observed birth under the managed package lock, retains exact start pins through worker restart and discloses stale kernels in ordinary tool results and the retained GUI transcript. Explicit scoped status starts no research command or kernel; the separate existing-connection observer also avoids waking, reconnecting or refreshing idle activity, with bounded client transport and read-only birth/generation mapping. [OpenShell Lab26](../.agents/docs/agent-reports/babbage-openshell-lab-26-2026-10-12.md) passed actual idle stop under polling, unavailable reads without wake, startup continuity and ordinary resume with state-loss disclosure; all owned runtime state was removed. [OpenShell Lab25](../.agents/docs/agent-reports/babbage-openshell-lab-25-2026-10-12.md) passed a real package change, preserved globals, a fresh session and explicit restart. The [visible-session GUI panel](WORKSPACE-KERNELS.md) passed real browser/OpenShell Lab27 on reviewed signed `70f6761`, and merged as PR #99 after all four fresh checks passed. Durable cross-session agent notification remains open.
-- **Passive original lineage.** The separate [lineage route](KERNEL-NOTICE-LINEAGE.md) proves retained original managed VM/incarnation/birth/raw generation and reports normalized generation separately; missing or contradictory proof stays unknown. [Lab28](../.agents/docs/agent-reports/babbage-openshell-lab-28-2026-10-12.md) passed real package staleness, continuation, idle stop/no wake and ordinary resume, with complete teardown. The internal [notice inbox](KERNEL-NOTICES.md) is a control-store prerequisite only; no MAIN delivery or new workspace route is wired.
-- **Not yet.** Rebuilding an environment from a lockfile (W3). Keeping every lockfile that a recorded result's lineage names, whatever the caps, once results record their lineage (the user's decision of 2026-10-11). The provisioning tool is the next section's.
+- **Kernel revisions** (CP-12). [Kernel start tracking](KERNEL-REVISIONS.md) records each observed birth under the managed package lock, retains exact start pins through worker restart and discloses stale kernels in ordinary tool results and the retained GUI transcript. Explicit scoped status starts no research command or kernel; the separate existing-connection observer also avoids waking, reconnecting or refreshing idle activity, with bounded client transport and read-only birth/generation mapping. The workspace shows them in its [kernels panel](WORKSPACE-KERNELS.md). Checked on OpenShell in [Lab25](../.agents/docs/agent-reports/babbage-openshell-lab-25-2026-10-12.md) and [Lab26](../.agents/docs/agent-reports/babbage-openshell-lab-26-2026-10-12.md). Durable cross-session agent notification is not built.
+- **Passive original lineage.** The separate [lineage route](KERNEL-NOTICE-LINEAGE.md) proves retained original managed VM/incarnation/birth/raw generation and reports normalized generation separately; missing or contradictory proof stays unknown. Checked on OpenShell in [Lab28](../.agents/docs/agent-reports/babbage-openshell-lab-28-2026-10-12.md). The internal [notice inbox](KERNEL-NOTICES.md) is a control-store prerequisite only; no delivery to the main agent or workspace route uses it.
+- **Not built.** Rebuilding an environment from a lockfile (W3). Keeping every lockfile that a recorded result's lineage names, whatever the caps, once results record their lineage (the user's decision of 2026-10-11). The provisioning tool is the next section's.
 
 ## Provisioning operations
 
-Runtime evidence: [lab 18](../.agents/docs/agent-reports/babbage-openshell-lab-18-2026-10-12.md) ran the provisioning tool with real micromamba and pip, the middleware and cache, and independent OpenShell VMs. Its dry runs passed the parsers, installs matched their decided files and lockfiles, an escalated install downloaded exactly its approved set, and the grant ended with the operation. All nine catalog probes passed. Cancellation and a worker restart after linking began both exposed `needs_recovery`; restoration remains unimplemented.
-
-An agent asks for a capability or for packages, and the worker decides, installs in the environment's turn, records and probes, telling the agent what happened ([Conda provisioning](specs/conda-provisioning.md), CP-1 to CP-25). The code is `provisioner.py`, with `resolution.py` (commands, parsing and decisions), `permissions.py` (permission requests) and `catalog.py`; the harness's tools are `provision` and `provision_status` (`packages/orchestrator`, `provision.py`).
+An agent asks for a capability or for packages, and the worker decides, installs in the environment's turn, records and probes, telling the agent what happened ([Conda provisioning](specs/conda-provisioning.md), CP-1 to CP-25). The code is `provisioner.py`, with `resolution.py` (commands, parsing and decisions), `permissions.py` (permission requests) and `catalog.py`; the harness's tools are `provision` and `provision_status` (`packages/orchestrator`, `provision.py`). Checked on OpenShell, with real micromamba and pip, the policy middleware and the package cache, in [lab 18](../.agents/docs/agent-reports/babbage-openshell-lab-18-2026-10-12.md).
 
 - **Which environments.** The worker provisions the environments it created ([environments](#environments)), under their stored policy revision. Their capabilities list the `provisioning` feature, and the harness then offers the tools. An environment of a sandbox made by hand is `unsupported`.
 - **The request** (`ProvisionRequest`) names the target environment (the session's, unless the agent names another of the project's), the purpose, and either a capability of the catalog or package specs: Conda specs, or pip specs only with the reason conda-forge lacks them (CP-15), and system packages, which are always refused. Conda and pip specs come in separate requests, the Conda ones first: pip then resolves against the Conda packages as installed, and brings its own copy of one only where a version constraint demands it, never as an unseen dependency of a package installed beside them. A pip name that a Conda package installed counts as installed. A spec is a channel, a name and a version constraint, or a PEP 508 requirement without a URL or markers: nothing that a package manager could read as an option, a file or a URL, and nothing ending like a package file (`.conda`, `.whl`, `.tar.gz` and the like). Operation IDs are kept per project, as for executions. An environment of another project is `not_found`, whatever the token, so that an agent naming one learns nothing of it.
@@ -517,22 +399,20 @@ An agent asks for a capability or for packages, and the worker decides, installs
 - **The steps** are ordinary executions in the operation's context, with operation IDs of the worker's own (`prv-<hex>.<step>`, which clients may not use) and `origin` naming the operation, so the harness can read and cancel each like any other:
   1. **Check** (a capability): if its probes passed at the current revision, the operation ends `already_satisfied`, citing those records; otherwise the probes run now, and pass or not (CP-2).
   2. **Refusals before any dry run**: system packages (`base_image_change_required`, CP-5), before the check too; a channel the policy does not list, or an ecosystem whose index reads it denies (CP-6, CP-F4).
-  3. **Resolve** (CP-7): `micromamba install --dry-run --json`, or `pip install --dry-run --only-binary :all: --report -`, in the sandbox, through the package cache, under the environment's policy. pip takes wheels only, whose metadata the index serves, so no source distribution is built, which would run its code; a package with no wheel cannot be installed through the tool yet. A dry run (`install --dry-run`, as its first words) takes no turn. The worker reads the files to link, each with channel (named as lockfiles name it, never by the cache's address), subdir, file name, version, build, SHA-256 and declared license, and its path at the cache, in a thread, at most 2,000 files. Names and paths must agree, since the permission request grants the paths while people read the names: a Conda file at the cache is `/conda/<channel>/<subdir>/<name>-<version>-<build>.conda` (or `.tar.bz2`), and a wheel is `/pypi/files/<project>/<sha256>/…` with its own project and SHA-256; anything else fails the resolve. Nothing to install ends `already_satisfied` with a version check of each requested package, or `failed` at `probe` when a check does not pass or a capability's probes fail.
+  3. **Resolve** (CP-7): `micromamba install --dry-run --json`, or `pip install --dry-run --only-binary :all: --report -`, in the sandbox, through the package cache, under the environment's policy. pip takes wheels only, whose metadata the index serves, so no source distribution is built, which would run its code; a package with no wheel cannot be installed through the tool. A dry run (`install --dry-run`, as its first words) takes no turn. The worker reads the files to link, each with channel (named as lockfiles name it, never by the cache's address), subdir, file name, version, build, SHA-256 and declared license, and its path at the cache, in a thread, at most 2,000 files. Names and paths must agree, since the permission request grants the paths while people read the names: a Conda file at the cache is `/conda/<channel>/<subdir>/<name>-<version>-<build>.conda` (or `.tar.bz2`), and a wheel is `/pypi/files/<project>/<sha256>/…` with its own project and SHA-256; anything else fails the resolve. Nothing to install ends `already_satisfied` with a version check of each requested package, or `failed` at `probe` when a check does not pass or a capability's probes fail.
   4. **Decide** (CP-6, CP-9): each file's path at the cache is classified and evaluated with the policy library, as the policy middleware will decide its download; a path that is not the package file its record names is denied. A package declaring the GNU Affero GPL is refused, naming the package and its license, unless the policy's `packages.agpl_exceptions` names it (open question 5). A file the policy denies is refused with the reason.
   5. **Permission** (CP-8): when the policy escalates any file, the worker records one permission request for the whole resolved set in the policy middleware's event store, and waits in `awaiting_permission`. The operator reviews it with `sandbox-science-policy-middleware pending --request N`, which shows what the agent asked for and why, and every file, and answers it like any other (D76): `approve --request N`. The middleware then lets exactly those files download to the environment's sandbox under that policy revision; anything else escalated is still refused. A denial, or no answer within the escalation timeout (counted by the worker, whether or not it can read the store), ends the operation `denied`, and nothing has downloaded. However an operation ends, the worker then withdraws its request: a denial marked `withdrawn`, built from the request's key, after which nothing grants its files again (a late approval neither, which the command line refuses). A withdrawal that fails is owed: the next operation to end tries it again, and a starting worker withdraws every open request of the operations it knows, those a crash or a stop left before the operation noted its request included. In any case the request names its own deadline (`valid_until`: the wait, the install's time limit and 30 minutes), after which it grants nothing. A grant therefore lasts until its operation ends, the approval expires or that deadline passes, whichever comes first.
   6. **Install** (CP-10, CP-14): `micromamba install` with the request's specs, pinned to exactly the decided files, or `pip install --require-hashes --no-deps --only-binary :all:` with exactly the resolved distributions, in the environment's turn, under the policy's wall time (its `resources.wall_time`, under the pool's cap; one hour when it names none; at most a day). The pins are `channel/subdir::name==version=build`, one for each decided file, in `MAMBA_PINNED_PACKAGES`: micromamba 2.9, the images' (ARG `MICROMAMBA_VERSION`), reads them there as `pinned_packages`, so the solve links those versions and builds, and the environment's history records the request's specs, not the pins. A pin holds a package to its name, version and build, not to its channel, so the channel each package came from is checked after the install. Checked offline with mamba 2.9, over HTTP in the cache's layout: the worker's own command installed the pinned builds, real dry-run output passed the strict parser, and a pinned build the index no longer offers failed the solve, at `resolve`, with nothing changed. The change is a managed revision whose `operation` names the operation. A file beyond the decided set (another version, build or channel) is still refused at its download if the policy escalates it, noted in the result if the policy allows it, and, if it declares the AGPL, ends the operation `needs_recovery` (`agpl_license`).
   7. **Probe** (CP-21 to CP-24): a capability's probes, or for packages a version check of each in the new revision's lockfile, recorded as `import_check`. Results belong to the revision they ran at (`probes` in its history entry). A probe that fails leaves the revision standing (CP-23).
 - **Records** (CP-16, CP-17): the operation (`ProvisionOperation`) keeps the request, the catalog revision, the revision when it was requested and those before and after its install, the policy revision, each resolved file with the policy's action and rule, the permission request, the package changes (from the two lockfiles), the probes, its executions, timings, and, short of completion, the stage where it stopped (`queue`, `check`, `resolve`, `permission`, `download`, `link`, `post-link` or `probe`), a reason, the error and what to do next. A revision is the operation's only when its install's own package commands made it (managed): a change seen only after a step, or made by another execution meanwhile, is no operation's. A probe that ran at no revision the worker could tell has none. The tool's result reports from these records (CP-25).
 - **Installer observations.** [Original step records](INSTALLER-ARTIFACTS.md) retain accepted execution/attempt identities, nullable self-reported installer versions and bounded sanitized partial JSON artifacts through existing project-scoped artifact reads. Legacy or unavailable observations stay unknown. These are neither complete raw logs nor executable attestation; retention failure never authorizes repeating an installer.
-- **Provisioning observations.** The worker attempts three bounded [event kinds](PROVISION-EVENTS.md): requested, awaiting permission and finished. Their separate event-store writes may be absent or acknowledgment-unknown and confer no approval authority; canonical operation records remain authoritative. Terminal queue turns release before late event writes while actual append tasks stay owned through cleanup. [Lab35](../.agents/docs/agent-reports/babbage-openshell-lab-35-2026-10-13.md) passed two small installs, six original-step artifacts, four requested/finished events and complete independently verified teardown. No genuine permission wait occurred in that fixture.
-- **Named Conda updates** (bounded CP-20): the existing MAIN provision tool and API accept explicit `action="upgrade"` for named targets in the current retained Conda lockfile. Missing action preserves legacy install bytes/digests. Update solving and decided-build pins reuse the original policy, permission, AGPL, queue, revision, recovery and observation paths. [As built](PROVISIONING-UPGRADES.md); [Lab36](../.agents/docs/agent-reports/babbage-openshell-lab-36-2026-10-14.md) passed real install/update and fresh guest function/version checks with independent complete cleanup. No upgrade-all, pip/capability upgrade, uninstall or restoration is added.
-- **Failures** (CP-13, in part): a failed install with a proved unchanged revision ends `failed`. A changed or uncertain install ends `needs_recovery`, preserving the earliest owner and last known good revision/lockfile. Matching package lists are not restoration proof. The [sticky recovery admission fence](RECOVERY-FENCE.md) persists and acknowledges an exact install hold before dispatch, then refuses new ordinary executions, provisioning and kernel restart after recovery is required. Already running calls/kernels, status, cancellation and files remain available. Ordinary work waiting behind a live install is rechecked at actual launch, and only exact registered internal steps can use that install's exemption. Failed hold persistence or synchronization prevents installation. Unknown effects, worker restart, stale ownership and malformed retained state never silently reopen admission. Independent review and [OpenShell Lab21](../.agents/docs/agent-reports/babbage-openshell-lab-21-2026-10-12.md) pass on signed source `e320236`, including graceful worker-offline/reconnect, preserved research/recovery access and exact original-binding delete/reuse; both disposable labs are removed. Final local gates pass 9,532 Python/436 web tests plus 24 post-build math checks; PR #85 merged after all three fresh CI checks passed. Restoring packages and an operator clear command remain unimplemented; `Restorer` is the explicit later seam, not an enabled capability.
-
+- **Provisioning observations.** The worker attempts three bounded [event kinds](PROVISION-EVENTS.md): requested, awaiting permission and finished. Their separate event-store writes may be absent or acknowledgment-unknown and confer no approval authority; canonical operation records remain authoritative. Terminal queue turns release before late event writes while actual append tasks stay owned through cleanup. Checked on OpenShell in [Lab35](../.agents/docs/agent-reports/babbage-openshell-lab-35-2026-10-13.md), which had no permission wait.
+- **Named Conda updates** (bounded CP-20): the main agent's `provision` tool and the API accept explicit `action="upgrade"` for named targets in the current retained Conda lockfile. Missing action preserves legacy install bytes/digests. Update solving and decided-build pins reuse the original policy, permission, AGPL, queue, revision, recovery and observation paths. See [provisioning upgrades](PROVISIONING-UPGRADES.md); checked on OpenShell in [Lab36](../.agents/docs/agent-reports/babbage-openshell-lab-36-2026-10-14.md). There is no upgrade-all, pip or capability upgrade, uninstall or restoration.
+- **Failures** (CP-13, in part): a failed install with a proved unchanged revision ends `failed`. A changed or uncertain install ends `needs_recovery`, preserving the earliest owner and last known good revision/lockfile. Matching package lists are not restoration proof. The [sticky recovery admission fence](RECOVERY-FENCE.md) persists and acknowledges an exact install hold before dispatch, then refuses new ordinary executions, provisioning and kernel restart after recovery is required. Already running calls/kernels, status, cancellation and files remain available. Ordinary work waiting behind a live install is rechecked at actual launch, and only exact registered internal steps can use that install's exemption. Failed hold persistence or synchronization prevents installation. Unknown effects, worker restart, stale ownership and malformed retained state never silently reopen admission. Checked on OpenShell in [Lab21](../.agents/docs/agent-reports/babbage-openshell-lab-21-2026-10-12.md). Restoring packages and an operator clear command are not built; `Restorer` is the seam for them, not an enabled capability.
 - **Restarts.** Before readiness, canonical recovery/unfinished-operation state closes admission, all unfinished operations are classified, and the final guest gate is synchronized. Legacy live daemons without the gate refuse new protected work while keeping healthy kernels and status/file access; prior legacy waiters are not claimed fenced. Operations do not survive a worker restart: a stopping worker ends those still running (`worker_restarted`), and a starting one ends any a crash left, withdrawing their permission requests. Each ends `failed`, or `needs_recovery` if its install had started and nobody saw it end: it may have changed the packages, and nothing looked.
 - **Trust.** The dry runs run in the sandbox, whose code can forge their output. The decision is the worker's forecast of the middleware's, made with the same library and checked against it in the tests; the middleware's decision on each download is what holds, and the grant is for exact paths at the cache, to one sandbox and policy revision, while the operation lasts. A forged dry run can only ask for other files, which the request lists by path for the operator to see; names that disagree with their paths fail the resolve. The AGPL check reads the licenses packages declare; it keeps honest installs within the licensing policy, not a hostile sandbox.
-- **Upgrading.** New result fields (`origin` on executions, `operation` and `probes` on revisions, the `provisioning` feature) need orchestrators upgraded before workers. A policy that uses `packages.agpl_exceptions` needs the new policy library in the worker, the policy middleware and the MCP proxy.
 
-Still open: restoring a revision and clearing recovery state (CP-13 and CP-20's return), policy disk-limit enforcement (CP-14), uninstalling through the tool, pip upgrades, GUI operator permission answers and broader effect controls (CP-26), source-only PyPI distributions, local test channels for CP-F5/CP-F6, and catalog extension by skill packs or project profiles. Read-only package/history/comparison views, bounded installer observations and the three provisioning observation kinds are implemented; their scope is linked above.
+Still open: restoring a revision and clearing recovery state (CP-13 and CP-20's return), policy disk-limit enforcement (CP-14), uninstalling through the tool, pip upgrades, GUI operator permission answers and broader effect controls (CP-26), source-only PyPI distributions, local test channels for CP-F5/CP-F6, and catalog extension by skill packs or project profiles. The read-only views of packages, history and lockfile differences are the [observation routes](#worker-api); bounded installer observations and the three provisioning event kinds are built, as above.
 
 ## PDFs
 
@@ -543,9 +423,92 @@ A `PdfRequest` runs one operation of the [PDF sources spec](specs/pdf-sources.md
 - **Renders.** A render writes its PNG into the session workspace, so it appears in `written_files` and can be published like any output.
 - **The feature.** The executor offers the `pdf` feature only when its interpreter can import pdf_oxide. Without it, a `PdfRequest` fails as `unsupported`. The harness offers its PDF tools (`pdf_info`, `pdf_pages`, `pdf_search`, `pdf_render`) only for an environment with the feature.
 
+## Bounded artifact capture
+
+`POST /v1/artifacts` requires executor `artifact_capture_protocol=1`; ordinary file
+reads retain their existing protocol. Internal `capture_read` carries a fresh
+`cap-` ID, scoped path/session, exact offset/range/byte cap, hash flag and remaining
+budget. `capture_cancel` addresses only that owned helper. Both successful protocol
+replies carry the exact ID and explicit `cleaned: true` only after actual cleanup
+or a no-helper pre-admission refusal. Capture-specific failure data is bounded;
+generic executor errors confer no cleanup proof. Active duplicate IDs cannot claim
+cleanup. Recent cancellation tombstones are bounded and IDs are never retry tokens.
+
+The fixed sandbox Python `-I -S` helper streams the initial hash under a preflight
+and growth byte cap, reads only regular nofollow sources, retains at most 8 MiB and
+checks its opened file identity. Publication verifies all range stamps/sizes and
+the final copied-byte hash. No rich code/import/renderer or researcher environment
+is loaded. Source paths remain mutable; this is exact retained content, not proof
+of writer closure, a producer, an atomic path snapshot or complete output inventory.
+
+Four FULL-durable publication leases globally, two per environment, reserve before
+dispatch; two actual helpers per executor have no queue. The default 30-second
+operation budget includes waits and host blob work. It is distinct from the one-second
+cleanup-ACK attempt and actual TERM/KILL/drain lifetime. Unkillable filesystem waits
+retain guest ownership/capacity. Host threads remain owned before FD close/reuse.
+Temporary helpers cancel on daemon bridge detach; research jobs/kernels retain their
+existing survival semantics. Environment release and worker shutdown drain host work.
+
+Unknown cleanup persists a bounded held lease across restart. Exact same-incarnation
+ACK may reconcile a host-drained hold; confirmed original-VM deletion or the existing
+verified recycle fence can mark matching guest ownership clean. Neither a logical
+environment deletion, observed replacement, blank legacy binding nor a new incarnation
+is proof. Active host leases remain counted until their actual work ends. Corrupt
+leases fail closed; crashed foreign active owners need explicit operator investigation
+because guest proof cannot prove their host threads exited. Nothing repairs them
+automatically, and capture never triggers a VM recycle. See [capture limits and recovery](ARTIFACTS.md#bounded-worker-capture-prerequisite)
+for exact bounds and client-disconnect semantics. Checked on OpenShell in
+[Lab22](../.agents/docs/agent-reports/babbage-openshell-lab-22-2026-10-12.md); lost
+transport, blocked host work and corrupt state are covered by local tests only.
+
+## Worker-local output observations
+
+`contracts/output_observations.py` and `worker/output_observations.py` retain only
+already-observed regular stat differences, regular observations and `not_seen_after`
+omissions, independently of `Result.written_files`. Raw byte paths are tagged by root
+before printable aliases. Each scan's added raw bookkeeping is capped at 256 entries
+and 64 KiB; normalized reports at 64 entries/16 KiB. The legacy stat walk and its
+pending directory lists remain unchanged; no complete mutation or hard I/O bound is
+claimed. Links/special files are unavailable and absence is not a deletion.
+
+The accepted request and exact original dispatch incarnation/known immutable VM pair
+are pinned before send. Missing or corrupt derived bindings cannot suppress canonical
+daemon recovery or borrow today's endpoint. Terminal detail/gap, final execution/events
+and source acknowledgement share one FULL-synchronous transaction. Invalid sidecars,
+detail quotas or damaged derived counters retain honest gaps without changing healthy
+completion. Untrustworthy sequence state leaves an unsequenced invalid marker and makes
+that scoped history unavailable; whole-store SQLite I/O failure remains a durability
+failure. The trusted host receipt timestamp is separate from untrusted source-monotonic
+scan intervals and execution end time.
+
+Internal `Store.observation_page(OutputScope(...), after=..., target=..., stream_id=...)`
+returns at most 32 records/64 KiB using clipped typed SQL projections. Sequences/floors
+are local to project/session/environment, target pins support bounded replay and stream
+identity detects resets. One fixed marker/binding follows each execution. Detail has
+4,096-report/32 MiB global and 8 MiB project caps with at most 64 evictions per finish;
+markers preserve quota/eviction gaps. The explicit feature baseline excludes old
+terminal history; no startup backfill is attempted. Logical detail quotas do not bound
+existing execution history, SQLite/WAL allocation or RSS. Original producer and observed
+inputs remain unknown; accepted actor is informational.
+
+There is no public journal route, capability, capture or automatic artifact or reviewer
+consumer. Checked on OpenShell in
+[Lab24](../.agents/docs/agent-reports/babbage-openshell-lab-24-2026-10-12.md); corruption,
+quota and namespace races are covered by local tests only. See [the full boundary and
+remaining prerequisites](ARTIFACTS.md#worker-local-terminal-observations).
+
 ## Executor protocol
 
-The worker sends one JSON object per line; each carries an `id` and an `op`. The operations are `hello`, `probe` (the [isolation probe](#isolation-tiers)), `configure`, `shell`, `cell`, `cancel`, `restart`, `read`, `write`, `list`, `lockfile` (the packages' fingerprint and lockfile now, after waiting up to 30 s for a package command), and for the shared files' sync, `shared` and `remove`.
+The worker sends one JSON object per line; each carries an `id` and an `op`. The executor's operations (`Executor.handle` in `executor.py`) are:
+- **Setup:** `hello`, `probe` (the [isolation probe](#isolation-tiers)), `configure` and `package_gate` (the [recovery fence](#provisioning-operations)'s admission state, acknowledged once earlier launches are admitted).
+- **Executions:** `shell`, `job` ([background jobs](#background-jobs)), `cell`, `pdf` ([PDFs](#pdfs)), `cancel` and `job_status`.
+- **Kernels and sessions:** `restart`, `kernels` (a session's kernels), `close_session` and `usage` (CPU time below the executor, for [idle suspension](#idle-suspension)).
+- **Files:** `read`, `write`, `list`, and `capture_read` and `capture_cancel` for [publication](#bounded-artifact-capture).
+- **Packages:** `lockfile` (the packages' fingerprint and lockfile at that moment, after waiting up to 30 s for a package command).
+- **Shared files' sync:** `shared`, `remove` and `move`.
+
+The [sandbox daemon](#sandbox-daemon-and-recovery) adds `replay`, `active` and `daemon_shutdown`, passes every other operation to its executor, and adds its `daemon_incarnation` to the `hello` reply. An unknown operation is `invalid_request`.
+
 - **Lines.** UTF-8 JSON, one object per line. The executor's lines stay under 16 MiB (`MAX_LINE`, the worker's limit too); it reads requests of up to 64 MiB.
 - **Replies.** Each request gets exactly one reply: `{"type": "reply", "id": …, "ok": true, …}`, or `ok: false` with `{"error": {"kind", "message"}}`. The `hello` reply says whether the executor became a subreaper (`subreaper`). A `read` with `"hash": false` leaves out the whole file's SHA-256, for publication's later ranges.
 - **Configuration.** `configure` writes files into the executor's configuration directory (`<project root>/.executor/config`) or the home directory. It adds variables to the environment of every later shell command and kernel: its `env`, and for each file with a `variable`, that variable set to the file's path. It records what it wrote, keeps a file that changed since or that it did not write, and names each one it kept in its reply (`skipped`). The OpenShell backend sends the package clients' configuration this way, right after `hello`.
@@ -571,9 +534,10 @@ A lost bridge starts a live recovery of its environment. Each attempt reattaches
 unfinished execution of the environment that no open bridge carries, including one
 whose bridge was lost while the recovery ran. A failed attempt, such as a transient
 gateway failure, is repeated after 0.2 s, doubling up to 30 s, until none is left.
-The worker polls each bridge for its executions' events. An unexpected failure while
-polling or recovering, such as one of the worker's database, is logged, and polling or
-recovery goes on. Startup tries five times, then refuses readiness
+Events reach the worker only by polling: every 0.1 s, it asks each bridge to `replay`
+the events of the executions it carries after their saved cursors. An unexpected failure
+while polling or recovering, such as one of the worker's database, is logged, and polling
+or recovery goes on; the poller then waits longer, doubling up to 10 s, while it lasts. Startup tries five times, then refuses readiness
 until remembered live daemons can be reconciled and unknown installers quiesced.
 One unreachable live environment therefore delays availability for the pool, rather
 than exposing an API while its control-created tasks may still be running.
@@ -604,7 +568,7 @@ If their incarnation changed before that binding was recorded, automatic replace
 refuses until an operator confirms cleanup of the original sandbox and removes its
 obsolete worker recovery records; the current environment binding is insufficient proof.
 
-The state database may still hold the tables of the delegated-run kernels, which were removed from main and are kept on the tag `archive/delegation-2026-10`. Nothing reads or writes them. The store refuses to open a state directory that holds executions recorded by delegated runs (`kernel_scope = 'run-v1'`); the operator discards that state directory.
+An older state directory may still hold the tables and executions of delegated runs, a removed feature ([archive](../.agents/docs/archive/README.md)). The worker leaves those tables alone, and the store refuses to open a state directory with any execution whose `kernel_scope` is not `legacy`; the operator discards that state directory.
 
 The daemon adds `source_seq` to each execution event. `replay` reads bounded pages after
 a source cursor; `active` lists at most 128 accepted unfinished requests. Admission
@@ -625,12 +589,11 @@ remain in the workspace. Old ended records can eventually be evicted. Recovery o
 worker-unacknowledged execution after that bounded retention reports `lost`, naming the
 limitation. Daemon memory and kernels do not survive daemon or sandbox death.
 
-Local daemon fixtures cover restart, bridge loss, cancellation, refusal, journal
-rollover, authentication, admission bursts and incarnation cleanup. [OpenShell lab
-20](../.agents/docs/agent-reports/babbage-openshell-lab-20-2026-10-12.md) separately
-verified same-attempt restart, offline completion and timeout, kernel continuity,
-whole logs, and the managed VM fence after daemon loss. The initial owner-marker
-cleanup failure remains recorded beside the corrected runtime checks.
+Local tests cover restart, bridge loss, cancellation, refusal, journal rollover,
+authentication, admission bursts and incarnation cleanup. Same-attempt restart, offline
+completion and timeout, kernel continuity, whole logs and the managed VM fence after
+daemon loss were checked on OpenShell in
+[lab 20](../.agents/docs/agent-reports/babbage-openshell-lab-20-2026-10-12.md).
 
 ## Settings
 
@@ -639,16 +602,19 @@ listen = "127.0.0.1:8100"
 token_file = "worker.token"          # the pool's own token: sandbox-science-worker token --out worker.token
 state_dir = "state"
 pool_id = "babbage"
+max_artifact_size = 1073741824       # bytes a published artifact may have (the default, 1 GiB)
 kernel_idle_timeout = 28800          # optional: stop kernels unused for 8 hours
 shared_sync = true                   # keep each project's shared/ in step across its environments (D79)
 
 [openshell]
-daemon = true                  # default: reconnect to a sandbox-lifetime executor
+daemon = true                        # default: reconnect to a sandbox-lifetime executor
 cli = "~/.local/opt/openshell-0.1.3/bin/openshell"
 python = "/opt/sandbox-science/bin/python"   # with ipykernel and jupyter_client; the base images' interpreter
 project_root = "/sandbox/project"
+executor_dir = "/sandbox/.sandbox-science"   # where the executor and its helpers are uploaded (the default)
 isolation_tier = 3                   # required: the tier the driver gives (D43); the probe can lower it
-sched_shim = true                    # build and preload the scheduler shim (needs cc on this host)
+sched_shim = true                    # build and preload the scheduler shim
+cc = "cc"                            # the C compiler on this host that builds the shim (the default)
 package_cache = "http://host.openshell.internal:8090"   # the package cache, as sandboxes reach it
 env = {XDG_CONFIG_HOME = "~/.local/state/openshell-lab/config"}
 sandboxes = {"env-1" = "research-1"}   # sandboxes made by hand
@@ -659,7 +625,7 @@ targets = "targets.yaml"             # OpenShell targets for the compiler
 ceiling = "pool-ceiling.yaml"        # the same pool ceiling the middleware applies
 profiles = {minimal = "sandbox-science/minimal:<sha>", crypto-base = "sandbox-science/crypto-base:<sha>"}   # base profile -> image (IMAGES.md)
 create_timeout = 600                 # seconds for a sandbox to become ready
-event_store = "/var/lib/sandbox-science/middleware/events.db"   # optional: provisioning's permission requests; this is the default
+event_store = "/var/lib/sandbox-science/middleware/events.db"   # optional: where provisioning writes its permission requests, withdrawals and provision.* records; this is the default
 admission = true                     # admit hosts on demand (D69)
 admin_hosts = ["10.0.0.2", "gateway.lab.internal"]   # the policy middleware's admin_hosts
 admission_interval = 3               # seconds between checks of each environment's drafts
@@ -671,7 +637,10 @@ name = "orchestrator-p1"
 token_sha256 = "<64 hex digits>"     # printed by sandbox-science-worker token --out client.token
 projects = ["p1"]
 max_environments = 8                 # live environments across its projects
+document_catalog = false             # the default; true lets it use the document catalog routes
 ```
+
+A settings file has exactly one backend table. For development, `[local]` replaces `[openshell]`: `python` (default: the worker's own interpreter) and `daemon` (default `false`; `true` uses the reconnectable executor, still with no isolation). The optional `[document_catalog]` table bounds the parked [document catalog](#document-catalog-prerequisite).
 
 Run it with `sandbox-science-worker serve --settings worker.toml`. The sandbox's environment needs Python with `ipykernel` and `jupyter_client`. On babbage they come from conda-forge through the [package cache](PACKAGE-CACHE.md), like any other tool.
 
@@ -684,15 +653,6 @@ sandbox-science-harness run --worker http://127.0.0.1:8100 --token-file worker.t
 ```
 
 ## Conformance suite
-
-The unchanged suite passed against both linux/amd64 OpenShell research profiles in
-[Lab23](../.agents/docs/agent-reports/babbage-openshell-lab-23-2026-10-12.md), using frozen
-main `73c07aa`: 23 external cases passed per profile, and 23 local variants were
-intentionally skipped per run. Both actual Python 3.14.8 guests retained declared
-and effective tier 3, with separate stable boot IDs and no isolation-probe findings.
-The lab and its owned fixtures were completely removed. Crypto-base advertised
-Sage, but this suite tested Python only. No other architecture/backend or new
-Sage assertion is implied; capture Lab22 used the separate `b535856` source.
 
 `packages/worker/tests/test_conformance.py` runs the [execution-tools fixtures](specs/tools.md#acceptance-fixtures) through the worker API alone, so it checks any backend without the harness (D52). It covers shell calls, the location and the isolation probe, kernels (state, interrupt, restart, death, streaming, reconnection), output bounds, cancellation, the file tools' confinement and publication. A backend passes only if the probe leaves its declared tier standing. CI runs it against a worker with the local backend that the suite starts. To check a worker that is already running, such as one with the OpenShell backend in a lab, set:
 
@@ -707,14 +667,55 @@ SS_CONFORMANCE_WORKER_URL=http://127.0.0.1:8100 SS_CONFORMANCE_TOKEN_FILE=worker
   SS_CONFORMANCE_ENVIRONMENT=env-1 uv run pytest packages/worker/tests/test_conformance.py
 ```
 
-The local runs are then skipped; setting only some of the variables is an error. Each test works in a new session (`conformance-…`) of the project `conformance`. Its files stay in the sandbox, and its kernels run until the executor ends. Tests that need the local backend's internals, such as a killed executor or a crashed store, are in `test_service.py`; those for the adversarial review of 2026-10-11, some with a stand-in for an executor that research code took over (`hostile_executor.py`), are in `test_robustness.py`.
+The local runs are then skipped; setting only some of the variables is an error. The suite passed against both linux/amd64 OpenShell research profiles, testing Python only, in [Lab23](../.agents/docs/agent-reports/babbage-openshell-lab-23-2026-10-12.md). Each test works in a new session (`conformance-…`) of the project `conformance`. Its files stay in the sandbox, and its kernels run until the executor ends. Tests that need the local backend's internals, such as a killed executor or a crashed store, are in `test_service.py`; those for the adversarial review of 2026-10-11, some with a stand-in for an executor that research code took over (`hostile_executor.py`), are in `test_robustness.py`.
 
-## Not yet done
+## Not built
 
-- **Survival across sandbox or daemon restarts.** Recovery currently uses the sandbox daemon's bounded in-memory journal. Jobs and kernel globals survive worker and bridge restarts, but a new daemon incarnation reports unknown outcomes as `lost`. There is no disk journal for surviving daemon death.
-- **Environment lifecycle.** The worker creates, revises, suspends and deletes sandboxes ([environments](#environments)), and provisions them ([provisioning operations](#provisioning-operations)). Restoring a revision after a failed install, and rebuilding an environment from a lockfile, come next (W3). Policy revisions enter the store only through the operator's command; an approval path from the GUI, with re-authentication for widening (D54), comes later.
-- **Data grants.** Scoped grants of project data, and session containers beside the project container.
-- **Large outputs.** A rich output over the limit is replaced by a note; the spec's spill to a referenced file is not implemented.
-- **Authentication.** Bearer tokens: the pool's own, and [clients' limited to projects](#clients-limited-to-projects). Environment IDs are still shared by the whole pool (see there). The outbound, worker-initiated channel for hosted control (architecture) comes later.
-- **Monitoring.** No connection yet to the monitor or the event store with a hash chain.
-- **Probes across sandboxes.** Two sandboxes with the same boot ID share a kernel, so neither is tier 3; the worker does not compare sandboxes with each other yet.
+- **Survival across sandbox or daemon loss.** Recovery uses the sandbox daemon's bounded in-memory journal. Jobs, calls and kernel globals survive worker and bridge restarts, but a new daemon incarnation reports unknown outcomes as `lost`. There is no disk journal that survives daemon death.
+- **Environment lifecycle.** The worker creates, revises, suspends and deletes sandboxes ([environments](#environments)), and provisions them ([provisioning operations](#provisioning-operations)). Restoring a revision after a failed install, and rebuilding an environment from a lockfile, are not built (W3). Policy revisions enter the store only through the operator's command; there is no approval path from the GUI, with re-authentication for widening (D54).
+- **Data grants.** Scoped grants of project data. (A session can have an environment of its own: the harness opens it with `--dedicated`.)
+- **Large outputs.** A rich output over the limit is replaced by a note; the spec's spill to a referenced file is not built.
+- **Authentication.** Bearer tokens only: the pool's own, and [clients' limited to projects](#clients-limited-to-projects). Environment IDs are shared by the whole pool (see there). The outbound, worker-initiated channel for hosted control (architecture) is not built.
+- **Monitoring.** No connection to the monitor. The worker keeps its own records in its SQLite store; it writes to the policy middleware's event store, with its hash chain, only for provisioning: permission requests (`escalation`), their withdrawals (`denial`) and the `provision.*` records ([provisioning operations](#provisioning-operations)).
+- **Version checks.** No client checks the worker's protocol version ([compatibility](#compatibility)).
+- **Probes across sandboxes.** Two sandboxes with the same boot ID share a kernel, so neither is tier 3; the worker does not compare sandboxes with each other.
+
+## Document catalog prerequisite
+
+This is parked code: the worker serves these routes, but no production caller uses them. The control-side client and delivery code that fed it were removed with the document sync, and are kept on the tag `archive/document-sync-2026-10` ([archived pages](../.agents/docs/archive/README.md)). LD-49 to LD-52 are not built.
+
+The worker can receive a control-owned document catalog in `documents-catalog.sqlite3` (`documents_catalog.py`; shared messages in `contracts/documents.py`). This is durable staging and catalog validation only. It writes no environment files, advances no environment's written revision, and advertises no mirror capability.
+
+Catalog routes require the pool token or a project-scoped client with the explicit boolean `document_catalog = true`. Existing clients default to denial, including status reads. An enabled client sees only its configured projects; other projects return `not_found`. No deployed configuration enables a client automatically. Permission and project checks precede body reads. Metadata requests are limited to 64 KiB and content requests to 352 KiB, including chunked requests, before JSON decoding. All counters are exact JSON integers, digests are lowercase 64-character SHA-256, and unknown fields are refused.
+
+The worker registers these routes when it has a catalog, as `sandbox-science-worker serve` always gives it. Each returns `CatalogStatus`:
+
+| Route | Request and behavior |
+| --- | --- |
+| `GET /v1/document-catalog/{project_id}` | Current committed cursor, target digest and counts, plus explicitly pending staging progress |
+| `POST /v1/document-catalog/{project_id}/snapshots` | `CatalogSnapshot`: reserve one pending generation for this project without changing membership |
+| `POST /v1/document-catalog/{project_id}/pages` | `CatalogSnapshotPage`: contiguous metadata pages, at most 64 live entries, ordered strictly by document ID |
+| `POST /v1/document-catalog/{project_id}/deltas` | `CatalogDelta`: at most 64 contiguous project sequence changes against the exact current cursor, including tombstones; declares the complete resulting target |
+| `POST /v1/document-catalog/{project_id}/content` | `CatalogContentChunk`: canonical base64 for a declared target digest, in aligned contiguous 256 KiB chunks, with only the final chunk shorter |
+| `POST /v1/document-catalog/{project_id}/commit` | The exact `CatalogSnapshot` target: verify the complete target and atomically replace the catalog, retain a receipt and discard staging |
+
+An entry names its document ID, immutable revision, project/session scope, session where applicable, name, digest and UTF-8 byte length. Its path is derived as `documents/<name>.md` or `documents/sessions/<session_id>/<name>.md`; callers cannot supply paths. Content is at most 1 MiB per document, valid UTF-8 without NUL. Empty content uses SHA-256 of the empty byte string and requires no chunk. Content already retained for the same project/digest can be reused; there is no cross-project content lookup.
+
+The version-one manifest is UTF-8 bytes: one compact JSON header with sorted keys and a terminating newline, then the same encoding of each complete live `PublicationEntry`, in strictly increasing document-ID order. All entry fields, including null/default fields, are present. The header contains `protocol: 1`, `project_id`, `catalog_seq`, `entry_count` and `total_content_bytes`. Paths must be unique. `manifest_sha256()` and `canonical_entry()` provide this encoding. The generation ID must be `catalog-<catalog_seq>-<manifest_sha256>`. Catalog sequence orders publication independently of immutable document revision; a promotion may change scope/path without changing the revision's bytes. Deltas carry their own contiguous changes and must produce the declared complete live manifest. Tombstones never appear in a snapshot's target.
+
+Only a complete, verified commit changes membership. Missing pages/chunks, wrong counts or aggregate bytes, digest mismatches, revision rollback, an immutable revision with different bytes, an inexact delta base, and path collisions all leave the previous catalog intact. An omitted document is removed from current catalog membership only at commit. Its durable identity high-water record survives removal, so a later live reintroduction needs a newer revision; delta tombstones retain their actual revision. History has an explicit identity quota and is never silently evicted. These catalog removals delete no sandbox files.
+
+SQLite `FULL` transactions commit the catalog, content membership, revision high-water records and receipt together. Pending pages/chunks survive worker restarts. Identical pending page/chunk retries return `replayed`; altered retries conflict. The most recent 32 committed generation receipts per project retain the original acknowledgement. Status always reports the actual current catalog, while `acknowledged` identifies the committed target a replay refers to, which may be older. Snapshot/delta retries must use the original payload; commit retries use the exact target. After receipt eviction an old generation remains stale and is never reapplied. Page/chunk routes address pending staging only, and return `not_found` after completion or expiry; retry the original begin/delta or commit to recover its receipt.
+
+The optional `[document_catalog]` settings configure logical retained-data bounds:
+
+| Setting | Default |
+| --- | --- |
+| `max_entries`, `max_project_bytes` | 10,000 current entries/project, 256 MiB declared content/project |
+| `max_total_entries`, `max_total_bytes` | 100,000 current entries and 4 GiB declared content across the worker |
+| `max_staged_entries`, `max_staged_bytes` | 20,000 declared target entries and 512 MiB declared content across pending generations |
+| `max_projects`, `max_retained_identities` | 1,024 project catalogs and 100,000 revision high-water identities across the worker |
+| `staging_seconds`, `receipts_per_project` | 900-second fixed staging lifetime, 32 committed receipts/project |
+| `max_pending_requests` | 8 admitted catalog operations, including queued/running SQL |
+
+Reservation is transactional across connections. Stage expiry releases metadata and chunks even when the next request is refused. Tightened limits hold over-budget staging rather than allowing a continued upload or commit; current status stays readable, and a replacement must fit current aggregate quotas. Historical identity capacity is retained; there is no retirement mechanism. These bounds cover logical content/counts, not filesystem high-water usage, WAL size or process RSS; SQLite may retain freed pages. The protocol ceilings are 10,000 entries and 1 GiB declared content per target. Delta staging additionally retains at most 64 changed revision records for tombstones. Catalog SQL uses one private thread with bounded admission, so lock waiters do not consume the worker's default I/O thread pool. A disconnected caller does not cancel an admitted transaction; application cleanup drains it before closing the database.
