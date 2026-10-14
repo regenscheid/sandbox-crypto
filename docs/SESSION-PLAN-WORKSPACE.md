@@ -1,13 +1,12 @@
 # Read-only workspace session plans
 
-Date: 2026-10-12. This backend exposes the bounded current projection from the
-[internal session-plan store](SESSION-PLANS.md). It reads recorded control state;
-it does not create plans, approve work, start research, contact a worker or wake a
-session. GUI polling and MAIN tool integration are independently delivered
-consumers. The authenticated [USER text-editing route](SESSION-PLAN-EDITING.md) and
-[structured editor](SESSION-PLAN-EDITOR.md) are now separately implemented consumers
-with retained drafts and immutable CAS; they do not change this read-only route.
-History pages and approval enforcement remain separate.
+The workspace's plan route returns the bounded current projection of a session's
+plan from the [session-plan store](SESSION-PLANS.md). It reads recorded control
+state; it does not create plans, approve work, start research, contact a worker or
+wake a session. The session view's plan panel polls it ([workspace](WORKSPACE.md#session-plans)).
+USER changes to a plan's text go through the separate
+[plan changes route](SESSION-PLAN-EDITING.md) and its [editor](SESSION-PLAN-EDITOR.md).
+Plan history pages and approval enforcement are not built.
 
 ## Authenticated scope and response
 
@@ -110,22 +109,12 @@ drain. The app's nested cleanup preserves kernel-proxy and shared WorkerClient
 closure after the plan reader settles, including when its close propagates
 cancellation. The app's document stores are separate connection owners.
 
-## Validation boundary
+## Tests
 
-Focused local HTTP and direct-owner tests cover committed live progress,
-closed/scoped history, revised intent, explicit outcomes, authentication and
-logout, full-response refusal, absent versus corrupt state, bounded giant rows,
-registry growth/symlinks/FIFOs, copied-model coherence, exact-byte close/reopen
-ABA, immediate admission, actual HTTP disconnect, cancellation-owned descriptors
-and SQL work, repeated shutdown cancellation and shared-client cleanup order.
-
-These tests use synthetic control activity and local aiohttp composition. They
-establish no browser rendering, model planning, automatic polling, research
-execution, approval enforcement or OpenShell behavior. Root-owned combined
-gates and browser acceptance remain separate from this source milestone.
-
-Local Python 3.13 validation: **47 focused API/ownership cases passed** and
-**242 affected cases passed**, including those 47 plus the existing workspace
-app/API/kernel and core SessionPlans suites. Ruff/format and combined
-workspace/orchestrator Pyright passed. No full repository suite or runtime/browser
-acceptance is claimed by this author milestone.
+`packages/workspace/tests/test_plans.py` covers committed live progress, closed and
+scoped history, revised intent, explicit outcomes, authentication and logout,
+refusal of an oversized response, absent versus corrupt state, bounded giant rows,
+registry growth, symbolic links and FIFOs, close/reopen of the registry with
+identical bytes, immediate admission, HTTP disconnect, cancellation-owned
+descriptors and SQL work, and shutdown order. They use synthetic control activity;
+they do not show browser rendering, model planning or approval enforcement.

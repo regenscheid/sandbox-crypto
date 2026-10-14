@@ -3,7 +3,7 @@
 
 The project's Environments panel is the read-only GUI portion of [CP-26](specs/conda-provisioning.md). It selects only environments in the loaded canonical project registry: the shared default and retained dedicated environments, including those whose sessions are closed. An environment's provisioning queue is project-wide; a session label identifies the requester rather than a private queue.
 
-The frontend is implemented independently of the worker observation DTOs and workspace proxy. Their combined integration, native browser acceptance and actual-worker acceptance are separate delivery gates. This page describes the frontend boundary, not acceptance of the whole CP-26 workflow.
+It reads the [provisioning workspace API](PROVISIONING-WORKSPACE.md). A selected revision's recorded packages and declared licenses load explicitly and page without polling ([API](PROVISIONING-WORKSPACE.md#recorded-packages-at-a-selected-revision)), and two retained lockfiles can be compared ([comparison view](LOCKFILE-DIFFERENCES-VIEW.md)).
 
 ## What the panel shows
 
@@ -17,7 +17,7 @@ Revision history pins a retained window and uses at most eight rows per page. It
 
 A history row's recorded operation ID offers **Load current retained operation**. This explicit request omits the sequence, returns the current retained operation state and its actual sequence, and is labeled as such. It does not reconstruct the operation's state at the selected revision. Subsequent file pages use the newly received exact sequence. No stale request silently falls back or adopts a newer sequence.
 
-There are no approve, deny, install, cancel, rebuild, restore or policy-edit controls. Notes, raw exceptions, complete execution records, installed-license certification, lockfile contents and diffs are outside this view.
+There are no approve, deny, install, cancel, rebuild, restore or policy-edit controls. Notes, raw exceptions, complete execution records, installed-license certification and raw lockfile contents are outside this view.
 
 ## Transport and ownership
 
@@ -29,12 +29,6 @@ The transport uses `no-store`, refuses redirects and bounds the entire response 
 
 The overview polls sequentially every three seconds while mounted and visible, with failure backoff up to thirty seconds. Selected detail is an explicit one-shot read. Visibility changes, unmount, scope selection and logout invalidate late publication; logout initiation also prevents late or newly created transport owners. A 401 clears facts, 404 clears the missing selection, 409 requires explicit re-selection, and unsupported/unavailable states retain only dated previous facts where appropriate. A departing or advancing queue entry makes an old selected queue record visibly historical. Retained history-selected operations remain explicitly pinned current-record observations, with server conflicts still refusing later drift.
 
-## Local validation and remaining gates
+## Tests
 
-The [focused cases](../web/workspace/src/lib/provisioning.test.ts) cover canonical scope refusals, strict DTO and pin coherence, actual streamed-response bounds, ignored header/body abort ownership, hide/unmount/logout and late replies, terminal read settlement, nonvacuous nine-item pagination, explicit current retained records, escaped text and honest license/probe/permission labels. SSR assertions and mocked fetch streams do not establish native browser rendering, actual worker contents or lifecycle behavior.
-
-Local final evidence: 52 focused cases, 746 combined web cases, Svelte/TypeScript with zero errors and warnings, both production builds, 24 post-build math checks, locked npm installation and lock/installed-license checks. No dependencies, backend, worker, contracts, tool grants or model prompt were changed by this frontend slice. The GUI build retains its existing large-chunk advisory. Root owns independent source review, combined gates, browser/worker acceptance, final evidence, fresh exact-head CI and merge. No services, workers, models, VMs or browsers were run by this frontend author.
-
-## Integrated viewer acceptance
-
-Root-owned [OpenShell Lab30](../.agents/docs/agent-reports/babbage-openshell-lab-30-2026-10-13.md) passed on signed clean `220cddd`, with exact corrected reader/GUI parity, real GP/Flint records, separate file approvals, native browser views, offline503 and120 stopped-environment GETs with unchanged SQL. All owned state was removed and independently checked. [PR #110](https://github.com/regenscheid/sandbox-crypto/pull/110) merged at `25159e1` on independently clear signed `70f9d12` after all four fresh checks passed (run `38415726829`). Primary main is clean/synced, locked dependencies checked and tree-identical to the reviewed head. The accepted report/archive remain immutable. The later [Lab31 comparison acceptance](../.agents/docs/agent-reports/babbage-openshell-lab-31-2026-10-13.md) completed on signed `ec1faea`: exact retained GP/Flint comparisons, canonical raw/ref/blob proof, native nine-difference pages in both directions and thirty paired reads while the original VM was Stopped. The first workspace interruption and original tuple/list helper assertion are preserved; source-reviewed root normalization qualifies unchanged complete SQL values, and helper-only `f0e0157` fixes that representation after teardown. All owned state was independently removed. Comparison final archive review/fresh CI delivery remains in progress; unchanged/base package-license visibility and GUI operator actions stay separate.
+The [focused cases](../web/workspace/src/lib/provisioning.test.ts) cover canonical scope refusals, strict DTO and pin coherence, streamed-response bounds, ignored header and body aborts, hide, unmount, logout and late replies, read settlement, pagination, explicit current retained records, escaped text and honest license, probe and permission labels. The panel was checked in a browser against a real worker in [Lab30](../.agents/docs/agent-reports/babbage-openshell-lab-30-2026-10-13.md), the comparison in [Lab31](../.agents/docs/agent-reports/babbage-openshell-lab-31-2026-10-13.md) and the package pages in [Lab32](../.agents/docs/agent-reports/babbage-openshell-lab-32-2026-10-13.md).

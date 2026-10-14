@@ -1,40 +1,11 @@
 # Read-only provisioning workspace API
 
-## Recorded packages at a selected revision
-
-`GET /api/v0/projects/{project}/environments/{environment}/provisioning/observations/revisions/{revision}/packages?pin={raw_record_sha256}&offset=0&limit=8`
-returns `RevisionPackagePage`. The worker counterpart uses `/v1/environments/`
-and required `project_id`. The canonical raw record hash and full retained lockfile
-reference bind each page. Stale pins refuse with 409, scope failures with 404;
-workspace responses are `no-store`.
-
-Inventories include unchanged/base packages and retained unmanaged revisions,
-independently of an install's files or comparison differences. Entries retain
-canonical ecosystem/name/location ordering, package metadata and declared Conda
-and optional [pip licenses](PIP-LOCKFILE-LICENSES.md). Missing or ambiguous pip
-declarations remain unknown. AGPL text matching reports a declaration;
-it does not certify compliance or installation state. Missing, skipped,
-unsupported or unproved sources stay held. Source URLs are escaped text.
-
-The browser explicitly loads a selected revision and follows bounded next/previous
-pages, without inventory polling. Selection, hide and logout drain the existing
-physical fetch/body owner. Deadlines are worker 8s/client 9s/proxy 10s/browser 12s.
-The worker shares the comparison reader's two global/one environment read lane,
-with 8 MiB lockfiles, 16 KiB entry records, 16 MiB index accounting and 64 KiB
-responses. Reads perform no guest work or keepalive. Component/full gates and
-actual-main source review pass. Root-owned Lab32 passed worker/workspace/native
-inventory paging, all 62 unchanged entries and six GP additions. Separately
-qualified stopped-VM reads preserve actual retired endpoints and unchanged SQL
-between fresh proofs for the original VM. All owned lab state is removed and
-independently audited. The [Lab32 report/archive](../.agents/docs/agent-reports/babbage-openshell-lab-32-2026-10-13.md)
-retains the original helper failure and qualified result; final delivery review
-and fresh CI remain.
-
 The workspace exposes recorded provisioning observations for a project's shared
 environment and retained dedicated environments. This is the read-only API part of
-CP-26 in the [provisioning specification](specs/conda-provisioning.md). It does not
+CP-26 in the [provisioning specification](specs/conda-provisioning.md); the project
+view's [Environments panel](PROVISIONING-WORKSPACE-VIEW.md) shows it. It does not
 submit work, approve permissions, cancel an operation, rebuild an environment or
-resume a guest. Browser rendering and real OpenShell acceptance are separate.
+resume a guest.
 
 All routes require the original authenticated workspace login. The server selects
 its configured `job_worker`; the browser cannot supply a worker address, token,
@@ -51,6 +22,8 @@ dedicated environment for retained read-only history; this never reopens them.
 | `.../operations/{operation}/files?seq=N&offset=0&limit=8` | Exact resolved-file page, total and continuation; every page must retain the selected sequence |
 | `.../revisions?after=-1&limit=8&target=N` | Retained revision summaries, explicit first retained revision and pinned target; omit `target` only for the first page |
 | `.../revisions/{revision}/probes?pin=SHA&offset=0&limit=8` | Selected exact revision-record SHA-256 and probe page with total and continuation |
+| `.../revisions/{revision}/packages?pin=SHA&offset=0&limit=8` | A page of the revision's recorded packages and declared licenses ([below](#recorded-packages-at-a-selected-revision); [details](REVISION-PACKAGES-WORKSPACE.md)) |
+| `.../lockfile-diff?before=N&before_pin=SHA&after=N&after_pin=SHA&offset=0&limit=8` | The differences between two pinned retained lockfiles ([details](LOCKFILE-DIFF-WORKSPACE.md)) |
 
 Success forwards the strict bounded worker DTO without adding session ownership or
 changing the meaning of its fields. The proxy checks returned project/environment,
@@ -74,6 +47,30 @@ are 422, and unavailable transport, corruption or bounds are 503. Success and er
 are `no-store`. Proxy errors include their own receipt-time `observed_at`; the
 workspace's existing authentication guard can reject a request before this route.
 An error is never converted into an empty queue or a successful observation.
+
+## Recorded packages at a selected revision
+
+`GET /api/v0/projects/{project}/environments/{environment}/provisioning/observations/revisions/{revision}/packages?pin={raw_record_sha256}&offset=0&limit=8`
+returns `RevisionPackagePage`. The worker counterpart uses `/v1/environments/`
+and required `project_id`. The canonical raw record hash and full retained lockfile
+reference bind each page. Stale pins refuse with 409, scope failures with 404;
+workspace responses are `no-store`.
+
+Inventories include unchanged/base packages and retained unmanaged revisions,
+independently of an install's files or comparison differences. Entries retain
+canonical ecosystem/name/location ordering, package metadata and declared Conda
+and optional [pip licenses](PIP-LOCKFILE-LICENSES.md). Missing or ambiguous pip
+declarations remain unknown. AGPL text matching reports a declaration;
+it does not certify compliance or installation state. Missing, skipped,
+unsupported or unproved sources stay held. Source URLs are escaped text.
+
+The browser explicitly loads a selected revision and follows bounded next/previous
+pages, without inventory polling. Selection, hide and logout drain the existing
+physical fetch/body owner. Deadlines are worker 8s/client 9s/proxy 10s/browser 12s.
+The worker shares the comparison reader's two global/one environment read lane,
+with 8 MiB lockfiles, 16 KiB entry records, 16 MiB index accounting and 64 KiB
+responses. Reads perform no guest work or keepalive. Checked on OpenShell in
+[Lab32](../.agents/docs/agent-reports/babbage-openshell-lab-32-2026-10-13.md).
 
 ## Receipt-time authority and actual ownership
 
@@ -119,39 +116,24 @@ these owners before closing the shared worker client, including when cancellatio
 is raised after the proxy finishes cleanup. No lifecycle lock is held across a
 network request.
 
-## Scope and validation
+## Scope
 
-The worker/contracts observation prerequisite supplies bounded compact projections;
-the workspace never fetches a giant full operation merely to trim it. Two-lockfile
-differences, declared-license summaries across revisions, complete error/notes and
-execution history, middleware answer/deadline history, USER provisioning mutations
-and all permission-answer authority remain outside this slice. The wider workspace
-boundary is described in [WORKSPACE.md](WORKSPACE.md), and worker behavior in
-[WORKER.md](WORKER.md).
+The worker's observation routes supply bounded compact projections; the workspace
+never fetches a full operation merely to trim it. Declared-license summaries across
+revisions, complete error notes and execution history, the middleware's answer and
+deadline history, USER provisioning changes and any authority to answer permissions
+are outside this API. The wider workspace boundary is described in
+[WORKSPACE.md](WORKSPACE.md), and worker behavior in [WORKER.md](WORKER.md).
 
-Focused tests use synthetic records, disposable files and in-process HTTP peers.
-They cover exact pages, unknown fields, scope/sequence/window/hash mismatches,
-authentication and registry ABA, size/chunk/deadline refusal, no redirect/fallback,
-admission, actual thread/descriptor lifetime and repeated-cancellation shutdown.
-They do not exercise a real worker, package manager, provider, model or VM. Root-owned
-combined gates, independent review and real browser/OpenShell acceptance remain
-delivery requirements.
+The tests (`packages/workspace/tests/test_provisioning.py`, `test_lockfile_diffs.py`,
+`test_revision_packages.py`) use synthetic records, disposable files and in-process
+HTTP peers. They cover exact pages, unknown fields, scope, sequence, window and hash
+mismatches, authentication and registry replacement, size, chunk and deadline
+refusal, no redirect or fallback, admission, thread and descriptor lifetime and
+shutdown under repeated cancellation. The viewer was checked against a real worker
+in [Lab30](../.agents/docs/agent-reports/babbage-openshell-lab-30-2026-10-13.md),
+and the lockfile comparison in [Lab31](../.agents/docs/agent-reports/babbage-openshell-lab-31-2026-10-13.md).
 
-The corrected author checkpoint on Python 3.13.15 passes 211 affected tests, including the 79
-new proxy/transport/registry cases, whole workspace/orchestrator typing, scoped Ruff
-and format checks, locked synchronization and the 75-distribution license check.
-The companion observation-contract source was pinned before and after the affected
-run from its parallel worktree; no worker code was executed. Existing WorkerClient
-method ASTs remain unchanged, with only the bounded observer snapshot/recheck seam
-added. These local results are distinct from root's later integrated gates/runtime.
-
-## Integrated viewer acceptance
-
-Root-owned [OpenShell Lab30](../.agents/docs/agent-reports/babbage-openshell-lab-30-2026-10-13.md) passed on signed clean `220cddd`, with exact corrected reader/GUI parity, real GP/Flint records, separate file approvals, native browser views, offline503 and120 stopped-environment GETs with unchanged SQL. All owned state was removed and independently checked. [PR #110](https://github.com/regenscheid/sandbox-crypto/pull/110) merged at `25159e1` on independently clear signed `70f9d12` after all four fresh checks passed (run `38415726829`). Primary main is clean/synced, locked dependencies checked and tree-identical to the reviewed head. The accepted report/archive remain immutable. The later [Lab31 comparison acceptance](../.agents/docs/agent-reports/babbage-openshell-lab-31-2026-10-13.md) completed on signed `ec1faea`: exact retained GP/Flint comparisons, canonical raw/ref/blob proof, native nine-difference pages in both directions and thirty paired reads while the original VM was Stopped. The first workspace interruption and original tuple/list helper assertion are preserved; source-reviewed root normalization qualifies unchanged complete SQL values, and helper-only `f0e0157` fixes that representation after teardown. All owned state was independently removed. Comparison final archive review/fresh CI delivery remains in progress; unchanged/base package-license visibility and GUI operator actions stay separate.
-
-
-The existing read-only detail decoder also accepts the bounded explicit `upgrade`
-action and labels it in the operation panel; omitted legacy action remains install.
-This adds no new fetch owner or action/permission control. The production worker
-and direct MAIN handler update path passed [Lab36](../.agents/docs/agent-reports/babbage-openshell-lab-36-2026-10-14.md);
-that run is backend acceptance and does not claim a new browser acceptance run.
+The operation detail carries the bounded `upgrade` action ([explicit upgrades](PROVISIONING-UPGRADES.md)),
+and the panel labels it; a record without an action is an install. Viewing it adds
+no action or permission control.
