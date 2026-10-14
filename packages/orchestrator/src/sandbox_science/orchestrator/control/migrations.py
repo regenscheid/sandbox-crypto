@@ -844,6 +844,12 @@ def _run_tree(schema: Schema) -> None:
         "CHECK (parent IS NULL OR length(CAST(parent AS BLOB)) BETWEEN 1 AND 256)",
         "ALTER TABLE runs ADD COLUMN delegation TEXT "
         "CHECK (delegation IS NULL OR length(CAST(delegation AS BLOB)) BETWEEN 1 AND 128)",
+        # A column check sees one column, so a trigger ties the three together.
+        "CREATE TRIGGER runs_place BEFORE INSERT ON runs "
+        "WHEN (NEW.role = 'main') != (NEW.parent IS NULL) "
+        "OR (NEW.parent IS NULL) != (NEW.delegation IS NULL) "
+        "BEGIN SELECT RAISE(ABORT, "
+        "'a delegated run names its parent and its delegation; a main run neither'); END",
     ):
         schema.execute(statement)
 

@@ -40,6 +40,7 @@ from typing import Annotated, Final, Literal, cast
 from pydantic import (
     Field,
     JsonValue,
+    StringConstraints,
     TypeAdapter,
     ValidationError,
     computed_field,
@@ -166,6 +167,8 @@ def _summary(value: JsonValue | None) -> dict[str, JsonValue]:
 
 
 RunRole = Literal["main", "delegated"]
+RunName = Annotated[str, StringConstraints(pattern=f"^{_RUN_NAME.pattern}$")]
+"""The name a session keeps a run's record under (``run_name``)."""
 """A run's role in its session's tree of runs (PD-32): the root answers the user, and a
 delegated run works for its parent."""
 
@@ -176,8 +179,9 @@ class RunRecord(Contract):
     run_id: str
     """The run's ID, which starts every operation ID of its tool calls."""
     role: RunRole = "main"
-    parent: str | None = None
-    """For a delegated run, the name its parent's record is kept under."""
+    parent: RunName | None = None
+    """For a delegated run, the name its parent's record is kept under: a run of the
+    same session that started before it."""
     delegation: Identifier | None = None
     """For a delegated run, the delegation it carries out."""
     prompt_provenance: Annotated[
@@ -255,6 +259,10 @@ class RunRecord(Contract):
             raise ValueError(
                 "a delegated run names its parent and its delegation; a main run neither"
             )
+        # Names begin with the start time, so a parent named before its child cannot be
+        # the child itself or one of its descendants.
+        if self.parent is not None and not self.parent < run_name(self.started_at, self.run_id):
+            raise ValueError("a delegated run's parent started before it")
         return self
 
     @model_validator(mode="after")
@@ -280,7 +288,7 @@ class RunEntry(Contract):
     run_id: Identifier
     started_at: datetime
     role: RunRole = "main"
-    parent: str | None = None
+    parent: RunName | None = None
     """The name of its parent's record, for a delegated run."""
 
 
@@ -492,6 +500,21 @@ class ProjectStore:
                 raise ProjectError(
                     ErrorKind.NOT_FOUND, f"project {project_id!r} has no session {session_id!r}"
                 )
+            known = tx.sql.execute(
+                "SELECT 1 FROM runs WHERE project_id = ? AND session_id = ? AND name = ?",
+                (project_id, session_id, entry.name),
+            ).fetchone()
+            if known is not None:
+                raise ProjectError(
+                    ErrorKind.CONFLICT, f"session {session_id!r} has a run {entry.name!r} already"
+                )
+            if record.parent is not None and not self._knows_run(
+                tx.sql, project_id, session_id, record.parent
+            ):
+                raise ProjectError(
+                    ErrorKind.INVALID_REQUEST,
+                    f"the parent {record.parent!r} is no run of session {session_id!r}",
+                )
             try:
                 tx.sql.execute(
                     "INSERT INTO runs (project_id, session_id, name, run_id, started_at, record, "
@@ -508,11 +531,26 @@ class ProjectStore:
                         record.delegation,
                     ),
                 )
-            except sqlite3.IntegrityError:
+            except sqlite3.IntegrityError as exc:
                 raise ProjectError(
-                    ErrorKind.CONFLICT, f"session {session_id!r} has a run {entry.name!r} already"
+                    ErrorKind.INVALID_REQUEST, f"the store refuses run {entry.name!r}: {exc}"
                 ) from None
         return entry
+
+    @staticmethod
+    def _knows_run(db: sqlite3.Connection, project_id: str, session_id: str, name: str) -> bool:
+        """Whether the session has a run of that name: kept, or still running (its
+        events). A parent's record is kept after its children's, so this is no foreign
+        key."""
+        return (
+            db.execute(
+                "SELECT 1 FROM runs WHERE project_id = ? AND session_id = ? AND name = ? "
+                "UNION ALL SELECT 1 FROM run_events WHERE project_id = ? AND session_id = ? "
+                "AND run = ? LIMIT 1",
+                (project_id, session_id, name, project_id, session_id, name),
+            ).fetchone()
+            is not None
+        )
 
     def runs(self, project_id: str, session_id: str) -> list[RunEntry]:
         """The runs a session keeps, oldest first."""

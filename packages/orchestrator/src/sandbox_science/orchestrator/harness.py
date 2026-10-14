@@ -153,6 +153,10 @@ class RunRequest:
     delegation: str | None = None
     """A delegated run's delegation. Nothing starts delegated runs yet."""
 
+    def __post_init__(self) -> None:
+        if (self.parent is None) != (self.delegation is None):
+            raise ValueError("a delegated run names its parent and its delegation together")
+
     @property
     def role(self) -> RunRole:
         return "main" if self.parent is None else "delegated"
