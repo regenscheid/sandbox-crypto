@@ -102,3 +102,28 @@ def test_events_are_numbered_and_never_changed(tmp_path: Path) -> None:
         for statement in ("UPDATE run_events SET data = '{}'", "DELETE FROM run_events"):
             with pytest.raises(sqlite3.IntegrityError, match="written once"):
                 db.execute(statement)
+
+
+def test_a_run_offers_delivers_and_writes_only_while_it_holds_the_session(
+    tmp_path: Path,
+) -> None:
+    projects, state = store(tmp_path)
+    state.post("p", "s", "m-1", "Hello.", author="user")
+    for refused in (
+        lambda: state.offer("p", "s", ["m-1"], "run-a"),
+        lambda: state.deliver("p", "s", ["m-1"], "run-a", holding=True),
+        lambda: state.append("p", "s", "run-a", "model", {"turn": 1}, holding=True),
+    ):
+        with pytest.raises(ControlError) as lost:
+            refused()
+        assert lost.value.kind == "conflict"
+    assert not state.known("p", "s", "run-a")
+    state.acquire("p", "s", "run-a", "holder-a")
+    assert state.known("p", "s", "run-a")
+    state.offer("p", "s", ["m-1"], "run-a")
+    assert state.append("p", "s", "run-a", "model", {"turn": 1}, holding=True) == 1
+    state.deliver("p", "s", ["m-1"], "run-a", holding=True)
+    assert [m.state for m in state.messages("p", "s")] == ["delivered"]
+    state.release("p", "s", "holder-a")
+    assert state.known("p", "s", "run-a")  # its events remain
+    projects.close()

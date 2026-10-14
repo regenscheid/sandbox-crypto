@@ -5,7 +5,9 @@ The run service's records (docs/specs/run-service.md):
 
 - **Messages** (RS-4). The user writes a message to a session; it waits ``queued`` until
   a run delivers it, and is marked ``delivered`` with that run only after the run's
-  record is saved (RS-9). A message ID makes a retried write safe.
+  record is saved (RS-9). A message ID makes a retried write safe. A run marks the
+  messages it offers, so what it saw is known without its events; a new message queues
+  the session's held messages again (RS-12).
 - **The run lease** (RS-5). One run of a session at a time, from the command line or the
   service. A lease whose holder stops renewing it for ``lease_seconds`` has expired.
 - **Run events** (RS-13, RS-14). What a run did, appended as it happens, numbered from 1
@@ -129,6 +131,12 @@ class RunState:
                 )
             except sqlite3.IntegrityError as error:
                 raise ControlError(INVALID_REQUEST, f"the message is refused: {error}") from None
+            # Writing again is resuming: the session's held messages go with this one.
+            db.execute(
+                "UPDATE session_messages SET state = 'queued', updated_at = ? "
+                "WHERE project_id = ? AND session_id = ? AND state = 'held'",
+                (now, project, session),
+            )
             return ChatMessage(
                 message_id=message_id,
                 number=cast(int, cursor.lastrowid),
@@ -161,10 +169,26 @@ class RunState:
             rows = tx.sql.execute(query + " ORDER BY number LIMIT ?", (*parameters, limit))
             return [_message(row) for row in rows.fetchall()]
 
-    def deliver(self, project: str, session: str, ids: list[str], run: str) -> None:
-        """Mark queued messages delivered by ``run``, once its record is saved (RS-9)."""
+    def offer(self, project: str, session: str, ids: list[str], run: str) -> None:
+        """Mark queued messages offered to ``run``, which must hold the session."""
+        with self.control.write() as tx:
+            _holding(tx.sql, project, session, run)
+            tx.sql.executemany(
+                "UPDATE session_messages SET offered = ? WHERE project_id = ? "
+                "AND session_id = ? AND message_id = ? AND state = 'queued'",
+                [(run, project, session, message_id) for message_id in ids],
+            )
+
+    def deliver(
+        self, project: str, session: str, ids: list[str], run: str, *, holding: bool = False
+    ) -> None:
+        """Mark queued messages delivered by ``run``, once its record is saved (RS-9).
+        With ``holding``, only while ``run`` holds the session: a run that lost its lease
+        delivers nothing, and its messages go to the next run."""
         now = self._now().isoformat()
         with self.control.write() as tx:
+            if holding:
+                _holding(tx.sql, project, session, run)
             tx.sql.executemany(
                 "UPDATE session_messages SET state = 'delivered', run = ?, updated_at = ? "
                 "WHERE project_id = ? AND session_id = ? AND message_id = ? "
@@ -233,14 +257,24 @@ class RunState:
     # --- Run events ------------------------------------------------------------------
 
     def append(
-        self, project: str, session: str, run: str, kind: EventKind, data: dict[str, JsonValue]
+        self,
+        project: str,
+        session: str,
+        run: str,
+        kind: EventKind,
+        data: dict[str, JsonValue],
+        *,
+        holding: bool = False,
     ) -> int:
-        """Append an event to the run's; its number."""
+        """Append an event to the run's; its number. With ``holding``, only while
+        ``run`` holds the session."""
         text = json.dumps(data, ensure_ascii=False, allow_nan=False)
         if len(text.encode()) > MAX_EVENT_BYTES:
             raise ControlError(INVALID_REQUEST, f"an event is at most {MAX_EVENT_BYTES} bytes")
         with self.control.write() as tx:
             db = tx.sql
+            if holding:
+                _holding(db, project, session, run)
             (last,) = db.execute(
                 "SELECT coalesce(max(seq), 0) FROM run_events "
                 "WHERE project_id = ? AND session_id = ? AND run = ?",
@@ -251,6 +285,17 @@ class RunState:
                 (project, session, run, last + 1, self._now().isoformat(), kind, text),
             )
             return last + 1
+
+    def known(self, project: str, session: str, run: str) -> bool:
+        """Whether the run wrote an event or holds the session."""
+        with self.control.read() as tx:
+            found = tx.sql.execute(
+                "SELECT 1 FROM run_events WHERE project_id = ? AND session_id = ? AND run = ? "
+                "UNION ALL SELECT 1 FROM run_leases WHERE project_id = ? AND session_id = ? "
+                "AND run = ? LIMIT 1",
+                (project, session, run, project, session, run),
+            ).fetchone()
+        return found is not None
 
     def ended(self, project: str, session: str, run: str) -> bool:
         """Whether the run's ``stopped`` event is written."""
@@ -289,6 +334,15 @@ def _session(db: sqlite3.Connection, project: str, session: str) -> None:
     ).fetchone()
     if found is None:
         raise ControlError(NOT_FOUND, f"project {project!r} has no session {session!r}")
+
+
+def _holding(db: sqlite3.Connection, project: str, session: str, run: str) -> None:
+    found = db.execute(
+        "SELECT 1 FROM run_leases WHERE project_id = ? AND session_id = ? AND run = ?",
+        (project, session, run),
+    ).fetchone()
+    if found is None:
+        raise ControlError(CONFLICT, f"run {run} no longer holds session {session!r}")
 
 
 def _message(row: tuple[object, ...]) -> ChatMessage:

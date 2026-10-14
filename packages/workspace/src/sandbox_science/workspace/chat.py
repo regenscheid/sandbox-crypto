@@ -126,6 +126,8 @@ async def events(request: web.Request) -> web.Response:
     def read() -> str:
         session_record(context.projects, project, session)
         state = RunState(context.documents)
+        if not state.known(project, session, run):
+            raise ProjectError(ErrorKind.NOT_FOUND, f"session {session!r} has no run {run!r}")
         found = state.events(project, session, run, after=after, limit=limit)
         lease = state.lease(project, session)
         status: Literal["active", "ended", "interrupted"] = "interrupted"

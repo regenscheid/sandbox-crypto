@@ -114,3 +114,10 @@ async def test_a_runs_events_are_read_by_cursor_with_its_state(
     state.append("p1", "a", "run-x", "stopped", {"stopped": "answered"})
     assert (await (await client.get(events)).json())["state"] == "ended"
     await error_of(await client.get(events, params={"limit": "201"}), 400, "invalid_request")
+
+
+async def test_the_events_of_an_unknown_run_are_not_found(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    client = await workspace(aiohttp_client, state_dir, static_dir)
+    await error_of(await client.get(SESSION + "/runs/no-such-run/events"), 404, "not_found")

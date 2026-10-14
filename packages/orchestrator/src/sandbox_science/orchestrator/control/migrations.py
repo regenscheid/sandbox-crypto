@@ -596,6 +596,7 @@ def _run_service(schema: Schema) -> None:
     created_at TEXT NOT NULL,
     state TEXT NOT NULL CHECK (state IN ('queued', 'delivered', 'refused', 'held')),
     run TEXT CHECK (run IS NULL OR length(CAST(run AS BLOB)) BETWEEN 1 AND 256),
+    offered TEXT CHECK (offered IS NULL OR length(CAST(offered AS BLOB)) BETWEEN 1 AND 256),
     reason TEXT CHECK (reason IS NULL OR length(CAST(reason AS BLOB)) <= 1024),
     updated_at TEXT NOT NULL,
     CHECK ((state = 'delivered') = (run IS NOT NULL)),
