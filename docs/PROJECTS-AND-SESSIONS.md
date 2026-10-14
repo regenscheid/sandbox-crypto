@@ -1,6 +1,6 @@
 # Projects, sessions, and persistent containers
 
-Date: 2026-10-10. The ownership model is confirmed by the user; storage and provisioning mechanisms below are proposed and untested.
+The ownership model is confirmed by the user. The sections up to [As built](#as-built-the-harnesss-project-records) describe the design; that section says what is built: project records with a default environment, dedicated session environments, shared project data kept in step across environments ([worker](WORKER.md#shared-data-across-environments)), recorded package provisioning ([worker](WORKER.md#provisioning-operations)) and idle suspension ([worker](WORKER.md#idle-suspension)). Its last list names what is not built.
 
 ## Confirmed model
 
@@ -37,7 +37,7 @@ Logical environment IDs survive replacement of a concrete container. Record both
 
 ## Data sharing
 
-Use a project data namespace with session workspaces and a shared area. Proposed paths are logical paths inside execution environments, not paths on the orchestrator host:
+Use a project data namespace with session workspaces and a shared area. The paths are logical paths inside execution environments, not paths on the orchestrator host; the worker implements `shared/` and `sessions/<session-id>/`:
 
 ```text
 project/
@@ -46,9 +46,9 @@ project/
   documents/              living documents, kept by the platform at their current revisions
 ```
 
-The `documents/` area holds each living document as a Markdown file, in every environment of the project; its history stays in the control store, and edits made to the files are merged into it ([living documents](specs/living-documents.md), D65).
+In the design, the `documents/` area holds each living document as a Markdown file, in every environment of the project; its history stays in the control store, and edits made to the files are merged into it ([living documents](specs/living-documents.md), D65). This is not built: an earlier, unwired document sync was removed from main and is kept on the tag `archive/document-sync-2026-10` ([archived pages](../.agents/docs/archive/README.md)).
 
-A separate session container can access project data through scoped mounts, a storage API, or explicit transfer. The same API should resolve project references on local and remote pools. Cross-host sessions cannot assume access to a host-local volume. Kubernetes storage access modes and the selected storage driver constrain which mounts can be shared. [Persistent volumes](https://kubernetes.io/docs/concepts/storage/persistent-volumes/)
+A separate session container can access project data through scoped mounts, a storage API, or explicit transfer; the worker built the transfer option, copying `shared/` between environments at call boundaries (D79). The same API should resolve project references on local and remote pools. Cross-host sessions cannot assume access to a host-local volume. Kubernetes storage access modes and the selected storage driver constrain which mounts can be shared. [Persistent volumes](https://kubernetes.io/docs/concepts/storage/persistent-volumes/)
 
 Confirmed access model: each workbook has its own working directory plus shared project storage. Read shared inputs, write the session workspace, and publish versioned results into the shared area. Support deliberate edits of shared files/directories with atomic publication or conflict/version checks; avoid silent last-writer-wins overwrites. Data sharing within the project's existing grant should not require approval for every file.
 
@@ -111,7 +111,9 @@ sandbox-science-harness project revise --state-dir state --project p1 --policy s
 
 Not yet built:
 - restoring a revision after a failed install, and rebuilding an environment from a lockfile (Conda provisioning, CP-13, CP-20);
-- capture and restore with a read-only root filesystem (D48, deferred by the user).
+- capture and restore with a read-only root filesystem (D48, deferred by the user);
+- the `documents/` area in environments (see [data sharing](#data-sharing));
+- scoped grants of project data beyond the shared-area sync, and read-only evidence snapshots for verification reproductions.
 
 ## Backend feasibility checks
 

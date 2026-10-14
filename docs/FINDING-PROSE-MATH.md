@@ -1,6 +1,6 @@
 # MAIN explanation math
 
-This D82/LD-53–55 slice checks the durable explanation field of session MAIN
+D82 math checks (LD-53 to LD-55) cover the durable explanation field of session MAIN
 `fix` and `rebut` responses to review-origin findings. It extends
 [document](MATH-CHECKS.md) and [comment](COMMENT-MATH.md) checks using the same
 isolated renderer, quotas, immutable attempts, closing rounds and saved-run ACK.
@@ -9,7 +9,7 @@ Renderer configuration remains operator-owned and defaults to unavailable.
 Reviewer assessments, USER responses, platform prose and mechanical diagnostic
 prose are excluded. A mechanical finding cannot become another prose source.
 Ledger fields, model repair proposals, idle dispatch and automatic compaction
-remain open. This checks renderability, not scientific truth.
+are not built. This checks renderability, not scientific truth.
 
 ## Source and ordinary correction
 
@@ -80,35 +80,18 @@ child resolution remain independent.
 
 Focused fixtures cover source authority, cross-run replay, parent independence,
 body/reviewer races, immutable original history, the initial empty-macro context,
-failed-edit budgets,
-unavailable retries, stale closing ACK, receipt/queue rollback, bounded corrupt
-reads, unknown legacy isolation and populated source-neutral job migration with
-child FKs/rollback. Workspace API and read-only rendering fixtures cover historical
-scope and original/current attribution. The final signed source `f7bb0a3` passed
-independent adversarial review. Final
-combined gates passed 9,730 Python tests (43 opt-in skips, two existing warnings),
-443 web tests, 24 post-build math checks and all locked/static/license/protocol
-checks/builds. The response-only replay correction is covered by the final Python
-run; completed web results/assets remain byte-identical. An interrupted predecessor
-Python run is not final evidence.
-
-Root-owned [native browser acceptance](../.agents/docs/agent-reports/finding-prose-math-2026-10-12.md)
-passed six exact child states, original/current explanation and actor history,
-ordinary MAIN correction, separate mechanical versus scientific confirmation and
-session isolation. The fixture's overall review stays explicitly inconclusive;
-confirming one scientific parent does not claim all fixture findings were reviewed.
-Independent read-only SQL verified twelve body hashes and thirteen finished jobs.
-The tab, transient server, port, marked state and private login file were removed;
-complete teardown was verified at 15:37:06.734290 UTC. Seventy-one built assets,
-helper and source were unchanged. Fresh PR CI remains required before merge.
+failed-edit budgets, unavailable retries, stale closing ACK, receipt/queue rollback,
+bounded corrupt reads, unknown legacy isolation and populated source-neutral job
+migration with child FKs/rollback. Workspace API and read-only rendering fixtures
+cover historical scope and original/current attribution. Checked in the browser in
+[finding prose math acceptance](../.agents/docs/agent-reports/finding-prose-math-2026-10-12.md).
 
 `.agents/labs/response_math.py` builds marked disposable synthetic state using
-actual configured local KaTeX without worker or model calls. Root owns the browser
-server, acceptance evidence and complete teardown; the helper provides main-fix
-and confirmation actions for live refresh checks.
+actual configured local KaTeX without worker or model calls. It provides `main-fix`,
+`confirm` and `audit` actions for live refresh checks.
 
-The subsequent [project-macro slice](PROJECT-MACROS.md#verification-boundary)
-adds exact project/anchored contexts, ambiguous-context holds and stale setting
-confirmation guards. Its lazy current-head refresh retains source ownership,
-failed-block reflag budgets and the shared closing/save-ACK boundary; it adds no
-idle scheduler, renderer auto-configuration or additional eligible prose.
+[Project macros](PROJECT-MACROS.md) add exact project/anchored contexts,
+ambiguous-context holds and stale setting confirmation guards. Their lazy
+current-head refresh keeps source ownership, failed-block reflag budgets and the
+shared closing/save-ACK boundary; it adds no idle scheduler, renderer
+auto-configuration or other eligible prose.

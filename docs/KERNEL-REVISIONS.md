@@ -61,8 +61,11 @@ the two supported languages in that session, as observed at completion. Cell and
 restart tool summaries include the kernel revision fields. A retained ordinary
 tool result names kernels that predate the current revision and explains that
 loaded state is retained until an explicit restart. These summaries are visible to
-the agent and in the GUI's retained tool transcript. There is no automatic live
-GUI broadcast or cross-session notification transport in this slice.
+the agent and in the GUI's retained tool transcript. The workspace also polls a
+session's running kernels through the observation route below
+([workspace kernels](WORKSPACE-KERNELS.md)), and stateful MAIN runs are told about
+kernels that predate a package change made from another session
+([kernel-notice delivery](KERNEL-NOTICE-DELIVERY.md)).
 
 `POST /v1/kernels/status` accepts only:
 
@@ -118,8 +121,9 @@ without the scoped kernel protocol fail visibly as `unsupported`.
 HTTP deadline, an 8 KiB response/error limit and no redirects. It checks exact
 response environment/session scope and the existing unique-language/current-revision
 coherence rules. It never falls back to explicit `/status` when observation is
-unavailable. This is a transport prerequisite only: no GUI poller, cross-session
-notification inbox, agent injection or automatic kernel restart is enabled.
+unavailable. The workspace's kernel panel is its caller; nothing restarts a kernel
+automatically. MAIN notices use the separate
+[lineage route](KERNEL-NOTICE-LINEAGE.md).
 
 A same-incarnation worker restart preserves a previously recorded exact birth pin
 and kernel globals. First observation of a kernel that was already running,
@@ -130,49 +134,26 @@ matches the worker's retained revision association. Sandbox/incarnation loss kee
 the existing lifecycle and state-loss behavior. Confirmed environment deletion
 forgets only that environment's birth/epoch metadata.
 
-## Acceptance boundary
+## Tests and labs
 
-Focused local tests use only the existing executor test backend and disposable
-prefixes. They cover real Jupyter kernels retaining globals across a managed fake
-install, waiting for linking, new-session and explicit-restart pins, scoped HTTP
-status, durable worker restart, delayed/returning fingerprints, collision and
-corruption refusal, and owned startup cancellation. Local tests are not OpenShell
-runtime acceptance.
+Local tests use the executor test backend and disposable prefixes. They cover real
+Jupyter kernels keeping globals across a managed fake install, waiting for linking,
+new-session and explicit-restart pins, scoped HTTP status, durable worker restart,
+delayed or returning fingerprints, collision and corruption refusal, owned startup
+cancellation, and, for observation, the read-only SQL state, an active package hold,
+a paused kernel birth, the write-lock timeout, connection and lifecycle races,
+cancellation and admission bounds, and HTTP scope, body, deadline and redirect
+refusals.
 
-For root-owned disposable CP-F7 acceptance:
+On OpenShell, [Lab25](../.agents/docs/agent-reports/babbage-openshell-lab-25-2026-10-12.md)
+(`.agents/labs/kernel_revision.py`) checked that a kernel keeps its globals and start
+revision across a real package install, a new kernel starts at the new revision, and
+both survive a same-VM worker restart until an explicit kernel restart.
+[Lab26](../.agents/docs/agent-reports/babbage-openshell-lab-26-2026-10-12.md)
+(`.agents/labs/kernel_observation.py`) checked that observation neither starts nor
+wakes an environment, that an idle stop completes during continuous observation, and
+that kernels and state-loss disclosure behave as described after startup recovery and
+ordinary resume. Worker startup recovery reconnects remembered daemon endpoints
+before serving the API.
 
-1. Start session A's Python kernel; set a synthetic global such as `cp12_value =
-   1729`. Retain its execution, kernel generation/start revision, daemon and VM
-   identities.
-2. In the same disposable environment, use the existing permitted provisioning
-   path to install a package not already present (for example `networkx` if the
-   selected minimal image lacks it). Retain the exact operation, successful probe
-   and changed revision. Do not weaken the package gate or reuse real credentials.
-3. Query A's scoped kernel status and run `print(cp12_value)`. Its original start
-   must remain older than the current revision. Start B's first Python cell and
-   verify its start/current revisions match the new revision. Query an empty
-   session and an unauthorized project; neither may disclose A or B.
-4. Gracefully restart only the disposable worker service. Requery A and its global;
-   the exact original start/generation and same daemon/VM must remain. Then
-   explicitly restart A and verify its new start is current and the old global is
-   gone. Preserve the old execution's immutable kernel pin.
-5. Tear down all disposable resources and archive exact source/runtime identities,
-   results and cleanup evidence. Root owns this lab; no author-started services,
-   VMs or models are part of local validation.
-
-Root-owned [OpenShell Lab25](../.agents/docs/agent-reports/babbage-openshell-lab-25-2026-10-12.md) passed on signed `629e27d`: Python 3.14.8, real networkx 3.7 provisioning from revision 0 to 1, retained A globals/start, fresh B start, same-VM worker restart and explicit kernel restart. The helper and evidence passed independent review; complete teardown was independently verified at 20:34:35.276855 UTC. This is sequential CP-F7 kernel-revision continuation acceptance, not a new concurrent-linking/overlap rerun. Exact combined gates, fresh CI and merge are recorded centrally. Automatic recovery/restoration,
-uninstall/upgrade, package UI and live cross-session notification remain separate
-backlog work.
-
-For root-owned disposable observation acceptance, first query a managed environment
-with no connected executor and verify `unavailable` without a start or wake. After
-an explicit cell establishes a kernel, observe its exact retained start/current
-revision and check another session is empty and a foreign project is refused.
-Observe repeatedly across a managed idle suspension: ordinary activity/busy counts
-must not advance, suspension must still complete, and subsequent observations must
-remain unavailable without reconnecting. Explicit status may use its existing wake
-path afterward. Retain source and VM/channel identities and complete teardown;
-[OpenShell Lab26](../.agents/docs/agent-reports/babbage-openshell-lab-26-2026-10-12.md) now passes on signed `a6bb469`, including actual gateway-confirmed idle stop during continuous observations, thirty subsequent unavailable reads without wake, same-VM/boot/kernel continuity through startup recovery and ordinary resume with state-loss disclosure. Complete teardown is retained in its archive. Worker startup recovery independently reconnects remembered daemon endpoints before serving the API; restart alone is not a detached-channel probe. Local focused tests
-cover the read-only SQL state, active package hold, paused kernel birth, actual
-write-lock timeout, connection/lifecycle races, cancellation and admission bounds,
-and actual HTTP scope/body/deadline/redirect refusals.
+Not built: automatic restoration of packages after a failed install, and uninstall.

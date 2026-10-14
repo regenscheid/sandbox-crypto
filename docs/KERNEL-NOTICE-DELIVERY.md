@@ -1,13 +1,16 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Explicit MAIN kernel-notice delivery
 
-Implemented source boundary, 2026-10-13; independent final review, combined gates,
-real-worker acceptance and delivery are separate. This slice connects existing
+`KernelDeliveryController`
+([kernel_delivery.py](../packages/orchestrator/src/sandbox_science/orchestrator/kernel_delivery.py))
+tells a MAIN run, before a model call, that one of its session's kernels started
+before the environment's latest package revision (CP-12). It connects the worker's
 [passive lineage](KERNEL-NOTICE-LINEAGE.md) and the [durable inbox](KERNEL-NOTICES.md)
-only to explicitly started stateful MAIN runs. It adds no public route, tool,
+to explicitly started stateful MAIN runs: the CLI installs it when a run has a
+`--state-dir` and a recorded project and session. It adds no public route, tool,
 default grant, scheduler, system-prompt version, restart or extra closing round.
-Stateless runs retain their previous path. Scientific outcomes, plan fences and
-other notice delivery/ACK semantics remain in their existing owners.
+Stateless runs get no kernel notices. Scientific outcomes, plan fences and other
+notice delivery and ACK rules belong to their own owners.
 
 ## Control provenance and private state
 
@@ -21,7 +24,9 @@ It finishes before planning pins its dependent registry snapshot. Closed session
 cannot baseline or enroll. Existing USER plan editing remains logical-session CAS;
 this token grants no retrospective cross-request lifetime fence to that endpoint.
 
-`KernelBindings` retains one immutable random binding ID per logical project and
+`KernelBindings` ([kernel_notice_bindings.py](../packages/orchestrator/src/sandbox_science/orchestrator/kernel_notice_bindings.py),
+`kernel-notice-bindings.sqlite3` and `kernel-notice.key` in the state directory)
+retains one immutable random binding ID per logical project and
 session, independently of lifetime rotation. A private random 32-byte key, created
 exclusively with mode 0600 and file/directory fsync, authenticates the exact trusted
 endpoint and authorization configuration. Its domain-separated HMAC also binds
@@ -126,22 +131,19 @@ other-notice ACKs keep their save-first ordering; cancellation observed before
 that phase skips them. An ACK already admitted before a later interruption may
 finish, and no rollback is claimed. Cleanup owns all actual work through completion.
 
-## Local checks and remaining acceptance
+## Tests and scope
 
-Focused scripted-model/store/CLI tests cover successful and failed calls, actual
-fsynced run round trips, earlier success followed by failure, unchanged tool/system
-inputs, historical context under unavailable proof, fresh-proof ACK refusal,
-close/reopen/config/VM changes, private registry loss and all sidecar families,
-partial and concurrent initialization, bounded 20 MiB corrupt values, copied
-metadata, pre/post-admission cancellation, repeated cleanup and renewal during a
-blocked save. The original strict tuple round-trip failure and independent
-receipt/transcript, copied-model and inbox-loss failures are retained separately
-from corrected passing logs. Local validation does not claim real-worker or
-external-model acceptance. Root owns combined gates, Lab29, complete teardown,
-immutable acceptance archives and fresh CI before merge.
+Scripted-model, store and CLI tests cover successful and failed calls, actual
+fsynced run round trips, earlier success followed by failure, unchanged tool and
+system inputs, historical context under unavailable proof, fresh-proof ACK refusal,
+close/reopen, configuration and VM changes, private registry loss and all sidecar
+families, partial and concurrent initialization, bounded 20 MiB corrupt values,
+copied metadata, cancellation before and after admission, repeated cleanup and
+renewal during a blocked save. Delivery through a real worker, including
+failure, cancellation, lifetime refusal and idle stop with ordinary resume, was
+checked on OpenShell in
+[Lab29](../.agents/docs/agent-reports/babbage-openshell-lab-29-2026-10-13.md).
 
-The final scoped affected run passes 426 cases in 4.49 seconds. Whole-orchestrator
-and new-test Pyright, changed-file Ruff/format and all 75 installed-distribution
-license checks pass. No full suite, service, provider, actual model, worker or VM
-was started by this author task; scripted models and disposable local stores were
-used for the boundary checks.
+There is no idle scheduler or wake, no automatic reconciliation after a VM or
+incarnation replacement, no routing to delegated runs and no complete notice
+history.

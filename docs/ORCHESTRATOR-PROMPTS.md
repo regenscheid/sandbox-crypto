@@ -1,347 +1,288 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Orchestrator prompts and durable planning
 
-**Design and implementation boundaries, 2026-10-12; initial audit at `fe5f4d7`.** This document inventories
-what the harness actually sends to models and proposes independently written
-system/stock prompts, a planning phase and automatic durable progress updates.
-The initial document-only freeze changed no runtime behavior. The narrow
-capability corrections, stateful MAIN planning, five explicit original research
-framings and general small-scale trial guidance are described below; external
-catalog loading and unsupported lifecycle prompts remain proposals. The existing
-[plans/delegation specification](specs/plans-and-delegation.md) and
-[skills specification](specs/skills.md) remain drafts; this design does not silently
-approve all their open questions. Standing authorization for autonomous work must
-not acquire a new approval gate merely because a plan is useful.
+This page lists what the harness sends to models, describes the MAIN agent's plan
+tools, and keeps the design proposals for prompts and lifecycle support that are
+not built. The as-built sections come first; everything under
+[Proposals (not built)](#proposals-not-built) is design, not running code. The
+requirement for a planning phase and live plan progress is confirmed
+([D86](DECISIONS.md)); the [plans and delegation](specs/plans-and-delegation.md)
+and [skills](specs/skills.md) specifications remain drafts, and this page does not
+approve their open questions. Standing authorization for autonomous work does not
+acquire an approval gate because a plan is useful.
+
+## Prompt inventory
+
+Every prompt below is original text written for this project (see
+[Evidence and reimplementation boundary](#evidence-and-reimplementation-boundary)).
+IDs are the version strings in the code.
+
+| Input | ID in code | Source | When it is sent |
+| --- | --- | --- | --- |
+| MAIN base system | `sandbox-main-2` (`prompt_bundle.py` `BASE_VERSION`) | [loop.py](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py) `SYSTEM_PROMPT` | Every MAIN run, unless the caller supplies a custom `system` |
+| MAIN planning guidance | `sandbox-main-plan-1` | [plan_tools.py](../packages/orchestrator/src/sandbox_science/orchestrator/plan_tools.py) `GUIDANCE` | Appended when the six plan tools are offered (stateful MAIN runs) |
+| Research templates | `sandbox-stock-intake-1`, `sandbox-stock-literature-1`, `sandbox-stock-experiment-1`, `sandbox-stock-proof-audit-1`, `sandbox-stock-report-1` | [stock_prompts.py](../packages/orchestrator/src/sandbox_science/orchestrator/stock_prompts.py) | Only with `--research-template` ([research framing](STOCK-RESEARCH-PROMPTS.md)) |
+| MAIN assembly | `sandbox-main-bundle-1`, or `sandbox-main-bundle-2` with a template | [prompt_bundle.py](../packages/orchestrator/src/sandbox_science/orchestrator/prompt_bundle.py) `assemble_main` | Provenance of every MAIN run ([MAIN provenance](MAIN-PROMPT-PROVENANCE.md)) |
+| Offered tool descriptions and schemas | Pinned by hash, not versioned | `tools.py` `SPECS`, `SAGE`, `PDF_SPECS`, `ADMIT_HOSTS` and `Toolbox` (`restart_kernel`); `jobs.py` `JOB_SPECS`; `provision.py` `PROVISION_SPECS`; `documents/tool.py` and `documents/annotation_tools.py` `SPECS`; `consistency/controller.py` `AUTHOR_SPECS`; `plan_tools.py` `SPECS` | Every model call, filtered by the worker's features and the run's capabilities |
+| Platform notices | Not versioned | `loop.py` `_requests`, `_reviews`, `_plans` and `_run_task` | User-role messages for document work requests, job completions, reviewer findings and counts, plan reread requirements and closing math findings |
+| Kernel package notice | Receipt version 1 | [kernel_notice_receipts.py](../packages/orchestrator/src/sandbox_science/orchestrator/kernel_notice_receipts.py) `NOTICE_PROSE_V1` | At most one per stateful MAIN run ([kernel-notice delivery](KERNEL-NOTICE-DELIVERY.md)) |
+| Job watcher | `sandbox-job-watcher-1` | [jobs.py](../packages/orchestrator/src/sandbox_science/orchestrator/jobs.py) `WATCHER_PROMPT`; `watcher_prompt.py` | Each due check-in when a watcher alias is configured ([background jobs](BACKGROUND-JOBS.md), [watcher provenance](WATCHER-PROMPT-PROVENANCE.md)) |
+| Consistency reviewer | Rubric `sandbox-consistency-1`; assembly `sandbox-reviewer-bundle-1` | [consistency/rubric.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/rubric.py) `RUBRIC`; `consistency/runner.py` `SPECS` (five read-only review tools) | Each reviewer call ([consistency review](CONSISTENCY-REVIEW.md), [reviewer provenance](REVIEWER-PROMPT-PROVENANCE.md)) |
+| Display math repair | `workspace-display-repair-1` | [workspace/mathrepair.py](../packages/workspace/src/sandbox_science/workspace/mathrepair.py) `SYSTEM_PROMPT`; `workspace/repair_prompt.py` | An opt-in repair request from the workspace ([repair provenance](DISPLAY-REPAIR-PROVENANCE.md)) |
+
+What each input does:
+
+- **MAIN base.** Covers research execution through the configured worker (control-side
+  document, review, job and policy bookkeeping run in the control service), honest
+  reporting, small pilots before large computations ([pilot guidance](PILOT-COMPUTATIONS.md)),
+  network admission and approval failures, and untrusted document text. Only
+  `request_text` in a platform-delivered work request is the user's instruction.
+- **Tool descriptions.** These are model-facing product guidance and need the same
+  review as system text. `start_job` says that recovery after a worker or bridge
+  restart needs the original executor daemon and sandbox, and that confirmed daemon
+  or VM loss reports unknown outcomes as `lost` without resubmitting the command.
+- **Platform notices.** Fixed framings in the loop, followed by bounded JSON data.
+  They are not versioned or pinned; the saved transcript keeps the text actually
+  sent. Delivered notice IDs are tracked separately from fetched ones and
+  acknowledged only after the run is saved.
+- **Watcher.** No tools. It returns `{"state":"fine"|"needs_attention","note":…}`;
+  a failed check wakes the waiting MAIN run. It cannot cancel a job or judge
+  scientific correctness.
+- **Reviewer.** Versioned rubric, pinned snapshot, read-only evidence tools, strict
+  finish and decision handling, and confirmation read/CAS guards.
+- **Display repair.** A separate call with no tools for one expression, bounded and
+  sanitized. The system text is a permitted MIT adaptation of the user's own wrapper.
+  A repair is display help, never a stored source change, a proof or a confirmation
+  of a mechanical finding.
+- **Model adapter.** [model.py](../packages/orchestrator/src/sandbox_science/orchestrator/model.py)
+  is provider-neutral, with OpenAI-compatible tool calls, an optional token limit and
+  a bounded response. MAIN has no context budget, compaction or retry.
+- **Run records.** Saved runs keep the rendered messages and the prompt provenance;
+  failed runs keep fixed failure metadata and partial outcomes
+  ([projects.py](../packages/orchestrator/src/sandbox_science/orchestrator/projects.py) `RunRecord`).
+
+The development and test [LocalBackend](../packages/worker/src/sandbox_science/worker/backends.py)
+runs its executor beside the worker with isolation tier 0, so MAIN must not infer a
+remote host, VM or sandbox from a tool name. It describes location and isolation
+only from worker-returned evidence; the [CLI](../packages/orchestrator/src/sandbox_science/orchestrator/cli.py)
+distinguishes absent isolation evidence from a measured tier. Production policy is
+enforced in code, not promised by a system message. Operators developing this
+repository may use ordinary local tools; that is outside the product's research
+execution path and is no exception that lets research code run in the orchestrator.
+
+## Implemented stateful MAIN planning tools
+
+The [session plan core](SESSION-PLANS.md) backs six tools: `plan_read`,
+`plan_create`, `plan_revise`, `plan_activate`, `plan_progress` and `plan_finish`.
+Progress statuses are `in_progress`, `completed`, `blocked` and `skipped`; there is
+no separate step-start tool. [plan_tools.py](../packages/orchestrator/src/sandbox_science/orchestrator/plan_tools.py)
+builds trusted MAIN attribution from the run's recorded project and session, run ID
+and model alias, and records the resolved model on each mutation when known. Model
+arguments cannot select USER, another session or a delegated grant. Each mutation
+has an explicit operation ID; a replay returns its original receipt, never advances
+the current-read pin, and a changed resolved model conflicts rather than replacing
+the original actor. The tool-call identity is kept in the run's tool record.
+
+The [CLI](../packages/orchestrator/src/sandbox_science/orchestrator/cli.py) offers the
+tools only to a stateful MAIN run with a recorded open session. Stateless runs, the
+watcher and the reviewer get no plan tools or guidance. The `sandbox-main-plan-1`
+guidance is appended to the MAIN system message only when the tools are offered. It
+asks substantive work to create or resume a short plan and record progress as work
+happens; small factual answers need no plan.
+
+**Activation and approval.** Activating a draft records workflow state under
+existing task authorization; it is neither USER approval nor a permission grant.
+The tools allow reading and revising an `awaiting_approval` plan but refuse its
+activation, progress, abandonment or replacement, since no USER approval path
+exists. Progress requires an active plan and exact plan, step and status CAS.
+Finishing requires the core's explicit goal outcome (`achieved`,
+`partially_achieved` or `not_achieved`) and terminal assertions for all current
+steps; blocked or skipped steps cannot produce `achieved`. Plan text and evidence
+are attributed assertions, with no scientific verification, permission expansion
+or automatic link from effects to steps.
+
+**Session fence.** Each operation rereads the run's session record under a short
+project lock and compares it with the record read at run start. The lock precedes
+control SQL; neither is held across a worker await. Closing the session, or closing
+and reopening it (a reopen records a new `opened_at` and `kernel_notice_lifetime`),
+ends the old run's plan effects. Other sessions opening or closing do not, nor does
+a policy revision: the worker enforces the project's current policy on each effect.
+A new run can read the logical session's history. This is a local admission fence,
+not an atomic control-store-to-guest launch guarantee; admitted work may settle
+without automatic cancellation or kernel restart.
+
+**Reread fence.** At active safe points the tools read a bounded summary and at most
+four scoped event pages of 16 items. Another actor's event (including a USER edit
+through the [workspace](SESSION-PLAN-EDITING.md)), an unread existing plan, corrupt
+history or an incomplete event scan requires a current reread before new effects.
+`plan_read(current)` returns the full bounded body and, for every current step, a
+compact status, fingerprint, attribution and CAS projection; long notes, evidence
+and history are explicit pages. The read satisfies the fence only after a successful
+model call includes that result and its ref, status, progress and event pins still
+match. Historical reads, mutation or replay receipts, a failed model call, or a read
+and an effect in the same assistant batch do not satisfy it. A GUI read or save does
+not clear it.
+
+**Tool classes.** [Toolbox](../packages/orchestrator/src/sandbox_science/orchestrator/tools.py)
+uses the finite classes in `plan_tools.py`: `READ_TOOLS` (file, document and review
+reads, job list/status/wait and provisioning status), `CANCEL_TOOLS` (`cancel_job`)
+and `EFFECT_TOOLS`. Unclassified tools get no exemption. Writes, execution,
+publication, provisioning, host admission and PDF helpers need the plan fence; PDF
+helpers are effects because they execute in the worker. Plan results are returned
+as complete JSON, not clipped like ordinary text.
+
+**Limits.** Tool requests are at most 96 KiB UTF-8 and refuse unknown authority or
+scope fields, non-strict counters and malformed text. Plan bodies keep the core's
+64 KiB limit; a complete tool response is at most 256 KiB. History requests at most
+eight items and shrinks the page to fit the response while keeping its target
+cursor. A read that cannot fit refuses rather than omitting steps or clearing the
+reread requirement.
+
+**Loop.** [The loop](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py)
+checks plan state before each model call and immediately before accepting a final
+answer, including after closing review and math awaits. A pending reread allows at
+most one more turn within the remaining budget, then stops with `user_message` and
+no stale final answer. It adds no reviewer or math response rounds. Plan commits are
+durable during the run, independent of a later model failure, cancellation or
+failed run save; progress is not a claim that an interrupted effect succeeded.
+Threaded plan work is drained before the borrowed store closes, including on
+cancellation during setup.
+
+Tests in [test_plan_tools.py](../packages/orchestrator/tests/test_plan_tools.py) use
+scripted models; they check host and tool enforcement, not live-model planning
+quality. The [planning evaluation helper](PLANNING-EVALUATION.md) measures a fixed
+synthetic task through the same path. The read-only
+[workspace view](SESSION-PLAN-WORKSPACE.md), [USER body editing](SESSION-PLAN-EDITING.md)
+and the [structured editor](SESSION-PLAN-EDITOR.md) are the other consumers of the
+plan core.
+
+## Prompt provenance
+
+Each model role records which input it used, as content identity rather than
+authority or proof of provider behavior:
+
+- **MAIN** ([MAIN provenance](MAIN-PROMPT-PROVENANCE.md)). One bounded owned
+  system and tool bundle per run, checked immediately before each model call.
+  `RunRecord.prompt_provenance` records the component versions, byte lengths and
+  hashes, the rendered system pin and canonical ordered tool pins. `sandbox-main-2`
+  labels exact built-in content, including identical caller text; it does not attest
+  to who supplied it. Other custom text has no catalog version. Old `sandbox-main-1`
+  records keep their text and pins. Dynamic task, tool and notice messages are
+  outside the bundle.
+- **Research framing** ([research framing](STOCK-RESEARCH-PROMPTS.md)). A selected
+  template is pinned between the base and the planning guidance in
+  `sandbox-main-bundle-2`. Selection is trusted caller configuration; task,
+  document and tool text cannot select or change it. There is no automatic
+  classifier, external loader, interpolation or extra call.
+- **Watcher** ([watcher provenance](WATCHER-PROMPT-PROVENANCE.md)). The exact
+  system text, `sandbox-job-watcher-1` and empty-tool pins are stored on each
+  call reservation, atomically with its budget admission. Legacy rows stay unknown.
+- **Reviewer** ([reviewer provenance](REVIEWER-PROMPT-PROVENANCE.md)). The exact
+  `sandbox-consistency-1` rubric text and ordered five-tool pins are stored on each
+  call reservation, atomically with its counters.
+- **Display repair** ([repair provenance](DISPLAY-REPAIR-PROVENANCE.md)). An
+  optional static descriptor on the repair response and process-local cache entry;
+  it is lost on eviction or restart.
+
+## Not built
+
+There is no prompt catalog or external prompt loader, no skill loading
+([skills](specs/skills.md)), no USER plan approval, no link from effects to plan
+steps, no liveness record for interrupted steps, no context budget or compaction,
+no resume prompt and no durable record of display-repair calls or spend.
+Delegation is not built: an earlier, unwired prototype, including its delegated-child
+prompt and controller, is kept on the tag `archive/delegation-2026-10`
+([archived pages](../.agents/docs/archive/README.md)), and delegation will be rebuilt
+as a role of the one loop ([refactoring plan](../.agents/refactor-plan/PLAN.md),
+Phase 4 item 7). [D86](DECISIONS.md) (amended 2026-10-14) records that the unused
+`awaiting_approval` state and the display-repair descriptor are to be removed; both
+are still in the code.
+
+## Authority and lifecycle checks that prompts cannot supply
+
+These design rules hold for what is built and for the proposals below.
+
+- **Execution and approval:** worker policy, grants, required plan approval, artifact
+  scope and positive role checks belong in code before dispatch. A plan, skill,
+  child outcome or tool output cannot approve permissions or choose credentials.
+- **Planning phases:** a genuine required-approval mode narrows actual tool grants;
+  a prompt-only read-only promise is insufficient. Do not introduce that mode when
+  existing user authorization permits execution.
+- **Reviewer and math:** retain exact snapshots, full required reads, body/context CAS,
+  immutable response history and mechanical origin exclusions. Newer artifacts and
+  completed plan steps cannot self-confirm findings. Warn-only mechanical findings
+  keep their shared bounded closing and save-after-delivery semantics.
+- **Delivery:** notices count as delivered only after a successful model call and
+  are acknowledged only after the run is durably saved. Failed first calls and
+  cancellation do not consume unseen user, plan, job, review or kernel notices.
+  Failed later calls may retain earlier delivered data. A committed plan mutation
+  survives either.
+- **Delegation:** isolated fresh child context, exact track/parent/run IDs, limits,
+  cancellation, scoped kernels and immutable raw and validated outcomes need code.
+  D81 places delegated runs within the session environment with kernels of their own.
+- **Resume and handoff:** a worker restart is not necessarily kernel loss. Preserve
+  original attempts and births and unknown outcomes; reconcile before retrying side
+  effects. There is no idle wake.
+- **Compaction:** retain the pre-compaction messages and a versioned summary record,
+  scope/cursor and exact retained anchors. Approvals and user instructions, open
+  questions, budgets, pending effects, the current plan and unresolved findings must
+  remain visible. A failed summary does not advance a cursor or drop source context.
+  Child contexts receive pinned briefs, not the parent's unbounded transcript.
+- **Capacity and provider failure:** harness errors keep a safe failed run, with no
+  automatic retry. Any future retry must enforce configured or user-authorized
+  timing, bounded attempts and model selection, with no silent alias switch and with
+  tool effects reconciled first. Prompts cannot implement a durable timer or the
+  authority to wake an offline session.
+- **Refusal, budgets and recovery:** an approval wait, policy denial, missing tool,
+  exhausted model budget and environment `needs_recovery` are distinct conditions.
+  Keep their fixed diagnostics and partial evidence; never ask a model to bypass a
+  denied operation, silently choose another model, clear recovery state or infer
+  approval from a question answer. Budget exhaustion records a run limit, not a
+  fabricated completed or blocked step. Independent authorized work may continue;
+  effects of unknown outcome are not retried automatically. A genuine unresolved
+  obstacle can be recorded as blocked with its reason.
 
 ## Evidence and reimplementation boundary
 
-The existing [Claude Science investigation](../.agents/docs/agent-reports/claude-science.md),
+The [Claude Science investigation](../.agents/docs/agent-reports/claude-science.md),
 especially its planning, delegation, review and user-edit sections, records
 versioned plans, independent tracks, scoped specialist roles, explicit fix claims
 and notifications to reread edited material. The
 [OpenScience Desktop investigation](../.agents/docs/agent-reports/openscience-desktop.md)
-records loaded-skill provenance, review triggers that exclude child/review sessions,
-editable documents and distinct observed versus proposed functionality. Both are
-dated **source-inspection evidence**, not fresh runtime tests or parity proof.
+records loaded-skill provenance, review triggers that exclude child and review
+sessions, editable documents, and the difference between observed and proposed
+functionality. Both are dated source-inspection evidence, not runtime tests or
+parity proof.
 
-The useful behaviors are the reference. No Claude Science prompt, code, skill
-text, schema, migration or asset is reproduced here (D03/D11/D56). The drafts below
-are original wording derived from this project's requirements and current tool
+The useful behaviors are the reference. No Claude Science prompt, code, skill text,
+schema, migration or asset is reproduced here (D03, D11, D56). The prompts and
+drafts are original wording derived from this project's requirements and tool
 boundaries. OpenScience's permissive license does not remove the need to verify
-behavior or justify any future reuse; this document imports nothing from it.
+behavior or justify any future reuse; nothing here is imported from it.
 
-## Actual prompt inventory
+## Proposals (not built)
 
-This table retains the initial `fe5f4d7` source audit and its gaps. The
-implemented sections below supersede the corrected capability text, absent
-single-MAIN planning tools and missing MAIN/watcher/reviewer input provenance. It is not an
-installed prompt library:
+Everything in this section is design. None of it is installed, and the drafts are
+not runtime instructions.
 
-| Input | Exact source seam | Current behavior and gap |
-| --- | --- | --- |
-| MAIN system | [loop.py](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py), `SYSTEM_PROMPT` at line 23; `run_task` at 286 | One default system message plus user task. Covers worker use, network/policy notices and untrusted document context. It has no planning/progress/delegation instructions or runtime tools. The sentence saying every tool runs in the sandbox is inaccurate: control-side document, review and job bookkeeping tools exist. Research execution goes through the configured worker; that does not establish a particular host placement or isolation tier. |
-| Offered tool descriptions/schemas | [tools.py](../packages/orchestrator/src/sandbox_science/orchestrator/tools.py):64–235, `Toolbox` at274; [documents/tool.py](../packages/orchestrator/src/sandbox_science/orchestrator/documents/tool.py); [jobs.py](../packages/orchestrator/src/sandbox_science/orchestrator/jobs.py):54 | Descriptions and JSON schemas are sent with each model call by `model.py:102`. They are executable product guidance and need the same review as system text. `start_job` still claims worker restarts lose jobs until a daemon exists, although daemon recovery is implemented. Correct the description without promising survival after actual VM/daemon loss. |
-| Platform notice templates | [loop.py](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py):91–137,150–178,191–258 | Work requests, job completions, reviewer findings/counts and closing mechanical findings enter model context. Successfully delivered IDs are tracked separately from fetched/input-only notices. No plan-change notice exists. Kernel inbox prerequisites remain separate from delivery wiring. |
-| Background watcher | [jobs.py](../packages/orchestrator/src/sandbox_science/orchestrator/jobs.py):34,540–575 | Tool-free bounded JSON progress assessment; failure wakes the waiting MAIN agent. It cannot cancel a job or determine scientific correctness. Its call reservations/model usage are retained. |
-| Consistency reviewer | [consistency/rubric.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/rubric.py):4–6; [runner.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/runner.py):279–310,388 | Versioned original rubric, pinned snapshot, read-only evidence tools, strict finish/decision handling, bounds and confirmation read/CAS guards. This is the actual runner. |
-| Display math repair | [workspace/mathrepair.py](../packages/workspace/src/sandbox_science/workspace/mathrepair.py):47–60,225–230,338 | Separate no-tool model call for one expression, bounded and sanitized. Existing file records a permitted MIT adaptation from the user's own wrapper; this document copies none of that prompt text. Repair is display assistance, never a stored source change, mathematical proof or mechanical finding confirmation. |
-| Model adapter | [model.py](../packages/orchestrator/src/sandbox_science/orchestrator/model.py):50,69–141 | Provider-neutral protocol and OpenAI-compatible tool calls; optional token limit and bounded response. No general role prompt catalog, prompt-bundle provenance, planning router or automatic compactor. MAIN has no implemented generic context budget/compaction threshold. |
-| Retained run/audit | [projects.py](../packages/orchestrator/src/sandbox_science/orchestrator/projects.py):153,432; [cli.py](../packages/orchestrator/src/sandbox_science/orchestrator/cli.py):341 | Saved messages retain rendered prompt text; fixed failed-run metadata and partial outcomes survive ordinary failures. Save/fsync precedes notice ACK. This is not a durable running-plan or delegated-run scheduler. |
+### Prompt catalog and assembly
 
-At that initial audit the source tree had no plan CRUD/progress tools or durable plan store,
-no delegated-run launcher/track authority, no durable question router, and no
-implemented skill catalog/load tools or general context compactor. Tool-role
-restrictions in existing document/reviewer code are useful enforcement seams;
-they do not prove a complete delegated runtime exists. Running external Codex
-agents while developing this repository is not an implementation of its product
-agent delegation.
+Maintain a small first-party catalog with explicit ID and version, applicable role,
+required implemented tools, byte budget and hash. Resolve one immutable bundle at run
+start; retain the IDs and hashes, rendered messages, offered tool schema hashes,
+requested alias and resolved model, and effective settings. Prompts never carry
+credentials, private worker URLs or tokens, or hidden authorization material.
 
-The explicit development/test [LocalBackend](../packages/worker/src/sandbox_science/worker/backends.py)
-runs its executor beside the worker with isolation tier 0. MAIN must not invent a
-remote host, VM or sandbox guarantee from the tool name. Use the worker's actual
-location and measured isolation evidence; [CLI isolation reporting](../packages/orchestrator/src/sandbox_science/orchestrator/cli.py)
-already distinguishes absent evidence from a measured tier. Production policy
-requirements remain enforced in code, not promised by a system message.
-Trusted operator development of this repository may use ordinary local developer
-tools; that is outside the product's research execution path. It is not a prompt
-exception permitting research code or untrusted payloads to run in the orchestrator.
+Assembly order is fixed: platform authority and boundaries, role instructions,
+capability facts from the actual tool whitelist, optional planning or execution mode,
+then bounded context and the authenticated user request. Skills, catalogs and pinned
+artifacts are separately attributed data or procedure inputs, not platform authority.
+Use deterministic budgets and mark omitted context; never silently truncate a policy
+boundary, plan version pin or unresolved finding. Do not require one provider's
+system-message layout.
 
-### Implemented narrow capability corrections
-
-A separate child of the initial design freeze corrects only three existing text
-inputs: MAIN now distinguishes configured-worker research execution from control
-bookkeeping and requires actual location/isolation evidence; `start_job` qualifies
-worker/bridge recovery on original daemon/sandbox continuity and preserves lost
-outcomes without automatic resubmission; the reviewer docstring points to the
-implemented reviewer in `consistency/` (the historical `reviews.py` helper has
-since been removed). The inventory above records the earlier audit
-and its findings. No tool schema, whitelist, policy, dispatch, closing or model-call
-behavior changes in that correction slice. The later planning and narrow MAIN
-input-provenance integrations are separate. The wider catalog and delegation
-capabilities remain proposals.
-
-[Actual-model-input fixtures](../packages/orchestrator/tests/test_prompt_inputs.py)
-exercise control-side document reads with and without job capability. They inspect
-the system message and offered tool descriptions at both model calls, preserve
-document injection text as tool data, and prove no plan/delegate tools appear.
-Together with affected job/trigger tests, 30 cases pass. These scripted tests check
-host assembly and capability boundaries, not a live model's instruction adherence.
-
-### Implemented stateful MAIN planning tools
-
-The separate [SessionPlans core](SESSION-PLANS.md) now backs six ordinary tools:
-`plan_read`, `plan_create`, `plan_revise`, `plan_activate`, `plan_progress` and
-`plan_finish`. [plan_tools.py](../packages/orchestrator/src/sandbox_science/orchestrator/plan_tools.py)
-constructs trusted MAIN attribution from the explicit run's recorded
-project/session, run ID and model alias. The actual resolved model is recorded on
-each mutation when known. Model arguments cannot select USER, another session or
-delegated grants. Each mutation has an explicit operation ID; replay preserves
-its original historical receipt, never advances the current-read pin, and a
-changed resolved model conflicts rather than replacing the original actor. Actual
-tool-call identity is retained separately in the run tool record.
-
-[CLI](../packages/orchestrator/src/sandbox_science/orchestrator/cli.py) installs the
-adapter only for a stateful MAIN run with a resolved recorded open session. A
-stateless run, watcher or reviewer gets no plan tools or planning guidance. The
-versioned original `sandbox-main-plan-1` guidance is appended to the actual MAIN
-system input only when these tools are offered. It asks substantive work to
-create/resume a short plan and record progress as work happens; small factual
-answers need no ceremonial plan. The stored system message preserves the wording
-actually used. The narrow MAIN input-provenance implementation below now pins
-those bytes and actual offered tools; general catalog assembly remains separate.
-
-Draft activation records workflow state under existing task authorization. It is
-neither USER approval nor a permission grant. The wrapper conservatively permits
-read/revision of `awaiting_approval` but refuses activation, progress, abandonment
-or replacement as a way around the missing trusted USER decision path. Progress
-requires an active plan and exact plan/step/status CAS. Terminal completion uses
-the core's explicit goal outcome and all-current-step guard; blocked/skipped cannot
-produce an achieved outcome. Plan text/evidence remain attributed assertions,
-without scientific verification, permission expansion or automatic effect-to-step
-lineage.
-
-Each adapter operation rereads the run's own session record under a short project
-lock and compares it with the record read when the run started. The lock precedes
-control SQL; neither is held across a worker await. Closing the session, or
-closing and reopening it, invalidates the old run adapter, since a reopen records
-a new `opened_at` and `kernel_notice_lifetime`. Other sessions opening or closing
-in the same project do not. Neither does a policy revision: the worker enforces
-the project's current policy on each effect.
-An explicitly started new run can read retained logical-session history. This is
-a local admission fence, not an atomic control-store-to-guest launch guarantee;
-already admitted work may settle without automatic cancellation or kernel restart.
-
-Active safe points read a bounded summary and at most four scoped event pages of
-16 items. Another actor's event, unread pre-existing plan, corrupt history or an
-incomplete event scan requires a current reread before new effects. A complete
-`plan_read(current)` returns the full bounded body and compact status, fingerprint,
-attribution and CAS projection for every current step. Long notes/evidence/history
-are explicit pages. The read satisfies the fence only after a successful model
-call actually includes that result and its exact ref/status/progress/event pins
-still match. Historical reads, mutation/replay receipts, a failing model call or
-read→effect in the same assistant batch cannot satisfy it.
-
-[Toolbox](../packages/orchestrator/src/sandbox_science/orchestrator/tools.py) uses a
-finite read/observe, cancel and effect classification; unclassified tools receive
-no exemption. Existing capability and policy checks still apply. File/document/
-review reads and existing job/provision status/wait/cancel operations remain
-available; writes, execution, publish, provisioning, policy admission and PDF
-helpers require the plan fence. PDFs are effects because their helpers execute in
-the worker. Plan calls preserve complete JSON instead of ordinary text clipping;
-unrelated document/job notices remain unseen until their existing later paths.
-
-Tool requests are at most 96 KiB UTF-8 and reject unknown authority/scope fields,
-non-strict counters and malformed text. Plan bodies retain the core's 64 KiB cap;
-complete tool responses are at most 256 KiB. History initially requests at most
-eight items and reduces the page size to fit the complete envelope while retaining
-its target cursor. A read that cannot fit refuses rather than omitting steps or
-clearing the reread requirement. No generic transcript compaction is added.
-
-[The loop](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py) rechecks
-plan state before model calls and immediately before assigning a final answer,
-including after closing review/math awaits. A pending reread permits at most one
-continuation within the ordinary remaining turn budget, then returns a partial
-`user_message` stop with no stale final answer. It adds no reviewer/math response
-rounds and preserves already completed scientific or explicit USER decisions.
-Plan/progress commits are durable during the run, independent of a later model
-failure, cancellation or failed RunRecord save. Existing notice save-before-ACK
-behavior is unchanged; progress is not a claim that an interrupted effect succeeded.
-Threaded plan work and the registry descriptor are owned and drained before the
-borrowed store closes, including cancellation during adapter construction.
-
-[Focused scripted fixtures](../packages/orchestrator/tests/test_plan_tools.py)
-exercise actual offered-tool/model inputs, live second-connection progress, USER
-CAS/reread and closing races, same-batch dispatch, bounded event gaps, compact
-large-note reads, immutable replay/model provenance, complete response delivery,
-save/failure/cancellation and actual thread/descriptor cleanup. These deterministic
-tests establish host/tool enforcement, not live-model planning quality. The read-only workspace
-view/API and authenticated [USER text editor](SESSION-PLAN-EDITOR.md) are separately
-implemented consumers. The editor preserves immutable CAS and the same successful-model
-reread fence; a GUI read or save cannot clear it. Approval decisions, delegation,
-automatic resumed work, idle wake, effect-to-step lineage and broader prompt evaluation
-remain separate.
-
-Local author validation: 127 core/adapter/failed-run/prompt cases and 117 affected
-review/math/document/job cases pass; whole-orchestrator Pyright and changed-path
-Ruff/format/license checks pass. Combined delivery gates, fresh PR CI and any
-workspace acceptance belong to the root integration and are not claimed here.
-
-### Implemented MAIN input provenance
-
-The original provenance slice retained the earlier base content unchanged. The
-later [small-scale trial guidance](PILOT-COMPUTATIONS.md) intentionally updates the
-current builtin base to `sandbox-main-2`; old `sandbox-main-1` records retain their
-exact historical text and pins. Assembly versions are separate from base versions.
-
-The [MAIN provenance slice](MAIN-PROMPT-PROVENANCE.md) assembles one bounded
-owned system/tool bundle for the run. It preserves the existing base text and
-conditional two-newline planning join, all offered schema values/order and grants.
-Each model call gets fresh tool parameter copies; immediately before the call,
-the harness checks the actual system and offered tool pins. Dynamic task, tool
-and notice messages stay outside this system/tool bundle.
-
-Optional retained RunRecord metadata records `sandbox-main-bundle-1`, exact
-component versions/bytes/hashes, rendered system and canonical ordered tool pins.
-`sandbox-main-2` recognizes exact current built-in content, including identical caller
-text; it does not attest to its author or origin. Other custom text has no invented
-catalog version. Oversized/unrepresentable custom text keeps its invocation
-behavior with explicitly unavailable metadata; invalid installed inputs refuse
-before a model call. Legacy records stay unknown rather than being backfilled.
-
-Complete metadata validates against the retained first system message. The schema
-hash is a recorded application input pin, not a copy of historical tool schemas,
-provider-wire attestation or a permission grant. No routing alias, resolved model,
-credentials, task or provider error is added. Ordinary and safely retained failed
-runs preserve existing durable-save-before-ACK behavior. The watcher has its
-separate reservation pins below, as does the reviewer. Producing-answer repair
-identity is described below; durable repair call/spend records, external prompt
-loading, compaction and live-model quality evaluation remain separate.
-
-### Implemented optional research framing and general small-scale trials
-
-A template means a short reusable task instruction block. The fixed first-party
-[research framings](STOCK-RESEARCH-PROMPTS.md) are `intake`, `literature`,
-`experiment`, `proof-audit` and `report`, explicitly selected through the trusted
-CLI/caller. A user still describes the task normally. Planning and live progress
-work independently of selecting any framing.
-
-The selected run uses complete-only `sandbox-main-bundle-2`, with exact stock
-ID/version/byte/hash pins between the MAIN base and optional real planning guidance.
-Unselected runs retain the assembly-v1 format, custom/unavailable behavior and old
-record parsing. Selection resolves once, keeps the original task and tools, and
-cannot be changed by quoted task/document/tool text or later catalog mutation.
-There is no automatic classifier, external loader, interpolation or extra call.
-Different custom base plus selection refuses. Historical input verification uses
-the saved text; old catalog entries need not remain installed.
-
-The user additionally requested testing scripts on a small scale before long or
-large computations. [General MAIN pilot guidance](PILOT-COMPUTATIONS.md) applies
-without selecting an experiment framing. Reuse applicable current trial evidence
-or run representative small inputs; check known cases/invariants and output shape,
-resolve failures before scaling, record available runtime/memory and disclose
-missing or nonrepresentative measurements. Qualify nonlinear scaling assumptions.
-When plan tools are offered, record trial, validation evidence and scale decision
-before the large run. Existing authorization/budgets and unknown-effect
-reconciliation remain in force; trivial work needs no ceremonial trial.
-
-This later general guidance deliberately changes the current MAIN base content
-version to `sandbox-main-2`. Stock-alone default-v1 byte comparisons at `5a96c42`
-are historical predecessor evidence; they do not claim that the final pilot base
-equals the earlier default. No stock text/version, planning guidance, offered
-schema/grant, dispatcher, closing budget or notice ACK is changed by the pilot.
-No measurement/cost tool, controller pilot gate or scientific certification is
-introduced. Scripted actual-input/history tests establish assembly and authority;
-live-model instruction adherence and useful research outcomes remain unevaluated.
-
-### Implemented watcher reservation provenance
-
-The [watcher provenance slice](WATCHER-PROMPT-PROVENANCE.md) retains its exact
-short original system text, `sandbox-job-watcher-1` version and empty-tool pins
-on each existing pending call reservation. The pin commits atomically with its
-existing due/budget admission, before a model call. The call verifies the owned
-system input and zero tools; failures, cancellation and usage updates retain it.
-Legacy rows remain NULL/unknown, with no current-source backfill. A narrow internal
-scoped reader checks SQL type/byte length before copying or parsing metadata.
-
-This is intended reserved input, not dispatch proof. Dynamic job data remains
-outside the digest; the prior stored JSON and actual user-message encoding still
-differ. Prompt text, tools, routing, scheduling, budgets, failure/wake/cancel and
-MAIN notice ACK behavior stay unchanged. The envelope bounds overhead per admitted
-call, not total historical storage. No public route, history UI, global retention,
-retry or watcher execution authority is added. Durable repair call accounting and
-external prompt loading remain separate.
-
-### Implemented reviewer reservation provenance
-
-The [reviewer provenance slice](REVIEWER-PROMPT-PROVENANCE.md) retains the exact
-historical `sandbox-consistency-1` rubric text and ordered five-tool input pins
-with each existing call reservation. The pin and existing call/token counters
-commit atomically. Fresh parameter copies and an immediate pre-call check bind
-the intended input to the actual application call. Historical schemas retain
-names and a hash; reconstructing them requires the matching source/build record.
-
-Writable initialization adds nullable metadata and an immutable-input trigger;
-read-only old databases remain readable without migration or fabricated pins.
-The exact-scope internal reader bounds SQL projection before parsing and reports
-absent, legacy, complete or corrupt. Nominal rubric mismatches refuse rather than
-charging a call under a different rubric. The original rubric, tool definitions,
-evidence grants, budgets, finding decisions and confirmation CAS stay unchanged.
-
-Five reservation/accounting/lease awaits now drain their actual SQL work through
-repeated cancellation. Existing raw tool, evidence, model-observation,
-confirmation and controller thread paths retain their previous lifetime limits;
-this is not whole-runner ownership. A reservation is intended input, not provider
-dispatch, instruction adherence or scientific verification. Per-call/per-review
-metadata bounds do not impose a global journal retention quota. No public history
-API, new model identity, automatic retry or broader review authority is added.
-
-### Implemented display-repair producing input identity
-
-The [repair descriptor](DISPLAY-REPAIR-PROVENANCE.md) is optional static metadata
-on the existing response and process-local cache answer. It retains exact system
-content/version, empty-tool pins and the actual fixed formatter under a bounded
-canonical envelope. The existing 575-byte permitted MIT-adapted system, user
-message, zero tools and sanitizer stay unchanged; no new upstream wording is used.
-Fresh owned inputs are verified immediately before the application model call.
-
-In-flight/cache consumers keep the first producer's descriptor, including when
-their error differs or current installed content changes. Historical descriptors
-validate retained fields without today's catalog or fabricated authenticity.
-Dynamic expression/error text or hashes, project/context/session/run, URLs,
-credentials and model identity are excluded. The answer's model remains an alias.
-
-Static system and formatter scalars are bounded before encoding; the descriptor
-is at most 4 KiB including conservative HTTP ASCII escaping. Exported text is
-bounded before parsing. Forged subtypes, DEL/control expansion and raw bool/float
-counter normalization are refused before acceptance. Disabled/busy/rate/legacy
-and never-called queued work remain unpinned. Local metadata refusal makes no
-gateway call and keeps existing browser charge/failure-cache behavior.
-
-Success, unusable output, ordinary failure and timeout keep formed static pins.
-Shielded shared-waiter and normal close behavior stay unchanged; no new repeated
-close-cancellation guarantee is claimed. Eviction/restart loses the descriptor.
-This is process/cache-lifetime input consistency, not a dynamic-request hash,
-unique attempt, provider dispatch, spend record or mathematical verification.
-LD-46 durable project records, resolved model/usage/cost and atomic budget
-admission remain separate work. Independent probes and scripted host-input/API
-tests establish these boundaries; live model quality remains unevaluated.
-
-## Prompt catalog and assembly proposal
-
-Maintain a small first-party catalog with explicit ID/version, applicable role,
-required implemented tools, byte budget and hash. Resolve one immutable bundle at
-run start; retain the IDs/hashes, actual rendered messages, offered tool schema
-hashes, requested alias/resolved model and effective settings. Existing rubric
-versioning and watcher call records provide starting seams. Prompts never carry
-credentials, private worker URLs/tokens or hidden authorization material.
-
-Assembly order is fixed: platform authority/boundaries, role instructions,
-capability facts from the actual tool whitelist, optional planning/execution mode,
-then bounded context and explicit authenticated user request. Skills/catalogs and
-pinned artifacts are separately attributed data/procedure inputs, not new platform
-authority. Use deterministic budgets and mark omitted context; never silently
-truncate a policy boundary, plan version pin or unresolved finding. Do not require
-one provider's system-message layout; the adapter must preserve this distinction.
+The proposed IDs below were never built; the built IDs are in the
+[inventory](#prompt-inventory).
 
 | Proposed ID | Activation | Required product support |
 | --- | --- | --- |
@@ -354,17 +295,13 @@ one provider's system-message layout; the adapter must preserve this distinction
 | `display-repair-vNext` | Opt-in configured repair request | Existing parser/sanitizer/limits; source remains untouched |
 | `resume-v1` | Explicit resumed run | Saved transcript plus actual effect reconciliation and live scope checks |
 | `compact-v1` | Configured context threshold | Separate durable compaction record and validated replacement context |
-| `research-intake`, `literature-synthesis`, `experiment`, `proof-audit`, `report` | Chosen task template | Existing capabilities only; unavailable requirements disclosed |
 
-The stock research templates are short framing aids, not copied methods or a
+The built research templates are short framing aids, not copied methods or a
 replacement for the external crypto-analysis-skills pack. Pack bodies remain
-external/pinned, with future SK-21 load evidence; naming a skill in a prompt is not
-proof it was loaded. Models never choose their reviewer's alias or enlarge grants.
+external and pinned, with future SK-21 load evidence; naming a skill in a prompt is
+not proof it was loaded. Models never choose their reviewer's alias or enlarge grants.
 
-### Representative original drafts
-
-These drafts are **not active runtime instructions**. Planning/delegate/resume/
-compaction drafts must not be installed before their required code paths exist.
+### Draft role prompts
 
 **MAIN:**
 > Carry out the user's authorized research task through the tools actually offered.
@@ -432,10 +369,9 @@ compaction drafts must not be installed before their required code paths exist.
 > that may have changed state. Preserve exact source/plan/evidence pins and unresolved
 > findings. A summary is navigation context, not authority or proof of new results.
 
-Stock task framing examples, in original wording:
-
-The five purposes have separate original runtime text in the implemented fixed
-catalog above; the examples here illustrate their intent.
+The five built research templates have their own runtime text in
+[stock_prompts.py](../packages/orchestrator/src/sandbox_science/orchestrator/stock_prompts.py);
+their intent:
 
 - **Intake:** identify the question, assumptions and evidence needed; propose the
   smallest decisive check before committing to a long computation.
@@ -448,127 +384,48 @@ catalog above; the examples here illustrate their intent.
 - **Report:** link claims to exact outputs, state uncertainty and remaining work,
   and distinguish a plan/dry run from an applied and verified result.
 
-## Durable planning and automatic progress
+### Planning lifecycle beyond the built tools
 
-The single-MAIN core and tools above implement versioned plans and durable
-progress. This section also describes follow-on approval, delegation, effect
-lineage and liveness behavior; those parts remain proposals, not installed tools.
-Create or update a plan for substantive research tasks and explicit planning
-requests; simple factual replies and one-step actions need no ceremony. Resume an
-applicable plan by stable IDs after user steering rather than replacing its history.
-The model may draft a plan in the same run and begin authorized work without
-another user confirmation. Exact-version approval is required only when the user
-or project explicitly requires it; a model must not invent a routine approval gate.
+The built tools above provide versioned plans and durable progress for one MAIN
+run. The rest of this section is proposal. Create or update a plan for substantive
+research tasks and explicit planning requests; simple factual replies and one-step
+actions need no ceremony. Resume an applicable plan by stable IDs after user
+steering rather than replacing its history. The model may draft a plan in the same
+run and begin authorized work without another user confirmation. Exact-version
+approval is required only when the user or project explicitly requires it; a model
+must not invent a routine approval gate. Delegated runs would receive only their
+track's write grant; no role field supplied by model text grants that authority.
 
-Separate immutable plan versions from append-only progress. Stable step IDs retain
-their history across inserted/reordered steps; removing a step retains its audit.
-An intent materially replaced by another task gets a new identity rather than
-inheriting the old completion. Plan/step writes require exact scope, actor, base
-version and operation replay; user and agent edits never silently overwrite one
-another. Bound steps/tracks/text/history and return explicit capacity/conflict
-states; no unresolved history eviction or hidden automatic merge.
+The table marks which actions are built.
 
-The installed tools are `plan_read`, `plan_create`, `plan_revise`, `plan_activate`,
-`plan_progress` and `plan_finish`. Progress records include `in_progress`,
-`completed`, `blocked` and `skipped`; no separate `plan_step_start` tool exists.
-Responses retain exact version/progress pins. Future authenticated USER editing
-must use the same CAS boundary; a future delegate must receive only its track's
-write grant. No role field supplied by model text grants that authority.
+| Trigger | Durable action and visible meaning | Built |
+| --- | --- | --- |
+| Planning starts | Save a draft goal, feasibility, outputs and steps. Draft text executes nothing. | Yes |
+| Execution becomes authorized | Activate the exact version under current project settings. Required approval, when configured, is explicit USER approval of that version; without it, keep read and plan-only grants. The approval default is an open question in the spec. | Activation only; no approval |
+| Agent begins a step | `plan_progress` records an attributed `in_progress` assertion against exact plan and step pins. Automatic effect-to-step association would need an explicit binding, never inference from prose. | Assertion only |
+| Agent produces a result | `plan_progress` records the agent's `completed` assertion with pinned evidence, immediately. Scientific correctness stays independently reviewable. | Yes |
+| Job or child changes state | Save its observed execution or delegation event; prompt MAIN to reconcile the linked step at the next safe point; never mark the step completed from an exit code or child status. | No |
+| A real obstacle appears | Record `blocked` with the missing capability, decision or evidence and partial work. Time, turn and cost limits are run outcomes, not scientific obstructions. | Yes |
+| Work is intentionally omitted | Record `skipped` with a reason. Cancellation or browser closure is not a deliberate skip. | Yes |
+| USER edits the plan | Save the new version, preserve agent drafts on conflict, require a reread; stop obsolete dependent dispatch until reconciled. Unrelated running work is not restarted or killed. | Body edits and the reread fence |
+| Goal appears finished | Require every current step to be terminal and an explicit goal outcome with remaining-work summary. Blocked or skipped never mean the goal succeeded. | Yes |
+| Run fails, is cancelled or restarts | Keep partial progress and the run's end state. An `in_progress` step may show interrupted liveness; never manufacture a terminal status. Resume reconciles executions before new dispatch. | Partial progress kept; no liveness or resume |
 
-The trigger table combines implemented bookkeeping with the explicitly named
-follow-on lifecycle work. It does not claim that effect-to-step links, required
-approval mode, delegated runs or disconnected-liveness records are installed.
+The terminal goal outcome is built in the [plan core](SESSION-PLANS.md#completion-is-an-attributed-outcome)
+as a clarification of draft PD-10, pending its reconciliation in the spec.
 
-| Trigger | Durable action and visible meaning |
-| --- | --- |
-| Planning starts | Save a draft goal/feasibility/outputs/steps. Draft text itself executes nothing. |
-| Execution becomes authorized | Activate the exact version under current project settings. Required approval, when configured, is explicit USER approval of that version; without it, preserve read/plan-only grants. The approval default remains the spec's open question/proposed off default. |
-| Agent begins a step | `plan_progress` persists an attributed in_progress assertion against exact plan/step pins. Future automatic effect-to-step association requires an explicit binding; it must never infer a step from prose similarity. |
-| Agent produces a result | `plan_progress` appends the agent's completed assertion with pinned evidence; the runtime validates refs/authority and records it immediately. Scientific correctness remains independently reviewable. No end-of-session-only status flush. |
-| Job or child changes state | Save its observed execution/delegation event. Prompt MAIN to reconcile the linked step at the next active safe point; do not mark the step completed automatically from exit0/child status. |
-| A real obstacle appears | Append blocked with the actual missing capability/decision/evidence and partial work. Time/turn/cost limits are observed run outcomes, not invented scientific obstructions. |
-| Work is intentionally omitted | Append skipped with a reason/actor. Cancellation or browser closure alone is not a deliberate skip. |
-| USER edits the plan | Save the new version, preserve agent drafts on conflict, queue a bounded reread notice; stop obsolete dependent dispatch until the version is reconciled. Unrelated already-running work is not silently restarted or killed. |
-| Goal appears finished | Validate every current step is completed/blocked/skipped (draft PD-10), then allow workflow completed only with an explicit goal outcome and remaining-work summary. Blocked/skipped never mean the research goal succeeded. |
-| Run fails/cancels/restarts | Keep partial progress and actual run end state. An in_progress step may show disconnected/interrupted liveness; do not manufacture completed/blocked/skipped. Resume reconciles actual executions before new dispatch. |
+A future reconciliation of stale active steps must stay bounded, preserve truthful
+partial answers and avoid inventing results or adding reviewer rounds. A GUI shows
+the authoritative version, current step, activity age, blocked and skipped counts,
+and disconnected or pending updates; a delayed browser reply cannot replace a newer
+version or erase an unsaved USER draft, and closing the browser stops polling, not
+research. The read-only view and USER body editing exist; history pages and
+effect-to-step lineage do not.
 
-**Proposed PD-10 clarification, not a claim that the draft spec already requires
-it:** distinguish workflow terminal accounting from goal outcome. A completed plan
-must retain an attributed immutable outcome `achieved`, `partially_achieved` or
-`not_achieved`, with summary, evidence and remaining work. `achieved` additionally
-requires every current step to be completed; blocked/skipped require reasons and
-can only support a qualified outcome. Even `achieved` is the author's assertion,
-not independently verified scientific truth. An abandoned plan records why work
-stopped and partial results without forcing its unfinished steps to terminal
-statuses. The implemented single-MAIN core and tools above provide version/progress accounting
-and activation under existing authorization. USER approval decisions, automatic
-effect-to-step links and delegated execution remain separate.
+### Acceptance scenarios
 
-The implemented automatic behavior asks the agent to maintain its plan through
-these tools during work, with each mutation durably recorded immediately. Linked
-effect/liveness events remain future work. A model classifier cannot rewrite step
-status from arbitrary text. The installed final-answer boundary rechecks current
-plan-read requirements within the ordinary remaining turn budget. A future stale
-active-step reconciliation must also stay bounded, preserve truthful partial
-answers and avoid inventing results or adding reviewer rounds.
-
-GUI progress reads committed plan/progress events with scoped monotonic cursors.
-Mounted-view polling is an acceptable first UI implementation; it need not wait for
-a live-chat transport. Show authoritative version, current step, activity age,
-blocked/skipped counts and disconnected/pending updates. A delayed browser reply
-cannot replace a newer scope/version or erase an unsaved USER draft. Browser closure
-stops polling, not research. The first read-only live viewer and scoped API are now
-implemented consumers of the plan core/tools; USER editing, history
-pages and effect-to-step lineage remain separate. Final combined/browser delivery
-gates are recorded in central status rather than inferred from this proposal.
-
-## Authority and lifecycle checks that prompts cannot supply
-
-- **Execution/approval:** worker policy, grants, required plan approval, artifact
-  scope and positive role checks belong in code before dispatch. A plan, skill,
-  child outcome or tool output cannot approve permissions or choose credentials.
-- **Planning phases:** a genuine required-approval mode narrows actual tool grants;
-  a prompt-only read-only promise is insufficient. Do not introduce that mode when
-  existing user authorization permits execution.
-- **Reviewer/math:** retain exact snapshots, full required reads, body/context CAS,
-  immutable response history and mechanical origin exclusions. Newer artifacts and
-  completed plan steps cannot self-confirm findings. Warn-only mechanical findings
-  retain their shared bounded closing/save-after-delivery semantics.
-- **Delivery:** mark notices delivered only after a successful model call and ACK
-  only after durable run save. Failed first calls and cancellation do not consume
-  unseen user/plan/job/review/kernel notices. Failed later calls may retain earlier
-  successfully delivered data. A plan mutation already committed survives either.
-- **Delegation:** isolated fresh child context, exact track/parent/run IDs, limits,
-  cancellation, scoped kernels and immutable raw/validated outcomes need code.
-  Default D81 placement is within the session environment with distinct kernels;
-  current session-keyed kernels are not yet a complete per-delegate allocation.
-- **Resume/handoff:** worker restart is not necessarily kernel loss. Preserve original
-  attempts/births and unknown outcomes; reconcile before retrying side effects.
-  No claim of SIGKILL transcript durability or working idle wake is added here.
-- **Compaction:** retain the pre-compaction messages and a versioned summary record,
-  scope/cursor and exact retained anchors. Approval/user instructions, open questions,
-  budgets, pending effects, current plan and unresolved findings must remain visible.
-  A failed summary does not advance a cursor or drop source context. Child contexts
-  receive pinned briefs, not the parent's unbounded private transcript.
-- **Capacity/provider failure:** existing harness errors retain a safe failed run,
-  not an automatic retry product. Any future retry support must enforce configured
-  or user-authorized timing, bounded attempts and model selection, with no silent
-  alias switch and with tool effects reconciled first. Development-session retry
-  preferences do not create product defaults. Prompts cannot implement a durable
-  timer or authorization to wake an offline session.
-- **Refusal, budgets and recovery:** an approval wait, policy denial, missing tool,
-  exhausted model budget and environment needs_recovery are distinct observed
-  conditions. Preserve their fixed diagnostics and partial evidence; do not ask a
-  model to bypass a denied operation, silently choose another model, clear recovery
-  state or infer approval from a question answer. Budget exhaustion records a run
-  limit, not a fabricated completed/blocked step. Keep unrelated authorized work
-  moving when it is independent; do not automatically retry effects of unknown
-  outcome. A genuine unresolved obstacle can be recorded as blocked with its reason.
-
-## Acceptance scenarios and overlooked cases
-
-Use scripted models/temporary stores for deterministic contract tests; reserve
-live models for separately budgeted behavior evaluations. Pin prompt/tool hashes
+Use scripted models and temporary stores for deterministic contract tests; reserve
+live models for separately budgeted behavior evaluations. Pin prompt and tool hashes
 and compare actual model inputs, not merely a prompt file's existence.
 
 | Scenario | Required assertion |
@@ -593,43 +450,15 @@ and compare actual model inputs, not merely a prompt file's existence.
 | Prompt/config changes mid-run | Existing run retains its pinned bundle; next run gets new revision; alias capability failures explicit, with no unauthorized fallback. |
 | Capacity retry | Only configured/user-authorized retry timing and model selection apply; attempt/turn budget and effect reconciliation prevent duplicate work; idle scheduler remains absent. |
 
-## Small implementation order
+### Proposed order of remaining work
 
-Current progress: capability-text corrections, immutable single-MAIN planning,
-six tools, read-only committed-progress polling, narrow MAIN input provenance,
-watcher/reviewer reservation provenance, five explicit original research framings,
-general small-scale trial guidance and producing-answer repair identity are
-implemented. Authenticated [USER body text editing](SESSION-PLAN-EDITING.md) and its
-[structured GUI](SESSION-PLAN-EDITOR.md) pass independent source review, combined
-local gates and native browser acceptance, including retained conflict drafts and
-exact reconciliation after a committed response is lost. USER approval, effect
-lineage/liveness, delegated runs, durable repair call/spend records, external
-prompt/skill loading and compaction remain separate.
-
-The [explicit stateful MAIN kernel consumer](KERNEL-NOTICE-DELIVERY.md) adds at most one bounded, dated version-1 historical USER prefix, with an exact transcript-bound receipt in saved runs. Successful host return establishes delivery; real fsync then fresh original proof precede ACK. [Lab29](../.agents/docs/agent-reports/babbage-openshell-lab-29-2026-10-13.md) passes actual worker/component acceptance, including failure/cancellation, lifetime refusal and idle stop/no-wake/ordinary resume; independent cleanup is complete. PR #109 is delivered at `cef64a0` after independent final archive review and all four fresh checks. It changes no system/base/stock/pilot/planning text, tool schema/grant or closing budget and adds no scheduler or idle wake. The opening inventory remains the dated preimplementation baseline.
-
-1. **Current-role prompt correctness:** fix only inaccurate live capability claims
-   in MAIN/start_job/historical reviewer docstring; keep the existing offered-tool
-   whitelist. Add focused actual-input/description assertions, injection cases and
-   original-role text/provenance versioning. No invented plan/delegate tools.
-2. **Durable single-session planning:** implement bounded immutable versions/stable
-   steps, append-only progress, positive USER/MAIN CAS/replay, completion guard and
-   explicit outcome first as a separate internal store prerequisite. Then add
-   ordinary agent tools plus one active-safe-point reread notice. Initial wired
-   scope is one MAIN without delegation, approval only when required; no scheduler.
-3. **Visible automatic progress:** bind explicit current steps to executions,
-   preserve interruption/liveness, add scoped USER plan editing and committed-progress
-   polling with draft/race tests. Show qualified completed outcomes. Integrate the
-   first original planning/execution prompts only when these tools are real.
-4. **Delegated tracks:** add fresh scoped child runs, exact track authority/kernels,
-   immutable outcomes, routing/cancel/restart ownership and bounded role settings.
-   Resolve draft PD limits/default questions explicitly before enabling them.
-   An earlier unwired prototype is kept on the tag `archive/delegation-2026-10`;
-   delegation will be rebuilt as a role of the one loop ([refactoring plan](../.agents/refactor-plan/PLAN.md), Phase 4 item 7).
-5. **Skills and context lifecycle:** catalog/load provenance and worker helper rules,
-   then bounded compaction/resume with retained source. Separate later live-model
-   evaluations test whether the original stock prompts improve research behavior.
-
-Root owns central tracking and any runtime acceptance. This initial document-only
-freeze neither changes those implementation statuses nor starts services, provider
-calls, research jobs or a background planning scheduler.
+1. **Visible automatic progress:** bind explicit current steps to executions,
+   preserve interruption and liveness, add USER approval only where required, and
+   show qualified completed outcomes.
+2. **Delegated tracks:** fresh scoped child runs, exact track authority and kernels,
+   immutable outcomes, routing, cancellation and restart ownership, and bounded role
+   settings, rebuilt as a role of the one loop. Resolve the draft spec's remaining
+   questions first.
+3. **Skills and context lifecycle:** catalog and load provenance and worker helper
+   rules, then bounded compaction and resume with retained source. Later live-model
+   evaluations test whether the prompts improve research behavior.

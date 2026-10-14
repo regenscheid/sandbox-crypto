@@ -2,13 +2,12 @@
 # MAIN prompt provenance
 
 The MAIN harness records bounded content provenance for its actual system message
-and offered tools. This implements one small part of the original
-[prompt proposal](ORCHESTRATOR-PROMPTS.md). The provenance layer preserves tool
-schemas/order, grants, dispatch, planning and closing behavior. Later original
-[research framing](STOCK-RESEARCH-PROMPTS.md) is explicitly selected; the separate
-[small-scale trial guidance](PILOT-COMPUTATIONS.md) updates the ordinary MAIN base.
-Watcher, consistency reviewer and display-repair model calls remain separate;
-their prompts and audit stores are not covered by this MAIN field.
+and offered tools ([prompt inventory](ORCHESTRATOR-PROMPTS.md#prompt-inventory)).
+The provenance layer does not change tool schemas or their order, grants, dispatch,
+planning or closing behavior. [Research framing](STOCK-RESEARCH-PROMPTS.md) is
+explicitly selected; the [small-scale trial guidance](PILOT-COMPUTATIONS.md) is
+part of the ordinary MAIN base. Watcher, consistency reviewer and display-repair
+model calls have their own provenance records; this MAIN field does not cover them.
 
 ## Assembly and actual inputs
 
@@ -89,7 +88,7 @@ at most two for unselected runs and three for selected runs; stock text is nonem
 and at most 2 KiB. String escaping and integer decimal expansion count toward the
 schema preflight; nonfinite numbers/non-JSON values refuse. Actual complete
 metadata validates its final encoded size and digest too. These ceilings are
-implementation bounds, not blanket approval of the wider draft prompt catalog.
+implementation bounds, not approval of the proposed prompt catalog.
 
 [`RunRecord`](../packages/orchestrator/src/sandbox_science/orchestrator/projects.py)
 checks a complete bundle against the retained first system message and each exact
@@ -108,24 +107,18 @@ closing round or scientific state transition. Setup refusal before a transcript
 and cancellation still do not manufacture a retained run. A custom unavailable
 pin does not turn partial observations into a completed answer.
 
-## Validation and remaining scope
+## Tests and scope
 
 Scripted actual-input tests exercise conditional MAIN planning, ordinary control
 tool data, capability-filtered schemas, fresh per-call copies and exact retained
-system/component pins. Focused tests include Unicode/custom inputs, legacy reads,
+system/component pins. They include Unicode/custom inputs, legacy reads,
 malformed/large/deep/cyclic schemas, encoding expansion refused before JSON,
 successful/failed CLI retention, save failure before ACK and cancellation.
-No live model or service is used by these checks.
-
-The initial MAIN provenance author validation covered 172 affected tests (including 32 new bundle tests),
-whole-orchestrator plus changed-test Pyright with zero errors, Ruff/format and all
-75 installed Python distribution licenses. Root-owned full combined gates remain
-separate from that historical focused source milestone. Current stock/pilot
-combined validation is recorded in the maintained status and implementation report.
+No live model or service is used.
 
 This does not version dynamic platform notices or the whole conversation, retain
 every provider call/model resolution, load external prompts,
-add delegation/approval/compaction or evaluate model adherence/research quality.
-Those remain separate proposals in the broader prompt design. Input fixtures
-verify that the original stock and pilot guidance reaches the application model
+add delegation/approval/compaction or evaluate model adherence/research quality
+([proposals](ORCHESTRATOR-PROMPTS.md#proposals-not-built)). Input fixtures
+verify that the stock and pilot guidance reaches the application model
 boundary; they do not prove live instruction adherence or scientific quality.

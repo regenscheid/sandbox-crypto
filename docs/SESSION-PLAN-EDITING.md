@@ -1,10 +1,11 @@
 # USER session-plan body editing
 
-Date: 2026-10-13. This backend adds an authenticated body revision to an existing
-[session plan](SESSION-PLANS.md), using its ordinary immutable version CAS. It
-adds no frontend, plan creation, workflow/status/progress change, goal outcome,
-approval, delegation or execution grant. A human-readable editor is a separate
-consumer. The existing [read-only view](SESSION-PLAN-WORKSPACE.md) stays readonly.
+The workspace server accepts an authenticated USER revision of an existing
+[session plan](SESSION-PLANS.md)'s body, using the plan's ordinary immutable
+version CAS. The route does not create plans, change workflow status or progress,
+record a goal outcome, approve a plan, delegate or grant execution. The
+[structured editor](SESSION-PLAN-EDITOR.md) in the GUI uses this route; the
+[read-only view](SESSION-PLAN-WORKSPACE.md) stays read-only.
 
 ## Route and exact request
 
@@ -139,26 +140,15 @@ fails. The existing MAIN successful-model current-plan reread fence observes
 the attributed USER event; this backend adds no ACK queue or retroactive effect
 cancellation.
 
-## Local validation boundary
+## Tests and scope
 
-The 51 focused backend cases and 271 affected app/reader/core/plan-tool cases
-pass locally; workspace/new-test Pyright,
-changed-file Ruff/format and Python license checks pass. Focused tests exercise
-real local HTTP, immutable USER/body/progress
-history, exact replay and stale CAS, authority injection, request/core limits,
-closed/terminal scopes, registry close/reopen and special files, lock contention,
-SQL rollback, original-cookie revocation, observed disconnect, cancellation and
-shutdown ownership. A scripted MAIN test edits through HTTP at the actual model
-boundary: same-batch read/effect remains fenced until the new read reaches a
-successful model call. It dispatches only a synthetic patched tool.
+Local tests use real HTTP and cover immutable USER, body and progress history,
+exact replay and stale CAS, authority injection, request and core limits, closed
+and terminal scopes, registry close/reopen and special files, lock contention, SQL
+rollback, original-cookie revocation, observed disconnect, cancellation and
+shutdown ownership. A scripted MAIN test edits through HTTP at the model boundary:
+a read and an effect in the same batch stay fenced until the new read reaches a
+successful model call.
 
-Initial focused/type/style failures are retained separately from successful
-logs; fixture URL/status/message-position and close/reopen-call corrections did
-not change the accepted core contract. Combined full-suite and frontend gates
-are not claimed by this focused validation.
-
-No frontend/browser, external model, provider, worker, VM or real research was
-run for this backend slice. Root owns independent review, combined gates and
-later structured-editor acceptance. Approval routes, USER workflow/progress
-editing, history UI, explicit cross-request lifetimes and delegation remain
-outside this change.
+Approval routes, USER workflow or progress editing, a history UI, explicit
+cross-request session lifetimes and delegation are not built.
