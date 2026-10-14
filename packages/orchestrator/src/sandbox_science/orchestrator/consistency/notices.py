@@ -14,7 +14,12 @@ from sandbox_science.orchestrator.control.notices import (
 from .store import Json, ReviewStore, clipped
 
 FINDINGS: Final = NoticeTable(
-    "review_notices", "project", "session", "{0}finding_id||'-r'||{0}revision", "notice_id"
+    "review_notices",
+    "project",
+    "session",
+    "{0}finding_id||'-r'||{0}revision",
+    ("finding_id", "revision"),
+    ("finding", "revision"),
 )
 """Where review findings are leased to the author's runs."""
 

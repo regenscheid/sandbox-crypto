@@ -12,7 +12,12 @@ from sandbox_science.orchestrator.consistency.store import Json, clipped, dump
 from sandbox_science.orchestrator.control.notices import MAX_PER_RUN, NoticeTable
 
 MATH: Final = NoticeTable(
-    "math_notices", "project", "session", "{0}finding_id||'-r'||{0}revision", "notice_id"
+    "math_notices",
+    "project",
+    "session",
+    "{0}finding_id||'-r'||{0}revision",
+    ("finding_id", "revision"),
+    ("finding", "revision"),
 )
 """Where math findings are leased to the author's runs."""
 

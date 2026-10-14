@@ -38,13 +38,14 @@ def _dump(value: object) -> str:
 class NoticeTable:
     """Where a source leases its notices: its table, its project and session columns,
     the SQL naming a notice (``{0}`` stands for a table alias and its dot), and the
-    field that names a notice in its projection."""
+    columns that key a notice's row with the fields that hold them in its projection."""
 
     name: str
     project: str
     session: str
     key: str
-    field: str
+    columns: tuple[str, ...]
+    fields: tuple[str, ...]
 
     def keyed(self, alias: str = "") -> str:
         return self.key.format(f"{alias}." if alias else "")
@@ -97,11 +98,16 @@ class LeasedNotices:
                 if len(_dump([*values, notice])) > max_chars:
                     break
                 values.append(notice)
-            db.execute(
-                f"UPDATE {self.table.name} SET claimed_run=?,claim_until=? "  # noqa: S608
-                f"WHERE ({self.table.keyed()}) IN (SELECT value FROM json_each(?))",
-                (run, now + LEASE_SECONDS, _dump([n[self.table.field] for n in values])),
-            )
+            if values:
+                table = self.table
+                db.executemany(
+                    f"UPDATE {table.name} SET claimed_run=?,claim_until=? WHERE "  # noqa: S608
+                    + " AND ".join(f"{column}=?" for column in table.columns),
+                    [
+                        (run, now + LEASE_SECONDS, *(n[field] for field in table.fields))
+                        for n in values
+                    ],
+                )
         return values
 
     def renew(self, project: str, session: str, run: str) -> None:

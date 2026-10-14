@@ -34,7 +34,12 @@ ID = Annotated[str, Field(pattern=r"^b[0-9]{1,9}$")]
 THREAD: Final = re.compile(r"ann-[0-9a-f]{24}")
 _RECEIPTS: Final = Receipts("comment", "operation ID already names another annotation change")
 REQUESTS: Final = NoticeTable(
-    "annotation_requests", "project_id", "session_id", "{0}request_id", "request_id"
+    "annotation_requests",
+    "project_id",
+    "session_id",
+    "{0}request_id",
+    ("request_id",),
+    ("request_id",),
 )
 """Where the user's work requests are leased to the addressed session's runs."""
 
