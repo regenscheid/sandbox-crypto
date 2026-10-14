@@ -2,10 +2,12 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { api, type DocumentRevision, type CommentThread, type Session } from '../lib/api';
-  import { commentAnchor } from '../lib/commentAnchors';
+  import { anchorOnShown, newComment, startComment } from '../lib/commentAnchors';
   import { commentDrafts } from '../lib/drafts';
   import { guardedWrite } from '../lib/mutation';
   import { macroSet } from '../lib/macros';
+  import { emptyList, PagedList } from '../lib/pagedList';
+  import { idle, submit } from '../lib/submit';
   import Markdown from '../lib/Markdown.svelte';
   import AnnotationThread from './AnnotationThread.svelte';
   import ErrorMessage from './ErrorMessage.svelte';
@@ -13,83 +15,55 @@
   const initial = untrack(() => found);
   const id = $derived(found.document.document_id);
   const draftScope = untrack(() => `${projectId}:${initial.document.document_id}`);
-  const draft = commentDrafts.load(draftScope).draft;
-  let body = $state(draft?.body ?? '');
-  let base = $state(draft?.base ?? initial.revision.number);
-  let block = $state(draft?.block ?? initial.blocks[0]?.id ?? '');
-  let kind = $state(draft?.kind ?? 'block');
-  let math = $state(draft?.math ?? '');
-  let quote = $state(draft?.quote ?? '');
-  let session = $state(draft?.session ?? initial.document.session_id ?? '');
+  let draft = $state(startComment(initial, commentDrafts.load(draftScope).draft));
   let sessions = $state<Session[]>([]);
-  let threads = $state<CommentThread[]>([]);
-  let next = $state<string | null>(null);
-  let busy = $state(false);
-  let error = $state<unknown>(null);
+  let sessionsError = $state<unknown>(null);
+  const threads = $state(emptyList<CommentThread, string>());
+  const list = new PagedList(threads, (after) =>
+    api
+      .comments(projectId, id, found.revision.number, after)
+      .then((page) => ({ items: page.threads, next: page.next_after })),
+  );
+  const posting = $state(idle());
   let persisted = $state(true);
-  let loading = $state(false);
+  const error = $derived(posting.error ?? threads.error ?? sessionsError);
   const macros = $derived(
     macroSet(found.macros, `${projectId}:${found.macro_context?.key ?? 'legacy-document'}`),
   );
   const anchorDocument = $derived(
-    base === found.revision.number ? Promise.resolve(found) : api.document(projectId, id, base),
+    draft.base === found.revision.number
+      ? Promise.resolve(found)
+      : api.document(projectId, id, draft.base),
   );
   $effect(() => {
-    if (body)
-      persisted = commentDrafts.save(draftScope, { base, block, body, kind, math, quote, session });
+    if (draft.body) persisted = commentDrafts.save(draftScope, $state.snapshot(draft));
     else commentDrafts.clear(draftScope);
   });
   $effect(() => {
-    void refresh();
+    void list.reload();
     api
       .project(projectId)
       .then((project) => (sessions = project.sessions))
-      .catch((caught) => (error = caught));
+      .catch((caught) => (sessionsError = caught));
   });
-  async function refresh(after: string | null = null) {
-    loading = true;
-    error = null;
-    try {
-      const result = await api.comments(projectId, id, found.revision.number, after);
-      threads = after === null ? result.threads : [...threads, ...result.threads];
-      next = result.next_after;
-    } catch (caught) {
-      error = caught;
-    } finally {
-      loading = false;
-    }
-  }
   async function create(anchored: DocumentRevision) {
-    busy = true;
-    error = null;
-    try {
-      const change = {
-        action: 'create',
-        anchor: commentAnchor(anchored, block, kind, math, quote),
-        body,
-        ...(session ? { addressed_to: session } : {}),
-      };
-      await guardedWrite('comment', `${projectId}:${id}`, change, (sent) =>
+    const posted = await submit(posting, async () => {
+      await guardedWrite('comment', `${projectId}:${id}`, newComment(anchored, draft), (sent) =>
         api.changeComment(projectId, id, sent),
       );
-      body = '';
-      commentDrafts.clear(draftScope);
-      await refresh();
-    } catch (caught) {
-      error = caught;
-    } finally {
-      busy = false;
-    }
+      discard();
+    });
+    if (posted) await list.reload();
   }
   function discard() {
-    body = '';
+    draft.body = '';
     commentDrafts.clear(draftScope);
   }
 </script>
 
 <svelte:window
   onbeforeunload={(event) => {
-    if (body && !persisted) event.preventDefault();
+    if (draft.body && !persisted) event.preventDefault();
   }}
 />
 <section class="comments" aria-label="Document comments">
@@ -99,44 +73,46 @@
     request for its main agent. An active run receives it at its next safe point; an idle session
     keeps it for its next manually started run.
   </p>
-  <button disabled={loading || busy} onclick={() => refresh()}>Refresh comments</button>
+  <button disabled={threads.loading || posting.busy} onclick={() => list.reload()}
+    >Refresh comments</button
+  >
   {#if error}<ErrorMessage {error} />{/if}
-  {#if threads.length === 0 && !loading}<p class="muted">No comments on this revision.</p>{/if}
-  {#each threads as thread (thread.thread_id)}
+  {#if threads.items.length === 0 && !threads.loading}<p class="muted">
+      No comments on this revision.
+    </p>{/if}
+  {#each threads.items as thread (thread.thread_id)}
     <AnnotationThread
       {projectId}
       documentId={id}
       {thread}
       {sessions}
       {macros}
-      changed={() => refresh()}
+      changed={() => list.reload()}
     />
   {/each}
-  {#if next}<button disabled={loading} onclick={() => refresh(next)}>Load more threads</button>{/if}
+  {#if threads.next}<button disabled={threads.loading} onclick={() => list.more()}
+      >Load more threads</button
+    >{/if}
   {#if found.matched && !found.revision.tombstone}
     <h3>Add a comment</h3>
     <p>
-      Anchor revision {base}. {#if base !== found.revision.number}<button
-          disabled={busy}
-          onclick={() => {
-            base = found.revision.number;
-            block = found.blocks[0]?.id ?? '';
-            math = '';
-            quote = '';
-          }}>Use displayed revision for the anchor</button
+      Anchor revision {draft.base}. {#if draft.base !== found.revision.number}<button
+          disabled={posting.busy}
+          onclick={() => (draft = anchorOnShown(draft, found))}
+          >Use displayed revision for the anchor</button
         >{/if}
     </p>
     {#await anchorDocument}
       <p>Loading anchored revision…</p>
     {:then anchored}
-      {@const selected = anchored.blocks.find((item) => item.id === block)}
-      <fieldset disabled={busy}>
+      {@const selected = anchored.blocks.find((item) => item.id === draft.block)}
+      <fieldset disabled={posting.busy}>
         <label
           >Anchor block <select
-            bind:value={block}
+            bind:value={draft.block}
             onchange={() => {
-              math = '';
-              quote = '';
+              draft.math = '';
+              draft.quote = '';
             }}
             >{#each anchored.blocks as item (item.id)}<option value={item.id}
                 >{item.id} · {item.kind}</option
@@ -144,22 +120,22 @@
           ></label
         >
         <label
-          >Anchor kind <select bind:value={kind}
+          >Anchor kind <select bind:value={draft.kind}
             ><option value="block">Whole block</option><option value="math">Formula</option><option
               value="range">Quoted text range</option
             ></select
           ></label
         >
-        {#if kind === 'math'}<label
-            >Formula <select bind:value={math}
+        {#if draft.kind === 'math'}<label
+            >Formula <select bind:value={draft.math}
               ><option value="">Choose formula</option
               >{#each selected?.math ?? [] as span (span.id)}<option value={span.id}
                   >{span.id} · {(span.tex ?? '').slice(0, 100)}</option
                 >{/each}</select
             ></label
           >{/if}
-        {#if kind === 'range'}<label
-            >Exact quoted text <input bind:value={quote} maxlength="4096" /></label
+        {#if draft.kind === 'range'}<label
+            >Exact quoted text <input bind:value={draft.quote} maxlength="4096" /></label
           >{/if}
         <details>
           <summary>Selected block source</summary>
@@ -168,27 +144,27 @@
         <label
           >Comment Markdown <textarea
             aria-label="Comment Markdown"
-            bind:value={body}
+            bind:value={draft.body}
             rows="5"
             maxlength="8192"></textarea></label
         >
         <label
-          >Address to main agent <select bind:value={session}
+          >Address to main agent <select bind:value={draft.session}
             ><option value="">No work request</option
             >{#each sessions as item (item.session_id)}<option value={item.session_id}
                 >{item.session_id}{item.closed_at ? ' (closed; next run)' : ''}</option
               >{/each}</select
           ></label
         >
-        <button disabled={!body.trim()} onclick={() => create(anchored)}>Post comment</button>
+        <button disabled={!draft.body.trim()} onclick={() => create(anchored)}>Post comment</button>
         <button onclick={discard}>Discard comment draft</button>
       </fieldset>
     {:catch caught}<ErrorMessage error={caught} />{/await}
     {#if !persisted}<p role="alert">
         Browser storage is unavailable. Keep this tab open or copy your comment draft.
       </p>{/if}
-    {#if body}<details>
-        <summary>Comment preview</summary><Markdown source={body} {macros} />
+    {#if draft.body}<details>
+        <summary>Comment preview</summary><Markdown source={draft.body} {macros} />
       </details>{/if}
   {/if}
 </section>

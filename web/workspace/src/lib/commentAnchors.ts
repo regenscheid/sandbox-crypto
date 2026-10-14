@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 import type { DocumentRevision } from './api';
+import type { CommentDraft } from './drafts';
 /** Python and the contract count Unicode code points, rather than UTF-16 units. */
 export function commentAnchor(
   found: DocumentRevision,
@@ -27,4 +28,43 @@ export function commentAnchor(
     result.end = start + size;
   }
   return result;
+}
+
+/** A new comment's draft: the stored one, or an empty one anchored on `found`. */
+export function startComment(found: DocumentRevision, stored: CommentDraft | null): CommentDraft {
+  return (
+    stored ?? {
+      base: found.revision.number,
+      block: found.blocks[0]?.id ?? '',
+      body: '',
+      kind: 'block',
+      math: '',
+      quote: '',
+      session: found.document.session_id ?? '',
+    }
+  );
+}
+
+/** The draft anchored on the revision shown instead, at its first block. */
+export function anchorOnShown(draft: CommentDraft, found: DocumentRevision): CommentDraft {
+  const block = found.blocks[0]?.id ?? '';
+  return { ...draft, base: found.revision.number, block, math: '', quote: '' };
+}
+
+/**
+ * The change that creates the comment, anchored in `anchored` (the draft's base
+ * revision); it throws when the anchor is not in that revision. A comment addressed to a
+ * session queues a request for its main agent.
+ */
+export function newComment(
+  anchored: DocumentRevision,
+  draft: CommentDraft,
+): Record<string, unknown> {
+  const { block, kind, math, quote, body, session } = draft;
+  return {
+    action: 'create',
+    anchor: commentAnchor(anchored, block, kind, math, quote),
+    body,
+    ...(session ? { addressed_to: session } : {}),
+  };
 }
