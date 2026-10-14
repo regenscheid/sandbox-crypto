@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -1291,3 +1292,16 @@ def test_confirmation_requires_nonempty_reads_and_stops_after_two_rejections(sto
         reviews.finish("p", "s", confirmation, "owner", "findings", "The claimed fix was rejected.")
     assert ended["status"] == "unaddressed"
     assert Findings(reviews).get("p", "s", finding["finding_id"])["reflags"] == 2
+
+
+def test_only_the_findings_module_writes_findings() -> None:
+    """One module writes ``review_findings``: the math checks go through ``Findings``."""
+    root = Path(storage.__file__).resolve().parents[1]
+    # SQL split over string literals still counts: quotes may come between the words.
+    writes = re.compile(r"(UPDATE|INSERT INTO)[\s\"']*review_findings\b")
+    writers = sorted(
+        str(path.relative_to(root))
+        for path in root.rglob("*.py")
+        if writes.search(path.read_text())
+    )
+    assert writers == ["consistency/findings.py"]

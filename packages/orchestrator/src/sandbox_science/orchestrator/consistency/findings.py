@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import Any, cast
+from typing import Any, Final, cast
 
 from pydantic import ValidationError
 
@@ -58,6 +58,27 @@ _REVIEWED = (
 """The columns a reviewer's finding sets; a math finding sets ``origin`` and
 ``math_check_id`` too."""
 FIELDS = (*_REVIEWED, "origin", "math_check_id")
+
+
+SEVERITY_RANK: Final = {"fail": 0, "warn": 1, "note": 2}
+"""A lower rank is more severe."""
+
+_ASSESSMENT: Final = ("review_id", "severity", "category", "statement", "anchors", "remedy")
+"""The fields of a reviewer's assessment of a finding."""
+
+
+def _status_for(value: FindingInput, run: Json, anchors: list[Json]) -> str:
+    """``inconclusive`` when the finding rests on missing or incomplete evidence."""
+    incomplete = (
+        value.assessment == "missing_evidence"
+        or (value.category == "missing_action" and not run["coverage_complete"])
+        or any(
+            not anchor["complete"]
+            and ("artifact" in anchor["locator"] or "operation" in anchor["locator"])
+            for anchor in anchors
+        )
+    )
+    return "inconclusive" if incomplete else "open"
 
 
 class Findings:
@@ -333,11 +354,10 @@ class Findings:
         threshold = (
             ReviewConfig.model_validate_json(configuration[0]) if configuration else ReviewConfig()
         ).interrupt_severity
-        ranks = {"fail": 0, "warn": 1, "note": 2}
         if (
             found["origin"] == "review"
             and status == "open"
-            and ranks[found["severity"]] <= ranks[threshold]
+            and SEVERITY_RANK[found["severity"]] <= SEVERITY_RANK[threshold]
         ):
             db.execute(
                 (
@@ -355,6 +375,9 @@ class Findings:
         }
 
     def create(self, project: str, session: str, review: str, owner: str, raw: object) -> Json:
+        """A reviewer's finding: a new one, a reflag of the open one with the same
+        semantic identity, or, while that one awaits its response's decision, a
+        deferred reflag."""
         try:
             value = FindingInput.model_validate(raw)
         except ValidationError:
@@ -398,29 +421,11 @@ class Findings:
                 ),
                 (project, session, dedupe),
             ).fetchone()
-            incomplete = (
-                value.assessment == "missing_evidence"
-                or (value.category == "missing_action" and not run["coverage_complete"])
-                or any(
-                    not anchor["complete"]
-                    and ("artifact" in anchor["locator"] or "operation" in anchor["locator"])
-                    for anchor in anchors
-                )
-            )
-            status = "inconclusive" if incomplete else "open"
-            if existing:
+            status = _status_for(value, run, anchors)
+            if existing is None:
+                result = self._raise(db, project, session, review, value, anchors, dedupe, status)
+            else:
                 found = self.load(db, project, session, existing[0])
-                previous = {
-                    key: found[key]
-                    for key in (
-                        "review_id",
-                        "severity",
-                        "category",
-                        "statement",
-                        "anchors",
-                        "remedy",
-                    )
-                }
                 assessment = {
                     "review_id": review,
                     "severity": value.severity,
@@ -429,121 +434,15 @@ class Findings:
                     "anchors": anchors,
                     "remedy": value.remedy,
                 }
-                latest = db.execute(
-                    "SELECT payload FROM review_transitions WHERE finding_id=? "
-                    "ORDER BY revision DESC LIMIT 1",
-                    (found["finding_id"],),
-                ).fetchone()
-                if (
-                    found["status"] == "claimed fixed"
-                    or json.loads(latest[0]).get("action") == "rebut"
-                ):
-                    # A detached review can still describe the old evidence after
-                    # a response arrives. Only an exact pinned review_decide may
-                    # resolve that response; generic reflags keep its CAS/head.
-                    result = {
-                        "outcome": "response_pending",
-                        "finding_id": found["finding_id"],
-                        "status": found["status"],
-                        "revision": found["revision"],
-                        "detail": "The pending response needs its pinned reviewer decision.",
-                    }
-                    db.execute(
-                        "INSERT INTO review_records(review_id,kind,payload,created) "
-                        "VALUES(?,'deferred_reflag',?,?)",
-                        (review, dump({**result, "assessment": assessment}), self.store.clock()),
-                    )
+                if self._response_pending(db, found):
+                    result = self._defer(db, review, found, assessment)
                     self.record_operation(
                         db, project, actor, value.operation_id, fingerprint, result
                     )
                     return result
-                ranks = {"fail": 0, "warn": 1, "note": 2}
-                if ranks[value.severity] <= ranks[found["severity"]]:
-                    # A stronger assessment must reach the canonical header and
-                    # notice threshold. Weaker reflags cannot erase it; both
-                    # assessments remain in this append-only transition.
-                    db.execute(
-                        "UPDATE review_findings SET review_id=?,severity=?,statement=?,"
-                        "anchors=?,remedy=? WHERE finding_id=?",
-                        (
-                            review,
-                            value.severity,
-                            value.statement,
-                            dump(anchors),
-                            value.remedy,
-                            found["finding_id"],
-                        ),
-                    )
-                    found.update(assessment)
                 if found["reflags"] + 1 >= config.max_reflags:
                     status = "unaddressed"
-                result = self.transition(
-                    db,
-                    found,
-                    status,
-                    actor,
-                    value.statement,
-                    {
-                        "review": review,
-                        "anchors": anchors,
-                        "previous_assessment": previous,
-                        "assessment": assessment,
-                    },
-                    reflag=True,
-                )
-            else:
-                finding = new_id("finding")
-                db.execute(
-                    "INSERT INTO review_findings("
-                    + ",".join(_REVIEWED)
-                    + ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (
-                        finding,
-                        project,
-                        session,
-                        review,
-                        value.severity,
-                        value.category,
-                        value.statement,
-                        dump(anchors),
-                        value.remedy,
-                        status,
-                        0,
-                        0,
-                        dedupe,
-                        value.supersedes,
-                        self.store.clock(),
-                    ),
-                )
-                found = self.load(db, project, session, finding)
-                result = self.transition(
-                    db,
-                    found,
-                    status,
-                    actor,
-                    "Reviewer raised this finding.",
-                    {
-                        "review": review,
-                        "assessment": {
-                            key: found[key]
-                            for key in (
-                                "review_id",
-                                "severity",
-                                "category",
-                                "statement",
-                                "anchors",
-                                "remedy",
-                            )
-                        },
-                    },
-                )
-                self.store.event(
-                    db,
-                    project,
-                    session,
-                    "finding.created",
-                    {"finding": finding, "review": review, "severity": value.severity},
-                )
+                result = self._reflag(db, found, assessment, status, actor)
             db.execute(
                 (
                     "INSERT INTO review_records(review_id,kind,payload,created) "
@@ -553,6 +452,175 @@ class Findings:
             )
             self.record_operation(db, project, actor, value.operation_id, fingerprint, result)
         return result
+
+    @staticmethod
+    def _response_pending(db: sqlite3.Connection, found: Json) -> bool:
+        """Whether the finding awaits the decision on a fix or rebuttal."""
+        latest = db.execute(
+            "SELECT payload FROM review_transitions WHERE finding_id=? "
+            "ORDER BY revision DESC LIMIT 1",
+            (found["finding_id"],),
+        ).fetchone()
+        return found["status"] == "claimed fixed" or json.loads(latest[0]).get("action") == "rebut"
+
+    def _defer(self, db: sqlite3.Connection, review: str, found: Json, assessment: Json) -> Json:
+        """Keep a reflag of a finding whose response is pending as a record only. A
+        detached review can still describe the old evidence after a response arrives;
+        only an exact pinned review_decide may resolve that response, and generic
+        reflags keep its CAS and head."""
+        result = {
+            "outcome": "response_pending",
+            "finding_id": found["finding_id"],
+            "status": found["status"],
+            "revision": found["revision"],
+            "detail": "The pending response needs its pinned reviewer decision.",
+        }
+        db.execute(
+            "INSERT INTO review_records(review_id,kind,payload,created) "
+            "VALUES(?,'deferred_reflag',?,?)",
+            (review, dump({**result, "assessment": assessment}), self.store.clock()),
+        )
+        return result
+
+    def _reflag(
+        self, db: sqlite3.Connection, found: Json, assessment: Json, status: str, actor: str
+    ) -> Json:
+        """Reflag ``found``. A stronger assessment reaches the canonical header and the
+        notice threshold; a weaker one cannot erase it. Both assessments remain in the
+        append-only transition."""
+        previous = {key: found[key] for key in _ASSESSMENT}
+        if SEVERITY_RANK[assessment["severity"]] <= SEVERITY_RANK[found["severity"]]:
+            db.execute(
+                "UPDATE review_findings SET review_id=?,severity=?,statement=?,"
+                "anchors=?,remedy=? WHERE finding_id=?",
+                (
+                    assessment["review_id"],
+                    assessment["severity"],
+                    assessment["statement"],
+                    dump(assessment["anchors"]),
+                    assessment["remedy"],
+                    found["finding_id"],
+                ),
+            )
+            found.update(assessment)
+        return self.transition(
+            db,
+            found,
+            status,
+            actor,
+            assessment["statement"],
+            {
+                "review": assessment["review_id"],
+                "anchors": assessment["anchors"],
+                "previous_assessment": previous,
+                "assessment": assessment,
+            },
+            reflag=True,
+        )
+
+    def _raise(
+        self,
+        db: sqlite3.Connection,
+        project: str,
+        session: str,
+        review: str,
+        value: FindingInput,
+        anchors: list[Json],
+        dedupe: str,
+        status: str,
+    ) -> Json:
+        """A new reviewer finding, with its first transition and event."""
+        finding = new_id("finding")
+        db.execute(
+            "INSERT INTO review_findings("
+            + ",".join(_REVIEWED)
+            + ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                finding,
+                project,
+                session,
+                review,
+                value.severity,
+                value.category,
+                value.statement,
+                dump(anchors),
+                value.remedy,
+                status,
+                0,
+                0,
+                dedupe,
+                value.supersedes,
+                self.store.clock(),
+            ),
+        )
+        found = self.load(db, project, session, finding)
+        result = self.transition(
+            db,
+            found,
+            status,
+            f"review:{review}",
+            "Reviewer raised this finding.",
+            {"review": review, "assessment": {key: found[key] for key in _ASSESSMENT}},
+        )
+        self.store.event(
+            db,
+            project,
+            session,
+            "finding.created",
+            {"finding": finding, "review": review, "severity": value.severity},
+        )
+        return result
+
+    def raise_math(
+        self,
+        db: sqlite3.Connection,
+        project: str,
+        session: str,
+        *,
+        statement: str,
+        anchors: list[Json],
+        remedy: str | None,
+        dedupe: str,
+        check: str,
+    ) -> str:
+        """A new mechanical math finding, open, in the caller's change; its ID."""
+        finding = new_id("finding")
+        db.execute(
+            "INSERT INTO review_findings(finding_id,project,session,review_id,severity,"
+            "category,statement,anchors,remedy,status,revision,reflags,dedupe,supersedes,"
+            "created,origin,math_check_id) "
+            "VALUES(?,?,?,NULL,'warn','math',?,?,?,'open',0,0,?,NULL,?,'math',?)",
+            (
+                finding,
+                project,
+                session,
+                statement,
+                dump(anchors),
+                remedy,
+                dedupe,
+                self.store.clock(),
+                check,
+            ),
+        )
+        return finding
+
+    @staticmethod
+    def reassess(
+        db: sqlite3.Connection,
+        finding: str,
+        *,
+        session: str,
+        statement: str,
+        anchors: list[Json],
+        remedy: str | None,
+        check: str,
+    ) -> None:
+        """Point a math finding at its latest failing check, in the caller's change."""
+        db.execute(
+            "UPDATE review_findings SET session=?,statement=?,anchors=?,remedy=?,"
+            "math_check_id=? WHERE finding_id=?",
+            (session, statement, dump(anchors), remedy, check, finding),
+        )
 
     def respond(self, project: str, session: str, raw: object, author: Author) -> Json:
         self.store.scope(project, session)

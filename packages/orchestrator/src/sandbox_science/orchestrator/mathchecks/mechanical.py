@@ -9,7 +9,6 @@ from typing import Any, cast
 
 from pydantic import ValidationError
 
-from sandbox_science.contracts import new_id
 from sandbox_science.orchestrator.consistency.findings import Findings
 from sandbox_science.orchestrator.consistency.store import ReviewStore, digest, dump
 from sandbox_science.orchestrator.documents.comment_bodies import source_key
@@ -125,6 +124,7 @@ class MechanicalFindings:
         return row is None or bool(row[0])
 
     def observe(self, db: sqlite3.Connection, job: Json, item: Json) -> None:
+        """Apply one span's check result: accept, reflag or raise its finding."""
         # Old results remain immutable observations, but cannot alter current
         # findings, owner exclusion, CAS heads or closing notices.
         if not self._current(db, job):
@@ -139,14 +139,6 @@ class MechanicalFindings:
         if row and row[1] > job["revision"]:
             return
         author = self.eligible(job["project"], item["owner"])
-        exclusion = (
-            None
-            if author
-            else (
-                "Current last-changing block owner is USER, non-author, unknown, or "
-                "has no established session. Historical evidence remains unresolved."
-            )
-        )
         answer = item["check"]
         configuration = {
             k: answer[k] for k in ("bundle_sha256", "launcher_sha256", "engine", "runtime")
@@ -162,118 +154,133 @@ class MechanicalFindings:
                 ]
             )
         )
-        if row:
-            found = db.execute(
-                "SELECT project,session FROM review_findings WHERE finding_id=?", (row[0],)
-            ).fetchone()
-            assert found is not None  # noqa: S101 - finding state has a checked foreign key
-            current = self.findings.load(db, found[0], found[1], row[0])
-            db.execute(
-                (
-                    "UPDATE math_finding_state SET "
-                    "checked_revision=?,checked_check=?,excluded=? WHERE finding_id=?"
-                ),
-                (job["revision"], job["check_id"], exclusion, row[0]),
-            )
-            if answer["status"] == "accepted":
-                db.execute(
-                    "UPDATE math_finding_state SET input_sha256=?,"
-                    "owner_revision=coalesce(?,owner_revision) "
-                    "WHERE finding_id=?",
-                    (identity, item["owner"]["revision"], row[0]),
-                )
-                if current["status"] not in ("confirmed fixed", "withdrawn"):
-                    self.findings.transition(
-                        db,
-                        current,
-                        "confirmed fixed",
-                        "platform:math",
-                        "The exact current formula was accepted by the configured renderer.",
-                        {
-                            "check": job["check_id"],
-                            "document_revision": job["revision"],
-                            "action": "mechanical_accept",
-                        },
-                    )
-                return
-            if answer["status"] != "rejected" or author is None or identity == row[2]:
-                return
-            anchors = self._anchors(job, item)
-            db.execute(
-                (
-                    "UPDATE review_findings SET "
-                    "session=?,statement=?,anchors=?,remedy=?,math_check_id=? WHERE "
-                    "finding_id=?"
-                ),
-                (
-                    author.session_id,
-                    "A saved formula was rejected by the configured math renderer: "
-                    + (answer["error"] or "parse error"),
-                    dump(anchors),
-                    answer["remedy"],
-                    job["check_id"],
-                    row[0],
-                ),
-            )
-            previous_session = current["session"]
-            current["session"] = author.session_id
-            previous_owner = self._previous_owner(db, job, item)
-            block_edit = previous_owner is not None and item["owner"]["revision"] != previous_owner
-            status = "unaddressed" if current["reflags"] + int(block_edit) >= 2 else "open"
-            if not block_edit and (
-                current["status"] == "unaddressed" or self._user_resolved(db, current)
-            ):
-                status = current["status"]
-            result = self.findings.transition(
-                db,
-                current,
-                status,
-                "platform:math",
-                answer["error"] or "Renderer rejected the formula.",
-                {
-                    "check": job["check_id"],
-                    "anchors": anchors,
-                    "action": "mechanical_reflag"
-                    if block_edit
-                    else "mechanical_dependency_refresh",
-                    "previous_session": previous_session,
-                    "previous_owner_revision": previous_owner,
-                    "block_edit_proven": block_edit,
-                    "owner": item["owner"],
-                },
-                reflag=block_edit and current["reflags"] < 2,
-            )
-            db.execute(
-                "UPDATE math_finding_state SET input_sha256=?,owner_revision=? WHERE finding_id=?",
-                (identity, item["owner"]["revision"], row[0]),
-            )
-            if status == "open":
-                self._notice(db, job, author, row[0], result["revision"])
+        if row is None:
+            if answer["status"] == "rejected" and author is not None:
+                self._raise(db, job, item, author, identity)
             return
-        if answer["status"] != "rejected" or author is None:
-            return
-        finding = new_id("finding")
-        anchors = self._anchors(job, item)
+        found = db.execute(
+            "SELECT project,session FROM review_findings WHERE finding_id=?", (row[0],)
+        ).fetchone()
+        assert found is not None  # noqa: S101 - finding state has a checked foreign key
+        current = self.findings.load(db, found[0], found[1], row[0])
+        exclusion = (
+            None
+            if author
+            else (
+                "Current last-changing block owner is USER, non-author, unknown, or "
+                "has no established session. Historical evidence remains unresolved."
+            )
+        )
         db.execute(
             (
-                "INSERT INTO "
-                "review_findings(finding_id,project,session,review_id,severity,category"
-                ",statement,anchors,remedy,status,revision,reflags,dedupe,supersedes,cr"
-                "eated,origin,math_check_id) "
-                "VALUES(?,?,?,NULL,'warn','math',?,?,?,'open',0,0,?,NULL,?,'math',?)"
+                "UPDATE math_finding_state SET "
+                "checked_revision=?,checked_check=?,excluded=? WHERE finding_id=?"
             ),
-            (
-                finding,
-                job["project"],
-                author.session_id,
-                "A saved formula was rejected by the configured math renderer: "
-                + (answer["error"] or "parse error"),
-                dump(anchors),
-                answer["remedy"],
-                digest(dump([source_key(job), item["block"], item["span"]])),
-                self.store.clock(),
-                job["check_id"],
-            ),
+            (job["revision"], job["check_id"], exclusion, row[0]),
+        )
+        if answer["status"] == "accepted":
+            self._accept(db, job, item, current, identity)
+        elif answer["status"] == "rejected" and author is not None and identity != row[2]:
+            self._reflag(db, job, item, current, author, identity)
+
+    def _accept(
+        self, db: sqlite3.Connection, job: Json, item: Json, current: Json, identity: str
+    ) -> None:
+        """The exact current formula renders: the finding is confirmed fixed."""
+        db.execute(
+            "UPDATE math_finding_state SET input_sha256=?,"
+            "owner_revision=coalesce(?,owner_revision) "
+            "WHERE finding_id=?",
+            (identity, item["owner"]["revision"], current["finding_id"]),
+        )
+        if current["status"] not in ("confirmed fixed", "withdrawn"):
+            self.findings.transition(
+                db,
+                current,
+                "confirmed fixed",
+                "platform:math",
+                "The exact current formula was accepted by the configured renderer.",
+                {
+                    "check": job["check_id"],
+                    "document_revision": job["revision"],
+                    "action": "mechanical_accept",
+                },
+            )
+
+    def _reflag(
+        self,
+        db: sqlite3.Connection,
+        job: Json,
+        item: Json,
+        current: Json,
+        author: Author,
+        identity: str,
+    ) -> None:
+        """The formula still fails with a new identity: point the finding at this check,
+        and reflag it when a newer proved edit of its block made it fail."""
+        answer = item["check"]
+        anchors = self._anchors(job, item)
+        assert author.session_id is not None  # noqa: S101 - eligible author has a session
+        Findings.reassess(
+            db,
+            current["finding_id"],
+            session=author.session_id,
+            statement="A saved formula was rejected by the configured math renderer: "
+            + (answer["error"] or "parse error"),
+            anchors=anchors,
+            remedy=answer["remedy"],
+            check=job["check_id"],
+        )
+        previous_session = current["session"]
+        current["session"] = author.session_id
+        previous_owner = self._previous_owner(db, job, item)
+        block_edit = previous_owner is not None and item["owner"]["revision"] != previous_owner
+        status = "unaddressed" if current["reflags"] + int(block_edit) >= 2 else "open"
+        if not block_edit and (
+            current["status"] == "unaddressed" or self._user_resolved(db, current)
+        ):
+            status = current["status"]
+        result = self.findings.transition(
+            db,
+            current,
+            status,
+            "platform:math",
+            answer["error"] or "Renderer rejected the formula.",
+            {
+                "check": job["check_id"],
+                "anchors": anchors,
+                "action": "mechanical_reflag" if block_edit else "mechanical_dependency_refresh",
+                "previous_session": previous_session,
+                "previous_owner_revision": previous_owner,
+                "block_edit_proven": block_edit,
+                "owner": item["owner"],
+            },
+            reflag=block_edit and current["reflags"] < 2,
+        )
+        db.execute(
+            "UPDATE math_finding_state SET input_sha256=?,owner_revision=? WHERE finding_id=?",
+            (identity, item["owner"]["revision"], current["finding_id"]),
+        )
+        if status == "open":
+            self._notice(db, job, author, current["finding_id"], result["revision"])
+
+    def _raise(
+        self, db: sqlite3.Connection, job: Json, item: Json, author: Author, identity: str
+    ) -> None:
+        """A first failing check of this span: a new open math finding for its author."""
+        answer = item["check"]
+        anchors = self._anchors(job, item)
+        assert author.session_id is not None  # noqa: S101 - eligible author has a session
+        finding = self.findings.raise_math(
+            db,
+            job["project"],
+            author.session_id,
+            statement="A saved formula was rejected by the configured math renderer: "
+            + (answer["error"] or "parse error"),
+            anchors=anchors,
+            remedy=answer["remedy"],
+            dedupe=digest(dump([source_key(job), item["block"], item["span"]])),
+            check=job["check_id"],
         )
         db.execute(
             "INSERT INTO math_finding_state VALUES(?,?,?,?,?,?,?,?,NULL)",
@@ -288,7 +295,6 @@ class MechanicalFindings:
                 job["check_id"],
             ),
         )
-        assert author.session_id is not None  # noqa: S101 - eligible author has a session
         current = self.findings.load(db, job["project"], author.session_id, finding)
         result = self.findings.transition(
             db,
