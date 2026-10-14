@@ -120,6 +120,7 @@ CI runs the same commands.
 - Every test has a 300 s limit (pytest-timeout), so a hang fails instead of stalling CI. `--timeout=0` turns it off for long manual runs.
 - A component with a deadline, a lease or a polling interval reads time through the `Clock` protocol in `contracts` and takes its timeouts and intervals as constructor parameters, defaulting to `SYSTEM_CLOCK` and the production values. Code that predates this rule is converted as the refactoring plan reaches it. Tests pass `sandbox_science.testing.FakeClock` and short timeouts instead of patching module constants, and wait for a condition with `eventually()` instead of sleeping. A timeout test uses a peer that never answers, so the timeout is the only possible outcome.
 - `pytest-repeat` (`--count 50`) and `pytest-xdist` (`-n 4`) check a test for flakiness.
+- **No processes left behind.** After each test module, the root `conftest.py` looks for processes still running from the run's temporary directory, by command line or working directory: executors, sandbox daemons, kernels and the commands they started. It gives them ten seconds, then kills them and fails the module's last test. A test that kills an executor on purpose gives its commands a way to end with it.
 - pyright reports unnecessary `# type: ignore` and `# pyright: ignore` comments as errors, and ruff reports unused `noqa` comments. Tests may run subprocesses, build SQL and use synthetic secrets and temporary paths without inline suppressions.
 
 ## Git and pull requests
