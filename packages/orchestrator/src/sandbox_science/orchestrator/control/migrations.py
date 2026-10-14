@@ -579,6 +579,64 @@ def _evidence_checks(schema: Schema) -> None:
     )
 
 
+_ID: Final = "length(CAST({0} AS BLOB)) BETWEEN 1 AND 128"
+
+
+def _run_service(schema: Schema) -> None:
+    """Version 8: a session's chat messages, its run lease and its runs' events
+    (docs/specs/run-service.md, RS-4, RS-5, RS-13)."""
+    for statement in (
+        f"""CREATE TABLE session_messages (
+    number INTEGER PRIMARY KEY,
+    message_id TEXT NOT NULL UNIQUE CHECK ({_ID.format("message_id")}),
+    project_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    text TEXT NOT NULL CHECK (length(CAST(text AS BLOB)) BETWEEN 1 AND 65536),
+    author TEXT NOT NULL CHECK ({_ID.format("author")}),
+    created_at TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('queued', 'delivered', 'refused', 'held')),
+    run TEXT CHECK (run IS NULL OR length(CAST(run AS BLOB)) BETWEEN 1 AND 256),
+    offered TEXT CHECK (offered IS NULL OR length(CAST(offered AS BLOB)) BETWEEN 1 AND 256),
+    reason TEXT CHECK (reason IS NULL OR length(CAST(reason AS BLOB)) <= 1024),
+    updated_at TEXT NOT NULL,
+    CHECK ((state = 'delivered') = (run IS NOT NULL)),
+    FOREIGN KEY (project_id, session_id) REFERENCES sessions (project_id, session_id)
+) STRICT""",
+        "CREATE INDEX session_messages_by_state "
+        "ON session_messages (project_id, session_id, state, number)",
+        """CREATE TRIGGER session_messages_kept BEFORE DELETE ON session_messages
+BEGIN SELECT RAISE(ABORT, 'messages are kept'); END""",
+        """CREATE TABLE run_leases (
+    project_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    run TEXT NOT NULL CHECK (length(CAST(run AS BLOB)) BETWEEN 1 AND 256),
+    holder TEXT NOT NULL CHECK (length(CAST(holder AS BLOB)) BETWEEN 1 AND 128),
+    started_at TEXT NOT NULL,
+    renewed_at REAL NOT NULL,
+    PRIMARY KEY (project_id, session_id),
+    FOREIGN KEY (project_id, session_id) REFERENCES sessions (project_id, session_id)
+) STRICT""",
+        """CREATE TABLE run_events (
+    project_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    run TEXT NOT NULL CHECK (length(CAST(run AS BLOB)) BETWEEN 1 AND 256),
+    seq INTEGER NOT NULL CHECK (seq BETWEEN 1 AND 999999999),
+    at TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN
+        ('started', 'user', 'model', 'assistant', 'tool', 'notice', 'waiting', 'stopped')),
+    data TEXT NOT NULL CHECK (json_valid(data) AND json_type(data) = 'object'
+        AND length(CAST(data AS BLOB)) <= 65536),
+    PRIMARY KEY (project_id, session_id, run, seq),
+    FOREIGN KEY (project_id, session_id) REFERENCES sessions (project_id, session_id)
+) STRICT""",
+        """CREATE TRIGGER run_events_no_update BEFORE UPDATE ON run_events
+BEGIN SELECT RAISE(ABORT, 'run events are written once'); END""",
+        """CREATE TRIGGER run_events_no_delete BEFORE DELETE ON run_events
+BEGIN SELECT RAISE(ABORT, 'run events are written once'); END""",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -586,6 +644,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _response_checks,
     _math_checks,
     _evidence_checks,
+    _run_service,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

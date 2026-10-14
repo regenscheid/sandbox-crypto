@@ -278,6 +278,11 @@ def _is_identifier(value: str) -> bool:
     return True
 
 
+def run_name(started_at: datetime, run_id: str) -> str:
+    """The name a session keeps a run's record under: its start time in UTC and its ID."""
+    return f"{started_at.astimezone(UTC).strftime(_STARTED)}-{run_id}"
+
+
 def _run_entry(name: str) -> RunEntry | None:
     """The run a record's name stands for; None for any other name, which is never a path."""
     match = _RUN_NAME.fullmatch(name)
@@ -445,8 +450,7 @@ class ProjectStore:
     def save_run(self, record: RunRecord) -> RunEntry:
         """Keep a run of one of the project's sessions; the record is written once."""
         project_id, session_id = record.context.project_id, record.context.session_id
-        started = record.started_at.astimezone(UTC).strftime(_STARTED)
-        entry = _run_entry(f"{started}-{record.run_id}")
+        entry = _run_entry(run_name(record.started_at, record.run_id))
         if entry is None:
             raise ProjectError(
                 ErrorKind.INVALID_REQUEST,
