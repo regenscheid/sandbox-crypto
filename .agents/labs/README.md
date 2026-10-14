@@ -423,3 +423,22 @@ literal in memory, then exports checked records and performs exact held-FD owned
 teardown. Private settings/provider contents and raw execution output are never
 exported or hashed. The helper is intentionally tied to its recorded product
 inputs; a later changed product tree requires separate review and repinning.
+
+
+## Lab36 — explicit named Conda upgrade
+
+The root-only helper `.agents/labs/provisioning_upgrades.py` is source-admitted
+after independent typed-helper and admission review. Its default only describes
+the finite plan. Root owns the separately reviewed startup, run, exact public
+export and original-state cleanup adapters; source and helper remain frozen until
+complete independent teardown. Actual runtime acceptance is pending.
+
+The bounds are one VM, at most16 accepted executions, two unique provisioning
+operations (one install and one update) and one known terminal replay. A scalar
+pilot precedes SymPy1.13.3; the existing MAIN provisioning handler requests the
+explicit1.14.0 upgrade. Fresh guest Python checks each version and a small symbolic
+factor/expand identity, avoiding a stale imported module. The fixed public
+Conda-forge metadata receipt only establishes historical candidate availability.
+The production selected-file policy, AGPL and permission checks still decide work.
+No model/provider call, automatic approval, rollback or disk-quota enforcement is
+claimed. Preserve original failures, identities and owners before any retry.
