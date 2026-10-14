@@ -26,6 +26,7 @@ from sandbox_science.contracts import TERMINAL_STATES, Clock, ErrorKind
 from .channel import ExecutorChannel
 from .connections import Connection, EnvironmentConnections
 from .errors import WorkerError
+from .lifecycle import EnvironmentLifecycle
 from .live import REQUEST, Live, time_limit
 from .publication import Publication
 from .store import Store
@@ -36,11 +37,6 @@ _log = logging.getLogger(__name__)
 
 STARTUP_RECOVERY_ATTEMPTS = 5
 """Recovery attempts at startup before the worker refuses to start."""
-
-ConfirmedLoss = Callable[[str], Awaitable[bool]]
-"""Whether the environment's sandbox is proven deleted, stopped or replaced."""
-Recycle = Callable[[str, str, str], Awaitable[None]]
-"""Stop and start the environment's original sandbox, by its name and ID."""
 
 
 @dataclass(frozen=True)
@@ -75,9 +71,8 @@ class DaemonRecovery:
         hooks: RecoveryHooks,
         *,
         clock: Clock,
-        timeouts: Callable[[], ManagerTimeouts],
-        confirmed_daemon_loss: Callable[[], ConfirmedLoss | None],
-        recycle_daemon: Callable[[], Recycle | None],
+        timeouts: ManagerTimeouts,
+        lifecycle: EnvironmentLifecycle,
     ) -> None:
         self.store = store
         self.connections = connections
@@ -86,11 +81,8 @@ class DaemonRecovery:
         self.hooks = hooks
         self.clock = clock
         self.timeouts = timeouts
-        """The manager's timeouts, as they are when each wait starts."""
-        self.confirmed_daemon_loss = confirmed_daemon_loss
-        """The manager's proof of sandbox loss, which is set after it is built."""
-        self.recycle_daemon = recycle_daemon
-        """The manager's sandbox recycle, which is set after it is built."""
+        self.lifecycle = lifecycle
+        """Proof of a sandbox's loss, and its recycle, where the worker manages it."""
         self._pollers: dict[str, tuple[ExecutorChannel, asyncio.Task[Any]]] = {}
 
     def bridge_lost(self, environment_id: str, channel: ExecutorChannel) -> None:
@@ -115,7 +107,7 @@ class DaemonRecovery:
         """
         if not self.usability.begin_recovery(environment_id):
             return
-        delay = self.timeouts().recovery_retry
+        delay = self.timeouts.recovery_retry
         try:
             for attempt in itertools.count(1):
                 try:
@@ -135,7 +127,7 @@ class DaemonRecovery:
                         "cannot reconcile the sandbox daemon; startup refused",
                     )
                 await asyncio.sleep(delay)
-                delay = min(2 * delay, self.timeouts().recovery_retry_max)
+                delay = min(2 * delay, self.timeouts.recovery_retry_max)
         finally:
             self.usability.end_recovery(environment_id)
         if startup and not self.usability.closing and self.unattached(environment_id):
@@ -174,7 +166,7 @@ class DaemonRecovery:
         """One recovery attempt; whether it reached the daemon or found the sandbox gone."""
         for live in self.unattached(environment_id):
             self._keep_watchdog(live)
-        confirmed_loss = self.confirmed_daemon_loss()
+        confirmed_loss = self.lifecycle.confirmed_daemon_loss
         if confirmed_loss is not None and await confirmed_loss(environment_id):
             self.usability.sandbox_stopped(environment_id)
             for live in self.unattached(environment_id):
@@ -216,7 +208,7 @@ class DaemonRecovery:
                 if live.cancel_watchdog is None or live.cancel_watchdog.done():
                     live.cancel_watchdog = self.hooks.spawn(self.hooks.watch_cancel(live))
                 try:
-                    async with asyncio.timeout(self.timeouts().cancel_grace):
+                    async with asyncio.timeout(self.timeouts.cancel_grace):
                         await self.hooks.send_cancel(live)
                         if live.execution.origin is not None:
                             # Withdrawn provisioning ownership cannot leave an
@@ -249,7 +241,7 @@ class DaemonRecovery:
             if live.execution.state not in TERMINAL_STATES
         }
         try:
-            async with asyncio.timeout(self.timeouts().cancel_grace):
+            async with asyncio.timeout(self.timeouts.cancel_grace):
                 reply = await channel.request("active")
                 raw: Any = reply.get("executions")
                 if (
@@ -306,7 +298,7 @@ class DaemonRecovery:
         A failed bridge is closed, which starts a recovery. Any other failure, such as
         one of the store, is logged and the poller goes on, waiting longer while it lasts.
         """
-        delay = self.timeouts().poll_interval
+        delay = self.timeouts.poll_interval
         while not self.usability.closing and not channel.closed:
             try:
                 for live in list(self.hooks.lives()):
@@ -316,13 +308,13 @@ class DaemonRecovery:
                         and live.final is None
                     ):
                         await self._replay(live, channel)
-                delay = self.timeouts().poll_interval
+                delay = self.timeouts.poll_interval
             except WorkerError:
                 await channel.close()
                 return
             except Exception:
                 _log.exception("polling the executor of %s failed", environment_id)
-                delay = min(2 * delay, self.timeouts().poll_retry_max)
+                delay = min(2 * delay, self.timeouts.poll_retry_max)
             await asyncio.sleep(delay)
 
     async def recycle(self, environment_id: str) -> None:
@@ -332,7 +324,7 @@ class DaemonRecovery:
         Owner-mark scans alone cannot prove its escaped children have stopped. Keep
         the old endpoint durable until the managed lifecycle confirms stop/start.
         """
-        recycle_daemon = self.recycle_daemon()
+        recycle_daemon = self.lifecycle.recycle_daemon
         if recycle_daemon is None:
             raise WorkerError(
                 ErrorKind.UNAVAILABLE,

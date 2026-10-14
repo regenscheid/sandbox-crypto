@@ -62,13 +62,12 @@ class ExecutionJournal:
         connections: EnvironmentConnections,
         *,
         clock: Clock,
-        timeouts: Callable[[], ManagerTimeouts],
+        timeouts: ManagerTimeouts,
     ) -> None:
         self.store = store
         self.connections = connections
         self.clock = clock
         self.timeouts = timeouts
-        """The manager's timeouts, as they are when used."""
         self.live: dict[str, Live] = {}
         """Executions not ended, and those ended lately, by ID."""
         self.streams_ended = False
@@ -142,7 +141,7 @@ class ExecutionJournal:
         if live.cancel_watchdog is not None and live.cancel_watchdog is not asyncio.current_task():
             live.cancel_watchdog.cancel()
         asyncio.get_running_loop().call_later(
-            self.timeouts().retain_live, self.live.pop, execution_id, None
+            self.timeouts.retain_live, self.live.pop, execution_id, None
         )
 
     def final(

@@ -45,7 +45,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Seque
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Final, NoReturn, cast
+from typing import TYPE_CHECKING, Final, NoReturn, cast
 
 from pydantic import ValidationError
 
@@ -61,9 +61,11 @@ from sandbox_science.policy import (
     HardFloor,
     LoadedPolicy,
     PolicyLoadError,
+    effective_resources,
     load_ceiling,
     normalize_host,
 )
+from sandbox_science.policy.model import Resources
 from sandbox_science.policy.openshell import (
     Compiled,
     CompileError,
@@ -78,6 +80,9 @@ from .errors import WorkerError
 from .provisioner import Governing
 from .settings import EnvironmentSettings, OpenShellBackendSettings
 from .timeouts import seconds
+
+if TYPE_CHECKING:
+    from .store import Store
 
 _log = logging.getLogger(__name__)
 
@@ -478,6 +483,25 @@ class Environments:
         if info is None:
             raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
         return info
+
+    def daemon_identity(self, environment_id: str) -> tuple[str, str] | None:
+        """The sandbox a managed environment is bound to, by name and ID; None for an
+        environment the worker did not create, or one without a sandbox ID yet."""
+        if not self.manages(environment_id):
+            return None
+        info = self.get(environment_id)
+        return (info.sandbox, info.sandbox_id) if info.sandbox_id else None
+
+    def job_resources(self, environment_id: str) -> Resources:
+        """The job limits of the environment's policy, within the pool's ceiling."""
+        if self.busy(environment_id):
+            raise WorkerError(ErrorKind.UNAVAILABLE, "the environment is changing")
+        governing = self.governing(environment_id)
+        if governing is None:
+            if self.handmade(environment_id):
+                return self.ceiling.resources
+            raise WorkerError(ErrorKind.POLICY_DENIED, "no ready environment policy for jobs")
+        return effective_resources(governing.policy.policy, governing.ceiling)[0]
 
     def governing(self, environment_id: str) -> Governing | None:
         """What decides the environment's packages, for provisioning: its stored policy
@@ -1199,3 +1223,53 @@ def _objects(document: object, key: str | None = None) -> list[dict[str, object]
         for item in cast(list[object], items)
         if isinstance(item, dict)
     ]
+
+
+async def confirmed_daemon_loss(
+    cli: OpenShellCli,
+    store: Store,
+    sandbox_of: Callable[[str], str | None],
+    environments: Environments | None,
+    environment_id: str,
+) -> bool:
+    """Actual sandbox loss, never a recycle intent or an unreachable gateway.
+
+    ``sandbox_of`` is the backend's sandbox for the environment; ``environments`` the
+    managed ones, if the worker manages any.
+    """
+    pending_recycle = store.recycle_needed(environment_id)
+    binding = store.recycle_binding(environment_id) if pending_recycle else None
+    if pending_recycle and binding is None:
+        return False  # legacy identity is unknown; cleanup needs explicit operator evidence
+    sandbox = sandbox_of(environment_id)
+    if environments is not None and environments.manages(environment_id):
+        info = environments.get(environment_id)
+        if info.state is EnvironmentState.DELETED and not pending_recycle:
+            return True
+        if info.state is EnvironmentState.STOPPED and not pending_recycle:
+            return True  # ordinary suspension already shut down its executor
+        sandbox = info.sandbox
+    if binding is not None:
+        sandbox = binding[0]  # prove termination of the original VM, not a new current binding
+    if sandbox is None:
+        return not pending_recycle  # removing a binding cannot prove a fenced VM stopped
+    try:
+        description = await cli.sandbox(sandbox)
+    except WorkerError:
+        return False  # gateway/transport failure is not evidence of sandbox loss
+    if pending_recycle:
+        if description is None:
+            return True
+        if binding is not None and description.get("id") != binding[1]:
+            return False
+        return description.get("phase") == "Stopped"
+    if description is None or description.get("phase") in (
+        "Stopped",
+        "Completed",
+        "Error",
+        "Deleting",
+    ):
+        return True
+    if environments is not None and environments.manages(environment_id):
+        return description.get("id") != environments.get(environment_id).sandbox_id
+    return False

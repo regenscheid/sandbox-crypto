@@ -436,7 +436,7 @@ async def test_http_disconnect_does_not_claim_remote_cancellation(
 
     http, manager, _ = service
     await manager.capabilities("env1")
-    manager.capture_timeout = 0.2
+    view(manager).set_capture(timeout=0.2)
     channel = view(manager).channel("env1")
     original = channel.request
     started, cancelled = asyncio.Event(), asyncio.Event()

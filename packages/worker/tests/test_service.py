@@ -501,7 +501,7 @@ async def test_a_session_sees_each_admission_notice_once(worker: Harness) -> Non
     def notices(environment_id: str, since: datetime) -> list[tuple[datetime, str]]:
         return [(at, text) for at, text in recorded if at > since]
 
-    worker.manager.notices = notices
+    worker.view.set_lifecycle(notices=notices)
     first = await worker.run("op-n1", kind="shell", script="true")
     assert first["result"]["notices"] == []
     recorded.append((datetime.now(UTC), "a.example.org was admitted on demand"))

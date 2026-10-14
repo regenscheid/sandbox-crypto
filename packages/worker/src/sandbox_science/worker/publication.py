@@ -69,8 +69,9 @@ class Publication:
         usability: Usability,
         *,
         clock: Clock,
-        max_artifact_size: Callable[[], int],
-        ack_timeout: Callable[[], float],
+        max_artifact_size: int,
+        timeout: float,
+        ack_timeout: float,
     ) -> None:
         self.store = store
         self.blobs = blobs
@@ -78,10 +79,11 @@ class Publication:
         self.usability = usability
         self.clock = clock
         self.max_artifact_size = max_artifact_size
-        """The largest artifact, as the manager's setting gives it when a capture reads."""
+        """The largest artifact, in bytes."""
+        self.timeout = timeout
+        """Seconds one publication may take, its captures and blob writes included."""
         self.ack_timeout = ack_timeout
-        """Seconds the executor gets to confirm it cleaned up a cancelled capture, as the
-        manager's setting gives it when one is asked."""
+        """Seconds the executor gets to confirm it cleaned up a cancelled capture."""
         self._owners: dict[asyncio.Task[ArtifactRef], _Owner] = {}
         """Each publication's task, with its lease, until its work on the worker's side ends."""
         self._pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="artifact-blob")
@@ -161,14 +163,14 @@ class Publication:
             ):
                 continue
             try:
-                async with asyncio.timeout(self.ack_timeout()):
+                async with asyncio.timeout(self.ack_timeout):
                     reply = await channel.request("capture_cancel", capture_id=lease.capture_id)
                 if reply.get("capture_id") == lease.capture_id and reply.get("cleaned") is True:
                     self.store.acknowledge_capture(lease)
             except (WorkerError, TimeoutError, ValueError):
                 _log.warning("capture cleanup remains unknown; durable admission held")
 
-    async def publish(self, request: PublishRequest, timeout: float) -> ArtifactRef:
+    async def publish(self, request: PublishRequest) -> ArtifactRef:
         """Admit four durable publications, two per environment, without queued work.
 
         Unknown guest cleanup holds admission even after actual host work drains;
@@ -177,7 +179,7 @@ class Publication:
         environment_id = request.context.environment_id
         if self.usability.closing or self.usability.releasing(environment_id):
             raise WorkerError(ErrorKind.UNAVAILABLE, "artifact capture admission limit reached")
-        deadline = self.clock.monotonic() + timeout
+        deadline = self.clock.monotonic() + self.timeout
         try:
             lease = self.store.reserve_capture(new_id("pub"), environment_id)
         except ValueError as exc:
@@ -336,7 +338,7 @@ class Publication:
                 path=reading.path,
                 offset=offset,
                 length=MAX_READ_BYTES,
-                max_bytes=min(capture.MAX_BYTES, self.max_artifact_size()),
+                max_bytes=min(capture.MAX_BYTES, self.max_artifact_size),
                 hash=hashed,
                 timeout=remaining,
                 reply_timeout=None,
@@ -352,11 +354,11 @@ class Publication:
 
             async def cleanup() -> None:
                 try:
-                    async with asyncio.timeout(self.ack_timeout()):
+                    async with asyncio.timeout(self.ack_timeout):
                         cancelled = await channel.request(
                             "capture_cancel",
                             capture_id=capture_id,
-                            reply_timeout=self.ack_timeout(),
+                            reply_timeout=self.ack_timeout,
                         )
                     if (
                         cancelled.get("capture_id") == capture_id
@@ -404,7 +406,7 @@ class Publication:
             if not isinstance(encoded, str) or len(encoded) > 4 * ((MAX_READ_BYTES + 2) // 3):
                 raise ValueError("range encoding exceeds its bound")
             data = base64.b64decode(encoded, validate=True)
-            limit = min(capture.MAX_BYTES, self.max_artifact_size())
+            limit = min(capture.MAX_BYTES, self.max_artifact_size)
             size = integer(reply.get("size"), 0, limit)
             start = integer(reply.get("offset"), 0, capture.MAX_BYTES)
             sha256, stamp = reply.get("sha256"), reply.get("stamp")

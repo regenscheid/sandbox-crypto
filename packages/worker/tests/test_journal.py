@@ -27,7 +27,7 @@ async def test_an_event_that_fails_to_store_takes_no_number(
             store,
             view(worker.manager).connections(),
             clock=worker.clock,
-            timeouts=lambda: MANAGER_TIMEOUTS,
+            timeouts=MANAGER_TIMEOUTS,
         )
         live = journal.track(stored)
         before = live.execution.last_seq

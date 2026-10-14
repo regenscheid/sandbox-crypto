@@ -34,6 +34,7 @@ from sandbox_science.worker.connections import (
     EnvironmentConnections,
 )
 from sandbox_science.worker.errors import WorkerError
+from sandbox_science.worker.lifecycle import UNMANAGED
 from sandbox_science.worker.settings import LocalBackendSettings
 from sandbox_science.worker.store import Store
 from sandbox_science.worker.usability import Usability
@@ -89,7 +90,6 @@ def connections_for(
         connect=connect,
         on_event=on_event,
         on_closed=on_closed,
-        daemon_identity=lambda _: None,
         incarnation_lost=lambda *_: None,
         recycle=recycle,
         sync_package_gate=sync_package_gate or opened.sync_package_gate,
@@ -101,6 +101,7 @@ def connections_for(
         store,
         Usability(store),
         hooks,
+        UNMANAGED,
         clock=SYSTEM_CLOCK,
         pool_id="test",
         state_dir=tmp_path,

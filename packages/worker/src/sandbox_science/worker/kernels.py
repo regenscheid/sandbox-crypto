@@ -38,16 +38,15 @@ from .channel import ExecutorChannel
 from .connections import Connection, EnvironmentConnections
 from .errors import WorkerError
 from .kernel_revisions import KernelBirth
+from .lifecycle import EnvironmentLifecycle
 from .package_admission import PackageAdmission
 from .replies import integer
 from .store import KernelRecord, Store
+from .timeouts import ManagerTimeouts
 from .usability import Usability
 
 MAX_KERNEL_OBSERVATIONS = 8
 """No queued observers, and at most one in flight for each environment."""
-
-DaemonIdentity = Callable[[str], tuple[str, str] | None]
-"""An environment's trusted sandbox binding; None when the worker does not know one."""
 
 
 @dataclass
@@ -68,8 +67,8 @@ class KernelRegistry:
         admission: PackageAdmission,
         *,
         clock: Clock,
-        observation_timeout: Callable[[], float],
-        daemon_identity: Callable[[], DaemonIdentity | None],
+        timeouts: ManagerTimeouts,
+        lifecycle: EnvironmentLifecycle,
     ) -> None:
         self.store = store
         self.connections = connections
@@ -77,11 +76,9 @@ class KernelRegistry:
         self.admission = admission
         """The package gate, which a kernel restart must pass like any package change."""
         self.clock = clock
-        self.observation_timeout = observation_timeout
-        """The whole budget of a passive kernel observation, the transport write lock
-        included, as the manager's timeouts give it when the observation starts."""
-        self.daemon_identity = daemon_identity
-        """The manager's daemon identity, which is set after it is built; None for none."""
+        self.timeouts = timeouts
+        self.lifecycle = lifecycle
+        """The managed environments' bindings, which a kernel birth needs to pin."""
         self._observations: dict[str, _Observer] = {}
 
     def invalidate(self, context: ExecutionContext) -> None:
@@ -180,7 +177,7 @@ class KernelRegistry:
                 endpoint = self.store.lineage_endpoint(environment_id)
                 if endpoint is not None and endpoint[0] == incarnation:
                     binding = endpoint[1:]
-                if binding is None and self.daemon_identity() is not None:
+                if binding is None and self.lifecycle.daemon_identity is not None:
                     can_pin = False  # a managed VM's original binding must be known
             try:
                 birth = KernelBirth.model_validate(
@@ -352,7 +349,7 @@ class KernelRegistry:
         if type(channel.hello.get(protocol)) is not int or channel.hello.get(protocol) != 1:
             raise WorkerError(ErrorKind.UNSUPPORTED, "legacy executor lacks scoped kernel status")
         incarnation = channel.incarnation
-        budget = self.observation_timeout()
+        budget = self.timeouts.kernel_observation
         observer = _Observer((context.project_id, environment_id, context.session_id))
         self._observations[environment_id] = observer
         try:

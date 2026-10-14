@@ -141,11 +141,13 @@ async def test_environment_limit_includes_other_sessions(jobs: ExecutionManager)
 
 @pytest.mark.asyncio
 async def test_job_timeout_uses_own_policy_and_keeps_output(jobs: ExecutionManager) -> None:
-    jobs.job_resources = lambda _: Resources(
-        wall_time=timedelta(seconds=1),
-        job_wall_time_default=timedelta(seconds=2),
-        job_wall_time_max=timedelta(seconds=3),
-        jobs_per_session=1,
+    view(jobs).set_lifecycle(
+        job_resources=lambda _: Resources(
+            wall_time=timedelta(seconds=1),
+            job_wall_time_default=timedelta(seconds=2),
+            job_wall_time_max=timedelta(seconds=3),
+            jobs_per_session=1,
+        )
     )
     job, _ = await jobs.submit(request("timeout", "printf started; sleep 60", timeout_seconds=0.1))
     ended = await jobs.wait(job.execution_id)
@@ -159,7 +161,9 @@ async def test_job_timeout_uses_own_policy_and_keeps_output(jobs: ExecutionManag
     assert default.job is not None
     assert default.job.timeout_seconds == 2
     await jobs.wait(default.execution_id)
-    jobs.job_resources = lambda _: Resources(job_wall_time_max=timedelta(seconds=1))
+    view(jobs).set_lifecycle(
+        job_resources=lambda _: Resources(job_wall_time_max=timedelta(seconds=1))
+    )
     clamped, _ = await jobs.submit(request("clamped", "true"))
     assert clamped.job is not None
     assert clamped.job.timeout_seconds == 1
@@ -297,7 +301,7 @@ async def test_disk_write_failure_ends_job_and_preserves_bounded_output(
 async def test_session_quota_spans_environments_and_cursor_is_scoped(
     jobs: ExecutionManager,
 ) -> None:
-    jobs.job_resources = lambda _: Resources(jobs_per_session=1)
+    view(jobs).set_lifecycle(job_resources=lambda _: Resources(jobs_per_session=1))
     first, _ = await jobs.submit(request("first"))
     other_environment = request("second").model_copy(
         update={"context": CONTEXT.model_copy(update={"environment_id": "env2"})}
@@ -323,15 +327,19 @@ async def test_session_quota_spans_environments_and_cursor_is_scoped(
 async def test_omitted_timeout_is_distinct_and_idempotent_across_policy_changes(
     jobs: ExecutionManager,
 ) -> None:
-    jobs.job_resources = lambda _: Resources(
-        job_wall_time_default=timedelta(seconds=10), job_wall_time_max=timedelta(seconds=60)
+    view(jobs).set_lifecycle(
+        job_resources=lambda _: Resources(
+            job_wall_time_default=timedelta(seconds=10), job_wall_time_max=timedelta(seconds=60)
+        )
     )
     original = request("policy-default", "true")
     first, _ = await jobs.submit(original)
     await jobs.wait(first.execution_id)
     with pytest.raises(WorkerError, match="different request"):
         await jobs.submit(request("policy-default", "true", timeout_seconds=86400))
-    jobs.job_resources = lambda _: Resources(job_wall_time_default=timedelta(seconds=20))
+    view(jobs).set_lifecycle(
+        job_resources=lambda _: Resources(job_wall_time_default=timedelta(seconds=20))
+    )
     same, created = await jobs.submit(original)
     assert not created
     assert same.job is not None

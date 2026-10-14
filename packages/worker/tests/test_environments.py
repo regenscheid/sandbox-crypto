@@ -55,10 +55,8 @@ from sandbox_science.worker.admission import (
 from sandbox_science.worker.app import create_app
 from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.backends import LocalBackend, OpenShellBackend
-from sandbox_science.worker.cli import _backend as cli_backend
-from sandbox_science.worker.cli import (
-    _confirmed_daemon_loss as confirmed_daemon_loss,
-)
+from sandbox_science.worker.build import build_backend as cli_backend
+from sandbox_science.worker.build import build_lifecycle, build_worker
 from sandbox_science.worker.cli import main
 from sandbox_science.worker.connections import Activity
 from sandbox_science.worker.environments import (
@@ -69,6 +67,7 @@ from sandbox_science.worker.environments import (
     new_sandbox_name,
 )
 from sandbox_science.worker.errors import WorkerError
+from sandbox_science.worker.lifecycle import EnvironmentLifecycle
 from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.provisioner import Provisioner, _Op
 from sandbox_science.worker.settings import (
@@ -1198,27 +1197,28 @@ async def test_recycle_intent_requires_actual_termination_and_clears_quarantine(
         ),
     )
     store = Store(setup.tmp / "recycle-worker.sqlite")
+    assert settings.openshell is not None
+    backend = OpenShellBackend(settings.openshell, setup.state_dir)
+    # The loss check as the worker builds it, from the settings, backend and environments.
+    lifecycle = build_lifecycle(settings, backend, setup.environments, store)
+    confirmed = lifecycle.confirmed_daemon_loss
+    assert confirmed is not None
     manager = ExecutionManager(
         store,
-        OpenShellBackend(setup.settings, setup.state_dir),
+        backend,
         Blobs(setup.tmp / "recycle-blobs"),
         pool_id="test",
         max_artifact_size=1 << 20,
         state_dir=setup.state_dir,
+        lifecycle=EnvironmentLifecycle(confirmed_daemon_loss=confirmed),
     )
     try:
         store.remember_endpoint("env-1", "inc-" + "1" * 24, (info.sandbox, info.sandbox_id or ""))
         store.require_recycle("env-1", "inc-" + "1" * 24)
         view(manager).quarantine("env-1")
 
-        async def confirmed(environment: str) -> bool:
-            return await confirmed_daemon_loss(
-                settings, manager, setup.environments, store, environment
-            )
-
         assert await confirmed("env-1") is (phase == "Stopped")
         if phase == "Stopped":
-            manager.confirmed_daemon_loss = confirmed
             await view(manager).recover("env-1", startup=True)
             assert not store.recycle_needed("env-1")
             assert not view(manager).quarantined("env-1")
@@ -2224,6 +2224,32 @@ async def test_the_backend_never_resolves_without_knowing_the_workers_environmen
     assert backend.manages is not None
 
 
+async def test_a_worker_built_on_managed_environments_gets_their_lifecycle(setup: Setup) -> None:
+    """The manager learns the environments' bindings, recycles, notices and job limits
+    when the worker is built, not from assignments after."""
+    settings = Settings.model_validate(
+        {
+            "token_file": setup.tmp / "worker.token",
+            "state_dir": setup.tmp / "built",
+            "openshell": setup.settings.model_dump(),
+        }
+    )
+    parts = build_worker(settings, "test-secret-" + "b" * 40)
+    try:
+        environments = parts.environments
+        assert environments is not None
+        lifecycle = parts.manager.lifecycle
+        assert lifecycle.daemon_identity == environments.daemon_identity
+        assert lifecycle.recycle_daemon == environments.recycle_executor
+        assert lifecycle.notices == environments.notices
+        assert lifecycle.job_resources == environments.job_resources
+        assert lifecycle.confirmed_daemon_loss is not None
+        assert parts.manager.backend.daemon
+        assert environments.release == parts.manager.release
+    finally:
+        await parts.close()
+
+
 async def test_hosts_are_admitted_ahead_of_use(api: Api) -> None:
     assert (await api.call("POST", "/v1/environments", A_TOKEN, api.environment("env-a")))[0] == 201
     path = "/v1/environments/env-a/admissions"
@@ -2382,6 +2408,11 @@ async def test_required_original_binding_guard_precedes_guest_delete(
     setup: Setup, tmp_path: Path, proof: str
 ) -> None:
     store = Store(tmp_path / "worker.sqlite3")
+
+    def identity(environment_id: str) -> tuple[str, str] | None:
+        info = setup.environments.get(environment_id)
+        return (info.sandbox, info.sandbox_id) if info.sandbox_id is not None else None
+
     manager = ExecutionManager(
         store,
         LocalBackend(LocalBackendSettings(), tmp_path),
@@ -2389,14 +2420,9 @@ async def test_required_original_binding_guard_precedes_guest_delete(
         pool_id="test",
         max_artifact_size=1024,
         state_dir=tmp_path,
+        lifecycle=EnvironmentLifecycle(daemon_identity=identity),
     )
     original, _ = await setup.environments.create(setup.request())
-
-    def identity(environment_id: str) -> tuple[str, str] | None:
-        info = setup.environments.get(environment_id)
-        return (info.sandbox, info.sandbox_id) if info.sandbox_id is not None else None
-
-    manager.daemon_identity = identity
     # create_app registers these required guards independently of the optional
     # executor release callback. Exercise that supported composition directly.
     setup.environments.release = None

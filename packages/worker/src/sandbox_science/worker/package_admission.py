@@ -29,13 +29,11 @@ from .channel import ExecutorChannel
 from .connections import Connection
 from .errors import WorkerError
 from .identity import same_execution
+from .lifecycle import EnvironmentLifecycle
 from .package_gate import PackageGate
 from .package_gate import refusal as recovery_refusal
 from .store import Store
 from .usability import Usability
-
-DaemonIdentity = Callable[[str], tuple[str, str] | None]
-"""An environment's trusted sandbox binding; None when the worker does not know one."""
 
 LEGACY = "legacy executor lacks package admission fencing; protected work refused"
 """The refusal when an executor cannot acknowledge the gate."""
@@ -53,7 +51,7 @@ class PackageAdmission:
         connect: Callable[[str], Awaitable[Connection]],
         spawn: Callable[[Any], asyncio.Task[Any]],
         sync: Callable[[str], Awaitable[None]],
-        daemon_identity: Callable[[], DaemonIdentity | None],
+        lifecycle: EnvironmentLifecycle,
     ) -> None:
         self.store = store
         self.backend = backend
@@ -64,8 +62,8 @@ class PackageAdmission:
         """Starts a background task that the manager owns and cancels when it closes."""
         self.sync_through = sync
         """How a retry syncs an environment: the manager's ``sync_package_gate``."""
-        self.daemon_identity = daemon_identity
-        """The manager's daemon identity, which is set after it is built; None for none."""
+        self.lifecycle = lifecycle
+        """The managed environments' bindings, which a gate is bound to when known."""
         self._locks: dict[str, asyncio.Lock] = {}
         self._acked: dict[ExecutorChannel, PackageGate] = {}
         self._retries: dict[str, asyncio.Task[Any]] = {}
@@ -104,19 +102,12 @@ class PackageAdmission:
             return False
         lock = self._locks.setdefault(environment_id, asyncio.Lock())
         async with lock:
-            daemon_identity = self.daemon_identity()
+            daemon_identity = self.lifecycle.daemon_identity
             binding = daemon_identity(environment_id) if daemon_identity else None
             try:
                 self.store.bind_package_gate(
                     environment_id,
-                    repr(
-                        binding
-                        or (
-                            self.backend.name,
-                            str(getattr(self.backend, "root", "")),
-                            self.backend.sandbox_id(environment_id),
-                        )
-                    ),
+                    repr(binding) if binding else self.backend.binding_key(environment_id),
                 )
             except WorkerError:
                 return False  # no gate mutation on an unproven or replacement sandbox
@@ -132,7 +123,7 @@ class PackageAdmission:
                     operation=gate.operation,
                     revision=gate.revision,
                 )
-                daemon_identity = self.daemon_identity()
+                daemon_identity = self.lifecycle.daemon_identity
                 if channel.closed or (
                     daemon_identity is not None and daemon_identity(environment_id) != binding
                 ):
@@ -180,17 +171,11 @@ class PackageAdmission:
         self._retries[environment_id] = self.spawn(retry())
 
     def _deletion_binding(self, environment_id: str) -> str | None:
-        daemon_identity = self.daemon_identity()
+        daemon_identity = self.lifecycle.daemon_identity
         if daemon_identity is not None:
             identity = daemon_identity(environment_id)
             return repr(identity) if identity is not None else None
-        return repr(
-            (
-                self.backend.name,
-                str(getattr(self.backend, "root", "")),
-                self.backend.sandbox_id(environment_id),
-            )
-        )
+        return self.backend.binding_key(environment_id)
 
     def forget(self, environment_id: str) -> None:
         """Only confirmed deletion, after provisioning drain, may remove this fence."""

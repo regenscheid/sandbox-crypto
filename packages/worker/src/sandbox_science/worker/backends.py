@@ -82,6 +82,16 @@ class Backend(Protocol):
     @property
     def isolation_tier(self) -> int: ...
 
+    @property
+    def daemon(self) -> bool:
+        """Whether executors run under a sandbox daemon that outlives the worker."""
+        ...
+
+    def binding_key(self, environment_id: str) -> str:
+        """The environment's sandbox binding as the backend knows it, for package gates
+        when no managed environment names one."""
+        ...
+
 
 class LocalBackend:
     """Runs the executor beside the worker. No isolation at all: development and tests."""
@@ -135,6 +145,13 @@ class LocalBackend:
     @property
     def isolation_tier(self) -> int:
         return 0
+
+    @property
+    def daemon(self) -> bool:
+        return self.settings.daemon
+
+    def binding_key(self, environment_id: str) -> str:
+        return repr((self.name, str(self.root), self.sandbox_id(environment_id)))
 
 
 class OpenShellBackend:
@@ -282,6 +299,13 @@ class OpenShellBackend:
     @property
     def isolation_tier(self) -> int:
         return self.settings.isolation_tier
+
+    @property
+    def daemon(self) -> bool:
+        return self.settings.daemon
+
+    def binding_key(self, environment_id: str) -> str:
+        return repr((self.name, "", self.sandbox_id(environment_id)))
 
 
 def daemon_token(state_dir: Path, environment_id: str) -> str:
