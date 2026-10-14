@@ -129,9 +129,12 @@ MAX_LOCKFILE_EVENT = MAX_LINE // 2
 """A ``revision`` event carries its lockfile only below this many bytes of JSON."""
 MAX_OWNERS = 4096
 MAX_RUNS = 64
-MAX_RUN_KERNELS = 63
-"""Delegated runs of one session with kernels of their own at once (contracts' bound)."""
 """Attempts remembered per call or kernel, to tell which one ran a package command."""
+MAX_RUN_KERNELS = 63
+"""Delegated runs of one session with live kernels of their own at once (contracts'
+bound)."""
+MAX_ENDED_RUNS = 4096
+"""Ended runs remembered per session, whose late cells are refused."""
 MAX_COMMANDS = 8
 """Package commands a ``revision`` event names: the last of its change."""
 MAX_LOOKS = 8
@@ -320,6 +323,12 @@ class Running:
     """Seconds it waited for package commands before it started; its time limit covers them."""
 
 
+def _not_retired(kernel: Kernel) -> None:
+    """Refuse to start a run's kernel after the run ended (under its ``control``)."""
+    if kernel.retired:
+        raise ToolError("conflict", f"run {kernel.run} has ended, and its kernels with it")
+
+
 @dataclass
 class Kernel:
     """A session's kernel for one language, or a run's own (``run``); its generation
@@ -348,14 +357,16 @@ class Kernel:
     kernels."""
     run: str | None = field(default=None, kw_only=True)
     """The run whose own kernel this is; ``None`` for the session's."""
+    retired: bool = field(default=False, kw_only=True)
+    """Its run has ended: it is never started again (set under ``control``)."""
 
     @property
     def kernel_id(self) -> str:
         if self.run is not None:
-            # Named by a digest, since joining a session and a run ID could repeat another
-            # session's kernel ID.
+            # Named by a digest after "krn.", which no session's kernel ID begins with
+            # ("krn-"), since joining a session and a run ID could repeat one.
             parts = f"{self.session}\0{self.run}\0{self.language}"
-            return f"krn-r{hashlib.sha256(parts.encode()).hexdigest()[:24]}-{self.language}"
+            return f"krn.r{hashlib.sha256(parts.encode()).hexdigest()[:24]}-{self.language}"
         name = f"krn-{self.session}-{self.language}"
         if len(name) <= 128:
             return name
@@ -645,6 +656,8 @@ class Executor:
         self.running: dict[str, Running] = {}
         self.kernels: dict[tuple[str, str, str], Kernel] = {}
         """By session, run (empty for the session's own) and language."""
+        self.ended_runs: dict[str, dict[str, None]] = {}
+        """By session, the runs whose kernels were closed, oldest first."""
         self.tasks: set[asyncio.Task[None]] = set()
         self.launch_controls: set[asyncio.Task[Any]] = set()
         self.configured: dict[str, str] = {}
@@ -1093,6 +1106,7 @@ class Executor:
             artifact_capture_protocol=capture.PROTOCOL,
             output_observation_protocol=1,
             kernel_revision_protocol=1,
+            run_kernels=1,
             environment=await self.baseline(),
             package_epoch=self.package_epoch,
         )
@@ -1650,8 +1664,17 @@ class Executor:
         if language not in KERNEL_NAMES:
             raise ToolError("unsupported", f"no {language!r} kernel here")
         key = (session, run or "", language)
+        if run is not None and run in self.ended_runs.get(session, {}):
+            raise ToolError("conflict", f"run {run} has ended, and its kernels with it")
         if key not in self.kernels:
-            runs = {k[1] for k in self.kernels if k[0] == session and k[1] and k[1] != run}
+            in_use = {id(running.kernel) for running in self.running.values()}
+            runs = {
+                kernel.run
+                for kernel in self.kernels.values()
+                if kernel.session == session
+                and kernel.run not in (None, run)
+                and (kernel.manager is not None or id(kernel) in in_use)
+            }
             if run is not None and len(runs) >= MAX_RUN_KERNELS:
                 raise ToolError(
                     "unavailable",
@@ -1720,6 +1743,7 @@ class Executor:
                 start = await self.begin(running, timeout)
                 running.queued = False
                 async with kernel.control:
+                    _not_retired(kernel)
                     await kernel.ensure_started(
                         lambda work: self.start_kernel(running, kernel, timeout, work)
                     )
@@ -1937,6 +1961,7 @@ class Executor:
                     kernel.state_lost = True
             finally:
                 self.package_launch.release()
+            _not_retired(kernel)
             await kernel.ensure_started(lambda work: self.start_kernel(restart, kernel, 180, work))
         await self.reply(request, kernel=kernel.info())
 
@@ -1976,9 +2001,10 @@ class Executor:
 
         Its running cells end cancelled and its queued ones never start. Each kernel
         keeps its generation, so the session's next cell starts a new one and reports
-        that earlier state is gone. Shell calls are not affected. A request naming a
-        run stops only that run's own kernels and forgets them, since the run has ended;
-        the session's jobs stay.
+        that earlier state is gone. Shell calls are not affected. Runs' own kernels are
+        retired and forgotten, and their runs remembered as ended, so a late cell is
+        refused rather than starting one again. A request naming a run stops only that
+        run's own kernels; the session's kernels and jobs stay.
         """
         session = self.session(request)
         run = self.run_name(request)
@@ -2009,9 +2035,21 @@ class Executor:
                     stopped.append(kernel.info())
                     await kernel.stop()
                     kernel.state_lost = True
-                if run is not None:
+                if kernel.run is not None:
+                    kernel.retired = True
                     self.kernels.pop(key, None)
+                    self.end_run(session, kernel.run)
+        if run is not None:
+            self.end_run(session, run)
         await self.reply(request, kernels=stopped)
+
+    def end_run(self, session: str, run: str) -> None:
+        """Remember ``run`` as ended, within ``MAX_ENDED_RUNS`` per session."""
+        ended = self.ended_runs.setdefault(session, {})
+        ended.pop(run, None)
+        ended[run] = None
+        while len(ended) > MAX_ENDED_RUNS:
+            del ended[next(iter(ended))]
 
     async def session_kernels(self, session: str) -> list[Message]:
         """Only this session's live kernels, its own and its runs', in the order of their

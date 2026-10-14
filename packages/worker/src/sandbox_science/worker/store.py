@@ -1022,6 +1022,21 @@ class Store:
                 (environment_id, session_id, run, language, *values),
             )
 
+    def forget_run_kernels(
+        self, environment_id: str, session_id: str, run: str | None = None
+    ) -> None:
+        """Drop the generations of ``run``'s own kernels, or of all the session's runs."""
+        if run is None:
+            self._db.execute(
+                "DELETE FROM run_kernels WHERE environment_id = ? AND session_id = ?",
+                (environment_id, session_id),
+            )
+        else:
+            self._db.execute(
+                "DELETE FROM run_kernels WHERE environment_id = ? AND session_id = ? AND run = ?",
+                (environment_id, session_id, run),
+            )
+
     # Artifacts.
 
     def insert_artifact(self, artifact: ArtifactRef) -> None:

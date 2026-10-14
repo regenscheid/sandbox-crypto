@@ -226,7 +226,8 @@ def _run_kernels(db: sqlite3.Connection) -> None:
     session_id TEXT NOT NULL CHECK {_identifier("session_id", nul=True)},
     run TEXT NOT NULL CHECK {_identifier("run", nul=True)},
     language TEXT NOT NULL CHECK {_identifier("language", nul=True)},
-    incarnation TEXT NOT NULL CHECK {_prefixed("incarnation", "inc", nul=True)},
+    incarnation TEXT NOT NULL
+        CHECK (incarnation = 'unknown' OR {_prefixed("incarnation", "inc", nul=True)}),
     base INTEGER NOT NULL CHECK (base {_COUNT}),
     last INTEGER NOT NULL CHECK (last {_COUNT} AND base < last),
     PRIMARY KEY (environment_id, session_id, run, language)

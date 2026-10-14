@@ -51,6 +51,17 @@ MAX_KERNEL_OBSERVATIONS = 8
 _RUN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
 
+def require_run_kernels(channel: ExecutorChannel) -> None:
+    """Refuse a request naming a run on an executor from before kernels per run (worker
+    protocol 4): a reattached daemon keeps its old executor, which would run it in the
+    session's kernel."""
+    if channel.hello.get("run_kernels") != 1:
+        raise WorkerError(
+            ErrorKind.UNSUPPORTED,
+            "this environment's executor predates kernels per run; recycle the environment",
+        )
+
+
 @dataclass
 class _Observer:
     scope: tuple[str, str, str]
@@ -160,7 +171,7 @@ class KernelRegistry:
             # Not an identifier the worker can report: name the kernel after its session.
             parts = (session_id, language) if run is None else (session_id, run, language)
             digest = hashlib.sha256("\0".join(parts).encode()).hexdigest()[:24]
-            prefix = "krn-" if run is None else "krn-r"
+            prefix = "krn-" if run is None else "krn.r"
             kernel = KernelInfo.model_validate({**info, "kernel_id": f"{prefix}{digest}"})
         current = self.store.kernel_starts.current(environment_id)
         revision = current[0] if current is not None else None
@@ -254,6 +265,7 @@ class KernelRegistry:
             self.admission.admission(context.environment_id)
             fields: dict[str, Any] = {"session": context.session_id, "language": request.language}
             if request.run is not None:
+                require_run_kernels(channel)
                 fields["run"] = request.run
             reply = await channel.request("restart", **fields, reply_timeout=180)
             kernel, _ = self.kernel(
@@ -403,10 +415,11 @@ class KernelRegistry:
         channel = environment.channel if environment is not None else None
         if environment is None or channel is None or channel.closed:
             return SessionClosed()
-        environment.requests += 1
         fields: dict[str, Any] = {"session": context.session_id}
         if request.run is not None:
+            require_run_kernels(channel)
             fields["run"] = request.run
+        environment.requests += 1
         try:
             reply = await channel.request("close_session", **fields, reply_timeout=180)
         finally:
@@ -421,4 +434,6 @@ class KernelRegistry:
             kernel, _ = self.kernel(context.environment_id, context.session_id, item, False)
             if kernel is not None:
                 stopped[kernel.run, kernel.language] = kernel
+        # The runs have ended: their kernels' generations are not needed again.
+        self.store.forget_run_kernels(context.environment_id, context.session_id, request.run)
         return SessionClosed(kernels=tuple(stopped.values()))

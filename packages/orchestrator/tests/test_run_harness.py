@@ -9,7 +9,7 @@ from typing import cast
 
 import pytest
 
-from sandbox_science.contracts import ErrorKind
+from sandbox_science.contracts import ErrorKind, ExecutionContext, KernelInfo, KernelListing
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.harness import (
     Harness,
@@ -23,7 +23,7 @@ from sandbox_science.orchestrator.harness import (
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.mathchecks.jobs import Checker
 from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
-from sandbox_science.orchestrator.projects import ProjectStore
+from sandbox_science.orchestrator.projects import ProjectStore, run_name
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.tools import ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
@@ -166,11 +166,22 @@ async def test_a_run_without_stores_uses_its_environment_and_keeps_nothing(
 
 
 async def test_a_delegated_runs_kernels_stop_when_it_ends(tmp_path: Path) -> None:
-    """PD-37: a delegated run's own kernels stop with it; a main run's are the session's."""
+    """PD-37: a delegated run's own kernels stop with it; a main run uses the session's
+    and first closes those its session's earlier runs left (PD-40)."""
 
     class Closing(Worker):
         def __init__(self) -> None:
             self.closed: list[str | None] = []
+
+        async def kernel_status(self, context: ExecutionContext) -> KernelListing:
+            def kernel(run: str | None) -> KernelInfo:
+                return KernelInfo(kernel_id=f"k-{run}", language="python", generation=1, run=run)
+
+            return KernelListing(
+                environment_id=context.environment_id,
+                session_id=context.session_id,
+                kernels=(kernel(None), kernel("left-behind")),
+            )
 
         async def close_session(self, context: object, run: str | None = None) -> None:
             self.closed.append(run)
@@ -186,12 +197,12 @@ async def test_a_delegated_runs_kernels_stop_when_it_ends(tmp_path: Path) -> Non
         settings=Settings(min_isolation_tier=None),
     )
     try:
-        await harness.run(RunRequest("p", "s", "Go", run_id="run-1"), Sink())
-        assert worker.closed == []
-        delegated = RunRequest(
-            "p", "s", "Look.", run_id="run-2", parent="run-1", delegation="dlg-1"
-        )
+        first = await harness.run(RunRequest("p", "s", "Go", run_id="run-1"), Sink())
+        assert first is not None
+        assert worker.closed == ["left-behind"]  # never the session's own
+        parent = run_name(first.started_at, "run-1")
+        delegated = RunRequest("p", "s", "Look.", run_id="run-2", parent=parent, delegation="dlg-1")
         await harness.run(delegated, Sink())
     finally:
         documents.close()
-    assert worker.closed == ["run-2"]
+    assert worker.closed == ["left-behind", "run-2"]

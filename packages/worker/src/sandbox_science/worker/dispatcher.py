@@ -52,7 +52,7 @@ from .errors import ExecutorRefusalError, WorkerError
 from .files import UNSYNCED, Files
 from .identity import execution_digest, same_execution
 from .journal import SOURCE_EVENT, ExecutionJournal
-from .kernels import KernelRegistry
+from .kernels import KernelRegistry, require_run_kernels
 from .lifecycle import EnvironmentLifecycle
 from .live import REQUEST, Live, time_limit
 from .output_observations import normalize as normalize_observation
@@ -317,6 +317,8 @@ class Dispatcher:
         channel = environment.channel
         if channel is None:
             raise WorkerError(ErrorKind.UNAVAILABLE, "the executor went away")
+        if "run" in fields:
+            require_run_kernels(channel)
         environment.running.add(execution_id)
         shared = self.shared
         if shared is not None:
