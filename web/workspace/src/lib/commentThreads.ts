@@ -2,12 +2,11 @@
 /**
  * A comment thread's decisions, apart from its views (AnnotationThread.svelte,
  * CommentBodyEditor.svelte): the changes a reply, an edit, a status change or a body
- * correction sends, the drafts they start from, and the thread's earlier entries, read a
- * page at a time back from the oldest entry shown.
+ * correction sends, the drafts they start from, and where its earlier entries start.
  */
 import type { CommentBodySource, CommentChange, CommentEntry, CommentThread } from './api';
 import type { BodyCorrectionDraft, ReplyDraft } from './drafts';
-import { PagedList, type ListState } from './pagedList';
+import type { Page } from './pagedList';
 
 /**
  * The change an action on the thread sends. A reply or an edit carries the draft's text
@@ -44,46 +43,20 @@ export function threadEntries(earlier: CommentEntry[], current: CommentEntry[]):
 }
 
 /**
- * A thread's earlier entries, a page at a time back from the oldest one shown. Each page
- * is one item, newest page first; `entries` puts them back in order. A new thread revision
- * starts again (`reset`), dropping a page still on its way.
+ * The page of a thread's entries before `before`, for `Earlier` (earlier.ts): the first
+ * page back starts at the oldest entry the thread shows, and a thread that shows its first
+ * entry has none.
  */
-export class EarlierEntries {
-  readonly list: PagedList<CommentEntry[], number>;
-
-  constructor(
-    readonly state: ListState<CommentEntry[], number>,
-    thread: () => CommentThread,
-    read: (before: number) => Promise<CommentThread>,
-  ) {
-    this.list = new PagedList(state, async (before) => {
-      const start = before ?? thread().entries_before;
-      if (start === null) return { items: [], next: null };
-      const page = await read(start);
-      return { items: [page.entries], next: page.entries_before };
-    });
-  }
-
-  /** Whether there are earlier entries to read, as the thread shown says. */
-  available(thread: CommentThread): boolean {
-    return this.state.items.length === 0
-      ? thread.entries_before !== null
-      : this.state.next !== null;
-  }
-
-  /** The next earlier page. */
-  read(): Promise<void> {
-    return this.state.items.length === 0 ? this.list.reload() : this.list.more();
-  }
-
-  /** The earlier entries read so far, oldest first. */
-  entries(): CommentEntry[] {
-    return [...this.state.items].reverse().flat();
-  }
-
-  reset(): void {
-    this.list.clear();
-  }
+export function earlierEntries(
+  thread: () => CommentThread,
+  read: (before: number) => Promise<CommentThread>,
+): (before: number | null) => Promise<Page<CommentEntry[], number>> {
+  return async (before) => {
+    const start = before ?? thread().entries_before;
+    if (start === null) return { items: [], next: null };
+    const page = await read(start);
+    return { items: [page.entries], next: page.entries_before };
+  };
 }
 
 /** A body correction's draft, on the body and thread revisions shown. */

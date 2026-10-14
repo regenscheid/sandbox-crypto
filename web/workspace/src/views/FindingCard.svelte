@@ -1,13 +1,17 @@
 <!-- SPDX-License-Identifier: MIT -->
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { reviews, parseRevisionReferences, type Finding, type Transition } from '../lib/reviews';
+  import { reviews, type Finding, type Transition } from '../lib/reviews';
+  import { Detail, noDetail } from '../lib/detail';
   import { findingDrafts } from '../lib/drafts';
+  import { Earlier } from '../lib/earlier';
+  import { afterResponse, findingHistory, findingResponse, startResponse } from '../lib/findings';
   import { guardedWrite } from '../lib/mutation';
+  import { emptyList } from '../lib/pagedList';
+  import { idle, submit } from '../lib/submit';
   import ErrorMessage from './ErrorMessage.svelte';
   import Markdown from '../lib/Markdown.svelte';
   import ResponseBody from './ResponseBody.svelte';
-  import { Preview } from '../lib/preview';
   import { macroSet } from '../lib/macros';
   let {
     projectId,
@@ -30,103 +34,62 @@
     ),
   );
   const key = untrack(() => `${projectId}:${sessionId}:${initial.finding_id}`);
-  const draft = findingDrafts.load(key).draft;
-  let explanation = $state(draft?.explanation ?? ''),
-    action = $state(draft?.action ?? 'rebut'),
-    references = $state(draft?.references ?? '');
-  let expected = $state(draft?.expected ?? initial.revision),
-    persisted = $state(true),
-    busy = $state(false),
-    error = $state<unknown>(null);
-  let history = $state<Transition[]>([]),
-    before = $state<number | null>(null),
-    historyHead = $state(initial.revision),
-    loaded = $state(false);
-  let sourceHead = $state(initial.response_generation ?? 0);
+  let draft = $state(startResponse(initial, findingDrafts.load(key).draft));
+  let persisted = $state(true);
+  const responding = $state(idle());
+  const pages = $state(emptyList<Transition[], number>());
+  const history = new Earlier(
+    pages,
+    findingHistory((before) => reviews.finding(projectId, sessionId, finding.finding_id, before)),
+  );
+  // Mechanical evidence of one check (and formula), keyed by both.
+  const evidence = $state(noDetail<string, string>());
+  const checks = new Detail(evidence, async (shown) => {
+    const [check, span] = shown.split('\u0000');
+    const result = await reviews.mathEvidence(projectId, sessionId, check!, 0, span || undefined);
+    return JSON.stringify(result, null, 2);
+  });
+  const busy = $derived(responding.busy || pages.loading);
+  const error = $derived(responding.error ?? pages.error ?? evidence.error);
+  let historyHead = initial.revision,
+    sourceHead = initial.response_generation ?? 0;
   $effect(() => {
-    if (finding.revision !== historyHead || (finding.response_generation ?? 0) !== sourceHead) {
-      history = [];
-      before = null;
-      loaded = false;
-      historyHead = finding.revision;
-      sourceHead = finding.response_generation ?? 0;
+    // A new finding revision, or new response bodies, start the history again and drop
+    // evidence read for the revision before.
+    const revision = finding.revision,
+      generation = finding.response_generation ?? 0;
+    if (revision !== historyHead) checks.clear();
+    if (revision !== historyHead || generation !== sourceHead) {
+      history.reset();
+      historyHead = revision;
+      sourceHead = generation;
     }
   });
   $effect(() => {
-    if (explanation)
-      persisted = findingDrafts.save(key, { expected, explanation, action, references });
+    if (draft.explanation) persisted = findingDrafts.save(key, $state.snapshot(draft));
     else {
       findingDrafts.clear(key);
-      expected = finding.revision;
+      draft.expected = finding.revision;
     }
   });
-  let mechanicalEvidence = $state(''),
-    mathHead = $state(initial.revision);
-  const mathPreview = new Preview();
-  $effect(() => {
-    if (finding.revision !== mathHead) {
-      mathPreview.invalidate();
-      mechanicalEvidence = '';
-      mathHead = finding.revision;
-    }
-  });
-  async function mathEvidence(check: string, span?: string) {
-    const current = mathPreview.begin(`${projectId}/${sessionId}/${finding.finding_id}`),
-      head = finding.revision;
-    try {
-      const result = await reviews.mathEvidence(projectId, sessionId, check, 0, span);
-      if (current() && head === finding.revision)
-        mechanicalEvidence = JSON.stringify(result, null, 2);
-    } catch (caught) {
-      if (current() && head === finding.revision) error = caught;
-    }
+  function mathEvidence(check: string, span?: string) {
+    void checks.show(`${check}\u0000${span ?? ''}`);
   }
   async function respond() {
-    busy = true;
-    error = null;
-    try {
-      const body = {
-        finding: finding.finding_id,
-        expected,
-        action,
-        explanation,
-        revisions: parseRevisionReferences(references),
-      };
-      const result = await guardedWrite('finding', key, body, (sent) =>
+    await submit(responding, async () => {
+      const result = await guardedWrite('finding', key, findingResponse(finding, draft), (sent) =>
         reviews.respond(projectId, sessionId, finding.finding_id, sent),
       );
-      explanation = '';
-      references = '';
-      expected = result.revision;
+      draft = afterResponse(draft, result);
       findingDrafts.clear(key);
       await changed();
-    } catch (caught) {
-      error = caught;
-    } finally {
-      busy = false;
-    }
-  }
-  async function earlier() {
-    busy = true;
-    try {
-      const head = finding.revision,
-        generation = finding.response_generation,
-        result = await reviews.finding(projectId, sessionId, finding.finding_id, before);
-      if (head !== finding.revision || generation !== finding.response_generation) return;
-      history = [...(result.history ?? []), ...history];
-      before = result.history_before ?? null;
-      loaded = true;
-    } catch (caught) {
-      error = caught;
-    } finally {
-      busy = false;
-    }
+    });
   }
 </script>
 
 <svelte:window
   onbeforeunload={(event) => {
-    if (explanation && !persisted) event.preventDefault();
+    if (draft.explanation && !persisted) event.preventDefault();
   }}
 />
 <article class="finding">
@@ -155,11 +118,11 @@
         >{/if}
       <pre>{JSON.stringify(anchor, null, 2)}</pre>{/each}
   </details>
-  {#if mechanicalEvidence}<pre aria-label="Mechanical math evidence">{mechanicalEvidence}</pre>{/if}
-  <button disabled={busy || (loaded && before === null)} onclick={earlier}
-    >{loaded ? 'Load earlier finding history' : 'Read finding history'}</button
+  {#if evidence.value}<pre aria-label="Mechanical math evidence">{evidence.value}</pre>{/if}
+  <button disabled={busy || !history.available()} onclick={() => history.read()}
+    >{history.started ? 'Load earlier finding history' : 'Read finding history'}</button
   >
-  {#each history as entry (entry.revision)}<div class="transition">
+  {#each history.entries() as entry (entry.revision)}<div class="transition">
       <p>{entry.revision} · {entry.status} · {entry.actor}</p>
       {#each entry.macro_context?.problems ?? [] as problem}<p role="status">
           {problem}
@@ -190,12 +153,12 @@
     </p>
     <fieldset disabled={busy}>
       <p>
-        Based on finding revision {expected}. {#if expected !== finding.revision}<button
-            onclick={() => (expected = finding.revision)}>Use current finding revision</button
+        Based on finding revision {draft.expected}. {#if draft.expected !== finding.revision}<button
+            onclick={() => (draft.expected = finding.revision)}>Use current finding revision</button
           > Your draft is retained.{/if}
       </p>
       <label
-        >Decision <select bind:value={action}
+        >Decision <select bind:value={draft.action}
           ><option value="rebut">Rebut with explanation</option><option value="fix"
             >Claim fixed</option
           ><option value="confirm">Confirm fixed as user</option><option value="dismiss"
@@ -208,19 +171,20 @@
           aria-label={`Finding response ${finding.finding_id}`}
           rows="4"
           maxlength="8192"
-          bind:value={explanation}></textarea></label
+          bind:value={draft.explanation}></textarea></label
       >
       <label
         >Changed document revisions<input
           aria-label="Changed document revisions"
-          bind:value={references}
+          bind:value={draft.references}
           placeholder="doc-…:2 doc-…:3"
         /></label
       >
-      <button disabled={!explanation.trim()} onclick={respond}>Save user response</button><button
+      <button disabled={!draft.explanation.trim()} onclick={respond}>Save user response</button
+      ><button
         onclick={() => {
-          explanation = '';
-          references = '';
+          draft.explanation = '';
+          draft.references = '';
           findingDrafts.clear(key);
         }}>Discard response draft</button
       >
