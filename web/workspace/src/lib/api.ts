@@ -132,8 +132,18 @@ export interface RunRecord {
     counts?: Record<string, number>;
     reviews?: string[];
   };
+  /** Each answered model call's usage, in order; older records have none. */
+  usage?: ModelUsage[];
   messages: Message[];
   tools: ToolRecord[];
+}
+
+/** One model call's usage, as the gateway reported it; a count it left out is null. */
+export interface ModelUsage {
+  /** The model that answered, as the gateway names it. */
+  model: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
 }
 
 /** One expression KaTeX rejected, as the page asks for its repair. */

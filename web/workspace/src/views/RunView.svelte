@@ -4,12 +4,13 @@
   import type { RunRecord } from '../lib/api';
   import { duration, formatTime } from '../lib/format';
   import Markdown from '../lib/Markdown.svelte';
-  import { entries } from '../lib/transcript';
+  import { entries, usageLine } from '../lib/transcript';
   import ToolCall from './ToolCall.svelte';
 
   let { run }: { run: RunRecord } = $props();
   const steps = $derived(entries(run));
   const calls = $derived(run.tools.length);
+  const usage = $derived(usageLine(run.usage));
 </script>
 
 <dl class="facts">
@@ -18,6 +19,10 @@
     {formatTime(run.started_at)} for {duration(run.started_at, run.ended_at)}, {calls}
     {calls === 1 ? 'tool call' : 'tool calls'}
   </dd>
+  {#if usage}
+    <dt>Model</dt>
+    <dd>{usage}</dd>
+  {/if}
   <dt>Environment</dt>
   <dd><code>{run.context.environment_id}</code></dd>
   {#if run.context.policy_revision}

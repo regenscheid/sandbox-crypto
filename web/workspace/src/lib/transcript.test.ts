@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 import { describe, expect, it } from 'vitest';
 import type { RunRecord } from './api';
-import { argumentFields, describeResult, entries } from './transcript';
+import { argumentFields, describeResult, entries, usageLine } from './transcript';
 
 function run(overrides: Partial<RunRecord> = {}): RunRecord {
   return {
@@ -133,5 +133,25 @@ describe('results', () => {
     const view = describeResult('example.org:443 reachable');
     expect([view.text, view.summary]).toEqual(['example.org:443 reachable', 'done']);
     expect(describeResult(undefined).summary).toBe('no result recorded');
+  });
+});
+
+describe("a run's model usage", () => {
+  it('sums the calls and their tokens, naming each model once', () => {
+    expect(
+      usageLine([
+        { model: 'model-a', input_tokens: 1000, output_tokens: 200 },
+        { model: 'model-a', input_tokens: 200, output_tokens: 140 },
+      ]),
+    ).toBe('2 model calls (model-a), 1,200 input and 340 output tokens');
+  });
+  it('says when the gateway left counts out, rather than counting them as zero', () => {
+    expect(usageLine([{ model: null, input_tokens: 5, output_tokens: null }])).toBe(
+      '1 model call, 5 input and 0 output tokens, some counts not reported by the gateway',
+    );
+  });
+  it('says nothing for a record with no usage, as older records have', () => {
+    expect(usageLine(undefined)).toBeNull();
+    expect(usageLine([])).toBeNull();
   });
 });
