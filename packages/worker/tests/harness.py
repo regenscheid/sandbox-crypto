@@ -40,7 +40,8 @@ from sandbox_science.worker.channel import (
 )
 from sandbox_science.worker.connections import Connection
 from sandbox_science.worker.kernels import _Observer
-from sandbox_science.worker.manager import ExecutionManager, _Live
+from sandbox_science.worker.live import Live
+from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.settings import LocalBackendSettings
 from sandbox_science.worker.shared_sync import SharedRecords, SharedSync
 from sandbox_science.worker.store import Store
@@ -101,7 +102,7 @@ class ManagerView:
 
     # Executions in flight.
 
-    def live(self, execution_id: str) -> _Live:
+    def live(self, execution_id: str) -> Live:
         """The manager's record of an execution that has not ended."""
         return self.manager._live[execution_id]
 
@@ -154,7 +155,7 @@ class ManagerView:
 
     async def recover(self, environment_id: str, *, startup: bool = False) -> None:
         """Run the daemon recovery of an environment now."""
-        await self.manager._recover(environment_id, startup=startup)
+        await self.manager._recovery.recover(environment_id, startup=startup)
 
     def quarantine(self, environment_id: str) -> None:
         self.manager._usability.quarantine(environment_id)
@@ -198,7 +199,7 @@ class ManagerView:
     def wrap_apply(
         self,
         patch: pytest.MonkeyPatch,
-        wrapper: Callable[[Callable[[_Live, str, Message], None], _Live, str, Message], None],
+        wrapper: Callable[[Callable[[Live, str, Message], None], Live, str, Message], None],
     ) -> None:
         """Route every executor message the manager applies through ``wrapper``."""
         original = self.manager._apply
@@ -251,16 +252,16 @@ class ManagerView:
 
     def poller(self, environment_id: str) -> tuple[ExecutorChannel, asyncio.Task[Any]]:
         """The daemon poller of an environment: the channel it polls and its task."""
-        return self.manager._pollers[environment_id]
+        return self.manager._recovery._pollers[environment_id]
 
     def put_poller(
         self, environment_id: str, channel: ExecutorChannel, task: asyncio.Task[Any]
     ) -> None:
-        self.manager._pollers[environment_id] = (channel, task)
+        self.manager._recovery._pollers[environment_id] = (channel, task)
 
     def poll(self, environment_id: str, channel: ExecutorChannel) -> None:
         """Start (or replace) the daemon poller of an environment."""
-        self.manager._poll(environment_id, channel)
+        self.manager._recovery.poll(environment_id, channel)
 
 
 def view(manager: ExecutionManager) -> ManagerView:
