@@ -46,6 +46,8 @@ from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.settings import LocalBackendSettings
 from sandbox_science.worker.store import Store
 
+from .harness import shut_down_daemon, view
+
 CONTEXT = ExecutionContext(project_id="p1", session_id="s1", environment_id="env1")
 SCOPE = OutputScope(**CONTEXT.model_dump(include={"project_id", "session_id", "environment_id"}))
 TOKEN = "synthetic-observation-token-000000000000"
@@ -619,7 +621,6 @@ async def test_actual_http_terminal_reports_and_invalid_sidecar_do_not_change_ou
     )
     await manager.start()
     client = await aiohttp_client(create_app(manager, TOKEN))
-    original = manager._apply
     try:
         for op, kind, body, expected in (
             ("success", "shell", {"script": "printf known > out"}, "succeeded"),
@@ -651,12 +652,12 @@ async def test_actual_http_terminal_reports_and_invalid_sidecar_do_not_change_ou
         assert store.observation_page(SCOPE).target == 3
         assert all(record.report is not None for record in store.observation_page(SCOPE).records)
 
-        def corrupt(live: Any, env: str, message: dict[str, Any]) -> None:
+        def corrupt(apply: Any, live: Any, env: str, message: dict[str, Any]) -> None:
             if message.get("event") == "end":
                 message = {**message, "output_observations": {"protocol": True}}
-            original(live, env, message)
+            apply(live, env, message)
 
-        monkeypatch.setattr(manager, "_apply", corrupt)
+        view(manager).wrap_apply(monkeypatch, corrupt)
         value, _ = await manager.submit(
             ShellRequest(operation_id="invalid", context=CONTEXT, script="echo still-healthy")
         )
@@ -694,7 +695,6 @@ async def test_actual_daemon_restart_preserves_attempt_and_terminal_observation(
         return value
 
     manager = make_manager()
-    channel = None
     await manager.start()
     try:
         context = (
@@ -716,8 +716,7 @@ async def test_actual_daemon_restart_preserves_attempt_and_terminal_observation(
         async with asyncio.timeout(10):
             while not path.exists():
                 await asyncio.sleep(0.01)
-        channel = manager._environments["env1"].channel
-        assert channel is not None
+        channel = view(manager).channel("env1")
         incarnation = channel.incarnation
         if damage == "corrupt-binding":
             store._db.execute("UPDATE output_observation_attempts SET binding=?", (b"invalid",))
@@ -754,14 +753,8 @@ async def test_actual_daemon_restart_preserves_attempt_and_terminal_observation(
     finally:
         # close detaches by design; explicit shutdown owns the isolated test daemon.
         try:
-            async with asyncio.timeout(35):
-                await manager.capabilities("env1")
-                channel = manager._environments["env1"].channel
-                await manager.release("env1")
+            await shut_down_daemon(manager)
         finally:
-            if channel is not None:
-                await asyncio.shield(channel.shutdown())
-            await manager.close()
             store.close()
 
 

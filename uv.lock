@@ -1735,11 +1735,15 @@ name = "sandbox-science-testing"
 version = "0.1.0"
 source = { editable = "packages/testing" }
 dependencies = [
+    { name = "aiohttp" },
     { name = "sandbox-science-contracts" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "sandbox-science-contracts", editable = "packages/contracts" }]
+requires-dist = [
+    { name = "aiohttp", specifier = ">=3.10" },
+    { name = "sandbox-science-contracts", editable = "packages/contracts" },
+]
 
 [[package]]
 name = "sandbox-science-worker"

@@ -8,5 +8,6 @@ helpers live here.
 
 from .clock import FakeClock
 from .waiting import eventually
+from .worker_api import WorkerApi
 
-__all__ = ["FakeClock", "eventually"]
+__all__ = ["FakeClock", "WorkerApi", "eventually"]

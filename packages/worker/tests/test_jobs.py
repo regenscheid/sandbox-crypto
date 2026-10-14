@@ -7,7 +7,6 @@ import asyncio
 import base64
 import errno
 import os
-import sys
 from collections.abc import AsyncIterator
 from datetime import timedelta
 from pathlib import Path
@@ -28,31 +27,18 @@ from sandbox_science.contracts import (
 from sandbox_science.policy.model import Resources
 from sandbox_science.worker import executor
 from sandbox_science.worker.app import create_app
-from sandbox_science.worker.artifacts import Blobs
-from sandbox_science.worker.backends import LocalBackend
 from sandbox_science.worker.errors import WorkerError
 from sandbox_science.worker.manager import ExecutionManager
-from sandbox_science.worker.settings import LocalBackendSettings
-from sandbox_science.worker.store import Store
+
+from .harness import Harness, running, view
 
 CONTEXT = ExecutionContext(project_id="p1", session_id="s1", environment_id="env1")
 
 
 @pytest_asyncio.fixture
 async def jobs(tmp_path: Path) -> AsyncIterator[ExecutionManager]:
-    store = Store(tmp_path / "worker.sqlite3")
-    manager = ExecutionManager(
-        store,
-        LocalBackend(LocalBackendSettings(python=sys.executable), tmp_path),
-        Blobs(tmp_path / "blobs"),
-        pool_id="test",
-        max_artifact_size=1 << 20,
-        state_dir=tmp_path,
-    )
-    await manager.start()
-    yield manager
-    await manager.close()
-    store.close()
+    async with await Harness.start(tmp_path) as worker:
+        yield worker.manager
 
 
 def request(operation: str, script: str = "sleep 60", **fields: Any) -> JobRequest:
@@ -64,14 +50,6 @@ def request(operation: str, script: str = "sleep 60", **fields: Any) -> JobReque
         expected_progress="periodic progress",
         **fields,
     )
-
-
-async def running(manager: ExecutionManager, execution_id: str) -> None:
-    async with asyncio.timeout(15):
-        async for event in manager.events(execution_id, 0):
-            if getattr(event, "state", None) is ExecutionState.RUNNING:
-                return
-    raise AssertionError("job never ran")
 
 
 @pytest.mark.asyncio
@@ -203,7 +181,7 @@ async def test_restart_reports_lost_and_never_replays(
     job, _ = await jobs.submit(request("lost", "printf once; sleep 60"))
     await running(jobs, job.execution_id)
     await jobs.close()
-    jobs._closing = False  # a fresh worker has this value
+    view(jobs).reopen()  # as a fresh worker process starts
     await jobs.start()
     ended = jobs.get(job.execution_id)
     assert ended.state is ExecutionState.LOST
@@ -435,7 +413,7 @@ async def test_unacknowledged_cancel_cannot_hang_session_close(
 
     job, _ = await jobs.submit(request("stuck-cancel", "printf alive; sleep 60"))
     await running(jobs, job.execution_id)
-    live = jobs._live[job.execution_id]
+    live = view(jobs).live(job.execution_id)
     assert live.channel is not None
     channel = live.channel
     original = channel.request
@@ -476,7 +454,7 @@ async def test_direct_cancel_has_completion_deadline(
 
     job, _ = await jobs.submit(request("ack-without-end", "sleep 60"))
     await running(jobs, job.execution_id)
-    live = jobs._live[job.execution_id]
+    live = view(jobs).live(job.execution_id)
     assert live.channel is not None
     channel = live.channel
     original = channel.request

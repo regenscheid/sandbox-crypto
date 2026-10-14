@@ -42,7 +42,7 @@ Planned members (created when work starts on them):
 | `event-store` | `sandbox_science.event_store` | Library: append-only event store with a hash chain (D74, shared) |
 | `connector-auth` | `sandbox_science.connector_auth` | Connector auth service (OAuth for MCP) |
 | `workspace` | `sandbox_science.workspace` | The research workspace's web server: the GUI's files and its API (D80) |
-| `testing` | `sandbox_science.testing` | Development only: support for this repository's tests (`FakeClock`, `eventually()`). A dev dependency; no production member imports it |
+| `testing` | `sandbox_science.testing` | Development only: support for this repository's tests (`FakeClock`, `eventually()`, the worker API client `WorkerApi`). A dev dependency; no production member imports it |
 
 The browser front end itself is not a member: it lives in `web/workspace/`, with Node's toolchain (D60, D80).
 
