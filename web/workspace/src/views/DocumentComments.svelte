@@ -26,7 +26,7 @@
   );
   const posting = $state(idle());
   let persisted = $state(true);
-  const error = $derived(posting.error ?? threads.error ?? sessionsError);
+  const error = $derived(posting.error ?? threads.error);
   const macros = $derived(
     macroSet(found.macros, `${projectId}:${found.macro_context?.key ?? 'legacy-document'}`),
   );
@@ -43,7 +43,10 @@
     void list.reload();
     api
       .project(projectId)
-      .then((project) => (sessions = project.sessions))
+      .then((project) => {
+        sessions = project.sessions;
+        sessionsError = null;
+      })
       .catch((caught) => (sessionsError = caught));
   });
   async function create(anchored: DocumentRevision) {
@@ -54,6 +57,10 @@
       discard();
     });
     if (posted) await list.reload();
+  }
+  function refresh() {
+    posting.error = null;
+    void list.reload();
   }
   function discard() {
     draft.body = '';
@@ -73,10 +80,10 @@
     request for its main agent. An active run receives it at its next safe point; an idle session
     keeps it for its next manually started run.
   </p>
-  <button disabled={threads.loading || posting.busy} onclick={() => list.reload()}
-    >Refresh comments</button
-  >
+  <button disabled={threads.loading || posting.busy} onclick={refresh}>Refresh comments</button>
   {#if error}<ErrorMessage {error} />{/if}
+  <!-- The sessions a comment may be addressed to; failing to read them hides nothing else. -->
+  {#if sessionsError}<ErrorMessage error={sessionsError} />{/if}
   {#if threads.items.length === 0 && !threads.loading}<p class="muted">
       No comments on this revision.
     </p>{/if}
