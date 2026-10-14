@@ -78,8 +78,7 @@ the sequence of its latest assertion, so unrelated steps can advance independent
 
 The optional `expected_status_revision` on `progress` enters the operation digest
 and is checked inside the same write transaction. An adapter that checks `active`
-must supply it to detect a concurrent transition to `draft` or
-`awaiting_approval`. Omission is an internal-core choice and provides no atomic
+must supply it to detect a concurrent transition to `draft`. Omission is an internal-core choice and provides no atomic
 active-status predicate. `set_status` always checks exact body version, workflow
 status revision and plan progress cursor together.
 
@@ -113,11 +112,12 @@ revision. They are same-project claims, with no resource lookup, verification,
 parser, read grant, worker access or reviewer execution. No consistency reviewer
 checks these completion claims.
 
-`awaiting_approval` and `active` are workflow records only. The store permits trusted
-USER/MAIN status bookkeeping; it does not implement PD-6's exact-version USER
-approval, revoke execution grants, or enforce an execution barrier. Callers must
-not turn status alone into approval or execution authority; the plan tools refuse
-to activate an `awaiting_approval` plan.
+`active` is a workflow record only. The store permits trusted USER/MAIN status
+bookkeeping; it does not implement PD-6's exact-version USER approval, revoke
+execution grants, or enforce an execution barrier. There is no approval state until
+plan approval's default is decided (decision 10); a plan an older writer stored as
+`awaiting_approval` reads as a draft, which fences effects. Callers must not turn
+status alone into approval or execution authority.
 
 ## Bounded reads, retention and failures
 

@@ -250,8 +250,8 @@ def test_copied_authority_cannot_bypass_positive_validation(plans, fields):
     assert plans.current(actor()) is None
 
 
-@pytest.mark.parametrize("held_status", ["awaiting_approval", "draft"])
-def test_progress_status_revision_race_and_step_cas(plans, held_status):
+def test_progress_status_revision_race_and_step_cas(plans):
+    held_status = "draft"
     first = made(plans)
     status(plans, first.ref, "active", operation="active")
     status(plans, first.ref, held_status, operation="hold")
@@ -344,9 +344,8 @@ def test_outcome_remaining_work_is_not_optional_success_inference(status_tag, re
         GoalOutcome(status=status_tag, summary="Assessment", evidence=(), remaining_work=remaining)
 
 
-def test_awaiting_and_active_only_store_bookkeeping(plans):
+def test_active_only_stores_bookkeeping(plans):
     first = made(plans)
-    status(plans, first.ref, "awaiting_approval", operation="request")
     status(plans, first.ref, "active", operation="record")
     assert plans.summary(actor()).status == "active"
     assert not hasattr(plans, "execution_allowed")
@@ -852,3 +851,33 @@ def test_unfiltered_history_cannot_silently_skip_missing_record(store, plans, ki
         db.execute("DELETE FROM session_plan_records WHERE kind=? AND number=1", (kind,))
     with pytest.raises(DocumentError, match="history has a gap"):
         plans.history(actor(), first.ref.plan_id, kind)
+
+
+def test_a_plan_stored_with_the_removed_approval_status_reads_as_a_draft(store, plans):
+    first = made(plans)
+    status(plans, first.ref, "active", operation="active")
+    # An older writer could record awaiting_approval, which no longer exists.
+    old, new = '"status":"active"', '"status":"awaiting_approval"'
+    with store.control.write() as tx:
+        # History is immutable; an older writer's rows are made by lifting that briefly.
+        triggers = tx.sql.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name=?",
+            ("session_plan_records",),
+        ).fetchall()
+        for name, _ in triggers:
+            tx.sql.execute(f"DROP TRIGGER {name}")
+        for table in ("session_plan_records", "session_plan_projections"):
+            tx.sql.execute(
+                f"UPDATE {table} SET record=replace(record,?,?)",
+                (old, new),
+            )
+            tx.sql.execute(f"UPDATE {table} SET bytes=length(CAST(record AS BLOB))")
+        for _, sql in triggers:
+            tx.sql.execute(sql)
+        changed = tx.sql.execute(
+            "SELECT count(*) FROM session_plan_projections WHERE record LIKE ?", (f"%{new}%",)
+        ).fetchone()[0]
+    assert changed
+    # The plan stays readable, and as a draft it fences effects.
+    assert plans.summary(actor()).status == "draft"
+    assert plans.current(actor()).head.status == "draft"

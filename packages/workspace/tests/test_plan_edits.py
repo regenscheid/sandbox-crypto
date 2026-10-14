@@ -206,16 +206,16 @@ async def test_missing_closed_and_foreign_plan_ids_do_not_mutate(
 
 
 @pytest.mark.asyncio
-async def test_terminal_refuses_new_edit_and_awaiting_approval_is_not_activated(
+async def test_terminal_refuses_new_edit_and_a_draft_is_not_activated(
     aiohttp_client, state_dir, static_dir, journal
 ):
     ref = seed(journal)
-    journal.set_status(authority(), "waiting", ref, 2, 0, "awaiting_approval", "Recorded wait")
+    journal.set_status(authority(), "waiting", ref, 2, 0, "draft", "Back to a draft")
     client = await create(aiohttp_client, state_dir, static_dir)
     response = await post(client, payload(ref))
     assert response.status == 200
     receipt = plan_edits.EditReceipt.model_validate_json(await response.read())
-    assert journal.summary(authority()).status == "awaiting_approval"
+    assert journal.summary(authority()).status == "draft"
     journal.set_status(authority(), "abandon", receipt.receipt.ref, 3, 0, "abandoned", "Stop")
     assert (await post(client, payload(receipt.receipt.ref, operation="new"))).status == 409
     # An exact old operation can still acknowledge a historical commit while open.

@@ -6,8 +6,8 @@ session plan. It edits goal and feasibility, output titles/descriptions/evidence
 standards, track and phase titles, and step titles/descriptions/evidence standards.
 It preserves stable IDs, array order, track links, and all untouched body fields.
 No plan creation, reordering, progress, outcome, approval or execution action is
-added. An awaiting-approval plan can have its wording revised without changing
-its status. Closed and terminal plans remain read-only.
+added. A draft can have its wording revised without changing its status. Closed
+and terminal plans remain read-only.
 
 The editor uses the authenticated USER
 [plan changes endpoint](SESSION-PLAN-EDITING.md). The server owns authorization,

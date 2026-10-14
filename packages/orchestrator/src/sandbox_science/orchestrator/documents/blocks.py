@@ -305,7 +305,7 @@ class _Builder:
     def span(self, block: int, **fields: object) -> None:
         if len(self.spans) >= MAX_SPANS:
             raise DocumentError(INVALID_REQUEST, f"the text has more than {MAX_SPANS} formulas")
-        span = Span(index=len(self.spans), block=block, **fields)  # type: ignore[arg-type]
+        span = Span(index=len(self.spans), block=block, **fields)  # pyright: ignore[reportArgumentType]
         self.spans.append(span)
         self._list(block, "spans").append(span.index)
 
@@ -394,19 +394,19 @@ class _Builder:
                 Block(
                     index=index,
                     kind=str(fields["kind"]),
-                    parent=fields["parent"],  # type: ignore[arg-type]
-                    depth=fields["depth"],  # type: ignore[arg-type]
-                    lines=fields["lines"],  # type: ignore[arg-type]
-                    start=fields["start"],  # type: ignore[arg-type]
-                    end=fields["end"],  # type: ignore[arg-type]
+                    parent=fields["parent"],  # pyright: ignore[reportArgumentType]
+                    depth=fields["depth"],  # pyright: ignore[reportArgumentType]
+                    lines=fields["lines"],  # pyright: ignore[reportArgumentType]
+                    start=fields["start"],  # pyright: ignore[reportArgumentType]
+                    end=fields["end"],  # pyright: ignore[reportArgumentType]
                     prefix=str(fields["prefix"]),
                     continuation=str(fields["continuation"]),
                     text=str(fields["text"]),
-                    firsts=fields["firsts"],  # type: ignore[arg-type]
-                    attrs=fields["attrs"],  # type: ignore[arg-type]
-                    spans=tuple(self._list(index, "spans")),  # type: ignore[arg-type]
-                    inlines=tuple(self._list(index, "inlines")),  # type: ignore[arg-type]
-                    children=tuple(self._list(index, "children")),  # type: ignore[arg-type]
+                    firsts=fields["firsts"],  # pyright: ignore[reportArgumentType]
+                    attrs=fields["attrs"],  # pyright: ignore[reportArgumentType]
+                    spans=tuple(self._list(index, "spans")),  # pyright: ignore[reportArgumentType]
+                    inlines=tuple(self._list(index, "inlines")),  # pyright: ignore[reportArgumentType]
+                    children=tuple(self._list(index, "children")),  # pyright: ignore[reportArgumentType]
                 )
             )
         return tuple(frozen)

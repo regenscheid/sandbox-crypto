@@ -307,7 +307,7 @@ async def test_the_cli_keeps_the_pins_without_credentials(tmp_path, monkeypatch,
         task="A small factual reply", max_turns=1, transcript=None,
     )  # fmt: skip
     monkeypatch.setattr(cli, "WorkerClient", Client)
-    monkeypatch.setattr(cli, "_read_secret", lambda _: "test-secret-unused-not-a-credential")
+    monkeypatch.setattr(cli, "read_secret", lambda _: "test-secret-unused-not-a-credential")
     monkeypatch.setattr(ScriptedModel, "from_json", lambda _: Model())
     assert await cli._run(args) == int(failure)
     (entry,) = projects.runs("p", "s")

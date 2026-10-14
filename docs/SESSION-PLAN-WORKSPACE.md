@@ -38,8 +38,8 @@ A changed step can retain an older `completed` assertion while
 `matches_current_step=false`. That assertion does not complete the revised step.
 Likewise, an attributed `in_progress` status is recorded progress, not proof that a
 process is running. Workflow `completed` retains the separate `achieved`,
-`partially_achieved` or `not_achieved` qualification. Neither `active` nor
-`awaiting_approval` grants execution or implements an approval barrier.
+`partially_achieved` or `not_achieved` qualification. `active` grants no execution
+and implements no approval barrier.
 
 ## Reading
 

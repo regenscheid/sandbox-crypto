@@ -6,7 +6,9 @@ outside it and named in the reports by SHA-256 (.agents/CONVENTIONS.md). This ch
 when a tracked file is raw evidence under `.agents/docs`, or larger than MAX_BYTES.
 
 It also fails when a relative link in a tracked Markdown file names a file or a heading
-that does not exist, and when a page in `docs/` is missing from the index, docs/README.md.
+that does not exist, when a page in `docs/` is missing from the index, docs/README.md,
+and when product code turns off pyright's private-usage check for a whole file or
+ignores it on a line without saying why.
 """
 
 from __future__ import annotations
@@ -30,6 +32,12 @@ LINK: Final = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 HEADING: Final = re.compile(r"#{1,6}\s+(.*?)\s*#*\s*$")
 SCHEME: Final = re.compile(r"[a-z][a-z0-9+.-]*:", re.IGNORECASE)
 DOCS_INDEX: Final = "docs/README.md"
+PYRIGHT: Final = re.compile(r"#\s*pyright:\s*(.*)")
+TYPE_IGNORE: Final = re.compile(r"#\s*type:\s*ignore")
+PRIVATE_IGNORE: Final = re.compile(r"ignore\[[^\]]*reportPrivateUsage[^\]]*\](.*)")
+NOQA: Final = re.compile(r"#\s*noqa\b[^#]*")
+REASON: Final = re.compile(r"[A-Za-z]{3,}")
+PYRIGHT_SETTINGS: Final = ('strict = ["packages/*/src"]', "enableTypeIgnoreComments = false")
 
 
 def problems(listing: list[tuple[str, int]]) -> list[str]:
@@ -125,6 +133,46 @@ def docs_problems(listing: list[tuple[str, int]]) -> list[str]:
     return link_problems(pages, exists) + index_problems(pages)
 
 
+def pragma_problems(sources: dict[str, str]) -> list[str]:
+    """Ways product code (``packages/*/src``) could hide a private use from pyright.
+
+    A file may say only ``# pyright: strict``; a line may ignore named rules only, and
+    an ignored private use says why, in words. ``# type: ignore`` is off for pyright,
+    so it is refused too.
+    """
+    found: list[str] = []
+    for path, text in sources.items():
+        parts = PurePosixPath(path).parts
+        if len(parts) < 3 or parts[0] != "packages" or parts[2] != "src":
+            continue
+        for number, line in enumerate(text.splitlines(), 1):
+            where = f"{path}:{number}"
+            if TYPE_IGNORE.search(line):
+                found.append(f"{where}: use # pyright: ignore[rule], not # type: ignore")
+            if (comment := PYRIGHT.search(line)) is None:
+                continue
+            setting = comment.group(1).strip()
+            if not setting.startswith("ignore"):
+                if setting != "strict":
+                    found.append(f"{where}: a file may say only # pyright: strict")
+            elif not setting.startswith("ignore["):
+                found.append(f"{where}: name the rules a # pyright: ignore ignores")
+            elif (private := PRIVATE_IGNORE.match(setting)) and not REASON.search(
+                NOQA.sub("", private.group(1))
+            ):
+                found.append(f"{where}: say why this line uses a private name")
+    return found
+
+
+def settings_problems(pyproject: str) -> list[str]:
+    """The pyright settings the private-usage rule relies on, missing from pyproject.toml."""
+    return [
+        f"pyproject.toml: pyright needs {setting}"
+        for setting in PYRIGHT_SETTINGS
+        if setting not in pyproject
+    ]
+
+
 def tracked() -> list[tuple[str, int]]:
     """Every tracked file with its size in the index."""
     git = shutil.which("git")
@@ -145,7 +193,13 @@ def tracked() -> list[tuple[str, int]]:
 
 def main() -> int:
     listing = tracked()
-    found = problems(listing) + docs_problems(listing)
+    sources = {
+        path: Path(path).read_text(encoding="utf-8")
+        for path, _ in listing
+        if path.endswith(".py") and Path(path).is_file()
+    }
+    found = problems(listing) + docs_problems(listing) + pragma_problems(sources)
+    found += settings_problems(Path("pyproject.toml").read_text(encoding="utf-8"))
     for line in found:
         print(line, file=sys.stderr)
     return 1 if found else 0

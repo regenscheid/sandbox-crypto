@@ -117,12 +117,12 @@ def _names(mapped: Mapped) -> dict[str, str]:
 
 def _statuses(store: DocumentStore, number: int) -> dict[str, str]:
     revision = store.revision("p1", "ff", number)
-    return {entry["id"]: entry["status"] for entry in revision.block_map["blocks"]}  # type: ignore[index, union-attr]
+    return {entry["id"]: entry["status"] for entry in revision.block_map["blocks"]}  # pyright: ignore
 
 
 def _spans(store: DocumentStore, number: int, block_id: str) -> list[tuple[str, str]]:
     revision = store.revision("p1", "ff", number)
-    for entry in revision.block_map["blocks"]:  # type: ignore[union-attr]
+    for entry in revision.block_map["blocks"]:  # pyright: ignore
         if entry["id"] == block_id:
             return [(span["id"], span["status"]) for span in entry["spans"]]
     raise AssertionError(f"no block {block_id}")
@@ -169,7 +169,7 @@ def test_ld_f1_ids_across_edits(store: DocumentStore) -> None:
     assert statuses[ids["P"]] == "changed"
     added = [block_id for block_id, status in statuses.items() if status == "added"]
     assert len(added) == 1
-    assert ids["S"] in saved.changes["removed"]  # type: ignore[operator]
+    assert ids["S"] in saved.changes["removed"]  # pyright: ignore
     # P's first span is kept and its second changed, under the same IDs.
     assert _spans(store, 2, ids["P"]) == [(p_spans[0], "kept"), (p_spans[1], "changed")]
 
@@ -606,9 +606,9 @@ def test_tombstones_keep_the_history(store: DocumentStore) -> None:
     tombstone = store.revision("p1", deleted.document_id, 2)
     assert tombstone.info.tombstone
     assert tombstone.text == ""
-    assert {entry["id"] for entry in tombstone.block_map["removed"]} == set(ids.values()) | {  # type: ignore[union-attr]
+    assert {entry["id"] for entry in tombstone.block_map["removed"]} == set(ids.values()) | {  # pyright: ignore
         entry["id"]
-        for entry in store.revision("p1", deleted.document_id, 1).block_map["blocks"]  # type: ignore[union-attr]
+        for entry in store.revision("p1", deleted.document_id, 1).block_map["blocks"]  # pyright: ignore
     }
     assert store.revision("p1", deleted.document_id, 1).text == FF
     assert store.documents("p1") == []

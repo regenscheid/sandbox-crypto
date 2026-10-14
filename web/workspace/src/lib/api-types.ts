@@ -227,7 +227,7 @@ export interface PlanHead {
   ref: PlanRef;
   status_revision: number;
   progress_cursor: number;
-  status: "draft" | "awaiting_approval" | "active" | "completed" | "abandoned";
+  status: "draft" | "active" | "completed" | "abandoned";
   outcome: GoalOutcome | null;
 }
 

@@ -107,7 +107,7 @@ def test_a_dry_run_after_a_line_of_text_still_reads() -> None:
         "not json",
         "[]",
         '{"success": false}',
-        dry_run("not a package"),  # type: ignore[arg-type]
+        dry_run("not a package"),  # pyright: ignore
         dry_run(link(name="Bad Name")),
         dry_run(link(version="1 2")),
         dry_run(link(url=None, channel=None)),

@@ -56,8 +56,7 @@ immutable body version, USER author, reason, event, operation/receipt and curren
 projection in the canonical FULL-durability transaction. Existing progress and
 workflow status remain attributed history. Changed step intent makes its older
 assertion nonmatching; a body edit cannot silently certify or reset progress.
-`awaiting_approval` remains recorded workflow state and does not become active.
-Terminal plans refuse new body edits.
+A body edit does not change the plan's workflow status. Terminal plans refuse new body edits.
 
 Success is JSON:
 

@@ -393,7 +393,7 @@ async def test_exact_replay_is_history_not_current_phase_and_preserves_model_aut
 
 
 @pytest.mark.asyncio
-async def test_status_cas_race_and_awaiting_approval_cannot_be_bypassed(fixture, monkeypatch):
+async def test_a_status_race_refuses_progress_and_a_draft_holds_effects(fixture, monkeypatch):
     f = fixture
     ref, revision = await active(f)
     original = f.core.progress
@@ -407,8 +407,8 @@ async def test_status_cas_race_and_awaiting_approval_cannot_be_bypassed(fixture,
             summary.head,
             summary.status_revision,
             summary.progress_cursor,
-            "awaiting_approval",
-            "USER review requested",
+            "draft",
+            "USER returns the plan to a draft",
         )
         return original(*args, **kwargs)
 
@@ -427,19 +427,6 @@ async def test_status_cas_race_and_awaiting_approval_cannot_be_bypassed(fixture,
         )
     assert f.core.current(f.user).steps[0].latest is None
     await read_and_deliver(f)
-    for name, extra in [("plan_activate", {}), ("plan_finish", {"status": "abandoned"})]:
-        summary = f.core.summary(f.user)
-        with pytest.raises(DocumentError, match="real USER"):
-            await call(
-                f,
-                name,
-                operation_id=name,
-                base=ref,
-                expected_status_revision=summary.status_revision,
-                expected_progress_cursor=summary.progress_cursor,
-                reason="Try",
-                **extra,
-            )
     with pytest.raises(DocumentError, match="not active"):
         await f.adapter.check_dispatch("effect")
     await call(
@@ -752,7 +739,7 @@ async def test_cli_cancelled_constructor_closes_owner_published_before_thread_re
     )
     monkeypatch.setattr(harness, "PlanTools", factory)
     monkeypatch.setattr(cli, "WorkerClient", Client)
-    monkeypatch.setattr(cli, "_read_secret", lambda _: "test-secret-unused")
+    monkeypatch.setattr(cli, "read_secret", lambda _: "test-secret-unused")
     task = asyncio.create_task(cli._run(args))
     assert await asyncio.to_thread(entered.wait, 5)
     task.cancel()

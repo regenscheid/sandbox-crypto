@@ -225,7 +225,7 @@ def test_a_store_another_process_creates_during_the_check_is_not_refused(
             other.close()
 
     def traced(target: object, *args: Any, **kwargs: Any) -> sqlite3.Connection:
-        db = connect(target, *args, **kwargs)  # type: ignore[arg-type]
+        db = connect(target, *args, **kwargs)  # pyright: ignore
         if str(target).endswith("?mode=ro"):
             db.set_trace_callback(first_commit)
         return db

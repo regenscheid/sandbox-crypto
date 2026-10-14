@@ -49,13 +49,13 @@ def test_base64_is_strict_and_canonical(encoded: str) -> None:
 @pytest.mark.parametrize("value", [True, 1.0, "1", -1, 2**63])
 def test_stat_counters_are_exact_bounded_integers(value: object) -> None:
     with pytest.raises(ValidationError):
-        OutputStat(mtime_ns=0, size=value, inode=1)  # type: ignore[arg-type]
+        OutputStat(mtime_ns=0, size=value, inode=1)  # pyright: ignore
 
 
 @pytest.mark.parametrize("value", [True, 1.0, "1", 2])
 def test_protocol_cannot_be_coerced(value: object) -> None:
     with pytest.raises(ValidationError):
-        OutputReport(protocol=value)  # type: ignore[arg-type]
+        OutputReport(protocol=value)  # pyright: ignore
 
 
 def test_coverage_cannot_claim_all_mutations_or_observed_links() -> None:

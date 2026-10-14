@@ -225,7 +225,7 @@ async def test_cli_cleanup_failure_keeps_partial_record_and_closes_model(
 
     monkeypatch.setattr(cli, "OpenAICompatibleModel", Model)
     monkeypatch.setattr(cli, "WorkerClient", Client)
-    monkeypatch.setattr(cli, "_read_secret", lambda _: "synthetic")
+    monkeypatch.setattr(cli, "read_secret", lambda _: "synthetic")
     monkeypatch.setattr(DocumentStore, "close", close)
     args = argparse.Namespace(
         project="p",

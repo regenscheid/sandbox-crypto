@@ -59,13 +59,13 @@ def decide(
     floor: HardFloor | None = None,
     **fields: object,
 ) -> Action:
-    request = HttpRequest(method, url, **fields)  # type: ignore[arg-type]
+    request = HttpRequest(method, url, **fields)  # pyright: ignore
     decision = evaluate_request(request, loaded, ceiling=ceiling, floor=floor or HardFloor())
     return decision.action
 
 
 def tool(name: str, loaded: LoadedPolicy = EXAMPLE, **fields: object) -> Action:
-    operation = McpOperation("crypto-research-mcp", "tools/call", name, **fields)  # type: ignore[arg-type]
+    operation = McpOperation("crypto-research-mcp", "tools/call", name, **fields)  # pyright: ignore
     return evaluate(operation, loaded, ceiling=OPEN).action
 
 
