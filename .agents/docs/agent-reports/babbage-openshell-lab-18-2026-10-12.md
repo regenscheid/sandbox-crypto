@@ -6,7 +6,7 @@ catalog's nine functional probes. Cancellation and a worker restart after linkin
 began left visible `needs_recovery` records. The lab found no platform change needed.
 
 The run began late on October 11 and finished on October 12, America/New_York.
-The [recorded evidence](babbage-openshell-lab-18-evidence-2026-10-12.json) keeps the
+The recorded evidence (archived outside git, sha256 `9b95ecac7f71`) keeps the
 operation results, resolved files, probe output, relevant cache requests, grant
 records and interruption observations. It contains no client token or provider secret.
 

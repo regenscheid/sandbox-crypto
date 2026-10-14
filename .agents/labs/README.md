@@ -183,7 +183,7 @@ The [Lab22 report](../docs/agent-reports/babbage-openshell-lab-22-2026-10-12.md)
 the successful run on signed `b535856` and Python 3.14.8: exact binary/empty retention,
 twelve prompt oversized/symlink/FIFO refusals, repeated healthy publication and ordinary
 read/execution access. Independent inspection found zero capture leases/helpers; complete
-teardown was verified at 12:36:45 UTC. [Retained evidence](../docs/agent-reports/babbage-openshell-lab-22-evidence-2026-10-12.json)
+teardown was verified at 12:36:45 UTC. Retained evidence (archived outside git, sha256 `3474c2a6577e`)
 keeps 16 exact text records. The following recipe remains reusable for a new disposable run.
 
 Root coordinates the disposable run after exact source review. Start `lab_up.sh`
@@ -213,7 +213,7 @@ Root-owned [Lab24 acceptance](../docs/agent-reports/babbage-openshell-lab-24-202
 passed on signed `35863776` / helper `bcddecd3`, with nineteen terminal markers,
 eighteen bounded reports, partial outputs, raw path/root identity and same-attempt/
 kernel continuity through graceful worker restart. PDF was unavailable. The
-[archive](../docs/agent-reports/babbage-openshell-lab-24-evidence-2026-10-12.json)
+archive (archived outside git, sha256 `6b8ce007f6c7`)
 retains source, gate, API, independent inspection and complete teardown evidence;
 cleanup was independently verified at 14:59:02.325873 UTC.
 
@@ -259,7 +259,7 @@ attempt-end bytes, automatic inventory or bounded legacy directory-walk I/O.
 ## Lab23: external backend and research-profile conformance
 
 The [Lab23 report](../docs/agent-reports/babbage-openshell-lab-23-2026-10-12.md) and
-[exact evidence](../docs/agent-reports/babbage-openshell-lab-23-evidence-2026-10-12.json)
+exact evidence (archived outside git, sha256 `b381bb770c0a`)
 record root's unchanged conformance suite run on frozen main `73c07aa`. All 23
 external cases passed on each linux/amd64 profile, minimal and crypto-base; the
 23 local variants per run were intentionally skipped. Both actual Python 3.14.8

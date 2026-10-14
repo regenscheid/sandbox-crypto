@@ -11,7 +11,7 @@ These definitions apply to Markdown text rendered with KaTeX. A document's YAML
 front matter overrides matching project definitions. Full LaTeX document editing
 and worker-based export staging remain separate work.
 
-The [exact archive](project-macros-evidence-2026-10-12.json) retains source/build
+The exact archive (archived outside git, sha256 `fcbf29ebee0d`) retains source/build
 pins, public fixture records, native accessibility and MathML observations,
 actual mechanical attempts, preliminary failures, independent review and cleanup.
 Each embedded text record has its byte length and SHA-256; screenshots are separate
@@ -39,8 +39,8 @@ Root used the actual GUI controls and native text input, navigation and reload.
 | Inheritance and refresh | Unnumbered inheritance-only source renders current italic F/double-struck Z, then fraktur F/Z after a later fixture change and reload |
 | Project isolation | B retains sans-serif F and KaTeX's default double-struck Z while A uses fraktur F/Z |
 
-[Saved editor](project-macros-saved-2026-10-12.jpg) and
-[retained stale draft](project-macros-conflict-2026-10-12.jpg) show the actual GUI.
+Saved editor (archived outside git, sha256 `85d85837cb82`) and
+retained stale draft (archived outside git, sha256 `c8702b9f80f6`) show the actual GUI.
 Read-only DOM MathML records verify font variants, rather than relying on visually
 similar glyphs. The fixture prose calls B's Z undefined, but the frozen KaTeX bundle
 defines `\Z` as `\mathbb{Z}` by default. B has no **project override** for Z; this

@@ -67,14 +67,14 @@ foreign-key diagnostics, original response action/reason/body history and the
 independent parent revisions. Browser console and server warning/error records
 were empty.
 
-- [Original explanation history](finding-prose-original-2026-10-12.jpg)
-- [Corrected explanation and attribution](finding-prose-current-2026-10-12.jpg)
-- [Fresh scientific confirmation](finding-prose-confirmed-2026-10-12.jpg)
-- [Other-session visibility](finding-prose-other-session-2026-10-12.jpg)
+- Original explanation history (archived outside git, sha256 `89461b937fe8`)
+- Corrected explanation and attribution (archived outside git, sha256 `53870cd8ea63`)
+- Fresh scientific confirmation (archived outside git, sha256 `5668489bcff7`)
+- Other-session visibility (archived outside git, sha256 `2997f53d7ee2`)
 
 ## Retained archive and teardown
 
-[Evidence archive](finding-prose-math-evidence-2026-10-12.json): 536,469 bytes,
+Evidence archive (archived outside git, sha256 `1923c2959330`): 536,469 bytes,
 SHA-256 `1923c2959330d39f2328d7f2117fcb949eafcf4e508357fc8c5be11e37ab45d6`.
 It retains 19 exact UTF-8 records, each with byte length and SHA-256, plus hashes
 for the four screenshots. Records include original/current source audits, GUI

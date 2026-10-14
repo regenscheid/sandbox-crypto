@@ -29,8 +29,8 @@ checkpoint has no reviewer alias and ends explicitly failed.
 
 The initial confirmation run was **inconclusive**. It both lacked an explicit checked-item
 record and counted unrelated pending author feed against confirmation coverage. The
-[initial records](consistency-review-initial-evidence-2026-10-12.json) and
-[initial coverage view](consistency-review-initial-coverage-2026-10-12.jpg) preserve that
+initial records (archived outside git, sha256 `b9beff1a6515`) and
+initial coverage view (archived outside git, sha256 `9cc0b182410e`) preserve that
 observation. Independent review identified the latter as a conservative scope bug.
 
 The correction measures confirmation coverage against all exact target, original and
@@ -41,12 +41,12 @@ fixed. The unrelated checkpoint remained failed and its exact author-work window
 `watermark=2, retry_end=3, failures=1` was unchanged. Regression fixtures still refuse a
 pass when a checked record is absent, a target is omitted or granted evidence is incomplete.
 
-The [recorded evidence](consistency-review-evidence-2026-10-12.json) combines token-free
+The recorded evidence (archived outside git, sha256 `c0af16531831`) combines token-free
 control-store records and observed browser snapshots. Screenshots show the
-[claimed fix](consistency-review-claimed-2026-10-12.jpg),
-[confirmation view](consistency-review-confirmed-2026-10-12.jpg),
-[retained stale draft](consistency-review-stale-draft-2026-10-12.jpg) and
-[complete attribution history](consistency-review-history-2026-10-12.jpg).
+claimed fix (archived outside git, sha256 `65c4883217a2`),
+confirmation view (archived outside git, sha256 `58c75ab56859`),
+retained stale draft (archived outside git, sha256 `9e59e0036579`) and
+complete attribution history (archived outside git, sha256 `5f5e5866cba9`).
 
 ## Validation and limits
 

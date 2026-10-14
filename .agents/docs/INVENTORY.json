@@ -1,31 +1,19 @@
 {
   "format_version": 1,
   "captured_date": "2026-10-14",
-  "status": "planning and source inspection, isolated delegation-record and original run/kernel-binding validation, bounded scripted planning-evaluator calibration, thirty-six OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, project macro native browser and actual KaTeX acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-14). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
+  "status": "planning and source inspection, isolated delegation-record and original run/kernel-binding validation, bounded scripted planning-evaluator calibration, thirty-six OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, project macro native browser and actual KaTeX acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-14). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed. Raw lab evidence (JSON records, screenshots) is kept outside git since 2026-10-14; reports name each archived file by its SHA-256.",
   "files": [
-    {
-      "path": "agent-reports/babbage-openshell-lab-36-evidence-2026-10-14.json",
-      "category": "runtime-evidence",
-      "bytes": 241899,
-      "sha256": "32f1a3e84a3ab310b137dd603ad0ce2ddd7c03e66c060549275704dd14e627b0"
-    },
     {
       "path": "agent-reports/babbage-openshell-lab-36-2026-10-14.md",
       "category": "runtime-validation",
-      "bytes": 5178,
-      "sha256": "4f8e3f632838c0c928780a6121f4c949ef137278ce1daf9a4e3cefb105da21e0"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-35-evidence-2026-10-13.json",
-      "category": "runtime-evidence",
-      "bytes": 257492,
-      "sha256": "37ce6358a2528de8ccc439e9b625a66441818c03e0ca72673af0e1c221410a97"
+      "bytes": 5171,
+      "sha256": "799a21031ea72228706eec4d4c63ccef875a61ffa42efb38ef95177347ebac70"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-35-2026-10-13.md",
       "category": "runtime-validation",
-      "bytes": 6713,
-      "sha256": "9ba4ad6f1aeccb067c86f7560c5c46cae5e259ca3038d953227ec04bc33bd5aa"
+      "bytes": 6706,
+      "sha256": "ae3977f42f23e68856cbca37cd891bec2002be24ec763bc8d1ca4d29efa30978"
     },
     {
       "path": "../../docs/PROVISION-EVENTS.md",
@@ -40,22 +28,10 @@
       "sha256": "7065fcfce1ad1c728ced83eb2cb91518dc0aa0b841f0c2af76079d1490b03721"
     },
     {
-      "path": "agent-reports/babbage-openshell-lab-34-evidence-2026-10-13.json",
-      "category": "runtime-evidence",
-      "bytes": 424892,
-      "sha256": "6be5271fd6b1b35d1cb8c4d6f19c5c442b6cd1fbfbebb0ade09c4e4ce160b2ac"
-    },
-    {
       "path": "agent-reports/babbage-openshell-lab-34-2026-10-13.md",
       "category": "runtime-validation",
-      "bytes": 4905,
-      "sha256": "a3c64e8e46b612bd17c292cd28ed30d68b428af99ee660746cec11ddab97dfcf"
-    },
-    {
-      "path": "agent-reports/pip-lockfile-licenses-evidence-2026-10-13.json",
-      "category": "local-validation-evidence",
-      "bytes": 69545,
-      "sha256": "b770106a62c6af0a6dbf88992382db5a9afcbb231d99c358eee019221fb6fc04"
+      "bytes": 4898,
+      "sha256": "0a44802787b302c52ae7ab3227a706a5290e61b398bff81809a556bd5a2808ea"
     },
     {
       "path": "../../docs/PIP-LOCKFILE-LICENSES.md",
@@ -246,38 +222,14 @@
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 35048,
-      "sha256": "edb79f0f8852b0e886b6dc27f0745f365333b6500bc932b8c02b49cc8588f208"
+      "bytes": 34047,
+      "sha256": "e28554326db2a8f97e0b771962487db911da6f1f0787fbf78bebf0cf3f7d84d2"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
       "category": "runtime-validation",
-      "bytes": 4183,
-      "sha256": "b9a157946d20cf37360b8f4dfd6397584e086bce712e2a87d25d7f74781083f6"
-    },
-    {
-      "path": "agent-reports/artifact-review-browser-evidence-2026-10-12.json",
-      "category": "browser-evidence",
-      "bytes": 32684,
-      "sha256": "4cdf92682f6c6af1d49c9ddcc99b1960c659773532eb126f07071b30c0a7cd97"
-    },
-    {
-      "path": "agent-reports/artifact-review-confirmed-2026-10-12.png",
-      "category": "browser-evidence",
-      "bytes": 248082,
-      "sha256": "687d9ab422094e053eadc6722b2e3e8b0064fada44763b6b993f567da470223f"
-    },
-    {
-      "path": "agent-reports/artifact-review-empty-2026-10-12.png",
-      "category": "browser-evidence",
-      "bytes": 279207,
-      "sha256": "f74898efae6059058ede5c6f9632a14ed334d34ee52981e2a6e6c9135fd5039e"
-    },
-    {
-      "path": "agent-reports/artifact-review-initial-2026-10-12.png",
-      "category": "browser-evidence",
-      "bytes": 172522,
-      "sha256": "2e4f5388892e242d9695105bf4c5be3ab04d7bd88c66609708b4df4835b2ea3f"
+      "bytes": 4189,
+      "sha256": "a59f67339f2b1b4824d40a571560fe1eaaa21d690d5740467572677a8345ad47"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-10-2026-10-11.md",
@@ -330,32 +282,14 @@
     {
       "path": "agent-reports/babbage-openshell-lab-18-2026-10-12.md",
       "category": "runtime-validation",
-      "bytes": 8851,
-      "sha256": "1b3b754052765d3e9b52c20114ab4f7d920ff7e2e0d688030df5d91cd9be5bc4"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-18-evidence-2026-10-12.json",
-      "category": "runtime-validation",
-      "bytes": 77971,
-      "sha256": "9b95ecac7f716212c3acc6331d1446532cad077bd7a56b65f1e6aaf7a6c1a721"
+      "bytes": 8844,
+      "sha256": "c157a98d9fe51d23d810830e35c1c62e0aa83bc5cb511f2de5aedf140ab37897"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-19-2026-10-12.md",
       "category": "runtime-validation",
-      "bytes": 8141,
-      "sha256": "4bc0f35cf96bf3486864c740a4f520356f750990135812f01b866c337c803b3e"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-19-evidence-2026-10-12.json",
-      "category": "runtime-validation",
-      "bytes": 82360,
-      "sha256": "a450d84660171374cc7a4428364f616445887ddad681cd89411ad3e1c7ac6096"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-19-gui-2026-10-12.jpg",
-      "category": "runtime-validation",
-      "bytes": 42764,
-      "sha256": "982e2a6f1ae1096444f316169c3a58fe025da03583a065c5a0edaf43468fa48c"
+      "bytes": 8133,
+      "sha256": "a8f37a1727ba5e790372193d71f2225403bee9c80c322e7493936392b58796a6"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-2-2026-10-10.md",
@@ -366,26 +300,8 @@
     {
       "path": "agent-reports/babbage-openshell-lab-20-2026-10-12.md",
       "category": "runtime-validation",
-      "bytes": 8322,
-      "sha256": "f7c531a63833d37f66454f77d107b856c437e20b37b5984f9d04a8f732f205f8"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-20-final-evidence-2026-10-12.json",
-      "category": "runtime-validation",
-      "bytes": 99334,
-      "sha256": "18685646cd132b72702a150dbc42030e4cf44e0c1400db6dc9c4a54de7f687a3"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-20-initial-evidence-2026-10-12.json",
-      "category": "runtime-validation",
-      "bytes": 43459,
-      "sha256": "80398be53bb5f7fee9f3150f78c759dfa5544a70c1c2c47a134bb4af7bbb3f14"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-20-initial-failure-2026-10-12.json",
-      "category": "runtime-validation",
-      "bytes": 5824,
-      "sha256": "64ad1ab497490904bc9bbf8984a418f6fd0549592a49dc9a71ce572fbdff33ab"
+      "bytes": 8280,
+      "sha256": "3cf7f5d0f06ad687e46cd52cf500c105f04d6cffd58a7bb7f43ce7697a584956"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-2026-10-10.md",
@@ -396,134 +312,56 @@
     {
       "path": "agent-reports/babbage-openshell-lab-21-2026-10-12.md",
       "category": "runtime-validation",
-      "bytes": 7720,
-      "sha256": "6bc8e329f1e805184c52eaeac024f3f8026c9e0bbecb3dd77521f6f0fa7b7362"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-21-cancel-evidence-2026-10-12.json",
-      "category": "runtime-validation",
-      "bytes": 332262,
-      "sha256": "e0f741bb4f068b0c0f786b9b479a805c2b91f5a1832fbdb3119f0e193af24597"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-21-offline-evidence-2026-10-12.json",
-      "category": "runtime-validation",
-      "bytes": 595952,
-      "sha256": "4529e8576a294b25ee749600435abb714f3358009a674a297a344116ceea5f5b"
+      "bytes": 7691,
+      "sha256": "0ece3e3650e797f8c705422653d7e66217deed3de722b6a46bc5d6eb5db19dcd"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-22-2026-10-12.md",
       "category": "runtime-validation",
-      "bytes": 7806,
-      "sha256": "2705177d5ca1495cf3c733f5c11fbe2ead564ce894c68e4d3a352c1e96104300"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-22-evidence-2026-10-12.json",
-      "category": "runtime-evidence",
-      "bytes": 103849,
-      "sha256": "3474c2a6577ecd4b6089e4045c038175afae2e580e0fbfe8bb21ce2d1065503d"
+      "bytes": 7799,
+      "sha256": "35e4812e22083b5c677f7fecf819173b7dcee0d8516efd0bca6e25b81293b18d"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-23-2026-10-12.md",
       "category": "runtime-validation",
-      "bytes": 5619,
-      "sha256": "a5b04abc5e9a2868cc6907b47d0bd4062577e76501e1152d51b6e46313f6fc2b"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-23-evidence-2026-10-12.json",
-      "category": "runtime-evidence",
-      "bytes": 77108,
-      "sha256": "b381bb770c0ae5702a4c98ac90012184c6e8289d0fccabfd0e1773ff227ee779"
+      "bytes": 5612,
+      "sha256": "baec8fcf3a02f228ee0d097661cb043e9293528c1bb362974bff1a4a862c7296"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-24-2026-10-12.md",
       "category": "runtime-validation",
-      "bytes": 7809,
-      "sha256": "406dfa955238e9375e4ff30378d97f14ef25a137cdc750a4ea2a7315b46713f8"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-24-evidence-2026-10-12.json",
-      "category": "runtime-evidence",
-      "bytes": 200670,
-      "sha256": "6b8ce007f6c7f1e111244dc01f7c3a94debbcd93c7e6f157b5c1e91f1b1c3f64"
+      "bytes": 7802,
+      "sha256": "a553372c8e4b8f93e873fb72ff16c8696598db59749cbe22e3fc0f5cb3b1290b"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-25-2026-10-12.md",
       "category": "runtime-validation",
-      "bytes": 6762,
-      "sha256": "3d65a11810f8e8b1a0f811899c94690f60cddb4e348ea0fa1a88bd9716eb38fe"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-25-evidence-2026-10-12.json",
-      "category": "runtime-evidence",
-      "bytes": 204935,
-      "sha256": "1f89881098c764f301b1b0570b561bea1d8ef04175d39580f750dec6e808a044"
+      "bytes": 6755,
+      "sha256": "1ccd345132eca015add6b2e6290d47d9565e8cb4ba631466b8a1df4813b7ffdd"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-26-2026-10-12.md",
       "category": "runtime-validation",
-      "bytes": 5387,
-      "sha256": "334975e9025a83143494283d121536b69047cb8d313a4a655f72b124193a415e"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-26-evidence-2026-10-12.json",
-      "category": "runtime-evidence",
-      "bytes": 251354,
-      "sha256": "5818a1dbd52f203cef43b62a037bd7d471d21231666ae385983a437d5a2ea3a7"
+      "bytes": 5380,
+      "sha256": "4b5b2e11e260e9cc9c6c5ce8946c089e95f95f059d87e65a5503aa311b2d06ba"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-27-2026-10-12.md",
       "category": "runtime-validation",
-      "bytes": 5926,
-      "sha256": "be733d6fd6241012c0e5e41b35a401f72fdd34d1ee7c8f96138a4321a96a1343"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-27-evidence-2026-10-12.json",
-      "category": "runtime-evidence",
-      "bytes": 272060,
-      "sha256": "27545cfd2f97e133911e8a5c28f4e1dd1f71e2aa8e0afde7e81135b1a5a59a99"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-27-idle-2026-10-12.jpg",
-      "category": "browser-validation",
-      "bytes": 95899,
-      "sha256": "524da19f254285ebd28d71fe95c24db2a41d8b977b3e8291014c325824bca0e0"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-27-logout-2026-10-12.jpg",
-      "category": "browser-validation",
-      "bytes": 15770,
-      "sha256": "0c65485266d34f99b82eaefa23e14218438a30644971ba3040cc0480e4126a20"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-27-stale-2026-10-12.jpg",
-      "category": "browser-validation",
-      "bytes": 90395,
-      "sha256": "abc849ac8184e6a1194cfb01bb39d026b80ed1d9b332548b3f97dfa9b9dd37bf"
+      "bytes": 6035,
+      "sha256": "e42b73b9c408b841d7c7256154b4c17db9d89cced69db46c2b1a28442b02d5b3"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-28-2026-10-12.md",
       "category": "runtime-validation",
-      "bytes": 5513,
-      "sha256": "3cc19741f736024d1d6c26272ed2510cf06401a21c3a95b4927b092bc2361500"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-28-evidence-2026-10-12.json",
-      "category": "runtime-evidence",
-      "bytes": 226308,
-      "sha256": "b0bb8ca1c3231701b1fa4722d7715703e2dcf057f19412372e4c39b0ab279bf5"
+      "bytes": 5506,
+      "sha256": "2f3c5bcab2a6288201aa95ab95ba7cce02138e9c405611cfad5dc3a339640ba3"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-29-2026-10-13.md",
       "category": "runtime-validation",
-      "bytes": 10180,
-      "sha256": "723c9e3000eb838d99cb0c2328efac99e195b0909f2f5c2a45ac97c253441744"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-29-evidence-2026-10-13.json",
-      "category": "validation-evidence",
-      "bytes": 1491591,
-      "sha256": "dc19c9535f1ed050d8756d7e27b2f9432cf4a42589e4e9213373baa7ac2910e3"
+      "bytes": 10173,
+      "sha256": "36f1f70414e25071b3cb32e9433a305070acaacc960bf297c2521e21aab47adb"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-3-2026-10-11.md",
@@ -534,218 +372,26 @@
     {
       "path": "agent-reports/babbage-openshell-lab-30-2026-10-13.md",
       "category": "runtime-validation",
-      "bytes": 10044,
-      "sha256": "48302fd48f7459d2055fd5df355255b4bfb8b1784b26beabf0420fea40906ca4"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-30-escalated-files-2026-10-13.jpg",
-      "category": "runtime-validation",
-      "bytes": 256263,
-      "sha256": "7819e28fefdfb09ca240b5ff18de18c284263c8ecfa6da0f7639435f1fc6e293"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-30-evidence-2026-10-13.json",
-      "category": "validation-evidence",
-      "bytes": 1930821,
-      "sha256": "b23873c28a8eacc4122007122bed05bbd7b8ed0977e80709dcf9a3fe4610c8f2"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-30-failed-overview-2026-10-13.jpg",
-      "category": "runtime-validation",
-      "bytes": 131237,
-      "sha256": "35e4cbb463db8e69b37894dd1805b0b1048f26d48da7b9cd99d83d2781e2234e"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-30-flint-probes-2026-10-13.jpg",
-      "category": "runtime-validation",
-      "bytes": 153252,
-      "sha256": "c063b96cc4a58ec7dfbf70e879dc22c5f4bd488a9be68099aa2d62621e5c4eb3"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-30-gp-files-2026-10-13.jpg",
-      "category": "runtime-validation",
-      "bytes": 291863,
-      "sha256": "9c9aa98106fcc23fe21e137baa2422e44be5808fe2c0c563ad8eacf5f30b1bb4"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-30-gp-probe-2026-10-13.jpg",
-      "category": "runtime-validation",
-      "bytes": 141076,
-      "sha256": "89ad24c746cc92073f5fcd88004d1146666a0b02cac153456fedb47486dcdc55"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-30-initial-2026-10-13.jpg",
-      "category": "runtime-validation",
-      "bytes": 109103,
-      "sha256": "291e42fbb7d365a1a43b65ee4280444c42a871a7038444be6d0bc4e20bc8cd05"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-30-logout-2026-10-13.jpg",
-      "category": "runtime-validation",
-      "bytes": 15770,
-      "sha256": "0c65485266d34f99b82eaefa23e14218438a30644971ba3040cc0480e4126a20"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-30-offline-2026-10-13.jpg",
-      "category": "runtime-validation",
-      "bytes": 159620,
-      "sha256": "3b7584c9255c4763b031401d48fee6e2dbfe5fe8c4c03e32230901b45adc8e3b"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-30-permission-queue-2026-10-13.jpg",
-      "category": "runtime-validation",
-      "bytes": 136094,
-      "sha256": "231c92900df5ea4c0e96438c0228b559845591f5351ec5d6dffaa9b31bb3e4d4"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-30-stopped-2026-10-13.jpg",
-      "category": "runtime-validation",
-      "bytes": 153318,
-      "sha256": "80c22cf4ca0505dd5890b4a1c558247b7fbc6e1575357febbac5c41a108fcd80"
+      "bytes": 10211,
+      "sha256": "c9a5d8b73921ae30067d12cd9e6177a0f3592e08e67472bc806cd4c71a36e9bc"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-31-2026-10-13.md",
       "category": "runtime-validation",
-      "bytes": 10924,
-      "sha256": "1020643766693b8a40260500c2144760c72acdbb57f4edc6156b36549ab7dd87"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-31-evidence-2026-10-13.json",
-      "category": "runtime-validation",
-      "bytes": 1924210,
-      "sha256": "0598dbdbdbc58e831f5ad90f2f144c39d0de72fc63e3bdffed2caba641525ee2"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-31-first-generation-unavailable-2026-10-13.jpg",
-      "category": "runtime-validation",
-      "bytes": 156780,
-      "sha256": "ebd75888168d6de08de54164927eacd6cb09c8bb0b9ff7dcf9f0af88b21d10d8"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-31-flint-comparison-2026-10-13.jpg",
-      "category": "runtime-validation",
-      "bytes": 375366,
-      "sha256": "6ce6c577bdb2a422d2f58b07eea45b72f299486e110ab416e911e2bb7eff79e7"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-31-generation2-page-1-2026-10-13.jpg",
-      "category": "runtime-validation",
-      "bytes": 509985,
-      "sha256": "8df78716f07466d3f09dc589c3058276bb608632770880979f19f1a49e7799ca"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-31-generation2-page-2-2026-10-13.jpg",
-      "category": "runtime-validation",
-      "bytes": 227588,
-      "sha256": "42be2013f37666d605e927adb77db3d76b394e7fcffd9ee269bee96aaa061736"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-31-initial-2026-10-13.jpg",
-      "category": "runtime-validation",
-      "bytes": 101366,
-      "sha256": "6a6899aa390e691c712b2c70c3c990d75e5ddaa7e0bca5fd8dcf3a08c4ac703d"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-31-logout-2026-10-13.jpg",
-      "category": "runtime-validation",
-      "bytes": 15770,
-      "sha256": "0c65485266d34f99b82eaefa23e14218438a30644971ba3040cc0480e4126a20"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-31-page-1-2026-10-13.jpg",
-      "category": "runtime-validation",
-      "bytes": 509984,
-      "sha256": "aee072d92f9546edc3f37dc04829f110a5f6a1bd6a10ac06e33a5d1f9c6ba82e"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-31-page-2-2026-10-13.jpg",
-      "category": "runtime-validation",
-      "bytes": 235394,
-      "sha256": "0739f567f1d03afc6b8831155ee4955b2bc361e4ca7378e5e3f84e334b78f3a5"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-31-stopped-same-pair-2026-10-13.jpg",
-      "category": "runtime-validation",
-      "bytes": 186293,
-      "sha256": "4eceb111e18c441b3e0ec72d0b3eb4e95bfc99189109781e231260147182a5b6"
+      "bytes": 10852,
+      "sha256": "3df28d8706caaeb29ecce3ce9fa359f5a7fcdc2fa9132badd564e02ca576298e"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-32-2026-10-13.md",
       "category": "runtime-validation",
-      "bytes": 11391,
-      "sha256": "969aa080fc481b8f632b428b0b5aea0ffa6736ec396acb5ddddbca96053dfaaf"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-32-baseline-proof-2026-10-13.jpg",
-      "category": "runtime-validation",
-      "bytes": 61901,
-      "sha256": "ed23215a54c66af4965577f1209109a229587dc5a63b041058ebd8df29fab918"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-32-evidence-2026-10-13.json",
-      "category": "runtime-validation",
-      "bytes": 4066993,
-      "sha256": "346f344688c576d3047d8b3e9a671532ffecafc52a6135cea236138970681d5f"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-32-logout-2026-10-13.jpg",
-      "category": "runtime-validation",
-      "bytes": 15736,
-      "sha256": "9876c1cc4a53f24b96a96035996bea0991e29f876c1a0f126a73cc6f20574f49"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-32-r0-first-2026-10-13.jpg",
-      "category": "runtime-validation",
-      "bytes": 56125,
-      "sha256": "8608c48db2772d35c0a67721d39f3c9b9a97dbe439e74a47728584a5e524559e"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-32-r0-last-2026-10-13.jpg",
-      "category": "runtime-validation",
-      "bytes": 55915,
-      "sha256": "7e85f5b4c519d8053491844a6a93b5aaa97f749d32681b2e1153822a8e9a8c1f"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-32-r1-first-2026-10-13.jpg",
-      "category": "runtime-validation",
-      "bytes": 56127,
-      "sha256": "ea4059bf850f5e68718e6534bd94f8bfe93a6c7a62f9927e1b03e04220b8b874"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-32-r1-last-2026-10-13.jpg",
-      "category": "runtime-validation",
-      "bytes": 56539,
-      "sha256": "251ad92c2ff71c632f360e3969ebc5daebea3049bf0c109f48b78733fbf284b9"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-32-r1-proof-2026-10-13.jpg",
-      "category": "runtime-validation",
-      "bytes": 61865,
-      "sha256": "aea5781171d3faa01c7dbe3b71d1c0fb986ddde280e61e3e90596715b56b5939"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-32-stopped-first-2026-10-13.jpg",
-      "category": "runtime-validation",
-      "bytes": 62731,
-      "sha256": "fded66f3aa70db344761e25b9777a191601dbf96053e2cd1e9345ee8d98a0a26"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-32-stopped-packages-2026-10-13.jpg",
-      "category": "runtime-validation",
-      "bytes": 51164,
-      "sha256": "d8d04b0b99672a1bc02a7de350a7b82a3fdd331874df70d03299cd54911e6a18"
+      "bytes": 11315,
+      "sha256": "1e4c387dba9011205eb17c6a5c06583ab80f0573d2f042945b0a0979c9e360b4"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-33-2026-10-13.md",
       "category": "runtime-validation",
-      "bytes": 7144,
-      "sha256": "389cb4cae593eb1cb311a5f72b1db2f9174e8f2b7efbb7e9cb1034b28a640e03"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-33-evidence-2026-10-13.json",
-      "category": "runtime-validation",
-      "bytes": 3904374,
-      "sha256": "6a2af6baa2635af89930ce77d25572498385e63fa637ecc7f5db7ede9d05c6b7"
+      "bytes": 7137,
+      "sha256": "c162efb22fc49b2f70fd57fbd66e196b93bc24bcf87bac9a6d769de44e498fc2"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-4-2026-10-11.md",
@@ -768,8 +414,8 @@
     {
       "path": "agent-reports/babbage-openshell-lab-7-2026-10-11.md",
       "category": "runtime-validation",
-      "bytes": 3744,
-      "sha256": "b261eb0ae7920cff62457800785c7e88ef306ce9e711952b59a8459d16617da6"
+      "bytes": 3735,
+      "sha256": "408ed89603a1bf9e258cbe96abeb693a0abf584cd87841cb521a675f82ec277c"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-8-2026-10-11.md",
@@ -792,248 +438,62 @@
     {
       "path": "agent-reports/claude-science.md",
       "category": "agent-source-investigation",
-      "bytes": 18135,
-      "sha256": "2df6e760403cbbb3d21188f7294c660c951b40ac71e8468424f5ee2550b9341e"
+      "bytes": 18090,
+      "sha256": "5507440d8fc6512400f3e45eb4b61fa7ec62cdfbee2ff051584f28db4336ca05"
     },
     {
       "path": "agent-reports/comment-math-2026-10-12.md",
       "category": "runtime-validation",
-      "bytes": 6141,
-      "sha256": "9d4fc173b9ef27f03ba7f5bb4b3b06ff92b3696b3e170c88e3e22d129fc5777e"
-    },
-    {
-      "path": "agent-reports/comment-math-browser-evidence-2026-10-12.json",
-      "category": "browser-evidence",
-      "bytes": 623607,
-      "sha256": "18f334198b5c4363052a1dc3bf350e31ae0c47dde0f2f3ab917dd60e075c59d3"
-    },
-    {
-      "path": "agent-reports/comment-math-confirmed-2026-10-12.jpg",
-      "category": "browser-evidence",
-      "bytes": 71339,
-      "sha256": "a1c0373a821dd898b1f3f338e08775306c6ac1b1ad373538ce2c00e077e8c3f4"
-    },
-    {
-      "path": "agent-reports/comment-math-initial-2026-10-12.jpg",
-      "category": "browser-evidence",
-      "bytes": 58709,
-      "sha256": "ec8a0d10bdfacd57dadaef402aa9450021088eec810f5117711addafcff93bc2"
-    },
-    {
-      "path": "agent-reports/comment-math-main-correction-2026-10-12.jpg",
-      "category": "browser-evidence",
-      "bytes": 55068,
-      "sha256": "f027e4239d37264d7963f3b4161f53f78d28f8c3b6ad6954c8640320f1c84aab"
-    },
-    {
-      "path": "agent-reports/comment-math-stale-draft-2026-10-12.jpg",
-      "category": "browser-evidence",
-      "bytes": 54123,
-      "sha256": "1693e2197c424e57c0bac3bda3555055e4e5524190db76a8b589a64b63415ad5"
-    },
-    {
-      "path": "agent-reports/comment-math-user-correction-2026-10-12.jpg",
-      "category": "browser-evidence",
-      "bytes": 58923,
-      "sha256": "c1d175c3c677dc1cfefcff875d5dd7568f88d67f30cd342ab9406bf28f52acc8"
+      "bytes": 6151,
+      "sha256": "fc3a05f23c26581361ca3c01fc3ad171d5b90c512bdef506e3c437b1c50f3984"
     },
     {
       "path": "agent-reports/consistency-review-2026-10-12.md",
       "category": "runtime-validation",
-      "bytes": 5284,
-      "sha256": "cffc24f725cc549452685aa6ac61a79a1c7245d0f2cec0167a4554b6d630a18b"
-    },
-    {
-      "path": "agent-reports/consistency-review-claimed-2026-10-12.jpg",
-      "category": "runtime-validation",
-      "bytes": 118908,
-      "sha256": "65c4883217a25d6658acd225b03499db0b3474e773fee1c6375d40dd937f022d"
-    },
-    {
-      "path": "agent-reports/consistency-review-confirmed-2026-10-12.jpg",
-      "category": "runtime-validation",
-      "bytes": 234523,
-      "sha256": "58c75ab568595c1abc9135bac5d8dbebe9b232df148d6d99e8b399b8ee6e84b6"
-    },
-    {
-      "path": "agent-reports/consistency-review-evidence-2026-10-12.json",
-      "category": "runtime-validation",
-      "bytes": 68631,
-      "sha256": "c0af16531831b4037c0881f032594b557626224d235e9cd501fc17bf61373179"
-    },
-    {
-      "path": "agent-reports/consistency-review-history-2026-10-12.jpg",
-      "category": "runtime-validation",
-      "bytes": 252440,
-      "sha256": "5f5e5866cba9f0a6bedc4277f6f1c90374e7fde668ffd29a27af3bdd54a16a53"
-    },
-    {
-      "path": "agent-reports/consistency-review-initial-coverage-2026-10-12.jpg",
-      "category": "runtime-validation",
-      "bytes": 65623,
-      "sha256": "9cc0b182410e5ae8db410fcfd8e06bfbf26e735179f734250a04a6b26ccbe549"
-    },
-    {
-      "path": "agent-reports/consistency-review-initial-evidence-2026-10-12.json",
-      "category": "runtime-validation",
-      "bytes": 75667,
-      "sha256": "b9beff1a65154b550e245359eba918cbdca24dbabc0259146c6c5789d01e2f7a"
-    },
-    {
-      "path": "agent-reports/consistency-review-stale-draft-2026-10-12.jpg",
-      "category": "runtime-validation",
-      "bytes": 209683,
-      "sha256": "9e59e003657991be608d5667b578e64aa28fcd6526c74f35ec61479fb2209e8f"
-    },
-    {
-      "path": "agent-reports/copy-latex-browser-2026-10-12.jpg",
-      "category": "browser-evidence",
-      "bytes": 146494,
-      "sha256": "1958ef05b66151b26cab51bb8eef0cd153a967e6f02588226c32715ee9bbbf68"
-    },
-    {
-      "path": "agent-reports/delegated-child-attempts-evidence-2026-10-13.json",
-      "category": "implementation-validation",
-      "bytes": 53538,
-      "sha256": "d6523ab88277a9f95597f88bcf3b111f5b7163a5c76b452b5dfd0288abd75ea8"
+      "bytes": 5264,
+      "sha256": "d4e38bee374cd57e6801525dab561d1c5e9e5ca56e78bdcc506e4d22321d90ff"
     },
     {
       "path": "agent-reports/delegated-plan-progress-2026-10-13.md",
       "category": "implementation-validation",
-      "bytes": 3148,
-      "sha256": "e785d500720682daf107a14deef0c48d5debb1000846d8a1392cd7269d44e278"
-    },
-    {
-      "path": "agent-reports/delegated-plan-progress-evidence-2026-10-13.json",
-      "category": "implementation-validation",
-      "bytes": 1055478,
-      "sha256": "f1966449aa373ee5688198fc32ce1ec409fa92049d6f678f976f77ed4e842855"
+      "bytes": 3142,
+      "sha256": "bc25fe0f75fc427b8812e8bc6756e09e19cd0c9609319bb20d9d39bc163a14ce"
     },
     {
       "path": "agent-reports/delegation-records-2026-10-13.md",
       "category": "implementation-validation",
-      "bytes": 11503,
-      "sha256": "abaad8c0cc9325b58d34d065cc6056885ab91be5c87e0c4b9b042a66f477e5c4"
-    },
-    {
-      "path": "agent-reports/delegation-records-evidence-2026-10-13.json",
-      "category": "implementation-validation",
-      "bytes": 671095,
-      "sha256": "d35e5e9edeef74c9fc44a8c47b6a93f6ce2da1882ae23b0e730d923b8d389258"
+      "bytes": 11502,
+      "sha256": "bbeee4607a2ce4312ffba83d3e58af2749dd5ed6c0895c608b699469d551d926"
     },
     {
       "path": "agent-reports/display-repair-input-provenance-2026-10-12.md",
       "category": "implementation-validation",
-      "bytes": 4626,
-      "sha256": "5a49735d24982adee612bad1f04d963af3bf3da9b227d5ff524422244a61675e"
-    },
-    {
-      "path": "agent-reports/display-repair-input-provenance-evidence-2026-10-12.json",
-      "category": "validation-evidence",
-      "bytes": 134113,
-      "sha256": "bc66a6b4cba05ae034d80df4949135a6e5bf221944f74996c11cbec8aa1cd052"
+      "bytes": 4612,
+      "sha256": "4c88575a567184a578ed17091d5cab6e203362887bca087d08cfd02d6f62145e"
     },
     {
       "path": "agent-reports/document-comments-2026-10-12.md",
       "category": "runtime-validation",
-      "bytes": 3816,
-      "sha256": "91fa9569cbaa37b58192d5868a99925addf69ecb3a5fade94894288587c7b97d"
-    },
-    {
-      "path": "agent-reports/document-comments-draft-2026-10-12.jpg",
-      "category": "runtime-validation",
-      "bytes": 52600,
-      "sha256": "9fd1129b4c3749881fc5a201757e86a81351343e4d137c2e988c9bcd685958fc"
-    },
-    {
-      "path": "agent-reports/document-comments-evidence-2026-10-12.json",
-      "category": "runtime-validation",
-      "bytes": 148006,
-      "sha256": "85caab84fb8d2050445d21d3027b9dae30ae07e1a9477597075bd3ce82841d53"
-    },
-    {
-      "path": "agent-reports/document-comments-queued-2026-10-12.jpg",
-      "category": "runtime-validation",
-      "bytes": 42519,
-      "sha256": "ea7e7b3b817f9a087624f9de7c03a385da87b5d69aa9534d61930389b3fef788"
-    },
-    {
-      "path": "agent-reports/document-comments-response-2026-10-12.jpg",
-      "category": "runtime-validation",
-      "bytes": 55614,
-      "sha256": "e94e417c9837ff7a5b00db15daa59a25ce9f944f4c1678c0cff30ce2598165fa"
+      "bytes": 3824,
+      "sha256": "b1129338903860aa361a426f5c25f95d7818cf306f95586b03afe30f5547a71e"
     },
     {
       "path": "agent-reports/document-editing-2026-10-12.md",
       "category": "runtime-validation",
-      "bytes": 3999,
-      "sha256": "5d548e664d75d616c15fe514176787c2c3fe659f6ceda30137b89c00d401c74e"
-    },
-    {
-      "path": "agent-reports/document-editing-accepted-patch-2026-10-12.jpg",
-      "category": "runtime-validation",
-      "bytes": 44794,
-      "sha256": "13347a429cc53df397771e947729fd3612c949b9aa69fe79ae53c3578bab2d39"
-    },
-    {
-      "path": "agent-reports/document-editing-conflict-2026-10-12.jpg",
-      "category": "runtime-validation",
-      "bytes": 44238,
-      "sha256": "8797f870281653ce86938d3f33ec4f0a6d9e2c84e11c6edf23f57123644952e5"
-    },
-    {
-      "path": "agent-reports/document-editing-evidence-2026-10-12.json",
-      "category": "runtime-validation",
-      "bytes": 35572,
-      "sha256": "1e39f601880f4389863fd7a7d69f14f981b6b7069c8a19497f9ed6fc8fc99294"
+      "bytes": 3998,
+      "sha256": "22bb2da50ec060bb42550949deea5cf784c452a6bedd9f1fa4cda9b9a6d7f7a4"
     },
     {
       "path": "agent-reports/document-export-inputs-2026-10-12.md",
       "category": "implementation-validation",
-      "bytes": 3581,
-      "sha256": "21f5301fc5bf8a7c5f642124a507099d19d9ade51c7e452ae6b6054e333c833c"
-    },
-    {
-      "path": "agent-reports/document-export-inputs-evidence-2026-10-12.json",
-      "category": "validation-evidence",
-      "bytes": 42196,
-      "sha256": "986ab2af5ad130fe800c2c69de7951f9524f6d69b48d361efb3dd9bac306d752"
+      "bytes": 3576,
+      "sha256": "7678493046bcaf60914ec61098cf0c417dacdb788e9f4a5e16f986e426ec210c"
     },
     {
       "path": "agent-reports/document-math-2026-10-12.md",
       "category": "runtime-validation",
-      "bytes": 4378,
-      "sha256": "2a375e00a6205bafa0cade1ed41500689dbb8ce3b3d1f2d4092def5a98d5b4f4"
-    },
-    {
-      "path": "agent-reports/document-math-browser-evidence-2026-10-12.json",
-      "category": "runtime-validation",
-      "bytes": 77016,
-      "sha256": "45b41d5e8e4f51b239fdee3c946695ac1a35e8953584139b17e6c9a838496797"
-    },
-    {
-      "path": "agent-reports/document-math-display-2026-10-12.jpg",
-      "category": "runtime-validation",
-      "bytes": 49091,
-      "sha256": "b12f0aa731ced624e8d3785fd16b9df761108a2a387668d379d1762f093d120f"
-    },
-    {
-      "path": "agent-reports/document-math-initial-2026-10-12.jpg",
-      "category": "runtime-validation",
-      "bytes": 56892,
-      "sha256": "8ffeae2d7f43303f37509dbf0a82690618ab335c66467ad3c8a67942d155a32a"
-    },
-    {
-      "path": "agent-reports/document-math-stale-draft-2026-10-12.jpg",
-      "category": "runtime-validation",
-      "bytes": 55641,
-      "sha256": "b7aeedd4134332ef6be00b9a83bec3fdd64cb3ff9f180ace7871f14a44c111bd"
-    },
-    {
-      "path": "agent-reports/document-math-user-history-2026-10-12.jpg",
-      "category": "runtime-validation",
-      "bytes": 67854,
-      "sha256": "4ac83b31fa0e8f00b6195d042668c228d67f97b12223fb853961324920057f0a"
+      "bytes": 4389,
+      "sha256": "789caf649e0e87e27183121cf736a2a6ca325ad1f3bb1d0dd674ea814fd6a9a2"
     },
     {
       "path": "agent-reports/document-mirror-plan-2026-10-12.md",
@@ -1048,82 +508,28 @@
       "sha256": "33aa358f483987c7c4c531a01ff7e93ff03c3f7cca6a4ab6cdc2999e24cd743e"
     },
     {
-      "path": "agent-reports/failed-run-2026-10-12.jpg",
-      "category": "browser-evidence",
-      "bytes": 129233,
-      "sha256": "43bfb568e904adb25991f097ec8b31ff23e95d9cf9e4932726dff7b59c32e347"
-    },
-    {
-      "path": "agent-reports/failed-run-evidence-2026-10-12.json",
-      "category": "browser-evidence",
-      "bytes": 107728,
-      "sha256": "c1d9e2b87f5f87eb53aad2a350ec4162c7aa2fecd2d0ee7e6b771f790e4044c3"
-    },
-    {
       "path": "agent-reports/failed-run-records-2026-10-12.md",
       "category": "runtime-validation",
-      "bytes": 4450,
-      "sha256": "07472b430d42917b6029f67955b80cf76314af449aa651fa4656d48a3de3227d"
-    },
-    {
-      "path": "agent-reports/finding-prose-confirmed-2026-10-12.jpg",
-      "category": "browser-evidence",
-      "bytes": 57031,
-      "sha256": "5668489bcff7bf51a266429103ed87c778b1a6d7459feae1696cc8f16711540a"
-    },
-    {
-      "path": "agent-reports/finding-prose-current-2026-10-12.jpg",
-      "category": "browser-evidence",
-      "bytes": 58045,
-      "sha256": "53870cd8ea63ad953523076e904561e9decc1bfa3ccd5f6250d7fbd928815a70"
+      "bytes": 4474,
+      "sha256": "602ef136a2c084064f45e138f4f403401618ca53d1f3a60c96d5ae30e1ad6063"
     },
     {
       "path": "agent-reports/finding-prose-math-2026-10-12.md",
       "category": "runtime-validation",
-      "bytes": 5906,
-      "sha256": "b8a02e75ed560cd2c4a37b2b97fd5c7c40826e0ebbde1d32cbd4c234cfb07053"
-    },
-    {
-      "path": "agent-reports/finding-prose-math-evidence-2026-10-12.json",
-      "category": "browser-evidence",
-      "bytes": 536469,
-      "sha256": "1923c2959330d39f2328d7f2117fcb949eafcf4e508357fc8c5be11e37ab45d6"
-    },
-    {
-      "path": "agent-reports/finding-prose-original-2026-10-12.jpg",
-      "category": "browser-evidence",
-      "bytes": 62966,
-      "sha256": "89461b937fe85708264834b6c796368141353189e9ca55ac451178237735a4d8"
-    },
-    {
-      "path": "agent-reports/finding-prose-other-session-2026-10-12.jpg",
-      "category": "browser-evidence",
-      "bytes": 55786,
-      "sha256": "2997f53d7ee2d81d27755defa6f4bec8d7cdac8034dff7616a35301543dd2125"
+      "bytes": 5920,
+      "sha256": "6d739b5226637a0eee6bacae4e07cbac0625462342862da18afb1d7b1e96a44e"
     },
     {
       "path": "agent-reports/main-prompt-provenance-2026-10-12.md",
       "category": "implementation-validation",
-      "bytes": 3445,
-      "sha256": "8985414563e3d8a92a6209660fde7424d9cbb4784c90084b7c4b6c6f67eff051"
-    },
-    {
-      "path": "agent-reports/main-prompt-provenance-evidence-2026-10-12.json",
-      "category": "validation-evidence",
-      "bytes": 68311,
-      "sha256": "ba84cd9a6eb8848a883bf5350357c2f102cf75c43b79ed4249f6498c9f9d2f79"
+      "bytes": 3440,
+      "sha256": "ec83045ded15f2e7707dfa72f74e6a5706716ba76a3b21d543088cf29168ddb0"
     },
     {
       "path": "agent-reports/math-license-notices-2026-10-12.md",
       "category": "build-validation",
-      "bytes": 6401,
-      "sha256": "5a47230703542b8502d257121a4358f74c2e7aaddeafa26459ef9f1bbfb51c0f"
-    },
-    {
-      "path": "agent-reports/math-license-notices-evidence-2026-10-12.json",
-      "category": "build-validation",
-      "bytes": 61846,
-      "sha256": "bbe0cead68664f2c734df7ea92b26784e2a16e2f07ed4117183ad2d2649012ff"
+      "bytes": 6398,
+      "sha256": "6c90fec21cb55528c1ac721c59d02d0fc3c5ad8722f4fa878298b56ba31af42a"
     },
     {
       "path": "agent-reports/openscience-desktop.md",
@@ -1140,188 +546,68 @@
     {
       "path": "agent-reports/orchestrator-prompts-2026-10-12.md",
       "category": "implementation-validation",
-      "bytes": 2698,
-      "sha256": "c040f88fc892603240f7cc092cd92112c449b9296f47981fb1826c98309a625a"
-    },
-    {
-      "path": "agent-reports/orchestrator-prompts-evidence-2026-10-12.json",
-      "category": "validation-evidence",
-      "bytes": 32395,
-      "sha256": "1a24b54c9d47463a531c34eaf40cb76446f144d479806e0020ddee91f47f19b3"
+      "bytes": 2688,
+      "sha256": "b7e5f4d572aaef1cadba1e22303b9f8c04d4762de64605e7ae1adc9c4e4b7068"
     },
     {
       "path": "agent-reports/planning-evaluation-2026-10-13.md",
       "category": "local-validation",
-      "bytes": 7257,
-      "sha256": "abb66398cddb5341fa04154d3f9112809df367089c64fa090d124fcc14548e27"
-    },
-    {
-      "path": "agent-reports/planning-evaluation-evidence-2026-10-13.json",
-      "category": "validation-evidence",
-      "bytes": 407883,
-      "sha256": "fea2485c3cb4619fb4013271e130615c0d8bb435c3a386f8e586dae3d87c7614"
+      "bytes": 7255,
+      "sha256": "d82f929c653bdd0479152ea75778078a286a5700790cf97a24c3f42a2d41c60e"
     },
     {
       "path": "agent-reports/project-macros-2026-10-12.md",
       "category": "runtime-validation",
-      "bytes": 8003,
-      "sha256": "8e4c952f156f64b8155bfba819e78f142a161ef1e68a206d97ed0a1b6515ff69"
-    },
-    {
-      "path": "agent-reports/project-macros-confirm-saved-2026-10-12.jpg",
-      "category": "browser-evidence",
-      "bytes": 55954,
-      "sha256": "2b28a75e0e1e09aa0cee743d7c52137e467e9b6eda4cb8f725cdc2f8a1b2c7f9"
-    },
-    {
-      "path": "agent-reports/project-macros-conflict-2026-10-12.jpg",
-      "category": "browser-evidence",
-      "bytes": 56737,
-      "sha256": "c8702b9f80f6897908318a06a5ed23003ec3fb11d470764f0e6a0676f3ac9445"
-    },
-    {
-      "path": "agent-reports/project-macros-document-2026-10-12.jpg",
-      "category": "browser-evidence",
-      "bytes": 44376,
-      "sha256": "53190980eafa59c6a26cdd42c646cce330898fe658f93616400b59aec95a4495"
-    },
-    {
-      "path": "agent-reports/project-macros-evidence-2026-10-12.json",
-      "category": "browser-evidence",
-      "bytes": 467301,
-      "sha256": "fcbf29ebee0d088d0c7117561ab747ca01fe067815279fb775904f2cd89b9e50"
-    },
-    {
-      "path": "agent-reports/project-macros-saved-2026-10-12.jpg",
-      "category": "browser-evidence",
-      "bytes": 59555,
-      "sha256": "85d85837cb82abcf4f43183f0550a57bcb062961bd8f616a9386f8be25afcac6"
+      "bytes": 8017,
+      "sha256": "443e0759a940acbf4400fbdc0f172946de97821c3e694205ac0b2b5a48c1b7bf"
     },
     {
       "path": "agent-reports/research-prompt-workflow-2026-10-12.md",
       "category": "implementation-validation",
-      "bytes": 4562,
-      "sha256": "9bb35a5bbfe9a254ab59599fef7708fdc2c72f34f22801269ce6d75fc2d5671a"
-    },
-    {
-      "path": "agent-reports/research-prompt-workflow-evidence-2026-10-12.json",
-      "category": "validation-evidence",
-      "bytes": 295074,
-      "sha256": "9883132e64a5c92b5f4975e9492ebff912998e647185197e805b62767a82a46a"
+      "bytes": 4555,
+      "sha256": "03f241e9b6f87ecc18f2dbb8668e44bb99093f379599ff01b50cae96e15547bc"
     },
     {
       "path": "agent-reports/reviewer-prompt-provenance-2026-10-12.md",
       "category": "implementation-validation",
-      "bytes": 3561,
-      "sha256": "be3345a0197762c98e894d961fbca36400dab177d5c683ae22aa5fce0238c429"
-    },
-    {
-      "path": "agent-reports/reviewer-prompt-provenance-evidence-2026-10-12.json",
-      "category": "validation-evidence",
-      "bytes": 82222,
-      "sha256": "f1e5df3f98e11137ba11faa3cad1b1f2c93ee5ce3192ad71c74d9be653cf60c4"
+      "bytes": 3552,
+      "sha256": "5ac1cb7c310406a918be7ad21759bb579715a17f9124c6c0d2cee0a3db6f54fe"
     },
     {
       "path": "agent-reports/run-kernel-binding-2026-10-13.md",
       "category": "implementation-validation",
-      "bytes": 6778,
-      "sha256": "d2501bf41e4a67a50174df8dddbb018520e1a5b25c7456d6f0237b47f271610a"
-    },
-    {
-      "path": "agent-reports/run-kernel-binding-evidence-2026-10-13.json",
-      "category": "implementation-validation",
-      "bytes": 566093,
-      "sha256": "f9acea1021d2a82fa2f48104821ebc6df0a8932441377a9050c15e61dc748dbf"
+      "bytes": 6777,
+      "sha256": "bf0101adf17d5d8a687cda594b150590aba25a7435afb9e047dc96e39966252e"
     },
     {
       "path": "agent-reports/session-planning-2026-10-12.md",
       "category": "runtime-validation",
-      "bytes": 7318,
-      "sha256": "95e35952808c2cf8a2af40f54e6a949bbbaa84d39c800bf290c710686d5d5442"
-    },
-    {
-      "path": "agent-reports/session-planning-evidence-2026-10-12.json",
-      "category": "runtime-evidence",
-      "bytes": 227406,
-      "sha256": "65a7ece1f21960ebf9ae73cc4c210090ef07db3eaa361d570c986365b3b40578"
-    },
-    {
-      "path": "agent-reports/session-planning-finished-2026-10-12.jpg",
-      "category": "runtime-screenshot",
-      "bytes": 191068,
-      "sha256": "a92dde4aa6dbaefd8a94046e1b41377257fbbb1bb218f8845264d8d20a9a18d2"
-    },
-    {
-      "path": "agent-reports/session-planning-initial-2026-10-12.jpg",
-      "category": "runtime-screenshot",
-      "bytes": 159227,
-      "sha256": "f3415243a0356edd1e8c333e2571f756d4bbf35d5fa817cb9ca6c7b7512cfc3b"
-    },
-    {
-      "path": "agent-reports/session-planning-revised-2026-10-12.jpg",
-      "category": "runtime-screenshot",
-      "bytes": 173956,
-      "sha256": "f3252790f974218df44df0cf58e402b9c4b54c0a41daee3c464e6a08b86a5c88"
+      "bytes": 7435,
+      "sha256": "88e3caf91aa16adae3b12fb7409d77135068871c964d486d963e6c0d90078643"
     },
     {
       "path": "agent-reports/user-plan-editing-2026-10-13.md",
       "category": "implementation-validation",
-      "bytes": 8126,
-      "sha256": "107077818c7167d70b0c6986e08925b55db7d6be9c5c326b72e378896c513a46"
-    },
-    {
-      "path": "agent-reports/user-plan-editing-evidence-2026-10-13.json",
-      "category": "validation-evidence",
-      "bytes": 544946,
-      "sha256": "8ddb6aa70a10eb4e4ccc15c75e6d684f7e71429238d32071436082fe3f5a78ee"
-    },
-    {
-      "path": "agent-reports/user-plan-editing-unknown-2026-10-13.jpg",
-      "category": "browser-evidence",
-      "bytes": 271802,
-      "sha256": "bd69ac45914fa21f897369a8b89791d1285c6c1a466a9c7c9369b856f8a69222"
-    },
-    {
-      "path": "agent-reports/user-plan-editing-user-v2-2026-10-13.jpg",
-      "category": "browser-evidence",
-      "bytes": 153804,
-      "sha256": "2462b46d50d5d9b7f539eb8ecef1e347b9c839519984222a8a415aeca396a02b"
+      "bytes": 8242,
+      "sha256": "ef7c49872e7bedf58546ca5b38fc6e97ad5fa2f0b986c7ee1e285b011b122360"
     },
     {
       "path": "agent-reports/watcher-prompt-provenance-2026-10-12.md",
       "category": "implementation-validation",
-      "bytes": 3588,
-      "sha256": "ffe857cd8827281b0da23cf64b85d870213c0f8fc627ae02cac8a0329542a0dc"
-    },
-    {
-      "path": "agent-reports/watcher-prompt-provenance-evidence-2026-10-12.json",
-      "category": "validation-evidence",
-      "bytes": 74166,
-      "sha256": "2ef4c217d9873c783bc5ba81959609e842e03f55078f97e7c4e7ef9ebcff6604"
+      "bytes": 3580,
+      "sha256": "6cd2fcf76ea686dd96b9bd65da1aec2d0b8c75e8a6e4ab1b3ac9d2f3ed00eea3"
     },
     {
       "path": "agent-reports/workspace-copy-latex-2026-10-12.md",
       "category": "runtime-validation",
-      "bytes": 5306,
-      "sha256": "e2d6528abd60ab550a67a332da48afceae1f48c88567a2af65d8f4a4d02b8ea0"
-    },
-    {
-      "path": "agent-reports/workspace-copy-latex-evidence-2026-10-12.json",
-      "category": "browser-evidence",
-      "bytes": 40290,
-      "sha256": "5f0514b7634172ea69bd0f37cb0f30f6846d307bb8e22c6d1a16411b083c1cb6"
-    },
-    {
-      "path": "agent-reports/workspace-license-evidence-2026-10-12.json",
-      "category": "runtime-validation",
-      "bytes": 208015,
-      "sha256": "52ea2e5fc7e5a3b62c5cc1306e74e71c91403f83060f474a4e63e2b440cb7c2e"
+      "bytes": 5312,
+      "sha256": "cc7e988b2c9192b2288d21962a7bc74927c02b4fc0ada36fa346f00f89e2caf4"
     },
     {
       "path": "agent-reports/workspace-license-notices-2026-10-12.md",
       "category": "runtime-validation",
       "bytes": 4225,
-      "sha256": "6899ede7df235f52c6adfe9e64c5ccea2a7cd50fb8a3f28b8282b6590688b0a8"
+      "sha256": "f2b59b6c803010e14ef30081e609572df1267cd55888268b90074456ec479d74"
     },
     {
       "path": "../../docs/DELEGATED-RUN-TRANSPORT.md",

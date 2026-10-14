@@ -58,7 +58,7 @@ Fresh root gates at signed `d2c3263` pass 10,508 Python/43 opt-in skips/two exis
 serializer warnings in 380.37 s, full Pyright/Ruff/format, protocol freshness and
 75 installed-distribution licenses. Fresh web lockfile/installed licenses,
 script-free install/check, 656 web cases, both builds and 24 post-build math cases
-pass. The [exact archive](display-repair-input-provenance-evidence-2026-10-12.json)
+pass. The exact archive (archived outside git, sha256 `bc66a6b4cba0`)
 retains these source freezes, probes, original unsuccessful logs and gates.
 
 Descriptor lifetime is process/cache only; eviction/restart loses it. It is not a

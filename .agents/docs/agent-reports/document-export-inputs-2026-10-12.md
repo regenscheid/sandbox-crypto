@@ -16,7 +16,7 @@ report correction `8fd62e8`; actual observer main `d61e4adf183866d66a50c8103645b
 is integrated without package, web or configuration changes. Lab26 remains separate
 observer acceptance. PR #97 merged at `d61e4ad` on independently reviewed signed `8fd62e8` after all four fresh checks passed (run `38315213515`).
 
-The [exact local evidence](document-export-inputs-evidence-2026-10-12.json)
+The exact local evidence (archived outside git, sha256 `986ab2af5ad1`)
 retains author and root gate logs and independent source/union review, each with
 its text byte length and SHA-256. No model, converter, worker, browser or VM was
 started for this export slice. OpenShell integration tests were intentionally

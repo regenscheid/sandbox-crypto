@@ -58,7 +58,7 @@ Root fresh combined gates at signed `a5f3de8` pass 10,476 Python cases/43 opt-in
 skips/two existing serializer warnings in 379.71 s, full Pyright/Ruff/format,
 protocol freshness and 75 Python licenses. Fresh web license/install/check,
 656 web cases, both production builds and 24 post-build math cases also pass.
-The [exact archive](research-prompt-workflow-evidence-2026-10-12.json) retains
+The exact archive (archived outside git, sha256 `9883132e64a5`) retains
 source freezes, independent probes/reviews, original baselines/logs and gates.
 
 These checks establish intended application input/history/authority behavior.

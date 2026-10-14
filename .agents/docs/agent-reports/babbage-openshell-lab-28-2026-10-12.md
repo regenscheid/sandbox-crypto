@@ -6,7 +6,7 @@ byte-identical to author `02afaedf6e36e8be5b43dd8731ba34ec43a984e5`; the separat
 internal notice inbox matches `0b8cf17a1099e57d4572e6597c51a66217994118`.
 Helper `.agents/labs/kernel_lineage.py` is pinned by SHA-256
 `4d90664b11b73f118f01b17a5650ecad123398aff94a25cd509a8832c6e52de8`.
-The [exact evidence archive](babbage-openshell-lab-28-evidence-2026-10-12.json)
+The exact evidence archive (archived outside git, sha256 `b0bb8ca1c323`)
 retains 39 text records with byte lengths and SHA-256. No raw gateway credential
 annotations or private provider registration output are exported.
 

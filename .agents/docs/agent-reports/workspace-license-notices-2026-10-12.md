@@ -61,7 +61,7 @@ acceptance; no browser, VM, real model or research code ran.
 
 ## Evidence and limits
 
-[Evidence archive](workspace-license-evidence-2026-10-12.json): **208,015 bytes**,
+Evidence archive (archived outside git, sha256 `52ea2e5fc7e5`): **208,015 bytes**,
 SHA-256 `52ea2e5fc7e5a3b62c5cc1306e74e71c91403f83060f474a4e63e2b440cb7c2e`.
 Its 21 exact UTF-8 records include the generated notice/license/manifest files,
 all fresh gate logs, source-input comparison, independent review summary and

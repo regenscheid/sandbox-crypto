@@ -8,7 +8,7 @@ byte-identical. The authenticated GUI observed a real shared-environment package
 change without executing another cell in the stale session. Passive observations
 allowed both real VMs to suspend, and subsequent reads did not wake them.
 
-The [exact evidence archive](babbage-openshell-lab-27-evidence-2026-10-12.json)
+The exact evidence archive (archived outside git, sha256 `27545cfd2f97`)
 retains safe API/SQL/gateway projections, browser accessibility/network records,
 source/build/helper pins, local gates and independent review/cleanup. Embedded text
 records have exact byte lengths and SHA-256 hashes. Private settings, login URLs,
@@ -60,9 +60,9 @@ eviction. The final post-resume browser capture shows dated previous generation 
 and unknown current state: the deliberately short idle threshold had already
 stopped the VM again. It is not evidence of a final active kernel.
 
-![A observes a shared package change without another A execution](babbage-openshell-lab-27-stale-2026-10-12.jpg)
+*A observes a shared package change without another A execution: screenshot `babbage-openshell-lab-27-stale-2026-10-12.jpg`, archived outside git (sha256 `abc849ac8184`)*
 
-![Stopped environment retains a dated previous observation](babbage-openshell-lab-27-idle-2026-10-12.jpg)
+*Stopped environment retains a dated previous observation: screenshot `babbage-openshell-lab-27-idle-2026-10-12.jpg`, archived outside git (sha256 `524da19f2542`)*
 
 Native hidden-tab pause was not proved: browser presentation hiding and a second
 tab both left `document.visibilityState` visible in this automation surface.

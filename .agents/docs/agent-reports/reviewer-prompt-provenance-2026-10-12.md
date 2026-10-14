@@ -49,7 +49,7 @@ protocol freshness and 75 Python licenses. Fresh web license/install/check,
 656 web cases, both production builds and 24 post-build math cases pass.
 No external model, service, worker, browser or VM was used for this slice.
 
-The [exact archive](reviewer-prompt-provenance-evidence-2026-10-12.json) retains
+The exact archive (archived outside git, sha256 `f1e5df3f98e1`) retains
 source/review/probe scripts, original failed and successful logs, combined gates
 and the actual watcher delivery receipt. Final signed delivery review and fresh
 exact-head CI remain required before merge. A separate author/reviewer pair implements bounded explicit

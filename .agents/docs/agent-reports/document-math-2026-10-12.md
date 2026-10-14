@@ -3,7 +3,7 @@
 The production workspace GUI was checked on babbage against marked, disposable
 synthetic control-store state. The D82 document-only implementation was based on
 verified main `1e2221a`; the production asset hashes are retained in the
-[browser evidence](document-math-browser-evidence-2026-10-12.json). The fixture ran
+browser evidence (archived outside git, sha256 `45b41d5e8e4f`). The fixture ran
 the actual local KaTeX 0.18.9 checker under Node 24.20.0. No model gateway, worker,
 OpenShell VM or research execution was contacted.
 
@@ -29,10 +29,10 @@ test also delayed one evidence response by two seconds to exercise selection rac
 | Display/source separation | The document showed a marked automatic repair and exposed the original TeX. A canonical readonly source check confirmed that the stored formula remained unchanged. |
 | Browser diagnostics | No warning or error console entries. |
 
-Recorded screenshots show the [mechanical finding and pinned anchor](document-math-initial-2026-10-12.jpg),
-the [retained stale USER draft](document-math-stale-draft-2026-10-12.jpg),
-the [complete USER decision history](document-math-user-history-2026-10-12.jpg)
-and the [marked repair with original TeX](document-math-display-2026-10-12.jpg).
+Recorded screenshots show the mechanical finding and pinned anchor (archived outside git, sha256 `8ffeae2d7f43`),
+the retained stale USER draft (archived outside git, sha256 `b7aeedd41343`),
+the complete USER decision history (archived outside git, sha256 `4ac83b31fa0e`)
+and the marked repair with original TeX (archived outside git, sha256 `b12f0aa731ce`).
 The evidence JSON includes observed browser text, exact mechanical observations,
 canonical final findings and retained source revisions, with no authentication tokens.
 

@@ -1,7 +1,7 @@
 # OpenShell lab 19 on babbage: background jobs
 
 Run on 2026-10-12. The worker/API checks for D83 passed in real OpenShell VMs.
-The [recorded evidence](babbage-openshell-lab-19-evidence-2026-10-12.json) contains
+The recorded evidence (archived outside git, sha256 `a450d8466017`) contains
 the API records, numbered events, output samples and logs, without client tokens.
 
 ## What ran where
@@ -65,7 +65,7 @@ replies, not the judgment of a real low-cost model.
 The real browser displayed the running job, elapsed time, CPU and memory,
 expanded output, the wait and its progress note. The next check-in changed to
 needs-attention and the wait disappeared. Clicking **Cancel job** changed the
-state through `cancelling` to `cancelled`. The [saved GUI view](babbage-openshell-lab-19-gui-2026-10-12.jpg) shows that terminal state and the attention note. A fresh harness process then
+state through `cancelling` to `cancelled`. The saved GUI view (archived outside git, sha256 `982e2a6f1ae1`) shows that terminal state and the attention note. A fresh harness process then
 received exactly one completion notice, saved its transcript and acknowledged
 the notice. A subsequent run received none. The evidence JSON includes these
 records. GUI chat and a live CLI inbox are not implemented; the injected-message

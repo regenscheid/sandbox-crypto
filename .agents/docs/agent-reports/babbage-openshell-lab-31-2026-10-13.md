@@ -1,6 +1,6 @@
 # OpenShell Lab31: retained lockfile comparisons
 
-Root ran this disposable lab on 2026-10-13. The comparison product passed actual worker, workspace and native-browser checks. All owned runtime and private state is removed. The original helper's final idle assertion failed on a tuple/list representation mismatch; an independently reviewed root confirmation established unchanged complete SQL values. The original failure remains in the [exact evidence archive](babbage-openshell-lab-31-evidence-2026-10-13.json).
+Root ran this disposable lab on 2026-10-13. The comparison product passed actual worker, workspace and native-browser checks. All owned runtime and private state is removed. The original helper's final idle assertion failed on a tuple/list representation mismatch; an independently reviewed root confirmation established unchanged complete SQL values. The original failure remains in the exact evidence archive (archived outside git, sha256 `0598dbdbdbc5`).
 
 This is comparison acceptance, with the qualifications below. The initial viewer was delivered in [PR #110](https://github.com/regenscheid/sandbox-crypto/pull/110). This comparison's final review and fresh delivery CI are still pending. Recorded licenses for unchanged/base packages remain a separate CP-26 slice; GUI permission answers, restoration and complete M2 remain open.
 
@@ -35,7 +35,7 @@ The base-to-final pair had nine actual additions. Root verified its API pages as
 
 The first workspace process closed cleanly at 15:28:38.249061Z without a root stop request, during the initial backward-page check. Source supports a SIGTERM/SIGINT stop handler; sender and cause are undetermined. Its cleanup reported no errors and removed its exact private inode. Original public server/cleanup/comparison records and unavailable-browser evidence were retained under exclusive generation-1 names. Root restored only the unchanged workspace in a transient user unit, with a fresh private login and ephemeral listener, then repeated GET-only comparison and native forward/backward paging. The original VM and completed operations were preserved throughout. This is qualified workspace recovery, not evidence that the separate scheduled heartbeat recovered a main-model capacity error.
 
-Nine original JPEGs are retained with exact hashes. Representative views: [Flint comparison and source proofs](babbage-openshell-lab-31-flint-comparison-2026-10-13.jpg), [restored first page](babbage-openshell-lab-31-generation2-page-1-2026-10-13.jpg), [restored second page](babbage-openshell-lab-31-generation2-page-2-2026-10-13.jpg), [stopped identical pair](babbage-openshell-lab-31-stopped-same-pair-2026-10-13.jpg), and [sign-out](babbage-openshell-lab-31-logout-2026-10-13.jpg).
+Nine original JPEGs are retained with exact hashes. Representative views: Flint comparison and source proofs (archived outside git, sha256 `6ce6c577bdb2`), restored first page (archived outside git, sha256 `8df78716f074`), restored second page (archived outside git, sha256 `42be2013f376`), stopped identical pair (archived outside git, sha256 `4eceb111e18c`), and sign-out (archived outside git, sha256 `0c65485266d3`).
 
 ## Idle proof and helper correction
 

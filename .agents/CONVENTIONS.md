@@ -14,6 +14,7 @@ Applies to all code and documentation in this repository. Change this file throu
 | `.agents/critical-review.md`, `.agents/proposed-changes.md` | The 2026-10-10 plan review (historical) |
 | `.agents/docs/` | Agent source investigations (historical evidence) |
 | `.agents/upstream/` | Descriptions of bugs found in upstream projects, one file each, ready to file. Filing is the user's call |
+| `.agents/refactor-plan/` | The revision and refactoring plan of 2026-10-14 and the six reviews behind it |
 | `.agents/handoff.md` | Where the last session stopped and how the work has been done, for the next agent |
 | `.agents/labs/` | Scripts for labs on babbage against a real OpenShell gateway, and how to run and report them |
 | `packages/<component>/` | One uv workspace member per deployable or shared component |
@@ -116,7 +117,8 @@ CI runs the same commands.
 - Branch from `main`: `impl/<work-package>-<topic>` for code (for example `impl/p-policy-engine`), `docs/<topic>` for documentation-only changes, `fix/<topic>` for fixes.
 - Commit messages: `<type>(<scope>): <summary>` where type is `feat`, `fix`, `docs`, `test`, `refactor`, `chore` or `ci`. Body explains why. End with the attribution trailers in use for the session.
 - One coherent change per pull request. The pull request description lists the work-package items it completes and any plan changes.
-- Merge with merge commits. Never rewrite published history.
+- Merge with merge commits. Never rewrite published history. The one exception so far: on 2026-10-14 the owner had raw lab evidence removed from all history (all commit SHAs before then changed; the pre-rewrite repository is kept privately on babbage).
+- **Lab evidence stays out of git.** Lab reports are Markdown in `.agents/docs/agent-reports/`, short, with results and findings. Raw evidence (JSON records, logs, screenshots) is kept outside the repository, on babbage, and each report names its files by SHA-256. `scripts/check_repo_hygiene.py` fails CI on evidence files under `.agents/docs` and on any tracked file over 1 MiB. Evidence never records home-directory paths, `/tmp` contents or copies of files already in git.
 - Pull requests are merged by the user, or by an agent only when the user explicitly says so.
 
 ## Keeping documentation and tracking current

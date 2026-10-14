@@ -55,9 +55,9 @@ computation was started.
 
 The retained screenshots show USER version2 and the expanded uncertain-save view:
 
-![USER version2](user-plan-editing-user-v2-2026-10-13.jpg)
+*USER version2: screenshot `user-plan-editing-user-v2-2026-10-13.jpg`, archived outside git (sha256 `2462b46d50d5`)*
 
-![Expanded unknown save](user-plan-editing-unknown-2026-10-13.jpg)
+*Expanded unknown save: screenshot `user-plan-editing-unknown-2026-10-13.jpg`, archived outside git (sha256 `bd69ac45914f`)*
 
 ## MAIN steering and authority
 
@@ -114,7 +114,7 @@ asset hashes. Tab21 absence is tied to root's filtered token-free CUA record;
 unrelated tabs were not enumerated. Root reports exact disposable credential
 exclusion from exported public records; reviewer did not read the credential.
 
-[Exact public archive](user-plan-editing-evidence-2026-10-13.json): 137
+Exact public archive (archived outside git, sha256 `8ddb6aa70a10`): 137
 UTF-8 records, each with original bytes/SHA256/text, plus two standalone JPEG
 metadata records. Archive 544,946 bytes, SHA256 `8ddb6aa70a10eb4e4ccc15c75e6d684f7e71429238d32071436082fe3f5a78ee`. Selected JPEGs
 retain original bytes and magic, with no conversion. Private login material and

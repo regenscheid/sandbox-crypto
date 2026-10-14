@@ -28,9 +28,9 @@ Subsequent root changes are documentation/evidence only.
 | Web/math/builds | Exact unchanged PR #99 paths; reuse 614 web, 24 math and both production builds |
 | Independent source/design review | Clear; source facts distinguished from draft capabilities |
 
-[Exact local evidence](orchestrator-prompts-evidence-2026-10-12.json) retains
+Exact local evidence (archived outside git, sha256 `1a24b54c9d47`) retains
 the review and fresh root gate logs with byte lengths and SHA-256. The reused web
-evidence is retained in [Lab27](babbage-openshell-lab-27-evidence-2026-10-12.json);
+evidence is retained in Lab27 (archived outside git, sha256 `27545cfd2f97`);
 it is not a new browser acceptance for prompts. No live external model, service,
 browser, converter or VM was started for this slice.
 

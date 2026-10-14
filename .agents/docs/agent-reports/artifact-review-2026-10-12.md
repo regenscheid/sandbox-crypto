@@ -5,7 +5,7 @@ against new, marked synthetic control-store state. The frozen, independently
 reviewed source was `9995f8a4f7513e1abbd5495d7ad9f2b5c66a6eac`, combining the
 artifact consumer with merged document math PR #83. Python was 3.13.15. Exact
 production asset hashes and observed responses are retained in the
-[evidence archive](artifact-review-browser-evidence-2026-10-12.json).
+evidence archive (archived outside git, sha256 `4cdf92682f6c`).
 
 The reusable
 [`artifact_review_browser_fixture.py`](../../../packages/orchestrator/tests/fixtures/artifact_review_browser_fixture.py)
@@ -27,9 +27,9 @@ contacted. This validates plumbing and authority, not model judgment.
 | Confirmation | The fixture checked the exact original and changed evidence, asserted their read-audit entries, and finished `passed` with the finding `confirmed fixed` at revision 3. The browser showed reviewer → USER claim → reviewer confirmation attribution. |
 | Browser diagnostics | No warning or error console entries. |
 
-Screenshots retain the [original pinned source](artifact-review-initial-2026-10-12.png),
-[empty source and incomplete inventory](artifact-review-empty-2026-10-12.png), and
-[confirmed fix with history](artifact-review-confirmed-2026-10-12.png). All three
+Screenshots retain the original pinned source (archived outside git, sha256 `2e4f5388892e`),
+empty source and incomplete inventory (archived outside git, sha256 `f74898efae60`), and
+confirmed fix with history (archived outside git, sha256 `687d9ab42209`). All three
 were visually inspected. The evidence JSON includes browser observations, HTTP
 responses, canonical confirmation state and its audited evidence IDs. An optional
 export of all SQL audit tables failed before teardown and is not included.

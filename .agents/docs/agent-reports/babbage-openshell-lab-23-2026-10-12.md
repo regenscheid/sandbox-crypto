@@ -6,7 +6,7 @@ managed MicroVMs retained effective and declared isolation tier 3. This closes
 the pending external backend conformance/probe and linux/amd64 research-profile
 acceptance checks; arm64, Kubernetes and multi-platform acceptance remain open.
 
-The [retained evidence](babbage-openshell-lab-23-evidence-2026-10-12.json) contains
+The retained evidence (archived outside git, sha256 `b381bb770c0a`) contains
 20 exact text records, including per-profile pytest/JUnit results, capabilities,
 independent guest/SQLite state, setup bookkeeping and teardown. Its 77,108 bytes
 have SHA-256 `b381bb770c0ae5702a4c98ac90012184c6e8289d0fccabfd0e1773ff227ee779`.

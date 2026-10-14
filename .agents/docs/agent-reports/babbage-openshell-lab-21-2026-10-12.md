@@ -5,8 +5,8 @@ real managed OpenShell VMs. The runs used separate fresh labs and are retained
 against their exact signed source commits. The first lab was completely removed
 before the final original-binding proof correction.
 
-The [cancellation evidence](babbage-openshell-lab-21-cancel-evidence-2026-10-12.json)
-and [final worker-offline evidence](babbage-openshell-lab-21-offline-evidence-2026-10-12.json)
+The cancellation evidence (archived outside git, sha256 `e0f741bb4f06`)
+and final worker-offline evidence (archived outside git, sha256 `4529e8576a29`)
 are retained separately. They contain API results and bounded durable-state projections,
 without client or daemon tokens. The reusable check script is
 [`recovery_gate.py`](../../labs/recovery_gate.py).

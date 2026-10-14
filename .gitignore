@@ -18,3 +18,8 @@ node_modules/
 
 # Standalone trusted KaTeX checker bundle.
 web/workspace/dist-math/
+
+# Raw lab evidence stays outside git; reports name it by SHA-256 (.agents/CONVENTIONS.md).
+.agents/docs/agent-reports/*.json
+.agents/docs/agent-reports/*.jpg
+.agents/docs/agent-reports/*.png
