@@ -81,7 +81,10 @@ export class ReviewBrowser {
   readonly text: PagedList<string, number>;
   readonly math: PagedList<string, number>;
   #review = '';
+  /** The text shown, whose next slice continues it, and the one asked for to replace it. */
   #reading = { review: '', evidence: '' };
+  #asked = { review: '', evidence: '' };
+  #askedCheck = '';
 
   constructor(
     readonly panel: ReviewPanel,
@@ -141,19 +144,34 @@ export class ReviewBrowser {
       const page = await api.records(...at(), this.#review, after ?? 0);
       return { items: page.records as unknown as Json[], next: page.next_after };
     });
+    // A text (or math check) asked for replaces the one shown only when its first page is
+    // shown: after a failure, the next slice still continues the text on screen, so two
+    // texts are never spliced together.
     this.text = new PagedList(panel.text, async (start) => {
-      const { review, evidence } = this.#reading;
-      const slice = await api.evidence(...at(), review, evidence, start ?? 0);
-      return { items: [slice.text], next: slice.next_start };
+      const key = start === null ? this.#asked : this.#reading;
+      const slice = await api.evidence(...at(), key.review, key.evidence, start ?? 0);
+      return {
+        items: [slice.text],
+        next: slice.next_start,
+        shown: () => void (this.#reading = key),
+      };
     });
     this.math = new PagedList(panel.math, async (after) => {
-      const page = await api.mathEvidence(...at(), panel.mathCheck, after ?? 0);
+      const check = after === null ? this.#askedCheck : panel.mathCheck;
+      const page = await api.mathEvidence(...at(), check, after ?? 0);
       const shown = after === null ? page : page.observations;
-      return { items: [JSON.stringify(shown, null, 2)], next: page.next_after };
+      return {
+        items: [JSON.stringify(shown, null, 2)],
+        next: page.next_after,
+        shown: () => void (panel.mathCheck = check),
+      };
     });
   }
 
-  /** The reviews, findings and math checks again, from their first pages. */
+  /**
+   * The reviews, findings and math checks again, from their first pages. Each list keeps
+   * what it had when its own read fails; the others are shown as they arrive.
+   */
   async refresh(): Promise<void> {
     await Promise.all([this.reviews.reload(), this.findings.reload(), this.checks.reload()]);
   }
@@ -164,19 +182,27 @@ export class ReviewBrowser {
     this.panel.selected = review;
     this.records.clear();
     this.text.clear();
+    this.evidence.clear(); // the last review's evidence and cursor never serve this one
     return this.evidence.reload();
   }
 
   /** Read an evidence text from its start, in place of the one being read. */
   read(review: string, evidence: string): Promise<void> {
-    this.#reading = { review, evidence };
+    this.#asked = { review, evidence };
     return this.text.reload();
   }
 
   /** Read a math check's evidence from its first page, in place of the one being read. */
   readMath(check: string): Promise<void> {
-    this.panel.mathCheck = check;
+    this.#askedCheck = check;
     return this.math.reload();
+  }
+
+  /** Forget every failure shown, as the Refresh button does before refreshing. */
+  clearErrors(): void {
+    const { panel } = this;
+    for (const list of [panel.evidence, panel.records, panel.text, panel.math]) list.error = null;
+    panel.requestError = null;
   }
 
   /** Queue a review for the next live safe point. */

@@ -29,14 +29,17 @@ function fake() {
     if (!found) throw new Error(`no call to ${name}`);
     found.resolve(value);
   };
-  return { api, calls, answer };
+  const fail = (name: string, error: unknown, index = 0) =>
+    calls.filter((item) => item.name === name)[index]!.reject(error);
+  return { api, calls, answer, fail };
 }
 
 function browser() {
-  const { api, calls, answer } = fake();
+  const { api, calls, answer, fail } = fake();
   const panel = emptyReviewPanel();
   const where = { project: 'p1', session: 's1' };
-  return { panel, calls, answer, where, browse: new ReviewBrowser(panel, () => where, api) };
+  const browse = new ReviewBrowser(panel, () => where, api);
+  return { panel, calls, answer, fail, where, browse };
 }
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -162,5 +165,80 @@ describe('the reviews panel', () => {
     answer('request', { queued: true, detail: 'Queued for the next safe point.' });
     await asked;
     expect(panel.notice).toBe('Queued for the next safe point.');
+  });
+});
+
+describe('a newly chosen review or text never shows, or extends, the last one', () => {
+  async function reviewA() {
+    const tools = browser();
+    const chosen = tools.browse.select(review('A'));
+    tools.answer('manifest', {
+      review: review('A'),
+      evidence: [{ evidence: 'eA' }],
+      next_after: 1,
+    });
+    await chosen;
+    return tools;
+  }
+
+  it("clears the last review's evidence at once when another is chosen", async () => {
+    const { panel, browse } = await reviewA();
+    void browse.select(review('B'));
+    expect(panel.selected?.review_id).toBe('B');
+    expect(panel.evidence).toMatchObject({ items: [], next: null });
+  });
+
+  it("asks for no more of the last review's evidence after the new manifest fails", async () => {
+    const { panel, calls, fail, browse } = await reviewA();
+    const chosen = browse.select(review('B'));
+    fail('manifest', new Error('offline'), 1);
+    await chosen;
+    await browse.evidence.more();
+    const asked = calls.filter((call) => call.name === 'manifest').map((call) => call.args);
+    expect(asked).toEqual([
+      ['p1', 's1', 'A', 0],
+      ['p1', 's1', 'B', 0],
+    ]);
+    expect(panel.evidence.items).toEqual([]);
+  });
+
+  it('keeps reading the text on screen when another text fails to load', async () => {
+    const { panel, calls, answer, fail, browse } = browser();
+    const one = browse.read('r', 'e1');
+    answer('evidence', { text: 'e1-part1|', next_start: 9 });
+    await one;
+    const two = browse.read('r', 'e2');
+    fail('evidence', new Error('offline'), 1);
+    await two;
+    const more = browse.text.more();
+    expect(calls.at(-1)?.args).toEqual(['p1', 's1', 'r', 'e1', 9]);
+    answer('evidence', { text: 'e1-part2', next_start: null }, 2);
+    await more;
+    expect(panel.text.items.join('')).toBe('e1-part1|e1-part2');
+  });
+
+  it('keeps reading the math check on screen when another check fails to load', async () => {
+    const { calls, answer, fail, browse } = browser();
+    const one = browse.readMath('c1');
+    answer('mathEvidence', { check: {}, observations: [], next_after: 5 });
+    await one;
+    const two = browse.readMath('c2');
+    fail('mathEvidence', new Error('offline'), 1);
+    await two;
+    void browse.math.more();
+    expect(calls.at(-1)?.args).toEqual(['p1', 's1', 'c1', 5]);
+  });
+
+  it('forgets every failure shown when asked, as the Refresh button does', async () => {
+    const { panel, fail, browse } = browser();
+    const text = browse.read('r', 'e1');
+    fail('evidence', new Error('text failed'));
+    await text;
+    const asked = browse.request();
+    fail('request', new Error('request failed'));
+    await asked;
+    expect(panelError(panel)).not.toBeNull();
+    browse.clearErrors();
+    expect(panelError(panel)).toBeNull();
   });
 });
