@@ -668,8 +668,8 @@ def test_revisions_and_events_cannot_be_rewritten(store: DocumentStore) -> None:
         for statement in (
             "UPDATE revisions SET text = 'forged'",
             "DELETE FROM revisions",
-            "UPDATE events SET kind = 'forged'",
-            "DELETE FROM events",
+            "UPDATE control_events SET kind = 'forged'",
+            "DELETE FROM control_events",
         ):
             with pytest.raises(sqlite3.IntegrityError, match=r"immutable|append-only"):
                 db.execute(statement)

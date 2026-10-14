@@ -981,8 +981,9 @@ async def test_terminal_drains_prior_document_events_and_classifies_neutral_answ
     with documents.control.write() as tx:
         db = tx.sql
         db.executemany(
-            "INSERT INTO events(time,kind,producer,project_id,session_id,document_id,payload) "
-            "VALUES('now','document.read','test','p','other','unrelated','{}')",
+            "INSERT INTO control_events(time,kind,producer,project,session,subject_type,"
+            "subject_id,payload) VALUES('2026-01-01T00:00:00+00:00','document.read','test','p',"
+            "'other','document','unrelated','{}')",
             [() for _ in range(250)],
         )
     documents.create(

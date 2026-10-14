@@ -35,10 +35,9 @@ from pydantic import TypeAdapter, ValidationError
 from sandbox_science.contracts import new_id
 from sandbox_science.orchestrator.control import (
     DEFAULT_TIMEOUT,
-    ControlEvent,
     ControlStore,
+    EventLog,
     Receipts,
-    Tx,
 )
 
 from .blocks import BYTE_ORDER_MARK, Budget, check_text, normalize_newlines, parse
@@ -315,6 +314,7 @@ class DocumentStore:
         self.producer = producer
         self.readonly = readonly
         self.control = ControlStore(path, readonly=readonly, timeout=timeout)
+        self.event_log = EventLog(self.control, "document", producer)
         self._clock = clock
         self._cache_lock = threading.Lock()
         self._cache: OrderedDict[tuple[str, int, str], Mapped] = OrderedDict()
@@ -542,24 +542,19 @@ class DocumentStore:
         if self.control.missing:
             return []
         with self.control.read() as tx:
-            db = tx.sql
-            rows = db.execute(
-                "SELECT seq, time, kind, producer, project_id, session_id, document_id, payload "
-                "FROM events WHERE project_id = ? AND seq > ? ORDER BY seq LIMIT ?",
-                (project_id, after, limit),
-            ).fetchall()
+            found = self.event_log.page(tx.sql, project_id, after, limit)
         return [
             EventRecord(
-                seq=row[0],
-                time=datetime.fromisoformat(row[1]),
-                kind=row[2],
-                producer=row[3],
-                project_id=row[4],
-                session_id=row[5],
-                document_id=row[6],
-                payload=json.loads(row[7]),
+                seq=event.seq,
+                time=event.time,
+                kind=event.kind,
+                producer=event.producer,
+                project_id=event.project,
+                session_id=event.session,
+                document_id=event.subject,
+                payload=event.payload,
             )
-            for row in rows
+            for event in found
         ]
 
     # Changes.
@@ -1693,22 +1688,9 @@ class DocumentStore:
     ) -> None:
         """Record an event in the change's transaction, and tell the control store's
         subscribers (such as the math checks)."""
-        cursor = db.execute(
-            "INSERT INTO events (time, kind, producer, project_id, session_id, document_id, "
-            "payload) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                _time(self._clock()),
-                kind,
-                self.producer,
-                info.project_id,
-                author.session_id,
-                info.document_id,
-                _dumps(payload),
-            ),
+        self.event_log.append(
+            db, kind, info.project_id, author.session_id, info.document_id, payload, self._clock()
         )
-        assert cursor.lastrowid is not None  # noqa: S101 - this event was inserted
-        event = ControlEvent(cursor.lastrowid, kind, info.project_id, info.document_id, payload)
-        self.control.notify(Tx(db), event)
 
     def _replay(
         self,
