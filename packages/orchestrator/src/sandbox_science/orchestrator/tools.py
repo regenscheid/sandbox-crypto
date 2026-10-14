@@ -325,6 +325,9 @@ def operation_id(prefix: str, call: ToolCall) -> str:
     return f"{readable}-{digest}" if readable else f"op-{digest}"
 
 
+RESTART_KERNEL: Final = "restart_kernel"
+
+
 def _harness_tool_names() -> frozenset[str]:
     from .consistency.controller import AUTHOR_SPECS
 
@@ -340,7 +343,7 @@ def _harness_tool_names() -> frozenset[str]:
         *AUTHOR_SPECS,
         *PLAN_SPECS,
     )
-    return frozenset(spec.name for spec in specs)
+    return frozenset(spec.name for spec in specs) | {RESTART_KERNEL}
 
 
 HARNESS_TOOL_NAMES: Final = _harness_tool_names()
@@ -388,7 +391,7 @@ class Toolbox:
             "list_files": ("read", _plain(self._list)),
             "publish": ("effect", self._publish),
             "sage": ("effect", _plain(self._sage)),
-            "restart_kernel": ("effect", _plain(self._restart)),
+            RESTART_KERNEL: ("effect", _plain(self._restart)),
             **{
                 spec.name: ("effect", _plain(partial(self._pdf, spec.name.removeprefix("pdf_"))))
                 for spec in PDF_SPECS
@@ -403,7 +406,7 @@ class Toolbox:
         if self.languages:
             specs.append(
                 ToolSpec(
-                    "restart_kernel",
+                    RESTART_KERNEL,
                     "Restart one of the session's kernels, discarding all its state.",
                     {
                         "type": "object",

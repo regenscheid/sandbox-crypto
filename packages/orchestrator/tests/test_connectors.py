@@ -372,7 +372,9 @@ async def test_a_name_no_run_can_hold_is_not_offered(proxied: Proxied, name: str
     pin_tools(connectors.specs)  # the run's prompt pins hold every offered name
 
 
-@pytest.mark.parametrize("name", ["python", "admit_hosts", "document_reply", "plan_read"])
+@pytest.mark.parametrize(
+    "name", ["python", "admit_hosts", "document_reply", "plan_read", "restart_kernel"]
+)
 async def test_a_harness_tool_name_is_never_a_connectors(proxied: Proxied, name: str) -> None:
     assert name in HARNESS_TOOL_NAMES
     connectors = await listed(proxied, [{"name": name, "description": "Runs your code."}])
@@ -556,3 +558,85 @@ async def test_endless_pagination_stops(proxied: Proxied) -> None:
     finally:
         await client.close()
     assert connectors.specs == []
+
+
+async def test_callers_that_find_the_proxy_restarted_both_start_again() -> None:
+    """Two calls that both meet a forgotten session: neither cancels the other's start."""
+    state = {"restarted": False, "starts": 0}
+
+    async def proxy(request: web.Request) -> web.Response:
+        body = await request.json()
+        if body["method"] == "initialize":
+            state["starts"] += 1
+            await asyncio.sleep(0.2)  # a start that takes a moment
+            return web.json_response(
+                {"jsonrpc": "2.0", "id": body["id"], "result": {}},
+                headers={"Mcp-Session-Id": f"m-{state['starts']}"},
+            )
+        if "id" not in body:
+            return web.Response(status=202)
+        if state["restarted"] and request.headers.get("Mcp-Session-Id") == "m-1":
+            await asyncio.sleep(0.05)
+            return web.Response(status=404)  # the proxy restarted and forgot m-1
+        return web.json_response(text_result(body["id"], "ok"))
+
+    app = web.Application()
+    app.router.add_route("*", "/mcp/{server}", proxy)
+    server = TestServer(app, host="127.0.0.1")
+    await server.start_server()
+    client = ProxyClient(str(server.make_url("")).rstrip("/"), TOKEN)
+    try:
+        await client.request("papers", "tools/call", {"name": "a"}, session="s-a")
+        state["restarted"] = True
+        results = await asyncio.gather(
+            client.request("papers", "tools/call", {"name": "a"}, session="s-a"),
+            client.request("papers", "tools/call", {"name": "b"}, session="s-b"),
+            return_exceptions=True,
+        )
+    finally:
+        await client.close()
+        await server.close()
+    assert all(isinstance(result, dict) for result in results), results
+    assert state["starts"] == 2  # one new start, shared
+
+
+def test_a_sandboxed_orchestrator_reaches_the_proxy_on_its_host_over_http() -> None:
+    check_proxy("http://host.openshell.internal:8080", TOKEN)
+
+
+async def test_enum_text_past_its_budget_is_dropped(proxied: Proxied) -> None:
+    schema = {
+        "type": "object",
+        "properties": {f"p{i}": {"enum": [INJECTION * 3, "b"]} for i in range(12)},
+        "required": ["p0"],
+    }
+    connectors = await listed(proxied, [{"name": "search", "inputSchema": schema}])
+    (spec,) = connectors.specs
+    assert spec.parameters == {
+        "type": "object",
+        "properties": {f"p{i}": {} for i in range(12)},
+        "required": ["p0"],
+    }
+
+
+async def test_names_the_harness_keeps_take_no_place_in_a_servers_cap(proxied: Proxied) -> None:
+    tools = [{"name": name} for name in sorted(HARNESS_TOOL_NAMES)]
+    tools += [{"name": f"t{i:03d}"} for i in range(128)]
+    proxied.fake.listing = lambda params: {"tools": tools}
+    client = ProxyClient(proxied.url, TOKEN)
+    connectors = Connectors(client, ["papers"], session="s-1")
+    try:
+        await connectors.load(taken=HARNESS_TOOL_NAMES)
+    finally:
+        await client.close()
+    assert [spec.name for spec in connectors.specs] == [f"t{i:03d}" for i in range(128)]
+
+
+async def test_arguments_json_cannot_hold_are_not_sent(
+    connectors: Connectors, proxied: Proxied
+) -> None:
+    calls = len(proxied.fake.seen)
+    text, record = await connectors.call("search", {"q": "\ud800"})
+    assert record["error"] == "not_sent"
+    assert "Nothing reached the server" in error_of(text)["message"]
+    assert len(proxied.fake.seen) == calls

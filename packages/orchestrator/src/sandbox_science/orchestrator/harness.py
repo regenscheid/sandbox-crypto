@@ -56,7 +56,7 @@ from .plan_tools import PlanTools
 from .projects import ProjectError, ProjectStore, RunRecord, ensure_environment, run_name
 from .runstate import RunState
 from .session_plans import SessionPlans
-from .tools import Toolbox, ToolOutcome
+from .tools import HARNESS_TOOL_NAMES, Toolbox, ToolOutcome
 from .worker_client import WorkerClient
 
 _IDENTIFIER: TypeAdapter[str] = TypeAdapter(Identifier)
@@ -436,7 +436,7 @@ class Harness:
         if self.mcp is not None and self.mcp.project == context.project_id:
             # Listed at the run's start: a server added later is offered to the next run.
             connectors = Connectors(self.mcp.client, self.mcp.servers, session=context.session_id)
-            await connectors.load()
+            await connectors.load(taken=HARNESS_TOOL_NAMES)
         if stores is None:
             return Toolbox(
                 self.client,

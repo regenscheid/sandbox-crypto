@@ -38,7 +38,7 @@ import json
 import logging
 import re
 import unicodedata
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final, cast
 from urllib.parse import urlsplit
@@ -60,6 +60,8 @@ UPSTREAM_FAILED: Final = -31002
 MAX_ANSWER_BYTES: Final = 8 * 1024 * 1024
 MAX_DESCRIPTION: Final = 2000
 MAX_SCHEMA_BYTES: Final = 16 * 1024
+MAX_VALUE_TEXT: Final = 1024
+"""Characters of enum and const text one tool's schema keeps."""
 MAX_PAGES: Final = 50
 MAX_TOOLS_PER_SERVER: Final = 128
 MAX_TOOLS: Final = 256
@@ -73,7 +75,11 @@ CALL_SECONDS: Final = 330.0
 NAME: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 """A tool name a model can call, and that a run's records can hold."""
 _TOKEN: Final = re.compile(r"[\x21-\x7e]{16,512}")
-_LOOPBACK: Final = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
+_PLAIN_HTTP: Final = frozenset(
+    {"127.0.0.1", "localhost", "::1", "[::1]", "host.openshell.internal"}
+)
+"""Hosts reached over plain http: loopback, and OpenShell's route from a sandbox to
+its own host (``host.openshell.internal``), whose traffic stays on that host."""
 
 
 class ConnectorError(Exception):
@@ -93,8 +99,11 @@ def check_proxy(url: str, token: str) -> None:
     host = parts.hostname
     if parts.scheme not in ("http", "https") or not host:
         raise ValueError("the MCP proxy's address is an http or https URL")
-    if parts.scheme == "http" and host not in _LOOPBACK:
-        raise ValueError("the MCP proxy is reached over https, or over http on loopback only")
+    if parts.scheme == "http" and host not in _PLAIN_HTTP:
+        raise ValueError(
+            "the MCP proxy is reached over https, or over http on loopback or "
+            "host.openshell.internal only"
+        )
     if parts.username is not None or parts.query or parts.fragment:
         raise ValueError("the MCP proxy's address has no credentials, query or fragment")
     if not _TOKEN.fullmatch(token):
@@ -128,30 +137,34 @@ class ProxyClient:
         self, server: str, method: str, params: Mapping[str, object], *, session: str
     ) -> dict[str, Any]:
         """``method``'s result from ``server``; ``session`` names the asking session."""
+        message = _body(
+            {"jsonrpc": "2.0", "id": self._next(), "method": method, "params": dict(params)}
+        )
         for attempt in (1, 2):
-            mcp_session = await self._session(server, session)
-            status, body = await self._post(server, method, params, session, mcp_session)
+            task, mcp_session = await self._session(server, session)
+            status, body = await self._post(server, message, session, mcp_session)
             if status == 404 and attempt == 1:
-                self._forget(server)  # the proxy forgot it: start again, once
+                self._forget(server, task)  # the proxy forgot it: start again, once
                 continue
             return _result(status, body)
         raise AssertionError("unreachable")  # pragma: no cover
 
-    def _forget(self, server: str) -> None:
-        task = self._sessions.pop(server, None)
-        if task is not None and not task.done():
-            task.cancel()
+    def _forget(self, server: str, task: asyncio.Task[str]) -> None:
+        """Forget the session ``task`` started, unless another caller already started a
+        new one, which is never cancelled: others may be waiting on it."""
+        if self._sessions.get(server) is task:
+            del self._sessions[server]
 
-    async def _session(self, server: str, session: str) -> str:
-        """The server's MCP session: callers wait on one start, and no lock is held."""
+    async def _session(self, server: str, session: str) -> tuple[asyncio.Task[str], str]:
+        """The server's MCP session, and the start that made it: callers wait on one
+        start, and no lock is held."""
         task = self._sessions.get(server)
         if task is None or (task.done() and (task.cancelled() or task.exception() is not None)):
             task = self._sessions[server] = asyncio.ensure_future(self._start(server, session))
         try:
-            return await asyncio.shield(task)
+            return task, await asyncio.shield(task)
         except ConnectorError:
-            if self._sessions.get(server) is task:
-                del self._sessions[server]
+            self._forget(server, task)
             raise
 
     async def _start(self, server: str, session: str) -> str:
@@ -193,18 +206,12 @@ class ProxyClient:
         return found
 
     async def _post(
-        self,
-        server: str,
-        method: str,
-        params: Mapping[str, object],
-        session: str,
-        mcp_session: str,
+        self, server: str, message: bytes, session: str, mcp_session: str
     ) -> tuple[int, object]:
-        message = {"jsonrpc": "2.0", "id": self._next(), "method": method, "params": dict(params)}
         try:
             response = await self._client().post(
                 f"{self.url}/mcp/{server}",
-                data=_body(message),
+                data=message,
                 headers=self._headers(session, mcp_session),
                 allow_redirects=False,
             )
@@ -246,8 +253,14 @@ class ProxyClient:
 
 def _body(message: Mapping[str, object]) -> bytes:
     """A message with its keys sorted, so the same arguments are the same request: a call
-    approved for the operator matches it when it comes again."""
-    return json.dumps(message, sort_keys=True, ensure_ascii=False).encode()
+    approved for the operator matches it when it comes again. A message JSON cannot hold
+    is never sent (``not_sent``)."""
+    try:
+        return json.dumps(message, sort_keys=True, ensure_ascii=False, allow_nan=False).encode()
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise ConnectorError(
+            "not_sent", f"the arguments cannot be sent as JSON ({type(exc).__name__})"
+        ) from None
 
 
 async def _read(response: aiohttp.ClientResponse) -> object:
@@ -326,7 +339,7 @@ class Connectors:
     def specs(self) -> list[ToolSpec]:
         return [tool.spec for tool in self.tools.values()]
 
-    async def load(self, taken: Sequence[str] = ()) -> None:
+    async def load(self, taken: Iterable[str] = ()) -> None:
         """List each server's tools. A server that cannot be listed in time offers none,
         and the run goes on without it; ``taken`` names tools the harness keeps."""
         names = set(taken)
@@ -420,6 +433,8 @@ def _explain(error: ConnectorError) -> str:
             "check its effect before calling again, and do not repeat a call that spends "
             "or changes something."
         )
+    if error.kind == "not_sent":
+        return f"{error.message}. Nothing reached the server; call it with other arguments."
     return error.message
 
 
@@ -431,7 +446,9 @@ def _spec(server: str, name: str, tool: Mapping[str, Any]) -> ToolSpec:
     if isinstance(schema, dict) and len(json.dumps(schema)) <= MAX_SCHEMA_BYTES:
         rebuilt = _schema(cast(dict[str, Any], schema), 0)
         if rebuilt is not None and rebuilt.get("type") == "object":
-            parameters = rebuilt
+            # Enum and const text is the server's too: past a small budget, a tool's
+            # values are dropped, which only loosens what the model is told.
+            parameters = rebuilt if _value_text(rebuilt) <= MAX_VALUE_TEXT else _bare(rebuilt)
     return ToolSpec(
         name,
         f"A tool of the MCP server {server}, through the MCP proxy. "
@@ -549,6 +566,42 @@ def _schema(schema: Mapping[str, Any], depth: int) -> dict[str, Any] | None:
 
 
 _BAD: Final = object()
+
+
+def _value_text(schema: object) -> int:
+    """Characters of text in a rebuilt schema's enum and const values."""
+    if isinstance(schema, list):
+        return sum(_value_text(item) for item in cast(list[object], schema))
+    if not isinstance(schema, dict):
+        return 0
+    total = 0
+    for key, value in cast(dict[str, object], schema).items():
+        if key == "enum":
+            total += sum(len(v) for v in cast(list[object], value) if isinstance(v, str))
+        elif key == "const":
+            total += len(value) if isinstance(value, str) else 0
+        elif key == "properties":
+            total += sum(_value_text(v) for v in cast(dict[str, object], value).values())
+        else:
+            total += _value_text(value)
+    return total
+
+
+def _bare(schema: object) -> Any:
+    """A rebuilt schema without its enum and const values."""
+    if isinstance(schema, list):
+        return [_bare(item) for item in cast(list[object], schema)]
+    if not isinstance(schema, dict):
+        return schema
+    return {
+        key: (
+            {name: _bare(v) for name, v in cast(dict[str, object], value).items()}
+            if key == "properties"
+            else _bare(value)
+        )
+        for key, value in cast(dict[str, object], schema).items()
+        if key not in ("enum", "const")
+    }
 
 
 def _scalar(value: object) -> object:
