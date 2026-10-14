@@ -1141,6 +1141,19 @@ _TEXT_MATH: Final = (
     ),
 )
 
+_UNQUEUED: Final = (
+    (
+        "SELECT c.check_id,c.entry_id FROM math_comment_jobs c WHERE NOT EXISTS(SELECT 1 "
+        "FROM comment_math_sources s WHERE s.entry_id=c.entry_id) ORDER BY c.rowid LIMIT 1",
+        "the math check {} of comment entry {} has no math queue row",
+    ),
+    (
+        "SELECT r.check_id,r.source FROM math_response_jobs r WHERE NOT EXISTS(SELECT 1 "
+        "FROM response_math_sources s WHERE s.source=r.source) ORDER BY r.rowid LIMIT 1",
+        "the math check {} of explanation {} has no math queue row",
+    ),
+)
+
 _JOB_SCOPE: Final = """CREATE VIEW math_job_scope AS
     SELECT j.check_id,s.project,NULL AS session FROM math_jobs j
     JOIN math_sources s USING(document)
@@ -1196,7 +1209,12 @@ def _text_math(schema: Schema) -> None:
     ``math_text_jobs``, each under its kind of text (B-04). A comment's queue names its
     document as its parent, and its checks the document revision and hash their macros
     came from; an explanation's queue names its finding and decision revision. The two
-    views over them are made again. A row the new tables refuse refuses the migration."""
+    views over them are made again. A check whose text has no queue row, or a row the new
+    tables refuse, refuses the migration."""
+    for query, what in _UNQUEUED:
+        found = schema.execute(query).fetchone()
+        if found is not None:
+            raise RefusedRowError(what.format(*found))
     for statement in (
         """CREATE TABLE text_math_sources (
     subject_type TEXT NOT NULL
@@ -1222,9 +1240,14 @@ def _text_math(schema: Schema) -> None:
         CHECK (macro_revision IS NULL OR macro_revision BETWEEN 0 AND 999999999),
     macro_sha256 TEXT CHECK (macro_sha256 IS NULL
         OR (length(macro_sha256) = 64 AND macro_sha256 NOT GLOB '*[^0-9a-f]*')),
+    -- A comment's check names the document revision and hash its macros came from.
+    CHECK ((subject_type = 'comment') = (macro_revision IS NOT NULL AND macro_sha256 IS NOT NULL)),
     FOREIGN KEY (subject_type, subject_id) REFERENCES text_math_sources(subject_type, subject_id)
 ) STRICT""",
         "CREATE INDEX math_text_jobs_subjects ON math_text_jobs(subject_type,subject_id)",
+        # One queue row per explanation decision, and the legacy discovery's lookup.
+        "CREATE UNIQUE INDEX text_math_sources_parents "
+        "ON text_math_sources(subject_type,parent,parent_revision)",
         "DROP VIEW math_current_checks",
         "DROP VIEW math_job_scope",
     ):

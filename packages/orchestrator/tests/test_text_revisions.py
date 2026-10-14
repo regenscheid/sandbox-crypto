@@ -126,19 +126,47 @@ async def test_texts_from_an_older_version_answer_and_are_checked_as_before(
 
 
 @pytest.mark.asyncio
-async def test_a_text_check_without_its_queue_is_refused(stores, tmp_path):
+@pytest.mark.parametrize(
+    ("tamper", "refusal"),
+    [
+        (
+            "DELETE FROM comment_math_sources",
+            r"math check math-[0-9a-f]{24} of comment entry cmt-[0-9a-f]{24} has no math queue",
+        ),
+        (
+            "DELETE FROM response_math_sources",
+            r"math check math-[0-9a-f]{24} of explanation response:finding-[0-9a-f]{24}:r\d+:"
+            r"explanation has no math queue",
+        ),
+    ],
+)
+async def test_a_text_check_without_its_queue_is_refused(stores, tmp_path, tamper, refusal):
+    """The refusal names the check and its text, not tables the refused store lacks."""
     docs, reviews, _ = stores
     await history(docs, reviews)
     old = store_path(tmp_path / "old")
     older_store(docs.path, old, TEXT_MATH - 1)
     with sqlite3.connect(old) as db:
-        db.execute("DELETE FROM comment_math_sources")
+        db.execute("PRAGMA foreign_keys=OFF")
+        db.execute(tamper)
     copied = DocumentStore(old)
     try:
-        with pytest.raises(ControlError, match=r"stays at version 15.*text_math_sources"):
+        with pytest.raises(ControlError, match=r"stays at version 15.*" + refusal):
             copied.initialize()
     finally:
         copied.close()
+
+
+@pytest.mark.asyncio
+async def test_an_explanation_decision_has_one_math_queue_row(stores):
+    docs, reviews, _ = stores
+    await history(docs, reviews)
+    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"), docs.control.write() as tx:
+        tx.sql.execute(
+            "INSERT INTO text_math_sources(subject_type,subject_id,project,session,parent,"
+            "parent_revision,target) SELECT subject_type,subject_id||'-again',project,session,"
+            "parent,parent_revision,target FROM text_math_sources WHERE subject_type='response'"
+        )
 
 
 @pytest.mark.asyncio
