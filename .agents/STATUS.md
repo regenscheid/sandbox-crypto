@@ -4,6 +4,8 @@ The internal [child-attempt journal](../docs/CHILD-ATTEMPTS.md) retains bounded 
 
 The restricted child execution slice is in progress: one author implements the explicitly configured controller, original prompt and positive tool table; another implements authenticated selected-worker HTTP transport; an independent reviewer checks both. Root integrates from actual main `db11f1d`, owns combined gates and production scripted-model/HTTP acceptance, then the finite OpenShell Lab34 run. Source checkpoints and focused tests are not delivery or live-runtime proof. No lab, real provider request, model default or new automatic grant is active.
 
+Conda provisioning now has a separate parallel assignment: declared licenses for pip distributions in revision lockfiles (CP-16). The controller author moves to this branch after signing its corrected source; it does not wait for the delegated-execution lab. Recovery/rebuild, install disk limits and other Conda work remain open.
+
 
 Updated: 2026-10-13. Delivery baseline main `db11f1d` includes PR #69 through #118 after their fresh CI gates; normal development uses Python 3.13, with supported Python 3.12 retained in the matrix.
 

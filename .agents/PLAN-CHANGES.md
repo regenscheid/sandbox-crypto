@@ -1,5 +1,9 @@
 # Plan changes
 
+## 2026-10-13 — parallel Conda provisioning work
+
+The user requested Conda provisioning progress in parallel with delegated execution. A separate author takes CP-16 pip-distribution declared license metadata in revision lockfiles after freezing the controller. This avoids coupling the source work to Lab34; runtime infrastructure remains root-owned. Broader recovery, disk limits, artifact/event provenance and permissions are separate open items.
+
 ## 2026-10-13 — restricted delegated execution in progress
 
 The child-attempt journal is delivered as [PR #118](https://github.com/regenscheid/sandbox-crypto/pull/118), merged at `db11f1d` on reviewed signed `156d4e9` after all four fresh checks passed (run `38484906708`). Primary main is clean, synchronized, locked and tree-identical to the reviewed head. The restricted child execution slice is in progress: one author implements the explicitly configured controller, original prompt and positive tool table; another implements authenticated selected-worker HTTP transport; an independent reviewer checks both. Root integrates from actual main `db11f1d`, owns combined gates and production scripted-model/HTTP acceptance, then the finite OpenShell Lab34 run. Source checkpoints and focused tests are not delivery or live-runtime proof. No lab, real provider request, model default or new automatic grant is active. The next delivery joins controller and worker transport as one coherent execution slice rather than marking either source-only component as the completed workflow.
