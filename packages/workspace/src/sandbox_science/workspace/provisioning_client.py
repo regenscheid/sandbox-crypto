@@ -18,10 +18,10 @@ from sandbox_science.contracts.lockfile_diffs import LockfileDiffPage
 from sandbox_science.contracts.revision_packages import RevisionPackagePage
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 
+from .api import TIMEOUTS, Timeouts
+
 MAX_BYTES: Final = 64 * 1024
 MAX_CHUNKS: Final = 256
-CALL_TIMEOUT: Final = 5.0
-DIFF_TIMEOUT: Final = 9.0
 T = TypeVar("T", bound=BaseModel)
 
 
@@ -41,8 +41,9 @@ def _invalid_constant(value: str) -> Never:
 class ProvisionObserver:
     """One exact configured binding and an owned read-only request at a time."""
 
-    def __init__(self, worker: WorkerClient) -> None:
+    def __init__(self, worker: WorkerClient, timeouts: Timeouts = TIMEOUTS) -> None:
         self.worker = worker
+        self.timeouts = timeouts
         self.binding = worker.observation_transport()
 
     def current(self) -> bool:
@@ -51,15 +52,15 @@ class ProvisionObserver:
 
     async def get(self, path: str, params: dict[str, str], model: type[T]) -> T:
         """Read one bounded strict DTO; request cancellation closes its HTTP owner."""
-        return await self._get(path, params, model, CALL_TIMEOUT)
+        return await self._get(path, params, model, self.timeouts.worker_call)
 
     async def get_diff(self, path: str, params: dict[str, str]) -> LockfileDiffPage:
         """Allow the worker's eight-second comparison budget, with the same byte cap."""
-        return await self._get(path, params, LockfileDiffPage, DIFF_TIMEOUT)
+        return await self._get(path, params, LockfileDiffPage, self.timeouts.worker_comparison)
 
     async def get_packages(self, path: str, params: dict[str, str]) -> RevisionPackagePage:
         """Use comparison's bounded budget for the same shared worker read lane."""
-        return await self._get(path, params, RevisionPackagePage, DIFF_TIMEOUT)
+        return await self._get(path, params, RevisionPackagePage, self.timeouts.worker_comparison)
 
     async def _get(self, path: str, params: dict[str, str], model: type[T], timeout: float) -> T:
         try:

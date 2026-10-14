@@ -43,6 +43,7 @@ from sandbox_science.contracts import (
     Location,
     Result,
     ResultEvent,
+    RevisionHistory,
     RichOutput,
     ShellRequest,
     StreamEvent,
@@ -65,6 +66,7 @@ from sandbox_science.orchestrator.model import (
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome, operation_id
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
+from sandbox_science.testing import eventually
 
 pytestmark = pytest.mark.asyncio
 
@@ -169,12 +171,13 @@ async def test_the_client_reads_revisions_and_their_lockfiles(client: WorkerClie
     script = [{"tool_calls": [{"name": "shell", "arguments": {"script": "true"}}]}]
     (call,) = ScriptedModel.from_json(script)._turns[0].tool_calls
     await toolbox.call(call, "op-revisions")
-    history = await client.revisions("env1")
-    for _ in range(300):  # the worker asks the executor for revision 0's lockfile
-        if history.revisions[0].lockfile is not None:
-            break
-        await asyncio.sleep(0.1)
+
+    async def locked() -> RevisionHistory | None:
         history = await client.revisions("env1")
+        return history if history.revisions[0].lockfile is not None else None
+
+    # The worker asks the executor for revision 0's lockfile in the background.
+    history = await eventually(locked, describe="revision 0's lockfile")
     zero = history.revisions[0]
     assert (zero.revision, zero.managed, zero.changed_by) == (0, None, None)
     assert zero.lockfile is not None
@@ -557,11 +560,8 @@ async def test_h1_the_client_reads_every_event_line_the_worker_may_send(
         assert raised.value.kind is ErrorKind.INTERNAL
 
 
-async def test_h2_heartbeats_keep_a_quiet_stream_open_and_silence_ends_it(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_h2_heartbeats_keep_a_quiet_stream_open_and_silence_ends_it() -> None:
     # The client had no read timeout, so a stream that went quiet hung it forever.
-    monkeypatch.setattr(worker_client, "RECONNECT_DELAY", 0.01)
     asked: list[str] = []
 
     async def quiet(request: web.Request) -> web.StreamResponse:
@@ -586,7 +586,9 @@ async def test_h2_heartbeats_keep_a_quiet_stream_open_and_silence_ends_it(
     app.router.add_get("/v1/executions/exe-2/events", silent)
     async with (
         TestServer(app) as server,
-        WorkerClient(str(server.make_url("")), TOKEN, stream_timeout=0.5) as client,
+        WorkerClient(
+            str(server.make_url("")), TOKEN, stream_timeout=0.5, reconnect_delay=0.01
+        ) as client,
     ):
         assert [item.seq async for item in client.events("exe-1")] == [1]
         assert asked == ["0"]  # a second of heartbeats, and never a reconnection
@@ -598,9 +600,7 @@ async def test_h2_heartbeats_keep_a_quiet_stream_open_and_silence_ends_it(
         assert loop.time() - started < 10
 
 
-async def test_h2_run_gives_up_when_no_result_comes(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(worker_client, "RESULT_GRACE", 0.5)
-
+async def test_h2_run_gives_up_when_no_result_comes() -> None:
     async def submit(request: web.Request) -> web.Response:
         return web.json_response({**EXECUTION, "state": "queued"}, status=201)
 
@@ -615,7 +615,10 @@ async def test_h2_run_gives_up_when_no_result_comes(monkeypatch: pytest.MonkeyPa
     app.router.add_post("/v1/executions", submit)
     app.router.add_get("/v1/executions/exe-1/events", forever)
     request = ShellRequest(operation_id="op-1", context=CONTEXT, script="true", timeout_seconds=0.5)
-    async with TestServer(app) as server, WorkerClient(str(server.make_url("")), TOKEN) as client:
+    async with (
+        TestServer(app) as server,
+        WorkerClient(str(server.make_url("")), TOKEN, result_grace=0.5) as client,
+    ):
         with pytest.raises(WorkerAPIError) as raised:
             await asyncio.wait_for(client.run(request), 10)
     assert raised.value.kind is ErrorKind.UNAVAILABLE

@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: MIT
 """Shared contracts between the orchestrator, the worker service and other components.
 
-The models describe data only; they do no I/O. docs/specs/tools.md defines the
+The models describe data only; they do no I/O. The ``Clock`` protocol (clock.py) is
+the one shared seam for time. docs/specs/tools.md defines the
 behavior behind the worker API types, and docs/IMPLEMENTATION-PLAN.md the
 shared contracts ("Shared contracts to establish first").
 """
 
 from .artifacts import ArtifactRef
+from .clock import SYSTEM_CLOCK, Clock, SystemClock, wait_or_sleep
 from .context import ExecutionContext
 from .documents import (
     CatalogChange,
@@ -114,6 +116,7 @@ from .worker import (
 
 __all__ = [
     "MAX_ADMISSION_HOSTS",
+    "SYSTEM_CLOCK",
     "TERMINAL_STATES",
     "AdmissionDecision",
     "AdmissionRequest",
@@ -130,6 +133,7 @@ __all__ = [
     "CatalogStageStatus",
     "CatalogStatus",
     "CellRequest",
+    "Clock",
     "CondaPackage",
     "Contract",
     "EnvironmentInfo",
@@ -201,6 +205,7 @@ __all__ = [
     "StateEvent",
     "StreamEvent",
     "StreamOutput",
+    "SystemClock",
     "WorkerErrorResponse",
     "WriteFileRequest",
     "WriteFileResult",
@@ -210,4 +215,5 @@ __all__ = [
     "manifest_sha256",
     "new_id",
     "validate_relative_path",
+    "wait_or_sleep",
 ]

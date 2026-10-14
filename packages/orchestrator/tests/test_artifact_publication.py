@@ -15,7 +15,6 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
 
-import aiohttp
 import pytest
 import pytest_asyncio
 from aiohttp import web
@@ -396,8 +395,7 @@ async def test_sql_ownership_survives_repeated_caller_and_close_cancellation(
         publisher.publish(PublishRequest(context=CONTEXT, path="out.bin"), "op1", tool_call="call1")
     )
     try:
-        while not entered.is_set():
-            await asyncio.sleep(0.001)
+        assert await asyncio.to_thread(entered.wait, 5)
         caller.cancel()
         caller.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -467,25 +465,19 @@ async def test_hostile_http_transfer_boundaries(case: str) -> None:
     assert len(calls) == (0 if case == "bool_metadata" else 1)
 
 
-async def test_transfer_total_deadline_and_size_refusal_before_network(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls = []
+async def test_transfer_total_deadline_and_size_refusal_before_network() -> None:
     data = b"ab"
     ref = snapshot(data)
-    actual_timeout = aiohttp.ClientTimeout
-
-    def timeout(**kwargs):
-        if kwargs.get("total") == 10:
-            calls.append(kwargs)
-            return actual_timeout(total=0.05)
-        return actual_timeout(**kwargs)
+    release = asyncio.Event()
+    requests = 0
 
     async def content(request: web.Request):
+        nonlocal requests
+        requests += 1
         response = web.StreamResponse(headers={"X-Content-SHA256": ref.sha256})
         await response.prepare(request)
         await response.write(b"a")
-        await asyncio.sleep(0.15)
+        await release.wait()  # the rest never comes before the client's deadline
         with contextlib.suppress(ConnectionResetError):
             await response.write(b"b")
         return response
@@ -494,11 +486,16 @@ async def test_transfer_total_deadline_and_size_refusal_before_network(
     app.router.add_get("/v1/artifacts/{id}/content", content)
     async with (
         TestServer(app) as server,
-        WorkerClient(str(server.make_url("/")).rstrip("/"), "test-secret-artifact") as client,
+        WorkerClient(
+            str(server.make_url("/")).rstrip("/"), "test-secret-artifact", transfer_timeout=0.05
+        ) as client,
     ):
-        with pytest.raises(WorkerAPIError, match="limit"):
-            await client.verified_artifact_content(ref, max_bytes=1)
-        monkeypatch.setattr(aiohttp, "ClientTimeout", timeout)
-        with pytest.raises(WorkerAPIError, match="transport"):
-            await client.verified_artifact_content(ref)
-    assert calls == [{"total": 10}]
+        try:
+            with pytest.raises(WorkerAPIError, match="limit"):
+                await client.verified_artifact_content(ref, max_bytes=1)
+            assert requests == 0
+            with pytest.raises(WorkerAPIError, match="transport"):
+                await client.verified_artifact_content(ref)
+            assert requests == 1
+        finally:
+            release.set()

@@ -44,6 +44,7 @@ from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolCal
 from sandbox_science.orchestrator.projects import ProjectError, ProjectStore, RunRecord
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerClient
+from sandbox_science.testing import FakeClock, eventually
 
 POLICY = "sha256:" + "a" * 64
 AUTH = "Bearer test-secret-kernel-notice-configuration"
@@ -335,7 +336,7 @@ class Passive:
         self.closed = True
 
 
-async def controller(project_store):
+async def controller(project_store, **options):
     context = ExecutionContext(
         project_id="project",
         session_id="a",
@@ -343,7 +344,9 @@ async def controller(project_store):
     )
     observer = Passive(lineage(context))
     source = WorkerClient(CONFIG.endpoint, AUTH.removeprefix("Bearer "))
-    owner = KernelDeliveryController(project_store, context, "main-run", source, observer=observer)
+    owner = KernelDeliveryController(
+        project_store, context, "main-run", source, observer=observer, **options
+    )
     await owner.initialize()
     assert owner._ready
     return owner, observer, source
@@ -617,9 +620,8 @@ async def test_save_cancellation_drains_actual_fsync_owner_keeps_audit_and_never
 async def test_proof_timeout_returns_unknown_but_keeps_actual_snapshot_owner_until_close(
     project_store, monkeypatch
 ):
-    from sandbox_science.orchestrator import kernel_delivery as module
-
-    owner, _passive, source = await controller(project_store)
+    # The snapshot blocks until released, so the proof can only time out.
+    owner, _passive, source = await controller(project_store, proof_timeout=0.02)
     entered, release = threading.Event(), threading.Event()
     retained = []
     original = owner._snapshot
@@ -632,7 +634,6 @@ async def test_proof_timeout_returns_unknown_but_keeps_actual_snapshot_owner_unt
         return result
 
     monkeypatch.setattr(owner, "_snapshot", blocked)
-    monkeypatch.setattr(module, "PROOF_TIMEOUT", 0.02)
     try:
         assert await owner.before_model() is None
         assert entered.is_set()
@@ -658,10 +659,8 @@ async def test_proof_timeout_returns_unknown_but_keeps_actual_snapshot_owner_unt
 
 @pytest.mark.asyncio
 async def test_historical_renewal_does_not_queue_behind_long_save(project_store, monkeypatch):
-    from sandbox_science.orchestrator import kernel_delivery as module
-
-    monkeypatch.setattr(module, "RENEW_SECONDS", 0.01)
-    owner, _passive, source = await controller(project_store)
+    clock = FakeClock()
+    owner, _passive, source = await controller(project_store, clock=clock, renew_seconds=10)
     entered, release = threading.Event(), threading.Event()
     renewed = threading.Event()
     assert owner.inbox is not None
@@ -684,6 +683,9 @@ async def test_historical_renewal_does_not_queue_behind_long_save(project_store,
         owner.model_delivered()
         call = asyncio.create_task(owner.save(save))
         assert await asyncio.to_thread(entered.wait, 2)
+        await eventually(lambda: clock.sleepers == 1, describe="the renewal waiting")
+        assert not renewed.is_set()
+        clock.advance(10)
         assert await asyncio.to_thread(renewed.wait, 2)
     finally:
         release.set()

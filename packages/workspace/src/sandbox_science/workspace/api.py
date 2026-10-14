@@ -24,6 +24,7 @@ import asyncio
 import json
 import math
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Final, cast
 
 from aiohttp import hdrs, web
@@ -34,6 +35,23 @@ from sandbox_science.orchestrator.projects import ProjectError, ProjectRecord, P
 MAX_RUN_BYTES: Final = 64 * 1024 * 1024
 STORE: Final = web.AppKey("store", ProjectStore)
 MAX_RUN: Final = web.AppKey("max_run", int)
+
+
+@dataclass(frozen=True)
+class Timeouts:
+    """Seconds the workspace waits for its reads and for the worker."""
+
+    call: float = 6.0
+    """A kernel, plan, plan-edit or provisioning request as a whole."""
+    comparison: float = 10.0
+    """A lockfile comparison or a revision's package page as a whole."""
+    worker_call: float = 5.0
+    """One provisioning observation from the worker."""
+    worker_comparison: float = 9.0
+    """One comparison or package page from the worker, within its eight-second budget."""
+
+
+TIMEOUTS: Final = Timeouts()
 
 Json = dict[str, object]
 

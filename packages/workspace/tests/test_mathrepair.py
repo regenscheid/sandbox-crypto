@@ -30,6 +30,7 @@ from sandbox_science.orchestrator.model import (
     ToolSpec,
 )
 from sandbox_science.orchestrator.projects import ProjectStore
+from sandbox_science.testing import eventually
 from sandbox_science.workspace import cli
 from sandbox_science.workspace.app import create_app
 from sandbox_science.workspace.mathrepair import (
@@ -245,7 +246,8 @@ async def test_concurrent_requests_for_one_expression_share_one_call() -> None:
     service = MathRepairService(model, reviewer="rev")
     one = asyncio.create_task(service.repair(request("x_i_j"), "s1"))
     two = asyncio.create_task(service.repair(request("x_i_j"), "s2"))
-    await asyncio.sleep(0.01)
+    # Both tasks start in one turn of the loop; the second joins the first's call.
+    await eventually(lambda: model.answering == 1)
     model.release.set()
     first, second = await asyncio.gather(one, two)
     assert first.tex == second.tex == "x_i_j}"
@@ -295,7 +297,8 @@ async def test_a_busy_server_says_so_and_asks_two_at_a_time() -> None:
         asyncio.create_task(service.repair(request(f"x{n}"), "s"))
         for n in range(MAX_ACTIVE + MAX_WAITING)
     ]
-    await asyncio.sleep(0.01)
+    # All start in one turn of the loop: two reach the model, the rest wait their turn.
+    await eventually(lambda: model.answering == MAX_ACTIVE)
     busy = await service.repair(request("one more"), "s")
     assert busy == RepairAnswer(enabled=True, model="rev", reason="busy")
     model.release.set()

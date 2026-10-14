@@ -102,14 +102,14 @@
     {
       "path": "../../docs/LOCKFILE-DIFF-WORKSPACE.md",
       "category": "implementation-boundary",
-      "bytes": 5850,
-      "sha256": "4880a12b3902d8fa486be1a05c3b03205b55440b8cb040792f6fec109ff25427"
+      "bytes": 5045,
+      "sha256": "735ef6f4f5ff610bd3cff55415d4311b68194b6eea7d6913b27276555fe2cc94"
     },
     {
       "path": "../../docs/LOCKFILE-DIFFERENCES-VIEW.md",
       "category": "implementation-boundary",
-      "bytes": 5869,
-      "sha256": "59d89011365053aa1377cb4bb6091615f42db4d0576208d871a03b0070d7720f"
+      "bytes": 5183,
+      "sha256": "7d032085b02cdaafb6b40c360bf7bc7e067a3b572cd2aafcb17c03b46d975cd2"
     },
     {
       "path": "../../docs/LOCKFILE-DIFFERENCES.md",
@@ -150,14 +150,14 @@
     {
       "path": "../../docs/PROVISIONING-WORKSPACE-VIEW.md",
       "category": "implementation-boundary",
-      "bytes": 7767,
-      "sha256": "470e5e114de8d298fc789546bdc53f397c2821ef63673bbbbe65123ed37989fb"
+      "bytes": 5895,
+      "sha256": "9f9d239ca243d4fddf61a62ec4f9efd5c5666bc442b8f8bc4a571435aeddfc38"
     },
     {
       "path": "../../docs/PROVISIONING-WORKSPACE.md",
       "category": "implementation-boundary",
-      "bytes": 12243,
-      "sha256": "35492a287dcac4b0cf5cc8d2e86b0477908a4e4982ed917c2c894d2c9a580c7c"
+      "bytes": 10049,
+      "sha256": "dbe78c4dddc2c42ffe0989e036c0fc13bc97ee6d59ba63930fb2246a7541f6dd"
     },
     {
       "path": "../../docs/REVIEWER-PROMPT-PROVENANCE.md",
@@ -186,14 +186,14 @@
     {
       "path": "../../docs/SESSION-PLAN-EDITOR.md",
       "category": "implementation-boundary",
-      "bytes": 5511,
-      "sha256": "7bcb379424548492f3975295bfd9e533cae9f92a4143eb25792cf27d98b7dc6d"
+      "bytes": 5566,
+      "sha256": "b2d97673d231ca93d06900779c9c4a3a06eb71b92917bd8320c4d7bdd0b09bd7"
     },
     {
       "path": "../../docs/SESSION-PLAN-WORKSPACE.md",
       "category": "implementation-boundary",
-      "bytes": 7981,
-      "sha256": "755f23ffc5c18cceebe7c9fc2a6e34a452471c3cad3bc611f914343d198b5cad"
+      "bytes": 7311,
+      "sha256": "80401af35e03c6c4c90970b1696348281c2284de2a195bc5e8a25fb8a16f802e"
     },
     {
       "path": "../../docs/SESSION-PLANS.md",
@@ -216,8 +216,8 @@
     {
       "path": "../../docs/WORKSPACE-KERNELS.md",
       "category": "implementation-boundary",
-      "bytes": 8270,
-      "sha256": "001dbde8290e08438135257d677765f4eebb57c8526cf00b2a237d50620adf74"
+      "bytes": 7461,
+      "sha256": "eea316334ca726db01065b5a4e47c7ab16694b7c71c32d9ed7ee4d3cdc87dac7"
     },
     {
       "path": "README.md",

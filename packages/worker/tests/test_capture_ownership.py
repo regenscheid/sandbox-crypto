@@ -140,19 +140,41 @@ async def test_restart_same_daemon_exact_ack_reconciles_only_held_rows(
 
 
 @pytest.mark.asyncio
-async def test_cancel_ack_deadline_includes_actual_channel_write_lock(tmp_path: Path) -> None:
+async def test_cancel_ack_deadline_includes_actual_channel_write_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     store = Store(tmp_path / "worker.sqlite3")
-    worker = manager(store, tmp_path)
+    worker = ExecutionManager(
+        store,
+        LocalBackend(LocalBackendSettings(daemon=False), tmp_path),
+        Blobs(tmp_path / "artifacts"),
+        pool_id="capture-ownership",
+        max_artifact_size=1024,
+        state_dir=tmp_path,
+        capture_ack_timeout=0.05,
+    )
     await worker.start()
     await worker.capabilities("env1")
-    worker.capture_timeout = 0.05
     channel = worker._environments["env1"].channel
     assert channel is not None
+    dispatched = asyncio.Event()
+    dispatch = store.dispatch_capture
+
+    def dispatch_and_tell(*args: Any, **kwargs: Any) -> Any:
+        lease = dispatch(*args, **kwargs)
+        dispatched.set()
+        return lease
+
+    monkeypatch.setattr(store, "dispatch_capture", dispatch_and_tell)
     await channel._write_lock.acquire()
     try:
-        async with asyncio.timeout(2):
+        publish = asyncio.create_task(worker.publish(PublishRequest(context=CONTEXT, path="x")))
+        await asyncio.wait_for(dispatched.wait(), 10)
+        # The read waits for the write lock; its cleanup request has to wait for it too.
+        publish.cancel()
+        async with asyncio.timeout(10):  # a hang guard only
             with pytest.raises(WorkerError, match="unknown"):
-                await worker.publish(PublishRequest(context=CONTEXT, path="x"))
+                await publish
         assert not worker._captures
         assert len(store.capture_leases()) == 1
         assert store.capture_leases()[0].phase == "held"

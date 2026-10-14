@@ -83,9 +83,9 @@ openness at admission and commit; this route provides no opaque cross-request
 session-open lifetime guarantee. The editor neither reopens a session nor claims
 that a retained retry belongs to an earlier open lifetime.
 
-Focused scripted tests cover reference preservation, invalid drafts, changed
-structure and reload, acknowledged refresh retention, conflict and uncertainty,
-new intent after explicit reconciliation, storage failure, session-wide request
-ownership, streamed response limits, logout, read-only scopes and escaped SSR.
-Native browser acceptance and combined backend/frontend delivery gates are
-root-owned and remain separate from these source tests.
+The tests in `web/workspace/src/lib/planEdits.test.ts` cover reference
+preservation, invalid drafts, changed structure and reload, refresh after an
+acknowledged save, conflict and uncertainty, new intent after explicit
+reconciliation, storage failure, request ownership per session, streamed response
+limits, logout, read-only scopes and escaped server-side rendering. A browser run
+with a withheld response is in the [acceptance report](../.agents/docs/agent-reports/user-plan-editing-2026-10-13.md).
