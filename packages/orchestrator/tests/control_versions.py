@@ -11,12 +11,16 @@ copies it back, migrates the copy, and reads it as it read the original.
 
 from __future__ import annotations
 
+import json
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 from sandbox_science.orchestrator.control import ControlStore, migrations
+
+Json = dict[str, Any]
 
 MACRO_REVISIONS = migrations.BASELINE + 8
 """The version that replaced the macro pin tables with ``macro_revision`` columns."""
@@ -30,14 +34,14 @@ _PINS = (
     "FROM src.revisions WHERE macro_revision IS NOT NULL",
     "INSERT INTO math_macro_pins SELECT j.check_id,s.project,j.macro_revision,"
     "coalesce((SELECT r.sha256 FROM src.project_macro_revisions r WHERE r.project=s.project "
-    f"AND r.revision=j.macro_revision),'{EMPTY_SHA}'),'[]' FROM src.math_jobs j "
+    f"AND r.revision=j.macro_revision),'{EMPTY_SHA}'),coalesce((SELECT a.anchors FROM "
+    "response_macro_anchors a JOIN src.math_response_jobs r ON r.source=a.source "
+    "WHERE r.check_id=j.check_id),'[]') FROM src.math_jobs j "
     "JOIN src.math_job_scope s USING(check_id) WHERE j.macro_revision IS NOT NULL",
     "INSERT INTO math_macro_contexts SELECT check_id,'{}','[]',macro_held,"
     "lower(hex(zeroblob(32))) FROM src.math_jobs WHERE macro_held IS NOT NULL",
     "INSERT INTO response_macro_revisions SELECT source,revision,macro_revision "
     "FROM src.review_response_bodies WHERE macro_revision IS NOT NULL",
-    "INSERT OR IGNORE INTO response_macro_anchors SELECT source,'[]' "
-    "FROM src.review_response_bodies",
     "INSERT INTO review_macro_pins SELECT p.review_id,p.finding_id,p.macro_revision,"
     "coalesce((SELECT r.sha256 FROM src.project_macro_revisions r JOIN src.review_findings f "
     "ON f.project=r.project WHERE f.finding_id=p.finding_id AND r.revision=p.macro_revision),"
@@ -79,6 +83,23 @@ def older_store(source: Path, target: Path, version: int) -> None:
         for table in tables:
             _copy(db, table)
         if version < MACRO_REVISIONS:
+            # An explanation's anchors as main pinned them at its first save, which is
+            # what the current code derives for it; a legacy writer pinned none.
+            from sandbox_science.orchestrator.documents.project_macros import response_anchors
+
+            reader = sqlite3.connect(source)
+            try:
+                for (key,) in reader.execute(
+                    "SELECT b.source FROM review_response_bodies b WHERE b.revision=(SELECT "
+                    "min(revision) FROM review_response_bodies c WHERE c.source=b.source) "
+                    "AND b.macro_revision IS NOT NULL ORDER BY b.rowid"
+                ).fetchall():
+                    db.execute(
+                        "INSERT INTO response_macro_anchors VALUES(?,?)",
+                        (key, json.dumps(response_anchors(reader, key), separators=(",", ":"))),
+                    )
+            finally:
+                reader.close()
             for statement in _PINS:
                 db.execute(statement)
         db.execute("COMMIT")
@@ -101,3 +122,89 @@ def _copy(db: sqlite3.Connection, table: str) -> None:
         f'INSERT INTO main."{table}" ({rowid}{names}) '
         f'SELECT {rowid}{names} FROM src."{table}" ORDER BY rowid'
     )
+
+
+def macro_answers(docs: Any, reviews: Any, effective: Callable[[Any, Json], Any]) -> Json:
+    """Every macro-related answer a store gives, as JSON: each check's context and
+    effective context (``effective(jobs, job)``, since main and B-12 give it differently),
+    the check listing, every document revision's and explanation body's views, every
+    finding with its contexts, the confirmation targets, the runs and the pending math
+    notices. A version-9 fixture's answers from main are compared with B-12's."""
+    from sandbox_science.orchestrator.consistency.findings import Findings
+    from sandbox_science.orchestrator.consistency.response_bodies import ResponseBodies
+    from sandbox_science.orchestrator.documents.project_macros import response_view, view
+    from sandbox_science.orchestrator.mathchecks.contexts import finding_macro_contexts
+    from sandbox_science.orchestrator.mathchecks.jobs import MathJobs
+    from sandbox_science.orchestrator.mathchecks.notices import MathNotices
+
+    def safe(read: Callable[[], Any]) -> Any:
+        try:
+            return read()
+        except Exception as error:
+            return {"error": f"{type(error).__name__}: {error}"}
+
+    out: Json = {}
+    db = sqlite3.connect(docs.path)
+    try:
+        jobs = MathJobs(reviews)
+        out["jobs"] = {}
+        for (check,) in db.execute("SELECT check_id FROM math_jobs ORDER BY rowid").fetchall():
+            job = safe(lambda c=check: jobs.job(c))
+            if "error" in job:
+                out["jobs"][check] = job
+                continue
+            out["jobs"][check] = {
+                "macro_context": job["macro_context"],
+                "effective": safe(lambda j=job: effective(jobs, j)),
+            }
+        out["listing"] = safe(lambda: jobs.listing("p"))
+        revisions = db.execute("SELECT document_id,number FROM revisions ORDER BY rowid").fetchall()
+        out["views"] = {
+            f"{d}@{n}": {
+                "historical": safe(
+                    lambda d=d, n=n: view(docs, "p", document=d, revision=n, historical=True)
+                ),
+                "current": safe(lambda d=d, n=n: view(docs, "p", document=d, revision=n)),
+            }
+            for d, n in revisions
+        }
+        bodies = db.execute(
+            "SELECT source,revision,finding_id,decision_revision FROM review_response_bodies "
+            "ORDER BY rowid"
+        ).fetchall()
+        out["responses"] = {
+            f"{source}#{revision}": {
+                "historical": safe(
+                    lambda s=source, r=revision: response_view(docs, "p", s, body_revision=r)
+                ),
+                "current": safe(lambda s=source: response_view(docs, "p", s)),
+                "api": safe(
+                    lambda f=finding, d=decision, r=revision: ResponseBodies(reviews).get(
+                        "p", "s", f, d, body_revision=r
+                    )
+                ),
+            }
+            for source, revision, finding, decision in bodies
+        }
+        out["findings"] = {}
+        for listed in Findings(reviews).listing("p", "s")["findings"]:
+            full = Findings(reviews).get("p", "s", listed["finding_id"])
+            contexts = safe(
+                lambda full=full: finding_macro_contexts(reviews, "p", full).model_dump(mode="json")
+            )
+            out["findings"][listed["finding_id"]] = {"finding": full, "contexts": contexts}
+        out["confirmation_targets"] = safe(lambda: reviews.confirmation_targets("p", "s"))
+        out["runs"] = {
+            review: safe(lambda r=review: reviews.run("p", "s", r))
+            for (review,) in db.execute(
+                "SELECT review_id FROM review_runs ORDER BY rowid"
+            ).fetchall()
+        }
+        out["notices"] = safe(
+            lambda: sorted(
+                n["notice_id"] for n in MathNotices(reviews).pending("p", "s", "answers", set())
+            )
+        )
+    finally:
+        db.close()
+    return json.loads(json.dumps(out, default=str))

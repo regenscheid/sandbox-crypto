@@ -12,6 +12,8 @@ import json
 import math
 import re
 import sqlite3
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
@@ -85,6 +87,13 @@ class MathLimits:
             value = getattr(self, name)
             if type(value) is not int or not 1 <= value <= maximum:
                 raise ValueError(f"invalid bounded math limit: {name}")
+
+
+_EFFECTIVE_CACHED = 256
+_EFFECTIVE: OrderedDict[tuple[str, str], tuple[dict[str, str], list[str], bool]] = OrderedDict()
+"""Each recent check's effective definitions, problems and held state, by store and check:
+the immutable inputs they are derived from are parsed once, not on every read."""
+_EFFECTIVE_LOCK = threading.Lock()
 
 
 class MathJobs:
@@ -254,7 +263,6 @@ class MathJobs:
             "attribution_cursor",
             "created",
             "ended",
-            "macro_held",
         )
         with self.documents.control.read() as tx:
             db = tx.sql
@@ -284,11 +292,27 @@ class MathJobs:
 
     def effective_context(self, job: Json) -> Json | None:
         """The macro context a check resolved, derived again from its setting revision
-        and immutable sources; None before the check resolved it."""
-        if job["macro_held"] is None:
+        and immutable sources; None before the check resolved it. Its inputs never
+        change, so each check's is worked out once per process (``_EFFECTIVE``)."""
+        with self.documents.control.read() as tx:
+            (stored,) = tx.sql.execute(
+                "SELECT macro_held FROM math_jobs WHERE check_id=?", (job["check_id"],)
+            ).fetchone()
+        if stored is None:
             return None
-        macros, problems, held = self._resolve_macros(job, None)
-        return resolved(job["macro_context"], macros, problems, held)
+        key = (str(self.documents.path), job["check_id"])
+        with _EFFECTIVE_LOCK:
+            found = _EFFECTIVE.get(key)
+            if found is not None:
+                _EFFECTIVE.move_to_end(key)
+        if found is None:
+            found = self._resolve_macros(job, None)
+            with _EFFECTIVE_LOCK:
+                _EFFECTIVE[key] = found
+                while len(_EFFECTIVE) > _EFFECTIVE_CACHED:
+                    _EFFECTIVE.popitem(last=False)
+        macros, problems, held = found
+        return resolved(job["macro_context"], dict(macros), list(problems), held)
 
     @staticmethod
     def proof_author(raw: str | None) -> Json | None:
@@ -900,8 +924,10 @@ class MathJobs:
         values: list[Json] = []
         for ordinal, raw in rows[:20]:
             values.append({"ordinal": ordinal, **json.loads(raw)})
+        job = self.job(check)
+        job["effective_macro_context"] = self.effective_context(job)
         return {
-            "check": self.job(check),
+            "check": job,
             "observations": values,
             "next_after": rows[19][0] + 1 if len(rows) > 20 else None,
         }

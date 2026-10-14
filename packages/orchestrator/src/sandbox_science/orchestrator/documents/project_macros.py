@@ -243,32 +243,76 @@ def current(db: sqlite3.Connection, check: str, project: str) -> bool:
     )
 
 
+_SEVERITY_RANK = {"fail": 0, "warn": 1, "note": 2}
+"""As the consistency review ranks severities: a lower rank is more severe."""
+
+
 def response_anchors(db: sqlite3.Connection, source: str) -> list[Json]:
-    """An explanation's macro anchors: the documents its finding is anchored to, or
-    unknown when its first body revision came from a writer that recorded no macros."""
+    """An explanation's macro anchors: the documents its finding was anchored to when
+    the explanation was given (its decision revision), or unknown when its first body
+    revision came from a writer that recorded no macros. A later reflag of the finding
+    does not change them."""
     row = db.execute(
-        "SELECT f.project,f.finding_id,b.macro_revision FROM review_response_bodies b "
-        "JOIN review_findings f USING(finding_id) WHERE b.source=? ORDER BY b.revision LIMIT 1",
+        "SELECT f.project,f.finding_id,b.decision_revision,b.macro_revision "
+        "FROM review_response_bodies b JOIN review_findings f USING(finding_id) "
+        "WHERE b.source=? ORDER BY b.revision LIMIT 1",
         (source,),
     ).fetchone()
-    if row is None or row[2] is None:
+    if row is None or row[3] is None:
         return [{"unknown": True}]
-    return finding_anchors(db, row[0], row[1])
+    project, finding, decision = row[0], row[1], row[2]
+    anchors = header_anchors(db, finding, decision)
+    if anchors is None:
+        return finding_anchors(db, project, finding)
+    return anchor_pins(db, project, anchors)
+
+
+def header_anchors(db: sqlite3.Connection, finding: str, revision: int) -> object | None:
+    """The anchors a review finding's header held at ``revision``, from its last
+    assessment then: a reflag's assessment replaced them when it was at least as severe
+    as the header, and kept them otherwise. None when no transition recorded one."""
+    row = db.execute(
+        "SELECT payload FROM review_transitions WHERE finding_id=? AND revision<=? "
+        "AND json_extract(payload,'$.assessment') IS NOT NULL ORDER BY revision DESC LIMIT 1",
+        (finding, revision),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        payload = cast(Json, json.loads(row[0]))
+        new, old = cast(Json, payload["assessment"]), payload.get("previous_assessment")
+        if not isinstance(old, dict):
+            return new["anchors"]
+        old = cast(Json, old)
+        stronger = _SEVERITY_RANK[new["severity"]] <= _SEVERITY_RANK[old["severity"]]
+        return new["anchors"] if stronger else old["anchors"]
+    except (ValueError, KeyError, TypeError, RecursionError):
+        return [{"unknown": True}]
 
 
 def finding_anchors(db: sqlite3.Connection, project: str, finding: str) -> list[Json]:
+    """The documents a finding is anchored to now."""
     row = db.execute(
         "SELECT anchors FROM review_findings WHERE finding_id=? AND project=?",
         (finding, project),
     ).fetchone()
+    if row is None:
+        return [{"unknown": True}]
     try:
-        if row is None:
-            raise ValueError
-        anchors = json.loads(row[0])
+        return anchor_pins(db, project, json.loads(row[0]))
+    except (ValueError, RecursionError):
+        return [{"unknown": True}]
+
+
+def anchor_pins(db: sqlite3.Connection, project: str, anchors: object) -> list[Json]:
+    """The document revisions a finding's anchors name, each once, in their order."""
+    try:
         if not isinstance(anchors, list) or len(cast(list[Any], anchors)) > 32:
             raise ValueError
         pins: list[Json] = []
         for anchor in cast(list[Json], anchors):
+            if anchor.get("unknown"):
+                raise ValueError
             locator = anchor.get("locator", {})
             if "document" not in locator:
                 continue

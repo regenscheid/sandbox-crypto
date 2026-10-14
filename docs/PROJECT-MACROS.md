@@ -61,7 +61,12 @@ context (refactoring plan, decision 7; schema version 10): a document revision, 
 math check, an explanation body revision and a reviewer's response pin each carry a
 `macro_revision`, and a check also whether its context was held. The effective
 context (anchors, definitions, problems, held state and identity key) is derived
-from that revision and the immutable sources whenever it is read.
+from that revision and the immutable sources when it is read; a check's is worked
+out once per process, since its inputs never change. A check's recorded revision
+and held state are kept once set (a trigger refuses changing them). The migration
+to version 10 refuses a store with a pin it cannot place, out of range, of another
+project or setting digest than its row's, or whose pinned anchors differ from those
+it derives, rather than dropping it; it rewrites only the rows that have a pin.
 
 Each new document revision records its project setting revision atomically with
 the source event. A current unnumbered document view uses the current project
@@ -74,9 +79,12 @@ its effective definitions, warnings and context identity are derived again from
 that revision and the checked source when read. Comment attempts retain their
 existing exact body and parent document macro revision. Thread history is
 explicitly displayed under the selected document's diagnostic context, not
-claimed as its original render. A MAIN fix/rebut explanation's anchors are its
-finding's document anchors as they are when read; an explanation whose first body
-revision came from a writer that recorded no macro revision has unknown anchors.
+claimed as its original render. A MAIN fix/rebut explanation's anchors are the
+documents its finding was anchored to at the explanation's decision revision, from
+the finding's transitions (a reflag's assessment replaced the header's anchors only
+when at least as severe), so a later reflag does not change them; an explanation
+whose first body revision came from a writer that recorded no macro revision has
+unknown anchors.
 Its check combines the anchors with the attempt's project setting revision. Body
 history also records its save-time project revision. Sources with no document
 anchors use the project setting.
