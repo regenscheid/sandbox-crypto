@@ -11,6 +11,11 @@
 export interface Page<T, C> {
   items: T[];
   next: C | null;
+  /**
+   * What else the answer brings, applied only when the page is shown: a page that a
+   * reload superseded changes nothing.
+   */
+  shown?: () => void;
 }
 
 export interface ListState<T, C> {
@@ -45,6 +50,12 @@ export class PagedList<T, C> {
     return next === null || loading ? Promise.resolve() : this.#load(next);
   }
 
+  /** An empty list; pages still on their way are dropped. */
+  clear(): void {
+    this.#generation++;
+    Object.assign(this.state, emptyList<T, C>());
+  }
+
   async #load(cursor: C | null): Promise<void> {
     const generation = ++this.#generation;
     this.state.loading = true;
@@ -54,6 +65,7 @@ export class PagedList<T, C> {
       if (generation !== this.#generation) return;
       this.state.items = cursor === null ? page.items : [...this.state.items, ...page.items];
       this.state.next = page.next;
+      page.shown?.();
     } catch (caught) {
       if (generation === this.#generation) this.state.error = caught;
     } finally {
