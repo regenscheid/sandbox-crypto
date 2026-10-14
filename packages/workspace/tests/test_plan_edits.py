@@ -24,7 +24,7 @@ from sandbox_science.orchestrator.session_plans import (
     PlanScope,
     SessionPlans,
 )
-from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome
+from sandbox_science.orchestrator.tools import Toolbox, ToolEntry, ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerClient
 from sandbox_science.workspace import plan_edits
 from sandbox_science.workspace.app import create_app
@@ -386,11 +386,12 @@ async def test_actual_http_user_edit_requires_successful_main_current_read(
     toolbox = Toolbox(cast(WorkerClient, SimpleNamespace()), context, plans=adapter)
     dispatched = []
 
-    async def synthetic_shell(args, operation):
-        dispatched.append(operation)
+    async def synthetic_shell(request):
+        dispatched.append(request.operation)
         return ToolOutcome('{"observed":"synthetic"}', {"observed": "synthetic"})
 
-    monkeypatch.setattr(toolbox, "_shell", synthetic_shell)
+    shell = ToolEntry(toolbox.entries["shell"].spec, "effect", synthetic_shell)
+    monkeypatch.setitem(toolbox.entries, "shell", shell)
     await adapter.safe_point()
     await adapter.call("plan_read", "{}", call_id="initial-read", model="scripted")
     await adapter.model_delivered()

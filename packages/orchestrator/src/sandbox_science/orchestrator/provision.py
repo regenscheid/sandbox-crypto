@@ -18,7 +18,6 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Final
 
 from pydantic import ValidationError
@@ -122,8 +121,6 @@ PROVISION_STATUS: Final = ToolSpec(
 
 PROVISION_SPECS: Final = (PROVISION, PROVISION_STATUS)
 
-Handler = Callable[[dict[str, Any], str], Awaitable["ToolOutcome"]]
-
 
 def _outcome(text: str, record: dict[str, Any]) -> ToolOutcome:
     # tools.py imports this module, so its ToolOutcome is imported when first used.
@@ -141,10 +138,6 @@ class ProvisionTools:
         self.client = client
         self.context = context
         self.output_chars = output_chars
-
-    @property
-    def handlers(self) -> dict[str, Handler]:
-        return {"provision": self.provision, "provision_status": self.status}
 
     def _context(self, args: dict[str, Any]) -> ExecutionContext:
         environment = args.get("environment")

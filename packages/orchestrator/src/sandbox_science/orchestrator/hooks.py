@@ -38,6 +38,10 @@ Point = Literal["start", "turn", "tool"]
 """``start``: once, before the first turn. ``turn``: before each model call.
 ``tool``: after each tool call, on its result."""
 
+Effect = Literal["read", "cancel", "effect", "plan"]
+"""What a tool call may change: ``read`` and ``cancel`` tools nothing a plan governs,
+``effect`` tools anything, and ``plan`` tools the plan, which they check themselves."""
+
 RESPONSE_ROUNDS: Final = 2
 """Closing answers a run may take back to respond to findings, whatever their source."""
 
@@ -71,6 +75,15 @@ class Closing:
     action: Literal["accept", "continue", "respond", "retry", "stop"] = "accept"
     notices: tuple[Notice, ...] = ()
     stopped: str = "user_message"
+
+
+@dataclass(frozen=True)
+class Refusal:
+    """A gate's refusal of a tool call, which the model reads as the call's error."""
+
+    kind: str
+    """An ``ErrorKind`` value."""
+    message: str
 
 
 class RunView(Protocol):
@@ -111,6 +124,10 @@ class TurnHook:
 
     async def model_returned(self, run: RunView) -> None:
         """After each successful model call, once the loop has counted its deliveries."""
+
+    async def gate(self, effect: Effect) -> Refusal | None:
+        """Before a tool call of this effect class: a refusal, or ``None`` to let it run."""
+        return None
 
     async def observe_tool(self, run: RunView, record: dict[str, Any]) -> None:
         """After each tool call, with the outcome the transcript keeps."""

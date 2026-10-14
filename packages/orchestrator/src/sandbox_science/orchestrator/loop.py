@@ -17,7 +17,7 @@ from typing import Any, Final, Literal, TypeVar
 from .hooks import RESPONSE_ROUNDS, Notice, Point, TurnHook
 from .kernel_notice_receipts import KernelNoticeDelivery
 from .model import ChatModel, Message
-from .plan_tools import GUIDANCE, GUIDANCE_VERSION
+from .plan_tools import GUIDANCE, GUIDANCE_VERSION, Plans
 from .plan_tools import NAMES as PLAN_NAMES
 from .projects import FailurePhase
 from .prompt_bundle import MainPromptBundle, PromptProvenance, assemble_main
@@ -288,7 +288,7 @@ async def _run_task(
         for call in reply.tool_calls:
             transcript.phase = "tool"
             outcome = await toolbox.call(
-                call, operation_id(f"{run_id}-t{turn}", call), model=reply.model
+                call, operation_id(f"{run_id}-t{turn}", call), model=reply.model, gates=hooks
             )
             transcript.phase = "harness"
             await _attach(hooks, transcript, outcome, toolbox.output_chars)
@@ -332,7 +332,11 @@ async def run_task(
                 for hook in hooks:
                     await stack.enter_async_context(interruption.context(hook.lease()))
                 offered_plans = {spec.name for spec in toolbox.specs} & PLAN_NAMES
-                if offered_plans != (PLAN_NAMES if toolbox.plans is not None else set()):
+                planned = toolbox.plans is not None
+                # Plan tools come with their hook, whose gate fences the run's effects.
+                if offered_plans != (PLAN_NAMES if planned else set()) or planned != any(
+                    isinstance(hook, Plans) for hook in hooks
+                ):
                     raise ValueError("MAIN planning capability assembly mismatch")
                 bundle = assemble_main(
                     system,

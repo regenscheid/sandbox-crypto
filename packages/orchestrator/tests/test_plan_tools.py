@@ -21,17 +21,15 @@ from sandbox_science.orchestrator.consistency.controller import ReviewController
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import DocumentStore, DocumentTool
 from sandbox_science.orchestrator.documents.errors import DocumentError
+from sandbox_science.orchestrator.hooks import Effect
 from sandbox_science.orchestrator.jobs import JobTools
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import ModelError, ModelTurn, ScriptedModel, ToolCall
 from sandbox_science.orchestrator.plan_tools import (
-    CANCEL_TOOLS,
-    EFFECT_TOOLS,
     GUIDANCE_VERSION,
     MAX_REQUEST_BYTES,
     MAX_RESPONSE_BYTES,
     NAMES,
-    READ_TOOLS,
     PlanTools,
 )
 from sandbox_science.orchestrator.projects import ProjectStore
@@ -41,7 +39,7 @@ from sandbox_science.orchestrator.session_plans import (
     PlanScope,
     SessionPlans,
 )
-from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome
+from sandbox_science.orchestrator.tools import Toolbox, ToolEntry, ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
 
@@ -128,6 +126,25 @@ async def active(f):
 async def read_and_deliver(f):
     await call(f, "plan_read")
     await f.adapter.model_delivered()
+
+
+READS = {
+    "read_file",
+    "list_files",
+    "document_list",
+    "document_read",
+    "document_comments",
+    "document_comment_read",
+    "review_findings",
+    "review_finding_read",
+    "review_evidence_read",
+    "review_response_read",
+    "list_jobs",
+    "job_status",
+    "wait_jobs",
+    "provision_status",
+}
+"""The tools a plan's gate lets through: they change nothing it governs."""
 
 
 def worker():
@@ -243,11 +260,11 @@ async def test_guidance_is_conditional_and_every_offered_tool_has_one_explicit_c
         reviews=reviews,
         plans=f.adapter,
     )
-    for spec in toolbox.specs:
-        assert (
-            sum(spec.name in group for group in (NAMES, READ_TOOLS, CANCEL_TOOLS, EFFECT_TOOLS))
-            == 1
-        )
+    effects = {name: entry.effect for name, entry in toolbox.entries.items()}
+    assert set(effects) == {spec.name for spec in toolbox.specs}
+    assert {name for name, effect in effects.items() if effect == "plan"} == NAMES
+    assert {name for name, effect in effects.items() if effect == "cancel"} == {"cancel_job"}
+    assert {name for name, effect in effects.items() if effect == "read"} == READS
     plain = Toolbox(worker(), f.context)
     model = ScriptedModel([ModelTurn("A small factual reply.")])
     result = await run_task(model, plain, "What is two plus two?", run_id="plain")
@@ -255,6 +272,27 @@ async def test_guidance_is_conditional_and_every_offered_tool_has_one_explicit_c
     assert GUIDANCE_VERSION not in model.requests[0][0]["content"]
     assert not (NAMES & {spec.name for spec in plain.specs})
     await reviews.close()
+
+
+@pytest.mark.asyncio
+async def test_a_toolbox_with_plan_tools_fences_effects_without_a_gate_passed(fixture):
+    f = fixture
+    await made(f)
+    toolbox = tools(f)
+    dispatched = []
+
+    async def shell(request):
+        dispatched.append(request.operation)
+        return ToolOutcome('{"ran":true}', {})
+
+    toolbox.entries["shell"] = ToolEntry(toolbox.entries["shell"].spec, "effect", shell)
+    refused = await toolbox.call(ToolCall("c1", "shell", '{"script": "true"}'), "op-ungated")
+    assert "not active" in json.loads(refused.text)["error"]["message"]
+    assert dispatched == []
+    # A class the fence does not know is checked like an effect.
+    with pytest.raises(DocumentError, match="not active"):
+        await f.adapter.check_dispatch(cast(Effect, "future"))
+    await f.adapter.check_dispatch("plan")
 
 
 @pytest.mark.asyncio
@@ -272,13 +310,11 @@ async def test_user_change_read_requires_successful_model_boundary_and_blocks_sa
     assert f.adapter.requires_read
     await call(f, "plan_read")
     with pytest.raises(DocumentError, match="reread_required"):
-        await f.adapter.check_dispatch("shell")
-    await f.adapter.check_dispatch("read_file")
-    await f.adapter.check_dispatch("cancel_job")
-    with pytest.raises(DocumentError, match="classification"):
-        await f.adapter.check_dispatch("future_unknown_tool")
+        await f.adapter.check_dispatch("effect")
+    await f.adapter.check_dispatch("read")
+    await f.adapter.check_dispatch("cancel")
     await f.adapter.model_delivered()
-    await f.adapter.check_dispatch("shell")
+    await f.adapter.check_dispatch("effect")
     # A historical read is valid history and cannot clear the next USER change.
     f.core.revise(
         f.user,
@@ -405,7 +441,7 @@ async def test_status_cas_race_and_awaiting_approval_cannot_be_bypassed(fixture,
                 **extra,
             )
     with pytest.raises(DocumentError, match="not active"):
-        await f.adapter.check_dispatch("pdf_info")
+        await f.adapter.check_dispatch("effect")
     await call(
         f, "plan_revise", operation_id="refine", base=ref, body=body("Clarify"), reason="Clarify"
     )
@@ -421,8 +457,8 @@ async def test_original_registry_lifetime_is_not_refreshed_after_change(fixture,
     with pytest.raises(DocumentError, match="planning"):
         await made(f)
     with pytest.raises(DocumentError, match="planning"):
-        await f.adapter.check_dispatch("write_file")
-    await f.adapter.check_dispatch("read_file")
+        await f.adapter.check_dispatch("effect")
+    await f.adapter.check_dispatch("read")
 
 
 @pytest.mark.asyncio
@@ -437,10 +473,10 @@ async def test_other_project_changes_keep_this_runs_effect_tools(fixture, change
     if change == "policy":
         # The worker enforces the project's current policy on each effect.
         f.projects.set_policy("p", "sha256:" + "b" * 64)
-    await f.adapter.check_dispatch("shell")
+    await f.adapter.check_dispatch("effect")
     ref, _ = await active(f)
     assert ref["version"] == 1
-    await f.adapter.check_dispatch("write_file")
+    await f.adapter.check_dispatch("effect")
 
 
 @pytest.mark.asyncio
@@ -746,11 +782,13 @@ async def test_actual_same_batch_current_read_cannot_authorize_effect_until_next
     toolbox = tools(f)
     dispatched = []
 
-    async def shell(args, operation):
-        dispatched.append(operation)
+    async def shell(request):
+        dispatched.append(request.operation)
         return ToolOutcome('{"observed":"synthetic effect"}', {"observed": "synthetic effect"})
 
-    monkeypatch.setattr(toolbox, "_shell", shell)
+    monkeypatch.setitem(
+        toolbox.entries, "shell", ToolEntry(toolbox.entries["shell"].spec, "effect", shell)
+    )
     model = ScriptedModel(
         [
             ModelTurn(
@@ -790,7 +828,7 @@ async def test_scoped_event_scan_has_a_finite_hold_and_complete_read_can_clear_i
     assert notice["event_scan_held"]
     assert f.adapter.cursor == before + 64
     with pytest.raises(DocumentError, match="reread_required"):
-        await f.adapter.check_dispatch("write_file")
+        await f.adapter.check_dispatch("effect")
     page, _ = await call(f, "plan_read")
     assert page["head"]["ref"] == ref
     assert page["steps"][0]["step_cursor"] == 70

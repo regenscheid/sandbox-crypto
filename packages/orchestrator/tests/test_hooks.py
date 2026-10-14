@@ -12,7 +12,15 @@ import pytest
 
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator import cli
-from sandbox_science.orchestrator.hooks import Closing, Notice, Point, RunView, TurnHook
+from sandbox_science.orchestrator.hooks import (
+    Closing,
+    Effect,
+    Notice,
+    Point,
+    Refusal,
+    RunView,
+    TurnHook,
+)
 from sandbox_science.orchestrator.loop import Transcript, run_task
 from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolCall
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
@@ -287,3 +295,27 @@ async def test_findings_that_go_out_with_a_later_continue_count_as_a_response_ro
     assert transcript.response_rounds == 2
     assert transcript.delivered_ids("r") == {"r-1", "r-2"}
     assert transcript.final_text == "4"
+
+
+class Fence(TurnHook):
+    name = "fence"
+
+    def __init__(self) -> None:
+        self.effects: list[str] = []
+
+    async def gate(self, effect: Effect) -> Refusal | None:
+        self.effects.append(effect)
+        return Refusal("conflict", "fenced") if effect == "effect" else None
+
+
+async def test_a_gate_refuses_tool_calls_by_their_effect_class() -> None:
+    fence = Fence()
+    calls = (ToolCall("c1", "shell", '{"script": "true"}'), ToolCall("c2", "list_files", "{}"))
+    model = ScriptedModel([ModelTurn(None, calls), ModelTurn("done")])
+    transcript = await run_task(model, toolbox(), "go", run_id="r", hooks=[fence])
+    shell, listing = (
+        json.loads(str(m["content"])) for m in transcript.messages if m["role"] == "tool"
+    )
+    assert shell["error"] == {"kind": "conflict", "message": "fenced"}
+    assert listing["error"]["kind"] == "internal"  # it ran, against no worker
+    assert fence.effects == ["effect", "read"]
