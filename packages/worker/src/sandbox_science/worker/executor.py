@@ -63,22 +63,23 @@ def _sibling(name: str) -> ModuleType:
     if __package__:
         return importlib.import_module(f"{__package__}.{name}")
     qualified = f"sandbox_science_{name}"
-    loaded = sys.modules.get(qualified)
-    if loaded is not None:
-        return loaded
     spec = importlib.util.spec_from_file_location(qualified, Path(__file__).with_name(f"{name}.py"))
     if spec is None or spec.loader is None:
         raise ImportError(f"no {name}.py beside {__file__}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[qualified] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        # A half-built module is never left for anything to find.
+        del sys.modules[qualified]
+        raise
     return module
 
 
 if TYPE_CHECKING:
     from . import capture, provisioning, sandbox_files
     from .sandbox_files import MAX_PATH_BYTES as MAX_PATH_BYTES
-    from .sandbox_files import MAX_SNAPSHOT as MAX_SNAPSHOT
     from .sandbox_files import SHARED as SHARED
     from .sandbox_files import ToolError as ToolError
     from .sandbox_files import encode_line as encode_line
@@ -90,8 +91,6 @@ else:
     encode_line = sandbox_files.encode_line
     SHARED = sandbox_files.SHARED
     MAX_PATH_BYTES = sandbox_files.MAX_PATH_BYTES
-    MAX_SNAPSHOT = sandbox_files.MAX_SNAPSHOT
-    sandbox_files.DIRECTORY_FLAGS = sandbox_files.DIRECTORY_FLAGS
 
 PROTOCOL = 1
 MAX_LINE = 16 * 1024 * 1024
@@ -2323,7 +2322,8 @@ class Executor:
         the worker's mark of this environment, which the reply carries.
         """
         raw: object = request.get("hash", [])
-        wanted = [path for path in cast(list[object], raw) if isinstance(path, str)][:MAX_SNAPSHOT]
+        named = [path for path in cast(list[object], raw) if isinstance(path, str)]
+        wanted = named[: sandbox_files.MAX_SNAPSHOT]
         limit = max(0, int(request.get("hash_limit", 0)))
         budget = max(0, int(request.get("hash_budget", 0)))
         mark = request.get("mark")
