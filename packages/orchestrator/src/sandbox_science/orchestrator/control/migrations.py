@@ -665,6 +665,69 @@ def _run_service_control(schema: Schema) -> None:
         schema.execute(statement)
 
 
+def _immutable_update(schema: Schema, table: str, sql: str) -> None:
+    """Run ``sql`` on an append-only ``table``, lifting its update trigger for it."""
+    triggers = schema.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name=? "
+        "AND sql LIKE '%BEFORE UPDATE%'",
+        (table,),
+    ).fetchall()
+    for name, _ in triggers:
+        schema.execute(f'DROP TRIGGER "{name}"')
+    schema.execute(sql)
+    for _, create in triggers:
+        schema.execute(create)
+
+
+def _macro_revisions(schema: Schema) -> None:
+    """Version 10: a math check, a document revision, a response body revision and a
+    review's response pin record the project macro revision they used (decision 7);
+    the effective macro context is derived when read, and the six tables that pinned
+    it go (B-12)."""
+    revision = "INTEGER CHECK (macro_revision IS NULL OR macro_revision BETWEEN 0 AND 999999999)"
+    for table in ("revisions", "math_jobs", "review_response_bodies", "review_response_pins"):
+        schema.execute(f"ALTER TABLE {table} ADD COLUMN macro_revision {revision}")
+    schema.execute(
+        "ALTER TABLE math_jobs ADD COLUMN macro_held INTEGER "
+        "CHECK (macro_held IS NULL OR macro_held IN (0, 1))"
+    )
+    schema.execute(
+        "UPDATE math_jobs SET macro_revision=(SELECT p.revision FROM math_macro_pins p "
+        "WHERE p.check_id=math_jobs.check_id),macro_held=(SELECT c.held FROM "
+        "math_macro_contexts c WHERE c.check_id=math_jobs.check_id)"
+    )
+    _immutable_update(
+        schema,
+        "revisions",
+        "UPDATE revisions SET macro_revision=(SELECT p.project_revision FROM "
+        "document_macro_pins p WHERE p.document=revisions.document_id "
+        "AND p.revision=revisions.number)",
+    )
+    _immutable_update(
+        schema,
+        "review_response_bodies",
+        "UPDATE review_response_bodies SET macro_revision=(SELECT p.project_revision FROM "
+        "response_macro_revisions p WHERE p.source=review_response_bodies.source "
+        "AND p.body_revision=review_response_bodies.revision)",
+    )
+    _immutable_update(
+        schema,
+        "review_response_pins",
+        "UPDATE review_response_pins SET macro_revision=(SELECT p.revision FROM "
+        "review_macro_pins p WHERE p.review_id=review_response_pins.review_id "
+        "AND p.finding_id=review_response_pins.finding_id)",
+    )
+    for table in (
+        "math_macro_pins",
+        "document_macro_pins",
+        "response_macro_anchors",
+        "response_macro_revisions",
+        "math_macro_contexts",
+        "review_macro_pins",
+    ):
+        schema.execute(f"DROP TABLE {table}")
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -674,6 +737,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _evidence_checks,
     _run_service,
     _run_service_control,
+    _macro_revisions,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

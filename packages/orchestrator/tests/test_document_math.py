@@ -1209,25 +1209,27 @@ async def test_completed_scientific_bound_survives_later_math_failure(stores, mo
 
 
 @pytest.mark.asyncio
-async def test_the_math_checks_keep_jobs_observations_and_findings(tmp_path, monkeypatch):
+async def test_the_math_checks_keep_jobs_observations_and_findings(tmp_path):
     from sandbox_science.orchestrator.control import migrations
 
-    with monkeypatch.context() as old:  # a store from before version 6
-        old.setattr(migrations, "MIGRATIONS", migrations.MIGRATIONS[:4])
-        old.setattr(migrations, "VERSION", migrations.BASELINE + 3)
-        projects = ProjectStore(tmp_path)
-        projects.create("p", "minimal", "sha256:" + "a" * 64)
-        projects.open_session("p", "s", dedicated=False)
-        projects.close()
-        docs = DocumentStore(store_path(tmp_path))
-        reviews = ReviewStore(docs, clock=lambda: 1000.0)
-        create(docs)
-        await drain(reviews, ScriptedChecker())
-        jobs = MathJobs(reviews)
-        before = (jobs.listing("p"), [jobs.job(c["check_id"]) for c in jobs.listing("p")["checks"]])
-        findings = get(reviews)
-        docs.close()
-    docs = DocumentStore(store_path(tmp_path))
+    from .control_versions import older_store
+
+    current, old = tmp_path / "current", tmp_path / "old"
+    projects = ProjectStore(current)
+    projects.create("p", "minimal", "sha256:" + "a" * 64)
+    projects.open_session("p", "s", dedicated=False)
+    projects.close()
+    docs = DocumentStore(store_path(current))
+    mathchecks.subscribe(docs)
+    reviews = ReviewStore(docs, clock=lambda: 1000.0)
+    create(docs)
+    await drain(reviews, ScriptedChecker())
+    jobs = MathJobs(reviews)
+    before = (jobs.listing("p"), [jobs.job(c["check_id"]) for c in jobs.listing("p")["checks"]])
+    findings = get(reviews)
+    docs.close()
+    older_store(store_path(current), store_path(old), migrations.BASELINE + 3)  # before v6
+    docs = DocumentStore(store_path(old))
     docs.initialize()  # the writer brings the store to the current version
     try:
         reviews = ReviewStore(docs, clock=lambda: 1000.0)

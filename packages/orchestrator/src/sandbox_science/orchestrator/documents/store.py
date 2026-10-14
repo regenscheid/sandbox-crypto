@@ -77,7 +77,7 @@ from .models import (
 from .normalize import Normalized, normalize
 from .operations import MAX_OPERATIONS, Operation, touches
 from .parser import parser_versions
-from .project_macros import source_saved
+from .project_macros import head as macro_head
 
 CACHED: Final = 16
 """Parsed revisions kept, by document, revision and content hash."""
@@ -1597,8 +1597,8 @@ class DocumentStore:
         db.execute(
             "INSERT INTO revisions (document_id, number, created_at, author, accepted_by, "
             "session_id, base, parent, reason, operations, patch_id, text, sha256, tombstone, "
-            "normalized, warnings, block_map, parser) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "normalized, warnings, block_map, parser, macro_revision) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 info.document_id,
                 number,
@@ -1618,6 +1618,7 @@ class DocumentStore:
                 _dumps(found),
                 _dumps(stored),
                 _dumps({**parser_versions(), "profile": mapped.parsed.profile}),
+                macro_head(db, info.project_id),  # the project macros it is shown with
             ),
         )
         db.execute(
@@ -1679,8 +1680,8 @@ class DocumentStore:
         author: Author,
         payload: Json,
     ) -> None:
-        """Record an event in the change's transaction, pin a saved source's project
-        macros, and tell the control store's subscribers (such as the math checks)."""
+        """Record an event in the change's transaction, and tell the control store's
+        subscribers (such as the math checks)."""
         cursor = db.execute(
             "INSERT INTO events (time, kind, producer, project_id, session_id, document_id, "
             "payload) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -1695,7 +1696,6 @@ class DocumentStore:
             ),
         )
         assert cursor.lastrowid is not None  # noqa: S101 - this event was inserted
-        source_saved(db, kind, info.document_id)
         event = ControlEvent(cursor.lastrowid, kind, info.project_id, info.document_id, payload)
         self.control.notify(Tx(db), event)
 

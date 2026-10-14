@@ -27,10 +27,11 @@ def finding_macro_contexts(store: ReviewStore, project: str, finding: Json) -> F
     with documents.control.read() as tx:
         anchors = finding_anchors(tx.sql, project, finding["finding_id"])
     if finding["origin"] == "math":
-        job = MathJobs(store).job(finding["math_check_id"])
+        jobs = MathJobs(store)
+        job = jobs.job(finding["math_check_id"])
         if job["project"] != project:
             raise DocumentError(INTERNAL, "finding check is outside its project")
-        pinned = job.get("effective_macro_context")
+        pinned = jobs.effective_context(job)
         own = (
             {**pinned, "macros": pinned["effective"]}
             if pinned

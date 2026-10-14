@@ -407,8 +407,14 @@ def _v3_with_a_thread(path: Path, monkeypatch: pytest.MonkeyPatch, anchor: str) 
         old.setattr(migrations, "MIGRATIONS", migrations.MIGRATIONS[:2])
         old.setattr(migrations, "VERSION", migrations.BASELINE + 1)
         documents = DocumentStore(path)
-        doc = documents.create("p", name="n", title="N", text="x\n", author=USER).document_id
+        doc = "doc-" + "1" * 24
         with documents.control.write() as tx:
+            # The document row the thread names; its revisions do not matter here.
+            tx.sql.execute(
+                "INSERT INTO documents(document_id,project_id,name,title,created_at,"
+                "created_by,head,next_block,next_span) VALUES (?,'p','n','N','t',?,1,1,1)",
+                (doc, USER.model_dump_json()),
+            )
             tx.sql.execute(
                 "INSERT INTO annotation_threads VALUES ('ann-1', ?, ?, '{}', 1.0)", (doc, anchor)
             )

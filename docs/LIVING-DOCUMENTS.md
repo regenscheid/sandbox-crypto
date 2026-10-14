@@ -23,12 +23,10 @@ In the code, `sandbox_science.orchestrator.control` owns the connection. `Contro
 | `annotation_operations` | Scoped idempotent comment mutation results |
 | `annotation_requests` | User-addressed requests, their session, delivery lease and queued/delivered/responded lifecycle |
 | `project_macro_revisions`, `project_macro_heads`, `project_macro_operations` | Immutable bounded USER definitions, current setting revision and idempotent setting results |
-| `document_macro_pins`, `response_macro_anchors`, `response_macro_revisions` | Save-time project setting pins and immutable original finding-document contexts |
-| `math_macro_pins`, `math_macro_contexts`, `review_macro_pins` | Exact setting/effective context for checks and reviewer explanation confirmation |
 | `annotation_body_revisions` | Immutable revisions of each comment opening or reply body, with its hash, block map and the proved owner of each block ([comment math](COMMENT-MATH.md)) |
 | `comment_math_sources`, `math_comment_jobs` | Each comment body's math-check cursor (target and completed body revision), and which checks are of comment bodies, with the parent document's macro revision they used |
 | `math_sources` | Each document's math-check cursor: the revision to check up to, the last one checked, and whether a retry was asked for ([math checks](MATH-CHECKS.md)) |
-| `math_jobs`, `math_job_owners` | Each check of one revision: its state, lease, span cursor, counts and renderer configuration, and the block ownership proofs it used |
+| `math_jobs`, `math_job_owners` | Each check of one revision: its state, lease, span cursor, counts and renderer configuration, the project macro revision it used and whether its macro context was held, and the block ownership proofs it used |
 | `math_observations` | Each checked formula's result, append-only |
 | `math_block_owners` | The revision and author that last changed each block, for attributing math findings |
 | `math_finding_state`, `math_notices`, `math_ignored` | The current mechanical finding for each formula, its closing notices with their claim and delivery, and findings staged as left unaddressed by a run |

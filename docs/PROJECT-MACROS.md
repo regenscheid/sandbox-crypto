@@ -56,22 +56,30 @@ mutate check cursors.
 
 ## Exact contexts and uncertainty
 
+What is recorded is the project setting revision a text used, not its whole
+context (refactoring plan, decision 7; schema version 10): a document revision, a
+math check, an explanation body revision and a reviewer's response pin each carry a
+`macro_revision`, and a check also whether its context was held. The effective
+context (anchors, definitions, problems, held state and identity key) is derived
+from that revision and the immutable sources whenever it is read.
+
 Each new document revision records its project setting revision atomically with
 the source event. A current unnumbered document view uses the current project
-setting; an explicitly numbered historical view uses the saved setting pin.
-A legacy source without a save-time pin reports unknown historical context,
-rather than reconstructing an earlier setting from today's head.
+setting; an explicitly numbered historical view uses the recorded revision. A
+legacy source without one reports unknown historical context, rather than
+reconstructing an earlier setting from today's head.
 
-Each admitted mechanical attempt pins the project setting revision/digest and
-retains its resolved effective definitions, warnings and context identity.
-Comment attempts retain their existing exact body and parent document macro
-revision pins. Thread history is explicitly displayed under the selected
-document's diagnostic context, not claimed as its original render; exact checked
-context remains in check evidence. MAIN fix/rebut explanation sources pin their
-original finding's document anchors at source creation, keeping those anchors
-through subsequent body corrections. Their current check combines those immutable
-anchors with the attempt's pinned project setting. Body history also retains its save-time
-project revision. Sources with no document anchors use the project setting.
+Each admitted mechanical attempt records the project setting revision it uses;
+its effective definitions, warnings and context identity are derived again from
+that revision and the checked source when read. Comment attempts retain their
+existing exact body and parent document macro revision. Thread history is
+explicitly displayed under the selected document's diagnostic context, not
+claimed as its original render. A MAIN fix/rebut explanation's anchors are its
+finding's document anchors as they are when read; an explanation whose first body
+revision came from a writer that recorded no macro revision has unknown anchors.
+Its check combines the anchors with the attempt's project setting revision. Body
+history also records its save-time project revision. Sources with no document
+anchors use the project setting.
 
 When several finding document anchors resolve to the same effective definitions,
 that agreed context is used. Conflicting, missing or unproved contexts hold
@@ -84,7 +92,7 @@ unknown context. Explicit USER decisions remain available, and mechanical child
 findings never resolve the scientific parent.
 
 Reviewer explanation confirmations fence exact body revision/digest, effective
-context identity and project setting revision/digest. A setting change during
+context identity and project setting revision. A setting change during
 review makes that confirmation stale. Confirmation eligibility and retry identity
 include the new setting revision, so an ended old-context review does not prevent a fresh
 confirmation. No new reviewer tool category or source editing privilege is
@@ -102,9 +110,8 @@ request, service, worker or idle scheduler.
 A settings write only appends one bounded setting and receipt. The existing
 active math controller discovers stale current-head contexts lazily, admitting
 at most 32 sources of each kind per refresh step. Its normal attempt/history,
-batch, lease and actual-work cancellation limits still apply. Immutable effective
-context storage has a global 64 MiB logical budget; exhaustion holds checking
-and remains visible without vetoing an ordinary source edit or setting change.
+batch, lease and actual-work cancellation limits still apply. Effective contexts
+are not stored, so they need no storage budget.
 
 A late result under an old setting remains immutable evidence but cannot change
 current findings, prove removal, supply a new closing notice or finalize staged
@@ -119,7 +126,7 @@ Focused fixtures cover USER authority and scoped HTTP guards, CAS/idempotent
 history, rollback, definition/combined expansion bounds, project isolation,
 document overrides, comment and explanation inputs, historical unknown state,
 lazy refresh, stale renderer/confirmation/closing ACK races, dependency-only
-budgets, ambiguous anchors, context quotas and corrupt retained-state reads.
+budgets, ambiguous anchors and corrupt retained-state reads.
 Frontend fixtures cover cache/request identity and visible ambiguity warnings.
 These fixtures make no live provider calls.
 

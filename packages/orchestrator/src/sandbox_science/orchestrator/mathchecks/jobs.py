@@ -254,6 +254,7 @@ class MathJobs:
             "attribution_cursor",
             "created",
             "ended",
+            "macro_held",
         )
         with self.documents.control.read() as tx:
             db = tx.sql
@@ -279,8 +280,15 @@ class MathJobs:
                 raise DocumentError(INTERNAL, "math job names no source")
 
             value["macro_context"] = job_context(db, check, value["project"])
-            value["effective_macro_context"] = resolved(db, check, value["macro_context"])
             return value
+
+    def effective_context(self, job: Json) -> Json | None:
+        """The macro context a check resolved, derived again from its setting revision
+        and immutable sources; None before the check resolved it."""
+        if job["macro_held"] is None:
+            return None
+        macros, problems, held = self._resolve_macros(job, None)
+        return resolved(job["macro_context"], macros, problems, held)
 
     @staticmethod
     def proof_author(raw: str | None) -> Json | None:
@@ -568,7 +576,12 @@ class MathJobs:
         except (ValueError, TypeError, KeyError, RecursionError):
             raise DocumentError(INTERNAL, "pinned math source identity is invalid") from None
 
-    def effective_macros(self, job: Json, mapped: Mapped, owner: str) -> dict[str, str]:
+    def _resolve_macros(
+        self, job: Json, mapped: Mapped | None
+    ) -> tuple[dict[str, str], list[str], bool]:
+        """A check's effective definitions, problems, and whether its context is held:
+        the setting it used with its source's own definitions (a document's front
+        matter, a comment's document's, an explanation's anchored documents')."""
         project = job["macro_context"]["macros"]
         held = not job["macro_context"]["known"]
         if "response" in job:
@@ -578,17 +591,20 @@ class MathJobs:
         elif "comment" in job:
             macros, problems = resolve(project, CommentMath(self).macros(job))
         else:
+            mapped = self.load(job) if mapped is None else mapped
             macros, problems = resolve(
                 project, mapped.parsed.front_matter.macros if mapped.parsed.front_matter else {}
             )
         if held and not problems:
             problems = ["Historical project macro context is unknown; checks are held"]
+        return macros, problems, held
+
+    def effective_macros(self, job: Json, mapped: Mapped, owner: str) -> dict[str, str]:
+        macros, _problems, held = self._resolve_macros(job, mapped)
         with self.documents.control.write() as tx:
             db = tx.sql
             self._fence(db, job["check_id"], owner)
-            job["macro_capacity"] = save_resolution(
-                db, job["check_id"], job["macro_context"], macros, problems, held
-            )
+            save_resolution(db, job["check_id"], held)
             if held:
                 db.execute(
                     "UPDATE math_jobs SET reason='macro context unknown or ambiguous' "
@@ -612,8 +628,6 @@ class MathJobs:
         if proofs is None or not await threaded(self.capacity, check, owner):
             return False
         macros = await threaded(self.effective_macros, job, mapped, owner)
-        if not job["macro_capacity"]:
-            return False
         formulas: list[Formula] = []
         for index, span in selected:
             block = mapped.parsed.blocks[span.block]
@@ -800,7 +814,9 @@ class MathJobs:
                     entry["kind"], entry["response"] = "response", response
 
                 context = job_context(db, entry["check_id"], project)
-                effective = resolved(db, entry["check_id"], context)
+                (held,) = db.execute(
+                    "SELECT macro_held FROM math_jobs WHERE check_id=?", (entry["check_id"],)
+                ).fetchone()
                 entry["project_macro_revision"] = context["revision"]
                 entry["macro_context_status"] = (
                     "unknown"
@@ -808,9 +824,9 @@ class MathJobs:
                     else "stale"
                     if context["revision"] != head(db, project)
                     else "pending"
-                    if effective is None
+                    if held is None
                     else "held"
-                    if effective["held"]
+                    if held
                     else "pinned"
                 )
             queue = [

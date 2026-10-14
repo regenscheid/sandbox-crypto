@@ -26,11 +26,13 @@ from sandbox_science.orchestrator.documents.errors import (
 )
 from sandbox_science.orchestrator.documents.models import Author
 from sandbox_science.orchestrator.documents.project_macros import (
+    head as macro_head,
+)
+from sandbox_science.orchestrator.documents.project_macros import (
     read as macros_read,
 )
 from sandbox_science.orchestrator.documents.project_macros import (
     response_anchors,
-    response_saved,
     response_view,
 )
 
@@ -220,7 +222,7 @@ def commit(
     ):
         raise DocumentError(CONFLICT, "response body changed during preparation")
     db.execute(
-        "INSERT INTO review_response_bodies VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO review_response_bodies VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             parent["source"],
             parent["finding"],
@@ -235,10 +237,10 @@ def commit(
             prepared.next_span,
             prepared.identity_floor,
             prepared.held,
+            # The project macros it was saved with; unknown for a legacy writer's body.
+            None if legacy else macro_head(db, parent["project"]),
         ),
     )
-
-    response_saved(db, parent, prepared.base + 1, legacy=legacy, unknown_anchors=prepared.base > 0)
     db.execute(
         "INSERT INTO "
         "response_math_sources(source,finding_id,decision_revision,project,session,target,blocked) "

@@ -11,7 +11,7 @@ from sandbox_science.orchestrator.consistency import response_bodies as bodies
 from sandbox_science.orchestrator.documents.engine import attach
 from sandbox_science.orchestrator.documents.errors import CONFLICT, INTERNAL, DocumentError
 from sandbox_science.orchestrator.documents.identity import Mapped
-from sandbox_science.orchestrator.documents.project_macros import pin, response_anchors
+from sandbox_science.orchestrator.documents.project_macros import pin
 
 from .schedule import LEASE
 
@@ -92,7 +92,7 @@ class ResponseMath:
         )
         db.execute("INSERT INTO math_response_jobs VALUES(?,?)", (check, source))
 
-        pin(db, check, project, response_anchors(db, source))
+        pin(db, check, project)
         db.execute(
             "UPDATE response_math_sources SET retry_requested=0,blocked=NULL WHERE source=?",
             (source,),
