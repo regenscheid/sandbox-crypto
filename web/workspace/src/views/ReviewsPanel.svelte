@@ -11,6 +11,12 @@
   const error = $derived(panelError(panel));
   const selected = $derived(panel.selected);
   const refresh = () => browser.refresh();
+  // The Refresh button clears every failure shown, as the panel did before; the effect
+  // below only reads the lists again.
+  function refreshAll() {
+    browser.clearErrors();
+    void browser.refresh();
+  }
   const read = (review: string, evidence: string) => browser.read(review, evidence);
   $effect(() => {
     void browser.refresh();
@@ -23,7 +29,7 @@
     A pass covers the recorded checks and is not a proof. Missing evidence, capped reviews and
     unconfirmed fixes remain explicit.
   </p>
-  <button disabled={busy} onclick={refresh}>Refresh reviews</button><button
+  <button disabled={busy} onclick={refreshAll}>Refresh reviews</button><button
     disabled={busy}
     onclick={() => browser.request()}>Request review at next live safe point</button
   >
