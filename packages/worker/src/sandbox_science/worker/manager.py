@@ -108,6 +108,7 @@ from .revisions import Prepared, Revisions, package_commands
 from .shared_sync import SharedSync
 from .store import CaptureLease, KernelRecord, Store
 from .timeouts import MANAGER_TIMEOUTS, ManagerTimeouts
+from .usability import Usability
 
 _log = logging.getLogger(__name__)
 _EVENT = TypeAdapter[Event](Event)
@@ -343,18 +344,14 @@ class ExecutionManager:
         self._environments: dict[str, _Environment] = {}
         self._channels: set[ExecutorChannel] = set()
         self._tasks: set[asyncio.Task[Any]] = set()
-        self._closing = False
+        self._usability = Usability(store)
+        """What stands in the way of using each environment, and the worker's shutdown."""
         self._streams_ended = False
-        self._recovering: set[str] = set()
         self._pollers: dict[str, tuple[ExecutorChannel, asyncio.Task[Any]]] = {}
-        self._daemon_fences: dict[str, asyncio.Task[None]] = {}
-        self._quarantined: set[str] = set()
         self.job_resources: Callable[[str], Resources] | None = None
         self.confirmed_daemon_loss: Callable[[str], Awaitable[bool]] | None = None
         self.daemon_identity: Callable[[str], tuple[str, str] | None] | None = None
         self.recycle_daemon: Callable[[str, str, str], Awaitable[None]] | None = None
-        self._closing_sessions: dict[tuple[str, str, str], int] = {}
-        self._released_environments: dict[str, int] = {}
         self._kernel_observations: dict[str, _KernelObserver] = {}
         self.notices: Notices | None = None
         """Admission notices for an environment since a time; the environments set it."""
@@ -455,7 +452,7 @@ class ExecutionManager:
 
     def refresh_package_gate(self, environment_id: str) -> None:
         """Bounded retry of release/classification ACK; uncertainty leaves the guest closed."""
-        if self._closing or environment_id in self._gate_retries:
+        if self._usability.closing or environment_id in self._gate_retries:
             return
 
         async def retry() -> None:
@@ -516,9 +513,8 @@ class ExecutionManager:
         behind, and attempts repeat with a capped backoff until none is left. Startup
         waits for one attempt that reaches the daemon, and refuses to start without one.
         """
-        if environment_id in self._recovering or self._closing:
+        if not self._usability.begin_recovery(environment_id):
             return
-        self._recovering.add(environment_id)
         delay = self.timeouts.recovery_retry
         try:
             for attempt in itertools.count(1):
@@ -529,7 +525,9 @@ class ExecutionManager:
                         raise
                     _log.exception("recovering the executions of %s failed", environment_id)
                     reached = False
-                if self._closing or (reached and (startup or not self._unattached(environment_id))):
+                if self._usability.closing or (
+                    reached and (startup or not self._unattached(environment_id))
+                ):
                     break
                 if startup and attempt == STARTUP_RECOVERY_ATTEMPTS:
                     raise WorkerError(
@@ -539,8 +537,8 @@ class ExecutionManager:
                 await asyncio.sleep(delay)
                 delay = min(2 * delay, self.timeouts.recovery_retry_max)
         finally:
-            self._recovering.discard(environment_id)
-        if startup and not self._closing and self._unattached(environment_id):
+            self._usability.end_recovery(environment_id)
+        if startup and not self._usability.closing and self._unattached(environment_id):
             self._spawn(self._recover(environment_id))
 
     def _unattached(self, environment_id: str) -> list[_Live]:
@@ -579,8 +577,7 @@ class ExecutionManager:
         if self.confirmed_daemon_loss is not None and await self.confirmed_daemon_loss(
             environment_id
         ):
-            self.store.forget_endpoint(environment_id)
-            self._quarantined.discard(environment_id)
+            self._usability.sandbox_stopped(environment_id)
             for live in self._unattached(environment_id):
                 self._lose(live, "the sandbox that was deleted, stopped or replaced")
             return True
@@ -708,7 +705,7 @@ class ExecutionManager:
         one of the store, is logged and the poller goes on, waiting longer while it lasts.
         """
         delay = self.timeouts.poll_interval
-        while not self._closing and not channel.closed:
+        while not self._usability.closing and not channel.closed:
             try:
                 for live in list(self._live.values()):
                     if (
@@ -732,16 +729,8 @@ class ExecutionManager:
         Attempts still running there end as the executor's channel closes.
         """
         await self.guard_package_deletion(environment_id)
-        self._released_environments[environment_id] = (
-            self._released_environments.get(environment_id, 0) + 1
-        )
-        try:
+        with self._usability.releasing_executor(environment_id):
             await self._release(environment_id)
-        finally:
-            if self._released_environments[environment_id] == 1:
-                self._released_environments.pop(environment_id)
-            else:
-                self._released_environments[environment_id] -= 1
 
     async def _release(self, environment_id: str) -> None:
         captures = [
@@ -776,7 +765,7 @@ class ExecutionManager:
         if channel is not None:
             self._channels.discard(channel)
             await channel.shutdown()
-            if not self.store.recycle_needed(environment_id):
+            if not self._usability.recycle_pending(environment_id):
                 self.store.forget_endpoint(environment_id)
 
     async def activity(self, environment_id: str) -> Activity | None:
@@ -837,7 +826,7 @@ class ExecutionManager:
 
     async def close(self) -> None:
         """Detach daemon bridges; stop stdio executors and report their attempts lost."""
-        self._closing = True
+        self._usability.close()
         if self._closing_task is None:
             self._closing_task = asyncio.create_task(self._close())
         _, cancelled = await capture.owned(self._closing_task)
@@ -1043,16 +1032,16 @@ class ExecutionManager:
 
     async def _environment(self, environment_id: str) -> _Environment:
         while True:
-            fence = self._daemon_fences.get(environment_id)
+            fence = self._usability.fence(environment_id)
             if fence is not None:
                 await asyncio.shield(fence)
                 continue
             environment = self._environments.setdefault(
                 environment_id, _Environment(last_used=self.clock.monotonic())
             )
-            if self.store.recycle_needed(environment_id):
+            if self._usability.recycle_pending(environment_id):
                 async with environment.lock:
-                    if not self.store.recycle_needed(environment_id):
+                    if not self._usability.recycle_pending(environment_id):
                         continue
                     fence = self._start_daemon_fence(environment_id)
                 await asyncio.shield(fence)
@@ -1067,7 +1056,7 @@ class ExecutionManager:
                 async with environment.lock:
                     if (
                         self._environments.get(environment_id) is not environment
-                        or environment_id in self._daemon_fences
+                        or self._usability.fence(environment_id) is not None
                     ):
                         continue  # released or fenced while this request waited
                     await self._open(environment_id, environment)
@@ -1078,17 +1067,9 @@ class ExecutionManager:
             return environment
 
     def _start_daemon_fence(self, environment_id: str) -> asyncio.Task[None]:
-        self._quarantined.add(environment_id)
-        fence = self._daemon_fences.get(environment_id)
-        if fence is None:
-            fence = self._spawn(self._recycle_daemon(environment_id))
-            self._daemon_fences[environment_id] = fence
-            fence.add_done_callback(partial(self._fence_done, environment_id))
-        return fence
-
-    def _fence_done(self, environment_id: str, task: asyncio.Task[None]) -> None:
-        if self._daemon_fences.get(environment_id) is task:
-            self._daemon_fences.pop(environment_id, None)
+        return self._usability.start_fence(
+            environment_id, lambda: self._spawn(self._recycle_daemon(environment_id))
+        )
 
     async def _recycle_daemon(self, environment_id: str) -> None:
         """Fence the whole VM, outside the execution lock, before publishing a replacement.
@@ -1116,8 +1097,7 @@ class ExecutionManager:
             # binding. Incarnation change/transport failure alone never clears.
             self.store.fenced_captures(environment_id, old_incarnation, *binding)
             self._capture_counts = self._capture_usage()
-        self.store.finish_recycle(environment_id)
-        self._quarantined.discard(environment_id)
+        self._usability.sandbox_stopped(environment_id)
 
     async def _open(self, environment_id: str, environment: _Environment) -> None:
         """Start the environment's executor unless one runs. Hold its lock."""
@@ -1146,8 +1126,7 @@ class ExecutionManager:
                     or (previous_binding is not None and previous_binding != identity)
                 )
             ):
-                self.store.require_recycle(environment_id, previous)
-                self._quarantined.add(environment_id)
+                self._usability.require_recycle(environment_id, previous)
                 await channel.shutdown()
                 for live in list(self._live.values()):
                     saved = self.store.recovery(live.execution.execution_id)
@@ -1355,7 +1334,7 @@ class ExecutionManager:
     async def _on_closed(self, environment_id: str, channel: ExecutorChannel) -> None:
         self._channels.discard(channel)
         self._gate_acked.pop(channel, None)
-        if channel.daemon_token is not None and (self._closing or not channel.detaching):
+        if channel.daemon_token is not None and (self._usability.closing or not channel.detaching):
             poller = self._pollers.get(environment_id)
             if poller is not None and poller[0] is channel:
                 self._pollers.pop(environment_id, None)
@@ -1364,14 +1343,14 @@ class ExecutionManager:
             environment = self._environments.get(environment_id)
             if environment is not None and environment.channel is channel:
                 environment.channel = None
-            if not self._closing:
+            if not self._usability.closing:
                 self._spawn(self._recover(environment_id))
             return
         # The executions sent to this executor end with it, whether or not its
         # environment's record still names it.
         for live in list(self._live.values()):
             if live.channel is channel and live.execution.state not in TERMINAL_STATES:
-                self._lose(live, "the worker" if self._closing else "the executor")
+                self._lose(live, "the worker" if self._usability.closing else "the executor")
         environment = self._environments.get(environment_id)
         if environment is not None and environment.channel is channel:
             environment.channel = None
@@ -1386,7 +1365,7 @@ class ExecutionManager:
         ``origin`` names the provisioning operation the execution is an install step of: a
         managed change its package commands make is recorded as that operation's.
         """
-        if self._closing:
+        if self._usability.closing:
             raise WorkerError(ErrorKind.UNAVAILABLE, "the worker is closing")
         encoded = request.model_dump_json()
         if isinstance(request, JobRequest):
@@ -1404,11 +1383,7 @@ class ExecutionManager:
                 )
             return self.get(execution_id), False
         self._package_origin(request, origin)
-        if (
-            request.context.environment_id in self._quarantined
-            or request.context.environment_id in self._daemon_fences
-            or self.store.recycle_needed(request.context.environment_id)
-        ):
+        if self._usability.fenced(request.context.environment_id):
             raise WorkerError(
                 ErrorKind.UNAVAILABLE,
                 "the environment is fenced until its sandbox executor is safely recycled",
@@ -1417,11 +1392,7 @@ class ExecutionManager:
         execution_id = new_id("exe")
         if isinstance(request, JobRequest):
             context = request.context
-            if (
-                context.environment_id in self._released_environments
-                or (context.project_id, context.environment_id, context.session_id)
-                in self._closing_sessions
-            ):
+            if self._usability.winding_down(context):
                 raise WorkerError(
                     ErrorKind.UNAVAILABLE, "the job's session or environment is closing"
                 )
@@ -2361,13 +2332,7 @@ class ExecutionManager:
         environment = self._environments.get(environment_id)
         channel = environment.channel if environment is not None else None
         if (
-            self._closing
-            or environment_id in self._recovering
-            or environment_id in self._daemon_fences
-            or environment_id in self._quarantined
-            or environment_id in self._released_environments
-            or (context.project_id, environment_id, context.session_id) in self._closing_sessions
-            or self.store.recycle_needed(environment_id)
+            not self._usability.usable(context)
             or environment is None
             or environment.lock.locked()
             or channel is None
@@ -2778,8 +2743,7 @@ class ExecutionManager:
         observer = self._kernel_observations.get(context.environment_id)
         if observer is not None and observer.scope == key:
             observer.valid = False  # close may finish before its old reply arrives
-        self._closing_sessions[key] = self._closing_sessions.get(key, 0) + 1
-        try:
+        with self._usability.closing_session(context):
             jobs = [
                 job
                 for job in self._running_jobs(context.environment_id)
@@ -2788,11 +2752,6 @@ class ExecutionManager:
             ]
             await self._cancel_jobs(jobs)
             return await self._close_session(request)
-        finally:
-            if self._closing_sessions[key] == 1:
-                self._closing_sessions.pop(key)
-            else:
-                self._closing_sessions[key] -= 1
 
     async def _close_session(self, request: SessionCloseRequest) -> SessionClosed:
         context = request.context
@@ -3140,7 +3099,7 @@ class ExecutionManager:
         this is a byte observation, never proof of writer closure.
         """
         environment_id = request.context.environment_id
-        if self._closing or environment_id in self._released_environments:
+        if self._usability.closing or self._usability.releasing(environment_id):
             raise WorkerError(ErrorKind.UNAVAILABLE, "artifact capture admission limit reached")
         deadline = self.clock.monotonic() + self.capture_timeout
         try:
