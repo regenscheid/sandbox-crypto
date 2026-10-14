@@ -7,11 +7,12 @@ that only records the waits.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 import pytest_asyncio
@@ -19,11 +20,14 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 
 from sandbox_science.contracts import ExecutionContext
+from sandbox_science.orchestrator import cli
+from sandbox_science.orchestrator.hooks import Closing, Notice, RunView, TurnHook
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import (
     MAX_RETRY_WAIT,
     ContextLimitError,
     ModelError,
+    ModelTurn,
     OpenAICompatibleModel,
     ScriptedModel,
 )
@@ -123,15 +127,89 @@ async def test_rate_limits_and_unavailable_upstreams_are_tried_again(fake: Gatew
     assert fake.calls == 4
 
 
-async def test_retries_end_and_long_waits_are_capped(fake: Gateway) -> None:
-    fake.answers = [(504, "timeout", {"Retry-After": "86400"})] * 3
+async def test_retries_end_and_backoff_is_capped(fake: Gateway) -> None:
+    fake.answers = [(504, "timeout", {})] * 8
     waits = Waits()
     with pytest.raises(ModelError) as failed:
-        await complete(fake, waits, retries=2)
+        await complete(fake, waits, retries=7, backoff=10)
     assert failed.value.status == 504
     assert not isinstance(failed.value, ContextLimitError)
-    assert waits.slept == [MAX_RETRY_WAIT, MAX_RETRY_WAIT]
-    assert fake.calls == 3
+    assert waits.slept == [10, 20, 40, *[MAX_RETRY_WAIT] * 4]
+    assert fake.calls == 8
+
+
+async def test_a_gateway_asking_for_a_longer_wait_than_the_cap_is_not_waited_for(
+    fake: Gateway,
+) -> None:
+    fake.answers = [(429, "later", {"Retry-After": "86400"}), (200, ANSWER, {})]
+    waits = Waits()
+    with pytest.raises(ModelError) as failed:
+        await complete(fake, waits)
+    assert (failed.value.status, waits.slept, fake.calls) == (429, [], 1)
+
+
+async def test_an_unrelated_400_quoting_the_request_is_not_a_context_error(
+    fake: Gateway,
+) -> None:
+    quoted = {
+        "error": {
+            "message": "litellm.BadRequestError: Invalid tool_call in messages[4]: "
+            "'grep -c context_length_exceeded gateway.log'",
+            "code": "400",
+        }
+    }
+    fake.answers = [(400, quoted, {})]
+    with pytest.raises(ModelError) as failed:
+        await complete(fake, Waits())
+    assert not isinstance(failed.value, ContextLimitError)
+
+
+async def test_litellms_own_context_error_is_recognized(fake: Gateway) -> None:
+    body = {
+        "error": {
+            "message": "litellm.ContextWindowExceededError: litellm.BadRequestError: too long",
+            "type": None,
+            "code": "400",
+        }
+    }
+    fake.answers = [(400, body, {})]
+    with pytest.raises(ContextLimitError):
+        await complete(fake, Waits())
+
+
+async def test_an_unparseable_answer_never_quotes_the_key(fake: Gateway) -> None:
+    fake.answers = [(200, f'{{"echo": {{"authorization": "Bearer {KEY}"}}}}', {})]
+    with pytest.raises(ModelError) as failed:
+        await complete(fake, Waits())
+    assert KEY not in str(failed.value)
+
+
+async def test_a_broken_answer_chains_no_request_and_logs_no_key(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def garbage(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await reader.read(65536)
+        writer.write(b"HTTP/1.1 200 OK\r\nBroken header line\r\n\r\n")
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(garbage, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    model = OpenAICompatibleModel(f"http://127.0.0.1:{port}/v1", "main", KEY, clock=Waits())
+    try:
+        with pytest.raises(ModelError) as failed:
+            await model.complete([{"role": "user", "content": "hi"}], [])
+        assert failed.value.__cause__ is None
+        async with WorkerClient("http://127.0.0.1:1", "test-secret-worker") as client:
+            with caplog.at_level(logging.DEBUG):
+                transcript = await run_task(model, Toolbox(client, CONTEXT), "Hi.", run_id="g")
+        assert transcript.failure == "model"
+        assert "cannot reach the model gateway" in caplog.text
+        assert KEY not in caplog.text
+    finally:
+        await model.close()
+        server.close()
+        await server.wait_closed()
 
 
 @pytest.mark.parametrize("status", [400, 401, 404, 500])
@@ -218,6 +296,92 @@ async def test_a_failure_is_logged_with_its_cause(
     assert (transcript.stopped, transcript.failure) == ("error", "model")
     assert "run logged failed during model" in caplog.text
     assert "ModelError: cannot reach the model gateway: synthetic refusal" in caplog.text
+
+
+class Findings(TurnHook):
+    """The first closing answer gets one finding, to respond to or continue with."""
+
+    name = "findings"
+
+    def __init__(self, action: Literal["respond", "continue"], size: int) -> None:
+        self.action: Literal["respond", "continue"] = action
+        self.size, self.asked = size, False
+
+    async def closing(self, run: RunView, answer: str | None) -> Closing:
+        if self.asked:
+            return Closing("accept")
+        self.asked = True
+        notice = Notice("findings", ("f-1",), "Findings: ", {"finding": "y" * self.size})
+        return Closing(self.action, (notice,))
+
+
+@pytest.mark.parametrize("action", ["respond", "continue"])
+async def test_a_closing_round_past_the_budget_keeps_the_answer(
+    action: Literal["respond", "continue"],
+) -> None:
+    model = ScriptedModel([ModelTurn(text="The answer.", model="scripted")])
+    async with WorkerClient("http://127.0.0.1:1", "test-secret-worker") as client:
+        transcript = await run_task(
+            model,
+            Toolbox(client, CONTEXT),
+            "Hi.",
+            run_id="limits",
+            max_input_chars=60_000,
+            hooks=[Findings(action, 70_000)],
+        )
+    assert len(model.requests) == 1
+    assert (transcript.stopped, transcript.final_text) == ("answered", "The answer.")
+    assert "Findings: " not in str(transcript.messages)  # no model would see them
+
+
+@pytest.mark.parametrize("action", ["respond", "continue"])
+async def test_a_closing_round_the_model_has_no_room_for_keeps_the_answer(
+    action: Literal["respond", "continue"], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = ScriptedModel([ModelTurn(text="The answer.", model="scripted")])
+    answered = model.complete
+
+    async def complete(messages: Any, tools: Any) -> ModelTurn:
+        if model.requests:
+            raise ContextLimitError("the model gateway returned 400: too long", status=400)
+        return await answered(messages, tools)
+
+    monkeypatch.setattr(model, "complete", complete)  # a gateway that refuses the round
+    async with WorkerClient("http://127.0.0.1:1", "test-secret-worker") as client:
+        transcript = await run_task(
+            model, Toolbox(client, CONTEXT), "Hi.", run_id="limits", hooks=[Findings(action, 10)]
+        )
+    assert (transcript.stopped, transcript.failure, transcript.final_text) == (
+        "answered",
+        None,
+        "The answer.",
+    )
+    assert transcript.delivered == {}  # the round's finding reached no model
+
+
+@pytest.mark.parametrize("budget", [0, -1])
+async def test_a_budget_that_admits_nothing_is_refused(budget: int) -> None:
+    async with WorkerClient("http://127.0.0.1:1", "test-secret-worker") as client:
+        with pytest.raises(ValueError, match="at least 1"):
+            await run_task(
+                ScriptedModel([]),
+                Toolbox(client, CONTEXT),
+                "Hi.",
+                run_id="limits",
+                max_input_chars=budget,
+            )
+
+
+def test_the_budget_flag_must_admit_something(capsys: pytest.CaptureFixture[str]) -> None:
+    argv = [
+        "run", "--worker", "http://127.0.0.1:1", "--token-file", "unused",
+        "--project", "p", "--session", "s", "--environment", "env",
+        "--script", "unused.json", "--max-input-chars", "0", "Hi.",
+    ]  # fmt: skip
+    with pytest.raises(SystemExit) as exited:
+        cli.main(argv)
+    assert exited.value.code == 2
+    assert "--max-input-chars must be at least 1" in capsys.readouterr().err
 
 
 # --- Through the command line ----------------------------------------------------------

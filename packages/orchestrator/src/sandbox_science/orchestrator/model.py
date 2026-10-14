@@ -146,10 +146,12 @@ class OpenAICompatibleModel:
             try:
                 return _parse_completion(await self._post(body))
             except _RetryableError as retry:
-                if attempt == self._retries:
+                # A gateway that asks for a longer wait than the cap is not waited for.
+                if attempt == self._retries or (retry.after or 0) > MAX_RETRY_WAIT:
                     raise retry.error from None
-                delay = min(retry.after if retry.after is not None else wait, MAX_RETRY_WAIT)
-                # The status only: the gateway's text can quote the request.
+                delay = retry.after if retry.after is not None else min(wait, MAX_RETRY_WAIT)
+                # The status only: the error, with the gateway's text, is the caller's to
+                # report once if the retries end.
                 _log.warning(
                     "the model gateway answered HTTP %s; trying again in %.1f s",
                     retry.error.status,
@@ -175,11 +177,11 @@ class OpenAICompatibleModel:
                     text = data.decode("utf-8")
                 except UnicodeDecodeError as exc:
                     raise ModelError("the model gateway's answer is not UTF-8") from exc
+                if self._api_key:  # An answer, or an error about it, can quote the key.
+                    text = text.replace(self._api_key, "[the gateway key]")
                 if 200 <= response.status < 300:
                     return text
                 status = response.status
-                if self._api_key:  # A gateway can quote the key it refuses.
-                    text = text.replace(self._api_key, "[the gateway key]")
                 error = ModelError(
                     f"the model gateway returned {status}: {text[:300]}", status=status
                 )
@@ -189,7 +191,12 @@ class OpenAICompatibleModel:
                     raise ContextLimitError(str(error), status=status)
                 raise error
         except aiohttp.ClientError as exc:
-            raise ModelError(f"cannot reach the model gateway: {exc}") from exc
+            # An exception about a response holds the request, with its Authorization
+            # header; only one without it is chained.
+            cause = None if hasattr(exc, "request_info") else exc
+            raise ModelError(
+                f"cannot reach the model gateway: {type(exc).__name__}: {exc}"
+            ) from cause
 
 
 class _RetryableError(Exception):
@@ -209,10 +216,20 @@ def _retry_after(value: str | None) -> float | None:
 def _context_exceeded(text: str) -> bool:
     """Whether a gateway's error says the input is longer than the model's context.
 
-    LiteLLM reports it as ``ContextWindowExceededError``; providers' own codes pass
-    through as ``context_length_exceeded``."""
-    lowered = text.lower()
-    return "context_length_exceeded" in lowered or "contextwindowexceeded" in lowered
+    The error object's ``code`` is ``context_length_exceeded`` as OpenAI-compatible
+    providers send it, or its message names LiteLLM's ``ContextWindowExceededError``.
+    Text elsewhere in the answer, which can quote the request, does not count."""
+    try:
+        error = _object(json.loads(text)).get("error")
+    except (ValueError, RecursionError):
+        return False
+    if not isinstance(error, dict):
+        return False
+    fields = cast(dict[str, object], error)
+    message = fields.get("message")
+    return fields.get("code") == "context_length_exceeded" or (
+        isinstance(message, str) and message.startswith("litellm.ContextWindowExceededError")
+    )
 
 
 async def _read_limited(response: aiohttp.ClientResponse, limit: int) -> bytes:

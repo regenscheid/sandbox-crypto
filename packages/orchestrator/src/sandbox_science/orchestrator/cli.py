@@ -359,6 +359,8 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error("--reviewer-script needs --reviewer-model")
             if args.model_url is not None and args.api_key_file is None:
                 parser.error("--model-url needs --api-key-file")
+            if args.max_input_chars < 1:
+                parser.error("--max-input-chars must be at least 1")
             if args.dedicated and args.state_dir is None:
                 parser.error("--dedicated needs --state-dir")
             if args.state_dir is not None and args.run_id is not None:
