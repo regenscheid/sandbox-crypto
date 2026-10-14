@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
 
@@ -51,18 +51,26 @@ from sandbox_science.contracts.worker import (
     LANGUAGES,
     PROTOCOL_VERSION,
 )
-from sandbox_science.policy.model import Resources
 
 from . import capture
 from .artifacts import Blobs
 from .backends import Backend
 from .channel import ExecutorChannel
 from .connections import Activity, Connection, ConnectionHooks, EnvironmentConnections
-from .dispatcher import Dispatcher, Notices
+from .dispatcher import Dispatcher
 from .errors import WorkerError
 from .files import Files
 from .journal import ExecutionJournal
 from .kernels import KernelRegistry
+from .lifecycle import (
+    UNMANAGED,
+    ConfirmedLoss,
+    DaemonIdentity,
+    EnvironmentLifecycle,
+    JobResources,
+    Notices,
+    Recycle,
+)
 from .package_admission import PackageAdmission, guard_reuse
 from .package_changes import PackageChanges
 from .package_gate import PackageGate
@@ -92,6 +100,7 @@ class ExecutionManager:
         capture_timeout: float = 30.0,
         capture_ack_timeout: float = 1.0,
         timeouts: ManagerTimeouts = MANAGER_TIMEOUTS,
+        lifecycle: EnvironmentLifecycle = UNMANAGED,
         clock: Clock = SYSTEM_CLOCK,
     ) -> None:
         for name, value in (
@@ -102,21 +111,17 @@ class ExecutionManager:
                 raise ValueError(f"{name} must be between 0.05 and 60 seconds")
         self.store = store
         self.backend = backend
-        self.timeouts = timeouts
+        self._timeouts = timeouts
+        self._lifecycle = lifecycle
         self.clock = clock
         """Time as the manager sees it: idle times, deadlines and execution watchdogs."""
         self.blobs = blobs
-        self.shared = shared
-        """Keeps the project's shared files in step across its environments (D79)."""
+        self._shared = shared
         self.revisions = Revisions(store, Blobs(state_dir / "lockfiles"), cache=package_cache)
         """Each environment's revisions, with their lockfiles (Conda provisioning, W3).
         ``package_cache`` is the cache's URL as sandboxes reach it, which lockfiles never
         name."""
         self.pool_id = pool_id
-        self.max_artifact_size = max_artifact_size
-        self.capture_timeout = capture_timeout
-        self.capture_ack_timeout = capture_ack_timeout
-        """Seconds the executor gets to confirm it cleaned up a cancelled capture."""
         self._closing_task: asyncio.Task[None] | None = None
         self.state_dir = state_dir
         self._tasks: set[asyncio.Task[Any]] = set()
@@ -134,7 +139,6 @@ class ExecutionManager:
                     environment_id, message
                 ),
                 on_closed=lambda environment_id, channel: self._on_closed(environment_id, channel),
-                daemon_identity=lambda environment_id: self._daemon_binding(environment_id),
                 incarnation_lost=lambda environment_id, previous: self._recovery.incarnation_lost(
                     environment_id, previous
                 ),
@@ -147,35 +151,34 @@ class ExecutionManager:
                     environment_id, channel
                 ),
             ),
+            lifecycle,
             clock=clock,
             pool_id=pool_id,
             state_dir=state_dir,
         )
-        self._journal = ExecutionJournal(
-            store, self._connections, clock=clock, timeouts=lambda: self.timeouts
-        )
+        self._journal = ExecutionJournal(store, self._connections, clock=clock, timeouts=timeouts)
         self._files = Files(
             self._connections,
             self._journal,
-            lambda: self.shared,
-            timeouts=lambda: self.timeouts,
+            shared,
+            timeouts=timeouts,
         )
         self._packages = PackageChanges(
             store,
             self.revisions,
             self._connections,
             self._journal,
-            spawn=lambda coroutine: self._spawn(coroutine),
-            timeouts=lambda: self.timeouts,
+            spawn=self._spawn,
+            timeouts=timeouts,
         )
         self._admission = PackageAdmission(
             store,
             backend,
             self._usability,
             connect=lambda environment_id: self._environment(environment_id),
-            spawn=lambda coroutine: self._spawn(coroutine),
+            spawn=self._spawn,
             sync=lambda environment_id: self.sync_package_gate(environment_id),
-            daemon_identity=lambda: self.daemon_identity,
+            lifecycle=lifecycle,
         )
         self._kernels = KernelRegistry(
             store,
@@ -183,8 +186,8 @@ class ExecutionManager:
             self._usability,
             self._admission,
             clock=clock,
-            observation_timeout=lambda: self.timeouts.kernel_observation,
-            daemon_identity=lambda: self.daemon_identity,
+            timeouts=timeouts,
+            lifecycle=lifecycle,
         )
         self._publication = Publication(
             store,
@@ -192,9 +195,9 @@ class ExecutionManager:
             self._connections,
             self._usability,
             clock=clock,
-            # Read when used, as these settings are public and may change.
-            max_artifact_size=lambda: self.max_artifact_size,
-            ack_timeout=lambda: self.capture_ack_timeout,
+            max_artifact_size=max_artifact_size,
+            timeout=capture_timeout,
+            ack_timeout=capture_ack_timeout,
         )
         self._recovery = DaemonRecovery(
             store,
@@ -202,18 +205,17 @@ class ExecutionManager:
             self._usability,
             self._publication,
             RecoveryHooks(
-                lives=lambda: self._journal.live.values(),
+                lives=self._journal.live.values,
                 lose=lambda live, what: self._dispatcher.lose(live, what),
-                spawn=lambda coroutine: self._spawn(coroutine),
+                spawn=self._spawn,
                 watch=lambda live, timeout: self._dispatcher.watch(live, timeout),
                 watch_cancel=lambda live: self._dispatcher.watch_cancel(live),
                 send_cancel=lambda live: self._dispatcher.send_cancel(live),
                 connect=lambda environment_id: self._environment(environment_id),
             ),
             clock=clock,
-            timeouts=lambda: self.timeouts,
-            confirmed_daemon_loss=lambda: self.confirmed_daemon_loss,
-            recycle_daemon=lambda: self.recycle_daemon,
+            timeouts=timeouts,
+            lifecycle=lifecycle,
         )
         self._dispatcher = Dispatcher(
             store,
@@ -227,19 +229,63 @@ class ExecutionManager:
             self._packages,
             clock=clock,
             connect=lambda environment_id: self._environment(environment_id),
-            spawn=lambda coroutine: self._spawn(coroutine),
-            timeouts=lambda: self.timeouts,
-            shared=lambda: self.shared,
-            notices=lambda: self.notices,
-            job_resources=lambda: self.job_resources,
-            daemon_identity=lambda: self.daemon_identity,
+            spawn=self._spawn,
+            timeouts=timeouts,
+            shared=shared,
+            lifecycle=lifecycle,
         )
-        self.job_resources: Callable[[str], Resources] | None = None
-        self.confirmed_daemon_loss: Callable[[str], Awaitable[bool]] | None = None
-        self.daemon_identity: Callable[[str], tuple[str, str] | None] | None = None
-        self.recycle_daemon: Callable[[str, str, str], Awaitable[None]] | None = None
-        self.notices: Notices | None = None
-        """Admission notices for an environment since a time; the environments set it."""
+
+    # Settings, fixed when the manager is built.
+
+    @property
+    def timeouts(self) -> ManagerTimeouts:
+        return self._timeouts
+
+    @property
+    def lifecycle(self) -> EnvironmentLifecycle:
+        """What the managed environments answer; nothing without any."""
+        return self._lifecycle
+
+    # The lifecycle's answers, by the names the manager's attributes had before they were
+    # given at construction; reading them is allowed, assigning them is refused.
+
+    @property
+    def daemon_identity(self) -> DaemonIdentity | None:
+        return self._lifecycle.daemon_identity
+
+    @property
+    def confirmed_daemon_loss(self) -> ConfirmedLoss | None:
+        return self._lifecycle.confirmed_daemon_loss
+
+    @property
+    def recycle_daemon(self) -> Recycle | None:
+        return self._lifecycle.recycle_daemon
+
+    @property
+    def notices(self) -> Notices | None:
+        return self._lifecycle.notices
+
+    @property
+    def job_resources(self) -> JobResources | None:
+        return self._lifecycle.job_resources
+
+    @property
+    def shared(self) -> SharedSync | None:
+        """Keeps the project's shared files in step across its environments (D79)."""
+        return self._shared
+
+    @property
+    def max_artifact_size(self) -> int:
+        return self._publication.max_artifact_size
+
+    @property
+    def capture_timeout(self) -> float:
+        return self._publication.timeout
+
+    @property
+    def capture_ack_timeout(self) -> float:
+        """Seconds the executor gets to confirm it cleaned up a cancelled capture."""
+        return self._publication.ack_timeout
 
     def package_admission(self, environment_id: str) -> PackageGate:
         """The environment's package gate; refused while it needs recovery."""
@@ -255,9 +301,7 @@ class ExecutionManager:
 
     async def start(self) -> None:
         """Recover known daemon executions without ever resubmitting a command."""
-        await self._dispatcher.restore(
-            daemon_enabled=getattr(getattr(self.backend, "settings", None), "daemon", False)
-        )
+        await self._dispatcher.restore(daemon_enabled=self.backend.daemon)
 
     async def release(self, environment_id: str) -> None:
         """Stop an environment's executor before its sandbox goes away.
@@ -313,10 +357,7 @@ class ExecutionManager:
         for live in list(self._journal.live.values()):
             saved = self.store.recovery(live.execution.execution_id)
             recoverable = (
-                getattr(getattr(self.backend, "settings", None), "daemon", False)
-                and live.dispatched
-                and saved is not None
-                and bool(saved[1])
+                self.backend.daemon and live.dispatched and saved is not None and bool(saved[1])
             )
             if live.execution.state not in TERMINAL_STATES and not recoverable:
                 self._dispatcher.lose(live, "the worker")
@@ -349,9 +390,6 @@ class ExecutionManager:
     async def _environment(self, environment_id: str) -> Connection:
         """The environment's connection, with its executor open."""
         return await self._connections.connect(environment_id)
-
-    def _daemon_binding(self, environment_id: str) -> tuple[str, str] | None:
-        return self.daemon_identity(environment_id) if self.daemon_identity else None
 
     async def forget_revisions(self, environment_id: str) -> None:
         """Forget a deleted environment's revisions, and delete the lockfiles only they
@@ -494,7 +532,7 @@ class ExecutionManager:
 
     async def publish(self, request: PublishRequest) -> ArtifactRef:
         """Publish a file of the environment as an artifact, within ``capture_timeout``."""
-        return await self._publication.publish(request, self.capture_timeout)
+        return await self._publication.publish(request)
 
     def artifact(self, artifact_id: str, project_id: str | None = None) -> ArtifactRef:
         return self._publication.artifact(artifact_id, project_id)

@@ -18,6 +18,7 @@ import asyncio
 import contextlib
 import sys
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from pathlib import Path
 from types import TracebackType
 from typing import Any, Literal, Self
@@ -40,6 +41,7 @@ from sandbox_science.worker.channel import (
 )
 from sandbox_science.worker.connections import Connection, EnvironmentConnections
 from sandbox_science.worker.kernels import _Observer
+from sandbox_science.worker.lifecycle import UNMANAGED, EnvironmentLifecycle
 from sandbox_science.worker.live import Live
 from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.settings import LocalBackendSettings
@@ -150,6 +152,56 @@ class ManagerView:
 
     def fetching_lockfiles(self) -> set[str]:
         return set(self.manager._packages._fetching)
+
+    # Settings a test changes after the manager is built. In production they are fixed
+    # when it is built; each part holds the value it was given.
+
+    def set_lifecycle(self, **changes: Any) -> None:
+        """Change what the managed environments answer, such as ``recycle_daemon``."""
+        lifecycle = replace(self.manager.lifecycle, **changes)
+        self.manager._lifecycle = lifecycle
+        for part in (
+            self.manager._connections,
+            self.manager._admission,
+            self.manager._kernels,
+            self.manager._recovery,
+            self.manager._dispatcher,
+        ):
+            part.lifecycle = lifecycle
+
+    def set_timeouts(self, timeouts: ManagerTimeouts) -> None:
+        self.manager._timeouts = timeouts
+        for part in (
+            self.manager._journal,
+            self.manager._files,
+            self.manager._packages,
+            self.manager._kernels,
+            self.manager._recovery,
+            self.manager._dispatcher,
+        ):
+            part.timeouts = timeouts
+
+    def set_capture(
+        self,
+        *,
+        timeout: float | None = None,
+        ack_timeout: float | None = None,
+        max_artifact_size: int | None = None,
+    ) -> None:
+        """Change publication's capture budget, cleanup budget or size limit."""
+        publication = self.manager._publication
+        if timeout is not None:
+            publication.timeout = timeout
+        if ack_timeout is not None:
+            publication.ack_timeout = ack_timeout
+        if max_artifact_size is not None:
+            publication.max_artifact_size = max_artifact_size
+
+    def set_shared(self, shared: SharedSync | None) -> None:
+        """Replace the shared files' sync (D79)."""
+        self.manager._shared = shared
+        self.manager._files.shared = shared
+        self.manager._dispatcher.shared = shared
 
     # Faults and states a test forces.
 
@@ -385,6 +437,11 @@ class HostileBackend:
     def sandbox_id(self, environment_id: str) -> str | None:
         return None
 
+    daemon = False
+
+    def binding_key(self, environment_id: str) -> str:
+        return repr((self.name, "", None))
+
     @property
     def isolation_tier(self) -> int:
         return 0
@@ -467,14 +524,16 @@ class Harness(WorkerApi):
 
     def new_manager(self) -> ExecutionManager:
         """A manager on the harness's store and backend, not started."""
-        manager = ExecutionManager(
+        identity = self.identity
+        lifecycle = (
+            EnvironmentLifecycle(daemon_identity=lambda _environment: identity)
+            if identity is not None
+            else UNMANAGED
+        )
+        return ExecutionManager(
             self.store, self.backend, Blobs(self.root / "artifacts"), shared=self.shared,
-            **self._options,
+            lifecycle=lifecycle, **self._options,
         )  # fmt: skip
-        if self.identity is not None:
-            identity = self.identity
-            manager.daemon_identity = lambda _environment: identity
-        return manager
 
     @property
     def client(self) -> TestClient[Any, Any]:

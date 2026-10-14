@@ -31,6 +31,7 @@ from .backends import Backend
 from .channel import ExecutorChannel, Message
 from .errors import WorkerError
 from .isolation import probe
+from .lifecycle import EnvironmentLifecycle
 from .store import Store
 from .usability import Usability
 
@@ -90,8 +91,6 @@ class ConnectionHooks:
     """An executor's message, by environment."""
     on_closed: Callable[[str, ExecutorChannel], Awaitable[None]]
     """An executor's channel closed, by environment."""
-    daemon_identity: Callable[[str], tuple[str, str] | None]
-    """The environment's trusted sandbox binding; None when the worker does not know one."""
     incarnation_lost: Callable[[str, str], None]
     """The daemon of that incarnation is gone: end the executions it carried."""
     recycle: Callable[[str], asyncio.Task[None]]
@@ -113,6 +112,7 @@ class EnvironmentConnections:
         store: Store,
         usability: Usability,
         hooks: ConnectionHooks,
+        lifecycle: EnvironmentLifecycle,
         *,
         clock: Clock,
         pool_id: str,
@@ -122,6 +122,8 @@ class EnvironmentConnections:
         self.store = store
         self.usability = usability
         self.hooks = hooks
+        self.lifecycle = lifecycle
+        """The managed environments' bindings, which an executor must keep while it opens."""
         self.clock = clock
         self.pool_id = pool_id
         self.state_dir = state_dir
@@ -129,6 +131,10 @@ class EnvironmentConnections:
         self.records: dict[str, Connection] = {}
         self.channels: set[ExecutorChannel] = set()
         """Every executor channel the worker opened and has not seen close."""
+
+    def _identity(self, environment_id: str) -> tuple[str, str] | None:
+        daemon_identity = self.lifecycle.daemon_identity
+        return daemon_identity(environment_id) if daemon_identity is not None else None
 
     def get(self, environment_id: str) -> Connection | None:
         """The environment's record, without connecting."""
@@ -180,14 +186,14 @@ class EnvironmentConnections:
         """Start the environment's executor unless one runs. Hold its lock."""
         if environment.channel is not None and not environment.channel.closed:
             return
-        identity = self.hooks.daemon_identity(environment_id)
+        identity = self._identity(environment_id)
         channel = await self.backend.open(
             environment_id,
             partial(self.hooks.on_event, environment_id),
             partial(self.hooks.on_closed, environment_id),
         )
         self.channels.add(channel)
-        if self.hooks.daemon_identity(environment_id) != identity:
+        if self._identity(environment_id) != identity:
             await channel.shutdown()
             raise WorkerError(ErrorKind.UNAVAILABLE, "environment binding changed during open")
         previous = self.store.endpoint_incarnation(environment_id)

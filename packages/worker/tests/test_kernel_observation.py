@@ -270,7 +270,7 @@ async def test_whole_deadline_includes_actual_channel_write_lock(
         assert environment.last_used == before
         assert view(manager).observations() == {}
         # Once the lock is free, an observation within the production budget succeeds.
-        manager.timeouts = ManagerTimeouts()
+        view(manager).set_timeouts(ManagerTimeouts())
         assert (await getattr(manager, observe_method)(REQUEST)).kernels == ()
 
 

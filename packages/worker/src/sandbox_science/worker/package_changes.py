@@ -53,7 +53,7 @@ class PackageChanges:
         journal: ExecutionJournal,
         *,
         spawn: Callable[[Any], asyncio.Task[Any]],
-        timeouts: Callable[[], ManagerTimeouts],
+        timeouts: ManagerTimeouts,
     ) -> None:
         self.store = store
         self.revisions = revisions
@@ -62,7 +62,6 @@ class PackageChanges:
         self.spawn = spawn
         """Starts a background task that the manager owns and cancels when it closes."""
         self.timeouts = timeouts
-        """The manager's timeouts, as they are when used."""
         self._lockfile_locks: dict[str, asyncio.Lock] = {}
         """One lockfile at a time is checked for each environment, in a thread."""
         self._fetching: set[str] = set()
@@ -100,7 +99,7 @@ class PackageChanges:
 
     async def _fetch_lockfile(self, environment_id: str, channel: ExecutorChannel) -> None:
         try:
-            reply = await channel.request("lockfile", reply_timeout=self.timeouts().lockfile)
+            reply = await channel.request("lockfile", reply_timeout=self.timeouts.lockfile)
         except WorkerError as error:
             _log.info("environment %s: no lockfile from its executor: %s", environment_id, error)
             return

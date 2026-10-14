@@ -283,7 +283,7 @@ async def test_openshell_replacement_waits_for_one_durable_lifecycle_fence(
         entered.set()
         await proceed.wait()
 
-    worker.manager.recycle_daemon = recycle
+    worker.view.set_lifecycle(recycle_daemon=recycle)
     os.kill(channel.hello["location"]["pid"], signal.SIGKILL)
     try:
         await asyncio.wait_for(entered.wait(), 10)
@@ -327,7 +327,7 @@ async def test_openshell_replacement_fences_endpoint_without_unfinished_jobs(
         assert worker.store.endpoint_incarnation(environment) == old
         calls.append(environment)
 
-    worker.manager.recycle_daemon = recycle
+    worker.view.set_lifecycle(recycle_daemon=recycle)
     await asyncio.wait_for(worker.manager.start(), 10)
     assert calls == ["env1"]
     assert not worker.store.recycle_needed("env1")
@@ -353,7 +353,7 @@ async def test_recycle_intent_survives_failed_fence_and_worker_restart(
     async def failed(_environment: str, _sandbox: str, _sandbox_id: str) -> None:
         raise WorkerError(ErrorKind.UNAVAILABLE, "synthetic stop failure")
 
-    worker.manager.recycle_daemon = failed
+    worker.view.set_lifecycle(recycle_daemon=failed)
     with pytest.raises(WorkerError, match="startup refused"):
         await worker.manager.start()
     assert worker.store.recycle_needed("env1")
@@ -369,7 +369,7 @@ async def test_recycle_intent_survives_failed_fence_and_worker_restart(
         os.kill(pid, signal.SIGKILL)  # local fixture's stand-in for a confirmed VM stop
         await eventually(lambda: (info := executor.process_info(pid)) is None or info.zombie)
 
-    worker.manager.recycle_daemon = succeeded
+    worker.view.set_lifecycle(recycle_daemon=succeeded)
     await asyncio.wait_for(worker.manager.start(), 10)
     assert not worker.store.recycle_needed("env1")
     assert worker.store.endpoint_incarnation("env1") != old
@@ -394,7 +394,7 @@ async def test_transport_or_authentication_failure_never_recycles_sandbox(
     async def unavailable(*_args: Any, **_kwargs: Any) -> ExecutorChannel:
         raise WorkerError(ErrorKind.UNAVAILABLE, "synthetic authentication/transport failure")
 
-    worker.manager.recycle_daemon = forbidden
+    worker.view.set_lifecycle(recycle_daemon=forbidden)
     with monkeypatch.context() as patch:
         patch.setattr(worker.backend, "open", unavailable)
         with pytest.raises(WorkerError, match="startup refused"):
@@ -451,7 +451,7 @@ async def test_legacy_endpoint_requires_cleanup_if_incarnation_changed_before_bi
     async def forbidden(_environment: str, _sandbox: str, _sandbox_id: str) -> None:
         raise AssertionError("unknown original identity cannot recycle the current VM")
 
-    worker.manager.recycle_daemon = forbidden
+    worker.view.set_lifecycle(recycle_daemon=forbidden)
     try:
         with pytest.raises(WorkerError, match="identity was not recorded"):
             await worker.manager.capabilities("env1")
@@ -697,7 +697,7 @@ async def test_cancel_during_pending_final_sync_cannot_acknowledge_end(worker: H
             return set()
 
     shared = Shared()
-    worker.manager.shared = cast(Any, shared)
+    worker.view.set_shared(cast(Any, shared))
     job, _ = await worker.manager.submit(request("final-sync", "printf final"))
     await asyncio.wait_for(shared.entered.wait(), 10)
     saved = worker.store.recovery(job.execution_id)
@@ -962,7 +962,7 @@ async def test_confirmed_sandbox_loss_forgets_endpoint_without_blocking_startup(
     async def confirmed(_environment: str) -> bool:
         return True
 
-    worker.manager.confirmed_daemon_loss = confirmed
+    worker.view.set_lifecycle(confirmed_daemon_loss=confirmed)
     await worker.manager.start()
     assert worker.manager.get(job.execution_id).state is ExecutionState.LOST
     assert "env1" not in worker.store.endpoints()
@@ -1201,7 +1201,7 @@ async def test_execution_dispatched_during_a_recovery_is_recovered_too(
             await release.wait()
         return False
 
-    worker.manager.confirmed_daemon_loss = held_loss_check
+    worker.view.set_lifecycle(confirmed_daemon_loss=held_loss_check)
     await opened[-1].close()  # the bridge is lost: a recovery starts and waits
     await asyncio.wait_for(entered.wait(), 10)
     second, _ = await worker.manager.submit(request("second", gated("printf second")))
@@ -1257,7 +1257,7 @@ async def test_unexpected_recovery_error_is_logged_and_recovery_goes_on(
             raise RuntimeError("synthetic recovery failure")
         return False
 
-    worker.manager.confirmed_daemon_loss = failing_loss_check
+    worker.view.set_lifecycle(confirmed_daemon_loss=failing_loss_check)
     await opened[-1].close()
     await eventually(lambda: calls >= 2)  # recovery went on after the failure
     open_gate(worker)

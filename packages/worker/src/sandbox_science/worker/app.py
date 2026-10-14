@@ -73,8 +73,6 @@ from sandbox_science.contracts.worker import (
     PROTOCOL_VERSION,
     MediaType,
 )
-from sandbox_science.policy import effective_resources
-from sandbox_science.policy.model import Resources
 
 from .documents_catalog import DocumentsCatalog
 from .environments import Environments
@@ -255,18 +253,6 @@ def create_app(
                 await manager.confirm_capture_cleanup(environment_id, info.sandbox, info.sandbox_id)
 
         environments.confirmed_deleted.append(confirmed_capture_cleanup)
-
-        def job_resources(environment_id: str) -> Resources:
-            if environments.busy(environment_id):
-                raise WorkerError(ErrorKind.UNAVAILABLE, "the environment is changing")
-            governing = environments.governing(environment_id)
-            if governing is None:
-                if environments.handmade(environment_id):
-                    return environments.ceiling.resources
-                raise WorkerError(ErrorKind.POLICY_DENIED, "no ready environment policy for jobs")
-            return effective_resources(governing.policy.policy, governing.ceiling)[0]
-
-        manager.job_resources = job_resources
     if provisioner is not None:
         app[PROVISIONER] = provisioner
         if environments is not None:

@@ -53,6 +53,7 @@ from .files import UNSYNCED, Files
 from .identity import execution_digest, same_execution
 from .journal import SOURCE_EVENT, ExecutionJournal
 from .kernels import KernelRegistry
+from .lifecycle import EnvironmentLifecycle
 from .live import REQUEST, Live, time_limit
 from .output_observations import normalize as normalize_observation
 from .package_admission import LEGACY as PACKAGE_GATE_LEGACY
@@ -75,11 +76,6 @@ MAX_EVENTS = 100_000
 """Stream and output events stored for one execution; later ones are dropped."""
 MAX_WRITTEN = 1000
 
-Notices = Callable[[str, datetime], list[tuple[datetime, str]]]
-"""Admission notices for an environment since a time."""
-DaemonIdentity = Callable[[str], tuple[str, str] | None]
-"""An environment's trusted sandbox binding; None when the worker does not know one."""
-
 
 class Dispatcher:
     """Executions from submission to their end, through each environment's executor."""
@@ -99,11 +95,9 @@ class Dispatcher:
         clock: Clock,
         connect: Callable[[str], Awaitable[Connection]],
         spawn: Callable[[Any], asyncio.Task[Any]],
-        timeouts: Callable[[], ManagerTimeouts],
-        shared: Callable[[], SharedSync | None],
-        notices: Callable[[], Notices | None],
-        job_resources: Callable[[], Callable[[str], Resources] | None],
-        daemon_identity: Callable[[], DaemonIdentity | None],
+        timeouts: ManagerTimeouts,
+        shared: SharedSync | None,
+        lifecycle: EnvironmentLifecycle,
     ) -> None:
         self.store = store
         self.connections = connections
@@ -120,13 +114,10 @@ class Dispatcher:
         self.spawn = spawn
         """Starts a background task that the manager owns and cancels when it closes."""
         self.timeouts = timeouts
-        """The manager's settings, each read when used, since they are public and set
-        after the manager is built: timeouts, the shared sync, admission notices, job
-        resources and the daemon identity."""
         self.shared = shared
-        self.notices = notices
-        self.job_resources = job_resources
-        self.daemon_identity = daemon_identity
+        """Keeps the project's shared files in step across its environments (D79)."""
+        self.lifecycle = lifecycle
+        """Admission notices, job limits and bindings, where the worker manages sandboxes."""
         self._noticed: dict[tuple[str, str], datetime] = {}
         """The time of the last admission notice each session got, by environment."""
 
@@ -166,7 +157,7 @@ class Dispatcher:
                 )
             resources = (
                 job_resources(context.environment_id)
-                if (job_resources := self.job_resources())
+                if (job_resources := self.lifecycle.job_resources)
                 else Resources()
             )
             maximum = min(
@@ -325,7 +316,7 @@ class Dispatcher:
         if channel is None:
             raise WorkerError(ErrorKind.UNAVAILABLE, "the executor went away")
         environment.running.add(execution_id)
-        shared = self.shared()
+        shared = self.shared
         if shared is not None:
             live.notices += await self.files.sync(shared.down, request.context, channel)
             if live.cancel_requested:  # while the shared files synced
@@ -365,7 +356,7 @@ class Dispatcher:
         live.dispatched = True
         live.dispatched_at = self.clock.monotonic()
         live.channel = channel
-        daemon_identity = self.daemon_identity()
+        daemon_identity = self.lifecycle.daemon_identity
         identity = daemon_identity(live.environment_id) if daemon_identity else None
         if channel.daemon_token is not None and (
             self.store.endpoint_incarnation(live.environment_id) != channel.incarnation
@@ -381,13 +372,13 @@ class Dispatcher:
             self.recovery.poll(request.context.environment_id, channel)
 
     async def watch(self, live: Live, timeout: float) -> None:
-        await self.clock.sleep(max(0, timeout + self.timeouts().watchdog_grace))
+        await self.clock.sleep(max(0, timeout + self.timeouts.watchdog_grace))
         if live.execution.state in TERMINAL_STATES or live.final is not None:
             return
         _log.warning("execution %s overran its limit; cancelling it", live.execution.execution_id)
         with contextlib.suppress(WorkerError):
             await self.cancel(live.execution.execution_id)
-        await self.clock.sleep(self.timeouts().lost_grace)
+        await self.clock.sleep(self.timeouts.lost_grace)
         self.journal.finish(
             live,
             ExecutionState.LOST,
@@ -581,7 +572,7 @@ class Dispatcher:
             if live.cancel_watchdog is not None:
                 live.cancel_watchdog.cancel()
             live.ended_at = self.clock.monotonic()
-            if self.shared() is None or live.channel is None:
+            if self.shared is None or live.channel is None:
                 self._complete(live, live.notices)
             else:
                 if live.watchdog is not None:
@@ -595,7 +586,7 @@ class Dispatcher:
         A later call in another environment of the project then finds them there.
         """
         notices = list(live.notices)
-        shared = self.shared()
+        shared = self.shared
         if shared is not None:
             notices += await self.files.sync(shared.up, live.execution.context, channel)
         try:
@@ -631,7 +622,7 @@ class Dispatcher:
         changes: dict[str, Any] = {}
         if held or notices:
             changes["notices"] = (*result.notices, *held, *notices)
-        shared = self.shared()
+        shared = self.shared
         if shared is not None and result.written_files:
             # Files the sync wrote during the call, unchanged since, are not the call's own.
             synced = shared.unchanged_writes(
@@ -745,7 +736,7 @@ class Dispatcher:
         A session's first result starts from its submission; later ones from the last
         notice it received, since decisions are stamped when they are recorded.
         """
-        notices = self.notices()
+        notices = self.lifecycle.notices
         if notices is None:
             return ()
         key = (environment_id, live.execution.context.session_id)
@@ -786,7 +777,7 @@ class Dispatcher:
 
     async def watch_cancel(self, live: Live) -> None:
         """A direct job cancel has its own deadline, independent of the wall-time limit."""
-        await self.clock.sleep(self.timeouts().cancel_grace)
+        await self.clock.sleep(self.timeouts.cancel_grace)
         if live.execution.state in TERMINAL_STATES or live.final is not None:
             return
         channel = live.channel
@@ -815,7 +806,7 @@ class Dispatcher:
             await asyncio.gather(*(self.journal.wait(job.execution_id) for job in jobs))
 
         try:
-            await asyncio.wait_for(cancel_all(), self.timeouts().cancel_grace)
+            await asyncio.wait_for(cancel_all(), self.timeouts.cancel_grace)
         except (TimeoutError, WorkerError):
             channels: set[ExecutorChannel] = set()
             for job in jobs:

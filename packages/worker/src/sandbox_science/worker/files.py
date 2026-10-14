@@ -60,16 +60,15 @@ class Files:
         self,
         connections: EnvironmentConnections,
         journal: ExecutionJournal,
-        shared: Callable[[], SharedSync | None],
+        shared: SharedSync | None,
         *,
-        timeouts: Callable[[], ManagerTimeouts],
+        timeouts: ManagerTimeouts,
     ) -> None:
         self.connections = connections
         self.journal = journal
         self.shared = shared
-        """The manager's shared-files sync (D79), as it is when used; None without one."""
+        """Keeps the project's shared files in step across its environments (D79)."""
         self.timeouts = timeouts
-        """The manager's timeouts, as they are when used."""
         self._held: OrderedDict[tuple[str, str], list[str]] = OrderedDict()
         """Notices from syncing shared files for file requests, by environment and session,
         for the session's next result there (D79)."""
@@ -142,7 +141,7 @@ class Files:
                 "expected_sha256": request.expected_sha256,
                 "create_only": request.create_only,
             }
-            shared = self.shared()
+            shared = self.shared
             if shared is not None and in_shared(request.path):
                 # The expected SHA-256 is checked against the project's version (D79).
                 notices: list[str] = []
@@ -153,7 +152,7 @@ class Files:
                         context.session_id,
                         channel,
                         fields,
-                        self.timeouts().shared,
+                        self.timeouts.shared,
                         notices,
                     )
                 finally:  # what the sync found is told even when the write is refused
@@ -192,7 +191,7 @@ class Files:
         self, context: ExecutionContext, path: str, channel: ExecutorChannel
     ) -> None:
         """Bring the shared files up to date before a file request that reads them (D79)."""
-        shared = self.shared()
+        shared = self.shared
         if shared is None or not in_shared(path):
             return
         self.tell(context, await self.sync(shared.down, context, channel))
@@ -235,7 +234,7 @@ class Files:
         try:
             return await asyncio.wait_for(
                 step(context.project_id, context.environment_id, context.session_id, channel),
-                self.timeouts().shared,
+                self.timeouts.shared,
             )
         except Exception as exc:  # the call goes on with shared/ as it is
             _log.warning(

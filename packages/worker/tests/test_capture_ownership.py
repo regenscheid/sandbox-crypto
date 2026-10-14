@@ -376,11 +376,11 @@ async def test_the_managers_capture_settings_govern_publication_when_changed(
 
     original = channel.request
     monkeypatch.setattr(channel, "request", silent)
-    worker.capture_ack_timeout = 0.05
+    view(worker).set_capture(ack_timeout=0.05)
     try:
         await asyncio.wait_for(view(worker).reconcile_captures("env1", channel), 1)
         monkeypatch.setattr(channel, "request", original)
-        worker.max_artifact_size = 100
+        view(worker).set_capture(max_artifact_size=100)
         with pytest.raises(WorkerError):
             await worker.publish(PublishRequest(context=CONTEXT, path="big.bin"))
     finally:

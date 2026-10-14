@@ -42,6 +42,7 @@ from sandbox_science.worker.app import create_app
 from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.backends import LocalBackend
 from sandbox_science.worker.errors import WorkerError
+from sandbox_science.worker.lifecycle import EnvironmentLifecycle
 from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.settings import LocalBackendSettings
 from sandbox_science.worker.store import Store
@@ -49,6 +50,9 @@ from sandbox_science.worker.store import Store
 from .harness import shut_down_daemon, view
 
 pytestmark = pytest.mark.slow
+SYNTHETIC_VM = EnvironmentLifecycle(
+    daemon_identity=lambda _environment: ("synthetic-vm", "synthetic-id")
+)
 
 CONTEXT = ExecutionContext(project_id="p1", session_id="s1", environment_id="env1")
 SCOPE = OutputScope(**CONTEXT.model_dump(include={"project_id", "session_id", "environment_id"}))
@@ -685,16 +689,15 @@ async def test_actual_daemon_restart_preserves_attempt_and_terminal_observation(
     backend = LocalBackend(LocalBackendSettings(daemon=True), tmp_path)
 
     def make_manager() -> ExecutionManager:
-        value = ExecutionManager(
+        return ExecutionManager(
             store,
             backend,
             Blobs(tmp_path / "blobs"),
             pool_id="test",
             max_artifact_size=1024,
             state_dir=tmp_path,
+            lifecycle=SYNTHETIC_VM,
         )
-        value.daemon_identity = lambda _environment: ("synthetic-vm", "synthetic-id")
-        return value
 
     manager = make_manager()
     await manager.start()
@@ -837,8 +840,8 @@ async def test_marked_lab_recipe_composes_with_actual_local_http_and_readonly_jo
         pool_id="test",
         max_artifact_size=1024,
         state_dir=tmp_path,
+        lifecycle=SYNTHETIC_VM,
     )
-    manager.daemon_identity = lambda _environment: ("synthetic-vm", "synthetic-id")
     await manager.start()
     client = await aiohttp_client(create_app(manager, TOKEN))
     monkeypatch.setattr(helper, "URL", str(client.make_url("")))
