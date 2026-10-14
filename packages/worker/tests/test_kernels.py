@@ -16,7 +16,7 @@ from sandbox_science.worker.channel import ExecutorChannel, Message
 
 from .harness import CONTEXT, Harness, view
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.slow]
 SCOPE = ExecutionContext.model_validate(CONTEXT)
 
 

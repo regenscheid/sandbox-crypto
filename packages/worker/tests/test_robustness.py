@@ -55,7 +55,7 @@ from .harness import AUTH, CONTEXT, HOSTILE, TOKEN, Harness, HostileBackend
 
 OTHER_SESSION = {**CONTEXT, "session_id": "s2"}
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.slow]
 
 
 def _running(channel: ExecutorChannel) -> bool:

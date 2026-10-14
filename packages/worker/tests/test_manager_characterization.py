@@ -24,7 +24,7 @@ from sandbox_science.testing import eventually
 
 from .harness import CONTEXT, Harness, context
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.slow]
 
 
 @pytest_asyncio.fixture(params=["stdio", "daemon"])

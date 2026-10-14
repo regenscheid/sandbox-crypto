@@ -77,6 +77,8 @@ from sandbox_science.worker.provisioner import Governing, Provisioner
 from sandbox_science.worker.settings import ClientSettings, LocalBackendSettings, token_digest
 from sandbox_science.worker.store import Store
 
+pytestmark = pytest.mark.slow
+
 FAKE = Path(__file__).with_name("fake_package_manager.py")
 TOKEN = "p" * 40
 AUTH = {"Authorization": f"Bearer {TOKEN}"}

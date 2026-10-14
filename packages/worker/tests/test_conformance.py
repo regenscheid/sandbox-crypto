@@ -42,7 +42,7 @@ TOKEN_VARIABLE = "SS_CONFORMANCE_TOKEN_FILE"
 ENVIRONMENT_VARIABLE = "SS_CONFORMANCE_ENVIRONMENT"
 LOCAL = ("local-stdio", "local-daemon")
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.slow]
 
 
 class Target:

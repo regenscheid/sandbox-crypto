@@ -40,6 +40,8 @@ from sandbox_science.worker.usability import Usability
 
 from .harness import CONTEXT, Harness, view
 
+pytestmark = pytest.mark.slow
+
 
 class Opened:
     """The channels the backend opened, so a test can see whether each was closed."""

@@ -86,7 +86,7 @@ from sandbox_science.worker.suspend import Suspender
 
 from .harness import view
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.slow]
 
 ROOT = Path(__file__).resolve().parents[3]
 EXAMPLE = ROOT / "examples" / "policy.yaml"
