@@ -3,9 +3,7 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Literal, cast
 
@@ -19,6 +17,7 @@ from sandbox_science.contracts.artifact_inventory import (
     ArtifactSnapshot,
 )
 from sandbox_science.contracts.model import Contract
+from sandbox_science.orchestrator.aio import OwnedExecutor
 from sandbox_science.orchestrator.documents.errors import (
     CONFLICT,
     INVALID_REQUEST,
@@ -407,49 +406,19 @@ class ArtifactConsumer:
 
     def __init__(self, store: ReviewStore, project: str, session: str) -> None:
         self.store, self.project, self.session = store, project, session
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="artifact-evidence")
-        self._work: set[asyncio.Task[Json]] = set()
-        self._closing = False
-        self._close_task: asyncio.Task[None] | None = None
+        self._owner = OwnedExecutor(8, "artifact-evidence")
 
     async def ingest(self, *, drain: bool = False) -> Json:
         """Bound queued work; cancellation detaches the caller, not actual SQL ownership."""
-        if self._closing or len(self._work) >= 8:
+        if not self._owner.admits:
             return {"complete": False, "enabled": True, "held": "consumer admission bound"}
-        task = asyncio.create_task(self._ingest(drain))
-        self._work.add(task)
-        task.add_done_callback(self._finished)
-        return await asyncio.shield(task)
-
-    def _finished(self, task: asyncio.Task[Json]) -> None:
-        self._work.discard(task)
-        if not task.cancelled():
-            # A detached caller may never retrieve a later SQL exception. Taking
-            # it here does not alter what a live awaiting caller receives.
-            task.exception()
+        return await self._owner.submit(self._ingest(drain))
 
     async def _ingest(self, drain: bool) -> Json:
-        return await asyncio.get_running_loop().run_in_executor(
-            self._executor,
-            lambda: ingest_artifacts(self.store, self.project, self.session, drain=drain),
+        return await self._owner.thread(
+            lambda: ingest_artifacts(self.store, self.project, self.session, drain=drain)
         )
 
     async def aclose(self) -> None:
         """Drain all actual transactions even if shutdown itself is repeatedly cancelled."""
-        self._closing = True
-        if self._close_task is None:
-            self._close_task = asyncio.create_task(self._drain())
-        cancelled = False
-        while not self._close_task.done():
-            try:
-                await asyncio.shield(self._close_task)
-            except asyncio.CancelledError:
-                cancelled = True
-        self._close_task.result()
-        if cancelled:
-            raise asyncio.CancelledError
-
-    async def _drain(self) -> None:
-        if self._work:
-            await asyncio.gather(*tuple(self._work), return_exceptions=True)
-        self._executor.shutdown(wait=True)
+        await self._owner.aclose()

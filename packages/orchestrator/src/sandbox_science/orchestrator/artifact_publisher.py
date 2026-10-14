@@ -3,11 +3,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import sqlite3
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import TypeVar
 
@@ -20,6 +18,7 @@ from sandbox_science.contracts.artifact_inventory import (
     ArtifactSnapshot,
 )
 
+from .aio import OwnedExecutor
 from .artifacts import ArtifactInventory
 from .documents.errors import DocumentError
 from .worker_client import WorkerAPIError, WorkerClient
@@ -54,13 +53,10 @@ class ArtifactPublisher:
         self.inventory, self.client, self.context = inventory, client, context
         self.run_id, self.alias = run_id, alias
         self.endpoint = client.base_url
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="artifact-inventory")
-        self._work: set[asyncio.Task[ArtifactPublicationOutcome]] = set()
-        self._closing = False
-        self._close_task: asyncio.Task[None] | None = None
+        self._owner = OwnedExecutor(8, "artifact-inventory")
 
     async def _sql(self, call: Callable[[], _T]) -> _T:
-        return await asyncio.get_running_loop().run_in_executor(self._executor, call)
+        return await self._owner.thread(call)
 
     async def publish(
         self, request: PublishRequest, operation: str, *, tool_call: str, model: str | None = None
@@ -68,7 +64,7 @@ class ArtifactPublisher:
         """Reserve, snapshot once, pin the known outcome, then verify/retain exact bytes."""
         if request.context != self.context:
             raise ValueError("artifact publisher context differs")
-        if self._closing or len(self._work) >= 8:
+        if not self._owner.admits:
             return ArtifactPublicationOutcome(
                 None,
                 ArtifactReceipt(
@@ -85,10 +81,7 @@ class ArtifactPublisher:
             model=model,
             worker_endpoint_sha256=hashlib.sha256(self.endpoint.encode()).hexdigest(),
         )
-        task = asyncio.create_task(self._publish(request, operation, source))
-        self._work.add(task)
-        task.add_done_callback(self._work.discard)
-        return await asyncio.shield(task)
+        return await self._owner.submit(self._publish(request, operation, source))
 
     def _binding(self) -> None:
         if self.client.base_url != self.endpoint:
@@ -185,22 +178,6 @@ class ArtifactPublisher:
             return ArtifactPublicationOutcome(worker, receipt)
 
     async def aclose(self) -> None:
-        """Stop admission and drain actual admitted tasks, under repeated cancellation."""
-        self._closing = True
-        if self._close_task is None:
-            self._close_task = asyncio.create_task(self._drain())
-        cancelled = False
-        while not self._close_task.done():
-            try:
-                await asyncio.shield(self._close_task)
-            except asyncio.CancelledError:
-                # Cleanup owns the borrowed store/client until actual work finishes.
-                cancelled = True
-        self._close_task.result()
-        if cancelled:
-            raise asyncio.CancelledError
-
-    async def _drain(self) -> None:
-        if self._work:
-            await asyncio.gather(*tuple(self._work), return_exceptions=True)
-        self._executor.shutdown(wait=True)
+        """Stop admission and drain actual admitted tasks, under repeated cancellation.
+        Cleanup owns the borrowed store and client until the work finishes."""
+        await self._owner.aclose()

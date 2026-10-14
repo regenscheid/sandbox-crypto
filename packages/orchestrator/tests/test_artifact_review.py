@@ -901,7 +901,7 @@ async def test_cancelled_caller_later_failure_is_retrieved_and_admission_bounded
         await asyncio.gather(*callers, return_exceptions=True)
         release.set()
         await consumer.aclose()
-        assert not consumer._work
+        assert (await consumer.ingest())["held"] == "consumer admission bound"  # closed
     finally:
         release.set()
         await consumer.aclose()

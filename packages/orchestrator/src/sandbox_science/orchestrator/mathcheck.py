@@ -22,6 +22,7 @@ from typing import Final, Literal, Self
 from pydantic import Field, TypeAdapter, field_validator, model_validator
 
 from sandbox_science.contracts import Contract
+from sandbox_science.orchestrator.aio import held
 
 MAX_INPUT = 262_144
 """Bytes of one request to the launcher: a batch of formulas, as a JSON array."""
@@ -185,18 +186,6 @@ async def _reap(process: asyncio.subprocess.Process) -> None:
     await asyncio.gather(discard(process.stdout), discard(process.stderr), process.wait())
 
 
-async def _owned[T](task: asyncio.Task[T]) -> tuple[T, bool]:
-    """Finish ownership handoff/cleanup before propagating repeated cancellation."""
-    cancelled = False
-    while True:
-        try:
-            return await asyncio.shield(task), cancelled
-        except asyncio.CancelledError:
-            cancelled = True
-            if task.done():
-                return task.result(), cancelled
-
-
 def _code(path: Path, limit: int) -> bytes:
     """Configuration must be an ordinary bounded file, never a blocking device/FIFO."""
     fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
@@ -353,15 +342,15 @@ class MathChecker:
                 start_new_session=True,
             )
         )
-        process, cancelled = await _owned(spawning)
+        process, cancelled = await held(spawning)
         if cancelled:
-            await _owned(asyncio.create_task(_reap(process)))
+            await held(asyncio.create_task(_reap(process)))
             raise asyncio.CancelledError
         data = b"[" + b",".join(request.data for request in batch) + b"]"
         try:
             output = await _exchange(process, data, MAX_OUTPUT * len(batch))
         finally:
-            _, cleanup_cancelled = await _owned(asyncio.create_task(_reap(process)))
+            _, cleanup_cancelled = await held(asyncio.create_task(_reap(process)))
             if cleanup_cancelled:
                 raise asyncio.CancelledError
         if process.returncode != 0:
