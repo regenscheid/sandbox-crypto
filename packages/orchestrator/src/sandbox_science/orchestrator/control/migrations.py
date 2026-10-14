@@ -373,8 +373,8 @@ def _math_checks(schema: Schema) -> None:
             """CREATE TABLE math_sources (
     document TEXT PRIMARY KEY REFERENCES documents(document_id),
     project TEXT NOT NULL CHECK (length(CAST(project AS BLOB)) BETWEEN 1 AND 128),
-    target INTEGER NOT NULL CHECK (target BETWEEN 0 AND 1000000000),
-    completed INTEGER NOT NULL DEFAULT 0 CHECK (completed BETWEEN 0 AND 1000000000),
+    target INTEGER NOT NULL CHECK (target BETWEEN 0 AND 999999999),
+    completed INTEGER NOT NULL DEFAULT 0 CHECK (completed BETWEEN 0 AND 999999999),
     blocked TEXT CHECK (blocked IS NULL OR length(CAST(blocked AS BLOB)) <= 4096),
     retry_requested INTEGER NOT NULL DEFAULT 0 CHECK (retry_requested IN (0, 1))) STRICT""",
         ),
