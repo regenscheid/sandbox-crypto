@@ -24,8 +24,11 @@ def _store(path: Path, *, readonly: bool = False) -> ControlStore:
 
 def test_a_change_commits_and_a_failed_one_rolls_back(tmp_path: Path) -> None:
     store = _store(tmp_path / "control.sqlite3")
+    assert not store.in_transaction
     with store.write() as tx:
+        assert store.in_transaction
         tx.sql.execute("INSERT INTO notes VALUES ('kept')")
+    assert not store.in_transaction
 
     def failing() -> None:
         with store.write() as tx:

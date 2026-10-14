@@ -460,7 +460,6 @@ class Annotations:
             db = tx.sql
             if not self._available(db):
                 return {"threads": [], "next_after": None}
-            assert db is not None  # noqa: S101
             start = 0
             if after is not None:
                 row = db.execute(
@@ -522,7 +521,6 @@ class Annotations:
             db = tx.sql
             if not self._available(db):
                 raise DocumentError(NOT_FOUND, "no such document thread")
-            assert db is not None  # noqa: S101
             found = self._thread(db, info.document_id, thread, before)
         original = self.store.mapped(project, info.document_id, found["anchor"]["revision"])
         found["attachment"] = attachment(original, current, found["anchor"])

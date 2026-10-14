@@ -67,9 +67,18 @@ class ControlStore:
 
     @property
     def missing(self) -> bool:
-        """Whether this read-only store has no database yet: it reads as empty."""
+        """Whether this read-only store has no database yet. ``read()`` on it raises
+        ``not_found``: a lookup fails with that kind, and repositories that list records
+        check ``missing`` first and return an empty listing."""
         with self._lock:
             return self.readonly and self._db is None and not self.path.is_file()
+
+    @property
+    def in_transaction(self) -> bool:
+        """Whether the calling thread has a transaction open on this store. The lock
+        makes another thread's transaction finish first."""
+        with self._lock:
+            return self._db is not None and self._db.in_transaction
 
     def initialize(self) -> None:
         """Open the database, creating it for a writer, before anything else uses it."""

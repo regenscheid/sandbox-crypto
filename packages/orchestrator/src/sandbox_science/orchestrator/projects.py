@@ -134,10 +134,30 @@ class SessionSnapshot:
     ) -> None:
         self.context = context
         self.session = session
-        self.descriptor = descriptor
-        self.root = root
-        self.identity = identity
-        self.digest = digest
+        self._descriptor = descriptor
+        self._root = root
+        self._identity = identity
+        self._digest = digest
+
+    @property
+    def descriptor(self) -> int:
+        """The retained descriptor of the session's project record."""
+        return self._descriptor
+
+    @property
+    def root(self) -> int:
+        """The retained descriptor of the projects directory."""
+        return self._root
+
+    @property
+    def identity(self) -> tuple[int, int, int, int, int]:
+        """The project record's file identity when it was read."""
+        return self._identity
+
+    @property
+    def digest(self) -> bytes:
+        """The SHA-256 of the project record as read."""
+        return self._digest
 
     def matches(self, other: SessionSnapshot) -> bool:
         """Whether both bounded reads still name the same unchanged open binding."""
