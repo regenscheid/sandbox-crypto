@@ -943,7 +943,7 @@ def test_escalated_tools_are_admitted_at_the_fence_only_on_request() -> None:
     ):
         assert openshell_admits(held.policy, "srv", tool) is before, tool
         assert openshell_admits(admitting.policy, "srv", tool) is after, tool
-    assert any("escalates by name are admitted" in f.message for f in admitting.findings)
+    assert any("escalate entries match are admitted" in f.message for f in admitting.findings)
 
 
 def test_admitting_escalated_tools_never_denies_a_tool_allowed_by_name() -> None:

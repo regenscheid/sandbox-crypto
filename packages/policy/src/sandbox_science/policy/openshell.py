@@ -1386,6 +1386,7 @@ def _tool_rules(
     tools = server.tools
     held = _CompiledTools.of(prefix, tools.allow, (*tools.escalate, *tools.deny), subject)
     chosen = held
+    patterns_held = False
     if admit_escalated and tools.escalate:
         exact_escalated = tuple(pattern for pattern in tools.escalate if "*" not in pattern)
         escalated_globs = tuple(pattern for pattern in tools.escalate if "*" in pattern)
@@ -1393,6 +1394,7 @@ def _tool_rules(
         allowed = [prefix + pattern for pattern in tools.allow if "*" not in pattern]
         newly_denied = sorted(set(chosen.denied(allowed)) - set(held.denied(allowed)))
         if newly_denied:
+            patterns_held = True
             chosen = _CompiledTools.of(
                 prefix,
                 (*tools.allow, *exact_escalated),
@@ -1427,9 +1429,14 @@ def _tool_rules(
             Finding(
                 Severity.INFO,
                 f"{subject}.tools",
-                "tools the policy escalates by name are admitted at this fence, so that "
-                "approvals take effect; the MCP proxy holds each call for approval (looser "
-                "at the fence only)",
+                (
+                    "tools the escalate entries name exactly are admitted at this fence, but "
+                    "not those only its escalated patterns match (see the warning),"
+                    if patterns_held
+                    else "tools the escalate entries match are admitted at this fence,"
+                )
+                + " so that approvals take effect; the MCP proxy holds each call for approval "
+                "(looser at the fence only)",
             )
         )
     if (tools.escalate and not admit_escalated) or default is Action.ESCALATE:

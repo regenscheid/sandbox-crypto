@@ -89,7 +89,7 @@ def test_compile_policy_writes_the_proxy_sandboxs_policy(
     assert "always denied at this fence" in printed
     assert main(["compile-policy", *base, "--out", str(admitting), "--admit-escalated"]) == 0
     printed = capsys.readouterr().out
-    assert "escalates by name are admitted at this fence" in printed
+    assert "escalate entries name exactly are admitted at this fence" in printed
     # The example escalates firecrawl's crawl by name: only the second admits it. Its
     # escalated patterns would need a deny entry for portal_*, which the exact-allowed
     # portal_list_servers matches, so they stay held at the fence, and the compiler says so.
