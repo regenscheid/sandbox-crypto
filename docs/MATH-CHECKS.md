@@ -156,11 +156,11 @@ check, while append-only history keeps the prior assessment and owner.
 These notices are collected only at closing, together with terminal consistency
 findings. They share at most two author response rounds; warnings never trigger
 generic threshold interruptions. A notice counts as delivered only after a
-successful author model call, and is acknowledged only after the run transcript
-is durably saved. Failed/zero/final-turn and late-result cases stay pending for a
+successful author model call, and is acknowledged only after the run's record
+is saved in the control store. Failed/zero/final-turn and late-result cases stay pending for a
 later live turn. After the bounded response opportunity, the decision to leave a
 still-rejected finding unaddressed is staged under the exact notice claim. It is
-finalized only after durable transcript save, in the acknowledgement transaction,
+finalized only after the run's record is saved, in the acknowledgement transaction,
 with current source, exclusion, USER head and latest rejected evidence rechecked.
 A failed save leaves the open notice retryable; an expired claim can rebind that
 staging record, and a stale save callback cannot decide another run's claim.

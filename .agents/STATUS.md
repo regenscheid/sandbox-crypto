@@ -1,50 +1,54 @@
 # Status
 
-Updated 2026-10-14, main `9da54ac`. This file is replaced, not appended to, and stays under 10 KB. History is in the git log, PR descriptions and [lab reports](docs/agent-reports/).
+Updated 2026-10-14, main `96380a4`. This file is replaced, not appended to, and stays under 10 KB. History is in the git log, PR descriptions and [lab reports](docs/agent-reports/).
 
 ## Phase and focus
 
 - **Phase 1 (babbage), toward milestone M2.** M1's exit run passed ([lab 9](docs/agent-reports/babbage-openshell-lab-9-2026-10-11.md)).
-- **Focus:** the [revision and refactoring plan](refactor-plan/PLAN.md), Phase 0 ("stop the bleeding"). Feature work on the M2 exit path resumes in Phase 4, after the test seams (Phase 1) and the core seams (Phase 2).
+- **Focus:** the [revision and refactoring plan](refactor-plan/PLAN.md), Phase 2 (the core seams), in five parallel lanes. Feature work on the M2 exit path resumes in Phase 4.
 - **How work is done:** see the plan's [working rules](CONVENTIONS.md#working-rules) and the [handoff](handoff.md).
 
 ## What works today
 
 - **Infrastructure:** the policy library, the policy middleware in front of OpenShell, the package cache (PyPI, conda, Cargo, Go, npm), the MCP proxy and the hash-chained event store.
-- **Worker:** OpenShell VM sandboxes at tier 3 on babbage, with probed isolation tiers; shell calls, persistent Python and Sage kernels, file handoff and PDF tools; background jobs; an executor daemon that keeps executions and kernels through worker restarts; idle suspension and resume; on-demand host admission.
+- **Worker:** OpenShell VM sandboxes at tier 3 on babbage, with probed isolation tiers; shell calls, persistent Python and Sage kernels, file handoff and PDF tools; background jobs; an executor daemon that keeps executions and kernels through worker restarts; idle suspension and resume; on-demand host admission. Worker API protocol 3, checked on every request and response ([compatibility](../docs/COMPATIBILITY.md)).
 - **Provisioning (D84):** Conda and pip installs as queued operations with one permission request per install, AGPL refusal, environment revisions with lockfiles, explicit named Conda upgrades, installer observations and events, and a recovery fence after uncertain installs. Restoring a revision, uninstall, pip upgrade and disk limits are not built.
-- **Harness (CLI):** the tool loop with a scripted or OpenAI-compatible model, projects and sessions, the planning phase with live progress (D86), living documents in the SQLite control store (D85), comments and work requests, automatic consistency review, mechanical math findings (D82) and the low-cost job watcher.
+- **Harness (CLI):** the tool loop with a scripted or OpenAI-compatible model, built through `orchestrator/harness.py`; projects, sessions and runs in the SQLite control store (schema version 3); the planning phase with live progress (D86); living documents (D85); comments and work requests; automatic consistency review; mechanical math findings (D82); the low-cost job watcher; a stateless kernel check before each turn.
 - **Workspace GUI:** login; documents with editing, conflicts and history; comments; review findings; session plans with editing; finished runs' transcripts; jobs; the kernel panel; the provisioning view; math rendering with repairs. It reads runs the CLI made and cannot start one.
-- **Removed, archived on tags** (plan decision 2, #129): the delegation prototype (child controller, dispatcher, run kernels, records, attempts; `archive/delegation-2026-10`) and document files in environments and exports (outbox, delivery, worker source adapter, export inputs; `archive/document-sync-2026-10`), with the dead `orchestrator/reviews.py`. About 11,100 lines of product code and 8,900 of tests. Delegation is to be rebuilt as a role of the one loop (plan, Phase 4). The worker's own document catalog stays, parked, with no production caller.
-- **Not built:** chat in the GUI, a run with a real model, the ledger and board, the PDF viewer, approvals in the GUI (the policy middleware's CLI answers them), an MCP client in the harness, the connector auth service.
-- **Tests:** about 11,500 Python tests (11,464 passed, 43 opt-in skips at the last full run) and 828 web tests; CI runs Python 3.12 and 3.13 and the web checks.
+- **Not built:** chat in the GUI, a run with a real model, the ledger and board, the PDF viewer, approvals in the GUI (the policy middleware's CLI answers them), an MCP client in the harness, the connector auth service, delegation (archived on `archive/delegation-2026-10`, to be rebuilt in Phase 4).
+- **Tests:** about 11,100 Python tests (11,041 passed, 44 opt-in skips at #161's full run) and 669 web tests; CI runs Python 3.12 and 3.13, serially, and the web checks.
 
 ## Refactoring plan
 
-The [plan](refactor-plan/PLAN.md) has five phases. The owner answered its decisions 1–3 and 11 (raw evidence out of git) on 2026-10-14 and asked for autonomous work with the remaining recommendations adopted ([plan changes](PLAN-CHANGES.md)).
-
 | Phase | State |
 | --- | --- |
-| 0. Stop the bleeding: bug fixes, removal of unwired code, hygiene, CI guards | Done |
-| 1. Test seams: clocks, test support, characterization tests, CI tiers | In progress: the worker's part |
-| 2. Core seams: loop hooks, control store, worker manager, contracts, workspace handlers | Next |
+| 0. Stop the bleeding | Done |
+| 1. Test seams | Done apart from the CI tiers (F-03, in flight) |
+| 2. Core seams, five lanes | In progress: lane C done; O, S, W and G partway |
 | 3. Shared building blocks for the M2 features | Later |
 | 4. The M2 exit path: chat, a real model, ledger and board, PDF viewer, then delegation and MCP | Later |
 
-- **Phase 0, done:**
-  - raw evidence out of git and the hygiene check (#123);
-  - bugs fixed: a second workbook disabling the first (A-01) and a discarded last-turn answer (A-10, #125); the workspace's 500 when the worker is down (E-02, #124); executions orphaned by a bridge loss during recovery (C-01), shutdown hanging on open streams (C-10), the flaky capture test (C-11) and silent background failures (C-15, #133);
-  - about 25,000 lines of unwired delegation and document-sync code removed and archived on tags (#129, #138);
-  - short tracking files and the adopted decisions (#126); CI timeouts and dead suppressions (#128); the web formatter (#127);
-  - the reference docs synced with the code, with tests that keep the route and table inventories and the docs index honest (#131, #135, #136, #140).
-- **Phase 1:** the agent loop and the workspace routes are pinned by characterization tests (#134, #132); components take an injected clock, and tests use `FakeClock` and `eventually()` from `packages/testing` (#137, #139). In flight: the worker's test harness, deterministic timing and conformance over the daemon (C-12, C-13, C-14, F-04). Still to do: the fast and full CI tiers (F-03).
-- **Next:** Phase 2 in five lanes (the plan's Phase 2 section). The orchestrator, control-store and workspace lanes start now; the worker and contracts lanes after the worker's test seams.
+The plan's [progress section](refactor-plan/PLAN.md#progress) lists each finding with its PR.
+
+- **Phase 1:** the worker's test harness, clock seam and conformance over the daemon are in (C-12, C-13, C-14, F-04, F-05). Left: F-03's CI tiers.
+- **Lane O, the loop:** turn hooks own delivery and closing, and every subsystem is a hook (A-02); table-driven tool dispatch (A-11); one lease helper (A-12); a stateless kernel check (A-04); a `Harness` the CLI builds (A-05). `_run_task` is 57 lines. **Open:** step 5 (A-08 #165; A-13, A-14 #166).
+- **Lane S, the control store:** a public `ControlStore` (B-01); one migration list, re-baselined (B-02); projects, sessions and runs in the store (A-07). Schema version 3; no source file disables private-usage checks. **In flight:** step 4 (B-14, B-17/E-12).
+- **Lane W, the worker:** one usability record per environment (C-04); connections behind the manager facade (C-03 stage 1). `manager.py` is 3,059 lines. **Open:** C-03 stages 2 and 3 (#163, #164).
+- **Lane C, the contracts:** done (D-01, D-02, D-07, D-11); worker protocol 3. Leftovers are in the [backlog](BACKLOG.md#repository).
+- **Lane G, the workspace:** plain handlers and one error mapping (E-01, E-02); one browser request client and poller (E-03); a generated API contract (E-04, E-13); one save pattern (E-05). **In flight:** step 4 (E-14 and the small items).
+
+## Known issues
+
+- **Kernel start fails under parallel load.** About 1 in 100 runs under `pytest -n 16` (fewer at `-n 8`), a kernel start hangs, fails, or is miscounted by the executor's `usage` reply; it looks like jupyter_client's port choice racing between kernels started at once. Serial runs, which CI does today, do not show it. The F-03 task fixes it before the parallel tier.
+- **Leaked daemon processes:** a few daemon tests (`test_recycle_intent_survives_failed_fence_and_worker_restart` and its sibling) leave a daemon running after the test. Also for the F-03 task.
+- **Repeat runs fill `/tmp`:** `--count 50` keeps every test's temporary directory; use `-o tmp_path_retention_policy=failed`.
+- **Upgrades:** worker protocol 3 means the orchestrator, the workspace and the worker upgrade together. Control stores from before schema version 2 are refused; export their documents first ([living documents](../docs/LIVING-DOCUMENTS.md)). Project JSON files are not read; projects are created again.
 
 ## M2 exit path
 
 | Step | State |
 | --- | --- |
-| Chat in the GUI with a live transcript (A-06, E-06, E-07) | Not started |
+| Chat in the GUI with a live transcript (A-06, E-06, E-07) | Not started; the run service builds on `Harness` |
 | A real model through the owner's LiteLLM gateway (A-09) | Blocked on the gateway key |
 | Ledger and board ([spec](../docs/specs/ledger.md)) | Not started |
 | User-grade review views (E-11) | Not started |
@@ -58,7 +62,7 @@ The [plan](refactor-plan/PLAN.md) has five phases. The owner answered its decisi
 
 ## Open questions
 
-Each has a recommendation; nothing here blocks Phase 0.
+Each has a recommendation; none blocks Phase 2.
 
 - **Draft specs:** [skills](../docs/specs/skills.md), [plans and delegation](../docs/specs/plans-and-delegation.md) (questions 1 and 2: plan approval's default, progress across versions), [living documents](../docs/specs/living-documents.md) (question 15) and the [ledger](../docs/specs/ledger.md).
 - **Math display choices:** LD-41's backslash form for `\(x\)` before a digit; the escaped-bracket rule; formulas that define macros shown as written; front-matter macro limits; 60 model repairs per browser session per hour ([workspace](../docs/WORKSPACE.md#math-repairs)).
@@ -75,8 +79,8 @@ Each has a recommendation; nothing here blocks Phase 0.
 
 ## Last five merges
 
-- #140 `9da54ac`: the worker docs as reference, with a route-inventory test.
-- #136: infrastructure docs, a docs index, and link and index checks in the hygiene script.
-- #135: documents, review and orchestrator docs synced, with table-inventory tests.
-- #131: the workspace docs synced, with a route-inventory test.
-- #139: the shared `eventually()` in the loop harness; the clock convention recorded.
+- #160 `96380a4`: projects, sessions and runs in the control store (A-07).
+- #161: shared contract primitives and vocabulary; worker protocol 3 (D-02, D-07, D-11).
+- #162: one save pattern for the workspace's editors (E-05).
+- #158: a `Harness` the CLI builds (A-05).
+- #155: environment connections behind the worker manager's facade (C-03 stage 1).

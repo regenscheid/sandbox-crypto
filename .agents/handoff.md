@@ -1,38 +1,44 @@
 # Handoff
 
-Updated 2026-10-14, main `2b44c77`. For the next agent: where things stand, how work is done, and what is next. This file is replaced, not appended to, and stays under 8 KB. Read it with [STATUS.md](STATUS.md), the [refactoring plan](refactor-plan/PLAN.md) and [CONVENTIONS.md](CONVENTIONS.md).
+Updated 2026-10-14, main `96380a4`. For the next agent: where things stand, how work is done, and what is next. This file is replaced, not appended to, and stays under 8 KB. Read it with [STATUS.md](STATUS.md), the [refactoring plan](refactor-plan/PLAN.md) and [CONVENTIONS.md](CONVENTIONS.md).
 
 ## Where things stand
 
 - **The code:** M1 passed on babbage. Much of M2 is built (see [STATUS](STATUS.md#what-works-today)), but the GUI cannot yet start or chat with a run, no real model has run, and the ledger, board and PDF viewer are missing.
-- **The refactoring plan:** six reviews of main at `6e9608a` found 97 findings ([notes](refactor-plan/notes/)). The [plan](refactor-plan/PLAN.md) orders them in five phases. The owner answered its scope questions on 2026-10-14 and asked for autonomous work through the plan, with its recommendations adopted; [PLAN-CHANGES](PLAN-CHANGES.md) records each decision.
-- **Phase 0 is in progress** in parallel lanes, each in its own worktree with its own PR. Merged: A-01 and A-10 (#125), E-02 (#124), the web formatter E-16 (#127), the tracking files and decision records (#126), the CI guards and dead suppressions (#128), and the removal of the unwired delegation and document-sync code (#129; kept on the tags `archive/delegation-2026-10` and `archive/document-sync-2026-10`). In flight: the worker bug fixes C-01, C-10, C-11 and C-15. [STATUS](STATUS.md#refactoring-plan) keeps the list current.
-- **Raw lab evidence** left git on 2026-10-14 and history was rewritten (#123). The pre-rewrite repository and the evidence are kept privately on babbage; reports name archived files by SHA-256.
+- **The refactoring plan:** Phases 0 and 1 are done, apart from F-03's CI tiers. Phase 2 runs in five lanes; lane C is done and O, S, W and G are partway. The plan's [progress section](refactor-plan/PLAN.md#progress) lists each finding with its PR, and [PLAN-CHANGES](PLAN-CHANGES.md) records the decisions made on the way.
+- **Open PRs and tasks in flight:** lane O step 5 (#165, prompt pins, A-08; #166, dead code and `awaiting_approval`, A-13, A-14); lane W's C-03 stages 2 and 3 (#163, #164); lane G step 4 (E-14 and the small items); lane S step 4 (B-14, B-17/E-12); and the F-03 CI tiers, which also fix the kernel-start flake and the leaked daemons ([known issues](STATUS.md#known-issues)).
 - **Lab state:** no lab, VM or private state is running.
-- **Heartbeat:** a conversation task, *Retry stalled orchestrator*, was created at the owner's request on 2026-10-13. It checks every five minutes and resumes a stalled session with the same model, leaving active work alone.
+- **Heartbeat:** a conversation task, *Retry stalled orchestrator*, checks every five minutes and resumes a stalled session with the same model, leaving active work alone.
+
+## What a new agent needs to know about the code now
+
+- **Loop:** features plug in as turn hooks (`orchestrator/hooks.py`); the loop owns delivery, response rounds and closing. A run's delivered notice IDs and hook summaries are in `RunRecord.delivered` and `RunRecord.summaries`. Tools are `ToolEntry` rows with an effect class; an unclassified tool is an `effect`. `Harness` (`orchestrator/harness.py`) is what the CLI builds and what the run service will build.
+- **Control store:** `orchestrator/control/` holds `ControlStore` (`read()`/`write()`) and the migration list. To change the schema, append a step to `MIGRATIONS`; never edit `baseline.sql` or a shipped step. Projects, sessions and runs live there; the project lock files stay until B-17.
+- **Worker:** `manager.py` is a facade being split (C-03): `usability.py` and `connections.py` are out; publication and the kernel registry are in open PRs. Worker tests go through `tests/harness.py`; only `ManagerView` reads the manager's private state.
+- **Contracts:** any change to what crosses the worker API raises `PROTOCOL_VERSION` (now 3); see [compatibility](../docs/COMPATIBILITY.md). Shared primitives are in `contracts/model.py`.
+- **Workspace:** routes are plain handlers with one error mapping (`workspace/errors.py`); the browser uses `lib/http.ts`, `lib/poller.ts` and `lib/mutation.ts`. The typed answers come from `scripts/generate_api_types.py`; rerun it when a response model changes.
 
 ## How work is done now
 
-- **Follow the plan and its [working rules](CONVENTIONS.md#working-rules).** In short: no production module without a production caller; PRs of at most about 800 changed lines of product code; defenses only against what the [threat model](../docs/THREAT-MODEL.md) covers; characterization tests through public APIs before a refactor; evidence out of git; short tracking files; no new subsystem in `loop.py`, `manager.py` or the workspace's `create_app`; no code on a spec whose open questions affect it.
-- **Re-check each finding** against current `origin/main` before acting on it. The notes were written against `6e9608a`.
-- **Parallel lanes:** within a phase, tasks own disjoint files. One agent per task, in a worktree of its own, with a written brief. Agents report in their final message; follow-ups go to the same agent.
+- **Follow the plan and its [working rules](CONVENTIONS.md#working-rules),** and put them in every brief: production callers only, PRs of about 800 product lines at most, the [threat model](../docs/THREAT-MODEL.md) as the bar for defenses, characterization tests first, evidence out of git, no new subsystem in `loop.py`, `manager.py` or `create_app`.
+- **Re-check each finding** against current `origin/main` before acting on it. The notes were written against `6e9608a`, and much has moved.
+- **Parallel lanes:** tasks own disjoint files. One agent per task, in its own worktree, with a written brief. Stacked PRs say so and name their base.
 - **Tracking files:** only the agent coordinating a wave edits STATUS, the handoff and PLAN-CHANGES. Other PRs put their summary in the PR description and update the reference docs and BACKLOG items their change affects.
-- **Review:** a separate agent reviews each substantial code PR without modifying the repository, reporting findings by severity with a file, a scenario and a fix; repeat until nothing critical, high or medium remains.
-- **Merging:** green PRs are merged by the coordinating agent, as the owner asked ([conventions](CONVENTIONS.md#how-work-is-done)). After a merge, fast-forward the main checkout and run `uv sync --locked`, then remove clean merged worktrees.
+- **Review:** a separate read-only agent reviews each substantial code PR, until nothing critical, high or medium remains.
+- **Merging:** green PRs are merged by the coordinating agent, as the owner asked. After a merge, fast-forward the main checkout and run `uv sync --locked`, then remove clean merged worktrees.
 
 ## What is next
 
-1. Finish Phase 0: merge each lane's PR once CI is green and a review is clear; then the worker bug fixes C-01, C-10, C-11 and C-15. Then check the plan's Phase 0 exit: the bug tests pass, the unwired modules are gone and the suite still passes, STATUS is under 10 KB, the size guard runs in CI.
-2. Start Phase 1 (test seams): F-04 steps 1–3 (a `Clock` protocol, timeouts as parameters, waiting on events), F-06 and C-13 (shared test support, one worker harness), F-05 (characterization tests for the loop, the worker manager and the workspace routes), C-14 and C-12, then F-03's CI tiers.
-3. Record in the plans-and-delegation spec the owner's answers of 2026-10-14 to its questions 3 and 4 (the plan, Phase 4 item 7) when delegation is rebuilt.
+1. Land the open PRs and the tasks in flight above.
+2. F-03: the fast and full CI tiers. Phase 1's exit needs 50 repeated runs without a flake, so the kernel-start race and the leaked daemons come first.
+3. Phase 2's remaining steps, in each lane's order: lane S (B-10, B-05 and B-03, then the long functions); lane W (C-03's remaining stages, C-06 to C-09, C-02, C-16); lane G (E-15, E-17, E-19, E-20). Then check Phase 2's exit against the plan.
+4. Record in the plans-and-delegation spec the owner's answers of 2026-10-14 to its questions 3 and 4 when delegation is rebuilt (Phase 4 item 7).
 
 ## Gotchas
 
 - **The lab's `env.sh` breaks `gh`:** it points `XDG_CONFIG_HOME` at the lab. Use another shell.
 - **Watching CI too early:** `gh pr checks N --watch` right after `gh pr create` can exit with "no checks reported". Wait a few seconds.
-- **Agent transcripts are huge.** Never read an agent's output file whole.
+- **Parallel test runs:** kernel tests can fail under `-n 8` or more (the known flake), and `--count` runs need `-o tmp_path_retention_policy=failed`.
 - **The main checkout is live during a lab:** the lab's cache and middleware run from its editable install. Use worktrees.
 - **AppArmor:** babbage restricts unprivileged user namespaces; Claude Desktop's shells are exempt, so qualification checks run through `systemd-run --user`.
-- **The forward unit restarts forever;** `labs/lab_down.sh` stops it.
-- **The scratchpad is per session.** Lab scripts live in [`labs/`](labs/README.md).
-- **A memory directory is loaded each session,** with notes on babbage's AppArmor, decision requests and autonomous merging.
+- **The forward unit restarts forever;** `labs/lab_down.sh` stops it. Lab scripts run only at the commit their report names.
