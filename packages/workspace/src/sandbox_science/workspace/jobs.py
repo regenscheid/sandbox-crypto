@@ -8,6 +8,8 @@ trusted project record. It never selects a worker address or sees a worker key.
 from __future__ import annotations
 
 import asyncio
+import functools
+from collections.abc import Awaitable, Callable
 from typing import Final
 
 from aiohttp import hdrs, web
@@ -23,6 +25,19 @@ from . import api
 WORKER: Final = web.AppKey("job_worker", WorkerClient)
 STATE: Final = web.AppKey("job_state", JobState)
 PATH: Final = "/api/v0/projects/{project}/sessions/{session}/jobs"
+
+_REFUSALS: Final = {
+    ErrorKind.INVALID_REQUEST: 400,
+    ErrorKind.POLICY_DENIED: 403,
+    ErrorKind.NOT_FOUND: 404,
+    ErrorKind.CONFLICT: 409,
+    ErrorKind.UNSUPPORTED: 422,
+}
+"""Worker refusals that the browser can act on, answered with the worker's message.
+Every other worker failure is 503 with a fixed message, since transport errors name
+the worker's address."""
+
+_Handler = Callable[[web.Request], Awaitable[web.Response]]
 
 
 def add_routes(app: web.Application, worker: WorkerClient | None, state: JobState | None) -> None:
@@ -57,58 +72,70 @@ def _answer(value: object) -> web.Response:
     )
 
 
-def _error(exc: WorkerAPIError) -> ProjectError:
-    return ProjectError(exc.kind, exc.message)
+def _worker_route(handler: _Handler) -> _Handler:
+    """Answer the worker's failures by one mapping for every job route."""
 
-
-async def listed(request: web.Request) -> web.Response:
-    try:
-        tools = await _tools(request)
-        listing = await tools.recent(limit=20)
-        # Fail closed if an unexpected peer response breaks session scoping.
-        checkins = (
-            await asyncio.to_thread(request.app[STATE].checkins, tools.context)
-            if STATE in request.app
-            else []
-        )
-        latest = {str(check["job_id"]): check for check in reversed(checkins)}
-        values: list[dict[str, object]] = []
-        for execution in listing.jobs:
-            tools.check_owner(execution)
-            values.append(
-                {
-                    **summary(await tools.owned(execution.execution_id)),
-                    "checkin": latest.get(execution.execution_id),
-                }
+    @functools.wraps(handler)
+    async def route(request: web.Request) -> web.Response:
+        try:
+            return await handler(request)
+        except WorkerAPIError as error:
+            status = _REFUSALS.get(error.kind)
+            if status is None:
+                status, kind, message = 503, ErrorKind.UNAVAILABLE, "the worker is unavailable"
+            else:
+                kind, message = error.kind, error.message
+            return web.json_response(
+                {"error": {"kind": kind.value, "message": message}},
+                status=status,
+                headers={hdrs.CACHE_CONTROL: "no-store"},
             )
-        waiting = (
-            await asyncio.to_thread(request.app[STATE].waits, tools.context)
-            if STATE in request.app
-            else []
-        )
-        return _answer(
-            {"enabled": True, "jobs": values, "truncated": listing.truncated, "waits": waiting}
-        )
-    except WorkerAPIError as exc:
-        raise _error(exc) from exc
+
+    return route
 
 
+@_worker_route
+async def listed(request: web.Request) -> web.Response:
+    tools = await _tools(request)
+    listing = await tools.recent(limit=20)
+    # Fail closed if an unexpected peer response breaks session scoping.
+    checkins = (
+        await asyncio.to_thread(request.app[STATE].checkins, tools.context)
+        if STATE in request.app
+        else []
+    )
+    latest = {str(check["job_id"]): check for check in reversed(checkins)}
+    values: list[dict[str, object]] = []
+    for execution in listing.jobs:
+        tools.check_owner(execution)
+        values.append(
+            {
+                **summary(await tools.owned(execution.execution_id)),
+                "checkin": latest.get(execution.execution_id),
+            }
+        )
+    waiting = (
+        await asyncio.to_thread(request.app[STATE].waits, tools.context)
+        if STATE in request.app
+        else []
+    )
+    return _answer(
+        {"enabled": True, "jobs": values, "truncated": listing.truncated, "waits": waiting}
+    )
+
+
+@_worker_route
 async def status(request: web.Request) -> web.Response:
-    try:
-        tools = await _tools(request)
-        job_id = tools.job_id({"job_id": request.match_info["job"]})
-        return _answer(summary(await tools.owned(job_id)))
-    except WorkerAPIError as exc:
-        raise _error(exc) from exc
+    tools = await _tools(request)
+    job_id = tools.job_id({"job_id": request.match_info["job"]})
+    return _answer(summary(await tools.owned(job_id)))
 
 
+@_worker_route
 async def cancel(request: web.Request) -> web.Response:
-    try:
-        tools = await _tools(request)
-        # The route intentionally accepts no model-supplied context or script.
-        text, _ = await tools.cancel({"job_id": request.match_info["job"]}, "workspace")
-        return web.Response(
-            text=text, content_type="application/json", headers={hdrs.CACHE_CONTROL: "no-store"}
-        )
-    except WorkerAPIError as exc:
-        raise _error(exc) from exc
+    tools = await _tools(request)
+    # The route intentionally accepts no model-supplied context or script.
+    text, _ = await tools.cancel({"job_id": request.match_info["job"]}, "workspace")
+    return web.Response(
+        text=text, content_type="application/json", headers={hdrs.CACHE_CONTROL: "no-store"}
+    )
