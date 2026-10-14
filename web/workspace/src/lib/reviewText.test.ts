@@ -4,6 +4,8 @@ import type { Evidence, MathJob, MathQueue, Review } from './reviews';
 import {
   coverageText,
   evidenceText,
+  identityText,
+  leftUnreviewed,
   locatorText,
   mathCheckText,
   outcomeText,
@@ -100,5 +102,57 @@ describe('what the reviews panel says', () => {
     const queued = { document: 'doc-1', target: 3, completed: 2, blocked: null, running: 0 };
     expect(queueText(queued as MathQueue)).toBe('document doc-1 to revision 3 (2 checked): queued');
     expect(queueText({ ...queued, blocked: 'quota' } as MathQueue)).toMatch(/held: quota$/);
+  });
+});
+
+describe('what the reviews panel says, after review', () => {
+  it('says a capped review may have hit the finding cap, and whether a failed window is retried', () => {
+    expect(outcomeText('capped')).toMatch(/budget or its finding cap/);
+    expect(outcomeText('failed')).toBe(
+      'failed: reviewer error; its window is due to be reviewed again',
+    );
+    expect(outcomeText('dropped', true)).toBe(
+      'dropped: lost to a restart; its window was left unreviewed after bounded retries',
+    );
+    expect(leftUnreviewed([{ review: 'rv-1', start: 1, end: 2 }], 'rv-1')).toBe(true);
+    expect(leftUnreviewed([{ review: 'rv-2' }], 'rv-1')).toBe(false);
+  });
+  it('claims no coverage for a review that did not complete', () => {
+    expect(coverageText(review({ state: 'failed', coverage_complete: true }))).toBe(
+      'Its window was feed entries 4 to 9; nothing was recorded as covered.',
+    );
+  });
+  it('writes an unreadable time as text instead of throwing', () => {
+    expect(when(Number.NaN)).toBe('NaN');
+    expect(when(1e20)).toBe('100000000000000000000');
+  });
+  it('says what a review checked and found consistent (CR-7)', () => {
+    const record = {
+      sequence: 3,
+      kind: 'checked',
+      payload: { checked: { statement: 'GF(17) count matches the log.', evidence: ['ev-1'] } },
+      created: 1791990000,
+    };
+    expect(recordText(record)).toBe(
+      `#3 checked: GF(17) count matches the log. · ${when(1791990000)}`,
+    );
+  });
+  it('says the configuration and the final-message classifier in words (CR-11, CR-35)', () => {
+    const classified = review({
+      config_revision: 'cfg-7',
+      classifier: { version: 'c2', label: 'terminal', effects: true, completion_claim: true },
+    });
+    expect(identityText(classified)).toBe(
+      'Configuration revision cfg-7. The final message was classified terminal by classifier c2, because the turn had effects and the agent claimed the work complete.',
+    );
+    expect(identityText(review({ config_revision: 'cfg-7', classifier: {} }))).toBe(
+      'Configuration revision cfg-7.',
+    );
+  });
+  it('names a pinned finding as evidence', () => {
+    const locator = { finding: 'finding-0123', revision: 2 };
+    expect(locatorText(locator)).toBe('finding finding-0123 revision 2');
+    const item = { kind: 'finding', locator, complete: true } as unknown as Evidence;
+    expect(evidenceText(item)).toBe('finding: finding finding-0123 revision 2 (complete)');
   });
 });

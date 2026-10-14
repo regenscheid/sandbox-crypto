@@ -6,12 +6,15 @@
   import {
     coverageText,
     evidenceText,
+    identityText,
+    leftUnreviewed,
     outcomeText,
     recordText,
     reviewLine,
     usageText,
   } from '../lib/reviewText';
   import ErrorMessage from './ErrorMessage.svelte';
+  import PinnedEvidencePreview from './PinnedEvidencePreview.svelte';
   let {
     panel,
     browser,
@@ -22,12 +25,15 @@
 
 <section class="detail" aria-label="Review detail">
   <h3>{reviewLine(review)}</h3>
-  <p><strong>Outcome:</strong> {outcomeText(review.state)}.</p>
+  <p>
+    <strong>Outcome:</strong>
+    {outcomeText(review.state, leftUnreviewed(panel.unreviewed, review.review_id))}.
+  </p>
   {#if review.summary}<p class="prose">{review.summary}</p>{/if}
   <p>{coverageText(review)}</p>
   <p class="muted">{usageText(review)}</p>
   <details>
-    <summary>Classifier and configuration identity</summary>
+    <summary>{identityText(review)}</summary>
     <pre>{JSON.stringify(
         { classifier: review.classifier, config_revision: review.config_revision },
         null,
@@ -35,7 +41,9 @@
       )}</pre>
   </details>
   <h4>Pinned evidence</h4>
-  {#if !panel.evidence.items.length && !panel.evidence.loading}<p class="muted">
+  {#if !panel.evidence.items.length && !panel.evidence.loading && panel.evidence.error === null}<p
+      class="muted"
+    >
       No evidence pinned.
     </p>{/if}
   <ul>
@@ -52,6 +60,13 @@
       >Load more snapshot evidence</button
     >{/if}
   {#if panel.evidence.error}<ErrorMessage error={panel.evidence.error} />{/if}
+  <!-- The evidence text read from this review's list, here beside it. -->
+  {#if panel.text.items.length}<PinnedEvidencePreview
+      text={browser.text.text()}
+    />{#if panel.text.next !== null}<button onclick={() => browser.text.list.more()}
+        >Read next evidence slice</button
+      >{/if}{/if}
+  {#if panel.text.error}<ErrorMessage error={panel.text.error} />{/if}
   <h4>Audit records</h4>
   <button disabled={busy || panel.records.next === null} onclick={() => browser.records.more()}
     >{panel.records.items.length ? 'Load more audit records' : 'Load review audit records'}</button

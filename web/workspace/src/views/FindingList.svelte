@@ -18,17 +18,17 @@
     busy: boolean;
   } = $props();
   const refresh = () => browser.refresh();
-  const read = (review: string, evidence: string) => browser.read(review, evidence);
 </script>
 
 <h3>Findings</h3>
-{#if !panel.findings.items.length}<p>No consistency findings recorded.</p>{/if}
+{#if !panel.findings.items.length && !panel.findings.loading && panel.findings.error === null}<p>
+    No consistency findings recorded.
+  </p>{/if}
 {#each panel.findings.items as finding (finding.finding_id)}<FindingCard
     {projectId}
     {sessionId}
     {finding}
     changed={refresh}
-    {read}
   />{/each}
 {#if panel.findings.next}<button disabled={busy} onclick={() => browser.findings.more()}
     >Load more findings</button

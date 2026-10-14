@@ -122,7 +122,7 @@ describe('the reviews panel', () => {
     const first = browse.read('r1', 'e1');
     answer('evidence', { text: 'abc', next_start: 3 });
     await first;
-    const next = browse.text.more();
+    const next = browse.text.list.more();
     answer('evidence', { text: 'def', next_start: null }, 1);
     await next;
     expect(panel.text.items.join('')).toBe('abcdef');
@@ -211,7 +211,7 @@ describe('a newly chosen review or text never shows, or extends, the last one', 
     const two = browse.read('r', 'e2');
     fail('evidence', new Error('offline'), 1);
     await two;
-    const more = browse.text.more();
+    const more = browse.text.list.more();
     expect(calls.at(-1)?.args).toEqual(['p1', 's1', 'r', 'e1', 9]);
     answer('evidence', { text: 'e1-part2', next_start: null }, 2);
     await more;

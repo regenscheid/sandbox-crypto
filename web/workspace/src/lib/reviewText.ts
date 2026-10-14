@@ -11,8 +11,9 @@ import type { Evidence, MathJob, MathQueue, Review } from './reviews';
 
 /** A record's time: epoch seconds today, ISO text once the answers are typed (E-13). */
 export function when(value: number | string | null | undefined): string {
-  if (typeof value === 'number') return formatTime(new Date(value * 1000).toISOString());
-  return formatTime(value);
+  if (typeof value !== 'number') return formatTime(value);
+  const time = new Date(value * 1000);
+  return Number.isNaN(time.getTime()) ? String(value) : formatTime(time.toISOString());
 }
 
 const OUTCOMES: Readonly<Record<string, string>> = {
@@ -21,15 +22,37 @@ const OUTCOMES: Readonly<Record<string, string>> = {
   passed: 'passed: no inconsistency found in the reviewed evidence (not a proof)',
   findings: 'reported findings',
   inconclusive: 'inconclusive: the main claims could not be evaluated',
-  capped: 'capped: it reached its budget; the findings it recorded stand',
-  failed: 'failed: reviewer error; its window is reviewed again',
-  dropped: 'dropped: lost to a restart; its window is reviewed again',
+  capped: 'capped: it reached its budget or its finding cap; the findings it recorded stand',
+  failed: 'failed: reviewer error',
+  dropped: 'dropped: lost to a restart',
 };
 
-/** What a review's state means (CR-33); only `passed` reads as a pass. */
-export function outcomeText(state: string): string {
-  return Object.hasOwn(OUTCOMES, state) ? OUTCOMES[state]! : state;
+/**
+ * What a review's state means (CR-33); only `passed` reads as a pass. A failed or dropped
+ * review's window is reviewed again, at most twice, and then left unreviewed (CR-34):
+ * `unreviewed` says which.
+ */
+export function outcomeText(state: string, unreviewed = false): string {
+  const said = Object.hasOwn(OUTCOMES, state) ? OUTCOMES[state]! : state;
+  if (state !== 'failed' && state !== 'dropped') return said;
+  return unreviewed
+    ? `${said}; its window was left unreviewed after bounded retries`
+    : `${said}; its window is due to be reviewed again`;
 }
+
+/** Whether the windows left unreviewed name this review. */
+export function leftUnreviewed(windows: readonly Json[], review: string): boolean {
+  return windows.some(
+    (window) =>
+      typeof window === 'object' &&
+      window !== null &&
+      !Array.isArray(window) &&
+      window['review'] === review,
+  );
+}
+
+/** States in which a review recorded what it covered. */
+const COMPLETED = new Set(['passed', 'findings', 'inconclusive', 'capped']);
 
 const KINDS: Readonly<Record<string, string>> = {
   checkpoint: 'Checkpoint review',
@@ -49,6 +72,8 @@ export function coverageText(review: Review): string {
     review.kind === 'confirmation'
       ? 'the pinned finding and its fix'
       : `feed entries ${review.start_seq} to ${review.end_seq}`;
+  if (!COMPLETED.has(review.state))
+    return `Its window was ${scope}; nothing was recorded as covered.`;
   const coverage = review.coverage_complete
     ? 'coverage complete within the available evidence'
     : 'coverage incomplete';
@@ -87,6 +112,8 @@ export function locatorText(locator: Record<string, Json>): string {
   }
   if (locator['message'] !== undefined && text(locator['run']))
     return `message ${text(locator['message'])} of run ${text(locator['run'])}`;
+  if (text(locator['finding']) && locator['response_revision'] === undefined)
+    return `finding ${text(locator['finding'])} revision ${text(locator['revision'])}`;
   if (locator['artifact'] !== undefined)
     return `an artifact published by run ${text(locator['run']) || 'unknown'}`;
   return 'a pinned record';
@@ -112,7 +139,42 @@ export function unreviewedText(window: Json): string {
 export function recordText(record: Json): string {
   const found =
     typeof record === 'object' && record !== null && !Array.isArray(record) ? record : {};
-  return `#${text(found['sequence'])} ${text(found['kind'])} · ${when(found['created'] as number | string | undefined)}`;
+  const head = `#${text(found['sequence'])} ${text(found['kind'])}`;
+  const time = when(found['created'] as number | string | undefined);
+  // What the reviewer checked and found consistent (CR-7).
+  const payload = found['payload'];
+  const checked =
+    typeof payload === 'object' && payload !== null && !Array.isArray(payload)
+      ? payload['checked']
+      : undefined;
+  const statement =
+    typeof checked === 'object' && checked !== null && !Array.isArray(checked)
+      ? text(checked['statement'])
+      : '';
+  return statement ? `${head}: ${statement} · ${time}` : `${head} · ${time}`;
+}
+
+/**
+ * The configuration a review ran under (CR-35), and the classifier's label for the turn's
+ * final message (CR-11), in words.
+ */
+export function identityText(review: Review): string {
+  const classifier =
+    typeof review.classifier === 'object' &&
+    review.classifier !== null &&
+    !Array.isArray(review.classifier)
+      ? review.classifier
+      : {};
+  const config = `Configuration revision ${review.config_revision}.`;
+  const label = text(classifier['label']);
+  if (!label) return config;
+  const reasons = [
+    classifier['effects'] ? 'the turn had effects' : '',
+    classifier['unresolved'] ? 'findings were unresolved' : '',
+    classifier['completion_claim'] ? 'the agent claimed the work complete' : '',
+  ].filter(Boolean);
+  const why = reasons.length ? `, because ${reasons.join(' and ')}` : '';
+  return `${config} The final message was classified ${label} by classifier ${text(classifier['version'])}${why}.`;
 }
 
 /** A math check in one line: what it checked and what it found. */

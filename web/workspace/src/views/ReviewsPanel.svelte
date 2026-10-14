@@ -9,7 +9,6 @@
   import ErrorMessage from './ErrorMessage.svelte';
   import FindingList from './FindingList.svelte';
   import MathChecks from './MathChecks.svelte';
-  import PinnedEvidencePreview from './PinnedEvidencePreview.svelte';
   import ReviewDetail from './ReviewDetail.svelte';
   import ReviewList from './ReviewList.svelte';
   let { projectId, sessionId }: { projectId: string; sessionId: string } = $props();
@@ -41,13 +40,6 @@
   <ReviewList {panel} {browser} {busy} />
   {#if panel.reviews.error}<ErrorMessage error={panel.reviews.error} />{/if}
   {#if panel.selected}<ReviewDetail {panel} {browser} review={panel.selected} {busy} />{/if}
-  <!-- Evidence text read from a review or a finding's anchors. -->
-  {#if panel.text.items.length}<PinnedEvidencePreview
-      text={panel.text.items.join('')}
-    />{#if panel.text.next !== null}<button onclick={() => browser.text.more()}
-        >Read next evidence slice</button
-      >{/if}{/if}
-  {#if panel.text.error}<ErrorMessage error={panel.text.error} />{/if}
   <MathChecks {panel} {browser} />
   <FindingList {projectId} {sessionId} {panel} {browser} {busy} />
 </section>

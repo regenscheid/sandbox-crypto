@@ -2,7 +2,7 @@
 <!-- The session's consistency reviews, newest first, and the windows none could cover. -->
 <script lang="ts">
   import type { ReviewBrowser, ReviewPanel } from '../lib/reviewBrowser';
-  import { outcomeText, reviewLine, unreviewedText } from '../lib/reviewText';
+  import { leftUnreviewed, outcomeText, reviewLine, unreviewedText } from '../lib/reviewText';
   let { panel, browser, busy }: { panel: ReviewPanel; browser: ReviewBrowser; busy: boolean } =
     $props();
 </script>
@@ -19,14 +19,18 @@
     </details>
   </div>
 {/if}
-{#if !panel.reviews.items.length}<p>No consistency reviews recorded.</p>{/if}
+{#if !panel.reviews.items.length && !panel.reviews.loading && panel.reviews.error === null}<p>
+    No consistency reviews recorded.
+  </p>{/if}
 <ul class="reviews">
   {#each panel.reviews.items as review (review.review_id)}<li>
       <button
         aria-pressed={panel.selected?.review_id === review.review_id}
         onclick={() => browser.select(review)}>{reviewLine(review)}</button
       >
-      <span class="muted">{outcomeText(review.state)}.</span>
+      <span class="muted"
+        >{outcomeText(review.state, leftUnreviewed(panel.unreviewed, review.review_id))}.</span
+      >
       {#if review.summary}<p class="summary">{review.summary}</p>{/if}
     </li>{/each}
 </ul>

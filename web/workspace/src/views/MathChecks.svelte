@@ -19,7 +19,9 @@
   </ul>
   {#if panel.queueMore}<p>Additional sources remain queued or held.</p>{/if}
 {/if}
-{#if !panel.checks.items.length}<p>No mechanical math checks recorded.</p>{/if}
+{#if !panel.checks.items.length && !panel.checks.loading && panel.checks.error === null}<p>
+    No mechanical math checks recorded.
+  </p>{/if}
 <ul>
   {#each panel.checks.items as check (check.check_id)}<li>
       <button onclick={() => browser.readMath(check.check_id)}>Read evidence</button>

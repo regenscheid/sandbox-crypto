@@ -41,7 +41,6 @@ it('renders mechanical authority, exact evidence and retained stale USER respons
       sessionId: 's',
       finding,
       changed: async () => {},
-      read: async () => {},
     },
   }).body.replace(/\s+/g, ' ');
   expect(html).toContain('Mechanical math check');
