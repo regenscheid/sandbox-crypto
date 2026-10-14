@@ -56,7 +56,7 @@ and unavailable are distinct. A previous observation remains explicitly dated an
 labeled as an unknown current state when polling fails or pauses.
 
 The panel reads through the workspace's shared poller and request function
-([workspace](WORKSPACE.md#views)): an eight-second deadline, a 12 KiB answer limit,
+([workspace](WORKSPACE.md#the-client)): an eight-second deadline, a 12 KiB answer limit,
 three seconds between reads, backoff to thirty seconds, no reads while the page is
 hidden, and none after sign-out until the page is reloaded. A reply that arrives
 after the page was hidden or the panel replaced is dropped. The browser checks
