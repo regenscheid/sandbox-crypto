@@ -64,7 +64,8 @@ temporary directory so an operator rollout cannot change the bytes mid-check.
 - At most two processes and 32 admitted formulas per checker; a batch has at
   most 32 unique span IDs. A default two-second deadline for each process includes
   waiting for a process slot; operators can choose 0.05 to 10 seconds. A batch
-  that misses it is unavailable as a whole.
+  whose process misses it, fails or answers wrongly is checked again in halves,
+  down to single formulas, so one such formula leaves only itself unavailable.
 - A request (the batch) is at most 256 KiB, each formula's answer at most 32 KiB
   and stderr at most 4 KiB. A formula that alone exceeds a request, or the
   launcher's 20,000 UTF-16 units, is unavailable without being sent.
@@ -72,6 +73,11 @@ temporary directory so an operator rollout cannot change the bytes mid-check.
   ordinary files and cap the bundle at 8 MiB and launcher at 64 KiB.
 - The GUI's 5,000 UTF-16-unit formula limit, 200 macros, 1,000 characters per
   macro, 2,000 expanded macro characters and KaTeX expansion/size limits apply.
+  The launcher also refuses (as unavailable) a formula nested more than 150 levels
+  deep, counting braces and `\left`/`\right` and adding its deepest macro
+  definition: how deep KaTeX's parser gets before the stack runs out depends on how
+  warm the process is, so without the limit a formula's verdict could depend on its
+  batch. A cold process manages more than 450 levels.
   KaTeX is always untrusted, with fresh macro state for each attempt.
 - Each Node process has a 96 MiB V8 old-space cap and 4 MiB semi-space cap.
   These are heap controls, **not an operating-system RSS limit**. Deployment

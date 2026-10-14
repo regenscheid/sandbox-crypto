@@ -356,7 +356,64 @@ async def test_a_formula_too_long_for_the_launcher_does_not_spoil_its_batch(
 
 
 @pytest.mark.asyncio
-async def test_an_answer_for_another_batch_is_inconclusive(tmp_path: Path) -> None:
-    checker = fixture_checker(tmp_path, answer())  # one answer, whatever it was asked
+async def test_an_answer_for_another_formula_never_passes_it(tmp_path: Path) -> None:
+    checker = fixture_checker(tmp_path, answer())  # one answer for m1, whatever it was asked
     results = await checker.check_many([Formula(id="m1", tex="x"), Formula(id="m2", tex="y")])
-    assert [result.status for result in results] == ["unavailable", "unavailable"]
+    # The two-formula batch is answered wrongly, so each is checked alone: m1 matches.
+    assert [result.status for result in results] == ["accepted", "unavailable"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fault",
+    ["time.sleep(1.0)", "sys.exit(3)"],
+    ids=["slow", "crash"],
+)
+async def test_one_failing_formula_leaves_its_neighbours_checked(
+    tmp_path: Path, fault: str
+) -> None:
+    """A batch whose process misses its deadline or fails is checked again in halves,
+    down to single formulas."""
+    prelude = f"ENGINE={ENGINE!r}\nOPTIONS={OPTIONS!r}\nRUNS={str(tmp_path / 'runs')!r}\n"
+    body = prelude + f"if any(item['id'] == 'bad' for item in request): {fault}\n" + ECHO
+    checker = fixture_checker(tmp_path, body, timeout=0.5)
+    formulas = [Formula(id=f"m{n}", tex="x") for n in range(7)] + [Formula(id="bad", tex="y")]
+    results = await checker.check_many(formulas)
+    assert [result.status for result in results] == ["accepted"] * 7 + ["unavailable"]
+
+
+def real_checker() -> MathChecker:
+    root = Path(__file__).resolve().parents[3]
+    bundle = root / "web/workspace/dist-math/mathcheck.mjs"
+    node = shutil.which("node")
+    if not bundle.is_file() or node is None:
+        pytest.skip("build:math and Node needed; exercised in the web CI job")
+    return MathChecker(Path(node), root / "web/workspace/server/check-math.mjs", bundle, timeout=10)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tex", "macros", "status"),
+    [
+        ("\\sqrt{" * 600 + "x" + "}" * 600, {}, "unavailable"),
+        ("\\sqrt{" * 600 + "\\unknownz" + "}" * 600, {}, "unavailable"),
+        ("x^{" * 400 + "y" + "}" * 400, {}, "unavailable"),
+        ("\\left(" * 151 + "x" + "\\right)" * 151, {}, "unavailable"),
+        ("\\sqrt{" * 100 + "\\A" + "}" * 100, {"\\A": "{" * 60 + "x" + "}" * 60}, "unavailable"),
+        ("\\sqrt{" * 150 + "x" + "}" * 150, {}, "accepted"),
+        ("\\sqrt{" * 150 + "\\unknownz" + "}" * 150, {}, "rejected"),
+        ("\\{" * 400 + "x" + "\\}" * 400, {}, "accepted"),
+    ],
+)
+async def test_a_formulas_verdict_does_not_depend_on_its_batch(
+    tex: str, macros: dict[str, str], status: str
+) -> None:
+    """Nesting deeper than the launcher's limit is unavailable alone and after a warm-up;
+    within it, a cold process and a warm one agree."""
+    math = real_checker()
+    alone = await math.check(Formula(id="deep", tex=tex, macros=macros))
+    neighbours = [Formula(id=f"n{i}", tex=tex, macros=macros) for i in range(31)]
+    batched = await math.check_many([*neighbours, Formula(id="deep", tex=tex, macros=macros)])
+    assert (alone.status, batched[-1].status) == (status, status)
+    if status == "unavailable":
+        assert alone.error == "formula nests too deeply"

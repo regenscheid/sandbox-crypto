@@ -36,11 +36,40 @@ for (const input of batch) {
   }
   ids.add(input.id);
 }
+// KaTeX's parser recurses once per level of nesting, and how deep it gets before the
+// stack runs out depends on how warm V8 is, so on what ran before in the process. A
+// formula nested deeper than this is unavailable, whatever its batch; a cold process
+// manages more than three times as deep.
+const MAX_DEPTH = 150;
+function depth(tex) {
+  let level = 0;
+  let deepest = 0;
+  for (let i = 0; i < tex.length; i += 1) {
+    if (tex[i] === '\\') {
+      const word = /^\\(left|right)(?![A-Za-z])/.exec(tex.slice(i, i + 7));
+      if (word) level += word[1] === 'left' ? 1 : -1;
+      i += word ? word[0].length - 1 : 1; // an escaped brace is not a group
+    } else if (tex[i] === '{') level += 1;
+    else if (tex[i] === '}') level -= 1;
+    deepest = Math.max(deepest, level);
+  }
+  return deepest;
+}
+function nesting(input) {
+  // A macro adds its own nesting where it is used; count the deepest one once.
+  const macros = Object.values(input.macros).map(depth);
+  return depth(input.tex) + Math.max(0, ...macros);
+}
 // The bundle is operator configuration, never a document or model-supplied path.
 if (process.argv.length !== 3) throw new Error('math bundle path required');
 const { checkFormula } = await import(pathToFileURL(resolve(process.argv[2])).href);
+function check(input) {
+  if (nesting(input) <= MAX_DEPTH) return checkFormula(input);
+  const common = checkFormula({ id: input.id, tex: '', display: input.display, macros: {} });
+  return { ...common, status: 'unavailable', error: 'formula nests too deeply', remedy: null };
+}
 const answers = batch.map((input) => {
-  const answer = JSON.stringify({ ...checkFormula(input), runtime: process.versions.node });
+  const answer = JSON.stringify({ ...check(input), runtime: process.versions.node });
   if (Buffer.byteLength(answer) > MAX_ANSWER) throw new Error('math result too large');
   return answer;
 });

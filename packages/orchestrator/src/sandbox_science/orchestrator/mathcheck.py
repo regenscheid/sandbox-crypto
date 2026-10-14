@@ -274,13 +274,28 @@ class MathChecker:
         return (await self.check_many([formula]))[0]
 
     async def _batch(self, batch: list[_Request]) -> list[MathCheck]:
+        """Check ``batch`` in one process. When that process misses its deadline, fails
+        or answers wrongly, check each half again, down to single formulas, so that one
+        formula that does so leaves only itself unavailable."""
+        results, failed = await self._attempt(batch)
+        if not failed or len(batch) == 1:
+            return results
+        middle = len(batch) // 2
+        first, second = await asyncio.gather(
+            self._batch(batch[:middle]), self._batch(batch[middle:])
+        )
+        return first + second
+
+    async def _attempt(self, batch: list[_Request]) -> tuple[list[MathCheck], bool]:
+        """The batch's results, and whether its process failed (rather than the checker's
+        configuration or admission), which a smaller batch may not."""
         bundle_digest: str | None = None
         launcher_digest: str | None = None
 
-        def unavailable(reason: str) -> list[MathCheck]:
+        def unavailable(reason: str, failed: bool = False) -> tuple[list[MathCheck], bool]:
             return [
                 _unavailable(request, reason, bundle_digest, launcher_digest) for request in batch
-            ]
+            ], failed
 
         if self._pending + len(batch) > MAX_BATCH:
             return unavailable("math checker admission limit reached")
@@ -299,13 +314,18 @@ class MathChecker:
                         bundle = pinned / "mathcheck.mjs"
                         launcher.write_bytes(launcher_code)
                         bundle.write_bytes(code)
-                        return await self._run(
+                        results = await self._run(
                             batch, bundle_digest, launcher_digest, launcher, bundle
                         )
+                        return results, False
         except TimeoutError:
-            return unavailable("math checker deadline exceeded")
-        except (OSError, ValueError, RecursionError, ExceptionGroup):
+            return unavailable("math checker deadline exceeded", bundle_digest is not None)
+        except OSError:
             return unavailable("math checker unavailable or invalid response")
+        except (ValueError, RecursionError, ExceptionGroup):
+            return unavailable(
+                "math checker unavailable or invalid response", launcher_digest is not None
+            )
         finally:
             self._pending -= len(batch)
 

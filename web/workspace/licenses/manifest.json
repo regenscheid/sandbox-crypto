@@ -161,7 +161,7 @@
   "katexRuntimeSha256": "180dade94d7cbd593e59ded86d347f1482e1e17840ee528109283b1b888452af",
   "mathLauncher": {
     "source": "server/check-math.mjs",
-    "sha256": "f0131a25c5dc0aab3dab0b31e21560ebba5a66edfb99f62e3997fdf0175c3668",
+    "sha256": "b0f5b4463a396ba4968623c4a65f49cf4a1f0fd8edfe2615faa9e0f16f2baa89",
     "builtins": ["node:path", "node:url"]
   },
   "svelteEmbedded": {
