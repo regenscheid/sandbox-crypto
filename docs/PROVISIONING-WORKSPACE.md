@@ -103,7 +103,7 @@ are outside this API. The wider workspace boundary is described in
 The tests (`packages/workspace/tests/test_provisioning.py`, `test_lockfile_diffs.py`,
 `test_revision_packages.py`) use synthetic records, disposable files and in-process
 HTTP peers; `test_routes_provisioning.py` pins the routes' status codes and
-shapes. They cover exact pages, unknown fields, authentication, size, chunk and
+shapes. They cover exact pages, unknown fields, authentication, size and
 deadline refusal, and no redirect or fallback. The viewer was checked against a real worker
 in [Lab30](../.agents/docs/agent-reports/babbage-openshell-lab-30-2026-10-13.md),
 and the lockfile comparison in [Lab31](../.agents/docs/agent-reports/babbage-openshell-lab-31-2026-10-13.md).
