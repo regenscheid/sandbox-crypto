@@ -837,7 +837,8 @@ async def test_a_result_that_cannot_be_stored_still_ends_the_attempt(
 
 
 async def test_held_notices_are_bounded_by_size() -> None:
-    from sandbox_science.worker.manager import MAX_HELD_BYTES, MAX_HELD_NOTICES, _held
+    from sandbox_science.worker.files import MAX_HELD_BYTES, MAX_HELD_NOTICES
+    from sandbox_science.worker.files import latest as _held
 
     many = [f"notice {n}" for n in range(MAX_HELD_NOTICES * 2)]
     assert _held(many) == many[-MAX_HELD_NOTICES:]
