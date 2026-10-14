@@ -61,6 +61,8 @@ may retain the ordinary LOST outcome. Changed original binding, lost acknowledge
 peer holds without re-enrollment, retry or MAIN fallback. Live composition
 acceptance remains a separate gate from the local synthetic-guest tests.
 
+[OpenShell Lab34](../.agents/docs/agent-reports/babbage-openshell-lab-34-2026-10-13.md) validates the explicitly configured controller and authenticated routes with a scripted model and actual guest kernels, including worker reconnect, cancellation, stopped passive reads and old-incarnation refusal. Source/full gates and complete owned teardown are independently reviewed; automatic parent launch and a real provider pilot remain separate.
+
 ## Worker API
 
 Ordinary routes need `Authorization: Bearer <token>`: the pool's own token, which acts for every project, or a client's, which acts only for the projects its settings list ([clients](#clients-limited-to-projects)). Bodies are the JSON forms of the `sandbox_science.contracts` models. Errors return a `WorkerErrorResponse` carrying an error kind from the spec, with status 400, 403, 404, 409, 422, 500, 503 or 504 as the kind implies. The routes that name an execution, an artifact or a provisioning operation take an optional `project_id` query parameter; when it is given, one of another project is `not_found`.
