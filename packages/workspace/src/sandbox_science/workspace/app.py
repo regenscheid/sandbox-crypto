@@ -50,6 +50,7 @@ from sandbox_science.orchestrator.worker_client import WorkerClient
 
 from . import (
     api,
+    chat,
     documents,
     errors,
     jobs,
@@ -338,6 +339,7 @@ def create_app(
         provisioning,
         plans,
         plan_edits,
+        chat,
     ):
         feature.add_routes(app)
     app.router.add_post("/api/v0/logout", logout)

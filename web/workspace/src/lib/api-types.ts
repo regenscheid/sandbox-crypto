@@ -24,6 +24,18 @@ export interface CatalogRef {
   sha256: string;
 }
 
+/** A message the user wrote to a session (RS-4). */
+export interface ChatMessage {
+  message_id: string;
+  number: number;
+  text: string;
+  author: string;
+  created_at: string;
+  state: "queued" | "delivered" | "refused" | "held";
+  run: string | null;
+  reason: string | null;
+}
+
 export interface CompactPlan {
   event_cursor: number;
   head: PlanHead;
@@ -84,6 +96,12 @@ export interface EnvironmentView {
 /** Failure kinds every tool reports (docs/specs/tools.md, "Errors"). */
 export type ErrorKind = "invalid_request" | "unsupported" | "unavailable" | "policy_denied" | "not_found" | "conflict" | "timed_out" | "cancelled" | "kernel_died" | "exception" | "internal";
 
+/** A page of a run's events, and the run's state now. */
+export interface EventPage {
+  state: "active" | "ended" | "interrupted";
+  events: RunEvent[];
+}
+
 /** Who asks for an execution, and for which project, session and environment. ``environment_id`` names the logical environment (the project's default environment or a dedicated session environment). The worker reports the concrete sandbox and the environment revision it used in ``Location``. */
 export interface ExecutionContext {
   project_id: string;
@@ -100,6 +118,8 @@ export interface GoalOutcome {
   evidence: PlanEvidence[];
   remaining_work: string[];
 }
+
+export type JsonValue = unknown;
 
 /** A session's kernel; ``generation`` grows by one on every restart. */
 export interface KernelInfo {
@@ -178,6 +198,17 @@ export interface LockfileSelection {
   revision: number;
   record_sha256: string;
   lockfile: LockfileRef | null;
+}
+
+/** A message as written, and the run that holds the session, if one does. */
+export interface MessageAnswer {
+  message: ChatMessage;
+  run: RunLease | null;
+}
+
+export interface MessageListing {
+  messages: ChatMessage[];
+  run: RunLease | null;
 }
 
 /** A Python distribution that pip or uv installed beside the Conda packages. */
@@ -507,6 +538,21 @@ export interface RunEntry {
   name: string;
   run_id: string;
   started_at: string;
+}
+
+/** One thing a run did, for display (RS-14). */
+export interface RunEvent {
+  seq: number;
+  at: string;
+  kind: "started" | "user" | "model" | "assistant" | "tool" | "notice" | "waiting" | "stopped";
+  data: Record<string, JsonValue>;
+}
+
+/** The run that holds a session, and when it last renewed its lease. */
+export interface RunLease {
+  run: string;
+  started_at: string;
+  renewed_at: string;
 }
 
 export interface SessionDetail {

@@ -89,6 +89,9 @@ All routes need the session and answer JSON. Every route that is a GET also answ
 | POST | `/api/v0/projects/{project}/macros` | Changes the setting: exact `expected` revision, bounded `macros` and `operation_id`, attributed to the USER on the server |
 | GET | `/api/v0/projects/{project}/sessions/{session}` | The `session` and its `runs`, oldest first: each run's `name`, `run_id` and `started_at` |
 | GET | `/api/v0/projects/{project}/sessions/{session}/runs/{run}` | The run's record ([run records](#run-records)), at most 64 MiB |
+| GET | `/api/v0/projects/{project}/sessions/{session}/runs/{run}/events` | The run's events after `after`, at most `limit` (200), and its state: `active`, `ended` or `interrupted` ([chat](#chat)) |
+| GET | `/api/v0/projects/{project}/sessions/{session}/messages` | The session's chat messages after `after`, with their state, and the run that holds the session ([chat](#chat)) |
+| POST | `/api/v0/projects/{project}/sessions/{session}/messages` | Queues a message `{message_id, text}` for the session's run; the same ID and text again answers the message already written ([chat](#chat)) |
 | GET | `/api/v0/projects/{project}/sessions/{session}/plan` | The session's current plan, version, progress and goal outcome; closed sessions stay readable ([contract](SESSION-PLAN-WORKSPACE.md)) |
 | POST | `/api/v0/projects/{project}/sessions/{session}/plan/changes` | A USER revision of the plan's body, guarded by its base version ([contract](SESSION-PLAN-EDITING.md)) |
 | GET | `/api/v0/projects/{project}/sessions/{session}/kernels` | The worker's passive observation of the session's kernels and their package revisions ([contract](WORKSPACE-KERNELS.md)) |
@@ -226,6 +229,10 @@ Each session has a consistency-review panel, backed by the shared control store.
 Users can rebut, claim a fix with exact `doc-ID:revision` references, confirm, dismiss or reopen a finding. Drafts, and the operation ID of a change not yet answered with a result, survive reload; a response to a stale finding keeps its text until the user chooses the current revision. Writes need the authenticated same-origin boundary, and the server derives the USER identity. Request review queues a request for the next live safe point; idle sessions do not start a model turn. See [consistency review as built](CONSISTENCY-REVIEW.md) for snapshot budgets and the retry and delivery rules.
 
 The panel also lists the project's mechanical math checks ([document](MATH-CHECKS.md), [comment and reply](COMMENT-MATH.md) and [MAIN explanation](FINDING-PROSE-MATH.md) checks) for an authenticated project and session, so USER checks and checks without a session stay visible. Findings stay scoped to the session that authored the checked text. These checks have the `math` origin and no reviewer run or model; their anchors open bounded, escaped evidence with the exact document, block and span. Queued, same-head retry, unavailable and quota-held states are shown. USER decisions on math findings use the same revision guard, retry IDs and kept drafts. Saved run summaries show math checks pending and their count; the panel does not update by push.
+
+## Chat
+
+The workspace keeps the user's messages to a session's main agent and shows a run's events ([run service](specs/run-service.md)); it starts no run itself. A message is queued in the control store with its state; the same message ID and text again answers the message already written. A run's events are read by cursor, with the run's state: `active` while it holds the session, `ended` once it has stopped, `interrupted` otherwise. The runs that deliver the messages and write the events, and the run service that starts them, are being built.
 
 ## Run records
 
