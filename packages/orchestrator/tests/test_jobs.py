@@ -237,19 +237,26 @@ async def test_watcher_fine_then_attention_resumes_same_turn(tmp_path: Path) -> 
 @pytest.mark.asyncio
 async def test_user_message_interrupts_wait_without_cancelling_job(tmp_path: Path) -> None:
     worker = FakeWorker()
-    messages: asyncio.Queue[str] = asyncio.Queue()
+    message = asyncio.Event()
+    heard: list[object] = []
+
+    async def wake() -> None:
+        await message.wait()
+
+    async def on_wait(wait: dict[str, object] | None) -> None:
+        heard.append(wait and wait["job_ids"])
+
     clock = FakeClock(datetime.now(UTC))
-    jobs = tools(worker, tmp_path, clock, messages=messages)
+    jobs = tools(worker, tmp_path, clock, wake=wake, on_wait=on_wait)
     waiting = asyncio.create_task(jobs.wait({"job_ids": ["exe-1"]}, "op"))
     await eventually(lambda: clock.sleepers == 1 and waits(jobs))
-    messages.put_nowait("What has it printed?")
+    message.set()
     text, _ = await asyncio.wait_for(waiting, 5)
-    assert json.loads(text) == {
-        "reason": "user_message",
-        "message": "What has it printed?",
-        "job_ids": ["exe-1"],
-    }
+    # The message itself follows the result, as the user's own message.
+    assert json.loads(text) == {"reason": "user_message", "job_ids": ["exe-1"]}
     assert worker.cancelled == []
+    assert heard == [["exe-1"], None]
+    assert waits(jobs) == []
 
 
 @pytest.mark.asyncio
@@ -548,17 +555,16 @@ async def test_failed_notice_batch_does_not_acknowledge_unseen_output(tmp_path: 
 
 
 @pytest.mark.asyncio
-async def test_completion_and_message_race_preserves_message(tmp_path: Path) -> None:
+async def test_completion_and_message_race_reports_one_of_them(tmp_path: Path) -> None:
     worker = FakeWorker()
     worker.records["exe-1"] = execution(state=ExecutionState.SUCCEEDED)
-    messages: asyncio.Queue[str] = asyncio.Queue()
-    messages.put_nowait("Keep this message")
-    jobs = tools(worker, tmp_path, messages=messages)
+
+    async def wake() -> None:
+        return  # a message waits already; the wait does not consume it
+
+    jobs = tools(worker, tmp_path, wake=wake)
     text, _ = await jobs.wait({"job_ids": ["exe-1"]}, "op")
-    value = json.loads(text)
-    assert (
-        value.get("message") == "Keep this message" or messages.get_nowait() == "Keep this message"
-    )
+    assert json.loads(text)["reason"] in ("ended", "user_message")
 
 
 @pytest.mark.asyncio

@@ -31,6 +31,7 @@ from . import mathchecks
 from .aio import threaded
 from .artifact_publisher import ArtifactPublisher
 from .artifacts import ArtifactInventory
+from .chat import EventLog, RunChat, UserMessages
 from .consistency.controller import ReviewController
 from .consistency.store import ReviewStore
 from .documents import DocumentError, DocumentStore, DocumentTool
@@ -42,7 +43,8 @@ from .mathchecks.controller import MathController
 from .mathchecks.jobs import Checker
 from .model import ChatModel
 from .plan_tools import PlanTools
-from .projects import ProjectError, ProjectStore, RunRecord, ensure_environment
+from .projects import ProjectError, ProjectStore, RunRecord, ensure_environment, run_name
+from .runstate import RunState
 from .session_plans import SessionPlans
 from .tools import Toolbox, ToolOutcome
 from .worker_client import WorkerClient
@@ -92,6 +94,8 @@ class Stores:
     projects: ProjectStore
     documents: DocumentStore
     jobs: JobState
+    runs: RunState
+    """The sessions' messages, run leases and run events."""
 
     def __post_init__(self) -> None:
         mathchecks.subscribe(self.documents)
@@ -309,10 +313,14 @@ class Harness:
         try:
             async with AsyncExitStack() as stack:
                 with interruption.protect():
+                    chat = self.chat(admitted)
                     toolbox = await self._toolbox(
-                        admitted, lambda close: closing(stack, interruption, close)
+                        admitted, chat, lambda close: closing(stack, interruption, close)
                     )
                     hooks = toolbox.turn_hooks()
+                    if chat is not None:
+                        # The user's messages reach the model last; the events come last.
+                        hooks = (*hooks, UserMessages(chat), EventLog(chat))
                     transcript = await run_task(
                         self.main.model,
                         toolbox,
@@ -339,8 +347,24 @@ class Harness:
             hooks,
         )
 
+    def chat(self, admitted: Admitted) -> RunChat | None:
+        """The run's messages and events, with stores: the run is named as its record
+        will be."""
+        if self.stores is None:
+            return None
+        return RunChat(
+            self.stores.runs,
+            admitted.context,
+            run=run_name(admitted.started_at, admitted.run_id),
+            run_id=admitted.run_id,
+            task=admitted.request.task,
+        )
+
     async def _toolbox(
-        self, admitted: Admitted, on_close: Callable[[Callable[[], Awaitable[object]]], None]
+        self,
+        admitted: Admitted,
+        chat: RunChat | None,
+        on_close: Callable[[Callable[[], Awaitable[object]]], None],
     ) -> Toolbox:
         """The run's tools; ``on_close`` takes what closes each part the run made."""
         stores, settings, alias = self.stores, self.settings, self.main.alias
@@ -357,6 +381,8 @@ class Harness:
             watcher_calls_per_hour=settings.watcher_calls_per_hour,
             first_check_seconds=settings.watcher_first_check,
             check_interval_seconds=settings.watcher_interval,
+            wake=chat.arrived if chat is not None else None,
+            on_wait=chat.waiting if chat is not None else None,
         )
         if stores is None:
             return Toolbox(self.client, context, languages=languages, features=features, jobs=jobs)

@@ -1,0 +1,231 @@
+# SPDX-License-Identifier: MIT
+"""The run service's records and a run's part in its session's chat (run-service spec).
+
+The store is tested through ``RunState``; runs go through ``cli.main`` with the scripted
+gateway and an in-process worker (``loop_harness``), and are read back through the
+record, the events and the messages.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+from typing import cast
+
+import pytest
+
+from sandbox_science.contracts import ExecutionContext
+from sandbox_science.contracts.worker import TERMINAL_STATES
+from sandbox_science.orchestrator import cli
+from sandbox_science.orchestrator.chat import session_lease
+from sandbox_science.orchestrator.control import ControlError
+from sandbox_science.orchestrator.jobstate import JobState
+from sandbox_science.orchestrator.projects import ProjectStore
+from sandbox_science.orchestrator.runstate import RunState
+from sandbox_science.orchestrator.worker_client import WorkerClient
+from sandbox_science.testing import FakeClock, eventually
+
+from .loop_harness import (
+    API_KEY,
+    PROJECT,
+    SESSION,
+    TASK,
+    TOKEN,
+    Harness,
+    Reply,
+    call,
+    start_job,
+)
+from .loop_harness import gateway as gateway
+from .loop_harness import harness as harness
+from .loop_harness import worker as worker
+
+
+def store(tmp_path: Path, clock: FakeClock | None = None) -> tuple[ProjectStore, RunState]:
+    projects = ProjectStore(tmp_path)
+    projects.create("p", "minimal", "sha256:" + "a" * 64)
+    projects.open_session("p", "s", dedicated=False)
+    if clock is None:
+        return projects, RunState(projects.control)
+    return projects, RunState(projects.control, clock=clock)
+
+
+def runs(harness: Harness) -> RunState:
+    return RunState(ProjectStore(harness.state).control)
+
+
+def kinds(state: RunState, run: str) -> list[str]:
+    return [event.kind for event in state.events(PROJECT, SESSION, run)]
+
+
+# --- The lease -------------------------------------------------------------------------
+
+
+async def test_the_lease_is_held_while_the_context_is(tmp_path: Path) -> None:
+    projects, state = store(tmp_path)
+    context = ExecutionContext(project_id="p", session_id="s", environment_id="env")
+    async with session_lease(state, context, "run-a"):
+        with pytest.raises(ControlError):
+            async with session_lease(state, context, "run-b"):
+                pass
+    assert state.lease("p", "s") is None
+    projects.close()
+
+
+# --- Runs --------------------------------------------------------------------------------
+
+
+async def test_a_run_writes_its_events_as_it_goes(harness: Harness) -> None:
+    seen: list[list[str]] = []
+
+    async def look() -> None:
+        state = runs(harness)
+        lease = state.lease(PROJECT, SESSION)
+        assert lease is not None
+        seen.append(kinds(state, lease.run))
+
+    record = await harness.run(
+        "run-1", [Reply(calls=[call("plan_read")], before=look), Reply("Done.", before=look)]
+    )
+    state = runs(harness)
+    (entry,) = ProjectStore(harness.state).runs(PROJECT, SESSION)
+    events = state.events(PROJECT, SESSION, entry.name)
+    # The tool call's result was an event before the second model call returned.
+    assert seen == [
+        ["started", "user", "model"],
+        ["started", "user", "model", "assistant", "tool", "model"],
+    ]
+    assert [e.kind for e in events] == [
+        "started", "user", "model", "assistant", "tool", "model", "assistant", "stopped",
+    ]  # fmt: skip
+    started, user, _, asked, tool, _, answered, stopped = (e.data for e in events)
+    assert started["run_id"] == "run-1"
+    assert started["prompt_provenance"] is not None
+    assert user == {"message_id": None, "text": TASK}
+    assert cast(list[dict[str, str]], asked["tool_calls"])[0]["name"] == "plan_read"
+    assert asked["usage"] == record.usage[0].model_dump(mode="json")
+    assert (tool["name"], tool["turn"]) == ("plan_read", 1)
+    assert answered["text"] == "Done."
+    assert stopped == {
+        "stopped": "answered",
+        "failure": None,
+        "final_text": "Done.",
+        "record": entry.name,
+    }
+    assert state.lease(PROJECT, SESSION) is None
+
+
+async def test_a_message_during_a_run_reaches_the_next_model_call(harness: Harness) -> None:
+    async def write() -> None:
+        runs(harness).post(PROJECT, SESSION, "m-1", "Also check $p = 7$.", author="user")
+
+    record = await harness.run(
+        "run-1", [Reply(calls=[call("plan_read")], before=write), Reply("Both done.")]
+    )
+    _, second = harness.gateway.main
+    # The user's own words, after the tool result, before the second call.
+    assert second[-1] == {"role": "user", "content": "Also check $p = 7$."}
+    assert record.delivered["messages"] == ["m-1"]
+    state = runs(harness)
+    (message,) = state.messages(PROJECT, SESSION)
+    (entry,) = ProjectStore(harness.state).runs(PROJECT, SESSION)
+    assert (message.state, message.run) == ("delivered", entry.name)
+    users = [e.data for e in state.events(PROJECT, SESSION, entry.name) if e.kind == "user"]
+    assert users[-1] == {"message_id": "m-1", "text": "Also check $p = 7$."}
+
+
+async def test_a_message_at_the_last_answer_continues_the_run(harness: Harness) -> None:
+    async def write() -> None:
+        runs(harness).post(PROJECT, SESSION, "m-1", "One more thing.", author="user")
+
+    record = await harness.run(
+        "run-1", [Reply("First answer.", before=write), Reply("The one more thing.")]
+    )
+    assert record.final_text == "The one more thing."
+    assert harness.gateway.main[1][-1] == {"role": "user", "content": "One more thing."}
+    assert record.delivered["messages"] == ["m-1"]
+
+
+async def test_a_message_a_failed_call_saw_stays_queued(harness: Harness) -> None:
+    async def write() -> None:
+        runs(harness).post(PROJECT, SESSION, "m-1", "Did it work?", author="user")
+
+    record = await harness.run(
+        "run-1", [Reply(calls=[call("plan_read")], before=write), Reply(status=500)], status=1
+    )
+    assert record.failure == "model"
+    assert "messages" not in record.delivered
+    (message,) = runs(harness).messages(PROJECT, SESSION)
+    assert message.state == "queued"
+    again = await harness.run("run-2", [Reply("It did.")])
+    assert harness.gateway.main[0][-1] == {"role": "user", "content": "Did it work?"}
+    assert again.delivered["messages"] == ["m-1"]
+
+
+async def running_job(harness: Harness) -> str:
+    async with WorkerClient(harness.worker.url, TOKEN) as client:
+        listing = await client.jobs(harness.context())
+    (job,) = [j.execution_id for j in listing.jobs if j.state not in TERMINAL_STATES]
+    return job
+
+
+async def test_a_message_ends_a_job_wait(harness: Harness) -> None:
+    waiting = Reply()
+    jobs: list[str] = []
+
+    async def wait_on_the_job() -> None:
+        jobs.append(await running_job(harness))
+        waiting.calls = [call("wait_jobs", job_ids=jobs)]
+
+        async def write_once_waiting() -> None:
+            await eventually(lambda: bool(JobState(harness.state).waits(harness.context())))
+            runs(harness).post(PROJECT, SESSION, "m-1", "How far is it?", author="user")
+
+        asyncio.get_running_loop().create_task(write_once_waiting())
+
+    waiting.before = wait_on_the_job
+    record = await harness.run(
+        "run-1", [Reply(calls=[start_job()]), waiting, Reply("It is still running.")]
+    )
+    _, _, third = harness.gateway.main
+    assert '"reason":"user_message"' in third[-2]["content"]
+    assert third[-1] == {"role": "user", "content": "How far is it?"}
+    assert record.delivered["messages"] == ["m-1"]
+    state = runs(harness)
+    (entry,) = ProjectStore(harness.state).runs(PROJECT, SESSION)
+    waits = [e.data for e in state.events(PROJECT, SESSION, entry.name) if e.kind == "waiting"]
+    assert waits == [{"job_ids": jobs, "mode": "all"}, {"job_ids": None, "mode": None}]
+    await harness.end_job()
+
+
+async def test_a_session_whose_run_is_in_progress_refuses_another(
+    harness: Harness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    state = runs(harness)
+    state.acquire(PROJECT, SESSION, "another-run", "another-holder")
+    token, key = harness.tmp / "worker.token", harness.tmp / "gateway.key"
+    token.write_text(TOKEN)
+    key.write_text(API_KEY)
+    argv = [
+        "run", "--worker", harness.worker.url, "--token-file", str(token),
+        "--project", PROJECT, "--session", SESSION, "--state-dir", str(harness.state),
+        "--allow-unisolated", "--model-url", harness.gateway.url, "--api-key-file", str(key),
+        "--model", "main", "--run-id", "run-1", TASK,
+    ]  # fmt: skip
+    assert await asyncio.to_thread(cli.main, argv) == 1
+    assert "has a run in progress: another-run" in capsys.readouterr().err
+    assert ProjectStore(harness.state).runs(PROJECT, SESSION) == []
+    assert harness.gateway.main == []
+    state.release(PROJECT, SESSION, "another-holder")
+
+
+async def test_an_event_that_cannot_be_written_does_not_stop_the_run(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def refuse(*args: object, **kwargs: object) -> int:
+        raise ControlError("busy", "the store is held")
+
+    monkeypatch.setattr(RunState, "append", refuse)
+    record = await harness.run("run-1", [Reply("Still answered.")])
+    assert (record.stopped, record.final_text) == ("answered", "Still answered.")
+    assert "the started event of run" in caplog.text
