@@ -4,7 +4,7 @@
 This package depends on the documents and the consistency review, and neither depends
 on it. A saved revision reaches it through the control store's events: each process
 that saves documents calls ``subscribe`` on its store once, where it is assembled (the
-harness, the document commands and the workspace).
+harness's ``Stores``, the document commands and the workspace).
 
 - ``schedule``: the save's subscriber, which records what to check;
 - ``jobs``: the checks themselves (``MathJobs``), leased and bounded;

@@ -94,8 +94,8 @@ The shared `control.sqlite3` transaction that saves an immutable revision also
 advances its document's math target. Failure rolls back both. The math checks are
 their own package, `orchestrator.mathchecks`, which depends on the documents and the
 consistency review; neither depends on it. A save reaches it as an event: each process
-that saves documents (the harness, the document commands, the workspace) calls
-`mathchecks.subscribe` on its store, and the store runs the subscriber in the save's
+that saves documents calls `mathchecks.subscribe` on its store (the harness when it
+makes its `Stores`, the document commands, the workspace), and the store runs the subscriber in the save's
 transaction (`ControlStore.subscribe` and `notify`). The target and
 completed cursors reference retained revisions rather than copying an unbounded
 queue on every save. Read-only workspace requests never advance state.

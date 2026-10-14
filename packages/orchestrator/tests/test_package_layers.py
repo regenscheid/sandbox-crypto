@@ -6,6 +6,7 @@ Every import counts, including those inside functions."""
 from __future__ import annotations
 
 import ast
+import sys
 from pathlib import Path
 
 import pytest
@@ -22,12 +23,13 @@ def _imports(package: str) -> set[tuple[str, str]]:
             if isinstance(node, ast.Import):
                 found.update((path.name, alias.name) for alias in node.names)
             elif isinstance(node, ast.ImportFrom):
-                if node.level == 0:
-                    found.add((path.name, node.module or ""))
-                elif node.level == 1:
-                    found.add((path.name, f"{PACKAGE}.{package}.{node.module or ''}"))
-                else:
-                    found.add((path.name, f"{PACKAGE}.{node.module or ''}"))
+                parent = (
+                    PACKAGE if node.level > 1 else f"{PACKAGE}.{package}" if node.level == 1 else ""
+                )
+                base = ".".join(part for part in (parent, node.module or "") if part)
+                found.add((path.name, base))
+                # "from .. import mathchecks" imports the package itself.
+                found.update((path.name, f"{base}.{alias.name}") for alias in node.names)
     return found
 
 
@@ -46,3 +48,24 @@ def test_a_package_imports_nothing_that_depends_on_it(
         f"{module}: {target}" for module, target in _imports(package) if target.startswith(prefixes)
     )
     assert found == []
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "from .. import mathchecks\n",
+        "from sandbox_science.orchestrator import mathchecks\n",
+        "from .. import consistency\n",
+        "import sandbox_science.orchestrator.mathchecks as checks\n",
+        "def later():\n    from ..mathchecks.jobs import MathJobs\n",
+    ],
+)
+def test_the_layer_check_sees_every_form_of_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, line: str
+) -> None:
+    (tmp_path / "documents").mkdir()
+    (tmp_path / "documents" / "store.py").write_text(line)
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", tmp_path)
+    forbidden = ("consistency", "mathchecks")
+    with pytest.raises(AssertionError):
+        test_a_package_imports_nothing_that_depends_on_it("documents", forbidden)

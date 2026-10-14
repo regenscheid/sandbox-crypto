@@ -54,7 +54,6 @@ from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.contracts import Identifier
 
-from . import mathchecks
 from .cli_documents import add_parsers, document, project, read_secret, session
 from .documents import DocumentError, DocumentStore, store_path
 from .harness import (
@@ -175,7 +174,6 @@ async def _run_with(args: argparse.Namespace, projects: ProjectStore | None) -> 
                 stores = None
                 if projects is not None and state_dir is not None:
                     documents = DocumentStore(store_path(state_dir), producer="harness")
-                    mathchecks.subscribe(documents)
                     closing(stack, interruption, lambda: _closed(documents))
                     stores = Stores(
                         projects, documents, JobState(state_dir, control=documents.control)
