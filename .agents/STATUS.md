@@ -1,6 +1,6 @@
 # Status
 
-Updated 2026-10-14, main `2b44c77`. This file is replaced, not appended to, and stays under 10 KB. History is in the git log, PR descriptions and [lab reports](docs/agent-reports/).
+Updated 2026-10-14, main `9da54ac`. This file is replaced, not appended to, and stays under 10 KB. History is in the git log, PR descriptions and [lab reports](docs/agent-reports/).
 
 ## Phase and focus
 
@@ -25,16 +25,20 @@ The [plan](refactor-plan/PLAN.md) has five phases. The owner answered its decisi
 
 | Phase | State |
 | --- | --- |
-| 0. Stop the bleeding: bug fixes, removal of unwired code, hygiene, CI guards | In progress |
-| 1. Test seams: clocks, test support, characterization tests, CI tiers | Next |
-| 2. Core seams: loop hooks, control store, worker manager, contracts, workspace handlers | Later |
+| 0. Stop the bleeding: bug fixes, removal of unwired code, hygiene, CI guards | Done |
+| 1. Test seams: clocks, test support, characterization tests, CI tiers | In progress: the worker's part |
+| 2. Core seams: loop hooks, control store, worker manager, contracts, workspace handlers | Next |
 | 3. Shared building blocks for the M2 features | Later |
 | 4. The M2 exit path: chat, a real model, ledger and board, PDF viewer, then delegation and MCP | Later |
 
-Phase 0 is done when the bug tests pass, the unwired modules are gone and the suite still passes, STATUS is under 10 KB, and the size guard runs in CI. Phase 0 so far:
-- **Merged:** raw evidence out of git, history rewritten, `scripts/check_repo_hygiene.py` in CI (#123); A-01, a second workbook no longer disables the first session's effect tools and a policy revision no longer blocks them, and A-10, a last-turn job notice no longer discards the final answer (#125); E-02, the workspace answers 503 without the worker's address when the worker is unavailable (#124); E-16, prettier formats the web app (#127); STATUS, the handoff and PLAN-CHANGES rewritten short, and the adopted decisions recorded (F-02, F-10, #126); CI job timeouts, superseded-run cancelling, a per-test timeout and dead suppressions removed (F-03 in part, F-12, #128); the unwired delegation and document-sync code removed (A-03, C-05, D-10, B-11, F-07, #129).
-- **In flight:** the worker bug fixes C-01 (executions orphaned by a bridge loss during recovery), C-10 (shutdown hangs on open event streams), C-11 (the flaky capture test) and C-15 (silent background-task failures).
-- **Next:** a docs-sync pass over `docs/` (F-08, B-16, C-17, D-11, E-20), then Phase 1.
+- **Phase 0, done:**
+  - raw evidence out of git and the hygiene check (#123);
+  - bugs fixed: a second workbook disabling the first (A-01) and a discarded last-turn answer (A-10, #125); the workspace's 500 when the worker is down (E-02, #124); executions orphaned by a bridge loss during recovery (C-01), shutdown hanging on open streams (C-10), the flaky capture test (C-11) and silent background failures (C-15, #133);
+  - about 25,000 lines of unwired delegation and document-sync code removed and archived on tags (#129, #138);
+  - short tracking files and the adopted decisions (#126); CI timeouts and dead suppressions (#128); the web formatter (#127);
+  - the reference docs synced with the code, with tests that keep the route and table inventories and the docs index honest (#131, #135, #136, #140).
+- **Phase 1:** the agent loop and the workspace routes are pinned by characterization tests (#134, #132); components take an injected clock, and tests use `FakeClock` and `eventually()` from `packages/testing` (#137, #139). In flight: the worker's test harness, deterministic timing and conformance over the daemon (C-12, C-13, C-14, F-04). Still to do: the fast and full CI tiers (F-03).
+- **Next:** Phase 2 in five lanes (the plan's Phase 2 section). The orchestrator, control-store and workspace lanes start now; the worker and contracts lanes after the worker's test seams.
 
 ## M2 exit path
 
@@ -71,8 +75,8 @@ Each has a recommendation; nothing here blocks Phase 0.
 
 ## Last five merges
 
-- #129 `2b44c77`: the unwired delegation and document-sync code removed, archived on tags.
-- #128 `036ebd9`: CI job timeouts, superseded-run cancelling, a per-test timeout, dead suppressions removed.
-- #126 `5fb7a6b`: short STATUS, handoff and PLAN-CHANGES; the adopted decisions recorded.
-- #127 `299fa24`: E-16, prettier for the web app.
-- #124 `b078846`: E-02, a 503 without the worker's address when the worker is unavailable.
+- #140 `9da54ac`: the worker docs as reference, with a route-inventory test.
+- #136: infrastructure docs, a docs index, and link and index checks in the hygiene script.
+- #135: documents, review and orchestrator docs synced, with table-inventory tests.
+- #131: the workspace docs synced, with a route-inventory test.
+- #139: the shared `eventually()` in the loop harness; the clock convention recorded.
