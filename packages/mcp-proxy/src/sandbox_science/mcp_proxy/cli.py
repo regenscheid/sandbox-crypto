@@ -5,7 +5,7 @@
 sandbox-science-mcp-proxy serve --settings proxy.toml [--log-level INFO]
 sandbox-science-mcp-proxy bind --state-dir DIR --project ID --policy policy.yaml
 sandbox-science-mcp-proxy unbind --state-dir DIR --project ID
-sandbox-science-mcp-proxy pending --settings proxy.toml
+sandbox-science-mcp-proxy pending --settings proxy.toml [--request SEQ]
 sandbox-science-mcp-proxy approve --settings proxy.toml --request SEQ [--scope tool] [--for HOURS]
 sandbox-science-mcp-proxy deny --settings proxy.toml --request SEQ
 sandbox-science-mcp-proxy new-token
@@ -34,7 +34,8 @@ from aiohttp import web
 
 from sandbox_science.event_store import EventStore, EventStoreError, Record, StoreReader
 from sandbox_science.policy import HardFloor, PolicyLoadError, load_ceiling
-from sandbox_science.policy.approvals import ALL_SCOPES, Approvals, pending_lines, prepare_answer
+from sandbox_science.policy.approvals import ALL_SCOPES
+from sandbox_science.policy.approvals import commands as approval_commands
 from sandbox_science.policy.loader import read_limited
 
 from .callers import Callers, token_digest
@@ -67,6 +68,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands.add_parser("new-token", help="print a new caller token and its hash")
     pending = commands.add_parser("pending", help="list permission requests nobody answered")
     pending.add_argument("--settings", type=Path, required=True)
+    pending.add_argument("--request", type=int, help="show this request in full, answered or not")
     for name, text in (("approve", "approve a permission request"), ("deny", "deny one")):
         answer = commands.add_parser(name, help=text)
         answer.add_argument("--settings", type=Path, required=True)
@@ -98,7 +100,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"unbound {args.project}" if removed else f"{args.project} was not bound")
                 return 0
             case "pending":
-                return _pending(load_settings(args.settings).event_store_path)
+                path = load_settings(args.settings).event_store_path
+                return approval_commands.pending(_read_records(path, 0), args.request)
             case "approve" | "deny":
                 return _answer(
                     load_settings(args.settings).event_store_path,
@@ -123,29 +126,22 @@ def _read_records(path: Path, after: int) -> list[Record]:
         return list(reader.records(after=after))
 
 
-def _pending(path: Path) -> int:
-    approvals = Approvals()
-    approvals.load(_read_records(path, 0))
-    lines = pending_lines(approvals)
-    print("\n".join(lines) if lines else "no permission requests are waiting")
-    return 0
-
-
 def _answer(path: Path, *, approve: bool, seq: int, scope: str | None, hours: float | None) -> int:
     """Append an approval or a denial of permission request ``seq``."""
-    approvals = Approvals()
-    approvals.load(_read_records(path, 0))
-    try:
-        kind, payload = prepare_answer(
-            approvals, seq, approve=approve, scope=scope, hours=hours, now=datetime.now(UTC)
-        )
-    except ValueError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-    with EventStore(path) as events:
-        record = events.append(kind, OPERATOR, payload)
-    print(f"{'approved' if approve else 'denied'} request {seq} as record {record.seq}")
-    return 0
+
+    def append(kind: str, payload: dict[str, object]) -> int:
+        with EventStore(path) as events:
+            return events.append(kind, OPERATOR, payload).seq
+
+    return approval_commands.answer(
+        _read_records(path, 0),
+        append,
+        seq,
+        approve=approve,
+        scope=scope,
+        hours=hours,
+        now=datetime.now(UTC),
+    )
 
 
 def _serve(settings: Settings) -> int:

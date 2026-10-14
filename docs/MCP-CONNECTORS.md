@@ -186,7 +186,7 @@ openshell sandbox exec -n mcp-proxy --no-tty --no-login-shell -- \
 openshell forward service --target-port 8080 --local 127.0.0.1:8080 mcp-proxy
 ```
 
-- Commands in the sandbox take full paths, since OpenShell's VM driver does not apply the image's `PATH`. `pending`, `approve` and `deny` run the same way, with `--settings /sandbox/mcp-proxy/proxy.toml`, and `/opt/sandbox-science/bin/sandbox-science-events export /sandbox/mcp-proxy/state/events.db` copies the records out.
+- Commands in the sandbox take full paths, since OpenShell's VM driver does not apply the image's `PATH`. `pending` (`--request N` shows one request in full), `approve` and `deny` run the same way, with `--settings /sandbox/mcp-proxy/proxy.toml`, and `/opt/sandbox-science/bin/sandbox-science-events export /sandbox/mcp-proxy/state/events.db` copies the records out.
 - Until a project is bound, its calls get 503 `project_unbound`. A binding, or a new revision bound later, applies from the next call, without a restart.
 - The state directory, with the policy store and the event store, is on the sandbox's disk, which survives `sandbox stop` and `start`.
 - The providers' placeholders reach the sandbox's command. The launcher restarts a proxy that exits, and the launcher and the proxy come back a few seconds after the sandbox is `Ready` again ([lab 15](../.agents/docs/agent-reports/babbage-openshell-lab-15-2026-10-11.md)).

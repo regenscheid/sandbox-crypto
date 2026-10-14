@@ -129,6 +129,16 @@ def test_a_retry_waits_on_the_same_request(
     assert kinds(events) == ["escalation"]
 
 
+def test_a_resolution_the_middleware_does_not_know_denies(
+    middleware: PolicyMiddleware, facts: FactsFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert middleware.evaluate_http(facts()).reason_code == reasons.APPROVAL_REQUIRED
+    monkeypatch.setattr(Approvals, "resolve", lambda self, key, now: object())
+    verdict = middleware.evaluate_http(facts(request_id="req-2"))
+    assert not verdict.allowed
+    assert verdict.reason_code == reasons.ESCALATION_TIMED_OUT
+
+
 def test_an_approval_lets_retries_through_and_is_recorded(
     middleware: PolicyMiddleware,
     facts: FactsFactory,

@@ -22,13 +22,17 @@ from pydantic import (
     model_validator,
 )
 
-from .keys import RequestKey, check_scope, files_digest
+from .keys import DEFAULT_SCOPES, RequestKey, check_scope, files_digest
 
 MAX_GRANT_FILES: Final = 2000
 """Package files one ``packages`` request may list."""
 MAX_GRANT_PATH: Final = 2048
 CONTEXT_TEXT: Final = 300
 """Characters of a ``packages`` request's context (what was asked, and why) kept to show."""
+WITHDRAWN: Final = "withdrawn"
+"""Marks the denial with which the worker closes a ``packages`` request for good."""
+VALID_UNTIL: Final = "valid_until"
+"""A ``packages`` request's own deadline: it grants nothing after it."""
 
 
 def _key(value: object) -> RequestKey:
@@ -188,3 +192,44 @@ class PermissionRequest:
 
     def expired(self, now: datetime) -> bool:
         return now - self.recorded >= self.timeout
+
+
+@dataclass(frozen=True, slots=True)
+class Answer:
+    """A recorded approval or denial of request ``request_seq``."""
+
+    seq: int
+    request_seq: int
+    kind: Literal["approval", "denial"]
+    key: RequestKey
+    scope: str
+    expires: datetime | None
+
+    def applies(self, key: RequestKey, now: datetime) -> bool:
+        live = self.expires is None or now < self.expires
+        return live and self.key.covers(key, self.scope)
+
+
+def answer_payload(
+    request: PermissionRequest, scope: str, expires: datetime | None
+) -> dict[str, object]:
+    """The payload of an approval or a denial of ``request``."""
+    return {
+        "request_seq": request.seq,
+        "scope": scope,
+        "target": request.key.payload(),
+        "expires": expires.isoformat(timespec="seconds") if expires is not None else None,
+    }
+
+
+def withdrawal_payload(seq: int, key: RequestKey, reason: str) -> dict[str, object]:
+    """The payload of the denial with which the worker closes ``packages`` request ``seq``
+    for good, built from its key alone, so that no read of the store is needed."""
+    return {
+        "request_seq": seq,
+        "scope": DEFAULT_SCOPES[key.kind],
+        "target": key.payload(),
+        "expires": None,
+        "reason": reason[:500],
+        WITHDRAWN: True,
+    }
