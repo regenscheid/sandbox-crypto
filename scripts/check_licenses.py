@@ -13,6 +13,12 @@ it is optional, need no install script, since installs run with ``--ignore-scrip
 With ``--installed``, after ``npm ci``, each installed package's own ``package.json``
 must also name the license the lockfile does: the lockfile's license fields are not
 covered by the integrity hashes, the packages' are. It needs only the standard library.
+
+One exception to "from the registry": a stub kept in the app's own ``stubs/`` directory,
+which an npm override puts in place of a package the app must not install (a native
+binary it never runs). Its lockfile entry is a link to that directory; the directory's
+own entry must declare an allowed license and have no dependencies or install script.
+Its code is in the repository, so it is reviewed like the rest.
 """
 
 from __future__ import annotations
@@ -166,6 +172,18 @@ def is_allowed(expression: str) -> bool:
 
 
 NPM_REGISTRY = "https://registry.npmjs.org/"
+STUBS = "stubs/"
+
+
+def _stub(path: str, entry: dict[str, Any]) -> bool:
+    """Whether a lockfile entry is the app's own stub package, under ``stubs/``."""
+    parts = path.split("/")
+    return (
+        path.startswith(STUBS)
+        and len(parts) == 2
+        and parts[1] not in ("", ".", "..")
+        and not any(key in entry for key in ("dependencies", "optionalDependencies"))
+    )
 
 
 def npm_problems(lockfile: dict[str, Any]) -> tuple[int, list[str]]:
@@ -185,9 +203,16 @@ def npm_problems(lockfile: dict[str, Any]) -> tuple[int, list[str]]:
         count += 1
         label = _label(path, entry)
         resolved = entry.get("resolved")
-        if entry.get("link") or not str(resolved).startswith(NPM_REGISTRY):
+        if entry.get("link"):
+            # Only a link to one of the app's own stubs; the stub's entry is checked itself.
+            target = packages.get(str(resolved))
+            if target is None or not _stub(str(resolved), target):
+                problems.append(f"{label}: comes from {resolved}, not the npm registry")
+            continue
+        stub = _stub(path, entry)
+        if not stub and not str(resolved).startswith(NPM_REGISTRY):
             problems.append(f"{label}: comes from {resolved}, not the npm registry")
-        if not str(entry.get("integrity", "")).startswith("sha512-"):
+        if not stub and not str(entry.get("integrity", "")).startswith("sha512-"):
             problems.append(f"{label}: has no SHA-512 integrity hash")
         expression = entry.get("license")
         if not isinstance(expression, str) or not expression.strip():
@@ -206,6 +231,11 @@ def installed_problems(lockfile: dict[str, Any], root: Path) -> tuple[int, list[
     problems: list[str] = []
     count = 0
     for path, entry in sorted(packages.items()):
+        if entry.get("link"):
+            # npm links the stub's directory in; the stub's own entry is checked below.
+            if path and (root / path).resolve() != (root / str(entry.get("resolved"))).resolve():
+                problems.append(f"{_label(path, entry)}: is not linked to {entry.get('resolved')}")
+            continue
         manifest = root / path / "package.json"
         if not path or not manifest.is_file():
             if path and not entry.get("optional"):

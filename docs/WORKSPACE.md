@@ -12,12 +12,12 @@ Besides runs and documents, the GUI shows a session's plan and progress, with a 
 ```bash
 cd web/workspace
 npm ci --ignore-scripts      # exactly the packages in package-lock.json; no install scripts
-npm run build                # writes dist/
+npm run build                # writes dist/, and the PDF viewer's dist/viewer/
 cd ../..
 uv run sandbox-science-workspace serve --state-dir harness-state --static web/workspace/dist
 ```
 
-Distribute the complete `dist/` directory, including `THIRD-PARTY-NOTICES.txt`, `LICENSE-Sandbox-Science.txt` and `license-manifest.json`. The build collects the package and helper origins it actually emits and ships their complete primary notices, with attribution and pinned license text for embedded components (React-derived Apache 2 helpers, the MIT is-promise adaptation, and the OFL fonts and glyph-derived SVG assets). The manifest records the notices and each distributed file's SHA-256, excluding the manifest itself. Unknown origins or assets, missing or changed notices, changed fonts, and version or license mismatches between the lockfile and the installed packages fail the build; copying a public directory is refused. The server serves these files like any other built file. See [notice inputs and update procedure](../web/workspace/licenses/README.md) and [licensing](LICENSING.md). The [isolated math-check distribution](MATH-CHECKS.md#build-and-configure) uses the same notice inputs for its code-only bundle.
+Distribute the complete `dist/` directory, including `THIRD-PARTY-NOTICES.txt`, `LICENSE-Sandbox-Science.txt` and `license-manifest.json`. The build collects the package and helper origins it actually emits and ships their complete primary notices, with attribution and pinned license text for embedded components (React-derived Apache 2 helpers, the MIT is-promise adaptation, and the OFL fonts and glyph-derived SVG assets). The manifest records the notices and each distributed file's SHA-256, excluding the manifest itself. Unknown origins or assets, missing or changed notices, changed fonts, and version or license mismatches between the lockfile and the installed packages fail the build; copying a public directory is refused. The server serves these files like any other built file. See [notice inputs and update procedure](../web/workspace/licenses/README.md) and [licensing](LICENSING.md). The [isolated math-check distribution](MATH-CHECKS.md#build-and-configure) uses the same notice inputs for its code-only bundle. The PDF viewer is a third build (`vite.viewer.config.ts`) into `dist/viewer/`, with notices and a manifest of its own: PDF.js, its worker and exactly the PDF.js files the license manifest lists ([PDF viewer](specs/pdf-viewer.md), PV-5). Only the preview origin serves it.
 
 The server prints a login URL once:
 

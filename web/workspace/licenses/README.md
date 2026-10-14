@@ -52,6 +52,16 @@ The source URL/date/hash are also in the manifest. OFL records the existing
 font/glyph-derived SVG asset terms; it adds no platform code dependency or
 license allowance. Apache 2 and MIT are already allowed for platform code.
 
+The PDF viewer's build (`vite.viewer.config.ts`, the `viewer` distribution) ships
+PDF.js with the complete notices of the files it copies: PDF.js's Apache license,
+the character maps' and Foxit fonts' BSD licenses, and the JBIG2 and OpenJPEG
+licenses with their PDF.js build notices. `pdfjsAssets` in the manifest lists, by
+SHA-256, every PDF.js file that may ship: the packed character maps, the Foxit
+fonts, the two image decoders' JavaScript fallbacks and the worker. The build
+fails when one is missing or modified, or when any other PDF.js file appears; the
+Liberation fonts (GPL-2.0 with exceptions), QuickJS, the scripting sandbox and
+WebAssembly are refused by name. The GUI's own build refuses PDF.js entirely.
+
 When updating npm packages, review their primary notice files and any bundled
 components before updating these pins. Review any new stylesheet, copied asset,
 virtual runtime helper or public-directory content explicitly.

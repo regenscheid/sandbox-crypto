@@ -2,12 +2,27 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync, readdirSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const virtualPackages = new Map([
   ['\0rolldown/runtime.js', 'rolldown'],
   ['\0vite/modulepreload-polyfill.js', 'vite'],
   ['\0vite/preload-helper.js', 'vite'],
 ]);
+
+// The PDF.js files the viewer ships beside its code (docs/specs/pdf-viewer.md): the packed
+// character maps, the Foxit standard fonts, the plain JavaScript image decoders and the
+// worker. Never the GPL-licensed Liberation fonts, the QuickJS scripting engine, PDF.js's
+// scripting sandbox, or any WebAssembly, which the viewer's CSP would not run.
+const PDFJS = 'node_modules/pdfjs-dist/';
+const PDFJS_SHIPPED = [/^cmaps\/[^/]+\.bcmap$/, /^standard_fonts\/Foxit[^/]+\.pfb$/,
+  /^wasm\/[a-z0-9]+_nowasm_fallback\.js$/, /^build\/pdf\.worker\.min\.mjs$/];
+const PDFJS_EXCLUDED = /LiberationSans|quickjs|pdf\.sandbox|\.wasm$/;
+
+// Where the viewer's build reads and writes: its page below the GUI's sources, its output
+// in the GUI's dist/viewer, which the preview origin serves under /viewer/.
+const gui = fileURLToPath(new URL('..', import.meta.url));
+export const VIEWER = { gui, root: resolve(gui, 'src/viewer'), outDir: resolve(gui, 'dist/viewer') };
 
 /** @param {string | Uint8Array} bytes */
 function sha256(bytes) {
@@ -58,10 +73,11 @@ function fontStatements(bytes) {
  * Build notices from actual emitted module/asset origins; unknown origins require review.
  * @param {string} root
  * @param {import('rolldown').OutputBundle} bundle
- * @param {'gui' | 'math'} distribution
+ * @param {'gui' | 'math' | 'viewer'} distribution
+ * @param {string} sourceRoot what the bundle's relative names are relative to
  */
-export function collectNotices(root, bundle, distribution = 'gui') {
-  if (!['gui', 'math'].includes(distribution)) throw new Error('Unknown notice distribution');
+export function collectNotices(root, bundle, distribution = 'gui', sourceRoot = root) {
+  if (!['gui', 'math', 'viewer'].includes(distribution)) throw new Error('Unknown notice distribution');
   root = realpathSync(root);
   const manifest = JSON.parse(readFileSync(resolve(root, 'licenses/manifest.json'), 'utf8'));
   const lock = JSON.parse(readFileSync(resolve(root, 'package-lock.json'), 'utf8'));
@@ -69,6 +85,7 @@ export function collectNotices(root, bundle, distribution = 'gui') {
   const fontPaths = new Set();
   let katexRuntime = false;
   let sveltePromise = false;
+  const pdfjsFiles = new Set();
 
   /** @param {string} id */
   function origin(id) {
@@ -78,7 +95,10 @@ export function collectNotices(root, bundle, distribution = 'gui') {
       return name;
     }
     if (id.includes('\0')) throw new Error(`Uncovered virtual license origin: ${id}`);
-    const name = inside(root, realpathSync(resolve(root, id.split('?')[0])));
+    const name = inside(root, realpathSync(resolve(sourceRoot, id.split('?')[0])));
+    if (name.startsWith(PDFJS) && distribution !== 'viewer') {
+      throw new Error(`PDF.js belongs to the viewer's bundle only: ${name}`);
+    }
     if (name.startsWith('node_modules/')) {
       const match = /^node_modules\/((?:@[^/]+\/)?[^/]+)\//.exec(name);
       const packageName = match?.[1];
@@ -120,9 +140,22 @@ export function collectNotices(root, bundle, distribution = 'gui') {
       for (const id of item.originalFileNames) owners.add(origin(id));
       // Vite combines the imported KaTeX stylesheet with project styles.
       if (item.fileName.endsWith('.css') && packages.has('katex')) owners.add('katex');
+    } else if (item.originalFileNames.length === 1 &&
+        resolve(sourceRoot, item.originalFileNames[0]).startsWith(resolve(root, PDFJS))) {
+      // Copied byte for byte; the manifest lists each PDF.js file that may ship.
+      const name = inside(resolve(root, PDFJS), realpathSync(resolve(sourceRoot, item.originalFileNames[0])));
+      if (distribution !== 'viewer' || PDFJS_EXCLUDED.test(name) || !PDFJS_SHIPPED.some(rule => rule.test(name)) ||
+          !manifest.pdfjsAssets[name]) {
+        throw new Error(`Uncovered PDF.js asset: ${name}`);
+      }
+      const bytes = checkedBytes(resolve(root, PDFJS, name), manifest.pdfjsAssets[name]);
+      if (sha256(item.source) !== sha256(bytes)) throw new Error(`Modified PDF.js asset: ${item.fileName}`);
+      packages.add('pdfjs-dist');
+      pdfjsFiles.add(name);
+      owners.add('pdfjs-dist');
     } else {
       if (item.originalFileNames.length !== 1) throw new Error(`Uncovered copied asset: ${item.fileName}`);
-      const path = inside(root, realpathSync(resolve(root, item.originalFileNames[0])));
+      const path = inside(root, realpathSync(resolve(sourceRoot, item.originalFileNames[0])));
       const name = path.replace(/^node_modules\/katex\//, '');
       if (name === path || !name.startsWith('dist/fonts/') || !manifest.katexAssets[name]) {
         throw new Error(`Uncovered copied asset: ${item.fileName}`);
@@ -137,7 +170,14 @@ export function collectNotices(root, bundle, distribution = 'gui') {
       notices: [...owners].sort() });
   }
 
-  const sections = [`Third-party notices for the Sandbox Science ${distribution === 'math' ? 'isolated math checker' : 'workspace GUI'}.\n` +
+  if (distribution === 'viewer') {
+    const listed = Object.keys(manifest.pdfjsAssets).sort();
+    if (JSON.stringify([...pdfjsFiles].sort()) !== JSON.stringify(listed)) {
+      throw new Error('The PDF.js files shipped differ from the license manifest\'s list');
+    }
+  }
+  const title = { gui: 'workspace GUI', math: 'isolated math checker', viewer: 'workspace PDF viewer' };
+  const sections = [`Third-party notices for the Sandbox Science ${title[distribution]}.\n` +
     'Includes runtime helpers and complete upstream notice files; some upstream files also cover build-only code.\n'];
   const packageRecords = [];
   for (const name of [...packages].sort()) {
@@ -218,19 +258,26 @@ export function collectNotices(root, bundle, distribution = 'gui') {
   };
 }
 
-/** Include checked runtime and asset notices. @param {'gui' | 'math'} distribution @returns {import('vite').Plugin} */
-export function licenseNotices(distribution = 'gui') {
+/**
+ * Include checked runtime and asset notices.
+ * @param {'gui' | 'math' | 'viewer'} distribution
+ * @param {string} [gui] the GUI's directory, when the build's root is below it
+ * @returns {import('vite').Plugin}
+ */
+export function licenseNotices(distribution = 'gui', gui) {
   let root;
+  let sourceRoot;
   return {
     name: 'workspace-license-notices', apply: 'build', enforce: 'post',
     configResolved(config) {
-      root = config.root;
+      sourceRoot = config.root;
+      root = gui ?? config.root;
       if (config.publicDir && existsSync(config.publicDir) && readdirSync(config.publicDir).length) {
         throw new Error('Public assets need explicit license coverage before copying');
       }
     },
     generateBundle: { order: 'post', handler(_, bundle) {
-      for (const [fileName, source] of Object.entries(collectNotices(root, bundle, distribution))) {
+      for (const [fileName, source] of Object.entries(collectNotices(root, bundle, distribution, sourceRoot))) {
         this.emitFile({ type: 'asset', fileName, source });
       }
     } },
@@ -254,4 +301,25 @@ export function verifyMathDistribution(root) {
   if (!readFileSync(resolve(directory, 'check-math.mjs')).equals(readFileSync(resolve(root, 'server/check-math.mjs')))) {
     throw new Error('Math launcher differs from its project source');
   }
+}
+
+/**
+ * Copy the PDF.js files the viewer loads at run time, under the names PDF.js asks for;
+ * the worker comes in through its `?url` import. @param {string} gui the GUI's directory
+ * @returns {import('vite').Plugin}
+ */
+export function pdfjsAssets(gui) {
+  return {
+    name: 'workspace-pdfjs-assets', apply: 'build',
+    generateBundle() {
+      for (const directory of ['cmaps', 'standard_fonts', 'wasm']) {
+        for (const file of readdirSync(resolve(gui, PDFJS, directory)).sort()) {
+          const name = `${directory}/${file}`;
+          if (!PDFJS_SHIPPED.some(rule => rule.test(name)) || PDFJS_EXCLUDED.test(name)) continue;
+          const path = resolve(gui, PDFJS, name);
+          this.emitFile({ type: 'asset', fileName: name, originalFileName: path, source: readFileSync(path) });
+        }
+      }
+    },
+  };
 }

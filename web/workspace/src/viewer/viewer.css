@@ -1,0 +1,89 @@
+/* SPDX-License-Identifier: MIT */
+/* The PDF viewer: a toolbar, and one page with its selectable text over the canvas. */
+
+body {
+  margin: 0;
+  font:
+    14px/1.4 system-ui,
+    sans-serif;
+  background: #e8e8e8;
+  color: #1b1b1b;
+}
+
+.toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+  padding: 0.4rem 0.6rem;
+  background: #f7f7f7;
+  border-bottom: 1px solid #c8c8c8;
+}
+
+.toolbar input[type='number'] {
+  width: 4.5rem;
+}
+
+#status {
+  min-height: 1.4em; /* a message does not move the page */
+  margin: 0.4rem 0.6rem;
+}
+
+#pages {
+  padding: 0.6rem;
+  overflow: auto;
+}
+
+.page {
+  position: relative;
+  margin: 0 auto;
+  background: white;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.3);
+}
+
+.page canvas {
+  display: block;
+}
+
+/* Text placed over the canvas, invisible but selectable, as PDF.js lays it out. */
+.textLayer {
+  position: absolute;
+  inset: 0;
+  overflow: clip;
+  line-height: 1;
+  text-align: initial;
+  transform-origin: 0 0;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+
+.textLayer span,
+.textLayer br {
+  position: absolute;
+  color: transparent;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+  user-select: text;
+}
+
+.textLayer > :not(.markedContent),
+.textLayer .markedContent span:not(.markedContent) {
+  --font-height: 0;
+  --scale-x: 1;
+  --rotate: 0deg;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+
+.textLayer .markedContent {
+  display: contents;
+}
+
+.textLayer ::selection {
+  background: rgb(0 90 200 / 0.3);
+}
