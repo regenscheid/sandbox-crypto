@@ -45,6 +45,7 @@ from sandbox_science.orchestrator.session_plans import (
     SessionPlans,
 )
 from sandbox_science.orchestrator.worker_client import WorkerClient
+from sandbox_science.testing import eventually
 from sandbox_science.worker.app import create_app
 from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.backends import LocalBackend
@@ -394,16 +395,6 @@ class RejectingChecker:
             )
             for f in formulas
         ]
-
-
-async def eventually(predicate: Callable[[], Awaitable[bool]], timeout: float = 30) -> None:
-    """Poll a condition, failing after ``timeout`` seconds."""
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while not await predicate():
-        if loop.time() > deadline:
-            raise AssertionError("the condition did not hold in time")
-        await asyncio.sleep(0.02)
 
 
 PLAN: Json = {
