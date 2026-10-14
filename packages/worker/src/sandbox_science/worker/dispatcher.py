@@ -349,6 +349,19 @@ class Dispatcher:
             fields.update(
                 package_operation=live.execution.origin, package_generation=gate.generation
             )
+        if live.cancel_requested or live.execution.state in TERMINAL_STATES:
+            # Cancelled while the package gate was acknowledged: the executor never gets it.
+            self.journal.finish(
+                live,
+                ExecutionState.CANCELLED,
+                Result(
+                    error=ErrorInfo(
+                        kind=ErrorKind.CANCELLED, message="cancelled before it started"
+                    ),
+                    notices=tuple(live.notices),
+                ),
+            )
+            return
         live.dispatched = True
         live.dispatched_at = self.clock.monotonic()
         live.channel = channel
@@ -605,8 +618,12 @@ class Dispatcher:
                 )
 
     def _complete(self, live: Live, notices: list[str]) -> None:
-        """End the attempt with the outcome the executor reported, and the sync's notices."""
-        if live.final is None:
+        """End the attempt with the outcome the executor reported, and the sync's notices.
+
+        An attempt that already ended, such as one lost while its sync ran, takes nothing:
+        the notices held for its session stay for the session's next result.
+        """
+        if live.final is None or live.execution.state in TERMINAL_STATES:
             return
         state, result = live.final
         context = live.execution.context
@@ -835,7 +852,6 @@ class Dispatcher:
     async def restore(self, *, daemon_enabled: bool) -> None:
         """Load the executions a previous worker left unfinished, and reattach those its
         daemons still run; the others are lost. Nothing is ever resubmitted."""
-        """Recover known daemon executions without ever resubmitting a command."""
         endpoints = tuple(set(self.store.endpoints()) | set(self.store.pending_recycles()))
         if endpoints and not daemon_enabled:
             raise WorkerError(
