@@ -6,15 +6,18 @@ links in one queue and one link table (version 16); a migrated store answers as 
 from __future__ import annotations
 
 import sqlite3
+from contextlib import nullcontext
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
+from sandbox_science.orchestrator.consistency import response_bodies
 from sandbox_science.orchestrator.consistency.findings import Findings
 from sandbox_science.orchestrator.consistency.response_bodies import ResponseBodies
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.control import ControlError
-from sandbox_science.orchestrator.documents import DocumentStore, store_path
+from sandbox_science.orchestrator.documents import DocumentStore, comment_bodies, store_path
 from sandbox_science.orchestrator.documents.annotations import Annotations
 from sandbox_science.orchestrator.documents.project_macros import response_view
 from sandbox_science.orchestrator.mathchecks.jobs import MathJobs
@@ -23,24 +26,72 @@ from sandbox_science.orchestrator.mathchecks.notices import MathNotices
 from .control_versions import TEXT_MATH, TEXT_REVISIONS, older_store
 from .test_comment_math import comment
 from .test_comment_math import edit as edit_comment
-from .test_document_math import BAD, ScriptedChecker, create, drain
+from .test_consistency import claim, dispatch, raise_finding
+from .test_document_math import BAD, MAIN, ScriptedChecker, create, drain
 from .test_document_math import stores as stores
 from .test_response_math import edit as edit_response
 from .test_response_math import response
 
+HELD = "> " * 40 + BAD
+"""A body too deeply nested for its block identity: it is saved, and its checks held."""
+
+
+def explained(reviews: ReviewStore, category: str, body: str, *, legacy: bool = False) -> str:
+    """Another finding, explained with ``body``; by a writer from before body revisions
+    when ``legacy``."""
+    claim(reviews, f"The {category} check gave 17.", f"m-{category}")
+    review = dispatch(reviews)
+    found = raise_finding(reviews, review, category=category, operation_id=category)
+    reviews.finish("p", "s", review, "owner", "findings", f"The {category} review")
+    payload = {
+        "finding": found["finding_id"],
+        "expected": 1,
+        "action": "rebut",
+        "explanation": body,
+        "operation_id": f"explain-{category}",
+    }
+    with patch.object(response_bodies, "commit") if legacy else nullcontext():
+        Findings(reviews).respond("p", "s", payload, MAIN)
+    return found["finding_id"]
+
 
 async def history(docs: DocumentStore, reviews: ReviewStore) -> dict[str, Any]:
-    """A comment whose body was edited twice and an explanation edited twice, with
-    their math checks run."""
+    """A comment whose body was edited twice and an explanation edited twice; a comment
+    and an explanation whose identity is held; a comment edited, and an explanation
+    given, by a writer from before body revisions; with their math checks run."""
     doc = create(docs, text="Paragraph.\n")
     entry = comment(docs, doc, body=BAD)["entry_id"]
     edit_comment(docs, doc, entry, "$x$ fixed", op="edit-1")
     edit_comment(docs, doc, entry, f"again {BAD}", op="edit-2")
+    held = comment(docs, doc, HELD, op="held")["entry_id"]
+    legacy = comment(docs, doc, op="legacy")
+    with patch.object(comment_bodies, "commit"):
+        Annotations(docs).change(
+            "p",
+            doc,
+            {
+                "action": "edit",
+                "thread": legacy["thread_id"],
+                "expected": 1,
+                "body": f"older {BAD}",
+                "operation_id": "older-writer",
+            },
+            MAIN,
+        )
     finding, decision = response(reviews)
     edit_response(reviews, finding, decision, "$y$", op="explain-1")
     edit_response(reviews, finding, decision, f"later {BAD}", op="explain-2")
+    held_finding = explained(reviews, "method", HELD)
+    legacy_finding = explained(reviews, "evidence_strength", BAD, legacy=True)
     await drain(reviews, ScriptedChecker())
-    return {"doc": doc, "entry": entry, "finding": finding, "decision": decision}
+    return {
+        "doc": doc,
+        "entry": entry,
+        "entries": [entry, held, legacy["entry_id"]],
+        "finding": finding,
+        "decision": decision,
+        "findings": [finding, held_finding, legacy_finding],
+    }
 
 
 def answers(docs: DocumentStore, reviews: ReviewStore, made: dict[str, Any]) -> dict[str, Any]:
@@ -48,6 +99,11 @@ def answers(docs: DocumentStore, reviews: ReviewStore, made: dict[str, Any]) -> 
     source = explanations.get("p", "s", made["finding"], made["decision"])["source"]
     return {
         "comment": Annotations(docs).body("p", made["doc"], made["entry"]),
+        "comments": [Annotations(docs).body("p", made["doc"], e) for e in made["entries"]],
+        "others": [
+            explanations.get("p", "s", f, Findings(reviews).get("p", "s", f)["revision"])
+            for f in made["findings"][1:]
+        ],
         "explanations": [
             explanations.get("p", "s", made["finding"], made["decision"], body_revision=n)
             for n in range(4)
@@ -71,6 +127,14 @@ async def test_bodies_read_back_every_revision(stores):
     assert [e["body"] for e in found["explanations"][2:]] == ["$y$", f"later {BAD}"]
     assert len(found["checks"]["checks"]) >= 3  # the document's, the comment's, the explanation's
     assert found["notices"]
+    _, held, legacy = found["comments"]
+    assert "Derived body identity" in held["held"]
+    assert "Legacy writer" in legacy["held"]
+    held, legacy = found["others"]
+    assert "Derived body identity" in held["held"]
+    # The discovery gave the legacy explanation a body revision that records no macros.
+    assert legacy["revision"] == 1
+    assert legacy["macro_context"]["anchors"] == [{"unknown": True}]
 
 
 async def more(docs: DocumentStore, reviews: ReviewStore, made: dict[str, Any]) -> None:

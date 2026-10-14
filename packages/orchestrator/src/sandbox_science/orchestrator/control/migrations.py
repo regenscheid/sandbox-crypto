@@ -30,12 +30,14 @@ import sqlite3
 from collections.abc import Callable, Sequence
 from importlib import resources
 from pathlib import Path
-from typing import Final, cast
+from typing import Any, Final, cast
 
 from .errors import BUSY, INTERNAL, NOT_FOUND, UNAVAILABLE, ControlError
 
 BASELINE: Final = 2
 """The version ``baseline.sql`` creates. Version 1 was the development stores before it."""
+
+_Json = dict[str, Any]
 
 APPLICATION_ID: Final = 0x53536373
 """The ``application_id`` of a control store ("SScs"), which ``baseline.sql`` sets."""
@@ -811,14 +813,100 @@ def _macro_revisions(schema: Schema) -> None:
         schema.execute(f"DROP TABLE {table}")
 
 
+# The derivation of an explanation's macro anchors as version 10 shipped it
+# (documents/project_macros.py at #221), kept here so that a later change to the live
+# code does not change what this step accepts.
+_V10_SEVERITY_RANK: Final = {"fail": 0, "warn": 1, "note": 2}
+
+
+def _v10_explanation_anchors(
+    db: sqlite3.Connection, project: str, finding: str, decision: int, macros: int | None
+) -> list[_Json]:
+    if macros is None:
+        return [{"unknown": True}]
+    anchors = _v10_header_anchors(db, finding, decision)
+    if anchors is None:
+        return _v10_finding_anchors(db, project, finding)
+    return _v10_anchor_pins(db, project, anchors)
+
+
+def _v10_header_anchors(db: sqlite3.Connection, finding: str, revision: int) -> object | None:
+    row = db.execute(
+        "SELECT payload FROM review_transitions WHERE finding_id=? AND revision<=? "
+        "AND json_extract(payload,'$.assessment') IS NOT NULL ORDER BY revision DESC LIMIT 1",
+        (finding, revision),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        payload = cast(_Json, json.loads(row[0]))
+        new, old = cast(_Json, payload["assessment"]), payload.get("previous_assessment")
+        if not isinstance(old, dict):
+            return new["anchors"]
+        old = cast(_Json, old)
+        stronger = _V10_SEVERITY_RANK[new["severity"]] <= _V10_SEVERITY_RANK[old["severity"]]
+        return new["anchors"] if stronger else old["anchors"]
+    except (ValueError, KeyError, TypeError, RecursionError):
+        return [{"unknown": True}]
+
+
+def _v10_finding_anchors(db: sqlite3.Connection, project: str, finding: str) -> list[_Json]:
+    row = db.execute(
+        "SELECT anchors FROM review_findings WHERE finding_id=? AND project=?",
+        (finding, project),
+    ).fetchone()
+    if row is None:
+        return [{"unknown": True}]
+    try:
+        return _v10_anchor_pins(db, project, json.loads(row[0]))
+    except (ValueError, RecursionError):
+        return [{"unknown": True}]
+
+
+def _v10_anchor_pins(db: sqlite3.Connection, project: str, anchors: object) -> list[_Json]:
+    try:
+        if not isinstance(anchors, list) or len(cast(list[Any], anchors)) > 32:
+            raise ValueError
+        pins: list[_Json] = []
+        for anchor in cast(list[_Json], anchors):
+            if anchor.get("unknown"):
+                raise ValueError
+            locator = anchor.get("locator", {})
+            if "document" not in locator:
+                continue
+            document, revision, sha = (
+                locator.get("document"),
+                locator.get("revision"),
+                locator.get("sha256"),
+            )
+            if (
+                not isinstance(document, str)
+                or re.fullmatch(r"doc-[0-9a-f]{24}", document) is None
+                or type(revision) is not int
+                or not 1 <= revision <= 999999999
+            ):
+                raise ValueError
+            saved = db.execute(
+                "SELECT sha256 FROM revisions r JOIN documents d "
+                "USING(document_id) WHERE d.project_id=? AND r.document_id=? AND r.number=?",
+                (project, document, revision),
+            ).fetchone()
+            if saved is None or (sha is not None and sha != saved[0]):
+                raise ValueError
+            pin = {"document": document, "revision": revision, "sha256": saved[0]}
+            if pin not in pins:
+                pins.append(pin)
+        if len(pins) > 8:
+            raise ValueError
+        return pins
+    except (ValueError, TypeError, AttributeError, RecursionError):
+        return [{"unknown": True}]
+
+
 def _same_anchors(schema: Schema) -> None:
     """Refuse the migration when an explanation's pinned anchors, or an explanation
     check's, differ from those version 10 derives for it (its finding's anchors at the
     explanation's decision revision)."""
-    # The derivation is the documents' own; it reads only through ``execute``. The
-    # explanation's first body revision is read here, from the table version 10 has.
-    from sandbox_science.orchestrator.documents.project_macros import explanation_anchors
-
     db = cast(sqlite3.Connection, schema)
 
     def response_anchors(db: sqlite3.Connection, source: str) -> object:
@@ -828,7 +916,7 @@ def _same_anchors(schema: Schema) -> None:
             "WHERE b.source=? ORDER BY b.revision LIMIT 1",
             (source,),
         ).fetchone()
-        return explanation_anchors(db, *row) if row else [{"unknown": True}]
+        return _v10_explanation_anchors(db, *row) if row else [{"unknown": True}]
 
     pinned = [
         *schema.execute("SELECT source,anchors FROM response_macro_anchors ORDER BY rowid"),
