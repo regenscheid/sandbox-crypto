@@ -101,8 +101,8 @@ def test_setting_fault_rolls_back_head_receipt_and_revision(stores):
     with docs.control.write() as tx:
         db = tx.sql
         db.execute(
-            "CREATE TRIGGER fail_macro_receipt BEFORE INSERT ON project_macro_operations "
-            "BEGIN SELECT RAISE(ABORT,'fixture'); END"
+            "CREATE TRIGGER fail_macro_receipt BEFORE INSERT ON operation_receipts "
+            "WHEN NEW.scope='macros' BEGIN SELECT RAISE(ABORT,'fixture'); END"
         )
     with pytest.raises(sqlite3.IntegrityError):
         change(docs, {r"\F": "x"})

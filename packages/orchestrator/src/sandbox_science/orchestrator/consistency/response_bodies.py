@@ -36,7 +36,7 @@ from sandbox_science.orchestrator.documents.project_macros import (
     response_view,
 )
 
-from .store import digest, dump, identifier, text
+from .store import RECEIPTS, digest, dump, identifier, text
 
 if TYPE_CHECKING:
     from .store import ReviewStore
@@ -306,17 +306,10 @@ class ResponseBodies:
         value: ResponseEdit,
         fingerprint: str,
     ) -> Json | None:
-        row = db.execute(
-            "SELECT fingerprint,result FROM review_operations "
-            "WHERE project=? AND actor=? AND operation_id=?",
-            (project, author.actor, value.operation_id),
-        ).fetchone()
-        if row is None:
+        retained = RECEIPTS.find(db, project, author.actor, value.operation_id, fingerprint)
+        if retained is None:
             return None
-        if row[0] != fingerprint:
-            raise DocumentError(CONFLICT, "operation ID already names another finding mutation")
         try:
-            retained = cast(Json, json.loads(row[1]))
             canonical = projection(
                 read(
                     db,

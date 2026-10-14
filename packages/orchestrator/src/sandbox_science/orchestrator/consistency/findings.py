@@ -33,7 +33,7 @@ from .models import (
     FindingResponse,
     ReviewConfig,
 )
-from .store import ReviewStore, digest, dump, identifier, stored_json, text
+from .store import RECEIPTS, ReviewStore, digest, dump, identifier, stored_json, text
 
 # Heterogeneous persisted JSON is validated at the mutation boundary.
 Json = dict[str, Any]
@@ -272,24 +272,15 @@ class Findings:
             "complete": item["complete"],
         }
 
+    @staticmethod
     def _replay(
-        self, db: sqlite3.Connection, project: str, actor: str, operation: str, fingerprint: str
+        db: sqlite3.Connection, project: str, actor: str, operation: str, fingerprint: str
     ) -> Json | None:
-        row = db.execute(
-            (
-                "SELECT fingerprint,result FROM review_operations WHERE project=? "
-                "AND actor=? AND operation_id=?"
-            ),
-            (project, actor, operation),
-        ).fetchone()
-        if row:
-            if row[0] != fingerprint:
-                raise DocumentError(CONFLICT, "operation ID already names another finding mutation")
-            return {**json.loads(row[1]), "replayed": True}
-        return None
+        found = RECEIPTS.find(db, project, actor, operation, fingerprint)
+        return None if found is None else {**found, "replayed": True}
 
+    @staticmethod
     def record_operation(
-        self,
         db: sqlite3.Connection,
         project: str,
         actor: str,
@@ -297,10 +288,7 @@ class Findings:
         fingerprint: str,
         result: Json,
     ) -> None:
-        db.execute(
-            "INSERT INTO review_operations VALUES(?,?,?,?,?)",
-            (project, actor, operation, fingerprint, dump(result)),
-        )
+        RECEIPTS.record(db, project, actor, operation, fingerprint, result)
 
     def transition(
         self,

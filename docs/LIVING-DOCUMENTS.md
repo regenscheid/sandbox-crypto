@@ -17,12 +17,11 @@ In the code, `sandbox_science.orchestrator.control` owns the connection. `Contro
 | `documents` | Each document's ID (`doc-…`), project, scope (the project, or one session's workbook), name, title, creator and the session it came from, whether agent patches wait as suggestions, its current revision, whether it is deleted, and the counters its block and span IDs come from |
 | `revisions` | Every revision, append-only: its number, author, the user who accepted it if it was a suggestion, session, base and parent revisions, reason, operations, the patch it came from, its text and SHA-256, whether it is a tombstone, what was normalized, its warnings, its block map, and the profile and parser versions that made the map |
 | `patches` | Every patch an agent submitted: applied, unchanged, conflicted (a rejected patch, LD-19), refused, suggested, accepted or declined, with its base, operations, author and the user's decision |
-| `requests` | The first result of each change made under an operation ID, so a retry returns it |
+| `operation_receipts` | The first result of each change made under an operation ID, so that a retry gets it and another request under that ID is refused; one scope each for documents (`document`), comments (`comment`), findings and finding responses (`review`) and project macros (`macros`, whose result is the setting revision) |
 | `events` | The changes' events (LD-39), numbered in commit order |
 | `annotation_threads`, `annotation_entries` | Immutable anchor/opening author and append-only attributed create, reply, edit, resolve and reopen entries |
-| `annotation_operations` | Scoped idempotent comment mutation results |
 | `annotation_requests` | User-addressed requests, their session, delivery lease and queued/delivered/responded lifecycle |
-| `project_macro_revisions`, `project_macro_heads`, `project_macro_operations` | Immutable bounded USER definitions, current setting revision and idempotent setting results |
+| `project_macro_revisions`, `project_macro_heads` | Immutable bounded USER definitions and the current setting revision |
 | `annotation_body_revisions` | Immutable revisions of each comment opening or reply body, with its hash, block map and the proved owner of each block ([comment math](COMMENT-MATH.md)) |
 | `comment_math_sources`, `math_comment_jobs` | Each comment body's math-check cursor (target and completed body revision), and which checks are of comment bodies, with the parent document's macro revision they used |
 | `math_sources` | Each document's math-check cursor: the revision to check up to, the last one checked, and whether a retry was asked for ([math checks](MATH-CHECKS.md)) |

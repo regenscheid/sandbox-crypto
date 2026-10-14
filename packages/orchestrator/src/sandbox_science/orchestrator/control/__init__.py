@@ -8,6 +8,7 @@ migrations (``migrations.py``).
 """
 
 from .errors import ControlError
+from .receipts import Receipts
 from .store import (
     DEFAULT_TIMEOUT,
     FILE_NAME,
@@ -24,6 +25,7 @@ __all__ = [
     "ControlError",
     "ControlEvent",
     "ControlStore",
+    "Receipts",
     "Subscriber",
     "Tx",
     "store_path",

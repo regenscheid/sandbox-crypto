@@ -33,7 +33,13 @@ from typing import Any, Final, cast
 from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.contracts import new_id
-from sandbox_science.orchestrator.control import DEFAULT_TIMEOUT, ControlEvent, ControlStore, Tx
+from sandbox_science.orchestrator.control import (
+    DEFAULT_TIMEOUT,
+    ControlEvent,
+    ControlStore,
+    Receipts,
+    Tx,
+)
 
 from .blocks import BYTE_ORDER_MARK, Budget, check_text, normalize_newlines, parse
 from .checks import warnings
@@ -111,6 +117,11 @@ def _dumps(value: object) -> str:
 
 def _time(value: datetime) -> str:
     return value.astimezone(UTC).isoformat()
+
+
+_RECEIPTS: Final = Receipts(
+    "document", "operation ID {operation!r} was used for another change; choose a new one"
+)
 
 
 @dataclass
@@ -1710,19 +1721,10 @@ class DocumentStore:
         """The first result of a request made again under its operation ID."""
         if operation_id is None:
             return None
-        found = db.execute(
-            "SELECT fingerprint, result FROM requests WHERE project_id = ? AND actor = ? "
-            "AND operation_id = ?",
-            (project_id, author.actor, operation_id),
-        ).fetchone()
+        found = _RECEIPTS.find(db, project_id, author.actor, operation_id, _fingerprint(request))
         if found is None:
             return None
-        if found[0] != _fingerprint(request):
-            raise DocumentError(
-                CONFLICT,
-                f"operation ID {operation_id!r} was used for another change; choose a new one",
-            )
-        return ChangeResult.model_validate_json(found[1]).model_copy(update={"replayed": True})
+        return ChangeResult.model_validate(found).model_copy(update={"replayed": True})
 
     def _remember(
         self,
@@ -1735,17 +1737,13 @@ class DocumentStore:
     ) -> None:
         if operation_id is None:
             return
-        db.execute(
-            "INSERT INTO requests (project_id, actor, operation_id, fingerprint, result, "
-            "created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (
-                project_id,
-                author.actor,
-                operation_id,
-                _fingerprint(request),
-                result.model_dump_json(),
-                _time(self._clock()),
-            ),
+        _RECEIPTS.record(
+            db,
+            project_id,
+            author.actor,
+            operation_id,
+            _fingerprint(request),
+            result.model_dump(mode="json"),
         )
 
 
