@@ -17,6 +17,7 @@ from pydantic import Field, TypeAdapter, ValidationError
 from sandbox_science.contracts import Identifier, new_id
 from sandbox_science.contracts.model import Contract
 from sandbox_science.orchestrator.control import Receipts
+from sandbox_science.orchestrator.control.notices import LeasedNotices, NoticeTable
 from sandbox_science.orchestrator.projects import ProjectError, recorded
 
 from . import comment_bodies
@@ -32,6 +33,15 @@ Json = dict[str, Any]
 ID = Annotated[str, Field(pattern=r"^b[0-9]{1,9}$")]
 THREAD: Final = re.compile(r"ann-[0-9a-f]{24}")
 _RECEIPTS: Final = Receipts("comment", "operation ID already names another annotation change")
+REQUESTS: Final = NoticeTable(
+    "annotation_requests",
+    "project_id",
+    "session_id",
+    "{0}request_id",
+    ("request_id",),
+    ("request_id",),
+)
+"""Where the user's work requests are leased to the addressed session's runs."""
 
 
 class AnchorInput(Contract):
@@ -329,6 +339,7 @@ class Annotations:
 
     def __init__(self, store: DocumentStore, *, clock: Callable[[], float] = time.time) -> None:
         self.store, self.clock = store, clock
+        self.leases = LeasedNotices(store.control, REQUESTS, clock)
 
     @staticmethod
     def _replay(
@@ -858,93 +869,60 @@ class Annotations:
         self, project: str, session: str, run: str, *, seen: set[str], max_chars: int = 20000
     ) -> list[Json]:
         """Lease a bounded batch; acknowledge only after the enclosing run is durable."""
-        if len(seen) >= 128:
-            return []
-        with self.store.control.write() as tx:
-            db = tx.sql
-            rows = db.execute(
-                "SELECT r.request_id,r.thread_id,t.document_id,e.body,t.anchor,"
-                "(SELECT max(number) FROM annotation_entries WHERE thread_id=t.thread_id) "
-                "FROM annotation_requests r JOIN annotation_threads t USING(thread_id) "
-                "JOIN annotation_entries e ON e.entry_id=r.entry_id "
-                "WHERE r.project_id=? AND r.session_id=? AND delivered_run IS NULL "
-                "AND state!='responded' AND (claimed_run IS NULL OR claim_until<? "
-                "OR claimed_run=?) AND request_id NOT IN (SELECT value FROM json_each(?)) "
-                "ORDER BY r.rowid LIMIT ?",
-                (
-                    project,
-                    session,
-                    self.clock(),
-                    run,
-                    dump(sorted(seen)),
-                    min(100, 128 - len(seen)),
-                ),
-            ).fetchall()
-            values: list[Json] = []
-            for request_id, thread_id, document, body, saved, head in rows:
-                notice = {
-                    "request_id": request_id,
-                    "thread_id": thread_id,
-                    "document_id": document,
-                    "request_text": body,
-                    "untrusted_context": {
-                        "anchor": json.loads(saved),
-                        "thread_revision": head,
-                    },
+
+        def notice(row: tuple[Any, ...]) -> Json:
+            request_id, thread_id, document, body, saved, head = row
+            found: Json = {
+                "request_id": request_id,
+                "thread_id": thread_id,
+                "document_id": document,
+                "request_text": body,
+                "untrusted_context": {"anchor": json.loads(saved), "thread_revision": head},
+            }
+            if len(dump(found)) + 2 > max_chars:
+                # Quoted document data can expand when JSON-escaped. Keep the
+                # complete user request and immutable, retrievable anchor identity.
+                found["untrusted_context"]["anchor"] = {
+                    k: found["untrusted_context"]["anchor"][k]
+                    for k in ("revision", "block", "math", "start", "end")
                 }
-                if len(dump(notice)) + 2 > max_chars:
-                    # Quoted document data can expand when JSON-escaped. Keep the
-                    # complete user request and immutable, retrievable anchor identity.
-                    notice["untrusted_context"]["anchor"] = {
-                        k: notice["untrusted_context"]["anchor"][k]
-                        for k in ("revision", "block", "math", "start", "end")
-                    }
-                    notice["untrusted_context"]["context_omitted"] = True
-                if len(dump([*values, notice])) > max_chars:
-                    break
-                values.append(notice)
-            for notice in values:
-                db.execute(
-                    "UPDATE annotation_requests SET claimed_run=?,claim_until=? WHERE request_id=?",
-                    (run, self.clock() + 120, notice["request_id"]),
-                )
-            return values
+                found["untrusted_context"]["context_omitted"] = True
+            return found
+
+        return self.leases.offer(
+            run,
+            seen,
+            batch=100,
+            max_chars=max_chars,
+            select=(
+                "SELECT n.request_id,n.thread_id,t.document_id,e.body,t.anchor,"
+                "(SELECT max(number) FROM annotation_entries WHERE thread_id=t.thread_id) "
+                "FROM annotation_requests n JOIN annotation_threads t USING(thread_id) "
+                "JOIN annotation_entries e ON e.entry_id=n.entry_id "
+                "WHERE n.project_id=? AND n.session_id=? AND n.state!='responded' "
+                "AND {leased} ORDER BY n.rowid LIMIT ?"
+            ),
+            parameters=(project, session),
+            project=notice,
+        )
 
     def renew(self, project: str, session: str, run: str) -> None:
-        with self.store.control.write() as tx:
-            db = tx.sql
-            db.execute(
-                (
-                    "UPDATE annotation_requests SET claim_until=? WHERE project_id=? "
-                    "AND session_id=? AND claimed_run=? AND delivered_run IS NULL"
-                ),
-                (self.clock() + 120, project, session, run),
-            )
+        self.leases.renew(project, session, run)
 
     def release(
         self, project: str, session: str, run: str, *, keep: set[str] | None = None
     ) -> None:
-        with self.store.control.write() as tx:
-            db = tx.sql
-            db.execute(
-                "UPDATE annotation_requests SET claimed_run=NULL,claim_until=NULL "
-                "WHERE project_id=? AND session_id=? AND claimed_run=? "
-                "AND delivered_run IS NULL AND request_id NOT IN "
-                "(SELECT value FROM json_each(?))",
-                (project, session, run, dump(sorted(keep or set()))),
-            )
+        self.leases.release(project, session, run, keep)
 
     def acknowledge(self, project: str, session: str, run: str, requests: list[str]) -> None:
         with self.store.control.write() as tx:
-            db = tx.sql
-            for request in requests:
-                db.execute(
-                    (
-                        "UPDATE annotation_requests SET state=CASE WHEN state='queued' "
-                        "THEN 'delivered' ELSE state "
-                        "END,delivered_run=?,delivered_at=?,claimed_run=NULL,claim_until=N"
-                        "ULL WHERE project_id=? AND session_id=? AND request_id=? AND "
-                        "delivered_run IS NULL AND claimed_run=?"
-                    ),
-                    (run, self.clock(), project, session, request, run),
-                )
+            self.leases.acknowledge(
+                tx.sql,
+                project,
+                session,
+                run,
+                requests,
+                also="state=CASE WHEN state='queued' THEN 'delivered' ELSE state END,"
+                "delivered_at=?,",
+                parameters=(self.clock(),),
+            )

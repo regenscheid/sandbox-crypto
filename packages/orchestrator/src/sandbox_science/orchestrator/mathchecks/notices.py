@@ -4,96 +4,75 @@
 from __future__ import annotations
 
 import sqlite3
+from typing import Any, Final
 
 from sandbox_science.orchestrator.consistency.findings import Findings
 from sandbox_science.orchestrator.consistency.notices import FindingNotices
 from sandbox_science.orchestrator.consistency.store import Json, clipped, dump
+from sandbox_science.orchestrator.control.notices import MAX_PER_RUN, NoticeTable
+
+MATH: Final = NoticeTable(
+    "math_notices",
+    "project",
+    "session",
+    "{0}finding_id||'-r'||{0}revision",
+    ("finding_id", "revision"),
+    ("finding", "revision"),
+)
+"""Where math findings are leased to the author's runs."""
 
 
 class MathNotices(FindingNotices):
+    table: NoticeTable = MATH
+
     def pending(
         self, project: str, session: str, run: str, seen: set[str], *, max_chars: int = 20000
     ) -> list[Json]:
-        if len(seen) >= 128:
+        if len(seen) >= MAX_PER_RUN:
             return []
         self.store.scope(project, session)
-        now = self.store.clock()
-        with self.store.documents.control.write() as tx:
-            db = tx.sql
-            rows = db.execute(
-                """SELECT n.finding_id,n.revision,f.statement,f.math_check_id
+
+        def notice(row: tuple[Any, ...]) -> Json:
+            finding, revision, statement, check = row
+            return {
+                "notice_id": f"{finding}-r{revision}",
+                "finding": finding,
+                "revision": revision,
+                "severity": "warn",
+                "origin": "math",
+                "check": check,
+                "statement": clipped(statement, 2048),
+                "detail": (
+                    "Read review_finding_read, then use the ordinary source "
+                    "edit tool (document_comment_edit for comments, review_response_edit "
+                    "for a response explanation). A "
+                    "mechanical check confirms accepted or removed formulas; do not claim "
+                    "a model-confirmed fix."
+                ),
+            }
+
+        return self.leases.offer(
+            run,
+            seen,
+            batch=20,
+            max_chars=max_chars,
+            select="""SELECT n.finding_id,n.revision,f.statement,f.math_check_id
               FROM math_notices n JOIN review_findings f USING(finding_id)
               JOIN math_finding_state s USING(finding_id)
               JOIN math_current_checks c ON c.check_id=s.checked_check AND c.source=s.document
               JOIN math_jobs j ON j.check_id=s.checked_check
               JOIN math_observations o ON o.check_id=j.check_id AND o.block=s.block AND
               o.span=s.span
-              WHERE n.project=? AND n.session=? AND n.delivered_run IS NULL
+              WHERE n.project=? AND n.session=?
               AND n.session=f.session AND n.revision=f.revision AND f.status='open' AND
               s.excluded IS NULL
               AND s.checked_revision=c.revision AND o.status='rejected'
               AND j.macro_held=0 AND j.macro_revision=coalesce((SELECT h.revision FROM
               project_macro_heads h WHERE h.project=f.project),0)
-
-              AND (n.claimed_run IS NULL OR n.claim_until<=? OR n.claimed_run=?)
-              AND (n.finding_id||'-r'||n.revision) NOT IN (SELECT value FROM json_each(?))
-              ORDER BY n.rowid LIMIT ?""",
-                (project, session, now, run, dump(sorted(seen)), min(20, 128 - len(seen))),
-            ).fetchall()
-            values: list[Json] = []
-            for finding, revision, statement, check in rows:
-                notice = {
-                    "notice_id": f"{finding}-r{revision}",
-                    "finding": finding,
-                    "revision": revision,
-                    "severity": "warn",
-                    "origin": "math",
-                    "check": check,
-                    "statement": clipped(statement, 2048),
-                    "detail": (
-                        "Read review_finding_read, then use the ordinary source "
-                        "edit tool (document_comment_edit for comments, review_response_edit "
-                        "for a response explanation). A "
-                        "mechanical check confirms accepted or removed formulas; do not claim "
-                        "a model-confirmed fix."
-                    ),
-                }
-                if len(dump([*values, notice])) > max_chars:
-                    break
-                values.append(notice)
-            for notice in values:
-                db.execute(
-                    (
-                        "UPDATE math_notices SET claimed_run=?,claim_until=? WHERE "
-                        "finding_id=? AND revision=?"
-                    ),
-                    (run, now + 120, notice["finding"], notice["revision"]),
-                )
-        return values
-
-    def renew(self, project: str, session: str, run: str) -> None:
-        with self.store.documents.control.write() as tx:
-            db = tx.sql
-            db.execute(
-                (
-                    "UPDATE math_notices SET claim_until=? WHERE project=? AND session=? "
-                    "AND claimed_run=? AND delivered_run IS NULL"
-                ),
-                (self.store.clock() + 120, project, session, run),
-            )
-
-    def release(self, project: str, session: str, run: str, keep: set[str] | None = None) -> None:
-        with self.store.documents.control.write() as tx:
-            db = tx.sql
-            db.execute(
-                (
-                    "UPDATE math_notices SET claimed_run=NULL,claim_until=NULL WHERE "
-                    "project=? AND session=? AND claimed_run=? AND delivered_run IS NULL "
-                    "AND (finding_id||'-r'||revision) NOT IN (SELECT value FROM "
-                    "json_each(?))"
-                ),
-                (project, session, run, dump(sorted(keep or set()))),
-            )
+              AND {leased} ORDER BY n.rowid LIMIT ?""",
+            parameters=(project, session),
+            project=notice,
+        )
 
     def acknowledge(
         self, project: str, session: str, run: str, notices: list[str], *, finalize: bool = True
@@ -116,15 +95,7 @@ class MathNotices(FindingNotices):
                     {"action": "ignored_math_notice", "notice_revision": revision, "run": run},
                     reflag=False,
                 )
-            db.execute(
-                (
-                    "UPDATE math_notices SET "
-                    "delivered_run=?,claimed_run=NULL,claim_until=NULL WHERE project=? AND "
-                    "session=? AND claimed_run=? AND delivered_run IS NULL AND "
-                    "(finding_id||'-r'||revision) IN (SELECT value FROM json_each(?))"
-                ),
-                (run, project, session, run, dump(notices)),
-            )
+            self.leases.acknowledge(db, project, session, run, notices)
 
     def bound(self, project: str, session: str, run: str, notices: set[str]) -> None:
         """Stage an unresolved closing opportunity without consuming its notice.
