@@ -315,6 +315,9 @@ uv run sandbox-science-workspace serve --state-dir harness-state --static web/wo
 ```
 
 Without a worker connection the jobs panel reports that live job views are unavailable.
+When the worker cannot be reached or answers badly, the job routes answer 503
+`unavailable` with a fixed message that does not name the worker's address; the
+worker's own refusals keep their status (400, 403, 404, 409 or 422).
 Project, session, run and document views continue to work.
 
 ## Run records
