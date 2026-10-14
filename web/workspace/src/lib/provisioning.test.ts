@@ -369,3 +369,36 @@ describe('package pages share physical transport and one-shot visibility ownersh
     expect(await read).toBeInstanceOf(transport.ProvisionReadError);await expect(transport.readProvision(scope,packageSelection(),new AbortController().signal)).rejects.toMatchObject({status:401});expect(fetch).toHaveBeenCalledOnce();vi.resetModules();
   });
 });
+
+describe('additive recorded pip license declarations', () => {
+  it.each([null, 'MIT', 'AGPL-3.0-only'])('accepts explicit %s and binds declaration/flag to the pip entry', license => {
+    const v = packageInventory(), row = v.packages[2]!;
+    row.package = {...row.package, license}; row.license = {declared: license, agpl: license === null ? null : /agpl|affero/i.test(license)};
+    expect(provisionData(v, scope, packageSelection())).toEqual(v);
+    const wrong = structuredClone(v); wrong.packages[2]!.license.declared = 'BSD';
+    expect(() => provisionData(wrong, scope, packageSelection())).toThrow();
+    if (license !== null) {const bad = structuredClone(v);bad.packages[2]!.license.agpl = !bad.packages[2]!.license.agpl;expect(() => provisionData(bad, scope, packageSelection())).toThrow();}
+  });
+  it('renders declared pip metadata without the stale always-unknown caption', () => {
+    const data = packageInventory(), row = data.packages[2]!;row.package = {...row.package,license:'AGPL-3.0-only'};row.license = {declared:'AGPL-3.0-only',agpl:true};
+    const html = render(EnvironmentPanel,{props:{projectId:'p',project:project(),initialSelection:packageSelection(),initialDetail:{phase:'observed',data,busy:false}}}).body;
+    expect(html).toContain('AGPL-3.0-only');expect(html).toContain('Missing declarations remain unknown');expect(html).not.toContain('Pip licenses remain unknown');
+  });
+  it('retains absent legacy license as unknown without accepting unrelated extra fields', () => {
+    const v = packageInventory();expect(provisionData(v, scope, packageSelection())).toEqual(v);
+    const extra = structuredClone(v) as unknown as {packages: {package: Record<string, unknown>}[]};extra.packages[2]!.package['unrelated'] = 'value';
+    expect(() => provisionData(extra, scope, packageSelection())).toThrow();
+  });
+  it.each([true, 42, [], {}, '', 'L'.repeat(257), 'MIT\u0000', 'MIT\nBSD'])('refuses malformed recorded license %j', license => {
+    const v = packageInventory() as unknown as {packages: {package: Record<string, unknown>;license: unknown}[]};
+    v.packages[2]!.package['license'] = license;v.packages[2]!.license = {declared: license, agpl: false};
+    expect(() => provisionData(v, scope, packageSelection())).toThrow();
+  });
+  it('accepts license-only pip changes and refuses detached side declarations', () => {
+    const v = comparison(), before = {name:'pip-pkg', version:'1', installer:'pip', location:'prefix' as const, url:null, sha256:null, license:'MIT'}, after = {...before,license:'AGPL-3.0-only'};
+    v.differences = [{ecosystem:'pip',name:'pip-pkg',location:'prefix',change:'changed',before,after,changed_fields:['license'],before_license:{declared:'MIT',agpl:false},after_license:{declared:'AGPL-3.0-only',agpl:true}}];
+    expect(provisionData(v, scope, diffSelection())).toEqual(v);
+    v.differences[0]!.after_license!.declared = 'MIT';
+    expect(() => provisionData(v, scope, diffSelection())).toThrow();
+  });
+});

@@ -97,9 +97,9 @@ class LockfileDifference(Bounded):
                 entry.location != self.location
                 or re.sub(r"[-_.]+", "-", entry.name).lower() != self.name
                 or license_info is None
-                or license_info.declared is not None
+                or license_info.declared != entry.license
             ):
-                raise ValueError("pip identity or unknown license mismatch")
+                raise ValueError("pip identity or declared license mismatch")
         if (
             (self.change == "added" and (self.before is not None or self.after is None))
             or (self.change == "removed" and (self.before is None or self.after is not None))
