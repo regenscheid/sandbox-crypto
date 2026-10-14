@@ -4,22 +4,21 @@
 // its author; the tests after the original's are this project's own.
 import { describe, expect, it } from 'vitest';
 import { ApiError, type MathRepairAnswer, type MathRepairRequest } from './api';
+import { Kept } from './kept';
 import {
-  definesMacros,
   describeError,
-  Kept,
   OutOfTime,
   recoveredHtml,
   recoverMath,
   repairKey,
-  repairTex,
-  safeRepair,
   texToUnicode,
   type MathRenderer,
   type Recovery,
   type ShownRecovery,
 } from './mathrepair';
 import { MAX_MODEL_TEX, ModelRepairs } from './modelRepairs';
+import { definesMacros, safeRepair } from './texDefinitions';
+import { repairTex } from './texRepairs';
 
 interface Call {
   tex: string;

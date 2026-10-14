@@ -5,7 +5,8 @@
  * mathrepair.ts and must not carry this client or the API it calls.
  */
 import type { MathRepairAnswer, MathRepairRequest } from './api';
-import { describeError, Kept, type ModelRepair } from './mathrepair';
+import { Kept } from './kept';
+import { describeError, type ModelRepair } from './mathrepair';
 
 /** The longest expression the server repairs (mathrepair.py, `MAX_TEX`). */
 export const MAX_MODEL_TEX = 4_000;

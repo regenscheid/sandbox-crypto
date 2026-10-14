@@ -24,7 +24,7 @@
  * results and of model repairs are kept by, since a formula renders otherwise under
  * other macros.
  */
-import { definesMacros } from './mathrepair';
+import { definesMacros } from './texDefinitions';
 
 export const MAX_MACROS = 200;
 /** Characters in one macro's definition. */
