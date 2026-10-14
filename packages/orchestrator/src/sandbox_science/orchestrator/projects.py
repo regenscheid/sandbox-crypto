@@ -156,6 +156,9 @@ class ModelUsage(Contract):
     """The model that answered, as the gateway names it."""
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
+    characters: int | None = Field(default=None, ge=0)
+    """What the call sent and received, in characters: the spend of a call without
+    token counts is a quarter of it."""
 
 
 def _summary(value: JsonValue | None) -> dict[str, JsonValue]:
@@ -180,7 +183,8 @@ class RunRecord(Contract):
     started_at: datetime
     ended_at: datetime
     stopped: str
-    """``answered``, ``turn_limit``, ``context_limit``, ``user_message``, or ``error``."""
+    """``answered``, ``turn_limit``, ``context_limit``, ``user_message``, ``cancelled``
+    (by the user), or ``error``."""
     failure: FailurePhase | None = None
     """Failed phase; old records omit it. Partial messages are observations, not an answer."""
     delivered: dict[Identifier, list[Identifier]] = Field(

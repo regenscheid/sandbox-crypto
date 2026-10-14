@@ -81,6 +81,7 @@ from .model import (
 )
 from .projects import ProjectError, ProjectStore, run_name
 from .runstate import RunState
+from .service import POLL_SECONDS, RunService
 from .stock_prompts import TEMPLATE_IDS
 from .tools import ToolOutcome
 from .worker_client import WorkerAPIError, WorkerClient
@@ -196,47 +197,7 @@ async def _held_run(
                     stores = Stores(
                         projects, documents, JobState(state_dir, control=documents.control), runs
                     )
-                watcher = reviewer = None
-                if args.watcher_model is not None:
-                    watcher = _role(
-                        args.watcher_script,
-                        "--watcher-script",
-                        args.watcher_model,
-                        lambda: _gateway(
-                            args, args.watcher_model, max_tokens=300, max_response_bytes=16384
-                        ),
-                    )
-                    closing(stack, interruption, lambda: _close(watcher.model))
-                if args.reviewer_model is not None:
-                    reviewer = _role(
-                        args.reviewer_script,
-                        "--reviewer-script",
-                        args.reviewer_model,
-                        lambda: _gateway(
-                            args, args.reviewer_model, max_tokens=2048, max_response_bytes=65536
-                        ),
-                    )
-                    closing(stack, interruption, lambda: _close(reviewer.model))
-                harness = Harness(
-                    client,
-                    main,
-                    stores=stores,
-                    watcher=watcher,
-                    reviewer=reviewer,
-                    checker=(
-                        MathChecker(args.math_node, args.math_launcher, args.math_bundle)
-                        if args.math_node is not None
-                        else None
-                    ),
-                    settings=Settings(
-                        min_isolation_tier=minimum,
-                        max_turns=args.max_turns,
-                        max_input_chars=args.max_input_chars,
-                        watcher_calls_per_hour=args.watcher_calls_per_hour,
-                        watcher_first_check=args.watcher_first_check,
-                        watcher_interval=args.watcher_interval,
-                    ),
-                )
+                harness = _harness(args, client, main, stores, stack, interruption)
                 finished = await harness.start(admitted, sink)
     except BaseException as error:
         if interruption.error is not None:
@@ -262,12 +223,177 @@ async def _closed(documents: DocumentStore) -> None:
     documents.close()
 
 
+def _harness(
+    args: argparse.Namespace,
+    client: WorkerClient,
+    main: Role,
+    stores: Stores | None,
+    stack: AsyncExitStack,
+    interruption: Interruption,
+) -> Harness:
+    """The harness the arguments describe; ``stack`` closes the models it opens."""
+    watcher = reviewer = None
+    if args.watcher_model is not None:
+        watcher = _role(
+            args.watcher_script,
+            "--watcher-script",
+            args.watcher_model,
+            lambda: _gateway(args, args.watcher_model, max_tokens=300, max_response_bytes=16384),
+        )
+        closing(stack, interruption, lambda: _close(watcher.model))
+    if args.reviewer_model is not None:
+        reviewer = _role(
+            args.reviewer_script,
+            "--reviewer-script",
+            args.reviewer_model,
+            lambda: _gateway(args, args.reviewer_model, max_tokens=2048, max_response_bytes=65536),
+        )
+        closing(stack, interruption, lambda: _close(reviewer.model))
+    return Harness(
+        client,
+        main,
+        stores=stores,
+        watcher=watcher,
+        reviewer=reviewer,
+        checker=(
+            MathChecker(args.math_node, args.math_launcher, args.math_bundle)
+            if args.math_node is not None
+            else None
+        ),
+        settings=Settings(
+            min_isolation_tier=None if args.allow_unisolated else args.min_isolation_tier,
+            max_turns=args.max_turns,
+            max_input_chars=args.max_input_chars,
+            watcher_calls_per_hour=args.watcher_calls_per_hour,
+            watcher_first_check=args.watcher_first_check,
+            watcher_interval=args.watcher_interval,
+        ),
+    )
+
+
+async def _serve(args: argparse.Namespace) -> int:
+    """Run the sessions' main agent for the GUI until stopped (RS-1)."""
+    alias = "scripted" if args.script is not None else args.model
+    main = _role(args.script, "--script", alias, lambda: _gateway(args, args.model))
+    interruption = Interruption()
+    async with AsyncExitStack() as stack:
+        projects = ProjectStore(args.state_dir)
+        stack.callback(projects.close)
+        documents = DocumentStore(store_path(args.state_dir), producer="harness")
+        stack.callback(documents.close)
+        client = await stack.enter_async_context(
+            WorkerClient(args.worker, read_secret(args.token_file))
+        )
+        closing(stack, interruption, lambda: _close(main.model))
+        stores = Stores(
+            projects,
+            documents,
+            JobState(args.state_dir, control=documents.control),
+            RunState(projects.control),
+        )
+        harness = _harness(args, client, main, stores, stack, interruption)
+        print(f"serving the sessions of {args.state_dir}", file=sys.stderr)
+        await RunService(harness, poll=args.poll).serve()
+    return 0
+
+
+def _agent_arguments(command: argparse.ArgumentParser) -> None:
+    """What ``run`` and ``serve`` both take: the worker, the models and the limits."""
+    command.add_argument("--worker", required=True, help="worker API base URL")
+    command.add_argument("--token-file", type=Path, required=True)
+    source = command.add_mutually_exclusive_group(required=True)
+    source.add_argument("--script", type=Path, help="replay model turns from a JSON file")
+    source.add_argument(
+        "--model-url",
+        help="OpenAI-compatible base URL (the LiteLLM proxy), as the gateway answers it: "
+        "redirects are not followed",
+    )
+    command.add_argument("--model", default="main", help="model alias")
+    command.add_argument("--api-key-file", type=Path)
+    command.add_argument("--min-isolation-tier", type=int, default=3)
+    command.add_argument("--allow-unisolated", action="store_true")
+    command.add_argument("--max-turns", type=int, default=30)
+    command.add_argument(
+        "--max-input-chars",
+        type=int,
+        default=MAX_INPUT_CHARS,
+        help="stop the run cleanly (context_limit) before MAIN is sent a longer conversation "
+        f"(default {MAX_INPUT_CHARS:,})",
+    )
+    command.add_argument(
+        "--watcher-model", help="separate job watcher model alias; omitted: no check-ins"
+    )
+    command.add_argument(
+        "--watcher-script", type=Path, help="scripted watcher replies for validation"
+    )
+    command.add_argument(
+        "--watcher-calls-per-hour",
+        type=int,
+        default=60,
+        help="durable per-project watcher call budget (default 60)",
+    )
+    command.add_argument("--watcher-first-check", type=float, default=300)
+    command.add_argument("--watcher-interval", type=float, default=1800)
+    command.add_argument(
+        "--math-node",
+        type=Path,
+        help="operator-configured absolute Node path for document math checks",
+    )
+    command.add_argument(
+        "--math-launcher", type=Path, help="operator-configured bounded math launcher"
+    )
+    command.add_argument(
+        "--math-bundle", type=Path, help="operator-configured built math checker bundle"
+    )
+    command.add_argument("--reviewer-model", help="separate consistency reviewer model alias")
+    command.add_argument(
+        "--reviewer-script", type=Path, help="scripted reviewer replies for validation"
+    )
+
+
+def _check_agent(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Refuse arguments of ``run`` or ``serve`` that do not go together."""
+    if args.watcher_calls_per_hour < 1:
+        parser.error("--watcher-calls-per-hour must be positive")
+    if any(
+        not math.isfinite(value) or value <= 0
+        for value in (args.watcher_first_check, args.watcher_interval)
+    ):
+        parser.error("watcher intervals must be positive and finite")
+    if args.watcher_model is not None:
+        if args.state_dir is None:
+            parser.error("--watcher-model needs --state-dir for durable accounting")
+        if args.watcher_script is None and args.model_url is None:
+            parser.error("--watcher-model needs --model-url or --watcher-script")
+        if args.watcher_model == args.model and args.script is None:
+            parser.error("--watcher-model must be a separate model alias")
+    elif args.watcher_script is not None:
+        parser.error("--watcher-script needs --watcher-model")
+    configured_math = (args.math_node, args.math_launcher, args.math_bundle)
+    if any(v is not None for v in configured_math) and (
+        any(v is None or not v.is_absolute() for v in configured_math) or args.state_dir is None
+    ):
+        parser.error("math checks need --state-dir and all three absolute --math-* paths")
+    if args.reviewer_model is not None:
+        if args.state_dir is None:
+            parser.error("--reviewer-model needs --state-dir for durable snapshots")
+        if args.reviewer_script is None and args.model_url is None:
+            parser.error("--reviewer-model needs --model-url or --reviewer-script")
+        if args.reviewer_model == args.model:
+            parser.error("--reviewer-model must be a separate model alias")
+    elif args.reviewer_script is not None:
+        parser.error("--reviewer-script needs --reviewer-model")
+    if args.model_url is not None and args.api_key_file is None:
+        parser.error("--model-url needs --api-key-file")
+    if args.max_input_chars < 1:
+        parser.error("--max-input-chars must be at least 1")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sandbox-science-harness")
     commands = parser.add_subparsers(dest="command", required=True)
     run = commands.add_parser("run", help="run one task to an answer")
-    run.add_argument("--worker", required=True, help="worker API base URL")
-    run.add_argument("--token-file", type=Path, required=True)
+    _agent_arguments(run)
     run.add_argument("--project", required=True)
     run.add_argument("--session", required=True)
     where = run.add_mutually_exclusive_group(required=True)
@@ -277,25 +403,6 @@ def main(argv: list[str] | None = None) -> int:
         "--dedicated",
         action="store_true",
         help="with --state-dir: a new session gets an environment of its own",
-    )
-    source = run.add_mutually_exclusive_group(required=True)
-    source.add_argument("--script", type=Path, help="replay model turns from a JSON file")
-    source.add_argument(
-        "--model-url",
-        help="OpenAI-compatible base URL (the LiteLLM proxy), as the gateway answers it: "
-        "redirects are not followed",
-    )
-    run.add_argument("--model", default="main", help="model alias")
-    run.add_argument("--api-key-file", type=Path)
-    run.add_argument("--min-isolation-tier", type=int, default=3)
-    run.add_argument("--allow-unisolated", action="store_true")
-    run.add_argument("--max-turns", type=int, default=30)
-    run.add_argument(
-        "--max-input-chars",
-        type=int,
-        default=MAX_INPUT_CHARS,
-        help="stop the run cleanly (context_limit) before MAIN is sent a longer conversation "
-        f"(default {MAX_INPUT_CHARS:,})",
     )
     run.add_argument(
         "--research-template",
@@ -307,33 +414,16 @@ def main(argv: list[str] | None = None) -> int:
         help="name the run (default: a new random ID). Under a reused ID, a call identical "
         "to one already made in the same place returns its earlier result, marked replayed",
     )
-    run.add_argument(
-        "--watcher-model", help="separate job watcher model alias; omitted: no check-ins"
-    )
-    run.add_argument("--watcher-script", type=Path, help="scripted watcher replies for validation")
-    run.add_argument(
-        "--watcher-calls-per-hour",
-        type=int,
-        default=60,
-        help="durable per-project watcher call budget (default 60)",
-    )
-    run.add_argument("--watcher-first-check", type=float, default=300)
-    run.add_argument("--watcher-interval", type=float, default=1800)
-    run.add_argument(
-        "--math-node",
-        type=Path,
-        help="operator-configured absolute Node path for document math checks",
-    )
-    run.add_argument("--math-launcher", type=Path, help="operator-configured bounded math launcher")
-    run.add_argument(
-        "--math-bundle", type=Path, help="operator-configured built math checker bundle"
-    )
-    run.add_argument("--reviewer-model", help="separate consistency reviewer model alias")
-    run.add_argument(
-        "--reviewer-script", type=Path, help="scripted reviewer replies for validation"
-    )
     run.add_argument("--transcript", type=Path)
     run.add_argument("task")
+    serve = commands.add_parser(
+        "serve", help="run the sessions' main agent for the GUI's messages, until stopped"
+    )
+    _agent_arguments(serve)
+    serve.add_argument("--state-dir", type=Path, required=True, help="the projects' records")
+    serve.add_argument(
+        "--poll", type=float, default=POLL_SECONDS, help="seconds between looks at the store"
+    )
     add_parsers(commands)
     args = parser.parse_args(argv)
     if args.command == "document":
@@ -344,41 +434,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
     match args.command:
         case "run":
-            if args.watcher_calls_per_hour < 1:
-                parser.error("--watcher-calls-per-hour must be positive")
-            if any(
-                not math.isfinite(value) or value <= 0
-                for value in (args.watcher_first_check, args.watcher_interval)
-            ):
-                parser.error("watcher intervals must be positive and finite")
-            if args.watcher_model is not None:
-                if args.state_dir is None:
-                    parser.error("--watcher-model needs --state-dir for durable accounting")
-                if args.watcher_script is None and args.model_url is None:
-                    parser.error("--watcher-model needs --model-url or --watcher-script")
-                if args.watcher_model == args.model and args.script is None:
-                    parser.error("--watcher-model must be a separate model alias")
-            elif args.watcher_script is not None:
-                parser.error("--watcher-script needs --watcher-model")
-            configured_math = (args.math_node, args.math_launcher, args.math_bundle)
-            if any(v is not None for v in configured_math) and (
-                any(v is None or not v.is_absolute() for v in configured_math)
-                or args.state_dir is None
-            ):
-                parser.error("math checks need --state-dir and all three absolute --math-* paths")
-            if args.reviewer_model is not None:
-                if args.state_dir is None:
-                    parser.error("--reviewer-model needs --state-dir for durable snapshots")
-                if args.reviewer_script is None and args.model_url is None:
-                    parser.error("--reviewer-model needs --model-url or --reviewer-script")
-                if args.reviewer_model == args.model:
-                    parser.error("--reviewer-model must be a separate model alias")
-            elif args.reviewer_script is not None:
-                parser.error("--reviewer-script needs --reviewer-model")
-            if args.model_url is not None and args.api_key_file is None:
-                parser.error("--model-url needs --api-key-file")
-            if args.max_input_chars < 1:
-                parser.error("--max-input-chars must be at least 1")
+            _check_agent(parser, args)
             if args.dedicated and args.state_dir is None:
                 parser.error("--dedicated needs --state-dir")
             if args.state_dir is not None and args.run_id is not None:
@@ -390,6 +446,11 @@ def main(argv: list[str] | None = None) -> int:
                         "digits, '.', '_' and '-', starting with a letter or digit"
                     )
             action = _run(args)
+        case "serve":
+            _check_agent(parser, args)
+            if not math.isfinite(args.poll) or args.poll <= 0:
+                parser.error("--poll must be positive and finite")
+            action = _serve(args)
         case "project":
             if args.action == "create" and (args.profile is None or args.policy is None):
                 parser.error("project create needs --profile and --policy")
@@ -405,3 +466,8 @@ def main(argv: list[str] | None = None) -> int:
     except (WorkerAPIError, ModelError, ProjectError, DocumentError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        if args.command != "serve":
+            raise
+        print("stopped: runs in progress end interrupted", file=sys.stderr)
+        return 0

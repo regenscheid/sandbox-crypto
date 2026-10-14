@@ -63,13 +63,18 @@ class RunChat:
         run: str,
         run_id: str,
         task: str | None,
+        message_ids: Sequence[str] = (),
+        prefix: int = 2,
         poll: float = POLL_SECONDS,
         clock: Clock = SYSTEM_CLOCK,
     ) -> None:
         """``run`` is the name the run's record will be kept under; ``task`` the task
-        the run starts with, if it is not made of messages."""
+        the run starts with, or ``None`` when its task is the queued ``message_ids``
+        (RS-6). ``prefix`` counts the messages the conversation starts with: the system
+        message, the earlier conversation and the task."""
         self.state, self.context, self.run, self.run_id = state, context, run, run_id
-        self.task, self.poll, self.clock = task, poll, clock
+        self.task, self.message_ids, self.prefix = task, tuple(message_ids), prefix
+        self.poll, self.clock = poll, clock
         self.offered: set[str] = set()
         self.texts: dict[str, str] = {}
 
@@ -155,6 +160,10 @@ class UserMessages(TurnHook):
         found = await self._take()
         return Closing("continue", found) if found else Closing()
 
+    def summary(self) -> object | None:
+        """The messages the run was started for, which its record's task joins."""
+        return {"initial": list(self.chat.message_ids)} if self.chat.message_ids else None
+
     async def acknowledge(self, record: RunRecord) -> None:
         ids = record.delivered.get(SOURCE)
         if ids:
@@ -228,7 +237,7 @@ class EventLog(TurnHook):
                     "project": chat.context.project_id,
                     "session": chat.context.session_id,
                     "run_id": chat.run_id,
-                    "message_ids": [],
+                    "message_ids": list(chat.message_ids),
                     "prompt_provenance": (
                         pins.model_dump(mode="json") if pins is not None else None
                     ),
@@ -236,8 +245,8 @@ class EventLog(TurnHook):
             )
             if chat.task is not None:
                 await chat.write("user", {"message_id": None, "text": chat.task})
-            # The system message and the task; later user messages are notices.
-            self.seen = min(len(messages), 2 if chat.task is not None else 1)
+            # What the run starts with; later user messages are notices.
+            self.seen = min(len(messages), chat.prefix)
         for source, ids in offered.items():
             new = sorted(set(ids) - self.written.get(source, set()))
             if not new:

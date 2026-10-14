@@ -32,9 +32,14 @@ from sandbox_science.contracts.model import Contract
 from .control import ControlError, ControlStore
 from .control.errors import BUSY, CONFLICT, INVALID_REQUEST, NOT_FOUND
 from .documents import DocumentStore
+from .projects import run_name
 
 LEASE_SECONDS: Final = 60.0
 """How long a run's lease outlives its last renewal (RS-5)."""
+SERVICE_SECONDS: Final = 30.0
+"""How old the run service's heartbeat may be while it runs (RS-3)."""
+MAIN_TOKENS: Final = 2_000_000
+"""A project's default model budget: MAIN tokens over a rolling 24 hours (RS-6a)."""
 MAX_MESSAGE_BYTES: Final = 65536
 MAX_EVENT_BYTES: Final = 65536
 PAGE: Final = 200
@@ -75,6 +80,15 @@ class RunLease(Contract):
     run: str
     started_at: datetime
     renewed_at: datetime
+
+
+class DeadLease(Contract):
+    """A lease whose holder stopped renewing it: its run was interrupted (RS-12)."""
+
+    project: str
+    session: str
+    run: str
+    holder: str
 
 
 _MESSAGE_COLUMNS: Final = "message_id, number, text, author, created_at, state, run, reason"
@@ -196,6 +210,55 @@ class RunState:
                 [(run, now, project, session, message_id) for message_id in ids],
             )
 
+    def _set_state(
+        self, project: str, session: str, ids: list[str], state: MessageState, reason: str | None
+    ) -> None:
+        now = self._now().isoformat()
+        with self.control.write() as tx:
+            tx.sql.executemany(
+                "UPDATE session_messages SET state = ?, reason = ?, updated_at = ? "
+                "WHERE project_id = ? AND session_id = ? AND message_id = ? AND state = 'queued'",
+                [(state, reason, now, project, session, message_id) for message_id in ids],
+            )
+
+    def refuse(self, project: str, session: str, ids: list[str], reason: str) -> None:
+        """Refuse queued messages, such as for a spent budget (RS-6)."""
+        self._set_state(project, session, ids, "refused", reason)
+
+    def hold(self, project: str, session: str, ids: list[str]) -> None:
+        """Hold the queued messages an interrupted run saw, until the user resumes (RS-12)."""
+        self._set_state(project, session, ids, "held", None)
+
+    def resume(self, project: str, session: str) -> int:
+        """Queue the session's held messages again; how many."""
+        now = self._now().isoformat()
+        with self.control.write() as tx:
+            _session(tx.sql, project, session)
+            return tx.sql.execute(
+                "UPDATE session_messages SET state = 'queued', updated_at = ? "
+                "WHERE project_id = ? AND session_id = ? AND state = 'held'",
+                (now, project, session),
+            ).rowcount
+
+    def waiting(self) -> list[tuple[str, str]]:
+        """Every session with queued messages, as (project, session)."""
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT DISTINCT project_id, session_id FROM session_messages "
+                "WHERE state = 'queued' ORDER BY project_id, session_id"
+            ).fetchall()
+        return [(project, session) for project, session in rows]
+
+    def delivered_texts(self, project: str, session: str, run: str) -> list[str]:
+        """The messages ``run`` delivered, in the order they were written."""
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT text FROM session_messages WHERE project_id = ? AND session_id = ? "
+                "AND run = ? ORDER BY number",
+                (project, session, run),
+            ).fetchall()
+        return [text for (text,) in rows]
+
     # --- The run lease ---------------------------------------------------------------
 
     def acquire(self, project: str, session: str, run: str, holder: str) -> None:
@@ -253,6 +316,113 @@ class RunState:
             started_at=datetime.fromisoformat(found[1]),
             renewed_at=datetime.fromtimestamp(found[2], UTC),
         )
+
+    def dead(self) -> list[DeadLease]:
+        """Leases whose holders stopped renewing them."""
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT project_id, session_id, run, holder FROM run_leases WHERE renewed_at <= ?",
+                (self._now().timestamp() - self.lease_seconds,),
+            ).fetchall()
+        return [DeadLease(project=p, session=s, run=r, holder=h) for p, s, r, h in rows]
+
+    # --- Cancels, the service's heartbeat and the budget -------------------------------
+
+    def cancel(self, project: str, session: str, run: str) -> None:
+        """Ask for the run to be cancelled (RS-11); asking again changes nothing."""
+        with self.control.write() as tx:
+            _session(tx.sql, project, session)
+            tx.sql.execute(
+                "INSERT OR IGNORE INTO run_cancels VALUES (?, ?, ?, ?)",
+                (project, session, run, self._now().isoformat()),
+            )
+
+    def cancelled(self, project: str, session: str, run: str) -> bool:
+        with self.control.read() as tx:
+            found = tx.sql.execute(
+                "SELECT 1 FROM run_cancels WHERE project_id = ? AND session_id = ? AND run = ?",
+                (project, session, run),
+            ).fetchone()
+        return found is not None
+
+    def beat(self, holder: str) -> None:
+        """The run service is running (RS-3)."""
+        with self.control.write() as tx:
+            tx.sql.execute(
+                "INSERT OR REPLACE INTO service_heartbeat VALUES (1, ?, ?)",
+                (holder, self._now().timestamp()),
+            )
+
+    def service_running(self) -> bool:
+        with self.control.read() as tx:
+            found = tx.sql.execute("SELECT renewed_at FROM service_heartbeat").fetchone()
+        return found is not None and self._now().timestamp() - found[0] < SERVICE_SECONDS
+
+    def budget(self, project: str) -> int:
+        """The project's MAIN tokens over a rolling 24 hours (RS-6a)."""
+        with self.control.read() as tx:
+            found = tx.sql.execute(
+                "SELECT main_tokens FROM project_budgets WHERE project_id = ?", (project,)
+            ).fetchone()
+        return MAIN_TOKENS if found is None else int(found[0])
+
+    def set_budget(self, project: str, tokens: int) -> None:
+        with self.control.write() as tx:
+            if (
+                tx.sql.execute("SELECT 1 FROM projects WHERE project_id = ?", (project,)).fetchone()
+                is None
+            ):
+                raise ControlError(NOT_FOUND, f"no project {project!r}")
+            try:
+                tx.sql.execute(
+                    "INSERT OR REPLACE INTO project_budgets VALUES (?, ?, ?)",
+                    (project, tokens, self._now().isoformat()),
+                )
+            except sqlite3.IntegrityError:
+                raise ControlError(INVALID_REQUEST, "a budget is 0 to 10^12 tokens") from None
+
+    def spent(self, project: str, since: datetime) -> int:
+        """MAIN's tokens in the project's runs that started at ``since`` or later: saved
+        records' ``usage``, and interrupted runs' ``assistant`` events. A call without
+        token counts spends a quarter of its characters."""
+        cost = (
+            "CASE WHEN json_extract(u, '$.input_tokens') IS NOT NULL "
+            "AND json_extract(u, '$.output_tokens') IS NOT NULL "
+            "THEN json_extract(u, '$.input_tokens') + json_extract(u, '$.output_tokens') "
+            "ELSE coalesce(json_extract(u, '$.characters'), 0) / 4 END"
+        )
+        first = run_name(since, "")
+        with self.control.read() as tx:
+            (saved,) = tx.sql.execute(
+                f"SELECT coalesce(sum({cost}), 0) FROM (SELECT usage.value AS u "  # noqa: S608
+                "FROM runs, json_each(runs.record, '$.usage') AS usage "
+                "WHERE runs.project_id = ? AND runs.name >= ?)",
+                (project, first),
+            ).fetchone()
+            (unsaved,) = tx.sql.execute(
+                f"SELECT coalesce(sum({cost}), 0) FROM (SELECT json_extract(e.data, '$.usage') "  # noqa: S608
+                "AS u FROM run_events AS e WHERE e.project_id = ? AND e.run >= ? "
+                "AND e.kind = 'assistant' AND NOT EXISTS (SELECT 1 FROM runs WHERE "
+                "runs.project_id = e.project_id AND runs.session_id = e.session_id "
+                "AND runs.name = e.run))",
+                (project, first),
+            ).fetchone()
+        return int(saved) + int(unsaved)
+
+    def run_messages(self, project: str, session: str, run: str) -> list[str]:
+        """The messages a run offered: those it started with and its ``user`` events'."""
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT kind, data FROM run_events WHERE project_id = ? AND session_id = ? "
+                "AND run = ? AND kind IN ('started', 'user')",
+                (project, session, run),
+            ).fetchall()
+        found: set[str] = set()
+        for kind, data in rows:
+            value = json.loads(data)
+            ids = value.get("message_ids") if kind == "started" else [value.get("message_id")]
+            found.update(str(item) for item in ids or [] if isinstance(item, str))
+        return sorted(found)
 
     # --- Run events ------------------------------------------------------------------
 

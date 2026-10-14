@@ -35,7 +35,7 @@ from sandbox_science.contracts.provision_observations import (
 )
 from sandbox_science.contracts.revision_packages import RevisionPackagePage
 from sandbox_science.workspace.api import ProjectAnswer, ProjectListing, SessionDetail
-from sandbox_science.workspace.chat import EventPage, MessageAnswer, MessageListing
+from sandbox_science.workspace.chat import EventPage, MessageAnswer, MessageListing, Requested
 from sandbox_science.workspace.kernels import WorkspaceObservation
 from sandbox_science.workspace.plan_edits import BodyChange, EditReceipt
 from sandbox_science.workspace.plans import WorkspacePlan
@@ -60,6 +60,7 @@ MODELS: tuple[type[BaseModel], ...] = (
     MessageAnswer,
     MessageListing,
     EventPage,
+    Requested,
 )
 HEADER = (
     "// SPDX-License-Identifier: MIT\n"

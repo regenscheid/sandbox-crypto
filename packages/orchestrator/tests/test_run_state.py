@@ -127,3 +127,45 @@ def test_a_run_offers_delivers_and_writes_only_while_it_holds_the_session(
     state.release("p", "s", "holder-a")
     assert state.known("p", "s", "run-a")  # its events remain
     projects.close()
+
+
+def test_held_and_refused_messages(tmp_path: Path) -> None:
+    projects, state = store(tmp_path)
+    for number in (1, 2, 3):
+        state.post("p", "s", f"m-{number}", f"Message {number}.", author="user")
+    state.hold("p", "s", ["m-1"])
+    state.refuse("p", "s", ["m-2"], "budget")
+    assert state.waiting() == [("p", "s")]
+    assert [(m.state, m.reason) for m in state.messages("p", "s")] == [
+        ("held", None),
+        ("refused", "budget"),
+        ("queued", None),
+    ]
+    assert state.resume("p", "s") == 1
+    assert [m.message_id for m in state.messages("p", "s", state="queued")] == ["m-1", "m-3"]
+    projects.close()
+
+
+def test_a_projects_budget_is_a_setting(tmp_path: Path) -> None:
+    projects, state = store(tmp_path)
+    assert state.budget("p") == 2_000_000
+    state.set_budget("p", 5000)
+    assert state.budget("p") == 5000
+    with pytest.raises(ControlError):
+        state.set_budget("p", -1)
+    with pytest.raises(ControlError):
+        state.set_budget("nope", 1)
+    projects.close()
+
+
+def test_dead_leases_and_the_services_heartbeat(tmp_path: Path) -> None:
+    clock = FakeClock(datetime(2026, 10, 14, tzinfo=UTC))
+    projects, state = store(tmp_path, clock)
+    state.acquire("p", "s", "run-a", "holder-a")
+    state.beat("service")
+    assert state.dead() == []
+    assert state.service_running()
+    clock.advance(60)
+    assert [lease.run for lease in state.dead()] == ["run-a"]
+    assert not state.service_running()
+    projects.close()

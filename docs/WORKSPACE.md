@@ -92,6 +92,8 @@ All routes need the session and answer JSON. Every route that is a GET also answ
 | GET | `/api/v0/projects/{project}/sessions/{session}/runs/{run}/events` | The run's events after `after`, at most `limit` (200), and its state: `active`, `ended` or `interrupted` ([chat](#chat)) |
 | GET | `/api/v0/projects/{project}/sessions/{session}/messages` | The session's chat messages after `after`, with their state, and the run that holds the session ([chat](#chat)) |
 | POST | `/api/v0/projects/{project}/sessions/{session}/messages` | Queues a message `{message_id, text}` for the session's run; the same ID and text again answers the message already written ([chat](#chat)) |
+| POST | `/api/v0/projects/{project}/sessions/{session}/resume` | Body `{}`: queues the session's held messages again, those an interrupted or cancelled run saw ([chat](#chat)) |
+| POST | `/api/v0/projects/{project}/sessions/{session}/runs/{run}/cancel` | Body `{}`: asks the run service to cancel the run ([chat](#chat)) |
 | GET | `/api/v0/projects/{project}/sessions/{session}/plan` | The session's current plan, version, progress and goal outcome; closed sessions stay readable ([contract](SESSION-PLAN-WORKSPACE.md)) |
 | POST | `/api/v0/projects/{project}/sessions/{session}/plan/changes` | A USER revision of the plan's body, guarded by its base version ([contract](SESSION-PLAN-EDITING.md)) |
 | GET | `/api/v0/projects/{project}/sessions/{session}/kernels` | The worker's passive observation of the session's kernels and their package revisions ([contract](WORKSPACE-KERNELS.md)) |
@@ -234,7 +236,16 @@ The panel also lists the project's mechanical math checks ([document](MATH-CHECK
 
 The user can write to a session's main agent ([run service](specs/run-service.md)). A message is queued in the control store with its state. A run of the session delivers it before its next model call, as the user's own message, and a message waiting when the run is about to answer makes it go on. Once the run's record is saved, the message is `delivered` with that run. A message a failed model call saw stays `queued` for the next run. While the agent waits on jobs, a message ends the wait. One run holds a session at a time: a run started while another holds it is refused (`busy`).
 
-Each run writes its events as it goes, in the control store: `started`, `user`, `model` (a model call began), `assistant`, `tool`, `notice`, `waiting` and `stopped`. Each is at most 64 KiB, with long text cut to its head and tail; the record keeps the whole text. The events are for display; deliveries are acknowledged only after the record is saved. The workspace reads them by cursor. Nothing starts a run from the GUI yet: the run service that will (`sandbox-science-harness serve`) is not built, so a message waits for a run started with `run`.
+Each run writes its events as it goes, in the control store: `started`, `user`, `model` (a model call began), `assistant`, `tool`, `notice`, `waiting` and `stopped`. Each is at most 64 KiB, with long text cut to its head and tail; the record keeps the whole text. The events are for display; deliveries are acknowledged only after the record is saved. The workspace reads them by cursor.
+
+The run service, `sandbox-science-harness serve`, starts the runs (RS-1). It is a separate orchestrator process that holds the worker token and the gateway key; the workspace never does. The two share only the control store: the workspace writes messages, cancels and resumes, and the service looks for them about once a second and writes back what happens. A message to a session with no run starts one, within the project's model budget: by default 2,000,000 MAIN tokens over a rolling 24 hours, from the records' usage and from interrupted runs' events (`project budget --main-tokens N` sets it). Over the budget, the message is `refused` with the reason `budget`. A new run's conversation begins with the session's earlier tasks and answers, up to 100,000 characters and without their tool calls. A cancelled run is saved as `cancelled`; its jobs keep running. When a run's process dies, the service ends the run `interrupted`, without a record, and holds its messages until the user resumes. The message list says whether the service is running: its heartbeat is at most 30 s old. Without it, messages wait.
+
+```bash
+sandbox-science-harness serve --state-dir state --worker http://127.0.0.1:8080 --token-file worker.token \
+    --model-url http://127.0.0.1:4000 --model main --api-key-file gateway.key
+```
+
+It takes `run`'s options for the worker, the models and the limits; Ctrl-C stops it, and its runs in progress end interrupted.
 
 ## Run records
 

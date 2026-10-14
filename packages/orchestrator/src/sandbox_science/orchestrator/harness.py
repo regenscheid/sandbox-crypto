@@ -13,6 +13,7 @@ each hook acknowledge what the record names.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 from collections.abc import Awaitable, Callable, Sequence
@@ -49,7 +50,7 @@ from .jobstate import JobState
 from .loop import MAX_INPUT_CHARS, Interruption, Transcript, run_task
 from .mathchecks.controller import MathController
 from .mathchecks.jobs import Checker
-from .model import ChatModel
+from .model import ChatModel, Message
 from .plan_tools import PlanTools
 from .projects import ProjectError, ProjectStore, RunRecord, ensure_environment, run_name
 from .runstate import RunState
@@ -134,6 +135,11 @@ class RunRequest:
     run_id: str | None = None
     """With stores, an identifier: it names the run's record."""
     research_template: str | None = None
+    history: tuple[Message, ...] = ()
+    """The session's earlier conversation, after the system message (RS-10)."""
+    message_ids: tuple[str, ...] = ()
+    """The queued messages the run is started for (RS-6): its conversation begins with
+    them, and ``task`` only names them in the record."""
 
 
 class RunSink(Protocol):
@@ -310,11 +316,14 @@ class Harness:
         )
         return await self.start(admitted, sink)
 
-    async def start(self, admitted: Admitted, sink: RunSink) -> Finished:
+    async def start(
+        self, admitted: Admitted, sink: RunSink, *, stop: asyncio.Event | None = None
+    ) -> Finished:
         """Run an admitted task to its end.
 
         A failure in the run or in closing what it made is recorded in the transcript;
-        the first cancellation or exit propagates.
+        the first cancellation or exit propagates, except one while ``stop`` is set: the
+        user's, which ends the run ``cancelled``.
         """
         if admitted.stateful != (self.stores is not None):
             raise ValueError("the run was admitted with other stores than this harness has")
@@ -332,11 +341,14 @@ class Harness:
                     if chat is not None:
                         # The user's messages reach the model last; the events come last.
                         hooks = (*hooks, UserMessages(chat), EventLog(chat))
+                    request = admitted.request
                     transcript = await run_task(
                         self.main.model,
                         toolbox,
-                        admitted.request.task,
+                        None if request.message_ids else request.task,
                         run_id=admitted.run_id,
+                        history=request.history,
+                        stop=stop,
                         max_turns=self.settings.max_turns,
                         max_input_chars=self.settings.max_input_chars,
                         on_tool=sink.tool,
@@ -363,12 +375,15 @@ class Harness:
         will be."""
         if self.stores is None:
             return None
+        request = admitted.request
         return RunChat(
             self.stores.runs,
             admitted.context,
             run=run_name(admitted.started_at, admitted.run_id),
             run_id=admitted.run_id,
-            task=admitted.request.task,
+            task=None if request.message_ids else request.task,
+            message_ids=request.message_ids,
+            prefix=1 + len(request.history) + (0 if request.message_ids else 1),
             clock=self.clock,
         )
 
