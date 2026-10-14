@@ -34,3 +34,11 @@ def test_every_layer_has_a_reason_code_in_openshell_format() -> None:
     assert len(codes) == len(set(codes))
     assert all(re.fullmatch(r"[a-z][a-z0-9_]{0,63}", code) for code in codes)
     assert set(reasons.LAYER_CODES.values()) <= set(codes)
+
+
+@pytest.mark.parametrize("name", ["Django", "zope.interface", "A__b..C", "x-_.-y", "Ünïcode_Name"])
+def test_the_contracts_copy_of_pep503_agrees(name: str) -> None:
+    # Contracts cannot import the policy library, so they keep their own copy.
+    from sandbox_science.contracts.revisions import pep503_name
+
+    assert pep503_name(name) == pep503(name)

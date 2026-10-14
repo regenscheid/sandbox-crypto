@@ -42,14 +42,16 @@ from .worker import TERMINAL_STATES, ErrorInfo, ExecutionState
 MAX_SPECS: Final = 32
 """Specs of each kind one request may name."""
 MAX_FILES: Final = 2000
-"""Resolved files one operation may record."""
+"""Resolved package files one operation may install."""
 MAX_CHANGES: Final = 2 * MAX_FILES
+"""Package changes a record holds (``ProvisionOperation.changes``)."""
 MAX_NOTES: Final = 32
+"""Notes a record holds (``ProvisionOperation.notes``)."""
 MAX_EXECUTIONS: Final = 128
 """Executions one operation may run: its steps, probes and looks."""
 MAX_QUEUED: Final = 32
-"""Provisioning operations waiting in one environment."""
-"""Resolved package files one operation may install."""
+"""Operations an environment may have that have not finished, the running one included;
+more are refused for now."""
 MAX_TEXT: Final = 2000
 """Characters of a purpose, reason or next step."""
 ARCHIVE_SUFFIXES: Final = (

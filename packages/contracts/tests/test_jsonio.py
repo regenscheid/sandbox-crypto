@@ -22,6 +22,8 @@ def test_ordinary_json_parses() -> None:
         ('{"a": NaN}', "no NaN"),
         ("[Infinity]", "no Infinity"),
         ("-Infinity", "no -Infinity"),
+        ("1e999", "too large"),
+        ("[-1e400]", "too large"),
     ],
 )
 def test_ambiguous_or_non_finite_json_is_refused(raw: str, message: str) -> None:

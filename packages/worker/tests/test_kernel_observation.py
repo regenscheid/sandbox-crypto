@@ -88,7 +88,7 @@ async def test_live_kernel_pins_and_recovery_hold_remain_readonly(observer: Harn
 
 
 @pytest.mark.parametrize("reply", [[], [{"kernel_id": "k", "language": "python", "generation": 1}]])
-@pytest.mark.parametrize("observe_method", ["observe_kernels", "observe_kernel_lineage"])
+@pytest.mark.parametrize("observe_method", ["observe_kernels"])
 async def test_idle_release_wins_while_an_observer_rpc_is_blocked(
     observer: Harness,
     monkeypatch: pytest.MonkeyPatch,
@@ -125,7 +125,7 @@ async def test_idle_release_wins_while_an_observer_rpc_is_blocked(
 
 
 @pytest.mark.parametrize("change", ["object", "channel", "incarnation", "detaching", "fence"])
-@pytest.mark.parametrize("observe_method", ["observe_kernels", "observe_kernel_lineage"])
+@pytest.mark.parametrize("observe_method", ["observe_kernels"])
 async def test_delayed_empty_reply_cannot_pass_a_changed_connection(
     observer: Harness, monkeypatch: pytest.MonkeyPatch, change: str, observe_method: str
 ) -> None:
@@ -169,7 +169,7 @@ async def test_delayed_empty_reply_cannot_pass_a_changed_connection(
         view(manager).release_quarantine("env1")
 
 
-@pytest.mark.parametrize("observe_method", ["observe_kernels", "observe_kernel_lineage"])
+@pytest.mark.parametrize("observe_method", ["observe_kernels"])
 async def test_waiting_lifecycle_and_observer_limits_do_not_queue(
     observer: Harness, observe_method: str
 ) -> None:
@@ -193,7 +193,7 @@ async def test_waiting_lifecycle_and_observer_limits_do_not_queue(
     assert "env1" not in view(manager).connected()
 
 
-@pytest.mark.parametrize("observe_method", ["observe_kernels", "observe_kernel_lineage"])
+@pytest.mark.parametrize("observe_method", ["observe_kernels"])
 async def test_global_and_per_environment_admission_owned_until_cancellation(
     observer: Harness, monkeypatch: pytest.MonkeyPatch, observe_method: str
 ) -> None:
@@ -246,7 +246,7 @@ async def test_global_and_per_environment_admission_owned_until_cancellation(
         view(manager).drop_connection(f"env-{index}")
 
 
-@pytest.mark.parametrize("observe_method", ["observe_kernels", "observe_kernel_lineage"])
+@pytest.mark.parametrize("observe_method", ["observe_kernels"])
 async def test_whole_deadline_includes_actual_channel_write_lock(
     tmp_path: Path, observe_method: str
 ) -> None:
@@ -307,7 +307,7 @@ async def test_unauthenticated_observation_never_reaches_manager(observer: Harne
     assert observer.view.connected() == set()
 
 
-@pytest.mark.parametrize("observe_method", ["observe_kernels", "observe_kernel_lineage"])
+@pytest.mark.parametrize("observe_method", ["observe_kernels"])
 async def test_unhealthy_existing_connections_refuse_before_rpc(
     observer: Harness, monkeypatch: pytest.MonkeyPatch, observe_method: str
 ) -> None:
@@ -366,7 +366,7 @@ async def test_unhealthy_existing_connections_refuse_before_rpc(
 @pytest.mark.parametrize(
     "old_reply", [[], [{"kernel_id": "k", "language": "python", "generation": 1}]]
 )
-@pytest.mark.parametrize("observe_method", ["observe_kernels", "observe_kernel_lineage"])
+@pytest.mark.parametrize("observe_method", ["observe_kernels"])
 async def test_completed_session_close_invalidates_only_its_active_observer(
     observer: Harness,
     monkeypatch: pytest.MonkeyPatch,

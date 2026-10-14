@@ -43,10 +43,6 @@ from .environments import (
 from .events import Event, OutputEvent, ResultEvent, StateEvent, StreamEvent
 from .kernel_lineage import (
     KernelBirthPin,
-    KernelLineageEntry,
-    KernelLineageIdentity,
-    KernelLineageObservation,
-    kernel_lineage_sha256,
 )
 from .model import Contract, Identifier, new_id
 from .provision_observations import (
@@ -164,9 +160,6 @@ __all__ = [
     "JobStatus",
     "KernelBirthPin",
     "KernelInfo",
-    "KernelLineageEntry",
-    "KernelLineageIdentity",
-    "KernelLineageObservation",
     "KernelListing",
     "KernelObservation",
     "KernelRestartRequest",
@@ -216,7 +209,6 @@ __all__ = [
     "WriteFileResult",
     "canonical_entry",
     "generation_id",
-    "kernel_lineage_sha256",
     "manifest_sha256",
     "new_id",
     "validate_relative_path",

@@ -13,7 +13,7 @@ import sqlite3
 from pydantic import ValidationError
 
 from sandbox_science.contracts import KernelInfo
-from sandbox_science.contracts.kernel_lineage import KernelBirthPin, LineageUnknown
+from sandbox_science.contracts.kernel_lineage import KernelBirthPin
 
 _MAX_RECORD = 2048
 # Compatibility name: retained JSON and existing start transactions are unchanged.
@@ -36,32 +36,6 @@ class KernelStarts:
             " incarnation TEXT NOT NULL, epoch INTEGER NOT NULL, revision INTEGER NOT NULL,"
             " fingerprint TEXT NOT NULL)"
         )
-
-    def retained(
-        self, environment_id: str, session_id: str, language: str
-    ) -> tuple[KernelBirth | None, LineageUnknown | None]:
-        """Bounded read of an original birth; observation never creates or repairs it."""
-        row = self.db.execute(
-            "SELECT substr(CAST(record AS BLOB),1,?) FROM kernel_start_revisions"
-            " WHERE environment_id=? AND session_id=? AND language=?",
-            (_MAX_RECORD + 1, environment_id, session_id, language),
-        ).fetchone()
-        if row is None:
-            return None, "missing_birth"
-        raw = row[0]
-        if not isinstance(raw, bytes) or len(raw) > _MAX_RECORD:
-            return None, "corrupt_birth"
-        try:
-            birth = KernelBirth.model_validate_json(raw, strict=True)
-        except (ValueError, ValidationError):
-            return None, "corrupt_birth"
-        if (birth.environment_id, birth.session_id, birth.language) != (
-            environment_id,
-            session_id,
-            language,
-        ):
-            return None, "identity_mismatch"
-        return birth, None
 
     def current(self, environment_id: str) -> tuple[int, str] | None:
         """Bounded current-revision projection; damaged metadata means unknown."""

@@ -18,6 +18,7 @@ from sandbox_science.contracts.artifact_inventory import (
     ArtifactPublicationSource,
     ArtifactSnapshot,
 )
+from sandbox_science.contracts.model import MAX_COUNTER
 from sandbox_science.orchestrator.artifacts import ArtifactInventory, ArtifactLimits
 from sandbox_science.orchestrator.documents import DocumentError, DocumentStore
 
@@ -371,4 +372,16 @@ def test_latest_hold_observation_survives_restart_and_preserves_transfer(tmp_pat
     assert operation.receipt == held
     complete = inventory.finish(SOURCE, "op1", "out.bin", None, worker, b"retained")
     assert complete.state == "recorded"
+    documents.close()
+
+
+@pytest.mark.parametrize("after", [-1, MAX_COUNTER + 1, 2**63 - 1])
+def test_an_event_cursor_past_the_counter_bound_is_an_invalid_request(
+    tmp_path: Path, after: int
+) -> None:
+    documents = DocumentStore(tmp_path / "control.sqlite3")
+    inventory = ArtifactInventory(documents)
+    with pytest.raises(DocumentError, match="invalid artifact event cursor"):
+        inventory.events("p1", after=after)
+    assert inventory.events("p1", after=MAX_COUNTER).entries == ()
     documents.close()

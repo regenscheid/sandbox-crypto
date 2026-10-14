@@ -31,7 +31,7 @@ from sandbox_science.contracts.artifact_inventory import (
     ArtifactSnapshot,
     artifact_path,
 )
-from sandbox_science.contracts.model import Contract
+from sandbox_science.contracts.model import MAX_COUNTER, Contract
 
 from .documents.errors import CONFLICT, INTERNAL, INVALID_REQUEST, NOT_FOUND, DocumentError
 from .documents.store import DocumentStore
@@ -345,7 +345,7 @@ class ArtifactInventory:
             ).fetchone()
             artifact, head = (new_id("artifact"), 0) if row is None else row
             _IDENTIFIER.validate_python(artifact)
-            if type(head) is not int or not 0 <= head < 2**63 - 1:
+            if type(head) is not int or not 0 <= head < MAX_COUNTER:
                 raise DocumentError(INTERNAL, "invalid artifact head")
             previous = self._revision(db, project, artifact, head) if head else None
             reproduced = previous is not None and (
@@ -531,7 +531,7 @@ class ArtifactInventory:
     def events(self, project: str, *, after: int = 0) -> ArtifactEventPage:
         """Bounded immutable event pages, without guessing execution lineage."""
         self._scope(project)
-        if type(after) is not int or not 0 <= after <= 2**63 - 1:
+        if type(after) is not int or not 0 <= after <= MAX_COUNTER:
             raise DocumentError(INVALID_REQUEST, "invalid artifact event cursor")
         if self.documents.control.missing:
             return ArtifactEventPage(entries=(), next_after=after)

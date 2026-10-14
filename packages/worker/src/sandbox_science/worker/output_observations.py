@@ -18,6 +18,7 @@ from typing import cast
 from pydantic import ValidationError
 
 from sandbox_science.contracts import ErrorKind, Execution
+from sandbox_science.contracts.model import MAX_COUNTER
 from sandbox_science.contracts.output_observations import (
     MAX_MARKER_BYTES,
     MAX_PAGE_BYTES,
@@ -298,7 +299,7 @@ class ObservationJournal:
         if (
             type(head) is not int
             or type(floor) is not int
-            or not 0 <= floor <= head < 2**63 - 1
+            or not 0 <= floor <= head < MAX_COUNTER
             or unavailable != 0
         ):
             raise ValueError("invalid scoped sequence state")
@@ -396,8 +397,8 @@ class ObservationJournal:
         """Read a bounded scope-local prefix, preserving gaps and explicit feature baseline."""
         if (
             type(after) is not int
-            or not 0 <= after < 2**63
-            or (target is not None and (type(target) is not int or not 0 <= target < 2**63))
+            or not 0 <= after <= MAX_COUNTER
+            or (target is not None and (type(target) is not int or not 0 <= target <= MAX_COUNTER))
         ):
             raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid observation cursor")
         meta = self.db.execute(
@@ -433,7 +434,7 @@ class ObservationJournal:
         if (
             type(head) is not int
             or type(floor) is not int
-            or not 0 <= floor <= head < 2**63
+            or not 0 <= floor <= head <= MAX_COUNTER
             or unavailable != 0
         ):
             raise WorkerError(ErrorKind.UNAVAILABLE, "invalid observation history counters")

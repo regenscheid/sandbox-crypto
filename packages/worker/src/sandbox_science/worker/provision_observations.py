@@ -17,8 +17,11 @@ from pydantic import BaseModel, TypeAdapter
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext, Identifier
 from sandbox_science.contracts.jsonio import strict_loads
+from sandbox_science.contracts.model import MAX_COUNTER
 from sandbox_science.contracts.provision_observations import (
     MAX_OBSERVATION_BYTES,
+    MAX_OBSERVATION_PAGE,
+    MAX_RETAINED_REVISIONS,
     AdmissionSummary,
     ProvisionDetail,
     ProvisionFilePage,
@@ -29,11 +32,21 @@ from sandbox_science.contracts.provision_observations import (
     RevisionSummaryPage,
 )
 from sandbox_science.contracts.provisioning import (
+    MAX_CHANGES,
+    MAX_EXECUTIONS,
+    MAX_FILES,
+    MAX_NOTES,
+    MAX_QUEUED,
     ProvisionOperation,
     ProvisionRequest,
     ResolvedFile,
 )
-from sandbox_science.contracts.revisions import EnvironmentRevision, ProbeResult
+from sandbox_science.contracts.revisions import (
+    MAX_COMMANDS,
+    MAX_PROBES,
+    EnvironmentRevision,
+    ProbeResult,
+)
 
 from .errors import WorkerError
 from .package_gate import checked
@@ -43,7 +56,13 @@ _MAX_REVISION = 2 * 1024 * 1024
 _MAX_INPUT = 32 * 1024 * 1024
 _HEAD = 48 * 1024
 _ID = TypeAdapter[str](Identifier)
-_ARRAYS = {"files": 2000, "changes": 4000, "probes": 64, "executions": 128, "notes": 32}
+_ARRAYS = {
+    "files": MAX_FILES,
+    "changes": MAX_CHANGES,
+    "probes": MAX_PROBES,
+    "executions": MAX_EXECUTIONS,
+    "notes": MAX_NOTES,
+}
 _SUMMARY = (
     "provision_id",
     "seq",
@@ -301,14 +320,14 @@ class ProvisionObservations:
                 "(typeof(submitted) NOT IN('real','integer') OR submitted>=?)",
                 (environment, since),
             ).fetchone()[0]
-            if type(total) is not int or not 0 <= total <= 32:
+            if type(total) is not int or not 0 <= total <= MAX_QUEUED:
                 raise _unavailable()
             rows = self.db.execute(
                 "SELECT substr(CAST(provision_id AS BLOB),1,129) FROM provisions WHERE "
                 "environment_id=? AND (typeof(finished)!='integer' OR finished IS NULL OR "
                 "finished!=1) AND (typeof(submitted) NOT IN('real','integer') OR "
-                "submitted>=?) ORDER BY rowid LIMIT 33",
-                (environment, since),
+                "submitted>=?) ORDER BY rowid LIMIT ?",
+                (environment, since, MAX_QUEUED + 1),
             ).fetchall()
             if any(type(row[0]) is not bytes or not 0 < len(row[0]) <= 128 for row in rows):
                 raise _unavailable()
@@ -382,7 +401,7 @@ class ProvisionObservations:
         self, project: str, environment: str, provision_id: str, *, since: float, seq: int | None
     ) -> ProvisionDetail:
         if seq is not None:
-            _parameters((seq, 0, 2**62))
+            _parameters((seq, 0, MAX_COUNTER))
         with self._read(project, environment) as scope:
             row_id, summary = self._operation(project, environment, provision_id, since, seq)
             self._types("provisions", row_id, {"error": (None, "null", "object")})
@@ -452,7 +471,7 @@ class ProvisionObservations:
         offset: int,
         limit: int,
     ) -> ProvisionFilePage:
-        _parameters((seq, 0, 2**62), (offset, 0, 2000), (limit, 1, 8))
+        _parameters((seq, 0, MAX_COUNTER), (offset, 0, MAX_FILES), (limit, 1, MAX_OBSERVATION_PAGE))
         with self._read(project, environment) as scope:
             row_id, summary = self._operation(project, environment, provision_id, since, seq)
             if offset > summary.files_total:
@@ -494,7 +513,7 @@ class ProvisionObservations:
             "revision_entries",
             row_id,
             tuple(EnvironmentRevision.model_fields),
-            {"commands": 8, "probes": 64},
+            {"commands": MAX_COMMANDS, "probes": MAX_PROBES},
         )
         self._types(
             "revision_entries",
@@ -540,9 +559,9 @@ class ProvisionObservations:
         limit: int,
         target: int | None,
     ) -> RevisionSummaryPage:
-        _parameters((after, -1, 2**62), (limit, 1, 8))
+        _parameters((after, -1, MAX_COUNTER), (limit, 1, MAX_OBSERVATION_PAGE))
         if target is not None:
-            _parameters((target, 0, 2**62))
+            _parameters((target, 0, MAX_COUNTER))
         with self._read(project, environment) as scope:
             row = self.db.execute(
                 "SELECT count(*),min(CASE WHEN typeof(revision)='integer' THEN revision "
@@ -557,9 +576,9 @@ class ProvisionObservations:
                 raise _unavailable()
             if (
                 type(total) is not int
-                or not 0 <= total <= 512
+                or not 0 <= total <= MAX_RETAINED_REVISIONS
                 or any(
-                    v is not None and (type(v) is not int or not 0 <= v <= 2**62)
+                    v is not None and (type(v) is not int or not 0 <= v <= MAX_COUNTER)
                     for v in (first, latest)
                 )
             ):
@@ -603,7 +622,9 @@ class ProvisionObservations:
         offset: int,
         limit: int,
     ) -> RevisionProbePage:
-        _parameters((revision, 0, 2**62), (offset, 0, 64), (limit, 1, 8))
+        _parameters(
+            (revision, 0, MAX_COUNTER), (offset, 0, MAX_PROBES), (limit, 1, MAX_OBSERVATION_PAGE)
+        )
         if type(pin) is not str or re.fullmatch(r"[0-9a-f]{64}", pin) is None:
             raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid revision pin")
         with self._read(project, environment) as scope:
@@ -661,7 +682,7 @@ class ProvisionObservations:
         selections: tuple[tuple[int, str], ...],
     ) -> tuple[RevisionSummary, ...]:
         for revision, pin in selections:
-            _parameters((revision, 0, 2**62))
+            _parameters((revision, 0, MAX_COUNTER))
             if type(pin) is not str or re.fullmatch(r"[0-9a-f]{64}", pin) is None:
                 raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid selected revision pin")
         with self._read(project, environment):

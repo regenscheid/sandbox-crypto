@@ -13,6 +13,8 @@ has recorded the [Lab32 report and exact archive](../docs/agent-reports/babbage-
 
 Scripts for running the platform against a real OpenShell gateway on babbage, as labs 9 to 20 did. Each lab's report is in [`../docs/agent-reports/`](../docs/agent-reports/). These scripts are agents' tooling, not product code: they assume babbage's setup and are kept here so that the next lab does not start from nothing.
 
+Some scripts are historical: they exercise code since removed, and run only at the commit their report names. `kernel_lineage.py` (Lab28) and `kernel_main.py` (Lab29) call the worker's kernel lineage route and `WorkerClient.observe_kernel_lineage`, removed with the rest of the lineage observation once the harness stopped reading it.
+
 ## Prerequisites
 
 - OpenShell 0.1.3 unpacked at `~/.local/opt/openshell-0.1.3/bin` (gateway, driver and CLI).

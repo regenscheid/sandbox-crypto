@@ -241,12 +241,6 @@ class ManagerView:
         patch.setattr(self.manager, "_sync_package_gate", watched)
         return synced
 
-    def kernel_lineage(
-        self, context: ExecutionContext, channel: ExecutorChannel, kernels: object
-    ) -> Any:
-        """Map an executor's kernel listing to lineage, without the transport around it."""
-        return self.manager._kernel_lineage(context, channel, kernels)
-
     def poller(self, environment_id: str) -> tuple[ExecutorChannel, asyncio.Task[Any]]:
         """The daemon poller of an environment: the channel it polls and its task."""
         return self.manager._pollers[environment_id]
