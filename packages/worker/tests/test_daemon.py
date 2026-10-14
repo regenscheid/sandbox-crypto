@@ -32,7 +32,7 @@ from sandbox_science.contracts import (
     ShellRequest,
 )
 from sandbox_science.testing import eventually
-from sandbox_science.worker import daemon, executor
+from sandbox_science.worker import daemon, executor, sandbox_processes
 from sandbox_science.worker.backends import ClosedHandler, LocalBackend, daemon_token
 from sandbox_science.worker.channel import EventHandler, ExecutorChannel
 from sandbox_science.worker.store import Store
@@ -260,7 +260,7 @@ async def test_daemon_incarnation_loss_reaps_escaped_children(worker: Harness) -
     os.kill(channel.hello["location"]["pid"], signal.SIGKILL)
     result = await asyncio.wait_for(worker.manager.wait(job.execution_id), 15)
     assert result.state is ExecutionState.LOST
-    await eventually(lambda: (info := executor.process_info(child)) is None or info.zombie)
+    await eventually(lambda: (info := sandbox_processes.process_info(child)) is None or info.zombie)
 
 
 @pytest.mark.asyncio
@@ -367,7 +367,9 @@ async def test_recycle_intent_survives_failed_fence_and_worker_restart(
     async def succeeded(environment: str, _sandbox: str, _sandbox_id: str) -> None:
         assert worker.store.recycle_needed(environment)
         os.kill(pid, signal.SIGKILL)  # local fixture's stand-in for a confirmed VM stop
-        await eventually(lambda: (info := executor.process_info(pid)) is None or info.zombie)
+        await eventually(
+            lambda: (info := sandbox_processes.process_info(pid)) is None or info.zombie
+        )
 
     worker.view.set_lifecycle(recycle_daemon=succeeded)
     await asyncio.wait_for(worker.manager.start(), 10)

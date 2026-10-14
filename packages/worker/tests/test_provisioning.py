@@ -56,9 +56,10 @@ from sandbox_science.worker import revisions as revisions_module
 from sandbox_science.worker.app import create_app
 from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.backends import LocalBackend
-from sandbox_science.worker.executor import Executor, Running, signal_processes, without_wrapped
+from sandbox_science.worker.executor import Executor, Running, without_wrapped
 from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.revisions import Prepared, Revisions, package_command
+from sandbox_science.worker.sandbox_processes import process_table, signal_processes
 from sandbox_science.worker.settings import ClientSettings, LocalBackendSettings, token_digest
 from sandbox_science.worker.store import Store
 
@@ -1159,7 +1160,7 @@ def test_m5_the_executor_signals_a_wrapped_command_through_its_wrapper_only(
     # and the command got two: the second can cut short the clean-up the first began.
     wrapper = sandbox.start("pip", "install", "counting")
     command = sandbox.prefix.pid("ready", "counting")
-    table = executor_module.process_table()
+    table = process_table()
     found = [table[wrapper.pid], table[command]]
     chosen = without_wrapped(found)
     assert [info.pid for info in chosen] == [wrapper.pid]

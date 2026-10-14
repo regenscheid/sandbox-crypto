@@ -21,7 +21,7 @@ from sandbox_science.contracts import (
     ProvisionState,
     ShellRequest,
 )
-from sandbox_science.worker import executor
+from sandbox_science.worker import executor, sandbox_processes
 from sandbox_science.worker.errors import WorkerError
 from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.package_gate import PackageGate
@@ -451,7 +451,7 @@ async def test_restart_launch_is_owned_by_shutdown_and_cannot_outlive_it(
     kernel = Kernel()
     guest.executor.kernels[("s1", "python")] = kernel  # pyright: ignore
     monkeypatch.setattr(guest.executor, "kernel", lambda *_: kernel)
-    monkeypatch.setattr(executor, "end_descendants", lambda: None)
+    monkeypatch.setattr(sandbox_processes, "end_descendants", lambda: None)
     restart = asyncio.create_task(guest.executor.op_restart({"id": 1, "session": "s1"}))
     await entered.wait()
     stop = asyncio.create_task(guest.executor.shutdown())

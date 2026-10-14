@@ -23,7 +23,7 @@ import pytest
 
 from sandbox_science.contracts import ProbeFacts
 from sandbox_science.testing import FakeClock, eventually
-from sandbox_science.worker import executor, sandbox_files
+from sandbox_science.worker import executor, sandbox_files, sandbox_processes
 
 pytestmark = pytest.mark.slow
 
@@ -75,28 +75,28 @@ def test_a_calls_leftovers_end_one_process_at_a_time(
     )
     call = subprocess.Popen(
         ["/bin/bash", "-c", script],
-        env={**os.environ, executor.OWNER: owner},
+        env={**os.environ, sandbox_processes.OWNER: owner},
         start_new_session=True,
     )
     other = subprocess.Popen(
         ["sleep", "60"],
-        env={**os.environ, executor.OWNER: other_owner},
+        env={**os.environ, sandbox_processes.OWNER: other_owner},
         start_new_session=True,
     )
-    executor._spawned.add(call.pid)
+    sandbox_processes.spawned.add(call.pid)
     try:
         plain, escaped = _read_pid(tmp_path / "plain"), _read_pid(tmp_path / "setsid")
-        info = executor.process_info(call.pid)
+        info = sandbox_processes.process_info(call.pid)
         assert info is not None
-        assert executor.end_owned(owner, (call.pid, info.start)) >= 3
+        assert sandbox_processes.end_owned(owner, (call.pid, info.start)) >= 3
         call.wait(timeout=10)
         assert _gone(plain)
         assert _gone(escaped)
         assert _alive(other.pid)  # another owner's process is left alone
     finally:
-        executor.end_owned(owner, None)
+        sandbox_processes.end_owned(owner, None)
         call.wait(timeout=10)
-        executor._spawned.discard(call.pid)
+        sandbox_processes.spawned.discard(call.pid)
         other.kill()
         other.wait()
 
@@ -108,8 +108,8 @@ def test_parallel_fixture_owners_are_isolated_from_sibling_cleanup(tmp_path: Pat
     processes: list[subprocess.Popen[bytes]] = []
     cleaner = (
         "import sys\n"
-        "from sandbox_science.worker import executor\n"
-        "print(executor.end_owned(sys.argv[1], None))\n"
+        "from sandbox_science.worker import sandbox_processes\n"
+        "print(sandbox_processes.end_owned(sys.argv[1], None))\n"
     )
     child = (
         "import os, pathlib, sys, time\n"
@@ -121,7 +121,7 @@ def test_parallel_fixture_owners_are_isolated_from_sibling_cleanup(tmp_path: Pat
             processes.append(
                 subprocess.Popen(
                     [sys.executable, "-c", child, str(tmp_path / f"ready-{index}")],
-                    env={**os.environ, executor.OWNER: owner},
+                    env={**os.environ, sandbox_processes.OWNER: owner},
                     start_new_session=True,
                 )
             )
@@ -129,7 +129,7 @@ def test_parallel_fixture_owners_are_isolated_from_sibling_cleanup(tmp_path: Pat
             # Popen's exec handshake can precede readable /proc environ. Wait for
             # actual child userspace readiness before asserting cleanup ownership.
             assert _read_pid(tmp_path / f"ready-{index}") == process.pid
-            assert executor.process_owner(process.pid) == owner
+            assert sandbox_processes.process_owner(process.pid) == owner
         for index, owner in enumerate(owners):
             cleaned = subprocess.run(
                 [sys.executable, "-c", cleaner, owner],
@@ -152,7 +152,7 @@ def test_parallel_fixture_owners_are_isolated_from_sibling_cleanup(tmp_path: Pat
 def test_ending_an_owner_with_nothing_left_is_harmless() -> None:
     process = subprocess.Popen(["true"], start_new_session=True)
     process.wait()
-    assert executor.end_owned(f"test-executor-{uuid4().hex}", (process.pid, 0)) == 0
+    assert sandbox_processes.end_owned(f"test-executor-{uuid4().hex}", (process.pid, 0)) == 0
 
 
 def test_an_oversized_result_is_trimmed_to_fit_one_line() -> None:
@@ -839,11 +839,15 @@ async def test_the_probe_operation(tmp_path: Path) -> None:
     ("sockets", "protected", "calls"),
     [
         # Sockets still work once it is not dumpable: it stays protected.
-        ([True, True], True, [(executor.PR_SET_DUMPABLE, 0)]),
+        ([True, True], True, [(sandbox_processes.PR_SET_DUMPABLE, 0)]),
         # OpenShell: sockets stop working, so it becomes dumpable again (lab 8).
-        ([True, False], False, [(executor.PR_SET_DUMPABLE, 0), (executor.PR_SET_DUMPABLE, 1)]),
+        (
+            [True, False],
+            False,
+            [(sandbox_processes.PR_SET_DUMPABLE, 0), (sandbox_processes.PR_SET_DUMPABLE, 1)],
+        ),
         # No sockets to lose: protected anyway.
-        ([False, False], True, [(executor.PR_SET_DUMPABLE, 0)]),
+        ([False, False], True, [(sandbox_processes.PR_SET_DUMPABLE, 0)]),
     ],
 )
 def test_the_executor_stays_dumpable_where_sockets_need_it(
@@ -859,20 +863,20 @@ def test_the_executor_stays_dumpable_where_sockets_need_it(
         made.append((option, value))
         return True
 
-    monkeypatch.setattr(executor, "_sockets_work", lambda: next(answers))
-    monkeypatch.setattr(executor, "_prctl", prctl)
-    assert executor.protect_process() is protected
+    monkeypatch.setattr(sandbox_processes, "_sockets_work", lambda: next(answers))
+    monkeypatch.setattr(sandbox_processes, "prctl", prctl)
+    assert sandbox_processes.protect_process() is protected
     assert made == calls
 
 
 def test_a_refused_prctl_leaves_the_executor_unprotected(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(executor, "_sockets_work", lambda: True)
-    monkeypatch.setattr(executor, "_prctl", lambda option, value: False)
-    assert executor.protect_process() is False
+    monkeypatch.setattr(sandbox_processes, "_sockets_work", lambda: True)
+    monkeypatch.setattr(sandbox_processes, "prctl", lambda option, value: False)
+    assert sandbox_processes.protect_process() is False
 
 
 def test_unix_sockets_work_here() -> None:
-    assert executor._sockets_work()
+    assert sandbox_processes._sockets_work()
 
 
 @pytest.mark.parametrize("call", ["bind", "listen", "connect", "accept"])
@@ -884,7 +888,7 @@ def test_a_refused_socket_call_makes_the_probe_say_no(
         raise PermissionError(1, "Operation not permitted")
 
     monkeypatch.setattr(socket.socket, call, refuse)
-    assert executor._sockets_work() is False
+    assert sandbox_processes._sockets_work() is False
 
 
 def test_pdf_requests_become_the_helpers_command_line() -> None:

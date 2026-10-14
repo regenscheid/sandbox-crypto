@@ -83,8 +83,8 @@ class Daemon:
         self.executor = executor.Executor(
             root,
             self.send,
-            subreaper=executor.enable_subreaper(),
-            protected=executor.protect_process(),
+            subreaper=executor.sandbox_processes.enable_subreaper(),
+            protected=executor.sandbox_processes.protect_process(),
             kernel_idle=kernel_idle,
         )
         self.owner_scope = "ss-daemon-" + address(token, root)[13:] + "-"
@@ -447,17 +447,17 @@ class Daemon:
         )
         # A dead daemon cannot own jobs any more. Reap only this endpoint's old
         # incarnation marks, with start-time checks against PID reuse.
-        for _ in range(executor.KILL_ROUNDS):
+        for _ in range(executor.sandbox_processes.KILL_ROUNDS):
             targets = [
                 info
-                for info in executor.process_table().values()
-                if (owner := executor.process_owner(info.pid))
+                for info in executor.sandbox_processes.process_table().values()
+                if (owner := executor.sandbox_processes.process_owner(info.pid))
                 and owner.startswith(self.owner_scope)
                 and not owner.startswith(self.executor.owner_prefix)
             ]
             if not targets:
                 break
-            executor.signal_processes(targets, signal.SIGKILL)
+            executor.sandbox_processes.signal_processes(targets, signal.SIGKILL)
             await asyncio.sleep(0.01)
         loop = asyncio.get_running_loop()
         for signum in (signal.SIGTERM, signal.SIGINT):
