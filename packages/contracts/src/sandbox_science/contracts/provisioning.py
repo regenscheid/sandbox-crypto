@@ -127,9 +127,20 @@ class ProvisionRequest(Contract):
     pip_reason: Text | None = None
     """Why pip: what conda-forge lacks. Recorded as the fallback's reason (CP-15)."""
     system: tuple[SystemPackage, ...] = Field(default=(), max_length=MAX_SPECS)
+    action: Literal["install", "upgrade"] = Field(
+        default="install", exclude_if=lambda value: type(value) is str and value == "install"
+    )
+    """Explicit named Conda upgrade (CP-20); legacy installs keep their original JSON.
+    This slice supports neither uninstall/restore nor pip/capability upgrades."""
 
     @model_validator(mode="after")
     def _one_kind(self) -> Self:
+        if type(self.action) is not str or self.action not in ("install", "upgrade"):
+            raise ValueError("unsupported provisioning action")
+        if self.action == "upgrade" and (
+            not self.conda or self.pip or self.system or self.capability is not None
+        ):
+            raise ValueError("upgrade requires named Conda specs only")
         specs = bool(self.conda or self.pip or self.system)
         if (self.capability is None) == (not specs):
             raise ValueError("name a capability, or package specs (conda, pip or system)")

@@ -72,7 +72,10 @@ PROVISION: Final = ToolSpec(
     "already; or for conda-forge package specs (conda), such as 'pari>=2.15'; or, only for what "
     "conda-forge lacks, PyPI requirements (pip) with the reason (pip_reason), in a request of "
     "their own after the Conda one, installed from wheels only. Ubuntu packages "
-    "(apt) cannot be installed at runtime: name them in system to record the need. The result "
+    "(apt) cannot be installed at runtime: name them in system to record the need. "
+    "Optional action 'upgrade' updates only explicitly named, already recorded Conda specs "
+    "under the same policy and permission checks; omitted action means 'install'. Upgrade "
+    "does not accept capabilities, pip or system packages, or upgrade-all. The result "
     "gives the outcome (already_satisfied, completed, awaiting_permission, denied, failed, "
     "needs_recovery), the environment's revisions before and after, the package changes, the "
     "probe results and what to do next.",
@@ -80,6 +83,7 @@ PROVISION: Final = ToolSpec(
         "type": "object",
         "properties": {
             "purpose": {"type": "string", "description": "Why the work needs it"},
+            "action": {"type": "string", "enum": ["install", "upgrade"]},
             "capability": {"type": "string"},
             "conda": _SPECS,
             "pip": _SPECS,
@@ -150,10 +154,21 @@ class ProvisionTools:
 
     async def provision(self, args: dict[str, Any], operation: str) -> ToolOutcome:
         """Ask for an operation and follow it until it ends or waits for permission."""
+        action = args.get("action", "install")
+        if type(action) is not str or action not in ("install", "upgrade"):
+            return _failure(ErrorKind.INVALID_REQUEST, "action must be install or upgrade")
         try:
             fields = {
                 key: args[key]
-                for key in ("purpose", "capability", "conda", "pip", "pip_reason", "system")
+                for key in (
+                    "purpose",
+                    "action",
+                    "capability",
+                    "conda",
+                    "pip",
+                    "pip_reason",
+                    "system",
+                )
                 if key in args
             }
             request = ProvisionRequest.model_validate(
@@ -264,6 +279,8 @@ def describe(
         "environment": operation.request.context.environment_id,
         "asked_for": _asked(operation),
     }
+    if operation.request.action == "upgrade":
+        summary["action"] = "upgrade"
     if replayed:
         summary["replayed"] = "this call was made before; this is the same operation"
     revisions = {
@@ -341,7 +358,7 @@ def _asked(operation: ProvisionOperation) -> str:
         return f"capability {request.capability}"
     parts = [*request.conda, *(f"pip:{spec}" for spec in request.pip)]
     parts += [f"system:{name}" for name in request.system]
-    return ", ".join(parts)
+    return ("upgrade " if request.action == "upgrade" else "") + ", ".join(parts)
 
 
 def _bounded(items: list[str], limit: int) -> list[str]:
