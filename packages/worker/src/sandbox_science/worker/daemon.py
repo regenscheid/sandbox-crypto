@@ -47,6 +47,14 @@ MAX_RECORDS = 4096
 MAX_ACTIVE = 128
 PAGE_EVENTS = 32
 AUTH_TIMEOUT = 10.0
+PUSH_BUFFER = 1024 * 1024
+"""Bytes the bridge may have unsent before the daemon pushes nothing more and the
+worker's replay brings the rest, so a bridge that stops reading never holds up the
+executor."""
+PUSHED = b',"pushed":true}\n'
+"""How a pushed event's line ends. A pushed event ahead of what the worker has means one
+before it failed there, and the worker replays at once; a replayed one, a broken daemon."""
+GAP_TEXT = "[output chunks omitted; whole job logs remain in the workspace]\n"
 
 
 def _mac(token: str, value: str) -> str:
@@ -107,13 +115,14 @@ class Daemon:
             writer.close()
             raise ConnectionError("bridge stopped reading") from None
 
-    async def send(self, message: Message) -> None:
+    async def send(self, message: Message, *, push: bool = True) -> None:
         if message.get("type") == "reply":
             target = self.pending.pop(int(message.get("id", -1)), None)
             if target is None:
                 return
             writer, request_id, op, execution_id = target
             # A rejected request reserved capacity but will never produce an end event.
+            # The worker ends it by this reply: the event is only for a replay.
             if execution_id is not None and message.get("ok") is not True:
                 history = self.history.get(execution_id)
                 if history is not None and not history.ended:
@@ -124,13 +133,15 @@ class Daemon:
                             "event": "end",
                             "state": "failed",
                             "result": {"error": message.get("error")},
-                        }
+                        },
+                        push=False,
                     )
             if writer is not self.writer or writer.is_closing():
                 return
             reply = {**message, "id": request_id}
             if op == "hello":
                 reply["daemon_incarnation"] = self.incarnation
+                reply["daemon_push"] = 1  # it pushes events and answers ``latest``
             with contextlib.suppress(ConnectionError):
                 await self.write(writer, reply)
             return
@@ -141,7 +152,9 @@ class Daemon:
         if history is None:
             return
         history.sequence += 1
-        message = {**message, "source_seq": history.sequence}
+        # Only the daemon marks an event pushed.
+        message = {key: value for key, value in message.items() if key != "pushed"}
+        message["source_seq"] = history.sequence
         if message.get("event") == "end":
             message = executor.sandbox_files.bounded_observations(message)
             history.ended = True
@@ -201,25 +214,26 @@ class Daemon:
         history.size += len(data)
         self.bytes += len(data)
         self.trim(execution)
-        await self.push(execution, history.sequence, data)
+        if push:
+            self.push(execution, history.sequence, data)
 
-    async def push(self, execution: str, sequence: int, data: bytes) -> None:
+    def push(self, execution: str, sequence: int, data: bytes) -> None:
         """Send a journalled event to the active bridge at once, if the bridge has every
-        earlier one; otherwise the worker's replay brings it, with any gap marked."""
+        earlier one and keeps up; otherwise the worker's replay brings it, with any gap
+        marked. It never waits for the bridge."""
         writer = self.writer
         if (
             writer is None
             or writer.is_closing()
             or self.stopping
             or self.delivered.get(execution) != sequence - 1
+            or writer.transport.get_write_buffer_size() > PUSH_BUFFER
+            or not data.endswith(b"}\n")
+            or len(data) - 2 + len(PUSHED) > executor.MAX_LINE
         ):
             return
-        writer.write(data)
+        writer.write(data[:-2] + PUSHED)
         self.delivered[execution] = sequence
-        try:
-            await asyncio.wait_for(writer.drain(), 10)
-        except (OSError, TimeoutError):
-            writer.close()  # the bridge stopped reading: the worker reconnects and replays
 
     def sent(self, writer: asyncio.StreamWriter, execution: str, sequence: int) -> None:
         """A replay wrote the execution's events up to ``sequence`` to ``writer``."""
@@ -294,10 +308,7 @@ class Daemon:
                         "execution": execution,
                         "event": "stream",
                         "name": "stderr",
-                        "text": (
-                            "[output chunks omitted while disconnected; "
-                            "whole job logs remain in the workspace]\n"
-                        ),
+                        "text": GAP_TEXT,
                         "source_seq": seq - 1,
                         "source_from": cursor + 1,
                     },
@@ -314,10 +325,7 @@ class Daemon:
                     "execution": execution,
                     "event": "stream",
                     "name": "stderr",
-                    "text": (
-                        "[output chunks omitted while disconnected; "
-                        "whole job logs remain in the workspace]\n"
-                    ),
+                    "text": GAP_TEXT,
                     "source_seq": cursor,
                     "source_from": after + 1,
                 },
@@ -390,6 +398,22 @@ class Daemon:
                         # The lifecycle is finished even if its acknowledgement is lost.
                         self.stop.set()
                     break
+                elif op == "latest":
+                    # Each execution's latest event, so a replay pass asks only where the
+                    # worker is behind.
+                    raw = request.get("executions")
+                    executions = cast(list[object], raw) if isinstance(raw, list) else None
+                    if executions is None or len(executions) > MAX_RECORDS:
+                        raise ValueError("invalid latest request")
+                    latest = {
+                        key: self.history[key].sequence
+                        for key in executions
+                        if isinstance(key, str) and key in self.history
+                    }
+                    await self.write(
+                        writer,
+                        {"type": "reply", "id": request["id"], "ok": True, "latest": latest},
+                    )
                 elif op == "active":
                     active = [key for key, item in self.history.items() if not item.ended]
                     await self.write(
