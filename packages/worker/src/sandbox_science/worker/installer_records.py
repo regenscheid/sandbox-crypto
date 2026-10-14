@@ -123,7 +123,7 @@ def _stream(value: StreamOutput | None, name: str) -> dict[str, object]:
         line = head[position:end]
         position = min(end + 1, len(head))
         scanned += 1
-        if line in _MESSAGES:
+        if line in _MESSAGES and (end < len(head) or len(head) == len(value.text)):
             messages.append(line)
         else:
             omitted += 1
