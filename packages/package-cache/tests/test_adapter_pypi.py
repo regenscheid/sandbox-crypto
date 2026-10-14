@@ -27,6 +27,7 @@ from sandbox_science.package_cache.adapters.pypi import (
     negotiate,
     normalize_name,
 )
+from sandbox_science.policy import classify_package_request
 
 FIXTURES = Path(__file__).parent / "fixtures" / "pypi"
 MANIFEST: list[dict[str, str]] = json.loads((FIXTURES / "manifest.json").read_text())["fixtures"]
@@ -1024,3 +1025,31 @@ def test_rewritten_links_use_the_configured_public_url() -> None:
     page = rewrite_json(json_page(json_file()), adapter=adapter)
     link = page["files"][0]["url"]
     assert link == f"https://cache.example:8443/mirror/pypi/files/{SAMPLE}/{WHEEL_SHA}/{WHEEL_PATH}"
+
+
+# --- agreement with the policy classifier -----------------------------------------
+
+
+def test_policy_classifies_what_the_adapter_serves() -> None:
+    # The policy middleware decides each request with classify_package_request before it
+    # reaches the cache, and a file-set grant matches the path exactly: every page and
+    # every file link a rewritten page offers must classify as the same project and kind.
+    adapter = make_adapter()
+    checked = 0
+    for entry in MANIFEST:
+        if entry["content_type"] != JSON_TYPE:
+            continue
+        project = entry["project"]
+        index = classify_package_request("GET", f"/pypi/{entry['path']}")
+        assert (index.ecosystem, index.name, index.kind) == ("pypi", project, "index")
+        fetch = fetch_page(adapter, entry["path"], JSON_TYPE)
+        page = json.loads(rewrite(fetch, (FIXTURES / entry["file"]).read_bytes(), JSON_TYPE))
+        for file in page["files"]:
+            path = file["url"].removeprefix(PUBLIC)
+            assert adapter.route(path.removeprefix("/pypi/"), {}) is not None, path
+            served = classify_package_request("GET", path)
+            assert (served.ecosystem, served.name, served.kind) == ("pypi", project, "artifact")
+            metadata = classify_package_request("GET", f"{path}.metadata")
+            assert (metadata.name, metadata.kind) == (project, "index")
+            checked += 1
+    assert checked  # the fixtures list files

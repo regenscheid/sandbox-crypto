@@ -24,6 +24,7 @@ from sandbox_science.package_cache.adapters.conda import (
     CondaAdapter,
     parse_package_filename,
 )
+from sandbox_science.policy import ClassificationError, classify_package_request
 
 FIXTURES = Path(__file__).parent / "fixtures" / "conda"
 LAYOUT: dict[str, Any] = json.loads((FIXTURES / "conda-forge-layout.json").read_text())
@@ -380,3 +381,31 @@ def test_headers_do_not_change_the_answer() -> None:
     adapter = make_adapter()
     path = f"{CHANNEL}/noarch/repodata.json"
     assert adapter.route(path, {}) == adapter.route(path, {"accept": "application/json"})
+
+
+# --- agreement with the policy classifier -----------------------------------------
+
+
+def test_policy_classifies_what_the_adapter_serves() -> None:
+    # The policy middleware decides each request with classify_package_request before it
+    # reaches the cache, and a file-set grant matches the path exactly: everything the
+    # adapter serves must classify as the same channel, package and kind.
+    for path in [*LAYOUT["routed"], *LAYOUT["routed_absent_upstream"], *FILENAMES]:
+        assert route(f"{CHANNEL}/{path}") is not None, path
+        operation = classify_package_request("GET", f"/conda/{CHANNEL}/{path}")
+        assert (operation.ecosystem, operation.channel) == ("conda", CHANNEL), path
+        parsed = parse_package_filename(path.split("/")[-1])
+        if parsed is None:
+            assert (operation.name, operation.kind) == (None, "index"), path
+        else:
+            assert (operation.name, operation.kind) == (parsed[0], "artifact"), path
+
+
+def test_percent_encoded_files_are_refused_by_the_policy_not_misread() -> None:
+    # The adapter also serves a file name's percent-encoded spelling, which the policy
+    # refuses: such a download is denied (fails closed), never granted as another file.
+    for encoded, plain in LAYOUT["routed_percent_encoded"].items():
+        assert route(f"{CHANNEL}/{encoded}") is not None
+        with pytest.raises(ClassificationError):
+            classify_package_request("GET", f"/conda/{CHANNEL}/{encoded}")
+        assert classify_package_request("GET", f"/conda/{CHANNEL}/{plain}").kind == "artifact"
