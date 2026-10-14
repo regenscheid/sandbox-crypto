@@ -12,7 +12,7 @@ Date: 2026-10-11. Work package W0 ([implementation plan](../IMPLEMENTATION-PLAN.
 | [Consistency review](consistency-review.md) | Approved (2026-10-11), amended since | Built: [consistency review](../CONSISTENCY-REVIEW.md) |
 | [Living documents](living-documents.md) | Draft; main questions settled by the user (2026-10-11) | In part: [living documents](../LIVING-DOCUMENTS.md); document files in environments and exports are not built |
 | [Plans and delegation](plans-and-delegation.md) | Approved (2026-10-14); questions 6 and 7 remain open (5 answered with the ledger) | Plans in part: [session plans](../SESSION-PLANS.md); delegation is not built (the prototype is [archived](../../.agents/docs/archive/README.md)) |
-| [Project ledger, board and frontier](ledger.md) | Approved (2026-10-14); question 6's likely reversal awaits the owner | Not built |
+| [Project ledger, board and frontier](ledger.md) | Approved (2026-10-14); its questions decided | Not built |
 | [Skills](skills.md) | Draft | Not built |
 | [Run service](run-service.md) | Approved; its questions decided (2026-10-14) | Built, the server side ([workspace](../WORKSPACE.md#chat)); the GUI's chat views are not built |
 
