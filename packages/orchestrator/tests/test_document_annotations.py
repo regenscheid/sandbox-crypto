@@ -22,6 +22,7 @@ from sandbox_science.orchestrator.documents import (
     DocumentTool,
 )
 from sandbox_science.orchestrator.documents.annotations import Annotations, dump
+from sandbox_science.orchestrator.documents.tool import WorkRequests
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import Message, ModelTurn, ScriptedModel, ToolSpec
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
@@ -397,7 +398,7 @@ async def test_safe_points_only_main_and_failed_turn_replays(store: DocumentStor
             work_request_ids=transcript.work_request_ids,
         ).model_dump(mode="json")
         args = argparse.Namespace(transcript=None, state_dir=store.path.parent)
-        assert cli._keep(args, fields, 0) == 0
+        assert await cli._save(args, fields, 0, [WorkRequests(main)]) == 0
         assert (
             Annotations(store).read_thread("p", "ff", request["thread_id"])["requests"][0]["state"]
             == "delivered"
@@ -432,11 +433,13 @@ async def test_failed_run_save_cannot_acknowledge_request(
         raise OSError("fsync failed")
 
     monkeypatch.setattr(ProjectStore, "save_run", failed)
+    main = DocumentTool(store, context, run_id="run-a")
     assert (
-        cli._keep(
+        await cli._save(
             argparse.Namespace(transcript=None, state_dir=store.path.parent),
             record.model_dump(mode="json"),
             0,
+            [WorkRequests(main)],
         )
         == 1
     )
@@ -872,10 +875,11 @@ async def test_failed_second_model_keeps_delivered_request_and_releases_unseen(
         work_request_ids=transcript.work_request_ids,
     )
     assert (
-        cli._keep(
+        await cli._save(
             argparse.Namespace(state_dir=store.path.parent, transcript=None),
             record.model_dump(mode="json"),
             1,
+            [WorkRequests(main)],
         )
         == 1
     )

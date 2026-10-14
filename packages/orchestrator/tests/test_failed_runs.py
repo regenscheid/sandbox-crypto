@@ -17,7 +17,7 @@ from pydantic import ValidationError
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator.documents import DocumentStore
-from sandbox_science.orchestrator.jobstate import JobState
+from sandbox_science.orchestrator.hooks import TurnHook
 from sandbox_science.orchestrator.loop import Transcript, run_task
 from sandbox_science.orchestrator.model import ModelError, ModelTurn, ScriptedModel
 from sandbox_science.orchestrator.projects import ProjectError, ProjectStore, RunRecord
@@ -272,7 +272,8 @@ async def test_cli_cleanup_failure_keeps_partial_record_and_closes_model(
     assert HOSTILE not in capsys.readouterr().err
 
 
-def test_failed_save_never_acknowledges_and_foreign_session_is_refused(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_failed_save_never_acknowledges_and_foreign_session_is_refused(tmp_path, monkeypatch):
     projects = ProjectStore(tmp_path)
     projects.create("p", "minimal", "sha256:" + "a" * 64)
     projects.open_session("p", "s", dedicated=False)
@@ -286,7 +287,10 @@ def test_failed_save_never_acknowledges_and_foreign_session_is_refused(tmp_path,
             )
         )
     acknowledged = []
-    monkeypatch.setattr(JobState, "acknowledge", lambda *args: acknowledged.append(args))
+
+    class Hook(TurnHook):
+        async def acknowledge(self, record):
+            acknowledged.append(record.run_id)
 
     def failed(*args):
         raise OSError("synthetic save failure")
@@ -294,11 +298,11 @@ def test_failed_save_never_acknowledges_and_foreign_session_is_refused(tmp_path,
     save = ProjectStore.save_run
     monkeypatch.setattr(ProjectStore, "save_run", failed)
     args = argparse.Namespace(state_dir=tmp_path, transcript=None)
-    assert cli._keep(args, kept.model_dump(mode="json"), 1) == 1
+    assert await cli._save(args, kept.model_dump(mode="json"), 1, [Hook()]) == 1
     assert projects.runs("p", "s") == []
     assert acknowledged == []
     monkeypatch.setattr(ProjectStore, "save_run", save)
-    assert cli._keep(args, kept.model_dump(mode="json"), 1) == 1
+    assert await cli._save(args, kept.model_dump(mode="json"), 1, [Hook()]) == 1
     assert len(projects.runs("p", "s")) == len(acknowledged) == 1
 
 

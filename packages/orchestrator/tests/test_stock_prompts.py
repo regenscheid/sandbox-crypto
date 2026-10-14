@@ -18,6 +18,7 @@ from pydantic import TypeAdapter, ValidationError
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator import cli, stock_prompts
 from sandbox_science.orchestrator.documents import USER, DocumentStore, DocumentTool
+from sandbox_science.orchestrator.hooks import TurnHook
 from sandbox_science.orchestrator.loop import SYSTEM_PROMPT, Transcript, run_task
 from sandbox_science.orchestrator.model import (
     Message,
@@ -279,22 +280,19 @@ async def test_selected_history_is_exact_after_catalog_changes_and_safe_failed_s
     projects.open_session("p", "s", dedicated=False)
     observed = []
 
-    class JobState:
-        def __init__(self, state):
-            pass
+    expected = record.prompt_provenance
 
-        def acknowledge(self, context, run, ids):
+    class Hook(TurnHook):
+        async def acknowledge(self, record):
             (entry,) = projects.runs("p", "s")
-            assert projects.run("p", "s", entry.name).prompt_provenance == record.prompt_provenance
-            observed.append(ids)
+            assert projects.run("p", "s", entry.name).prompt_provenance == expected
+            observed.append(record.job_notice_ids)
 
-    monkeypatch.setattr(cli, "JobState", JobState)
     args = argparse.Namespace(transcript=None, state_dir=tmp_path)
-    assert cli._keep(args, record.model_dump(mode="json"), int(failure)) == int(failure)
+    fields = record.model_dump(mode="json")
+    assert await cli._save(args, fields, int(failure), [Hook()]) == int(failure)
     assert observed == [[]]
-    assert (
-        cli._keep(args, record.model_dump(mode="json"), 0) == 1
-    )  # Existing duplicate save refuses.
+    assert await cli._save(args, fields, 0, [Hook()]) == 1  # Existing duplicate save refuses.
     assert observed == [[]]
     damaged = record.model_dump(mode="json")
     damaged["messages"][0]["content"] += "changed"

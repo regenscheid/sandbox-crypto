@@ -49,7 +49,7 @@ import math
 import sqlite3
 import sys
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -65,11 +65,11 @@ from .consistency.mathnotices import MathNotices
 from .consistency.notices import FindingNotices
 from .consistency.store import ReviewStore
 from .documents import USER, Author, DocumentError, DocumentStore, DocumentTool, store_path
-from .documents.annotations import Annotations
 from .documents.errors import CONFLICT
 from .documents.mathcontroller import MathController
 from .documents.mathjobs import threaded
 from .documents.tool import view_blocks
+from .hooks import TurnHook
 from .jobs import JobTools
 from .jobstate import JobState
 from .kernel_delivery import KernelDeliveryController
@@ -167,6 +167,7 @@ async def _run_main(args: argparse.Namespace, notice_owners: list[KernelDelivery
     started = datetime.now(UTC)
     transcript: Transcript | None = None
     context: ExecutionContext | None = None
+    hooks: Sequence[TurnHook] = ()
     interruption = Interruption()
     try:
         async with interruption.context(
@@ -313,26 +314,29 @@ async def _run_main(args: argparse.Namespace, notice_owners: list[KernelDelivery
                     with interruption.protect():
                         if documents is not None:
                             plans = await threaded(make_plans)
+                        toolbox = Toolbox(
+                            client,
+                            context,
+                            languages=capabilities.languages,
+                            features=capabilities.features,
+                            documents=documents,
+                            jobs=jobs,
+                            reviews=reviews,
+                            math_checks=math_checks,
+                            artifacts=artifacts,
+                            plans=plans,
+                            kernel_notices=kernel_notices,
+                        )
+                        hooks = toolbox.turn_hooks()
                         transcript = await run_task(
                             model,
-                            Toolbox(
-                                client,
-                                context,
-                                languages=capabilities.languages,
-                                features=capabilities.features,
-                                documents=documents,
-                                jobs=jobs,
-                                reviews=reviews,
-                                math_checks=math_checks,
-                                artifacts=artifacts,
-                                plans=plans,
-                                kernel_notices=kernel_notices,
-                            ),
+                            toolbox,
                             args.task,
                             run_id=run_id,
                             max_turns=args.max_turns,
                             on_tool=show,
                             research_template=getattr(args, "research_template", None),
+                            hooks=hooks,
                         )
                 finally:
                     try:
@@ -408,24 +412,46 @@ async def _run_main(args: argparse.Namespace, notice_owners: list[KernelDelivery
         "math_summary": transcript.math_summary,
     }
     status = 1 if transcript.failure is not None else 0 if transcript.stopped == "answered" else 3
-    if not notice_owners:
-        return _keep(args, fields, status)
-    owner = notice_owners[0]
+    return await _save(args, fields, status, hooks, notice_owners[0] if notice_owners else None)
+
+
+async def _save(
+    args: argparse.Namespace,
+    fields: dict[str, object],
+    status: int,
+    hooks: Sequence[TurnHook],
+    owner: KernelDeliveryController | None = None,
+) -> int:
+    """Keep the run's record, then let each hook acknowledge what the saved record names.
+
+    A crash between the save and an acknowledgement safely repeats those notices.
+    """
     saved: list[RunRecord] = []
-    cancelled = threading.Event()
-    result = await owner.save(
-        lambda: _keep(
-            args, fields, status, saved=saved.append, may_ack=lambda: not cancelled.is_set()
-        ),
-        cancelled=cancelled,
-    )
+    if owner is None:
+        status = _keep(args, fields, status, saved=saved.append)
+    else:
+        cancelled = threading.Event()
+        status = await owner.save(
+            lambda: _keep(
+                args, fields, status, saved=saved.append, may_ack=lambda: not cancelled.is_set()
+            ),
+            cancelled=cancelled,
+        )
+    if not saved:
+        return status
+    for hook in hooks:
+        try:
+            await hook.acknowledge(saved[0])
+        except (DocumentError, OSError, ValueError, sqlite3.Error) as exc:
+            print(f"error: the run's {hook.name} could not be acknowledged: {exc}", file=sys.stderr)
+            status = 1
     if (
-        saved
+        owner is not None
         and saved[0].kernel_notice_delivery is not None
         and not await owner.acknowledge_saved()
     ):
         print("kernel notices: saved delivery remains unresolved", file=sys.stderr)
-    return result
+    return status
 
 
 def _keep(
@@ -464,9 +490,6 @@ def _keep(
             if may_ack is not None and not may_ack():
                 return status
             # Save first: a crash before this acknowledgement safely repeats notices.
-            JobState(args.state_dir).acknowledge(
-                record.context, record.run_id, record.job_notice_ids
-            )
             if record.review_notice_ids:
                 review_documents = DocumentStore(store_path(args.state_dir), producer="harness")
                 try:
@@ -490,17 +513,6 @@ def _keep(
                     )
                 finally:
                     math_documents.close()
-            if record.work_request_ids:
-                documents = DocumentStore(store_path(args.state_dir), producer="harness")
-                try:
-                    Annotations(documents).acknowledge(
-                        record.context.project_id,
-                        record.context.session_id,
-                        record.run_id,
-                        record.work_request_ids,
-                    )
-                finally:
-                    documents.close()
         except (
             ProjectError,
             DocumentError,

@@ -28,7 +28,7 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.contracts.kernel_lineage import KernelBirthPin
 from sandbox_science.orchestrator import cli, projects
-from sandbox_science.orchestrator.jobstate import JobState
+from sandbox_science.orchestrator.hooks import TurnHook
 from sandbox_science.orchestrator.kernel_delivery import KernelDeliveryController
 from sandbox_science.orchestrator.kernel_notice_bindings import (
     BindingError,
@@ -765,12 +765,12 @@ async def test_cli_actual_save_other_ack_order_and_postadmission_cancel(
         events.append("saved")
         return result
 
-    original_jobs_ack = JobState.acknowledge
+    class Other(TurnHook):
+        async def acknowledge(self, record: RunRecord) -> None:
+            assert "saved" in events
+            events.append("other-ack")
 
-    def jobs_ack(*args):
-        assert "saved" in events
-        events.append("other-ack")
-        return original_jobs_ack(*args)
+    hooks = Toolbox.turn_hooks
 
     from sandbox_science.orchestrator.kernel_notices import KernelNotices
 
@@ -788,7 +788,7 @@ async def test_cli_actual_save_other_ack_order_and_postadmission_cancel(
     monkeypatch.setattr(cli, "_context", resolved)
     monkeypatch.setattr(cli, "_read_secret", lambda _: AUTH.removeprefix("Bearer "))
     monkeypatch.setattr(ProjectStore, "save_run", save)
-    monkeypatch.setattr(JobState, "acknowledge", jobs_ack)
+    monkeypatch.setattr(Toolbox, "turn_hooks", lambda toolbox: (*hooks(toolbox), Other()))
     monkeypatch.setattr(KernelNotices, "acknowledge", kernel_ack)
     args = argparse.Namespace(
         script=None,

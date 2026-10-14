@@ -374,11 +374,10 @@ async def test_job_and_document_notices_ride_on_tool_results(harness: Harness) -
     attached = json.loads(last[-3]["content"])
     assert [n["job_id"] for n in attached["job_notices"]] == [second]
     assert len(last[-3]["content"]) <= 20000
-    # A-02 changes this: attaching job notices to a long result halves it from the
-    # head, dropping its tail (where tracebacks and platform notices are); A-02
-    # bounds head and tail.
+    # A-02 changed this: attaching job notices to a long result keeps its head and its
+    # tail, where tracebacks and platform notices are.
     assert head in attached["tool_result"]
-    assert tail not in attached["tool_result"]
+    assert tail in attached["tool_result"]
 
 
 async def test_a_review_response_round_then_the_bound(harness: Harness) -> None:
