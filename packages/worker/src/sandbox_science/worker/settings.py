@@ -166,16 +166,6 @@ class ClientSettings(_Model):
     document_catalog: bool = Field(default=False, strict=True)
     """Explicit control-service permission to ingest/status document catalogs. Ordinary
     execution clients remain denied, even for their own projects."""
-    run_controller: bool = Field(default=False, strict=True)
-    """Explicit trusted control-service selected-run ingress; never granted by a DTO."""
-    run_restart: bool = Field(default=False, strict=True)
-    """Separately allow selected-kernel restart for this controller."""
-
-    @model_validator(mode="after")
-    def _run_permissions(self) -> Self:
-        if self.run_restart and not self.run_controller:
-            raise ValueError("selected restart requires explicit controller permission")
-        return self
 
 
 class Settings(_Model):

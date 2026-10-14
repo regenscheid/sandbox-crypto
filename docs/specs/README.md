@@ -79,7 +79,7 @@ Each spec lists its own. These need the user first:
 3. **A `withdrawn` finding status.** Settled 2026-10-11: yes.
 4. **Shell-invoked installs.** Settled 2026-10-11: through wrappers ([Conda provisioning](conda-provisioning.md)).
 5. **Which files become artifacts.** Settled 2026-10-11: every file an execution writes in its session workspace, minus ignore patterns.
-6. **Delegation defaults.** Depth 1, four concurrent delegated agents per session, and a separate kernel for each delegated agent.
+6. **Delegation defaults.** Answered 2026-10-14 by the owner: at least 8–10 concurrent delegated agents per session (4–5 typical); one additional level of nesting, so the main agent's delegated agents may delegate once more; a separate kernel for each delegated agent, with no kernel sharing ([plans and delegation](plans-and-delegation.md), PD-14, PD-15).
 7. **Skill helper injection.** Inject a skill's kernel helpers when the skill is loaded (as CScience does), or only on an explicit call?
 8. **Plan approval.** Should plans need the user's approval before execution by default, and should every new version of an approved plan need approval again?
 9. **Documents as files.** Settled 2026-10-11: each living document is also a Markdown file under `documents/` in every environment, kept at its current revision. Agents change documents through the document tool or its helper (`ss-doc`), and direct edits of the files are merged, or kept as rejected patches ([living documents](living-documents.md), LD-3, LD-49 to LD-52; RA-1 amended). Ledger entries stay in the control store, as drafted.

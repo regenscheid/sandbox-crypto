@@ -4,6 +4,8 @@ Date: 2026-10-11. **Status: Draft, to review with the user.** W0 behavior specif
 
 The user explicitly requested a planning phase and live plan progress on 2026-10-12 ([D86](../DECISIONS.md), [original prompt design](../ORCHESTRATOR-PROMPTS.md)). That confirms those product requirements, not every detail or open question in this draft. The first [internal plan/progress core](../SESSION-PLANS.md) and [single-MAIN tools/phase guidance](../ORCHESTRATOR-PROMPTS.md#implemented-stateful-main-planning-tools) and read-only live viewer/API are implemented, independently reviewed and pass [combined/browser acceptance](../../.agents/docs/agent-reports/session-planning-2026-10-12.md); USER editing/approval routes and delegated-run lifecycle remain separate. The original design introduces no execution approval gate. Its explicit terminal goal-outcome proposal clarifies PD-10 without silently claiming that blocked/skipped work achieved the goal.
 
+Delegation is not implemented. An earlier, unwired prototype (delegation records, a child controller and per-run worker kernels) is kept on the tag `archive/delegation-2026-10` ([archived pages](../../.agents/docs/archive/README.md)). Delegation will be rebuilt as a role of the one agent loop, with its own prompt, tool table, hooks and budget ([refactoring plan](../../.agents/refactor-plan/PLAN.md), Phase 4 item 7). The control store's plan records keep the `delegated` author role and track grants (PD-9).
+
 ## Scope
 
 How agents organize research work in a session: versioned plans with phases, steps and tracks; progress; delegated agents that work on tracks and return structured outcomes; questions to the user; and the model settings of the three agent roles, main, delegated and reviewer (D61; the decision register leaves role settings to this spec). It also defines agent runs, which the other specs use. The user values this work organization (D04).
@@ -40,8 +42,17 @@ Terms:
 - PD-11. A parent run starts a delegation with the task, the track (if any), a context summary, pinned input references, an output schema (the platform default, or one a skill supplies), a role profile (tools, skill set, model setting) and limits (turns, wall time, cost). The platform assigns a delegation ID that the request, the outcome and every related record carry (the pack's convention).
 - PD-12. A track has at most one active delegation; starting another for it is refused while one runs (new).
 - PD-13. A delegated run starts with a fresh context: its role instructions, the brief, its track of the plan, its skill catalog and the referenced inputs, not the parent's transcript (CScience; Claude Code's public subagent documentation). Skills the profile preloads are recorded as loads ([skills](skills.md), SK-21).
-- PD-14. Delegated agents are logical: a delegation creates no container, and the child's tools use the session's environment ([architecture](../ARCHITECTURE.md)). Each delegated run gets its own kernels there, and sees its parent's results only through published artifacts and records (new). *Confirmed by the user on 2026-10-11 (D81): delegated agents are not separate sessions, and they stay in the session's environment; an environment of their own is a later opt-in. CScience likewise runs a session's child agents in the session's own sandbox, each with its own kernels and workspace directory.*
-- PD-15. A delegated run cannot delegate further, and a session runs at most four delegated runs at once. Both are project settings (new defaults; CScience children cannot delegate, while Claude Code allows deeper nesting).
+- PD-14. Delegated agents are logical: a delegation creates no container, and the child's tools use the session's environment ([architecture](../ARCHITECTURE.md)). Each delegated run gets its own kernels there, and sees its parent's results only through published artifacts and records (new). *Confirmed by the user on 2026-10-11 (D81): delegated agents are not separate sessions, and they stay in the session's environment; an environment of their own is a later opt-in. CScience likewise runs a session's child agents in the session's own sandbox, each with its own kernels and workspace directory.* *Answered by the owner on 2026-10-14 (open question 4): no kernel sharing. A parent never lends its kernel to a delegated run. In-memory state is handed off through saved files in the session workspace, such as Sage's `save()`/`load()` or pickle, so the handoff is explicit and recorded. Very large state stays with the parent, which does that part itself instead of delegating it.*
+- PD-15. Depth and concurrency. *Answered by the owner on 2026-10-14 (open question 3):* a session supports at least 8–10 delegated runs at once; 4–5 is the typical number. Nesting goes one level further: the main agent's delegated runs may delegate once more, and that second level may not. Depth is enforced by withholding the delegate tool at the limit, as Claude Code does (CScience children cannot delegate; Claude Code allows deeper nesting). Proposed rules:
+  - the default depth is 2 (the main agent's delegated runs, and one level below them), as a per-project setting;
+  - delegation can be switched off per delegated role;
+  - one concurrency cap covers the session's whole tree of runs, not each parent;
+  - a delegated run's budgets are carved from its parent's;
+  - cancellation cascades down the tree (PD-21);
+  - a handback goes to the direct parent (PD-20);
+  - the GUI shows the runs as a tree;
+  - the worker stays unaware of the tree: kernels belong to a run, at any depth;
+  - kernels start lazily, on a run's first cell.
 - PD-16. A delegated run acts under the session's grants and the project policy, with at most its parent's tools. It MUST NOT answer questions for the user, decide permission requests, approve plans, or claim or confirm fixes to review findings (CScience reserves confirmation to the root session). Operations it causes can raise permission requests, and the decision returns to that operation.
 
 ### Outcomes
@@ -116,8 +127,9 @@ All fixtures are `scripted`: the main agent, delegated agents and the user's act
 - *Then* the cell runs in the session's environment at the same revision, in a kernel distinct from the parent's, where `x` is undefined; no container or environment was created.
 
 **PD-F8 What delegated agents cannot do** (PD-15, PD-16)
-- *When* a child tries to answer a pending question, decide a permission request, approve the plan, claim a fix for a finding and start a delegation.
-- *Then* each attempt is refused with `not_permitted_for_role` and recorded.
+- *Given* the default depth, a delegated run C1 of the main agent, and C1's own delegated run C2.
+- *When* C2 tries to answer a pending question, decide a permission request, approve the plan and claim a fix for a finding.
+- *Then* each attempt is refused with `not_permitted_for_role` and recorded; C1 was offered the delegate tool and C2 was not.
 
 **PD-F9 Question routing** (PD-23, PD-24, PD-26)
 - *Given* children C1 and C2 have each asked a question, and the browser is closed and reopened.
@@ -140,8 +152,8 @@ All fixtures are `scripted`: the main agent, delegated agents and the user's act
 
 1. Plan approval: off by default (proposed), or on? Should every new version of an approved plan need approval again (as drafted), or only substantive changes?
 2. Progress across versions: carry over by step ID (proposed, PD-7), or reset as CScience does?
-3. Delegation limits: depth 1 and four concurrent delegated runs per session?
-4. Delegated runs get their own kernels (proposed, PD-14). Should a parent be able to share its kernel with a child deliberately?
+3. **Answered (2026-10-14, by the owner):** delegation limits. A session supports at least 8–10 delegated runs at once, 4–5 typically; the main agent's delegated runs may delegate once more, and the second level may not, enforced by withholding the delegate tool at the depth limit. The proposed rules for nesting are in PD-15.
+4. **Answered (2026-10-14, by the owner):** no kernel sharing. Delegated runs get their own kernels (PD-14); a parent never lends its kernel to a delegated run. In-memory state is handed off through saved files in the session workspace, such as Sage's `save()`/`load()` or pickle; very large state stays with the parent.
 5. Should plans also exist at project level, spanning sessions, or is that the board's job?
 6. Questions with a default and a timeout (PD-26): useful, or should questions always wait for the user?
 7. Which role settings should the GUI expose per delegation: the alias only, or effort and budgets too?

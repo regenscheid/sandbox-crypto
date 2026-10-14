@@ -30,8 +30,8 @@
     {
       "path": "agent-reports/babbage-openshell-lab-34-2026-10-13.md",
       "category": "runtime-validation",
-      "bytes": 4898,
-      "sha256": "0a44802787b302c52ae7ab3227a706a5290e61b398bff81809a556bd5a2808ea"
+      "bytes": 4892,
+      "sha256": "dc3593a18d65ed6df745f7e07164fbea69de99c650e6f0aa966c123e31697d68"
     },
     {
       "path": "../../docs/PIP-LOCKFILE-LICENSES.md",
@@ -40,22 +40,22 @@
       "sha256": "7867930003074fd012e602a5ce5497f1e76f159e74881db622383d256d035c40"
     },
     {
-      "path": "../../docs/CHILD-ATTEMPTS.md",
+      "path": "archive/CHILD-ATTEMPTS.md",
       "category": "implementation-boundary",
-      "bytes": 9106,
-      "sha256": "362bd58a401fcc8ecfa47223660d7ad9e790ef982fa0f3765668216e64a699a8"
+      "bytes": 9282,
+      "sha256": "9e01d7bc058e548513baf94fac22ee1e3ac6730d91041e0e987385317735b6ec"
     },
     {
-      "path": "../../docs/DELEGATED-PLAN-PROGRESS.md",
+      "path": "archive/DELEGATED-PLAN-PROGRESS.md",
       "category": "implementation-boundary",
-      "bytes": 7783,
-      "sha256": "0088d5ab6717a57f2477c08a9c2cfdcce429b2850c5bc5d2ce1bc122b41ac54f"
+      "bytes": 7973,
+      "sha256": "9c9705c51e72687df252179a4f1967abb81c0f5c4fedf222fdd96e070f2df4ec"
     },
     {
-      "path": "../../docs/DELEGATION-RECORDS.md",
+      "path": "archive/DELEGATION-RECORDS.md",
       "category": "implementation-boundary",
-      "bytes": 9477,
-      "sha256": "d031c229005fd2772abb832a2772a480fa786acfb21fbf1fe14c07271af890cc"
+      "bytes": 9598,
+      "sha256": "7c09188b0200681528aaece234d92d626426dced6f8f9d241cc92b016c37d0b0"
     },
     {
       "path": "../../docs/DISPLAY-REPAIR-PROVENANCE.md",
@@ -64,10 +64,10 @@
       "sha256": "266f42648acad9332b25c704f9658ae560a1407c722491a8b5afc72e414b0c85"
     },
     {
-      "path": "../../docs/DOCUMENT-EXPORTS.md",
+      "path": "archive/DOCUMENT-EXPORTS.md",
       "category": "implementation-boundary",
-      "bytes": 6755,
-      "sha256": "ab286af29457f2ab29eef7829728360ea5907cb08581e6be44502313b4896cad"
+      "bytes": 6934,
+      "sha256": "38ef3caa2cf88e612fc703026c03c97047f2b97868fa30f629d66aba5f47cdec"
     },
     {
       "path": "../../docs/FINDING-PROSE-MATH.md",
@@ -126,8 +126,8 @@
     {
       "path": "../../docs/ORCHESTRATOR-PROMPTS.md",
       "category": "implementation-design",
-      "bytes": 49697,
-      "sha256": "0ded56fb292bfa9552bb220834ccc862e3b658344830079c5437d98e5f1317ae"
+      "bytes": 49856,
+      "sha256": "9e8acdc248e70308a8e2ab8a36e908d791ca9a3a6bb4709cd27b00f5db41addb"
     },
     {
       "path": "../../docs/PILOT-COMPUTATIONS.md",
@@ -166,16 +166,16 @@
       "sha256": "d05b95d54cf92b3667eb18ba73ec125cb8def3dc564a9c1c8e8f3e6191ec0c4b"
     },
     {
-      "path": "../../docs/RUN-KERNEL-DISPATCH.md",
+      "path": "archive/RUN-KERNEL-DISPATCH.md",
       "category": "implementation-boundary",
-      "bytes": 10967,
-      "sha256": "cbbca3050ce1577f7daf5d23b26ec6bb097c04ebca549900104f0fc4371dabff"
+      "bytes": 11152,
+      "sha256": "0a3f5c8995dec09d466a276009cb5843afa26dad3d4aa109e9c0bc6a0f6b7bb4"
     },
     {
-      "path": "../../docs/RUN-KERNELS.md",
+      "path": "archive/RUN-KERNELS.md",
       "category": "implementation-boundary",
-      "bytes": 10647,
-      "sha256": "f89edc201990f39530415f010b552fb3928c5977a1c243acae638ffb53f5f484"
+      "bytes": 10704,
+      "sha256": "36d410bfff126deeb36d0b1402a4e0dc2eada1279c0ae297f3ade312ee61a897"
     },
     {
       "path": "../../docs/SESSION-PLAN-EDITING.md",
@@ -198,8 +198,8 @@
     {
       "path": "../../docs/SESSION-PLANS.md",
       "category": "implementation-boundary",
-      "bytes": 11743,
-      "sha256": "a290a8d376fe5038ab63ea679bad85578bc29f590d09232b3d8c618de34f4520"
+      "bytes": 12012,
+      "sha256": "24a38a2150e9fb921a4fbfc1787770e2ba46ec411062e93cbeefe5ef61ec4d7e"
     },
     {
       "path": "../../docs/STOCK-RESEARCH-PROMPTS.md",
@@ -456,14 +456,14 @@
     {
       "path": "agent-reports/delegated-plan-progress-2026-10-13.md",
       "category": "implementation-validation",
-      "bytes": 3142,
-      "sha256": "bc25fe0f75fc427b8812e8bc6756e09e19cd0c9609319bb20d9d39bc163a14ce"
+      "bytes": 3139,
+      "sha256": "eb7143ab2de3fb08e1868dcc2a0c7b978aa95b01e751632a179523501d2c59ad"
     },
     {
       "path": "agent-reports/delegation-records-2026-10-13.md",
       "category": "implementation-validation",
-      "bytes": 11502,
-      "sha256": "bbeee4607a2ce4312ffba83d3e58af2749dd5ed6c0895c608b699469d551d926"
+      "bytes": 11499,
+      "sha256": "0fec21ec5789c6ef7889fa5cf85e89c526375d375cb949f9aaac5ed4ef2c8515"
     },
     {
       "path": "agent-reports/display-repair-input-provenance-2026-10-12.md",
@@ -610,16 +610,16 @@
       "sha256": "f2b59b6c803010e14ef30081e609572df1267cd55888268b90074456ec479d74"
     },
     {
-      "path": "../../docs/DELEGATED-RUN-TRANSPORT.md",
+      "path": "archive/DELEGATED-RUN-TRANSPORT.md",
       "category": "implementation-boundary",
-      "bytes": 8270,
-      "sha256": "94ab86b496b294546db45dc2f4c3e46d72a741eef0151ac33814d1d19e89f74f"
+      "bytes": 8446,
+      "sha256": "dcebb75e6bedcaa2b3dd4854af23b842b622d39fbcfc3307c1391b0b375543cd"
     },
     {
-      "path": "../../docs/DELEGATED-CHILD-CONTROLLER.md",
+      "path": "archive/DELEGATED-CHILD-CONTROLLER.md",
       "category": "implementation-boundary",
-      "bytes": 8271,
-      "sha256": "0526ee27e43b72085ce97bf13eb1a6430e78a5cda18ddc6629caf9012213b933"
+      "bytes": 8447,
+      "sha256": "b67461032fb5d2e01a7e1dcd42b76fd9ca302c8b15346d8d9bb1a7e3df8921bf"
     },
     {
       "path": "../../docs/PROVISIONING-UPGRADES.md",

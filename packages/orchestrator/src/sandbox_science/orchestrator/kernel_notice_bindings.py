@@ -19,12 +19,11 @@ import time
 from collections.abc import Generator
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from pydantic import TypeAdapter
 
 from sandbox_science.contracts import Identifier, new_id
-
-from .documents.delivery_journal import DeliveryError, endpoint_fingerprint
 
 MAX_BINDINGS = 256
 MAX_BYTES = 128 * 1024
@@ -36,6 +35,25 @@ _LOCK = "kernel-notice-bindings.lock"
 
 class BindingError(ValueError):
     """Fixed local refusal without credentials, peer text or private paths."""
+
+
+def _valid_endpoint(base_url: str) -> bool:
+    """An http(s) worker URL with a host and no credentials, query or fragment."""
+    if not 1 <= len(base_url) <= 2048 or any(not 32 < ord(c) < 127 for c in base_url):
+        return False
+    try:
+        url = urlsplit(base_url)
+        _ = url.port
+    except ValueError:
+        return False
+    return (
+        url.scheme in {"http", "https"}
+        and bool(url.hostname)
+        and url.username is None
+        and url.password is None
+        and not url.query
+        and not url.fragment
+    )
 
 
 @dataclass(frozen=True)
@@ -55,10 +73,11 @@ class WorkerConfiguration:
         ):
             raise BindingError("invalid trusted notification configuration")
         try:
-            endpoint_fingerprint(self.endpoint)
+            if not _valid_endpoint(self.endpoint):
+                raise BindingError("invalid trusted notification configuration")
             if len(self.authorization.encode("utf-8", "strict")) > 16_384:
                 raise BindingError("invalid trusted notification configuration")
-        except (DeliveryError, UnicodeError, TypeError, ValueError):
+        except (UnicodeError, TypeError, ValueError):
             raise BindingError("invalid trusted notification configuration") from None
         return json.dumps(
             {"version": 1, "endpoint": self.endpoint, "authorization": self.authorization},

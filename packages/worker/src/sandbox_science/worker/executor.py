@@ -1320,52 +1320,6 @@ class Running:
     """Seconds it waited for package commands before it started; its time limit covers them."""
 
 
-def _checked_run_binding(value: object) -> Message:
-    keys = {"scope", "sandbox", "sandbox_id", "incarnation"}
-    if type(value) is not dict:
-        raise ToolError("invalid_request", "invalid internal child binding")
-    value = cast(Message, value)
-    if len(value) != 4 or any(type(key) is not str for key in value) or set(value) != keys:
-        raise ToolError("invalid_request", "invalid internal child binding")
-    scope = value["scope"]
-    expected = {
-        "project_id",
-        "session_id",
-        "environment_id",
-        "parent_run_id",
-        "delegation_id",
-        "child_run_id",
-    }
-    if type(scope) is not dict:
-        raise ToolError("invalid_request", "invalid internal child scope")
-    scope = cast(Message, scope)
-    if len(scope) != 6 or any(type(key) is not str for key in scope) or set(scope) != expected:
-        raise ToolError("invalid_request", "invalid internal child scope")
-    for item in (*scope.values(), value["sandbox"], value["sandbox_id"]):
-        if type(item) is not str or len(item) > 128 or _SESSION_RE.fullmatch(item) is None:
-            raise ToolError("invalid_request", "invalid internal child identifier")
-    incarnation = value["incarnation"]
-    if type(incarnation) is not str or re.fullmatch(r"inc-[0-9a-f]{24}", incarnation) is None:
-        raise ToolError("invalid_request", "invalid internal child incarnation")
-    if scope["parent_run_id"] == scope["child_run_id"] or any(
-        scope[name].casefold() == "user" for name in ("parent_run_id", "child_run_id")
-    ):
-        raise ToolError("invalid_request", "invalid internal child run attribution")
-    return {
-        "scope": dict(scope),
-        "sandbox": value["sandbox"],
-        "sandbox_id": value["sandbox_id"],
-        "incarnation": incarnation,
-    }
-
-
-def _run_binding_hash(binding: Message) -> str:
-    raw = json.dumps(binding, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
-        "ascii"
-    )
-    return hashlib.sha256(b"run-kernel-binding-v1\0" + raw).hexdigest()
-
-
 @dataclass
 class Kernel:
     """A session's kernel for one language; its generation grows on every restart."""
@@ -1389,19 +1343,10 @@ class Kernel:
     owner: str = ""
     leader: Leader | None = None
     last_used: float = field(default_factory=time.monotonic)
-    run_binding: Message | None = None
     """When a cell last started or ended, for stopping idle kernels."""
 
     @property
     def kernel_id(self) -> str:
-        if self.run_binding is not None:
-            raw = json.dumps(
-                {"binding": self.run_binding, "language": self.language},
-                sort_keys=True,
-                separators=(",", ":"),
-                ensure_ascii=True,
-            ).encode("ascii")
-            return "krn-run-" + hashlib.sha256(raw).hexdigest()[:32]
         name = f"krn-{self.session}-{self.language}"
         if len(name) <= 128:
             return name
@@ -1410,7 +1355,7 @@ class Kernel:
         return f"krn-{digest}-{self.language}"
 
     def info(self) -> Message:
-        info: Message = {
+        return {
             "kernel_id": self.kernel_id,
             "language": self.language,
             "generation": self.generation,
@@ -1419,9 +1364,6 @@ class Kernel:
             "start_execution": self.start_execution,
             "start_package_epoch": self.start_package_epoch,
         }
-        if self.run_binding is not None:
-            info["run_binding_sha256"] = _run_binding_hash(self.run_binding)
-        return info
 
     async def alive(self) -> bool:
         return self.manager is not None and await _alive(self.manager)
@@ -1533,11 +1475,6 @@ class Executor:
         """Whether this process adopts orphans, so leftovers are found below it."""
         self.running: dict[str, Running] = {}
         self.kernels: dict[tuple[str, str], Kernel] = {}
-        self.run_incarnation: str | None = None
-        self.run_bindings: dict[tuple[str, str], Message] = {}
-        self.run_kernels: dict[tuple[str, str, str, str], Kernel] = {}
-        self.closed_runs: set[tuple[str, str]] = set()
-        self.run_handlers: dict[asyncio.Task[Any], Message] = {}
         self.tasks: set[asyncio.Task[None]] = set()
         self.launch_controls: set[asyncio.Task[Any]] = set()
         self.configured: dict[str, str] = {}
@@ -1615,11 +1552,6 @@ class Executor:
             "job": self.op_shell,
             "job_status": self.op_job_status,
             "cell": self.op_cell,
-            "run_cell": self.op_run_cell,
-            "run_restart": self.op_run_restart,
-            "run_cancel": self.op_run_cancel,
-            "run_close": self.op_run_close,
-            "run_kernels": self.op_run_kernels,
             "pdf": self.op_pdf,
             "cancel": self.op_cancel,
             "restart": self.op_restart,
@@ -1669,27 +1601,13 @@ class Executor:
             *(item.task for item in running if item.task is not None), return_exceptions=True
         )
         controls = [
-            task
-            for task in self.launch_controls | set(self.run_handlers)
-            if task not in (requester, asyncio.current_task())
+            task for task in self.launch_controls if task not in (requester, asyncio.current_task())
         ]
         for task in controls:
             task.cancel()
         await asyncio.gather(*controls, return_exceptions=True)
-        # An admitted child handler can publish its cancelled attempt task while
-        # an acceptance reply drains. Own that task too before kernel/process cleanup.
-        selected = [
-            item
-            for item in self.running.values()
-            if item.kernel is not None and item.kernel.run_binding is not None
-        ]
-        for item in selected:
-            item.cancel_requested = True
         await asyncio.gather(
-            *(item.task for item in selected if item.task is not None), return_exceptions=True
-        )
-        await asyncio.gather(
-            *(kernel.stop() for kernel in self.all_kernels()), return_exceptions=True
+            *(kernel.stop() for kernel in self.kernels.values()), return_exceptions=True
         )
         await asyncio.to_thread(end_descendants)
 
@@ -2005,7 +1923,6 @@ class Executor:
             artifact_capture_protocol=capture.PROTOCOL,
             output_observation_protocol=1,
             kernel_revision_protocol=1,
-            run_kernel_protocol=1 if self.run_incarnation is not None else 0,
             environment=await self.baseline(),
             package_epoch=self.package_epoch,
         )
@@ -2114,18 +2031,10 @@ class Executor:
                         epoch = self.package_epoch if fingerprint == self.reported else None
             if running.cancel_requested:
                 raise _NotStartedError
-            if (
-                (kernel.run_binding is not None and self.run_closed(kernel.run_binding))
-                or self.closing
-                or (
-                    (
-                        running.kind == "restart"
-                        or running.package_operation
-                        or (kernel.run_binding is not None)
-                    )
-                    and running.controller
-                    and not running.controller()
-                )
+            if self.closing or (
+                (running.kind == "restart" or running.package_operation)
+                and running.controller
+                and not running.controller()
             ):
                 raise ToolError(
                     "unavailable", "controller detached or executor closing before kernel startup"
@@ -2144,19 +2053,11 @@ class Executor:
         """Wait without retaining the launch lock; serialize the final launch with hold ACK."""
         while True:
             await self.package_launch.acquire()
-            if self.closing or (
-                running.kernel is not None
-                and running.kernel.run_binding is not None
-                and self.run_closed(running.kernel.run_binding)
-            ):
+            if self.closing:
                 self.package_launch.release()
                 raise ToolError("unavailable", "executor is closing; new launch refused")
             if (
-                (
-                    running.package_operation
-                    or running.kind == "restart"
-                    or (running.kernel is not None and running.kernel.run_binding is not None)
-                )
+                (running.package_operation or running.kind == "restart")
                 and running.controller
                 and not running.controller()
             ):
@@ -2574,8 +2475,6 @@ class Executor:
         return self.kernels[key]
 
     async def op_cell(self, request: Message) -> None:
-        if "run_binding" in request or "run_binding_sha256" in request:
-            raise ToolError("invalid_request", "child selection requires run_cell")
         session = self.session(request)
         kernel = self.kernel(session, str(request.get("language", "python")))
         code = request.get("code")
@@ -2593,190 +2492,6 @@ class Executor:
                 int(request.get("limit", 1024 * 1024)),
             )
         )
-
-    def all_kernels(self) -> tuple[Kernel, ...]:
-        return (*self.kernels.values(), *self.run_kernels.values())
-
-    def run_closed(self, binding: Message) -> bool:
-        scope = binding["scope"]
-        return (scope["project_id"], scope["child_run_id"]) in self.closed_runs
-
-    def run_controller(self, request: Message) -> None:
-        if not callable(request.get("_admission_guard")):
-            raise ToolError("unavailable", "child controller admission is unavailable")
-        self.controller_present(request)
-
-    def run_selection(
-        self, request: Message, *, remember: bool = False, allow_closed: bool = False
-    ) -> Message:
-        """Bounded exact wire selection; immutable VM identity is worker-owned evidence."""
-        self.run_controller(request)
-        binding = _checked_run_binding(request.get("run_binding"))
-        digest = _run_binding_hash(binding)
-        if (
-            type(request.get("run_binding_sha256")) is not str
-            or request.get("run_binding_sha256") != digest
-        ):
-            raise ToolError("invalid_request", "child binding key differs")
-        if self.run_incarnation is None or binding["incarnation"] != self.run_incarnation:
-            raise ToolError("unavailable", "child original daemon incarnation differs")
-        scope = binding["scope"]
-        if type(request.get("session")) is not str or self.session(request) != scope["session_id"]:
-            raise ToolError("invalid_request", "child session differs")
-        key = (scope["project_id"], scope["child_run_id"])
-        old = self.run_bindings.get(key)
-        if old is not None and old != binding:
-            raise ToolError("conflict", "child original binding cannot change")
-        if not allow_closed and key in self.closed_runs:
-            raise ToolError("unavailable", "child kernel scope is closed")
-        if remember and old is None:
-            if len(self.run_bindings) >= 128:
-                raise ToolError("unavailable", "child kernel binding capacity is full")
-            self.run_bindings[key] = binding
-        return binding
-
-    def run_kernel(self, binding: Message, language: str) -> Kernel:
-        if language not in KERNEL_NAMES:
-            raise ToolError("unsupported", "child kernel language is unavailable")
-        scope = binding["scope"]
-        key = (scope["project_id"], scope["session_id"], scope["child_run_id"], language)
-        found = self.run_kernels.get(key)
-        if found is None:
-            session = scope["session_id"]
-            found = Kernel(
-                session,
-                language,
-                self.directory(session, "."),
-                self.environment(session),
-                run_binding=binding,
-            )
-            self.run_kernels[key] = found
-        return found
-
-    async def op_run_cell(self, request: Message) -> None:
-        binding = self.run_selection(request)
-        code, timeout, limit = request.get("code"), request.get("timeout"), request.get("limit")
-        language = request.get("language")
-        try:
-            code_bytes = (
-                len(code.encode("utf-8")) if type(code) is str and len(code) <= 262144 else 262145
-            )
-        except UnicodeError:
-            code_bytes = 262145
-        if (
-            type(code) is not str
-            or code_bytes > 262144
-            or type(language) is not str
-            or language not in KERNEL_NAMES
-            or type(timeout) not in (int, float)
-            or not 0 < cast(float, timeout) <= 86400
-            or type(limit) is not int
-            or not 1 <= limit <= 67108864
-        ):
-            raise ToolError("invalid_request", "invalid internal child cell")
-        self.controller_present(request)
-        self.run_selection(request, remember=True)
-        kernel = self.run_kernel(binding, language)
-        running = self.accept(request, "cell")
-        running.kernel = kernel
-        handler = asyncio.current_task()
-        if handler is not None:
-            self.run_handlers[handler] = binding
-        try:
-            await self.reply(request)
-        except BaseException:
-            running.cancel_requested = True
-            raise
-        finally:
-            running.task = self.spawn(
-                self.run_cell(running, kernel, code, float(cast(float, timeout)), limit)
-            )
-            if handler is not None:
-                self.run_handlers.pop(handler)
-
-    async def op_run_cancel(self, request: Message) -> None:
-        binding = self.run_selection(request, allow_closed=True)
-        execution = request.get("execution")
-        if type(execution) is not str or re.fullmatch(r"exe-[0-9a-f]{24}", execution) is None:
-            raise ToolError("invalid_request", "invalid child execution identity")
-        running = self.running.get(execution)
-        if running is not None and (
-            running.kernel is None or running.kernel.run_binding != binding
-        ):
-            raise ToolError("invalid_request", "child cancellation differs from original attempt")
-        await self.op_cancel(request)
-
-    async def op_run_restart(self, request: Message) -> None:
-        binding = self.run_selection(request)
-        language = request.get("language")
-        if type(language) is not str or language not in KERNEL_NAMES:
-            raise ToolError("invalid_request", "invalid child restart language")
-        self.run_selection(request, remember=True)
-        task = asyncio.current_task()
-        if task is not None:
-            self.launch_controls.add(task)
-            self.run_handlers[task] = binding
-        try:
-            await self.restart_request(request, selected=self.run_kernel(binding, language))
-        finally:
-            if task is not None:
-                self.launch_controls.discard(task)
-                self.run_handlers.pop(task)
-
-    async def op_run_kernels(self, request: Message) -> None:
-        binding = self.run_selection(request, allow_closed=True)
-        scope = binding["scope"]
-        found: list[Message] = []
-        for language in KERNEL_NAMES:
-            key = (scope["project_id"], scope["session_id"], scope["child_run_id"], language)
-            kernel = self.run_kernels.get(key)
-            if kernel is not None and await kernel.alive():
-                found.append(kernel.info())
-        await self.reply(request, kernels=found)
-
-    async def op_run_close(self, request: Message) -> None:
-        binding = self.run_selection(request, remember=True, allow_closed=True)
-        scope = binding["scope"]
-        key = (scope["project_id"], scope["child_run_id"])
-        self.closed_runs.add(key)
-        selected = [kernel for kernel in self.run_kernels.values() if kernel.run_binding == binding]
-
-        task = asyncio.current_task()
-        if task is not None:
-            self.launch_controls.add(task)
-        try:
-            await _owned(self.stop_run_kernels(selected))
-            await self.reply(request, kernels=[])
-        finally:
-            if task is not None:
-                self.launch_controls.discard(task)
-
-    async def stop_run_kernels(self, selected: list[Kernel]) -> None:
-        """Drain already admitted handlers and actual selected attempts before cleanup ACK."""
-        for item in self.running.values():
-            if any(item.kernel is kernel for kernel in selected):
-                item.cancel_requested = True
-        handlers = [
-            task
-            for task, selected_binding in tuple(self.run_handlers.items())
-            if any(kernel.run_binding == selected_binding for kernel in selected)
-            and task is not asyncio.current_task()
-        ]
-        await asyncio.gather(*handlers, return_exceptions=True)
-        for kernel in selected:
-            running = [item for item in self.running.values() if item.kernel is kernel]
-            for item in running:
-                item.cancel_requested = True
-                item.closing = item.started
-                if item.queued and item.task is not None:
-                    item.task.cancel()
-            async with kernel.control:
-                if kernel.manager is not None:
-                    await kernel.stop()
-                    kernel.state_lost = True
-            await asyncio.gather(
-                *(item.task for item in running if item.task is not None), return_exceptions=True
-            )
 
     async def run_cell(
         self, running: Running, kernel: Kernel, code: str, timeout: float, limit: int
@@ -3059,13 +2774,9 @@ class Executor:
             if task is not None:
                 self.launch_controls.discard(task)
 
-    async def restart_request(self, request: Message, *, selected: Kernel | None = None) -> None:
+    async def restart_request(self, request: Message) -> None:
         session = self.session(request)
-        kernel = (
-            selected
-            if selected is not None
-            else self.kernel(session, str(request.get("language", "python")))
-        )
+        kernel = self.kernel(session, str(request.get("language", "python")))
         restart = Running("restart", "restart")
         restart.kernel = kernel
         guard = request.get("_admission_guard")
@@ -3075,11 +2786,7 @@ class Executor:
             await self.package_launch.acquire()
             try:
                 self.controller_present(request)
-                if (
-                    self.closing
-                    or self.package_mode != "ready"
-                    or (kernel.run_binding is not None and self.run_closed(kernel.run_binding))
-                ):
+                if self.closing or self.package_mode != "ready":
                     raise ToolError(
                         "unavailable", "package admission is closed; kernel restart refused"
                     )
@@ -3100,7 +2807,7 @@ class Executor:
         interval = max(0.2, min(30.0, idle / 2))
         while True:
             await asyncio.sleep(interval)
-            for kernel in self.all_kernels():
+            for kernel in tuple(self.kernels.values()):
                 if kernel.manager is None or time.monotonic() - kernel.last_used < idle:
                     continue
                 async with kernel.control:
@@ -3127,7 +2834,7 @@ class Executor:
                 self.launch_controls.discard(task)
 
     async def close_session_request(self, request: Message) -> None:
-        """Stop all session kernels; reply with its legacy MAIN kernel projection.
+        """Stop all session kernels; reply with the kernels it stopped.
 
         Its running cells end cancelled and its queued ones never start. Each kernel
         keeps its generation, so the session's next cell starts a new one and reports
@@ -3135,11 +2842,6 @@ class Executor:
         """
         session = self.session(request)
         stopped: list[Message] = []
-        for key, binding in self.run_bindings.items():
-            if binding["scope"]["session_id"] == session:
-                self.closed_runs.add(key)
-        selected = [kernel for kernel in self.run_kernels.values() if kernel.session == session]
-        await _owned(self.stop_run_kernels(selected))
         jobs = [
             running
             for running in self.running.values()
@@ -3187,7 +2889,7 @@ class Executor:
         say in a background thread, from an idle one.
         """
         cpu = await asyncio.to_thread(cpu_seconds_below, os.getpid())
-        kernels = sum(1 for kernel in self.all_kernels() if kernel.manager is not None)
+        kernels = sum(1 for kernel in self.kernels.values() if kernel.manager is not None)
         await self.reply(request, cpu_seconds=cpu, kernels=kernels, running=len(self.running))
 
     async def op_read(self, request: Message) -> None:

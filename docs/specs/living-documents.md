@@ -124,12 +124,11 @@ export staging remain separate. See [project macros](../PROJECT-MACROS.md).
 
 ### Exports
 
-An internal [bounded export-input snapshot](../DOCUMENT-EXPORTS.md) now pins exact
-stored Markdown, original math identities/TeX, saved parser and known effective
-macro context with durable replay and explicit held unsupported inputs. It has
-no public route, converter, worker staging/execution or export-complete outcome;
-LD-35–38 and LD-F10's export / LD-F11 remain unimplemented. Living documents are
-Markdown with LaTeX math, not a full `.tex` editor.
+LD-35–38 and LD-F10's export / LD-F11 are not implemented. An earlier, unwired
+[export-input snapshot](../../.agents/docs/archive/DOCUMENT-EXPORTS.md) prerequisite
+is kept on the tag `archive/document-sync-2026-10`; it will be ported to the control
+store's public API when LD-49 to LD-52 are scheduled. Living documents are Markdown
+with LaTeX math, not a full `.tex` editor.
 
 - LD-35. Exports to `.tex` and PDF run as executions in the requesting session's environment, or in the project's default environment for an export the user starts from the project, never beside the orchestrator. The document revision, its resolved references and its macros are staged read-only. Pandoc and TeX come from the environment and are installed at runtime when missing ([Conda provisioning](conda-provisioning.md)); Pandoc is GPL and runs only as a separate program ([licensing](../LICENSING.md)) (D16, D45, D65).
 - LD-36. An export resolves each `latest` reference to the revision current when it starts, and records it. Its outputs are artifacts whose lineage names the document revision, the resolved references, the Pandoc and TeX versions and the environment (RA-13) (new).

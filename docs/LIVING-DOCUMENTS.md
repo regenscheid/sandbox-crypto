@@ -16,117 +16,15 @@ Documents live in one SQLite database in the harness's state directory, `<state-
 | `annotation_threads`, `annotation_entries` | Immutable anchor/opening author and append-only attributed create, reply, edit, resolve and reopen entries |
 | `annotation_operations` | Scoped idempotent comment mutation results |
 | `annotation_requests` | User-addressed requests, their session, delivery lease and queued/delivered/responded lifecycle |
-| `publication_projects`, `publication_current` | Durable per-project publication cursor and current metadata for every canonical identity, including tombstones |
-| `publication_events`, `publication_meta` | Bounded recent publication metadata and the completed additive bootstrap version |
 | `project_macro_revisions`, `project_macro_heads`, `project_macro_operations` | Immutable bounded USER definitions, current setting revision and idempotent setting results |
 | `document_macro_pins`, `response_macro_anchors`, `response_macro_revisions` | Save-time project setting pins and immutable original finding-document contexts |
 | `math_macro_pins`, `math_macro_contexts`, `review_macro_pins` | Exact setting/effective context for checks and reviewer explanation confirmation |
 
 Triggers refuse updates and deletions of revisions, events, annotation threads and annotation entries, as a guard against mistakes; anyone who can write the file can drop them. The schema's version is SQLite's `user_version`, 1; a database in another version, or an SQLite file that is not a control store, is refused. The workspace server reads and writes the store through the orchestrator package, as it reads the projects' records, until W5 gives the control application an API of its own.
 
+Control stores made before 2026-10-14 may still hold the tables of removed code: `publication_meta`, `publication_projects`, `publication_current`, `publication_events`, `document_export_inputs`, `delegation_record_*` and `child_attempt_*`. Nothing reads or writes them. The Phase 2 schema re-baseline (refactoring plan, decision 6) will discard such stores.
+
 **Events.** `document.created`; `document.revision_created`, with the revision, its base and parent, the author and the author's kind, the blocks changed, added, removed and moved, the structural blocks added, the characters of text an agent added or changed, whether delimiters were normalized, and whether it is a tombstone; `document.patch_conflicted`, with the conflicts; `document.patch_refused`, with the blocks the patch would have changed without naming them; `document.suggestion_created`; `document.suggestion_decided`; `document.settings_changed`; and `document.promoted`, recording the original session, new name, user and reason; and `annotation.created` / `annotation.changed`, committed with the thread entry and request. Each names the service that recorded it (`harness`, `harness-cli` for the user's commands, or `workspace`) and the session of the agent that made the change.
-
-## Publication outbox prerequisite
-
-The internal `documents.publication.Publications` reader pins complete canonical targets
-for the [worker catalog](WORKER.md#document-catalog-prerequisite). Every committed revision,
-including deletion, and every promotion records publication metadata in the same SQLite
-transaction as its source event and operation receipt. A failed hook rolls everything back;
-an exact operation retry emits no duplicate publication. The hook reads the updated SQL
-head and scope rather than the caller's earlier metadata. Promotion changes the path at
-the same immutable revision, without inventing a deletion of that revision.
-
-Project publication sequence is independent of document revision and survives history
-eviction. The event cache retains at most 4,096 entries per project and 65,536 globally;
-current identity projections and cursors are never evicted. Content remains in immutable
-revisions. These are logical metadata bounds, not a filesystem/WAL/RSS quota. Existing
-schema-version-one stores receive the additive tables and a current-state baseline in
-one transaction, once. Baseline entries are not lifecycle deltas: a cursor preceding
-that baseline requires a complete snapshot, including an empty target for deleted-only
-projects. Read-only clients never initialize or repair the store.
-
-`plan(project, after=...)` reads the cursor and all live metadata in one consistent read.
-It returns a pinned complete snapshot, a complete contiguous delta of at most 64 changes
-and 64 KiB, or an already-current result. Missing/evicted history and larger deltas fall
-back to the complete snapshot. Repeated changes to one document remain separate. A
-target over 10,000 entries or the shared protocol's byte limits is refused in full;
-worker export limits do not veto ordinary canonical edits. An already-running older
-writer that bypasses the hook leaves a detectable projection mismatch: export refuses
-instead of assigning its bytes to an older publication cursor.
-
-`content(project, entry)` reads the exact pinned immutable revision, even after later
-edits or deletion, and verifies its byte length and SHA-256 within that project. SQL
-clips metadata, content and digest fields before returning them to Python; malformed
-or oversized stored rows cannot become unbounded Python export objects. Both APIs are
-synchronous and must run off asynchronous event loops.
-
-The outbox itself performs no network delivery. Its separate manual delivery adapter
-below retains pinned targets and exact storage acknowledgements. Environment file
-publication, direct-edit ingestion and `ss-doc` invocation remain disabled. LD-49 to
-LD-52 and their runtime fixtures remain open, including the conservative hold for
-uncertain writers.
-
-Acceptance passed 59 focused publication/store cases, independent SQL fault/retry,
-retention/bootstrap and actual worker-catalog composition probes, and the combined
-suite: 9,274 Python tests (43 opt-in skips), 429 web tests, strict/static/license/protocol
-checks and both production builds. Corrupt 20 MiB metadata and revision rows were
-refused with bounded Python export allocations; this does not measure SQLite cache
-memory or prove a sandbox writer guard.
-
-## Manual catalog delivery
-
-`documents.delivery.CatalogDelivery` is an internal, explicitly invoked adapter.
-`step(binding, client)` receives an operator-approved `WorkerClient` and immutable
-`DeliveryBinding`: project, binding ID, exact positive configuration revision and
-SHA-256 of the approved endpoint. It discovers no credentials, enables no clients and
-has no scheduler, execution hook, agent tool or public route. Each step reads fresh
-worker status and sends at most one begin/delta, page, content chunk or commit request.
-The catalog-only transport caps response bodies at 8 KiB and metadata/content requests
-at 64/352 KiB, refuses redirects and applies a ten-second total HTTP deadline.
-
-A separate SQLite journal uses WAL and `synchronous=FULL`. Before the first upload it
-commits the exact target, complete ordered metadata, chosen snapshot/delta mode and
-original delta payload. Source advances cannot alter that pin. Immutable content is
-read and verified one document at a time from the canonical revision store; this journal
-stores no document content. Metadata pages and aligned chunks replay identically after
-lost replies or restart. Stage expiry can replay the same pin. A reset or changed base
-that makes a pending delta ambiguous holds for explicit reconciliation, preserving its
-original mode and payload. A snapshot can restart on an empty worker without treating
-the old local acknowledgement as current storage.
-
-Fresh status must coherently bind project, generation, cursor, manifest, count and
-bytes. Matching the exact current target can settle a lost commit reply after receipt
-eviction. An older replay receipt never substitutes for actual current membership;
-foreign stages, unknown ahead cursors and same-cursor different manifests hold. A
-historical local acknowledgement is reported separately from freshly observed current
-storage. A successful acknowledgement and pin removal commit in one transaction.
-
-Per-binding SQL leases fence configuration changes and stale replies. Endpoint changes
-require a higher operator configuration revision, retain unresolved pins/history and
-reconcile fresh status. The endpoint is checked before and after network operations.
-Leases never grant worker permissions. Canonical writes remain independent of delivery
-failure or quota exhaustion. Future canonical revision collection must retain pinned
-source revisions; current revisions are append-only.
-A process that dies without releasing its lease leaves the binding busy until expiry;
-the next owner reconciles the retained target rather than assuming the request failed.
-
-Defaults bound 128 bindings, 20,000 pinned entries and 32 MiB of pinned metadata across
-the journal, eight admitted steps/SQL operations and 60-second leases. `DeliveryLimits`
-configures these logical bounds; they do not claim filesystem/WAL or SQLite RSS limits.
-Tightened limits refuse continued admission without discarding the original pin.
-All SQL uses one private thread, with bounded admission before submission. Caller
-cancellation retains admitted step/transaction ownership; `aclose()` stops admission
-and drains actual work before closing, even under repeated cancellation. The caller
-must retain the injected client and canonical store until that drain finishes.
-
-Focused local acceptance covers actual authenticated worker HTTP composition, lost
-replies/restarts, source advances during a 600,000-byte upload, empty-target deletion only
-at commit, stage expiry, worker resets, ambiguous delta holds, stale lease/endpoint
-replies, corrupt pins, aggregate quotas and acknowledgement transaction failure.
-Independent source review and final combined validation with the worker source adapter
-and atomic synthetic OpenShell fixture passed 9,365 Python tests (43 opt-in skips),
-431 web tests, strict/static/license/protocol checks and both production builds.
-No OpenShell or environment publication is exercised by this prerequisite.
 
 ## Parsing
 
@@ -240,8 +138,6 @@ math, model repair proposals and idle scheduling remain open.
 
 The [consistency review](CONSISTENCY-REVIEW.md) consumes durable session-attributed agent and worker revisions, counting the characters they wrote and structural blocks they added, never as artifact revisions (CR-10 as amended, LD-40). USER revisions and worker changes without an established session do not trigger a session review. The reviewer reads bounded immutable revision evidence; checkpoint, terminal and confirmation windows retain their own durable state.
 
-The [internal worker source adapter](WORKER-DOCUMENT-SOURCE.md) prepares attested captured text as named patches, applies delegated authority and suggestions, and retains exact rejected bytes with durable replayable receipts. Its logical raw budgets and 4 MiB capture cap are explicit. It enables no worker transport, file capture, mirror overwrite or helper; uncertain writer closure remains held. This is a control-side prerequisite for LD-50, with LD-49 to LD-52 still requiring separate runtime work.
-
 ## Measured
 
 On babbage, documents of repeated sections, each a heading and a paragraph with three formulas:
@@ -260,4 +156,5 @@ A patch parses the text again after each operation and carries the IDs over; one
 - Automatic idle-session wake/turn dispatch for addressed comments (part of LD-22), annotation sidecar export and anchors for artifact types other than living documents (RA-21/RA-23).
 - References, embedded artifacts and ledger bindings (LD-31 to LD-34), and exports (LD-35 to LD-38).
 - Document files in every environment, direct edits of them, and the `ss-doc` helper (LD-3, LD-49 to LD-52).
+- An earlier, unwired prerequisite for exports and document files in environments (export-input snapshots, a publication outbox, catalog delivery and a worker source adapter) is kept on the tag `archive/document-sync-2026-10` ([archived pages](../.agents/docs/archive/README.md)). It will be ported to the control store's public API (B-01) when LD-49 to LD-52 are scheduled. The worker's document catalog stays in the tree, parked ([worker](WORKER.md#document-catalog-prerequisite)).
 - Math repairs proposed into a document (LD-48), and math checks/remediation for ledger entries and excluded finding prose (remaining LD-53 to LD-55/D82 scope). Document, comment/reply and eligible MAIN fix/rebut explanation revision scheduling, mechanical findings and closing delivery are built ([math checks](MATH-CHECKS.md)); automatic history compaction and an idle controller are not.

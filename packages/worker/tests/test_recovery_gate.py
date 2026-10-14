@@ -437,7 +437,6 @@ async def test_restart_launch_is_owned_by_shutdown_and_cannot_outlive_it(
     entered, release = asyncio.Event(), asyncio.Event()
 
     class Kernel:
-        run_binding = None
         manager: object | None = None
         generation = 0
         stops = 0
@@ -490,7 +489,6 @@ async def test_restart_rechecks_original_controller_after_kernel_stop(
     attached = True
 
     class Kernel:
-        run_binding = None
         manager: object | None = object()
         control = asyncio.Lock()
         state_lost = False

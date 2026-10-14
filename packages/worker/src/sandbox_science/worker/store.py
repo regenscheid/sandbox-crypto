@@ -5,7 +5,6 @@ artifacts and provisioning operations."""
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import json
 import logging
 import re
@@ -31,19 +30,12 @@ from sandbox_science.contracts import (
     ProvisionState,
 )
 from sandbox_science.contracts.output_observations import Gap, OutputPage, OutputReport, OutputScope
-from sandbox_science.contracts.run_cells import (
-    MAX_RUN_REQUEST_BYTES,
-    RunCellRequest,
-    run_cell_bytes,
-)
-from sandbox_science.contracts.worker import MAX_EVENT_BYTES
 
 from .errors import WorkerError
 from .kernel_revisions import KernelStarts
 from .output_observations import ObservationJournal
 from .package_gate import PackageGate, checked
 from .provision_observations import ProvisionObservations
-from .run_kernel_state import RunKernelState, strict_json
 
 _log = logging.getLogger(__name__)
 _EVENT = TypeAdapter[Event](Event)
@@ -212,19 +204,18 @@ class Store:
                 row[1] for row in self._db.execute("PRAGMA table_info(executions)")
             }
             if "kernel_scope" not in execution_columns:
-                if self._db.execute(
-                    "SELECT 1 FROM sqlite_master WHERE name IN ('run_dispatch_met"
-                    "a','run_cell_selections','run_kernel_generations','run_kerne"
-                    "l_births','run_kernel_controls','run_kernel_closures') LIMIT"
-                    " 1"
-                ).fetchone():
-                    raise WorkerError(
-                        ErrorKind.UNAVAILABLE, "retained run state lost its canonical marker"
-                    )
                 self._db.execute(
                     "ALTER TABLE executions ADD COLUMN kernel_scope TEXT NOT NULL DEFAULT 'legacy'"
                 )
-        self.run_kernel_state = RunKernelState(self)  # no namespace setup or effects on startup
+            # Delegated runs were removed; their old tables stay untouched.
+            if self._db.execute(
+                "SELECT 1 FROM executions WHERE kernel_scope IS NOT 'legacy' LIMIT 1"
+            ).fetchone():
+                raise WorkerError(
+                    ErrorKind.UNAVAILABLE,
+                    "this state directory holds delegated-run executions from a removed"
+                    " feature; discard it",
+                )
         self.provision_observations = ProvisionObservations(self._db)
         self.observations = ObservationJournal(self._db)
         self.kernel_starts = KernelStarts(self._db)
@@ -555,118 +546,6 @@ class Store:
             )
             self.observations.accept(execution, digest)
 
-    def insert_run_execution(
-        self, execution: Execution, request: RunCellRequest, *, validate: Callable[[], None]
-    ) -> None:
-        """Original marker, bounded envelope, selection and attempt share one commit."""
-        raw = run_cell_bytes(request)
-        digest = hashlib.sha256(raw).hexdigest()
-        if (
-            execution.context != request.context
-            or execution.operation_id != request.operation_id
-            or execution.kind != "cell"
-        ):
-            raise WorkerError(ErrorKind.INVALID_REQUEST, "child attempt differs from its request")
-        with self._transaction():
-            validate()
-            self.run_kernel_state.budget()
-            if self.run_kernel_state.closed(request.binding):
-                raise WorkerError(ErrorKind.UNAVAILABLE, "child kernel scope is closed")
-            self._db.execute(
-                "INSERT INTO executions VALUES(?,?,?,?,?,?,?,?)",
-                (
-                    execution.execution_id,
-                    _operation_key(execution.context.project_id, execution.operation_id),
-                    digest,
-                    execution.context.environment_id,
-                    execution.context.session_id,
-                    int(execution.state in TERMINAL_STATES),
-                    execution.model_dump_json(),
-                    "run-v1",
-                ),
-            )
-            self._db.execute(
-                "INSERT INTO execution_recovery(execution_id,request) VALUES(?,?)",
-                (execution.execution_id, raw.decode("ascii")),
-            )
-            self.run_kernel_state.accept(execution, request, raw)
-            validate()
-            self.observations.accept(execution, digest)
-
-    def kernel_scope(self, execution_id: str) -> str | None:
-        row = self._db.execute(
-            "SELECT CASE WHEN typeof(kernel_scope)='text' AND length(CAST"
-            "(kernel_scope AS BLOB))<=6 THEN "
-            "CAST(kernel_scope AS BLOB) END FROM executions WHERE execution_id=?",
-            (execution_id,),
-        ).fetchone()
-        if row is None:
-            return None
-        if row[0] not in (b"legacy", b"run-v1"):
-            raise WorkerError(ErrorKind.UNAVAILABLE, "original execution kernel scope is invalid")
-        if (
-            row[0] == b"legacy"
-            and self._db.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='run_cell_selections'"
-            ).fetchone()
-            is not None
-            and self._db.execute(
-                "SELECT 1 FROM run_cell_selections WHERE execution=? LIMIT 1", (execution_id,)
-            ).fetchone()
-            is not None
-        ):
-            raise WorkerError(
-                ErrorKind.UNAVAILABLE, "canonical marker disagrees with retained child selection"
-            )
-        return row[0].decode("ascii")
-
-    def run_execution(self, execution_id: str) -> Execution:
-        row = self._db.execute(
-            (
-                "SELECT CASE WHEN typeof(record)='text' THEN substr(CAST(reco"
-                "rd AS BLOB),1,?) END FROM executions WHERE execution_id=?"
-            ),
-            (MAX_EVENT_BYTES + 8193, execution_id),
-        ).fetchone()
-        try:
-            if row is None or type(row[0]) is not bytes or len(row[0]) > MAX_EVENT_BYTES + 8192:
-                raise ValueError
-            strict_json(row[0], MAX_EVENT_BYTES + 8192)
-            value = Execution.model_validate_json(row[0], strict=True)
-            if value.execution_id != execution_id:
-                raise ValueError
-            return value
-        except (ValueError, TypeError, ValidationError, RecursionError):
-            raise WorkerError(
-                ErrorKind.UNAVAILABLE, "original child attempt is unavailable"
-            ) from None
-
-    def run_operation(self, project_id: str, operation_id: str) -> tuple[str, str] | None:
-        """Bounded new internal lookup; ambiguous old unscoped names stay held."""
-        if self._db.execute(
-            "SELECT 1 FROM executions WHERE operation_id=? LIMIT 1", (operation_id,)
-        ).fetchone():
-            raise WorkerError(ErrorKind.CONFLICT, "legacy operation identity is ambiguous")
-        row = self._db.execute(
-            (
-                "SELECT CASE WHEN typeof(execution_id)='text' THEN substr(CAS"
-                "T(execution_id AS BLOB),1,29) END,CASE WHEN typeof(request_d"
-                "igest)='text' THEN substr(CAST(request_digest AS BLOB),1,65)"
-                " END FROM executions WHERE operation_id=?"
-            ),
-            (_operation_key(project_id, operation_id),),
-        ).fetchone()
-        if row is None:
-            return None
-        if (
-            type(row[0]) is not bytes
-            or re.fullmatch(rb"exe-[0-9a-f]{24}", row[0]) is None
-            or type(row[1]) is not bytes
-            or re.fullmatch(rb"[0-9a-f]{64}", row[1]) is None
-        ):
-            raise WorkerError(ErrorKind.UNAVAILABLE, "original child operation is invalid")
-        return row[0].decode("ascii"), row[1].decode("ascii")
-
     def update_execution(self, execution: Execution) -> None:
         self._db.execute(
             "UPDATE executions SET record = ?, terminal = ? WHERE execution_id = ?",
@@ -993,51 +872,12 @@ class Store:
         )
 
     def recovery(self, execution_id: str) -> tuple[str, str, int, bool] | None:
-        if self.kernel_scope(execution_id) == "run-v1":
-            return self.run_recovery(execution_id)
         row = self._db.execute(
             "SELECT request, incarnation, source_seq, cancelled FROM execution_recovery "
             "WHERE execution_id = ?",
             (execution_id,),
         ).fetchone()
         return (str(row[0]), str(row[1]), int(row[2]), bool(row[3])) if row else None
-
-    def run_recovery(self, execution_id: str) -> tuple[str, str, int, bool] | None:
-        """Typed byte-capped original child envelope and replay cursor projection."""
-        row = self._db.execute(
-            "SELECT CASE WHEN typeof(request)='text' THEN substr(CAST(req"
-            "uest AS BLOB),1,2097153) END,"
-            "CASE WHEN typeof(incarnation)='text' AND length(CAST(incarnation AS BLOB))=0 THEN X'' "
-            "WHEN typeof(incarnation)='text' THEN substr(CAST(incarnation AS BLOB),1,29) END,"
-            "CASE WHEN typeof(source_seq)='integer' THEN source_seq END,"
-            "CASE WHEN typeof(cancelled)='integer' THEN cancelled END FROM execution_recovery "
-            "WHERE execution_id=?",
-            (execution_id,),
-        ).fetchone()
-        if row is None:
-            return None
-        raw, inc, cursor, cancelled = row
-        if (
-            type(raw) is not bytes
-            or len(raw) > MAX_RUN_REQUEST_BYTES
-            or type(inc) is not bytes
-            or (inc != b"" and re.fullmatch(rb"inc-[0-9a-f]{24}", inc) is None)
-            or type(cursor) is not int
-            or not 0 <= cursor < 2**62
-            or type(cancelled) is not int
-            or cancelled not in (0, 1)
-        ):
-            raise WorkerError(ErrorKind.UNAVAILABLE, "original child recovery is invalid")
-        try:
-            return raw.decode("utf-8"), inc.decode("ascii"), cursor, cancelled == 1
-        except UnicodeError:
-            raise WorkerError(ErrorKind.UNAVAILABLE, "original child recovery is invalid") from None
-
-    def dispatch_incarnation(self, execution_id: str, incarnation: str) -> None:
-        self._db.execute(
-            "UPDATE execution_recovery SET incarnation = ? WHERE execution_id = ?",
-            (incarnation, execution_id),
-        )
 
     def cancel_intent(self, execution_id: str) -> None:
         self._db.execute(

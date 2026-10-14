@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Delegated own-track plan progress
 
-The internal [adapter](../../../docs/DELEGATED-PLAN-PROGRESS.md), authored at signed `fb95a5a5`, lets an explicitly authorized child read its assigned track and append progress through the existing canonical transaction. It checks the original child, current grants, plan revision, status and step cursor. External edits and failed writes require a complete reread delivered to a successful model call. That delivery is a trusted host assertion; this adapter calls no model.
+The internal [adapter](../archive/DELEGATED-PLAN-PROGRESS.md), authored at signed `fb95a5a5`, lets an explicitly authorized child read its assigned track and append progress through the existing canonical transaction. It checks the original child, current grants, plan revision, status and step cursor. External edits and failed writes require a complete reread delivered to a successful model call. That delivery is a trusted host assertion; this adapter calls no model.
 
 It owns one thread and its private session descriptor, refuses overlapping work, and drains cancellation before closing owned resources. Caller stores remain borrowed. Unknown postcommit outcomes hold without automatic retry. Historical replay cannot restore current authority or clear the reread fence.
 

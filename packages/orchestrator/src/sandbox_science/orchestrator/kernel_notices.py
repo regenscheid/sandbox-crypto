@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Internal, bounded kernel-observation inbox; transport and run delivery are unwired.
+"""Internal, bounded kernel-observation inbox, delivered to MAIN by `kernel_delivery`.
 
 Callers must authenticate MAIN context and prove the original birth/VM pin independently.
 All methods are synchronous, own one FULL/WAL transaction and belong in owned thread work.

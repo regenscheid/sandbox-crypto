@@ -89,7 +89,6 @@ class Daemon:
         )
         self.owner_scope = "ss-daemon-" + address(token, root)[13:] + "-"
         self.executor.owner_prefix = self.owner_scope + self.incarnation + "-"
-        self.executor.run_incarnation = self.incarnation
         if kernel_idle is not None:
             self.executor.reaper = self.executor.spawn(self.executor.reap_idle_kernels(kernel_idle))
 
@@ -172,7 +171,6 @@ class Daemon:
                     "birth_id",
                     "start_environment",
                     "start_execution",
-                    "run_binding_sha256",
                 ):
                     value = raw_kernel.get(key)
                     if isinstance(value, str) and len(value) <= 128:
@@ -367,7 +365,7 @@ class Daemon:
                     execution_id: str | None = None
                     if len(self.pending) >= 256:
                         raise ValueError("too many requests")
-                    if op in ("job", "shell", "cell", "pdf", "run_cell"):
+                    if op in ("job", "shell", "cell", "pdf"):
                         execution = str(request.get("execution", ""))
                         if not re.fullmatch(r"exe-[0-9a-f]{24}", execution):
                             raise ValueError("invalid execution ID")

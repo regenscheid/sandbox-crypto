@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator, Callable, Sequence
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +25,6 @@ from sandbox_science.orchestrator.model import (
     ToolCall,
     ToolSpec,
 )
-from sandbox_science.orchestrator.reviews import CheckpointWindow
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
@@ -280,10 +278,6 @@ async def test_ld_f13_document_revisions_count_as_text_and_structure(
     client: WorkerClient, store: DocumentStore
 ) -> None:
     ids = _ids(store)
-    now = datetime(2026, 10, 11, 12, 0, tzinfo=UTC)
-    window = CheckpointWindow("s1", last_dispatch=now - timedelta(seconds=300))
-    for event in store.events("p1"):
-        window.observe(event)
 
     def paragraph(number: int) -> str:
         sentence = f"Check {number}: the residue r satisfies r^16 = 1 modulo 17, as computed. "
@@ -325,17 +319,8 @@ async def test_ld_f13_document_revisions_count_as_text_and_structure(
     small, lemma_event = events[1:4], events[4]
     assert [event.payload["agent_characters"] for event in small] == [100, 100, 100]
     assert all(event.payload["structural_added"] == [] for event in small)
-    for event in small:
-        window.observe(event)
-        # Three revisions, but 300 characters and no structural block: no review yet.
-        assert not window.due(now)
-    window.observe(lemma_event)
     assert lemma_event.payload["agent_characters"] == 2100
     assert [entry["kind"] for entry in lemma_event.payload["structural_added"]] == ["container"]  # type: ignore[index, union-attr]
-    assert window.due(now)
-    snapshot = window.dispatch(now)
-    assert (lemma_event.document_id, 5) in snapshot.revisions
-    assert not window.due(now + timedelta(seconds=10))
     # The user's table counts as structure and text in its event, but no agent wrote it.
     table = "| n | n^16 |\n| - | - |\n" + "".join(f"| {n} | 1 |\n" for n in range(2, 300))
     head = store.document("p1", "ff").head
@@ -347,8 +332,6 @@ async def test_ld_f13_document_revisions_count_as_text_and_structure(
     assert user_event.payload["author_kind"] == "user"
     assert user_event.payload["agent_characters"] == 0
     assert [entry["kind"] for entry in user_event.payload["structural_added"]] == ["table"]  # type: ignore[index, union-attr]
-    window.observe(user_event)
-    assert not window.due(now + timedelta(seconds=500))
 
 
 async def test_revisions_are_attributed_to_the_run(

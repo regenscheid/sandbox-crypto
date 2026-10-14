@@ -39,30 +39,6 @@ its actual wait through repeated cancellation. The original caller interruption
 is preserved; a CLI timeout remains `unavailable`. Reaping the CLI does not prove
 that a gateway mutation had no effect, and does not authorize an automatic retry.
 
-## Selected child controller API
-
-Explicitly enabled control-service clients use the authenticated
-[original selected-run API](DELEGATED-RUN-TRANSPORT.md) at
-`POST /v1/run-kernels/{enroll,submit,get,events,cancel,observe,close,restart}`.
-`run_controller` defaults to false; the pool token and ordinary project clients
-inherit no selected-run permission. Restart needs its separate `run_restart`
-permission. Every operation binds the original canonical scope, immutable VM and
-daemon incarnation, and reads/controls name the exact original attempt. Legacy
-execution routes cannot adopt selected execution IDs. Passive reads may perform
-bounded authentication/history SQL reads but never wake or touch activity.
-
-The [restricted child controller](DELEGATED-CHILD-CONTROLLER.md) supplies the
-original prompt, positive tools, canonical attempt journal and explicit model
-budgets. The worker trusts the authenticated controller's canonical attribution;
-it does not authenticate the control application's database. Worker shutdown
-drains host owners and detaches healthy eligible daemon bridges; it does not
-close those guest kernels or replace enrollment. Queued or unrecoverable attempts
-may retain the ordinary LOST outcome. Changed original binding, lost acknowledgement or unsupported
-peer holds without re-enrollment, retry or MAIN fallback. Live composition
-acceptance remains a separate gate from the local synthetic-guest tests.
-
-[OpenShell Lab34](../.agents/docs/agent-reports/babbage-openshell-lab-34-2026-10-13.md) validates the explicitly configured controller and authenticated routes with a scripted model and actual guest kernels, including worker reconnect, cancellation, stopped passive reads and old-incarnation refusal. Source/full gates and complete owned teardown are independently reviewed; automatic parent launch and a real provider pilot remain separate.
-
 ## Worker API
 
 Ordinary routes need `Authorization: Bearer <token>`: the pool's own token, which acts for every project, or a client's, which acts only for the projects its settings list ([clients](#clients-limited-to-projects)). Bodies are the JSON forms of the `sandbox_science.contracts` models. Errors return a `WorkerErrorResponse` carrying an error kind from the spec, with status 400, 403, 404, 409, 422, 500, 503 or 504 as the kind implies. The routes that name an execution, an artifact or a provisioning operation take an optional `project_id` query parameter; when it is given, one of another project is `not_found`.
@@ -122,7 +98,7 @@ Every request that may change something (all but `GET` and the file reads) is lo
 
 ## Document catalog prerequisite
 
-The worker can receive a control-owned document catalog in `documents-catalog.sqlite3` (`documents_catalog.py`; shared messages in `contracts/documents.py`). This is durable staging and catalog validation only. It writes no environment files, advances no environment's written revision, and advertises no mirror capability. LD-49 to LD-52 and fixtures LD-F12 and LD-F23 to LD-F27 remain open. The separate [manual delivery journal](LIVING-DOCUMENTS.md#manual-catalog-delivery) transfers canonical targets to this store. Environment publication must first enforce the conservative hold whenever writer state is uncertain; direct-edit capture/acknowledgement and `ss-doc` remain separate work.
+The worker can receive a control-owned document catalog in `documents-catalog.sqlite3` (`documents_catalog.py`; shared messages in `contracts/documents.py`). This is durable staging and catalog validation only. It writes no environment files, advances no environment's written revision, and advertises no mirror capability. It is parked: nothing in production calls it. The control-side client and delivery code that fed it were removed from main and are kept on the tag `archive/document-sync-2026-10`. LD-49 to LD-52 and fixtures LD-F12 and LD-F23 to LD-F27 remain open. Environment publication must first enforce the conservative hold whenever writer state is uncertain; direct-edit capture/acknowledgement and `ss-doc` remain separate work.
 
 The [writer-guard investigation](../.agents/docs/agent-reports/document-writer-guard-2026-10-12.md) identifies a protected-filesystem feasibility prerequisite before runtime replacement/removal can be enabled. Existing `/proc` checks cannot prove all arbitrary writers closed, and notification counters do not supply that proof. FUSE is a proposed setup boundary requiring independent implementation and OpenShell validation of handle/mmap lifetime, namespace races, bounded admission and monitor/controller failure; it is not an advertised worker capability. Lab20's verified VM recycle terminates old processes and loses kernel memory, so it is not the ordinary document synchronization mechanism.
 
@@ -165,20 +141,6 @@ Catalog prerequisite acceptance after integrating the math and consistency chang
 and both production builds. Independent adversarial review covered retained identities,
 old receipt replay, stage expiry, project/authentication denial and cancellation while SQL
 commits remain owned. These tests establish the catalog boundary, not sandbox publication.
-
-The control store's [publication outbox](LIVING-DOCUMENTS.md#publication-outbox-prerequisite)
-now supplies complete pinned catalog plans and exact project-scoped revision content.
-Its source transaction records each canonical change coherently. The internal
-[manual delivery journal](LIVING-DOCUMENTS.md#manual-catalog-delivery) now transfers
-complete pinned targets through these routes and reconciles exact worker storage
-acknowledgements. It enables no environment writes or mirror capability.
-
-The control-side [worker document source adapter](WORKER-DOCUMENT-SOURCE.md) consumes
-trusted immutable captures with established publication/context identity. It retains
-exact raw refusals or submits named delegated patches, committing source, raw bytes,
-quota accounting, receipts and publication metadata atomically. It exposes no worker
-route, filesystem capture/restore or writer guard; every receipt denies restoration
-authority. Transport authentication and real OpenShell acceptance remain open.
 
 ## Behavior worth knowing
 
@@ -635,6 +597,8 @@ Legacy endpoints can learn their original binding on a same-incarnation reconnec
 If their incarnation changed before that binding was recorded, automatic replacement
 refuses until an operator confirms cleanup of the original sandbox and removes its
 obsolete worker recovery records; the current environment binding is insufficient proof.
+
+The state database may still hold the tables of the delegated-run kernels, which were removed from main and are kept on the tag `archive/delegation-2026-10`. Nothing reads or writes them. The store refuses to open a state directory that holds executions recorded by delegated runs (`kernel_scope = 'run-v1'`); the operator discards that state directory.
 
 The daemon adds `source_seq` to each execution event. `replay` reads bounded pages after
 a source cursor; `active` lists at most 128 accepted unfinished requests. Admission
