@@ -13,7 +13,6 @@ from typing import Any
 import pytest
 
 from sandbox_science.contracts import ExecutionContext
-from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator.documents import (
     USER,
     Author,
@@ -23,6 +22,7 @@ from sandbox_science.orchestrator.documents import (
 )
 from sandbox_science.orchestrator.documents.annotations import Annotations, dump
 from sandbox_science.orchestrator.documents.tool import WorkRequests
+from sandbox_science.orchestrator.harness import save
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import Message, ModelTurn, ScriptedModel, ToolSpec
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
@@ -403,7 +403,16 @@ async def test_safe_points_only_main_and_failed_turn_replays(store: DocumentStor
             delivered={"requests": sorted(transcript.delivered_ids("requests"))},
         ).model_dump(mode="json")
         args = argparse.Namespace(transcript=None, state_dir=store.path.parent)
-        assert await cli._save(args, fields, 0, [WorkRequests(main)]) == 0
+        assert (
+            await save(
+                fields,
+                0,
+                [WorkRequests(main)],
+                projects=ProjectStore(args.state_dir),
+                transcript=args.transcript,
+            )
+            == 0
+        )
         assert (
             Annotations(store).read_thread("p", "ff", request["thread_id"])["requests"][0]["state"]
             == "delivered"
@@ -440,11 +449,11 @@ async def test_failed_run_save_cannot_acknowledge_request(
     monkeypatch.setattr(ProjectStore, "save_run", failed)
     main = DocumentTool(store, context, run_id="run-a")
     assert (
-        await cli._save(
-            argparse.Namespace(transcript=None, state_dir=store.path.parent),
+        await save(
             record.model_dump(mode="json"),
             0,
             [WorkRequests(main)],
+            projects=ProjectStore(store.path.parent),
         )
         == 1
     )
@@ -880,11 +889,11 @@ async def test_failed_second_model_keeps_delivered_request_and_releases_unseen(
         delivered={"requests": sorted(transcript.delivered_ids("requests"))},
     )
     assert (
-        await cli._save(
-            argparse.Namespace(state_dir=store.path.parent, transcript=None),
+        await save(
             record.model_dump(mode="json"),
             1,
             [WorkRequests(main)],
+            projects=ProjectStore(store.path.parent),
         )
         == 1
     )

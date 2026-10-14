@@ -25,6 +25,8 @@ sandbox-science-harness document decide DOC PATCH (accept | reject) --state-dir 
 sandbox-science-harness document delete DOC --reason "…" --state-dir state --project p1
 ```
 
+``run`` builds a ``Harness`` (harness.py) from its arguments: the worker client, the
+models and the stores. The harness runs the task; the CLI prints its progress and answer.
 With ``--state-dir``, the session runs in its project's default environment, or in
 an environment of its own with ``--dedicated`` (W3, projects.py). The harness has
 the worker create or revise it first, and keeps the run's record, the same that
@@ -46,37 +48,33 @@ import argparse
 import asyncio
 import json
 import math
-import sqlite3
 import sys
-from collections.abc import Callable, Sequence
-from datetime import UTC, datetime
+from collections.abc import Callable
+from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
 
 from pydantic import TypeAdapter, ValidationError
 
-from sandbox_science.contracts import ErrorKind, ExecutionContext, Identifier, Location, new_id
+from sandbox_science.contracts import ErrorKind, ExecutionContext, Identifier, new_id
 
-from .aio import threaded
-from .artifact_publisher import ArtifactPublisher
-from .artifacts import ArtifactInventory
-from .consistency.controller import ReviewController
-from .consistency.store import ReviewStore
-from .documents import USER, Author, DocumentError, DocumentStore, DocumentTool, store_path
+from .documents import USER, Author, DocumentError, DocumentStore, store_path
 from .documents.errors import CONFLICT
-from .documents.mathcontroller import MathController
 from .documents.tool import view_blocks
-from .hooks import TurnHook
-from .jobs import JobTools
+from .harness import Finished, Harness, Role, RunRequest, Settings, Stores, closing, save
 from .jobstate import JobState
-from .loop import Interruption, Transcript, run_task
+from .loop import Interruption
 from .mathcheck import MathChecker
-from .model import ChatModel, ModelError, OpenAICompatibleModel, ScriptedModel
-from .plan_tools import PlanTools
-from .projects import ProjectError, ProjectStore, RunRecord, ensure_environment
-from .session_plans import SessionPlans
+from .model import (
+    MAX_RESPONSE_BYTES,
+    ChatModel,
+    ModelError,
+    OpenAICompatibleModel,
+    ScriptedModel,
+)
+from .projects import ProjectError, ProjectStore, ensure_environment
 from .stock_prompts import TEMPLATE_IDS
-from .tools import Toolbox, ToolOutcome
+from .tools import ToolOutcome
 from .worker_client import WorkerAPIError, WorkerClient
 
 
@@ -84,361 +82,139 @@ def _read_secret(path: Path) -> str:
     return path.read_text().strip()
 
 
-def tier_in_effect(location: Location) -> int | None:
-    """The isolation tier the worker's probe left standing (D43); ``None`` without a probe.
+class _Printer:
+    """A run's progress on standard output, and its errors on standard error."""
 
-    The worker lowers the declared tier when its probe finds less isolation, so the
-    declared tier alone never counts.
-    """
-    return location.isolation_tier if location.isolation_evidence is not None else None
+    def note(self, text: str) -> None:
+        print(text)
 
+    def error(self, text: str) -> None:
+        print(f"error: {text}", file=sys.stderr)
 
-def describe_isolation(location: Location) -> str:
-    """The tier in effect, the declared one if it differs, and what limits it."""
-    evidence = location.isolation_evidence
-    if evidence is None:
-        return "no isolation evidence"
-    text = f"isolation tier {location.isolation_tier}"
-    if location.declared_isolation_tier != location.isolation_tier:
-        text += f" (declared {location.declared_isolation_tier})"
-    if evidence.findings:
-        text += ": " + "; ".join(evidence.findings)
-    return text
+    async def tool(self, name: str, arguments: str, outcome: ToolOutcome) -> None:
+        print(f"\n→ {name} {arguments}\n← {outcome.text}")
 
 
-async def _context(args: argparse.Namespace, client: WorkerClient) -> ExecutionContext:
-    """The session's execution context; from the project's record with ``--state-dir``."""
-    if args.state_dir is None:
-        return ExecutionContext(
-            project_id=args.project, session_id=args.session, environment_id=args.environment
-        )
-    store = ProjectStore(args.state_dir)
-    project = store.get(args.project)
-    session = store.open_session(args.project, args.session, dedicated=args.dedicated)
-    info = await ensure_environment(client, project, session.environment_id)
-    if info is not None:
-        print(
-            f"environment: {info.environment_id} ({info.profile}, {info.policy}), "
-            f"sandbox {info.sandbox}"
-        )
-    return ExecutionContext(
-        project_id=args.project,
-        session_id=args.session,
-        environment_id=session.environment_id,
-        policy_revision=project.policy,
+def _gateway(
+    args: argparse.Namespace,
+    alias: str,
+    max_tokens: int | None = None,
+    max_response_bytes: int = MAX_RESPONSE_BYTES,
+) -> ChatModel:
+    key = _read_secret(args.api_key_file)
+    return OpenAICompatibleModel(
+        args.model_url, alias, key, max_tokens=max_tokens, max_response_bytes=max_response_bytes
     )
 
 
+def _role(script: Path | None, alias: str, gateway: Callable[[], ChatModel]) -> Role:
+    model = ScriptedModel.from_json(json.loads(script.read_text())) if script else gateway()
+    return Role(model, alias)
+
+
+async def _close(model: ChatModel) -> None:
+    if isinstance(model, OpenAICompatibleModel):
+        await model.close()
+
+
 async def _run(args: argparse.Namespace) -> int:
-    """Run one task against the worker, then save its record and acknowledge its notices."""
-    model: ChatModel
-    if args.script is not None:
-        model = ScriptedModel.from_json(json.loads(args.script.read_text()))
-    else:
-        model = OpenAICompatibleModel(args.model_url, args.model, _read_secret(args.api_key_file))
-    run_id = args.run_id or new_id("run")
-    started = datetime.now(UTC)
-    transcript: Transcript | None = None
-    context: ExecutionContext | None = None
-    hooks: Sequence[TurnHook] = ()
+    """Run one task against the worker, then save its record and acknowledge its notices.
+
+    The worker client, the models and the stores close after the run and before its
+    record is saved, in reverse order; a failure there is recorded as the run's.
+    """
+    sink = _Printer()
+    alias = "scripted" if args.script is not None else args.model
+    main = _role(args.script, alias, lambda: _gateway(args, args.model))
+    request = RunRequest(
+        project=args.project,
+        session=args.session,
+        task=args.task,
+        environment=args.environment,
+        dedicated=args.dedicated,
+        run_id=args.run_id,
+        research_template=args.research_template,
+    )
+    finished: Finished | None = None
+    state_dir: Path | None = args.state_dir
+    projects = ProjectStore(state_dir) if state_dir is not None else None
     interruption = Interruption()
     try:
-        async with interruption.context(
-            WorkerClient(args.worker, _read_secret(args.token_file))
-        ) as client:
+        async with AsyncExitStack() as stack:
             with interruption.protect():
-                context = await _context(args, client)
-                capabilities = await client.capabilities(context.environment_id)
-                location = capabilities.location
-                tier = tier_in_effect(location)
-                if not args.allow_unisolated and (tier is None or tier < args.min_isolation_tier):
-                    print(
-                        f"error: the worker offers {describe_isolation(location)}. At least tier "
-                        f"{args.min_isolation_tier} is required "
-                        "(--allow-unisolated for development)",
-                        file=sys.stderr,
-                    )
-                    return 2
-                print(
-                    f"worker: pool {location.pool_id}, {location.backend} backend, sandbox "
-                    f"{location.sandbox_id}, host {location.hostname}, "
-                    f"{describe_isolation(location)}"
+                client = await stack.enter_async_context(
+                    interruption.context(WorkerClient(args.worker, _read_secret(args.token_file)))
                 )
-
-                async def show(name: str, arguments: str, outcome: ToolOutcome) -> None:
-                    print(f"\n→ {name} {arguments}\n← {outcome.text}")
-
-                documents = None
-                if args.state_dir is not None:
-                    documents = DocumentTool(
-                        DocumentStore(store_path(args.state_dir), producer="harness"),
-                        context,
-                        run_id=run_id,
-                        alias="scripted" if args.script is not None else args.model,
+                closing(stack, interruption, lambda: _close(main.model))
+                stores = None
+                if projects is not None and state_dir is not None:
+                    documents = DocumentStore(store_path(state_dir), producer="harness")
+                    closing(stack, interruption, lambda: _closed(documents))
+                    stores = Stores(projects, documents, JobState(state_dir))
+                watcher = reviewer = None
+                if args.watcher_model is not None:
+                    watcher = _role(
+                        args.watcher_script,
+                        args.watcher_model,
+                        lambda: _gateway(
+                            args, args.watcher_model, max_tokens=300, max_response_bytes=16384
+                        ),
                     )
-                job_state = JobState(args.state_dir) if args.state_dir is not None else None
-                watcher: ChatModel | None = None
-                watcher_alias = args.watcher_model
-                if watcher_alias is not None:
-                    if args.watcher_script is not None:
-                        watcher = ScriptedModel.from_json(
-                            json.loads(args.watcher_script.read_text())
-                        )
-                    else:
-                        watcher = OpenAICompatibleModel(
-                            args.model_url,
-                            watcher_alias,
-                            _read_secret(args.api_key_file),
-                            max_tokens=300,
-                            max_response_bytes=16384,
-                        )
-                reviewer: ChatModel | None = None
+                    closing(stack, interruption, lambda: _close(watcher.model))
                 if args.reviewer_model is not None:
-                    reviewer = (
-                        ScriptedModel.from_json(json.loads(args.reviewer_script.read_text()))
-                        if args.reviewer_script is not None
-                        else OpenAICompatibleModel(
-                            args.model_url,
-                            args.reviewer_model,
-                            _read_secret(args.api_key_file),
-                            max_tokens=2048,
-                            max_response_bytes=65536,
-                        )
+                    reviewer = _role(
+                        args.reviewer_script,
+                        args.reviewer_model,
+                        lambda: _gateway(
+                            args, args.reviewer_model, max_tokens=2048, max_response_bytes=65536
+                        ),
                     )
-                inventory = ArtifactInventory(documents.store) if documents is not None else None
-                reviews = (
-                    ReviewController(
-                        ReviewStore(documents.store, artifacts=inventory),
-                        context,
-                        run_id=run_id,
-                        model=reviewer,
-                        alias=args.reviewer_model,
-                        author_alias="scripted" if args.script is not None else args.model,
-                    )
-                    if documents is not None
-                    else None
-                )
+                    closing(stack, interruption, lambda: _close(reviewer.model))
                 checker = (
                     MathChecker(args.math_node, args.math_launcher, args.math_bundle)
                     if args.math_node is not None
                     else None
                 )
-                math_checks = (
-                    MathController(
-                        reviews.store,
-                        context.project_id,
-                        context.session_id,
-                        run_id,
-                        checker=checker,
-                    )
-                    if reviews is not None
-                    else None
-                )
-                jobs = JobTools(
-                    client,
-                    context,
-                    run_id=run_id,
-                    state=job_state,
-                    watcher=watcher,
-                    watcher_alias=watcher_alias,
+                settings = Settings(
+                    min_isolation_tier=None if args.allow_unisolated else args.min_isolation_tier,
+                    max_turns=args.max_turns,
                     watcher_calls_per_hour=args.watcher_calls_per_hour,
-                    first_check_seconds=args.watcher_first_check,
-                    check_interval_seconds=args.watcher_interval,
+                    watcher_first_check=args.watcher_first_check,
+                    watcher_interval=args.watcher_interval,
+                    checker=checker,
                 )
-                artifacts = (
-                    ArtifactPublisher(
-                        inventory,
-                        client,
-                        context,
-                        run_id=run_id,
-                        alias="scripted" if args.script is not None else args.model,
-                    )
-                    if documents is not None and inventory is not None
-                    else None
+                harness = Harness(
+                    client,
+                    main,
+                    stores=stores,
+                    watcher=watcher,
+                    reviewer=reviewer,
+                    settings=settings,
                 )
-                plans = None
-                plan_owners: list[PlanTools] = []
-
-                def make_plans() -> PlanTools:
-                    if documents is None:
-                        raise RuntimeError("planning requires its recorded context")
-                    owner = PlanTools(
-                        SessionPlans(documents.store),
-                        ProjectStore(args.state_dir),
-                        context,
-                        run_id=run_id,
-                        alias="scripted" if args.script is not None else args.model,
-                    )
-                    # Publish ownership before cancellation-owned threaded()
-                    # can discard its return value while propagating an interrupt.
-                    plan_owners.append(owner)
-                    return owner
-
-                try:
-                    with interruption.protect():
-                        if documents is not None:
-                            plans = await threaded(make_plans)
-                        toolbox = Toolbox(
-                            client,
-                            context,
-                            languages=capabilities.languages,
-                            features=capabilities.features,
-                            documents=documents,
-                            jobs=jobs,
-                            reviews=reviews,
-                            math_checks=math_checks,
-                            artifacts=artifacts,
-                            plans=plans,
-                            check_kernels=documents is not None,
-                        )
-                        hooks = toolbox.turn_hooks()
-                        transcript = await run_task(
-                            model,
-                            toolbox,
-                            args.task,
-                            run_id=run_id,
-                            max_turns=args.max_turns,
-                            on_tool=show,
-                            research_template=getattr(args, "research_template", None),
-                            hooks=hooks,
-                        )
-                finally:
-                    try:
-                        if plan_owners:
-                            with interruption.protect():
-                                await threaded(plan_owners[0].close)
-                    finally:
-                        try:
-                            try:
-                                if artifacts is not None:
-                                    with interruption.protect():
-                                        await artifacts.aclose()
-                            finally:
-                                if reviews is not None:
-                                    with interruption.protect():
-                                        await reviews.close()
-                        finally:
-                            try:
-                                if isinstance(reviewer, OpenAICompatibleModel):
-                                    with interruption.protect():
-                                        await reviewer.close()
-                            finally:
-                                try:
-                                    if isinstance(watcher, OpenAICompatibleModel):
-                                        with interruption.protect():
-                                            await watcher.close()
-                                finally:
-                                    try:
-                                        if documents is not None:
-                                            with interruption.protect():
-                                                documents.store.close()
-                                    finally:
-                                        if isinstance(model, OpenAICompatibleModel):
-                                            with interruption.protect():
-                                                await model.close()
+                finished = await harness.run(request, sink)
+                if finished is None:
+                    return 2
     except BaseException as error:
         if interruption.error is not None:
             raise interruption.error from None
-        if not isinstance(error, Exception):
+        if not isinstance(error, Exception) or finished is None:
             raise
-        if transcript is None:
-            raise
-        transcript.fail("cleanup")
-    if transcript is None or context is None:
-        raise RuntimeError("the run did not start")
+        finished.transcript.fail("cleanup")
+    transcript = finished.transcript
     if transcript.failure is not None:
-        print(f"error: run failed during {transcript.failure}", file=sys.stderr)
+        sink.error(f"run failed during {transcript.failure}")
     print(f"\n{transcript.final_text or '(no answer)'}")
-    fields: dict[str, object] = {
-        "run_id": run_id,
-        "context": context.model_dump(mode="json"),
-        "task": args.task,
-        "started_at": started,
-        "ended_at": datetime.now(UTC),
-        "stopped": transcript.stopped,
-        "failure": transcript.failure,
-        "final_text": transcript.final_text,
-        "messages": transcript.messages,
-        "prompt_provenance": (
-            transcript.prompt_provenance.model_dump(mode="json")
-            if transcript.prompt_provenance is not None
-            else None
-        ),
-        "tools": transcript.tool_records,
-        "delivered": {source: sorted(ids) for source, ids in transcript.delivered.items() if ids},
-        "summaries": transcript.summaries,
-    }
-    status = 1 if transcript.failure is not None else 0 if transcript.stopped == "answered" else 3
-    return await _save(args, fields, status, hooks)
+    return await save(
+        finished.fields(),
+        finished.status,
+        finished.hooks,
+        projects=projects,
+        transcript=args.transcript,
+    )
 
 
-async def _save(
-    args: argparse.Namespace,
-    fields: dict[str, object],
-    status: int,
-    hooks: Sequence[TurnHook],
-) -> int:
-    """Keep the run's record, then let each hook acknowledge what the saved record names.
-
-    A crash between the save and an acknowledgement safely repeats those notices. A hook
-    that fails to acknowledge is reported; the others still acknowledge theirs.
-    """
-    saved: list[RunRecord] = []
-    status = _keep(args, fields, status, saved=saved.append)
-    if not saved:
-        return status
-    for hook in hooks:
-        try:
-            await hook.acknowledge(saved[0])
-        except Exception as exc:
-            print(f"error: the run's {hook.name} could not be acknowledged: {exc}", file=sys.stderr)
-            status = 1
-    return status
-
-
-def _keep(
-    args: argparse.Namespace,
-    fields: dict[str, object],
-    status: int,
-    *,
-    saved: Callable[[RunRecord], None] | None = None,
-) -> int:
-    """Write the run's transcript, then keep its record in the project's; ``status``
-    unless either fails.
-
-    A record that does not validate, such as a tool result nested deeper than pydantic
-    follows, still reaches ``--transcript`` as the harness has it.
-    """
-    try:
-        record: RunRecord | None = RunRecord.model_validate(fields)
-        invalid = ""
-    except (ValidationError, RecursionError) as exc:
-        record, invalid = None, str(exc)[:300]
-    if args.transcript is not None:
-        try:
-            text = record.to_json() if record is not None else json.dumps(fields, default=str)
-            args.transcript.write_text(text)
-        except (OSError, ValueError, RecursionError) as exc:
-            print(f"error: the transcript could not be written: {exc}", file=sys.stderr)
-            status = 1
-    if args.state_dir is not None:
-        try:
-            if record is None:
-                raise ProjectError(ErrorKind.INVALID_REQUEST, f"the record is invalid: {invalid}")
-            ProjectStore(args.state_dir).save_run(record)
-            if saved is not None:
-                saved(record)
-        except (
-            ProjectError,
-            DocumentError,
-            OSError,
-            ValueError,
-            RecursionError,
-            sqlite3.Error,
-        ) as exc:
-            print(f"error: the run's record could not be kept: {exc}", file=sys.stderr)
-            status = 1
-    return status
+async def _closed(documents: DocumentStore) -> None:
+    documents.close()
 
 
 async def _project(args: argparse.Namespace) -> int:

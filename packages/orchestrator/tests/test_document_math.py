@@ -22,6 +22,7 @@ from sandbox_science.orchestrator.documents import (
     store_path,
 )
 from sandbox_science.orchestrator.documents.mathjobs import MathJobs, MathLimits
+from sandbox_science.orchestrator.harness import save
 from sandbox_science.orchestrator.mathcheck import Formula, MathCheck
 from sandbox_science.orchestrator.projects import ProjectStore
 
@@ -900,7 +901,6 @@ async def test_math_notice_ack_only_after_durable_run_save(stores, monkeypatch, 
     from datetime import UTC, datetime
 
     from sandbox_science.contracts import ErrorKind, ExecutionContext
-    from sandbox_science.orchestrator import cli
     from sandbox_science.orchestrator.documents.mathcontroller import MathChecks, MathController
     from sandbox_science.orchestrator.loop import run_task
     from sandbox_science.orchestrator.model import ScriptedModel
@@ -950,13 +950,23 @@ async def test_math_notice_ack_only_after_durable_run_save(stores, monkeypatch, 
 
     monkeypatch.setattr(ProjectStore, "save_run", failed)
     args = argparse.Namespace(state_dir=docs.path.parent, transcript=None)
-    assert await cli._save(args, fields, 0, hooks) == 1
+    assert (
+        await save(
+            fields, 0, hooks, projects=ProjectStore(args.state_dir), transcript=args.transcript
+        )
+        == 1
+    )
     assert get(reviews)[0]["status"] == "open"
     with docs.control.read() as tx:
         db = tx.sql
         assert db.execute("SELECT delivered_run FROM math_notices").fetchone()[0] is None
     monkeypatch.setattr(ProjectStore, "save_run", original)
-    assert await cli._save(args, fields, 0, hooks) == 0
+    assert (
+        await save(
+            fields, 0, hooks, projects=ProjectStore(args.state_dir), transcript=args.transcript
+        )
+        == 0
+    )
     assert get(reviews)[0]["status"] == ("open" if failure else "unaddressed")
     with docs.control.read() as tx:
         db = tx.sql
@@ -1116,7 +1126,6 @@ async def test_completed_scientific_bound_survives_later_math_failure(stores, mo
     from datetime import UTC, datetime
 
     from sandbox_science.contracts import ExecutionContext
-    from sandbox_science.orchestrator import cli
     from sandbox_science.orchestrator.consistency.controller import ReviewController
     from sandbox_science.orchestrator.consistency.models import ReviewConfig
     from sandbox_science.orchestrator.documents.mathcontroller import MathController
@@ -1193,6 +1202,11 @@ async def test_completed_scientific_bound_survives_later_math_failure(stores, mo
         "delivered": {source: sorted(ids) for source, ids in transcript.delivered.items()},
     }
     args = argparse.Namespace(state_dir=docs.path.parent, transcript=None)
-    assert await cli._save(args, fields, 1, hooks) == 1
+    assert (
+        await save(
+            fields, 1, hooks, projects=ProjectStore(args.state_dir), transcript=args.transcript
+        )
+        == 1
+    )
     assert Findings(reviews).get("p", "s", math["finding_id"])["status"] == "open"
     assert Findings(reviews).get("p", "s", scientific["finding_id"])["status"] == "unaddressed"

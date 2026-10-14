@@ -11,7 +11,7 @@ from typing import Literal, cast
 import pytest
 
 from sandbox_science.contracts import ExecutionContext
-from sandbox_science.orchestrator import cli
+from sandbox_science.orchestrator.harness import save
 from sandbox_science.orchestrator.hooks import (
     Closing,
     Effect,
@@ -169,7 +169,16 @@ async def test_save_acknowledges_every_source_from_the_record(
         delivered={source: sorted(ids) for source, ids in transcript.delivered.items()},
     ).model_dump(mode="json")
     args = argparse.Namespace(transcript=None, state_dir=tmp_path)
-    assert await cli._save(args, fields, 0, [failing, other]) == 1
+    assert (
+        await save(
+            fields,
+            0,
+            [failing, other],
+            projects=ProjectStore(args.state_dir),
+            transcript=args.transcript,
+        )
+        == 1
+    )
     assert "the run's failing could not be acknowledged" in capsys.readouterr().err
     (saved,) = projects.runs("p", "s")
     assert projects.run("p", "s", saved.name).delivered == {

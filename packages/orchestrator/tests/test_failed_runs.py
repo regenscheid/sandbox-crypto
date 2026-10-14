@@ -14,15 +14,16 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from sandbox_science.contracts import ExecutionContext
+from sandbox_science.contracts import ErrorKind, ExecutionContext
 from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator.documents import DocumentStore
+from sandbox_science.orchestrator.harness import save
 from sandbox_science.orchestrator.hooks import TurnHook
 from sandbox_science.orchestrator.loop import Transcript, run_task
 from sandbox_science.orchestrator.model import ModelError, ModelTurn, ScriptedModel
 from sandbox_science.orchestrator.projects import ProjectError, ProjectStore, RunRecord
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome
-from sandbox_science.orchestrator.worker_client import WorkerClient
+from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 
 HOSTILE = (
     "Authorization: Bearer test-secret-failed-run-not-a-credential; "
@@ -191,6 +192,11 @@ async def test_cli_cleanup_failure_keeps_partial_record_and_closes_model(
         async def __aenter__(self):
             return self
 
+        async def environment(self, environment_id):
+            if cancel_phase == "setup":
+                raise asyncio.CancelledError("setup cancelled")
+            raise WorkerAPIError(ErrorKind.UNSUPPORTED, "a local worker manages no environments")
+
         async def __aexit__(self, *args):
             closed.append("client")
             if cancel_phase:
@@ -209,13 +215,6 @@ async def test_cli_cleanup_failure_keeps_partial_record_and_closes_model(
                 features=(),
             )
 
-    async def context(*args):
-        if cancel_phase == "setup":
-            raise asyncio.CancelledError("setup cancelled")
-        return CONTEXT.model_copy(
-            update={"environment_id": ProjectStore(tmp_path).get("p").default_environment_id}
-        )
-
     original_close = DocumentStore.close
 
     def close(store):
@@ -226,10 +225,14 @@ async def test_cli_cleanup_failure_keeps_partial_record_and_closes_model(
 
     monkeypatch.setattr(cli, "OpenAICompatibleModel", Model)
     monkeypatch.setattr(cli, "WorkerClient", Client)
-    monkeypatch.setattr(cli, "_context", context)
     monkeypatch.setattr(cli, "_read_secret", lambda _: "synthetic")
     monkeypatch.setattr(DocumentStore, "close", close)
     args = argparse.Namespace(
+        project="p",
+        session="s",
+        environment=None,
+        dedicated=False,
+        research_template=None,
         script=None,
         model_url="http://unused.invalid",
         model="main",
@@ -257,7 +260,8 @@ async def test_cli_cleanup_failure_keeps_partial_record_and_closes_model(
             await cli._run(args)
         assert projects.runs("p", "s") == []
         assert not args.transcript.exists()
-        assert closed == (["client"] if cancel_phase == "setup" else ["store", "model", "client"])
+        # The model and the store are open before setup, so a cancelled setup closes them too.
+        assert closed == ["store", "model", "client"]
         return
     assert await cli._run(args) == 1
     assert closed == ["store", "model", "client"]
@@ -292,14 +296,32 @@ async def test_failed_save_never_acknowledges_and_foreign_session_is_refused(tmp
     def failed(*args):
         raise OSError("synthetic save failure")
 
-    save = ProjectStore.save_run
+    original = ProjectStore.save_run
     monkeypatch.setattr(ProjectStore, "save_run", failed)
     args = argparse.Namespace(state_dir=tmp_path, transcript=None)
-    assert await cli._save(args, kept.model_dump(mode="json"), 1, [Hook()]) == 1
+    assert (
+        await save(
+            kept.model_dump(mode="json"),
+            1,
+            [Hook()],
+            projects=ProjectStore(args.state_dir),
+            transcript=args.transcript,
+        )
+        == 1
+    )
     assert projects.runs("p", "s") == []
     assert acknowledged == []
-    monkeypatch.setattr(ProjectStore, "save_run", save)
-    assert await cli._save(args, kept.model_dump(mode="json"), 1, [Hook()]) == 1
+    monkeypatch.setattr(ProjectStore, "save_run", original)
+    assert (
+        await save(
+            kept.model_dump(mode="json"),
+            1,
+            [Hook()],
+            projects=ProjectStore(args.state_dir),
+            transcript=args.transcript,
+        )
+        == 1
+    )
     assert len(projects.runs("p", "s")) == len(acknowledged) == 1
 
 

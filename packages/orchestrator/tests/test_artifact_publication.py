@@ -27,7 +27,7 @@ from sandbox_science.contracts import (
     PublishRequest,
     WriteFileRequest,
 )
-from sandbox_science.orchestrator import cli
+from sandbox_science.orchestrator import cli, harness
 from sandbox_science.orchestrator.artifact_publisher import ArtifactPublisher
 from sandbox_science.orchestrator.artifacts import ArtifactInventory, ArtifactLimits
 from sandbox_science.orchestrator.documents import DocumentStore
@@ -333,19 +333,21 @@ async def test_cli_closes_borrowed_store_and_models_after_publisher_drain_cancel
             closed.append("store")
         original_close(store)
 
-    async def context(*args):
-        return CONTEXT.model_copy(update={"environment_id": recorded.environment_id})
-
     async def interrupted(*args, **kwargs):
         raise asyncio.CancelledError
 
     monkeypatch.setattr(cli, "OpenAICompatibleModel", Model)
-    monkeypatch.setattr(cli, "ArtifactPublisher", CancelledClosePublisher)
-    monkeypatch.setattr(cli, "_context", context)
+    monkeypatch.setattr(harness, "ArtifactPublisher", CancelledClosePublisher)
     monkeypatch.setattr(cli, "_read_secret", lambda _: TOKEN)
-    monkeypatch.setattr(cli, "run_task", interrupted)
+    monkeypatch.setattr(harness, "run_task", interrupted)
     monkeypatch.setattr(DocumentStore, "close", close_store)
     args = argparse.Namespace(
+        project="p1",
+        session="s1",
+        environment=None,
+        dedicated=False,
+        research_template=None,
+        transcript=None,
         script=None,
         model_url="http://unused.invalid",
         model="main",
@@ -370,7 +372,7 @@ async def test_cli_closes_borrowed_store_and_models_after_publisher_drain_cancel
     )
     projects = ProjectStore(args.state_dir)
     projects.create("p1", "minimal", "sha256:" + "a" * 64)
-    recorded = projects.open_session("p1", "s1", dedicated=False)
+    projects.open_session("p1", "s1", dedicated=False)
     with pytest.raises(asyncio.CancelledError):
         await cli._run(args)
     assert closed == ["publisher-drained", "reviewer", "watcher", "store", "main"]
