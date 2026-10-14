@@ -4,6 +4,7 @@
   import { parseRoute } from './lib/router';
   import DocumentView from './views/DocumentView.svelte';
   import HistoryView from './views/HistoryView.svelte';
+  import PdfView from './views/PdfView.svelte';
   import ProjectList from './views/ProjectList.svelte';
   import ProjectView from './views/ProjectView.svelte';
   import SessionView from './views/SessionView.svelte';
@@ -55,6 +56,15 @@
           documentId={route.document}
           revision={route.revision}
           block={route.block}
+        />
+      {/key}
+    {:else if route.view === 'pdf'}
+      {#key `${route.project}/${route.artifact}/${route.revision}/${route.sha256}`}
+        <PdfView
+          projectId={route.project}
+          artifactId={route.artifact}
+          revision={route.revision}
+          sha256={route.sha256}
         />
       {/key}
     {:else if route.view === 'history'}

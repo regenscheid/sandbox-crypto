@@ -142,6 +142,7 @@ async def test_a_capability_opens_its_pdf_and_nothing_else(origins, published) -
     assert link["url"].startswith(f"{preview.origin}/viewer/#")
     fragment = parse_qs(link["url"].split("#", 1)[1])
     assert fragment["w"] == [preview.workspace_origin]
+    assert link["path"] == "sessions/a/paper.pdf"
     opened = await viewer.get(f"/pdf/{capability_of(link['url'])}")
     assert opened.status == 200
     assert opened.headers["Content-Type"] == "application/pdf"

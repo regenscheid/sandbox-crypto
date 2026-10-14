@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 import { describe, expect, it } from 'vitest';
-import { documentHref, historyHref, parseRoute, projectHref, sessionHref } from './router';
+import { documentHref, historyHref, parseRoute, pdfHref, projectHref, sessionHref } from './router';
+
+const SHA = 'ab'.repeat(32);
 
 describe('routes', () => {
   it.each([
@@ -40,6 +42,14 @@ describe('routes', () => {
     ['#/projects/p1/documents/doc-1/revisions', { view: 'missing' }],
     ['#/projects/p1/documents', { view: 'missing' }],
     ['#/projects/p1/documents/doc-1/elsewhere', { view: 'missing' }],
+    [
+      `#/projects/p1/artifacts/art-1/revisions/2/${SHA}`,
+      { view: 'pdf', project: 'p1', artifact: 'art-1', revision: 2, sha256: SHA },
+    ],
+    [`#/projects/p1/artifacts/art-1/revisions/0/${SHA}`, { view: 'missing' }],
+    [`#/projects/p1/artifacts/art-1/revisions/2/${SHA.toUpperCase()}`, { view: 'missing' }],
+    ['#/projects/p1/artifacts/art-1/revisions/2/abc', { view: 'missing' }],
+    ['#/projects/p1/artifacts/art-1/revisions/2', { view: 'missing' }],
   ])('%s', (hash, route) => {
     expect(parseRoute(hash)).toEqual(route);
   });
@@ -61,6 +71,13 @@ describe('routes', () => {
     expect(parseRoute(documentHref('p1', 'doc-1', 4, 'b3'))).toMatchObject({
       revision: 4,
       block: 'b3',
+    });
+    expect(parseRoute(pdfHref('p 1', 'art/1', 3, SHA))).toEqual({
+      view: 'pdf',
+      project: 'p 1',
+      artifact: 'art/1',
+      revision: 3,
+      sha256: SHA,
     });
     expect(parseRoute(historyHref('p 1', 'doc-1'))).toEqual({
       view: 'history',

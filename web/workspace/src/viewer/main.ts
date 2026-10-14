@@ -190,4 +190,7 @@ async function open(): Promise<void> {
   go(1);
 }
 
+// The workspace opens a PDF again with a fresh capability by changing only the fragment,
+// which does not reload a page by itself.
+window.addEventListener('hashchange', () => location.reload());
 void open();
