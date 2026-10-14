@@ -1322,6 +1322,12 @@
       "category": "implementation-boundary",
       "bytes": 8271,
       "sha256": "0526ee27e43b72085ce97bf13eb1a6430e78a5cda18ddc6629caf9012213b933"
+    },
+    {
+      "path": "../../docs/PROVISIONING-UPGRADES.md",
+      "category": "implementation-boundary",
+      "bytes": 4468,
+      "sha256": "d8a8407b2bd1536326976f9938eef679b789ca76b5b5985cb9f0a847c14ec93e"
     }
   ]
 }
