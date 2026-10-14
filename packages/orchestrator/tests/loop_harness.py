@@ -441,6 +441,7 @@ class Harness:
         max_turns: int | None = None,
         max_input_chars: int | None = None,
         reviewer: bool = False,
+        options: Sequence[str] = (),
     ) -> RunRecord:
         """One ``run`` through the CLI; the record as the project keeps it."""
         self.gateway.script = list(script)
@@ -461,6 +462,7 @@ class Harness:
             argv += ["--max-input-chars", str(max_input_chars)]
         if reviewer:
             argv += ["--reviewer-model", "reviewer"]
+        argv += list(options)
         assert await asyncio.to_thread(cli.main, [*argv, TASK]) == status
         assert not self.gateway.script, "the run ended before the script did"
         record = RunRecord.model_validate_json(transcript.read_text())

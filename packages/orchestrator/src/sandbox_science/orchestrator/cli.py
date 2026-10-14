@@ -45,6 +45,7 @@ import argparse
 import asyncio
 import json
 import math
+import re
 import signal
 import sys
 from collections.abc import Callable
@@ -53,15 +54,17 @@ from pathlib import Path
 
 from pydantic import TypeAdapter, ValidationError
 
-from sandbox_science.contracts import Identifier
+from sandbox_science.contracts import ErrorKind, Identifier
 
 from .chat import session_lease
 from .cli_documents import add_parsers, document, project, read_secret, session
+from .connectors import ProxyClient, check_proxy
 from .documents import DocumentError, DocumentStore, store_path
 from .harness import (
     Finished,
     Harness,
     IsolationRefusedError,
+    McpAccess,
     Role,
     RunRequest,
     Settings,
@@ -86,6 +89,9 @@ from .service import POLL_SECONDS, RunService
 from .stock_prompts import TEMPLATE_IDS
 from .tools import ToolOutcome
 from .worker_client import WorkerAPIError, WorkerClient
+
+_SERVER = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+"""A server's name in a project policy's ``mcp.servers``."""
 
 
 class _Printer:
@@ -250,6 +256,22 @@ def _harness(
             lambda: _gateway(args, args.reviewer_model, max_tokens=2048, max_response_bytes=65536),
         )
         closing(stack, interruption, lambda: _close(reviewer.model))
+    mcp = None
+    if args.mcp_proxy is not None:
+        token = read_secret(args.mcp_token_file)
+        try:
+            check_proxy(args.mcp_proxy, token)
+        except ValueError as exc:
+            raise ProjectError(ErrorKind.INVALID_REQUEST, str(exc)) from None
+        if args.mcp_token_file.stat().st_mode & 0o077:
+            print(
+                f"warning: {args.mcp_token_file} is readable by others; keep the MCP proxy "
+                "token to its owner (chmod 600)",
+                file=sys.stderr,
+            )
+        proxy = ProxyClient(args.mcp_proxy, token)
+        closing(stack, interruption, proxy.close)
+        mcp = McpAccess(proxy, tuple(args.mcp_server), args.mcp_project)
     return Harness(
         client,
         main,
@@ -269,6 +291,7 @@ def _harness(
             watcher_first_check=args.watcher_first_check,
             watcher_interval=args.watcher_interval,
         ),
+        mcp=mcp,
     )
 
 
@@ -357,6 +380,22 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
     command.add_argument(
         "--math-bundle", type=Path, help="operator-configured built math checker bundle"
     )
+    command.add_argument(
+        "--mcp-proxy", help="the MCP proxy's address; agents get its servers' tools (D-08)"
+    )
+    command.add_argument(
+        "--mcp-token-file", type=Path, help="the harness's caller token for the MCP proxy"
+    )
+    command.add_argument(
+        "--mcp-project",
+        help="the project the MCP proxy token is for: only its runs get the servers' tools",
+    )
+    command.add_argument(
+        "--mcp-server",
+        action="append",
+        default=[],
+        help="an MCP server behind the proxy whose tools runs get; repeat for more",
+    )
     command.add_argument("--reviewer-model", help="separate consistency reviewer model alias")
     command.add_argument(
         "--reviewer-script", type=Path, help="scripted reviewer replies for validation"
@@ -399,6 +438,16 @@ def _check_agent(parser: argparse.ArgumentParser, args: argparse.Namespace) -> N
         parser.error("--model-url needs --api-key-file")
     if args.max_input_chars < 1:
         parser.error("--max-input-chars must be at least 1")
+    mcp = (args.mcp_proxy, args.mcp_token_file, args.mcp_project)
+    if (any(value is not None for value in mcp) and any(value is None for value in mcp)) or (
+        args.mcp_proxy is None and args.mcp_server
+    ):
+        parser.error("--mcp-proxy, --mcp-token-file, --mcp-project and --mcp-server go together")
+    if args.mcp_proxy is not None and not args.mcp_server:
+        parser.error("--mcp-proxy needs at least one --mcp-server")
+    for name in args.mcp_server:
+        if not _SERVER.fullmatch(name):
+            parser.error(f"--mcp-server {name!r} is not a server name of the project policy")
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -41,14 +41,18 @@ from sandbox_science.contracts import (
 from sandbox_science.contracts.worker import Language
 
 from .artifact_publisher import ArtifactPublisher
+from .connectors import Connectors
 from .consistency.controller import REVIEW_EFFECTS, ReviewController, Reviews
+from .documents import annotation_tools
 from .documents.errors import DocumentError
 from .documents.tool import DOCUMENT_EFFECTS, DocumentTool, WorkRequests, with_notices
+from .documents.tool import SPECS as DOCUMENT_SPECS
 from .hooks import Effect, TurnHook
 from .jobs import BACKGROUND, JOB_EFFECTS, JOB_SPECS, JobNotices, JobTools
 from .kernel_check import KernelCheck
 from .mathchecks.controller import MathChecks, MathController
 from .model import ToolCall, ToolSpec
+from .plan_tools import SPECS as PLAN_SPECS
 from .plan_tools import Plans, PlanTools
 from .provision import PROVISION_SPECS, PROVISIONING, ProvisionTools
 from .worker_client import WorkerAPIError, WorkerClient, dump
@@ -321,6 +325,31 @@ def operation_id(prefix: str, call: ToolCall) -> str:
     return f"{readable}-{digest}" if readable else f"op-{digest}"
 
 
+RESTART_KERNEL: Final = "restart_kernel"
+
+
+def _harness_tool_names() -> frozenset[str]:
+    from .consistency.controller import AUTHOR_SPECS
+
+    specs = (
+        *SPECS,
+        SAGE,
+        *PDF_SPECS,
+        ADMIT_HOSTS,
+        *PROVISION_SPECS,
+        *JOB_SPECS,
+        *DOCUMENT_SPECS,
+        *annotation_tools.SPECS,
+        *AUTHOR_SPECS,
+        *PLAN_SPECS,
+    )
+    return frozenset(spec.name for spec in specs) | {RESTART_KERNEL}
+
+
+HARNESS_TOOL_NAMES: Final = _harness_tool_names()
+"""Every name the harness gives a tool of its own, which no connector tool may take."""
+
+
 class Toolbox:
     """The tools of one run. ``documents``, when given, adds the document tools, whose
     calls go to the control store rather than the worker."""
@@ -340,6 +369,7 @@ class Toolbox:
         artifacts: ArtifactPublisher | None = None,
         plans: PlanTools | None = None,
         check_kernels: bool = False,
+        connectors: Connectors | None = None,
     ) -> None:
         self.client = client
         self.context = context
@@ -361,7 +391,7 @@ class Toolbox:
             "list_files": ("read", _plain(self._list)),
             "publish": ("effect", self._publish),
             "sage": ("effect", _plain(self._sage)),
-            "restart_kernel": ("effect", _plain(self._restart)),
+            RESTART_KERNEL: ("effect", _plain(self._restart)),
             **{
                 spec.name: ("effect", _plain(partial(self._pdf, spec.name.removeprefix("pdf_"))))
                 for spec in PDF_SPECS
@@ -376,7 +406,7 @@ class Toolbox:
         if self.languages:
             specs.append(
                 ToolSpec(
-                    "restart_kernel",
+                    RESTART_KERNEL,
                     "Restart one of the session's kernels, discarding all its state.",
                     {
                         "type": "object",
@@ -432,6 +462,23 @@ class Toolbox:
                 raw=True,
                 whole=True,
             )
+        if connectors is not None:
+            # A connector tool is never offered under a name the harness gives a tool of
+            # its own, whether this run has that tool or not: the system prompt names
+            # some of them.
+            names = {entry.spec.name for entry in entries} | HARNESS_TOOL_NAMES
+            for entry in _group(
+                connectors.specs,
+                lambda name, call: connectors.call(name, call.args),
+                {},
+                bound=True,
+            ):
+                if entry.spec.name in names:
+                    _log.warning(
+                        "connector tool %s is not offered: its name is taken", entry.spec.name
+                    )
+                else:
+                    entries.append(entry)
         self.entries = {entry.spec.name: entry for entry in entries}
         if len(self.entries) != len(entries):
             names = [entry.spec.name for entry in entries]

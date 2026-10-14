@@ -751,7 +751,8 @@ async def test_a_run_that_stops_for_its_lost_lease_ends_and_backs_off(
         await eventually(lambda: runs(harness).ended(PROJECT, SESSION, lease.run), timeout=10)
         stalled["on"] = False
         gate.release.set()
-        assert service.failures == {(PROJECT, SESSION): 1}
+        # The stopped event is written before the failure is counted.
+        await eventually(lambda: service.failures == {(PROJECT, SESSION): 1})
         assert (PROJECT, SESSION) in service.waiting_until
     stopped = [
         e.data for e in runs(harness).events(PROJECT, SESSION, lease.run) if e.kind == "stopped"
