@@ -5,8 +5,6 @@ No read follows a mutable worker path. Executions/transcript entries are copied 
 observations; document reads pin immutable revision numbers and verify their hashes.
 """
 
-# Logical control-store modules share the same transaction and connection machinery.
-# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
 import hashlib
@@ -199,11 +197,10 @@ class ReviewStore:
         artifacts: ArtifactInventory | None = None,
     ) -> None:
         self.documents, self.clock, self.artifacts = documents, clock, artifacts
-        if artifacts is None:
-            with documents._read() as db:
+        if artifacts is None and not documents.control.missing:
+            with documents.control.read() as tx:
                 existing = (
-                    db is not None
-                    and db.execute(
+                    tx.sql.execute(
                         "SELECT 1 FROM sqlite_master WHERE name='artifact_meta'"
                     ).fetchone()
                     is not None
@@ -213,7 +210,8 @@ class ReviewStore:
         if artifacts is not None and artifacts.documents is not documents:
             raise ValueError("artifact evidence must share the control connection")
         if not documents.readonly:
-            with documents._write() as db:
+            with documents.control.write() as tx:
+                db = tx.sql
                 for statement in SCHEMA:
                     db.execute(statement)
                 if (
@@ -234,10 +232,9 @@ class ReviewStore:
 
                 prepare_schema(db)
 
-    def available(self, db: sqlite3.Connection | None) -> bool:
+    def available(self, db: sqlite3.Connection) -> bool:
         return (
-            db is not None
-            and db.execute("SELECT 1 FROM sqlite_master WHERE name='review_runs'").fetchone()
+            db.execute("SELECT 1 FROM sqlite_master WHERE name='review_runs'").fetchone()
             is not None
         )
 
@@ -254,24 +251,23 @@ class ReviewStore:
             raise DocumentError(NOT_FOUND, "no such review session")
 
     def config(self, project: str) -> tuple[ReviewConfig, str]:
-        with self.documents._read() as db:
-            row = (
-                db.execute(
-                    (
+        row = None
+        if not self.documents.control.missing:
+            with self.documents.control.read() as tx:
+                db = tx.sql
+                if self.available(db):
+                    row = db.execute(
                         "SELECT payload FROM review_config WHERE project=? ORDER BY "
-                        "number DESC LIMIT 1"
-                    ),
-                    (project,),
-                ).fetchone()
-                if self.available(db) and db is not None
-                else None
-            )
+                        "number DESC LIMIT 1",
+                        (project,),
+                    ).fetchone()
         value = ReviewConfig.model_validate_json(row[0]) if row else ReviewConfig()
         return value, digest(value.model_dump_json())
 
     def configure(self, project: str, session: str, config: ReviewConfig) -> str:
         self.scope(project, session)
-        with self.documents._write() as db:
+        with self.documents.control.write() as tx:
+            db = tx.sql
             number = db.execute(
                 "SELECT coalesce(max(number),0)+1 FROM review_config WHERE project=?", (project,)
             ).fetchone()[0]
@@ -309,8 +305,9 @@ class ReviewStore:
     ) -> int:
         """Copy one platform observation. A duplicate source key has one immutable value."""
         self.scope(project, session)
-        with self.documents._write() as db:
-            return self._observe(
+        with self.documents.control.write() as tx:
+            db = tx.sql
+            return self.record_observation(
                 db,
                 project,
                 session,
@@ -326,7 +323,7 @@ class ReviewStore:
                 effects=effects,
             )
 
-    def _observe(
+    def record_observation(
         self,
         db: sqlite3.Connection,
         project: str,
@@ -394,15 +391,15 @@ class ReviewStore:
         explicit incomplete coverage and is resumed at the next boundary.
         """
         self.scope(project, session)
-        with self.documents._read() as db:
-            assert db is not None  # noqa: S101
+        with self.documents.control.read() as tx:
+            db = tx.sql
             target = db.execute(
                 "SELECT coalesce(max(seq),0) FROM events WHERE project_id=?", (project,)
             ).fetchone()[0]
         after = 0
         for _ in range(50 if drain else 1):
-            with self.documents._read() as db:
-                assert db is not None  # noqa: S101
+            with self.documents.control.read() as tx:
+                db = tx.sql
                 current = db.execute(
                     "SELECT document_cursor FROM review_windows WHERE project=? AND session=?",
                     (project, session),
@@ -448,7 +445,8 @@ class ReviewStore:
                     )
             if rows:
                 after = rows[-1][0]
-                with self.documents._write() as db:
+                with self.documents.control.write() as tx:
+                    db = tx.sql
                     self._window(db, project, session)
                     db.execute(
                         "UPDATE review_windows SET document_cursor=max(document_cursor,?) "
@@ -462,8 +460,8 @@ class ReviewStore:
     def run_effects(self, project: str, session: str, run: str) -> bool:
         """Derive effects from durable run-attributed observations, not callbacks."""
         self.scope(project, session)
-        with self.documents._read() as db:
-            assert db is not None  # noqa: S101
+        with self.documents.control.read() as tx:
+            db = tx.sql
             return (
                 db.execute(
                     "SELECT 1 FROM review_feed WHERE project=? AND session=? AND effects=1 "
@@ -475,8 +473,8 @@ class ReviewStore:
 
     def finding_states(self, project: str, session: str) -> Json:
         self.scope(project, session)
-        with self.documents._read() as db:
-            assert db is not None  # noqa: S101
+        with self.documents.control.read() as tx:
+            db = tx.sql
             return dict(
                 db.execute(
                     "SELECT status,count(*) FROM review_findings WHERE project=? AND session=? "
@@ -488,8 +486,8 @@ class ReviewStore:
 
     def progress(self, project: str, session: str) -> Json:
         self.scope(project, session)
-        with self.documents._read() as db:
-            assert db is not None  # noqa: S101
+        with self.documents.control.read() as tx:
+            db = tx.sql
             row = db.execute(
                 "SELECT watermark,retry_end FROM review_windows WHERE project=? AND session=?",
                 (project, session),
@@ -506,7 +504,8 @@ class ReviewStore:
 
     def request(self, project: str, session: str) -> None:
         self.scope(project, session)
-        with self.documents._write() as db:
+        with self.documents.control.write() as tx:
+            db = tx.sql
             self._window(db, project, session)
             db.execute(
                 "UPDATE review_windows SET requested=1 WHERE project=? AND session=?",
@@ -517,8 +516,11 @@ class ReviewStore:
         config, _ = self.config(project)
         if not config.enabled:
             return False
-        with self.documents._read() as db:
-            if not self.available(db) or db is None:
+        if self.documents.control.missing:
+            return False
+        with self.documents.control.read() as tx:
+            db = tx.sql
+            if not self.available(db):
                 return False
             row = db.execute(
                 (
@@ -557,8 +559,8 @@ class ReviewStore:
         not repeatedly schedule the same claim. A new response revision can queue it.
         """
         self.scope(project, session)
-        with self.documents._read() as db:
-            assert db is not None  # noqa: S101
+        with self.documents.control.read() as tx:
+            db = tx.sql
             from sandbox_science.orchestrator.documents.project_macros import exists, head
 
             macro_match = (
@@ -621,8 +623,8 @@ class ReviewStore:
         targets = self.confirmation_targets(project, session)
         if kind == "confirmation" and not targets:
             return None
-        with self.documents._read() as db:
-            assert db is not None  # noqa: S101
+        with self.documents.control.read() as tx:
+            db = tx.sql
             window = db.execute(
                 "SELECT watermark,retry_end FROM review_windows WHERE project=? AND session=?",
                 (project, session),
@@ -707,8 +709,8 @@ class ReviewStore:
                 )
             )
             finding["anchors"] = json.loads(finding["anchors"])
-            with self.documents._read() as db:
-                assert db is not None  # noqa: S101
+            with self.documents.control.read() as tx:
+                db = tx.sql
                 response = db.execute(
                     "SELECT reason,payload FROM review_transitions WHERE finding_id=? "
                     "AND revision=?",
@@ -847,7 +849,8 @@ class ReviewStore:
             else None
         )
         review = new_id("rev")
-        with self.documents._write() as db:
+        with self.documents.control.write() as tx:
+            db = tx.sql
             self._window(db, project, session)
             actual = db.execute(
                 "SELECT watermark,retry_end FROM review_windows WHERE project=? AND session=?",
@@ -975,7 +978,7 @@ class ReviewStore:
             (project, session, kind, dump(payload), self.clock()),
         )
 
-    def _run(self, db: sqlite3.Connection, project: str, session: str, review: str) -> Json:
+    def load_run(self, db: sqlite3.Connection, project: str, session: str, review: str) -> Json:
         identifier(review, "rev")
         row = db.execute(
             "SELECT * FROM review_runs WHERE project=? AND session=? AND review_id=?",
@@ -988,10 +991,13 @@ class ReviewStore:
 
     def run(self, project: str, session: str, review: str) -> Json:
         self.scope(project, session)
-        with self.documents._read() as db:
-            if not self.available(db) or db is None:
+        if self.documents.control.missing:
+            raise DocumentError(NOT_FOUND, "no such review")
+        with self.documents.control.read() as tx:
+            db = tx.sql
+            if not self.available(db):
                 raise DocumentError(NOT_FOUND, "no such review")
-            found = self._run(db, project, session, review)
+            found = self.load_run(db, project, session, review)
         found["config"] = json.loads(found["config"])
         found["classifier"] = json.loads(found["classifier"])
         found.pop("owner", None)
@@ -999,7 +1005,8 @@ class ReviewStore:
         return found
 
     def renew(self, project: str, session: str, review: str, owner: str) -> None:
-        with self.documents._write() as db:
+        with self.documents.control.write() as tx:
+            db = tx.sql
             result = db.execute(
                 (
                     "UPDATE review_runs SET lease_until=? WHERE project=? AND "
@@ -1019,9 +1026,9 @@ class ReviewStore:
             raise DocumentError(POLICY_DENIED, "this reviewer no longer owns a live grant")
 
     def grant(self, project: str, session: str, review: str, owner: str) -> None:
-        with self.documents._read() as db:
-            assert db is not None  # noqa: S101
-            self.owner(self._run(db, project, session, review), owner)
+        with self.documents.control.read() as tx:
+            db = tx.sql
+            self.owner(self.load_run(db, project, session, review), owner)
 
     def finish(
         self,
@@ -1038,8 +1045,9 @@ class ReviewStore:
         if outcome == "running":
             raise DocumentError(INVALID_REQUEST, "a review must end with an outcome")
         text(summary)
-        with self.documents._write() as db:
-            found = self._run(db, project, session, review)
+        with self.documents.control.write() as tx:
+            db = tx.sql
+            found = self.load_run(db, project, session, review)
             if found["state"] != "running" or found["owner"] != owner:
                 raise DocumentError(CONFLICT, "review is no longer owned by this run")
             if require_expired and found["lease_until"] > self.clock():
@@ -1124,8 +1132,8 @@ class ReviewStore:
     def recover(self, project: str, session: str) -> int:
         """Drop only expired owners, never another live harness process's review."""
         self.scope(project, session)
-        with self.documents._read() as db:
-            assert db is not None  # noqa: S101
+        with self.documents.control.read() as tx:
+            db = tx.sql
             rows = list(
                 db.execute(
                     (
@@ -1157,8 +1165,9 @@ class ReviewStore:
         encoded = dump(payload)
         if len(encoded.encode()) > MAX_ITEM_BYTES:
             raise DocumentError(INVALID_REQUEST, "review record exceeds its bound")
-        with self.documents._write() as db:
-            found = self._run(db, project, session, review)
+        with self.documents.control.write() as tx:
+            db = tx.sql
+            found = self.load_run(db, project, session, review)
             self.owner(found, owner)
             db.execute(
                 "INSERT INTO review_records(review_id,kind,payload,created) VALUES(?,?,?,?)",
@@ -1179,8 +1188,9 @@ class ReviewStore:
         if type(estimated_tokens) is not int or not 1 <= estimated_tokens <= 1000000000:
             raise DocumentError(INVALID_REQUEST, "invalid reviewer token reservation")
         pin = encode_provenance(prompt_provenance) if prompt_provenance is not None else None
-        with self.documents._write() as db:
-            found = self._run(db, project, session, review)
+        with self.documents.control.write() as tx:
+            db = tx.sql
+            found = self.load_run(db, project, session, review)
             self.owner(found, owner)
             if (
                 prompt_provenance is not None
@@ -1225,10 +1235,12 @@ class ReviewStore:
         identifier(review, "rev")
         if type(call) is not int or not 1 <= call <= 2**63 - 1:
             raise DocumentError(INVALID_REQUEST, "invalid reviewer reservation ID")
-        with self.documents._read() as db:
+        if self.documents.control.missing:
+            return ProvenanceRead("absent")
+        with self.documents.control.read() as tx:
+            db = tx.sql
             if (
-                db is None
-                or not self.available(db)
+                not self.available(db)
                 or db.execute("SELECT 1 FROM sqlite_master WHERE name='review_calls'").fetchone()
                 is None
             ):
@@ -1287,8 +1299,9 @@ class ReviewStore:
             for value in (input_tokens, output_tokens)
         ):
             raise DocumentError(INVALID_REQUEST, "invalid provider usage")
-        with self.documents._write() as db:
-            self.owner(self._run(db, project, session, review), owner)
+        with self.documents.control.write() as tx:
+            db = tx.sql
+            self.owner(self.load_run(db, project, session, review), owner)
             updated = db.execute(
                 (
                     "UPDATE review_calls SET "
@@ -1319,7 +1332,7 @@ class ReviewStore:
                     ),
                 )
                 config = ReviewConfig.model_validate_json(
-                    self._run(db, project, session, review)["config"]
+                    self.load_run(db, project, session, review)["config"]
                 )
                 db.execute(
                     "UPDATE review_runs SET cap_reached=1 WHERE review_id=? "
@@ -1335,8 +1348,8 @@ class ReviewStore:
         if type(limit) is not int or not 1 <= limit <= 20:
             raise DocumentError(INVALID_REQUEST, "manifest limit is 1 to 20")
         found = self.run(project, session, review)
-        with self.documents._read() as db:
-            assert db is not None  # noqa: S101
+        with self.documents.control.read() as tx:
+            db = tx.sql
             rows = list(
                 db.execute(
                     (
@@ -1370,9 +1383,9 @@ class ReviewStore:
     def evidence(self, project: str, session: str, review: str, evidence: str) -> Json:
         self.scope(project, session)
         identifier(evidence, "ev")
-        with self.documents._read() as db:
-            assert db is not None  # noqa: S101
-            self._run(db, project, session, review)
+        with self.documents.control.read() as tx:
+            db = tx.sql
+            self.load_run(db, project, session, review)
             row = db.execute(
                 (
                     "SELECT substr(kind,1,33),substr(cast(locator AS BLOB),1,4097),"
@@ -1417,8 +1430,8 @@ class ReviewStore:
         self.scope(project, session)
         if reference.project_id != project:
             raise DocumentError(NOT_FOUND, "artifact evidence is outside this project")
-        with self.documents._read() as db:
-            assert db is not None  # noqa: S101
+        with self.documents.control.read() as tx:
+            db = tx.sql
             row = db.execute(
                 "SELECT substr(cast(locator AS BLOB),1,4097),"
                 "substr(cast(payload AS BLOB),1,262145),substr(sha256,1,65),"
@@ -1516,8 +1529,9 @@ class ReviewStore:
         result["locator"]["total_characters"] = len(source)
         if owner is None:
             return result
-        with self.documents._write() as db:
-            found = self._run(db, project, session, review)
+        with self.documents.control.write() as tx:
+            db = tx.sql
+            found = self.load_run(db, project, session, review)
             self.owner(found, owner)
             if not result["text"] and not result["locator"].get("empty_source"):
                 return result
@@ -1534,9 +1548,9 @@ class ReviewStore:
     def records(self, project: str, session: str, review: str, *, after: int = 0) -> Json:
         if type(after) is not int or not 0 <= after <= 999999999:
             raise DocumentError(INVALID_REQUEST, "invalid review record cursor")
-        with self.documents._read() as db:
-            assert db is not None  # noqa: S101
-            self._run(db, project, session, review)
+        with self.documents.control.read() as tx:
+            db = tx.sql
+            self.load_run(db, project, session, review)
             values: list[Json] = []
             size = 0
             more = False
@@ -1564,8 +1578,11 @@ class ReviewStore:
         self.scope(project, session)
         if after is not None:
             identifier(after, "rev")
-        with self.documents._read() as db:
-            if not self.available(db) or db is None:
+        if self.documents.control.missing:
+            return {"reviews": [], "next_after": None, "unreviewed": []}
+        with self.documents.control.read() as tx:
+            db = tx.sql
+            if not self.available(db):
                 return {"reviews": [], "next_after": None, "unreviewed": []}
             cursor = db.execute("SELECT coalesce(max(rowid),0)+1 FROM review_runs").fetchone()[0]
             if after is not None:

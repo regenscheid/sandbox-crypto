@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: MIT
 """Explicit authenticated USER project macro settings; same-origin guard is shared."""
 
-# Project routes reuse the authenticated document transaction boundary.
-# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
 from aiohttp import web
@@ -19,7 +17,7 @@ def add_routes(app: web.Application) -> None:
 
 
 async def macros(request: web.Request) -> web.Response:
-    return await documents._answer(
+    return await documents.answer(
         request, lambda store: ProjectMacros(store).get(request.match_info["project"])
     )
 
@@ -29,7 +27,7 @@ async def change(request: web.Request) -> web.Response:
         value = await request.json()
     except (ValueError, UnicodeDecodeError, RecursionError):
         return documents.api_error(DocumentError("invalid_request", "invalid project macro JSON"))
-    return await documents._answer(
+    return await documents.answer(
         request,
         lambda store: ProjectMacros(store).change(request.match_info["project"], value, USER),
         writer=True,

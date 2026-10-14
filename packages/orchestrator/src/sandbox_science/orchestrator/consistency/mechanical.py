@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: MIT
 """Private mechanical math lifecycle. Model reviewers cannot invoke this authority."""
 
-# Logical modules deliberately share one transaction and append-only history.
-# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
 import json
@@ -175,7 +173,7 @@ class MechanicalFindings:
                 "SELECT project,session FROM review_findings WHERE finding_id=?", (row[0],)
             ).fetchone()
             assert found is not None  # noqa: S101 - finding state has a checked foreign key
-            current = self.findings._get(db, found[0], found[1], row[0])
+            current = self.findings.load(db, found[0], found[1], row[0])
             db.execute(
                 (
                     "UPDATE math_finding_state SET "
@@ -191,7 +189,7 @@ class MechanicalFindings:
                     (identity, item["owner"]["revision"], row[0]),
                 )
                 if current["status"] not in ("confirmed fixed", "withdrawn"):
-                    self.findings._transition(
+                    self.findings.transition(
                         db,
                         current,
                         "confirmed fixed",
@@ -232,7 +230,7 @@ class MechanicalFindings:
                 current["status"] == "unaddressed" or self._user_resolved(db, current)
             ):
                 status = current["status"]
-            result = self.findings._transition(
+            result = self.findings.transition(
                 db,
                 current,
                 status,
@@ -297,8 +295,8 @@ class MechanicalFindings:
             ),
         )
         assert author.session_id is not None  # noqa: S101 - eligible author has a session
-        current = self.findings._get(db, job["project"], author.session_id, finding)
-        result = self.findings._transition(
+        current = self.findings.load(db, job["project"], author.session_id, finding)
+        result = self.findings.transition(
             db,
             current,
             "open",
@@ -372,8 +370,8 @@ class MechanicalFindings:
         for finding, block, span, session in rows:
             if (block, span) in live:
                 continue
-            current = self.findings._get(db, job["project"], session, finding)
-            self.findings._transition(
+            current = self.findings.load(db, job["project"], session, finding)
+            self.findings.transition(
                 db,
                 current,
                 "confirmed fixed",

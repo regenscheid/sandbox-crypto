@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: MIT
 """Exact finding-explanation source adapter for the shared mechanical worker."""
 
-# Source adapters intentionally share the bounded lease/transaction machinery.
-# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
 import re
@@ -153,8 +151,8 @@ class ResponseMath:
 
     def load(self, job: Json) -> Mapped:
         meta = job["response"]
-        with self.documents._read() as db:
-            assert db is not None  # noqa: S101 - writer initialized
+        with self.documents.control.read() as tx:
+            db = tx.sql
             saved = bodies.read(
                 db,
                 meta["finding"],
@@ -172,8 +170,8 @@ class ResponseMath:
         return attach(saved["body"], saved["block_map"], documents=False)
 
     def attribution(self, check: str, owner: str, blocks: set[str]) -> dict[str, Json]:
-        with self.documents._read() as db:
-            assert db is not None  # noqa: S101 - writer initialized
+        with self.documents.control.read() as tx:
+            db = tx.sql
             meta = metadata(db, check)
             assert meta is not None  # noqa: S101 - selected adapter
             _, revision, _, _ = self.fence(db, check, owner, meta)

@@ -171,7 +171,8 @@ def test_document_snapshot_reads_exact_revision_after_head_changes(store) -> Non
     read = reviews.read_evidence("p", "s", review, pinned["evidence"], owner="owner")
     assert "16" in read["text"]
     assert "15" not in read["text"]
-    with documents._read() as db:
+    with documents.control.read() as tx:
+        db = tx.sql
         assert (
             db.execute("SELECT count(*) FROM review_reads WHERE review_id=?", (review,)).fetchone()[
                 0
@@ -334,7 +335,8 @@ async def test_reviewer_has_no_execution_or_editing_tools(store) -> None:
     )
     await ReviewerRunner(reviews, "p", "s", review, "owner", model).run()
     assert reviews.run("p", "s", review)["state"] == "passed"
-    with documents._read() as db:
+    with documents.control.read() as tx:
+        db = tx.sql
         records = [
             json.loads(r[0])
             for r in db.execute(
@@ -441,7 +443,8 @@ def test_missing_evidence_is_inconclusive_and_never_a_fail_notice(store) -> None
     review = dispatch(reviews)
     finding = raise_finding(reviews, review, assessment="missing_evidence")
     assert finding["status"] == "inconclusive"
-    with documents._read() as db:
+    with documents.control.read() as tx:
+        db = tx.sql
         assert db.execute("SELECT count(*) FROM review_notices").fetchone()[0] == 0
 
 
@@ -765,7 +768,8 @@ def test_confirmation_with_an_omitted_exact_target_stays_incomplete(store, monke
     assert not reviews.run("p", "s", confirmation)["coverage_complete"]
     manifest = reviews.manifest("p", "s", confirmation)["evidence"]
     assert sum(item["kind"] == "finding" for item in manifest) == 1
-    with reviews.documents._read() as db:
+    with reviews.documents.control.read() as tx:
+        db = tx.sql
         assert (
             db.execute(
                 "SELECT count(*) FROM review_confirmation_targets WHERE review_id=?",
@@ -873,7 +877,8 @@ async def test_confirmation_coverage_is_independent_of_failed_author_window(
         "passed" if original_complete and response_complete and checked else "inconclusive"
     )
     assert Findings(reviews).get("p", "s", finding["finding_id"])["status"] == "confirmed fixed"
-    with documents._read() as db:
+    with documents.control.read() as tx:
+        db = tx.sql
         assert tuple(
             db.execute(
                 "SELECT watermark,retry_end,failures FROM review_windows "
@@ -920,7 +925,8 @@ async def test_terminal_drains_prior_document_events_and_classifies_neutral_answ
     from sandbox_science.orchestrator.consistency.controller import ReviewController
 
     reviews, documents, _ = store
-    with documents._write() as db:
+    with documents.control.write() as tx:
+        db = tx.sql
         db.executemany(
             "INSERT INTO events(time,kind,producer,project_id,session_id,document_id,payload) "
             "VALUES('now','document.read','test','p','other','unrelated','{}')",
@@ -1154,7 +1160,8 @@ async def test_finding_notice_acknowledgement_requires_saved_successful_model_tu
 
     monkeypatch.setattr(ProjectStore, "save_run", failed_save)
     assert cli._keep(args, fields, 0) == 1
-    with documents._read() as db:
+    with documents.control.read() as tx:
+        db = tx.sql
         assert db.execute("SELECT delivered_run FROM review_notices").fetchone()[0] is None
     monkeypatch.setattr(ProjectStore, "save_run", original)
     assert cli._keep(args, fields, 0) == 0

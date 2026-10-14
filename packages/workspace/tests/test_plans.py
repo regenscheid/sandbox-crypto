@@ -265,8 +265,8 @@ async def test_absent_history_returns_null_without_creating_or_migrating_sql(
     if not existing:
         assert not path.exists()
     else:
-        with owner._read() as db:
-            assert db is not None
+        with owner.control.read() as tx:
+            db = tx.sql
             assert db.execute(
                 "SELECT count(*) FROM sqlite_master WHERE name LIKE 'session_plan_%'"
             ).fetchone() == (0,)
@@ -282,14 +282,16 @@ async def test_corrupt_history_is_503_not_null_or_unbounded_allocation(
     try:
         if damage == "partial":
             owner.initialize()
-            with owner._write() as db:
+            with owner.control.write() as tx:
+                db = tx.sql
                 db.execute(
                     "CREATE TABLE session_plan_meta(singleton INTEGER PRIMARY KEY,version INTEGER)"
                 )
         else:
             journal = SessionPlans(owner)
             seed(journal)
-            with owner._write() as db:
+            with owner.control.write() as tx:
+                db = tx.sql
                 if damage == "version":
                     db.execute("DROP TRIGGER session_plan_records_no_delete")
                     db.execute("DELETE FROM session_plan_records WHERE kind='version'")
@@ -607,7 +609,7 @@ async def test_cancelled_initial_file_read_keeps_and_then_closes_its_descriptors
 
     def blocked(*args):
         snapshot = original(*args)
-        retained.extend((snapshot._descriptor, snapshot._root))
+        retained.extend((snapshot.descriptor, snapshot.root))
         entered.set()
         assert release.wait(5)
         return snapshot

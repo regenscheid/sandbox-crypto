@@ -24,8 +24,7 @@ import re
 import sqlite3
 import threading
 from collections import OrderedDict
-from collections.abc import Callable, Generator, Sequence
-from contextlib import contextmanager
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -34,6 +33,7 @@ from typing import Any, Final, cast
 from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.contracts import new_id
+from sandbox_science.orchestrator.control import DEFAULT_TIMEOUT, ControlStore
 
 from .blocks import BYTE_ORDER_MARK, Budget, check_text, normalize_newlines, parse
 from .checks import warnings
@@ -80,8 +80,6 @@ from .parser import parser_versions
 
 FILE_NAME: Final = "control.sqlite3"
 SCHEMA_VERSION: Final = 1
-DEFAULT_TIMEOUT: Final = 10.0
-"""Seconds a change waits for another process's write to finish."""
 CACHED: Final = 16
 """Parsed revisions kept, by document, revision and content hash."""
 
@@ -282,10 +280,6 @@ def _attempt[T](compute: Callable[[], T]) -> T | DocumentError:
         return error
 
 
-def _busy(error: sqlite3.OperationalError) -> bool:
-    return any(word in str(error).lower() for word in ("locked", "busy"))
-
-
 def _document(row: Sequence[Any]) -> _Row:
     info = DocumentInfo(
         document_id=row[0],
@@ -395,154 +389,66 @@ class DocumentStore:
         self.path = path
         self.producer = producer
         self.readonly = readonly
-        self._timeout = timeout
+        self.control = ControlStore(
+            path, version=SCHEMA_VERSION, prepare=self._schema, readonly=readonly, timeout=timeout
+        )
         self._clock = clock
-        self._lock = threading.RLock()
-        self._db: sqlite3.Connection | None = None
+        self._cache_lock = threading.Lock()
         self._cache: OrderedDict[tuple[str, int, str], Mapped] = OrderedDict()
 
     def initialize(self) -> None:
         """Open or initialize the control store before another control component adds tables."""
-        with self._lock:
-            self._connection()
+        self.control.initialize()
 
     def close(self) -> None:
-        with self._lock:
-            if self._db is not None:
-                self._db.close()
-                self._db = None
+        self.control.close()
 
-    # Connections and transactions.
-
-    def _connection(self) -> sqlite3.Connection | None:
-        if self._db is not None:
-            return self._db
-        if self.readonly:
-            if not self.path.is_file():
-                return None
-            db = sqlite3.connect(
-                self.path.resolve().as_uri() + "?mode=ro",
-                uri=True,
-                timeout=self._timeout,
-                isolation_level=None,
-                check_same_thread=False,
-            )
-            (version,) = db.execute("PRAGMA user_version").fetchone()
-            if version != SCHEMA_VERSION:
-                db.close()
-                raise DocumentError(
-                    INTERNAL, f"{self.path} is in store format {version}, not {SCHEMA_VERSION}"
-                )
-        else:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            db = sqlite3.connect(
-                self.path, timeout=self._timeout, isolation_level=None, check_same_thread=False
-            )
-            try:
-                self._prepare(db)
-            except BaseException:
-                db.close()
-                raise
-        self._db = db
-        return db
-
-    def _prepare(self, db: sqlite3.Connection) -> None:
-        (mode,) = db.execute("PRAGMA journal_mode=WAL").fetchone()
-        if str(mode).lower() != "wal":
-            raise DocumentError(INTERNAL, f"{self.path} cannot use write-ahead logging")
-        db.execute("PRAGMA synchronous=FULL")
-        db.execute("PRAGMA foreign_keys=ON")
-        db.execute("BEGIN IMMEDIATE")
-        try:
-            (version,) = db.execute("PRAGMA user_version").fetchone()
-            if version == 0:
-                (objects,) = db.execute("SELECT count(*) FROM sqlite_master").fetchone()
-                if objects:
-                    raise DocumentError(INTERNAL, f"{self.path} is not a control store")
-                for statement in _SCHEMA:
-                    db.execute(statement)
-                db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-            elif version != SCHEMA_VERSION:
-                raise DocumentError(
-                    INTERNAL,
-                    f"{self.path} is in store format {version}; this version reads "
-                    f"{SCHEMA_VERSION}",
-                )
-            from .annotations import SCHEMA as ANNOTATION_SCHEMA
-
-            for statement in ANNOTATION_SCHEMA:
+    def _schema(self, db: sqlite3.Connection) -> None:
+        """Create or check the schema, in the first transaction of a writer's connection."""
+        (version,) = db.execute("PRAGMA user_version").fetchone()
+        if version == 0:
+            (objects,) = db.execute("SELECT count(*) FROM sqlite_master").fetchone()
+            if objects:
+                raise DocumentError(INTERNAL, f"{self.path} is not a control store")
+            for statement in _SCHEMA:
                 db.execute(statement)
-            from .mathqueue import prepare as prepare_math
-
-            prepare_math(db)
-            from .project_macros import prepare as prepare_macros
-
-            prepare_macros(db)
-            from .comment_bodies import SCHEMA as COMMENT_BODY_SCHEMA
-
-            for statement in COMMENT_BODY_SCHEMA:
-                db.execute(statement)
-            db.execute(
-                "INSERT OR IGNORE INTO "
-                "comment_math_sources(entry_id,document,project,target,blocked) "
-                "SELECT e.entry_id,t.document_id,d.project_id,0,"
-                "'Legacy body identity is unknown; automatic math attribution is excluded' "
-                "FROM annotation_entries e JOIN annotation_threads t USING(thread_id) "
-                "JOIN documents d ON d.document_id=t.document_id WHERE e.kind IN ('create','reply')"
+            db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        elif version != SCHEMA_VERSION:
+            raise DocumentError(
+                INTERNAL,
+                f"{self.path} is in store format {version}; this version reads {SCHEMA_VERSION}",
             )
-            db.execute("COMMIT")
-        finally:
-            if db.in_transaction:
-                db.execute("ROLLBACK")
+        from .annotations import SCHEMA as ANNOTATION_SCHEMA
 
-    @contextmanager
-    def _write(self) -> Generator[sqlite3.Connection]:
-        """One change: SQLite's write lock is taken before anything is read."""
-        if self.readonly:
-            raise DocumentError(INTERNAL, "this document store is read-only")
-        with self._lock:
-            try:
-                db = self._connection()
-                assert db is not None  # noqa: S101 - a writer always has a database
-                db.execute("BEGIN IMMEDIATE")
-            except sqlite3.OperationalError as error:
-                if not _busy(error):
-                    raise
-                raise DocumentError(
-                    BUSY,
-                    f"another change held the document store for over {self._timeout:g} "
-                    "seconds: try again (with the same operation ID, a retry is safe)",
-                ) from error
-            try:
-                yield db
-                db.execute("COMMIT")
-            except BaseException:
-                if db.in_transaction:
-                    db.execute("ROLLBACK")
-                raise
+        for statement in ANNOTATION_SCHEMA:
+            db.execute(statement)
+        from .mathqueue import prepare as prepare_math
 
-    @contextmanager
-    def _read(self) -> Generator[sqlite3.Connection | None]:
-        """A consistent view for reads that take several queries."""
-        with self._lock:
-            db = self._connection()
-            if db is None:
-                yield None
-                return
-            db.execute("BEGIN")
-            try:
-                yield db
-            finally:
-                if db.in_transaction:
-                    db.execute("COMMIT")
+        prepare_math(db)
+        from .project_macros import prepare as prepare_macros
+
+        prepare_macros(db)
+        from .comment_bodies import SCHEMA as COMMENT_BODY_SCHEMA
+
+        for statement in COMMENT_BODY_SCHEMA:
+            db.execute(statement)
+        db.execute(
+            "INSERT OR IGNORE INTO "
+            "comment_math_sources(entry_id,document,project,target,blocked) "
+            "SELECT e.entry_id,t.document_id,d.project_id,0,"
+            "'Legacy body identity is unknown; automatic math attribution is excluded' "
+            "FROM annotation_entries e JOIN annotation_threads t USING(thread_id) "
+            "JOIN documents d ON d.document_id=t.document_id WHERE e.kind IN ('create','reply')"
+        )
 
     # Reads.
 
     def documents(self, project_id: str, *, deleted: bool = False) -> list[DocumentInfo]:
         """The project's documents, project and workbook ones, by name."""
-        with self._read() as db:
-            if db is None:
-                return []
+        if self.control.missing:
+            return []
+        with self.control.read() as tx:
+            db = tx.sql
             rows = db.execute(
                 _DOCUMENT + " WHERE project_id = ? ORDER BY session_id IS NOT NULL, session_id, "
                 "name, created_at",
@@ -556,18 +462,21 @@ class DocumentStore:
     ) -> DocumentInfo:
         """A document by ID, or by name: the session's workbook document first, then the
         project's."""
-        with self._read() as db:
+        with self.control.read() as tx:
+            db = tx.sql
             return self._find(db, project_id, reference, session_id).info
+
+    def find(self, db: sqlite3.Connection, project_id: str, reference: str) -> DocumentInfo:
+        """A document by ID or name, inside a transaction."""
+        return self._find(db, project_id, reference).info
 
     def _find(
         self,
-        db: sqlite3.Connection | None,
+        db: sqlite3.Connection,
         project_id: str,
         reference: str,
         session_id: str | None = None,
     ) -> _Row:
-        if db is None:
-            raise DocumentError(NOT_FOUND, f"no document {reference!r}")
         row = db.execute(
             _DOCUMENT + " WHERE project_id = ? AND document_id = ?", (project_id, reference)
         ).fetchone()
@@ -585,12 +494,12 @@ class DocumentStore:
 
     def revision(self, project_id: str, reference: str, number: int | None = None) -> Revision:
         """A revision with its text and block map; the current one without ``number``."""
-        with self._read() as db:
+        with self.control.read() as tx:
+            db = tx.sql
             row = self._find(db, project_id, reference)
             return self._revision(db, row.info.document_id, number or row.info.head)
 
-    def _revision(self, db: sqlite3.Connection | None, document_id: str, number: int) -> Revision:
-        assert db is not None  # noqa: S101 - a document was found in it
+    def _revision(self, db: sqlite3.Connection, document_id: str, number: int) -> Revision:
         found = db.execute(
             _REVISION + " WHERE document_id = ? AND number = ?", (document_id, number)
         ).fetchone()
@@ -609,13 +518,13 @@ class DocumentStore:
 
     def _mapped(self, revision: Revision) -> Mapped:
         key = (revision.info.document_id, revision.info.number, revision.info.sha256)
-        with self._lock:
+        with self._cache_lock:
             cached = self._cache.get(key)
             if cached is not None:
                 self._cache.move_to_end(key)
                 return cached
         mapped = attach(revision.text, revision.block_map)
-        with self._lock:
+        with self._cache_lock:
             self._cache[key] = mapped
             while len(self._cache) > CACHED:
                 self._cache.popitem(last=False)
@@ -623,9 +532,9 @@ class DocumentStore:
 
     def revisions(self, project_id: str, reference: str, after: int = 0) -> list[RevisionInfo]:
         """A document's revisions after ``after``, oldest first, without their texts."""
-        with self._read() as db:
+        with self.control.read() as tx:
+            db = tx.sql
             row = self._find(db, project_id, reference)
-            assert db is not None  # noqa: S101
             rows = db.execute(
                 _REVISION + " WHERE document_id = ? AND number > ? ORDER BY number",
                 (row.info.document_id, after),
@@ -637,9 +546,9 @@ class DocumentStore:
     ) -> list[tuple[RevisionInfo, Json]]:
         """The revisions after ``after``, oldest first, with their block maps but not their
         texts."""
-        with self._read() as db:
+        with self.control.read() as tx:
+            db = tx.sql
             row = self._find(db, project_id, reference)
-            assert db is not None  # noqa: S101
             rows = db.execute(
                 _REVISION.replace("FROM revisions", ", block_map FROM revisions")
                 + " WHERE document_id = ? AND number > ? ORDER BY number",
@@ -651,9 +560,9 @@ class DocumentStore:
         """Who changed what (LD-11): each revision with its author, reason and changed
         blocks; for each block, the revisions that changed it and their authors; and the
         patches that made no revision of their own, with their states and decisions."""
-        with self._read() as db:
+        with self.control.read() as tx:
+            db = tx.sql
             row = self._find(db, project_id, reference)
-            assert db is not None  # noqa: S101
             rows = db.execute(
                 _REVISION.replace("FROM revisions", ", block_map FROM revisions")
                 + " WHERE document_id = ? ORDER BY number",
@@ -718,9 +627,10 @@ class DocumentStore:
         """The current revision of each document."""
         if not document_ids:
             return {}
-        with self._read() as db:
-            if db is None:
-                return {}
+        if self.control.missing:
+            return {}
+        with self.control.read() as tx:
+            db = tx.sql
             marks = ",".join("?" * len(document_ids))
             rows = db.execute(
                 f"SELECT document_id, head FROM documents WHERE document_id IN ({marks})",  # noqa: S608 - placeholders only
@@ -732,9 +642,9 @@ class DocumentStore:
         self, project_id: str, reference: str, *, states: Sequence[str] = ()
     ) -> list[PatchInfo]:
         """A document's patches, oldest first: all of them, or those in ``states``."""
-        with self._read() as db:
+        with self.control.read() as tx:
+            db = tx.sql
             row = self._find(db, project_id, reference)
-            assert db is not None  # noqa: S101
             rows = db.execute(
                 _PATCH + " WHERE document_id = ? ORDER BY created_at, rowid",
                 (row.info.document_id,),
@@ -744,9 +654,10 @@ class DocumentStore:
 
     def events(self, project_id: str, *, after: int = 0, limit: int = 1000) -> list[EventRecord]:
         """The project's events after sequence number ``after``, oldest first."""
-        with self._read() as db:
-            if db is None:
-                return []
+        if self.control.missing:
+            return []
+        with self.control.read() as tx:
+            db = tx.sql
             rows = db.execute(
                 "SELECT seq, time, kind, producer, project_id, session_id, document_id, payload "
                 "FROM events WHERE project_id = ? AND seq > ? ORDER BY seq LIMIT ?",
@@ -793,7 +704,8 @@ class DocumentStore:
         request = {"create": stem, "title": title, "session": session_id, "text": text}
         # Parsed before the write lock is taken, so other changes do not wait for it.
         made = _attempt(lambda: normalize(parse(text)))
-        with self._write() as db:
+        with self.control.write() as tx:
+            db = tx.sql
             replay = self._replay(db, project_id, author, operation_id, request)
             if replay is not None:
                 return replay
@@ -841,7 +753,7 @@ class DocumentStore:
                     info.created_session,
                 ),
             )
-            self._event(
+            self.record_event(
                 db,
                 "document.created",
                 info,
@@ -901,7 +813,8 @@ class DocumentStore:
         carried = None
         if isinstance(made, Normalized):
             carried = self._prepare_save(project_id, reference, base, made)
-        with self._write() as db:
+        with self.control.write() as tx:
+            db = tx.sql
             replay = self._replay(db, project_id, author, operation_id, request)
             if replay is not None:
                 return replay
@@ -970,7 +883,8 @@ class DocumentStore:
         submission = _Submission(new_id("patch"), base, parsed, raw, why, author)
         # Checked before the write lock is taken, so other changes do not wait for it.
         prepared = self._prepare_patch(project_id, reference, submission)
-        with self._write() as db:
+        with self.control.write() as tx:
+            db = tx.sql
             replay = self._replay(db, project_id, author, operation_id, request)
             if replay is not None:
                 return replay
@@ -1013,7 +927,8 @@ class DocumentStore:
                 operation_id=operation_id,
             )
         request = {"source": reference, "base": base, "text": text, "reason": submission.reason}
-        with self._write() as db:
+        with self.control.write() as tx:
+            db = tx.sql
             replay = self._replay(db, project_id, author, operation_id, request)
             if replay is not None:
                 return replay
@@ -1103,7 +1018,8 @@ class DocumentStore:
         self._operation_id(operation_id)
         stem, why = _name(name), _reason(reason)
         request = {"promote": reference, "base": base, "name": stem, "reason": why}
-        with self._write() as db:
+        with self.control.write() as tx:
+            db = tx.sql
             replay = self._replay(db, project_id, author, operation_id, request)
             if replay is not None:
                 return replay
@@ -1123,7 +1039,7 @@ class DocumentStore:
                 "UPDATE documents SET session_id = NULL, name = ? WHERE document_id = ?",
                 (stem, row.info.document_id),
             )
-            self._event(
+            self.record_event(
                 db,
                 "document.promoted",
                 row.info,
@@ -1175,7 +1091,8 @@ class DocumentStore:
             raise DocumentError(INVALID_REQUEST, "choose a revision containing text")
         restored = self._mapped(revision)
         head = self.mapped(project_id, reference, base)
-        with self._write() as db:
+        with self.control.write() as tx:
+            db = tx.sql
             replay = self._replay(db, project_id, author, operation_id, request)
             if replay is not None:
                 return replay
@@ -1217,9 +1134,9 @@ class DocumentStore:
 
     def preview_patch(self, project_id: str, reference: str, patch_id: str) -> Json:
         """Preview retained operations against the current revision, without writing."""
-        with self._read() as db:
+        with self.control.read() as tx:
+            db = tx.sql
             row = self._find(db, project_id, reference)
-            assert db is not None  # noqa: S101
             patch = self._review_patch(db, row, patch_id)
             submission = _Submission(
                 patch_id,
@@ -1267,10 +1184,10 @@ class DocumentStore:
         request = {"apply_patch": reference, "patch": patch_id, "base": base, "reason": why}
         prepared = None
         try:
-            with self._read() as reading:
+            with self.control.read() as tx:
+                reading = tx.sql
                 row = self._find(reading, project_id, reference)
                 self._current(row, base)
-                assert reading is not None  # noqa: S101
                 patch = self._review_patch(reading, row, patch_id)
                 candidate = _Submission(
                     patch_id,
@@ -1285,7 +1202,8 @@ class DocumentStore:
         except DocumentError:
             # Replay and authoritative errors are checked in the transaction below.
             pass
-        with self._write() as db:
+        with self.control.write() as tx:
+            db = tx.sql
             replay = self._replay(db, project_id, author, operation_id, request)
             if replay is not None:
                 return replay
@@ -1318,9 +1236,8 @@ class DocumentStore:
         if self.readonly:
             return None
         try:
-            with self._read() as db:
-                if db is None:
-                    return None
+            with self.control.read() as tx:
+                db = tx.sql
                 row = self._find(db, project_id, reference)
                 if row.info.deleted or base != row.info.head:
                     return None
@@ -1339,9 +1256,8 @@ class DocumentStore:
         if self.readonly:
             return None
         try:
-            with self._read() as db:
-                if db is None:
-                    return None
+            with self.control.read() as tx:
+                db = tx.sql
                 row = self._find(db, project_id, reference)
                 inputs = self._inputs(db, row, submission.base)
         except (DocumentError, sqlite3.Error):
@@ -1489,7 +1405,7 @@ class DocumentStore:
             raise DocumentError(INTERNAL, "the patch was not checked")
         if suggest:
             self._keep(db, info, submission, "suggested", {"current": info.head})
-            self._event(
+            self.record_event(
                 db,
                 "document.suggestion_created",
                 info,
@@ -1583,7 +1499,7 @@ class DocumentStore:
             **submission.attribution,
             **details,
         }
-        self._event(db, kind, row.info, submission.author, payload)
+        self.record_event(db, kind, row.info, submission.author, payload)
         return result
 
     def delete(
@@ -1605,7 +1521,8 @@ class DocumentStore:
             )
         why = _reason(reason)
         request = {"delete": reference}
-        with self._write() as db:
+        with self.control.write() as tx:
+            db = tx.sql
             replay = self._replay(db, project_id, author, operation_id, request)
             if replay is not None:
                 return replay
@@ -1644,14 +1561,15 @@ class DocumentStore:
         """Whether agent patches to the document wait as suggestions (LD-20)."""
         if author.kind != "user":
             raise DocumentError(POLICY_DENIED, "only the user decides how a document takes patches")
-        with self._write() as db:
+        with self.control.write() as tx:
+            db = tx.sql
             row = self._find(db, project_id, reference)
             self._live(row)
             db.execute(
                 "UPDATE documents SET takes_suggestions = ? WHERE document_id = ?",
                 (int(on), row.info.document_id),
             )
-            self._event(
+            self.record_event(
                 db, "document.settings_changed", row.info, author, {"takes_suggestions": on}
             )
             return row.info.model_copy(update={"takes_suggestions": on})
@@ -1669,7 +1587,8 @@ class DocumentStore:
         prepared = None
         if accept:
             prepared = self._prepare_decision(project_id, reference, patch_id, author)
-        with self._write() as db:
+        with self.control.write() as tx:
+            db = tx.sql
             row = self._find(db, project_id, reference)
             suggestion = self._suggestion(db, row, patch_id)
             now = self._clock()
@@ -1679,7 +1598,7 @@ class DocumentStore:
                     "WHERE patch_id = ?",
                     (_time(now), author.model_dump_json(), patch_id),
                 )
-                self._event(
+                self.record_event(
                     db,
                     "document.suggestion_decided",
                     row.info,
@@ -1696,7 +1615,7 @@ class DocumentStore:
             submission = _accepted(suggestion, author)
             assessed = self._assessed(db, row, submission, prepared)
             result = self._act(db, row, submission, assessed)
-            self._event(
+            self.record_event(
                 db,
                 "document.suggestion_decided",
                 row.info,
@@ -1732,9 +1651,8 @@ class DocumentStore:
         if self.readonly:
             return None
         try:
-            with self._read() as db:
-                if db is None:
-                    return None
+            with self.control.read() as tx:
+                db = tx.sql
                 row = self._find(db, project_id, reference)
                 submission = _accepted(self._suggestion(db, row, patch_id), author)
                 inputs = self._inputs(db, row, submission.base)
@@ -1856,7 +1774,7 @@ class DocumentStore:
             payload["patch_id"] = patch_id
         if accepted_by is not None:
             payload["accepted_by"] = accepted_by.model_dump(mode="json", exclude_none=True)
-        self._event(db, "document.revision_created", info, author, payload)
+        self.record_event(db, "document.revision_created", info, author, payload)
         self._cache_put(info.document_id, number, text, mapped)
         return ChangeResult(
             outcome=outcome,
@@ -1873,12 +1791,12 @@ class DocumentStore:
 
     def _cache_put(self, document_id: str, number: int, text: str, mapped: Mapped) -> None:
         key = (document_id, number, hashlib.sha256(text.encode()).hexdigest())
-        with self._lock:
+        with self._cache_lock:
             self._cache[key] = mapped
             while len(self._cache) > CACHED:
                 self._cache.popitem(last=False)
 
-    def _event(
+    def record_event(
         self,
         db: sqlite3.Connection,
         kind: str,
@@ -1886,6 +1804,8 @@ class DocumentStore:
         author: Author,
         payload: Json,
     ) -> None:
+        """Record an event in the change's transaction, and tell the math checks and the
+        project macros about a saved source."""
         cursor = db.execute(
             "INSERT INTO events (time, kind, producer, project_id, session_id, document_id, "
             "payload) VALUES (?, ?, ?, ?, ?, ?, ?)",

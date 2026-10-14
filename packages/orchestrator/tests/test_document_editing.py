@@ -293,7 +293,7 @@ def test_editing_preparation_runs_outside_writer_transaction(store: DocumentStor
     from sandbox_science.orchestrator.documents.blocks import parse as original
 
     def checked(text):
-        assert store._db is None or not store._db.in_transaction
+        assert not store.control.in_transaction
         return original(text)
 
     monkeypatch.setattr(module, "parse", checked)

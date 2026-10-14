@@ -6,9 +6,6 @@ This module borrows DocumentStore's connection/transaction and never closes it.
 Its synchronous calls must finish before that owner closes the store.
 """
 
-# Logical control-store modules share the canonical transaction seam.
-# pyright: reportPrivateUsage=false
-
 from __future__ import annotations
 
 import hashlib
@@ -446,21 +443,22 @@ class SessionPlans:
     def __init__(self, documents: DocumentStore, *, limits: PlanLimits | None = None) -> None:
         self.documents = documents
         self.limits = _checked(PlanLimits, limits or PlanLimits())
-        if documents.readonly:
-            with documents._read() as db:
-                if db is not None:
-                    present = db.execute(
-                        "SELECT count(*) FROM sqlite_master WHERE type='table' AND "
-                        "name IN ('session_plan_meta','session_plan_records',"
-                        "'session_plan_projections')"
-                    ).fetchone()[0]
-                    if present == 0:
-                        raise DocumentError(NOT_FOUND, "session-plan history is not initialized")
-                    if present != 3:
-                        raise DocumentError(INTERNAL, "session-plan schema is incomplete")
-                    self._schema(db)
+        if documents.readonly and not documents.control.missing:
+            with documents.control.read() as tx:
+                db = tx.sql
+                present = db.execute(
+                    "SELECT count(*) FROM sqlite_master WHERE type='table' AND "
+                    "name IN ('session_plan_meta','session_plan_records',"
+                    "'session_plan_projections')"
+                ).fetchone()[0]
+                if present == 0:
+                    raise DocumentError(NOT_FOUND, "session-plan history is not initialized")
+                if present != 3:
+                    raise DocumentError(INTERNAL, "session-plan schema is incomplete")
+                self._schema(db)
         if not documents.readonly:
-            with documents._write() as db:
+            with documents.control.write() as tx:
+                db = tx.sql
                 present = db.execute(
                     "SELECT count(*) FROM sqlite_master WHERE type='table' AND "
                     "name IN ('session_plan_meta','session_plan_records',"
@@ -742,9 +740,10 @@ class SessionPlans:
     def summary(self, authority: PlanAuthority) -> PlanSummary | None:
         """Read the small current identity/cursors without materializing plan progress."""
         authority = _checked(PlanAuthority, authority)
-        with self.documents._read() as db:
-            if db is None:
-                return None
+        if self.documents.control.missing:
+            return None
+        with self.documents.control.read() as tx:
+            db = tx.sql
             pointer = self._current(db, authority.scope)
             if pointer is None:
                 return None
@@ -913,7 +912,8 @@ class SessionPlans:
             if expected_current
             else None,
         }
-        with self.documents._write() as db:
+        with self.documents.control.write() as tx:
+            db = tx.sql
             identifier, digest, replay = self._begin(db, authority, operation, "publish", payload)
             if replay:
                 return replay
@@ -982,7 +982,8 @@ class SessionPlans:
             "body": body.model_dump(mode="json"),
             "reason": reason,
         }
-        with self.documents._write() as db:
+        with self.documents.control.write() as tx:
+            db = tx.sql
             identifier, digest, replay = self._begin(db, authority, operation, "revise", payload)
             if replay:
                 return replay
@@ -1057,7 +1058,8 @@ class SessionPlans:
             "evidence": [item.model_dump(mode="json") for item in request.evidence],
             "expected_status_revision": expected_status_revision,
         }
-        with self.documents._write() as db:
+        with self.documents.control.write() as tx:
+            db = tx.sql
             identifier, digest, replay = self._begin(db, authority, operation, "progress", payload)
             if replay:
                 return replay
@@ -1133,7 +1135,8 @@ class SessionPlans:
             "reason": reason,
             "outcome": change.outcome.model_dump(mode="json") if change.outcome else None,
         }
-        with self.documents._write() as db:
+        with self.documents.control.write() as tx:
+            db = tx.sql
             identifier, digest, replay = self._begin(db, authority, operation, "status", payload)
             if replay:
                 return replay
@@ -1182,9 +1185,10 @@ class SessionPlans:
     def current(self, authority: PlanAuthority) -> PlanSnapshot | None:
         """Read only current steps; removed-step assertions remain in explicit history."""
         authority = _checked(PlanAuthority, authority)
-        with self.documents._read() as db:
-            if db is None:
-                return None
+        if self.documents.control.missing:
+            return None
+        with self.documents.control.read() as tx:
+            db = tx.sql
             pointer = self._current(db, authority.scope)
             if pointer is None:
                 return None
@@ -1225,9 +1229,10 @@ class SessionPlans:
     def compact_current(self, authority: PlanAuthority) -> CompactPlan | None:
         """Read body plus every current step without returning note/evidence content."""
         authority = _checked(PlanAuthority, authority)
-        with self.documents._read() as db:
-            if db is None:
-                return None
+        if self.documents.control.missing:
+            return None
+        with self.documents.control.read() as tx:
+            db = tx.sql
             pointer = self._current(db, authority.scope)
             if pointer is None:
                 return None
@@ -1277,9 +1282,10 @@ class SessionPlans:
         """Resolve one exact immutable version within the trusted project/session scope."""
         authority = _checked(PlanAuthority, authority)
         ref = _checked(PlanRef, ref)
-        with self.documents._read() as db:
-            if db is None:
-                raise DocumentError(NOT_FOUND, "plan not found")
+        if self.documents.control.missing:
+            raise DocumentError(NOT_FOUND, "plan not found")
+        with self.documents.control.read() as tx:
+            db = tx.sql
             return self._version(db, authority.scope, ref)
 
     def history(
@@ -1302,9 +1308,10 @@ class SessionPlans:
             raise DocumentError(INVALID_REQUEST, "invalid plan history kind/filter")
         if step_id is not None:
             step_id = _checked_operation(step_id)
-        with self.documents._read() as db:
-            if db is None:
-                raise DocumentError(NOT_FOUND, "plan not found")
+        if self.documents.control.missing:
+            raise DocumentError(NOT_FOUND, "plan not found")
+        with self.documents.control.read() as tx:
+            db = tx.sql
             head = self._projection(db, authority.scope, "head", plan_id, PlanHead)
             if head is None:
                 raise DocumentError(NOT_FOUND, "plan not found in this session")
@@ -1363,13 +1370,14 @@ class SessionPlans:
     ) -> PlanPage[PlanEvent]:
         """Local session sequence only; no other project's activity creates cursor holes."""
         authority = _checked(PlanAuthority, authority)
-        with self.documents._read() as db:
-            if db is None:
-                after = _counter(after)
-                target = 0 if target is None else _counter(target)
-                if after or target or type(limit) is not int or not 1 <= limit <= 16:
-                    raise DocumentError(INVALID_REQUEST, "invalid scoped plan page bounds")
-                return PlanPage((), 0, 0, False)
+        if self.documents.control.missing:
+            after = _counter(after)
+            target = 0 if target is None else _counter(target)
+            if after or target or type(limit) is not int or not 1 <= limit <= 16:
+                raise DocumentError(INVALID_REQUEST, "invalid scoped plan page bounds")
+            return PlanPage((), 0, 0, False)
+        with self.documents.control.read() as tx:
+            db = tx.sql
             pointer = self._current(db, authority.scope)
             maximum = pointer.event_cursor if pointer else 0
             return self._page(

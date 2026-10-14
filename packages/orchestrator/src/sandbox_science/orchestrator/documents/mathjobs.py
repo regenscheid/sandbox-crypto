@@ -5,8 +5,6 @@ SQL work and parsing run in a thread, rendering outside transactions. No rendere
 is discovered automatically. Exhausted logical quotas hold the cursor, not saves.
 """
 
-# Logical modules share the canonical transaction machinery.
-# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
 import asyncio
@@ -147,7 +145,8 @@ class MathJobs:
         Prior attempts remain immutable. This does not spin, start an idle service
         or turn an unavailable observation into a successful check.
         """
-        with self.documents._write() as db:
+        with self.documents.control.write() as tx:
+            db = tx.sql
             db.execute(
                 (
                     "UPDATE math_sources SET retry_requested=1 WHERE project=? AND "
@@ -180,7 +179,8 @@ class MathJobs:
         now = self.store.clock()
         if not math.isfinite(now) or abs(now) > 1e18:
             raise DocumentError(INTERNAL, "invalid math clock")
-        with self.documents._write() as db:
+        with self.documents.control.write() as tx:
+            db = tx.sql
             from .comment_math import reconcile
 
             reconcile(db, project)
@@ -330,8 +330,8 @@ class MathJobs:
             f"substr(CAST({name} AS BLOB),1,{bounds[name] + 1})" if name in bounds else name
             for name in names
         )
-        with self.documents._read() as db:
-            assert db is not None  # noqa: S101 - canonical writer initialized
+        with self.documents.control.read() as tx:
+            db = tx.sql
             row = db.execute(
                 "SELECT " + fields + " FROM math_jobs WHERE check_id=?",  # noqa: S608 - fixed columns
                 (check,),
@@ -395,7 +395,7 @@ class MathJobs:
                 raise DocumentError(INTERNAL, "stored math job exceeds its schema bounds") from None
 
     @staticmethod
-    def _proof_author(raw: bytes | None) -> Json | None:
+    def proof_author(raw: bytes | None) -> Json | None:
         if raw is None:
             return None
         if len(raw) > 8192:
@@ -409,7 +409,8 @@ class MathJobs:
         value = dump(identity)
         if len(value.encode()) > 4096:
             raise DocumentError(INTERNAL, "math configuration identity exceeds its bound")
-        with self.documents._write() as db:
+        with self.documents.control.write() as tx:
+            db = tx.sql
             self._fence(db, check, owner)
             old = db.execute(
                 "SELECT substr(CAST(configuration AS BLOB),1,4097) FROM math_jobs WHERE check_id=?",
@@ -431,19 +432,19 @@ class MathJobs:
         from .response_math import ResponseMath
         from .response_math import metadata as response_metadata
 
-        with self.documents._read() as db:
-            assert db is not None  # noqa: S101 - canonical store initialized
+        with self.documents.control.read() as tx:
+            db = tx.sql
             comment = metadata(db, check)
             response = response_metadata(db, check)
         if response is not None:
             return ResponseMath(self).attribution(check, owner, blocks)
         if comment is not None:
             return CommentMath(self).attribution(check, owner, blocks)
-        with self.documents._read() as db:
-            assert db is not None  # noqa: S101 - writer initialized the canonical store
+        with self.documents.control.read() as tx:
+            db = tx.sql
             document, revision, _, cursor = self._fence(db, check, owner)
             proofs = {
-                r[0]: {"revision": r[1], "author": self._proof_author(r[2])}
+                r[0]: {"revision": r[1], "author": self.proof_author(r[2])}
                 for r in db.execute(
                     (
                         "SELECT block,revision,substr(CAST(author AS BLOB),1,8193) FROM "
@@ -484,7 +485,8 @@ class MathJobs:
             added.update(
                 {block: {"revision": None, "author": None} for block in missing - added.keys()}
             )
-        with self.documents._write() as db:
+        with self.documents.control.write() as tx:
+            db = tx.sql
             self._fence(db, check, owner)
             count, size = db.execute(
                 "SELECT count(*),coalesce(sum(bytes),0) FROM math_job_owners"
@@ -524,7 +526,8 @@ class MathJobs:
         return proofs if blocks <= proofs.keys() else None
 
     def capacity(self, check: str, owner: str) -> bool:
-        with self.documents._write() as db:
+        with self.documents.control.write() as tx:
+            db = tx.sql
             document, *_ = self._fence(db, check, owner)
             amount, size = db.execute(
                 "SELECT count(*),coalesce(sum(bytes),0) FROM math_observations"
@@ -576,7 +579,8 @@ class MathJobs:
         from sandbox_science.orchestrator.consistency.mechanical import MechanicalFindings
 
         job = self.job(check)
-        with self.documents._write() as db:
+        with self.documents.control.write() as tx:
+            db = tx.sql
             document, revision, cursor, _ = self._fence(db, check, owner)
             if (document, revision, cursor) != (job["document"], job["revision"], job["cursor"]):
                 raise DocumentError(CONFLICT, "math pinned work changed before commit")
@@ -680,8 +684,8 @@ class MathJobs:
             from .comment_math import CommentMath
 
             return CommentMath(self).load(job)
-        with self.documents._read() as db:
-            assert db is not None  # noqa: S101 - canonical writer initialized
+        with self.documents.control.read() as tx:
+            db = tx.sql
             row = db.execute(
                 (
                     "SELECT substr(CAST(r.text AS BLOB),1,1048577),substr(CAST(r.block_map "
@@ -722,7 +726,8 @@ class MathJobs:
             )
         if held and not problems:
             problems = ["Historical project macro context is unknown; checks are held"]
-        with self.documents._write() as db:
+        with self.documents.control.write() as tx:
+            db = tx.sql
             self._fence(db, job["check_id"], owner)
             job["macro_capacity"] = save_resolution(
                 db, job["check_id"], job["macro_context"], macros, problems, held
@@ -876,12 +881,11 @@ class MathJobs:
     ) -> Json:
         from sandbox_science.orchestrator.consistency.store import identifier
 
-        with self.documents._read() as db:
-            if (
-                db is None
-                or db.execute("SELECT 1 FROM sqlite_master WHERE name='math_jobs'").fetchone()
-                is None
-            ):
+        if self.documents.control.missing:
+            return {"checks": [], "next_after": None, "queue": []}
+        with self.documents.control.read() as tx:
+            db = tx.sql
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='math_jobs'").fetchone() is None:
                 return {"checks": [], "next_after": None, "queue": []}
             cursor = db.execute("SELECT coalesce(max(rowid),0)+1 FROM math_jobs").fetchone()[0]
             if after is not None:
@@ -1031,11 +1035,12 @@ class MathJobs:
             not isinstance(span, str) or re.fullmatch(r"m[1-9][0-9]{0,8}", span) is None
         ):
             raise DocumentError(INVALID_REQUEST, "invalid math span")
-        with self.documents._read() as db:
+        if self.documents.control.missing:
+            raise DocumentError(NOT_FOUND, "no such scoped math check")
+        with self.documents.control.read() as tx:
+            db = tx.sql
             if (
-                db is None
-                or db.execute("SELECT 1 FROM sqlite_master WHERE name='math_jobs'").fetchone()
-                is None
+                db.execute("SELECT 1 FROM sqlite_master WHERE name='math_jobs'").fetchone() is None
                 or db.execute(
                     (
                         "SELECT 1 FROM math_jobs j JOIN "  # noqa: S608 - fixed view

@@ -5,9 +5,6 @@ The adapter owns no scheduler or approval authority. Short project-lock -> contr
 SQL calls are cancellation-owned; a worker await never holds either lock.
 """
 
-# Existing control-store callers share the canonical project lock.
-# pyright: reportPrivateUsage=false
-
 from __future__ import annotations
 
 import json
@@ -251,7 +248,7 @@ class PlanTools:
                 POLICY_DENIED, "planning session was closed or reopened; start a new run"
             )
         try:
-            with self.projects._locked(self.context.project_id):
+            with self.projects.locked(self.context.project_id):
                 current = self.projects.session_snapshot(
                     self.context.project_id, self.context.session_id
                 )

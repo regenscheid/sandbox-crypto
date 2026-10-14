@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: MIT
 """Closing-only mechanical notices, separate from reviewer interruption thresholds."""
 
-# Shared transaction and append-only finding machinery.
-# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
 import sqlite3
@@ -20,7 +18,8 @@ class MathNotices(FindingNotices):
             return []
         self.store.scope(project, session)
         now = self.store.clock()
-        with self.store.documents._write() as db:
+        with self.store.documents.control.write() as tx:
+            db = tx.sql
             rows = db.execute(
                 """SELECT n.finding_id,n.revision,f.statement,f.math_check_id
               FROM math_notices n JOIN review_findings f USING(finding_id)
@@ -76,7 +75,8 @@ class MathNotices(FindingNotices):
         return values
 
     def renew(self, project: str, session: str, run: str) -> None:
-        with self.store.documents._write() as db:
+        with self.store.documents.control.write() as tx:
+            db = tx.sql
             db.execute(
                 (
                     "UPDATE math_notices SET claim_until=? WHERE project=? AND session=? "
@@ -86,7 +86,8 @@ class MathNotices(FindingNotices):
             )
 
     def release(self, project: str, session: str, run: str, keep: set[str] | None = None) -> None:
-        with self.store.documents._write() as db:
+        with self.store.documents.control.write() as tx:
+            db = tx.sql
             db.execute(
                 (
                     "UPDATE math_notices SET claimed_run=NULL,claim_until=NULL WHERE "
@@ -101,13 +102,14 @@ class MathNotices(FindingNotices):
         self, project: str, session: str, run: str, notices: list[str], *, finalize: bool = True
     ) -> None:
         """Finalize only after the represented transcript is durably saved."""
-        with self.store.documents._write() as db:
+        with self.store.documents.control.write() as tx:
+            db = tx.sql
             findings = Findings(self.store)
             for finding, revision in (
                 self._eligible(db, project, session, run, notices, True) if finalize else []
             ):
-                current = findings._get(db, project, session, finding)
-                findings._transition(
+                current = findings.load(db, project, session, finding)
+                findings.transition(
                     db,
                     current,
                     "unaddressed",
@@ -133,7 +135,8 @@ class MathNotices(FindingNotices):
         A failed transcript save must leave the exact open finding deliverable.
         ACK rechecks all evidence and applies the decision after durable save.
         """
-        with self.store.documents._write() as db:
+        with self.store.documents.control.write() as tx:
+            db = tx.sql
             for finding, revision in self._eligible(db, project, session, run, notices, False):
                 db.execute(
                     "INSERT INTO math_ignored VALUES(?,?,?) ON CONFLICT(finding_id,revision) "
@@ -177,9 +180,10 @@ class MathNotices(FindingNotices):
 
     def counts(self, project: str, session: str) -> Json:
         self.store.scope(project, session)
-        with self.store.documents._read() as db:
-            if db is None:
-                return {}
+        if self.store.documents.control.missing:
+            return {}
+        with self.store.documents.control.read() as tx:
+            db = tx.sql
             rows = db.execute(
                 "SELECT f.status,s.excluded IS NOT NULL,count(*) FROM review_findings f "
                 "JOIN math_finding_state s USING(finding_id) WHERE f.project=? AND f.session=? "

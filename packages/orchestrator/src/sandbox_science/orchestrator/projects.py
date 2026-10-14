@@ -24,10 +24,6 @@ record rather than replacing one, and it is written once: complete, synced, and 
 over another.
 """
 
-# ProjectStore's durable notification baseline owns the same module's retained
-# SessionSnapshot descriptors; no external caller gains those file capabilities.
-# pyright: reportPrivateUsage=false
-
 from __future__ import annotations
 
 import contextlib
@@ -143,23 +139,43 @@ class SessionSnapshot:
         self._identity = identity
         self._digest = digest
 
+    @property
+    def descriptor(self) -> int:
+        """The retained descriptor of the session's project record."""
+        return self._descriptor
+
+    @property
+    def root(self) -> int:
+        """The retained descriptor of the projects directory."""
+        return self._root
+
+    @property
+    def identity(self) -> tuple[int, int, int, int, int]:
+        """The project record's file identity when it was read."""
+        return self._identity
+
+    @property
+    def digest(self) -> bytes:
+        """The SHA-256 of the project record as read."""
+        return self._digest
+
     def matches(self, other: SessionSnapshot) -> bool:
         """Whether both bounded reads still name the same unchanged open binding."""
-        before, after = os.fstat(self._root), os.fstat(other._root)
+        before, after = os.fstat(self.root), os.fstat(other.root)
         return (
             (before.st_dev, before.st_ino) == (after.st_dev, after.st_ino)
-            and self._identity == other._identity
-            and _file_identity(os.fstat(self._descriptor)) == self._identity
-            and _file_identity(os.fstat(other._descriptor)) == other._identity
-            and self._digest == other._digest
+            and self.identity == other.identity
+            and _file_identity(os.fstat(self.descriptor)) == self.identity
+            and _file_identity(os.fstat(other.descriptor)) == other.identity
+            and self.digest == other.digest
             and self.context == other.context
             and self.session == other.session
         )
 
     def close(self) -> None:
         """Release both retained descriptors; the caller owns their actual lifetime."""
-        os.close(self._descriptor)
-        os.close(self._root)
+        os.close(self.descriptor)
+        os.close(self.root)
 
 
 FailurePhase = Literal["model", "tool", "harness", "cleanup"]
@@ -381,7 +397,7 @@ class ProjectStore:
 
     def create(self, project_id: str, profile: str, policy: str) -> tuple[ProjectRecord, bool]:
         """Record a new project; return the existing one when it has the same settings."""
-        with self._locked(project_id):
+        with self.locked(project_id):
             try:
                 existing: ProjectRecord | None = self.get(project_id)
             except ProjectError as error:
@@ -410,7 +426,7 @@ class ProjectStore:
 
     def set_policy(self, project_id: str, policy: str) -> ProjectRecord:
         """Move the project to another policy revision; its environments follow on next use."""
-        with self._locked(project_id):
+        with self.locked(project_id):
             record = self.get(project_id)
             if record.policy == policy:
                 return record
@@ -422,7 +438,7 @@ class ProjectStore:
 
     def open_session(self, project_id: str, session_id: str, *, dedicated: bool) -> SessionRecord:
         """The session's record, created on first use; a closed session opens again."""
-        with self._locked(project_id):
+        with self.locked(project_id):
             record = self.get(project_id)
             session = record.sessions.get(session_id)
             now = datetime.now(UTC)
@@ -484,19 +500,19 @@ class ProjectStore:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             snapshot = self.session_snapshot(project_id, session_id)
             if (os.fstat(root).st_dev, os.fstat(root).st_ino) != (
-                os.fstat(snapshot._root).st_dev,
-                os.fstat(snapshot._root).st_ino,
+                os.fstat(snapshot.root).st_dev,
+                os.fstat(snapshot.root).st_ino,
             ):
                 raise ProjectError(ErrorKind.UNAVAILABLE, "notification registry changed")
             if snapshot.session.kernel_notice_lifetime is not None:
-                os.fsync(snapshot._descriptor)
+                os.fsync(snapshot.descriptor)
                 os.fsync(root)
                 return snapshot.session
-            raw = os.pread(snapshot._descriptor, MAX_SESSION_RECORD_BYTES + 1, 0)
+            raw = os.pread(snapshot.descriptor, MAX_SESSION_RECORD_BYTES + 1, 0)
             if (
                 len(raw) > MAX_SESSION_RECORD_BYTES
-                or hashlib.sha256(raw).digest() != snapshot._digest
-                or _file_identity(os.fstat(snapshot._descriptor)) != snapshot._identity
+                or hashlib.sha256(raw).digest() != snapshot.digest
+                or _file_identity(os.fstat(snapshot.descriptor)) != snapshot.identity
             ):
                 raise ProjectError(ErrorKind.UNAVAILABLE, "notification registry changed")
             record = ProjectRecord.model_validate_json(raw, strict=True)
@@ -548,7 +564,7 @@ class ProjectStore:
                 os.close(root)
 
     def close_session(self, project_id: str, session_id: str) -> SessionRecord:
-        with self._locked(project_id):
+        with self.locked(project_id):
             record = self.get(project_id)
             session = record.sessions.get(session_id)
             if session is None:
@@ -660,7 +676,7 @@ class ProjectStore:
         return self.root / f"{project_id}.json"
 
     @contextlib.contextmanager
-    def _locked(self, project_id: str) -> Generator[None]:
+    def locked(self, project_id: str) -> Generator[None]:
         lock = self._path(project_id).with_suffix(".lock")
         with lock.open("a") as handle:
             fcntl.flock(handle, fcntl.LOCK_EX)

@@ -93,7 +93,8 @@ async def test_main_explanation_exact_source_remediation_and_original_audit(stor
     assert original["payload"]["action"] == "rebut"
     assert original["response_body"]["body"] == "$x$"
     assert ResponseBodies(reviews).get("p", "s", finding, decision, body_revision=1)["body"] == BAD
-    with docs._read() as db:
+    with docs.control.read() as tx:
+        db = tx.sql
         assert db.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
@@ -219,14 +220,16 @@ async def test_reflags_unavailable_removal_empty_macros_and_no_recursive_sources
     )
     with pytest.raises(DocumentError):
         ResponseBodies(reviews).get("p", "s", child["finding_id"], child["revision"])
-    with reviews.documents._read() as db:
+    with reviews.documents.control.read() as tx:
+        db = tx.sql
         assert db.execute("SELECT count(*) FROM response_math_sources").fetchone()[0] == 1
 
 
 def test_body_queue_receipt_atomicity_and_immutable_rows(stores):
     _, reviews, _ = stores
     finding, decision = response(reviews)
-    with reviews.documents._write() as db:
+    with reviews.documents.control.write() as tx:
+        db = tx.sql
         db.execute(
             "CREATE TRIGGER receipt_failure BEFORE INSERT ON review_operations WHEN "
             "NEW.operation_id='edit' BEGIN SELECT RAISE(ABORT,'receipt fault'); END"
@@ -234,10 +237,14 @@ def test_body_queue_receipt_atomicity_and_immutable_rows(stores):
     with pytest.raises(sqlite3.IntegrityError, match="receipt fault"):
         edit(reviews, finding, decision, "$x$")
     assert ResponseBodies(reviews).get("p", "s", finding, decision)["revision"] == 1
-    with reviews.documents._read() as db:
+    with reviews.documents.control.read() as tx:
+        db = tx.sql
         assert db.execute("SELECT target FROM response_math_sources").fetchone() == (1,)
-    with pytest.raises(sqlite3.IntegrityError, match="immutable"), reviews.documents._write() as db:
-        db.execute("UPDATE review_response_bodies SET body='rewrite'")
+    with (
+        pytest.raises(sqlite3.IntegrityError, match="immutable"),
+        reviews.documents.control.write() as tx,
+    ):
+        tx.sql.execute("UPDATE review_response_bodies SET body='rewrite'")
 
 
 @pytest.mark.asyncio
@@ -262,7 +269,8 @@ async def test_legacy_proven_original_and_shared_quotas(stores):
 def test_corrupt_raw_body_bounded_before_parse(stores):
     _, reviews, _ = stores
     finding, decision = response(reviews)
-    with reviews.documents._write() as db:
+    with reviews.documents.control.write() as tx:
+        db = tx.sql
         db.execute("DROP TRIGGER review_response_bodies_update")
         db.execute("UPDATE review_response_bodies SET body=?", ("x" * (20 * 1024 * 1024),))
     with pytest.raises(DocumentError, match="bounds"):
@@ -278,7 +286,8 @@ async def test_unknown_legacy_response_does_not_starve_healthy_sources(stores):
     docs, reviews, _ = stores
     with patch("sandbox_science.orchestrator.consistency.response_bodies.commit"):
         finding, decision = response(reviews)
-    with docs._write() as db:
+    with docs.control.write() as tx:
+        db = tx.sql
         db.execute("DROP TRIGGER review_transitions_update")
         raw = json.loads(
             db.execute(
@@ -313,12 +322,14 @@ async def test_unknown_legacy_response_does_not_starve_healthy_sources(stores):
 def test_source_cache_cannot_rebind_canonical_project_session_or_field(stores):
     docs, reviews, _ = stores
     finding, decision = response(reviews)
-    with docs._write() as db:
+    with docs.control.write() as tx:
+        db = tx.sql
         db.execute("UPDATE response_math_sources SET project='other'")
     with pytest.raises(DocumentError):
         MathJobs(reviews).claim("other", "owner")
     assert maths(reviews) == []
-    with docs._write() as db:
+    with docs.control.write() as tx:
+        db = tx.sql
         db.execute("UPDATE response_math_sources SET project='p',session='other'")
     with pytest.raises(DocumentError, match="canonical session"):
         MathJobs(reviews).claim("p", "owner")
@@ -332,7 +343,8 @@ def test_initial_body_queue_failure_rolls_back_scientific_response(stores):
     review = dispatch(reviews)
     found = raise_finding(reviews, review)
     reviews.finish("p", "s", review, "owner", "findings", "Original")
-    with docs._write() as db:
+    with docs.control.write() as tx:
+        db = tx.sql
         db.execute(
             "CREATE TRIGGER queue_fault BEFORE INSERT ON response_math_sources "
             "BEGIN SELECT RAISE(ABORT,'queue fault'); END"
@@ -351,7 +363,8 @@ def test_initial_body_queue_failure_rolls_back_scientific_response(stores):
             MAIN,
         )
     assert Findings(reviews).get("p", "s", found["finding_id"])["revision"] == 1
-    with docs._read() as db:
+    with docs.control.read() as tx:
+        db = tx.sql
         assert db.execute("SELECT count(*) FROM review_response_bodies").fetchone() == (0,)
         assert db.execute(
             "SELECT count(*) FROM review_operations WHERE operation_id=?", ("atomic-response",)
@@ -512,14 +525,16 @@ def test_response_replay_receipt_is_bounded_and_binds_its_immutable_revision(sto
         {**expected, "author": {"kind": "user"}},
         {**expected, "finding": "finding-" + "a" * 24},
     ):
-        with docs._write() as db:
+        with docs.control.write() as tx:
+            db = tx.sql
             db.execute(
                 "UPDATE review_operations SET result=? WHERE operation_id='first'",
                 (json.dumps(result),),
             )
         with pytest.raises(DocumentError, match="immutable body"):
             api.edit("p", "s", payload, MAIN)
-    with docs._write() as db:
+    with docs.control.write() as tx:
+        db = tx.sql
         db.execute(
             "UPDATE review_operations SET result=? WHERE operation_id='first'",
             (json.dumps({**expected, "body": "x" * (20 * 1024 * 1024)}),),

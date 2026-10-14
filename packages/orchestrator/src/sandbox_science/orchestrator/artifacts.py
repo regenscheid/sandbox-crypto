@@ -6,9 +6,6 @@ hints never prove a producing execution or observed input. Rich bytes are stored
 hashed, never parsed. Unresolved publication intents are retained rather than replayed.
 """
 
-# Logical control-store modules share DocumentStore's transaction/connection ownership.
-# pyright: reportPrivateUsage=false
-
 from __future__ import annotations
 
 import hashlib
@@ -110,7 +107,8 @@ class ArtifactInventory:
         self.documents = documents
         self.limits = limits or ArtifactLimits()
         if not documents.readonly:
-            with documents._write() as db:
+            with documents.control.write() as tx:
+                db = tx.sql
                 for statement in _SCHEMA:
                     db.execute(statement)
                 version = db.execute(
@@ -166,7 +164,7 @@ class ArtifactInventory:
         if metadata > limits.metadata_bytes:
             raise DocumentError(INVALID_REQUEST, "artifact metadata retention quota is full")
 
-    def _request(
+    def publication_request(
         self, source: ArtifactPublicationSource, path: str, media_type: str | None
     ) -> tuple[str, str]:
         artifact_path(path)
@@ -181,7 +179,7 @@ class ArtifactInventory:
             raise DocumentError(INVALID_REQUEST, "artifact publication intent exceeds its limit")
         return text, hashlib.sha256(text.encode()).hexdigest()
 
-    def _operation(
+    def find_operation(
         self, db: sqlite3.Connection, source: ArtifactPublicationSource, operation: str, digest: str
     ) -> ArtifactOperation | None:
         _IDENTIFIER.validate_python(operation)
@@ -276,10 +274,11 @@ class ArtifactInventory:
         message: str,
     ) -> ArtifactReceipt:
         """Retain the latest bounded failure observation without changing retry ownership."""
-        _, digest = self._request(source, path, media_type)
+        _, digest = self.publication_request(source, path, media_type)
         receipt = ArtifactReceipt(state="held", operation_id=operation, message=message[:512])
-        with self.documents._write() as db:
-            found = self._operation(db, source, operation, digest)
+        with self.documents.control.write() as tx:
+            db = tx.sql
+            found = self.find_operation(db, source, operation, digest)
             if found is None:
                 raise DocumentError(NOT_FOUND, "no reserved artifact publication intent")
             if found.state == "done":
@@ -296,9 +295,10 @@ class ArtifactInventory:
         self, source: ArtifactPublicationSource, operation: str, path: str, media_type: str | None
     ) -> ArtifactOperation:
         """Reserve before RPC; an earlier unknown intent is deliberately never replayed."""
-        request, digest = self._request(source, path, media_type)
-        with self.documents._write() as db:
-            found = self._operation(db, source, operation, digest)
+        request, digest = self.publication_request(source, path, media_type)
+        with self.documents.control.write() as tx:
+            db = tx.sql
+            found = self.find_operation(db, source, operation, digest)
             if found is not None:
                 return found
             self._budget(db, source.context.project_id)
@@ -318,10 +318,11 @@ class ArtifactInventory:
         worker: ArtifactRef,
     ) -> None:
         """Durably retain the known worker outcome before transferring any bytes."""
-        _, digest = self._request(source, path, media_type)
+        _, digest = self.publication_request(source, path, media_type)
         encoded = _json(worker)
-        with self.documents._write() as db:
-            found = self._operation(db, source, operation, digest)
+        with self.documents.control.write() as tx:
+            db = tx.sql
+            found = self.find_operation(db, source, operation, digest)
             if found is None or found.state != "intent" or found.worker is not None:
                 raise DocumentError(CONFLICT, "artifact publication no longer owns its intent")
             db.execute(
@@ -342,7 +343,7 @@ class ArtifactInventory:
         data: bytes,
     ) -> ArtifactReceipt:
         """Commit bytes, immutable revision, head, event and operation receipt atomically."""
-        _, digest = self._request(source, path, media_type)
+        _, digest = self.publication_request(source, path, media_type)
         snapshot = ArtifactSnapshot.model_validate(worker.model_dump())
         project, session = source.context.project_id, source.context.session_id
         if (
@@ -362,8 +363,9 @@ class ArtifactInventory:
                 INVALID_REQUEST, "artifact bytes exceed quota or fail exact size/hash verification"
             )
         logical_path = path if path.startswith("shared/") else f"sessions/{session}/{path}"
-        with self.documents._write() as db:
-            found = self._operation(db, source, operation, digest)
+        with self.documents.control.write() as tx:
+            db = tx.sql
+            found = self.find_operation(db, source, operation, digest)
             if found is not None and found.state == "done" and found.receipt is not None:
                 return found.receipt
             if (
@@ -480,9 +482,10 @@ class ArtifactInventory:
         self._scope(project)
         if link.project_id != project:
             raise DocumentError(NOT_FOUND, "no such artifact in project")
-        with self.documents._read() as db:
-            if db is None:
-                raise DocumentError(NOT_FOUND, "no artifact inventory")
+        if self.documents.control.missing:
+            raise DocumentError(NOT_FOUND, "no artifact inventory")
+        with self.documents.control.read() as tx:
+            db = tx.sql
             row = db.execute(
                 "SELECT head FROM artifact_objects WHERE project=? AND id=?",
                 (project, link.artifact_id),
@@ -509,9 +512,10 @@ class ArtifactInventory:
             raise DocumentError(INVALID_REQUEST, "artifact content exceeds consumer bound")
         if project != reference.project_id:
             raise DocumentError(NOT_FOUND, "no such artifact in project")
-        with self.documents._read() as db:
-            if db is None:
-                raise DocumentError(NOT_FOUND, "no artifact inventory")
+        if self.documents.control.missing:
+            raise DocumentError(NOT_FOUND, "no artifact inventory")
+        with self.documents.control.read() as tx:
+            db = tx.sql
             revision = self._revision(db, project, reference.artifact_id, reference.revision)
             if revision.reference != reference:
                 raise DocumentError(CONFLICT, "artifact revision reference differs")
@@ -544,22 +548,17 @@ class ArtifactInventory:
         self._scope(project)
         if after:
             _IDENTIFIER.validate_python(after)
-        with self.documents._read() as db:
-            rows = (
-                []
-                if db is None
-                else db.execute(
-                    "SELECT substr(id,1,129),head FROM artifact_objects "
-                    "WHERE project=? AND id>? ORDER BY id LIMIT 11",
-                    (project, after),
-                ).fetchall()
-            )
-            entries: tuple[ArtifactRevision, ...] = (
-                ()
-                if db is None
-                else tuple(
-                    self._revision(db, project, artifact, number) for artifact, number in rows[:10]
-                )
+        if self.documents.control.missing:
+            return ArtifactPage(entries=(), next_after=None)
+        with self.documents.control.read() as tx:
+            db = tx.sql
+            rows = db.execute(
+                "SELECT substr(id,1,129),head FROM artifact_objects "
+                "WHERE project=? AND id>? ORDER BY id LIMIT 11",
+                (project, after),
+            ).fetchall()
+            entries = tuple(
+                self._revision(db, project, artifact, number) for artifact, number in rows[:10]
             )
             return ArtifactPage(
                 entries=entries,
@@ -573,16 +572,15 @@ class ArtifactInventory:
         self._scope(project)
         if type(after) is not int or not 0 <= after <= 2**63 - 1:
             raise DocumentError(INVALID_REQUEST, "invalid artifact event cursor")
-        with self.documents._read() as db:
-            rows = (
-                []
-                if db is None
-                else db.execute(
-                    "SELECT seq,substr(cast(record AS BLOB),1,?) FROM artifact_events "
-                    "WHERE project=? AND seq>? ORDER BY seq LIMIT 10",
-                    (_MAX_RECORD + 1, project, after),
-                ).fetchall()
-            )
+        if self.documents.control.missing:
+            return ArtifactEventPage(entries=(), next_after=after)
+        with self.documents.control.read() as tx:
+            db = tx.sql
+            rows = db.execute(
+                "SELECT seq,substr(cast(record AS BLOB),1,?) FROM artifact_events "
+                "WHERE project=? AND seq>? ORDER BY seq LIMIT 10",
+                (_MAX_RECORD + 1, project, after),
+            ).fetchall()
             events = tuple(
                 ArtifactEvent.model_validate_json(_clipped(record, _MAX_RECORD))
                 for _, record in rows

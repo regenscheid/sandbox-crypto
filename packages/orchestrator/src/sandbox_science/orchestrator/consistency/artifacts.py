@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: MIT
 """Durable explicit-publication evidence; no worker, parser or path-read authority."""
 
-# These control repositories share one bounded transaction/connection boundary.
-# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
 import asyncio
@@ -159,16 +157,16 @@ def ingest_artifacts(
     inventory = store.artifacts
     if inventory is None:
         return {"cursor": 0, "target": 0, "complete": True, "enabled": False}
-    with store.documents._read() as db:
-        assert db is not None  # noqa: S101
+    with store.documents.control.read() as tx:
+        db = tx.sql
         target = db.execute(
             "SELECT coalesce(max(seq),0) FROM artifact_events WHERE project=?",
             (project,),
         ).fetchone()[0]
     after, unknown_more = 0, False
     for _ in range(10 if drain else 1):
-        with store.documents._read() as db:
-            assert db is not None  # noqa: S101
+        with store.documents.control.read() as tx:
+            db = tx.sql
             row = db.execute(
                 "SELECT cursor FROM review_artifact_cursors WHERE project=? AND session=?",
                 (project, session),
@@ -236,7 +234,7 @@ def ingest_artifacts(
             request = bounded_json(raw, 8192)
             try:
                 source = ArtifactPublicationSource.model_validate(request["source"])
-                encoded, expected = inventory._request(
+                encoded, expected = inventory.publication_request(
                     source, request["path"], request["media_type"]
                 )
             except (ValidationError, KeyError, ValueError):
@@ -245,9 +243,9 @@ def ingest_artifacts(
                 raise DocumentError(CONFLICT, "unresolved artifact scope differs")
             if expected != sha or encoded.encode() != raw:
                 raise DocumentError(CONFLICT, "unresolved artifact fingerprint differs")
-            with store.documents._read() as db:
-                assert db is not None  # noqa: S101
-                state = inventory._operation(db, source, operation, expected)
+            with store.documents.control.read() as tx:
+                db = tx.sql
+                state = inventory.find_operation(db, source, operation, expected)
             if state is None or state.state == "done":
                 continue
             snapshot = None
@@ -264,7 +262,8 @@ def ingest_artifacts(
             }
             uncertain.append((op, {"operation": operation, "run": source.run_id}, payload))
         end = events[-1][0] if events else after
-        with store.documents._write() as db:
+        with store.documents.control.write() as tx:
+            db = tx.sql
             db.execute(
                 "INSERT OR IGNORE INTO review_artifact_cursors VALUES(?,?,0)", (project, session)
             )
@@ -276,7 +275,7 @@ def ingest_artifacts(
                 # Another ingestor owns this prefix; retry a fresh bounded page.
                 continue
             for key, locator, payload, complete, count in prepared:
-                store._observe(
+                store.record_observation(
                     db,
                     project,
                     session,
@@ -304,7 +303,7 @@ def ingest_artifacts(
                         (project, session, key),
                     ).fetchone()
                 ):
-                    store._observe(
+                    store.record_observation(
                         db,
                         project,
                         session,
@@ -324,8 +323,8 @@ def ingest_artifacts(
         if after >= target and not unknown_more:
             break
     # Recheck unseen uncertainty after commit, including concurrently accepted intents.
-    with store.documents._read() as db:
-        assert db is not None  # noqa: S101
+    with store.documents.control.read() as tx:
+        db = tx.sql
         unknown_more = (
             db.execute(
                 "SELECT 1 FROM artifact_operations o WHERE project=? AND actor=? AND state!='done' "

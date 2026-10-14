@@ -95,7 +95,7 @@ async def comments(request: web.Request) -> web.Response:
     raw = request.query.get("revision")
     if raw is not None and _REVISION.fullmatch(raw) is None:
         return api_error(DocumentError("invalid_request", "invalid document revision"))
-    return await _answer(
+    return await answer(
         request,
         lambda store: Annotations(store).list(
             request.match_info["project"],
@@ -110,7 +110,7 @@ async def comment_thread(request: web.Request) -> web.Response:
     raw = request.query.get("before")
     if raw is not None and _REVISION.fullmatch(raw) is None:
         return api_error(DocumentError("invalid_request", "invalid entry cursor"))
-    return await _answer(
+    return await answer(
         request,
         lambda store: Annotations(store).read_thread(
             request.match_info["project"],
@@ -126,7 +126,7 @@ async def comment_change(request: web.Request) -> web.Response:
         raw = await request.json()
     except (ValueError, UnicodeDecodeError):
         return api_error(DocumentError("invalid_request", "invalid annotation change"))
-    return await _answer(
+    return await answer(
         request,
         lambda store: Annotations(store).change(
             request.match_info["project"], request.match_info["document"], raw, USER
@@ -136,7 +136,7 @@ async def comment_change(request: web.Request) -> web.Response:
 
 
 async def preview(request: web.Request) -> web.Response:
-    return await _answer(
+    return await answer(
         request,
         lambda store: store.preview_patch(
             request.match_info["project"],
@@ -208,7 +208,7 @@ async def change(request: web.Request) -> web.Response:
             )
         return result.model_dump(mode="json")
 
-    return await _answer(request, write, writer=True)
+    return await answer(request, write, writer=True)
 
 
 async def documents(request: web.Request) -> web.Response:
@@ -217,7 +217,7 @@ async def documents(request: web.Request) -> web.Response:
     def view(store: DocumentStore) -> Json:
         return {"documents": [found.model_dump(mode="json") for found in store.documents(project)]}
 
-    return await _answer(request, view)
+    return await answer(request, view)
 
 
 async def document(request: web.Request) -> web.Response:
@@ -226,15 +226,15 @@ async def document(request: web.Request) -> web.Response:
     if raw is not None and _REVISION.fullmatch(raw) is None:
         return api_error(DocumentError("invalid_request", "revision is a revision number, from 1"))
     number = None if raw is None else int(raw)
-    return await _answer(request, lambda store: _revision(store, project, reference, number))
+    return await answer(request, lambda store: _revision(store, project, reference, number))
 
 
 async def history(request: web.Request) -> web.Response:
     project, reference = request.match_info["project"], request.match_info["document"]
-    return await _answer(request, lambda store: store.history(project, reference))
+    return await answer(request, lambda store: store.history(project, reference))
 
 
-async def _answer(
+async def answer(
     request: web.Request, view: Callable[[DocumentStore], Json], *, writer: bool = False
 ) -> web.Response:
     """The view as JSON, read and encoded in a thread, once the project is known."""

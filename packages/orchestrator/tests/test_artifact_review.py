@@ -203,7 +203,8 @@ def test_exact_raw_text_copy_and_empty_exposure(state, raw: bytes) -> None:
             break
         start = read["next_start"]
     assert "".join(slices).encode() == raw
-    with reviews.documents._read() as db:
+    with reviews.documents.control.read() as tx:
+        db = tx.sql
         assert db.execute("SELECT count(*) FROM review_reads").fetchone()[0] >= 1
     assert (
         reviews.evidence("p", "s", review, evidence["evidence"])["payload"]["source"]["producer"]
@@ -259,8 +260,8 @@ def test_reproduction_does_not_count_and_restart_does_not_need_callback(state) -
         assert result["cursor"] == 4
         assert recovered.due("p", "s")
         assert ingest_artifacts(recovered, "p", "s") == result
-        with reopened._read() as db:
-            assert db is not None
+        with reopened.control.read() as tx:
+            db = tx.sql
             assert db.execute("SELECT count(*),sum(artifacts) FROM review_feed").fetchone() == (
                 4,
                 3,
@@ -275,19 +276,20 @@ def test_reproduction_does_not_count_and_restart_does_not_need_callback(state) -
 def test_source_cursor_and_feed_rollback_atomically(state, monkeypatch) -> None:
     reviews, _, _ = state
     publish(state)
-    original = reviews._observe
+    original = reviews.record_observation
 
     def fail(*args, **kwargs):
         original(*args, **kwargs)
         raise RuntimeError("crash before cursor commit")
 
-    monkeypatch.setattr(reviews, "_observe", fail)
+    monkeypatch.setattr(reviews, "record_observation", fail)
     with pytest.raises(RuntimeError):
         ingest_artifacts(reviews, "p", "s")
-    with reviews.documents._read() as db:
+    with reviews.documents.control.read() as tx:
+        db = tx.sql
         assert db.execute("SELECT count(*) FROM review_feed").fetchone()[0] == 0
         assert db.execute("SELECT count(*) FROM review_artifact_cursors").fetchone()[0] == 0
-    monkeypatch.setattr(reviews, "_observe", original)
+    monkeypatch.setattr(reviews, "record_observation", original)
     assert ingest_artifacts(reviews, "p", "s")["complete"]
 
 
@@ -300,7 +302,8 @@ def test_prefix_bounds_and_concurrent_ingestors(state) -> None:
     with ThreadPoolExecutor(max_workers=2) as threads:
         list(threads.map(lambda _: ingest_artifacts(reviews, "p", "s", drain=True), range(2)))
     assert ingest_artifacts(reviews, "p", "s", drain=True)["complete"]
-    with reviews.documents._read() as db:
+    with reviews.documents.control.read() as tx:
+        db = tx.sql
         assert db.execute("SELECT count(*),sum(artifacts) FROM review_feed").fetchone() == (
             115,
             115,
@@ -331,7 +334,8 @@ def test_unknown_and_known_worker_pins_observed_once_then_recorded(state) -> Non
     reviews.finish("p", "s", review, "owner", "inconclusive", "Uncertain publication.")
     inventory.hold(source, "known", "held.txt", "text/plain", "later transfer problem")
     ingest_artifacts(reviews, "p", "s")
-    with reviews.documents._read() as db:
+    with reviews.documents.control.read() as tx:
+        db = tx.sql
         assert db.execute("SELECT count(*) FROM review_feed").fetchone()[0] == 2
     inventory.finish(source, "known", "held.txt", "text/plain", worker, b"held")
     ingest_artifacts(reviews, "p", "s")
@@ -454,7 +458,8 @@ def test_supersession_is_not_confirmation_and_mixed_anchor_is_not_replaced(state
 def test_corrupt_giant_blob_is_clipped_before_python_and_never_copied(state) -> None:
     reviews, inventory, _ = state
     ref = publish(state, data=b"small")
-    with reviews.documents._write() as db:
+    with reviews.documents.control.write() as tx:
+        db = tx.sql
         db.execute("DROP TRIGGER artifact_revisions_no_update")
         db.execute("UPDATE artifact_revisions SET data=zeroblob(20971520)")
     tracemalloc.start()
@@ -482,7 +487,8 @@ def test_corrupt_large_metadata_refuses_before_json_allocation(state, table, col
     reviews, inventory, source = state
     publish(state)
     inventory.begin(source, "pending", "pending.txt", "text/plain")
-    with reviews.documents._write() as db:
+    with reviews.documents.control.write() as tx:
+        db = tx.sql
         if table == "artifact_events":
             db.execute("DROP TRIGGER artifact_events_no_update")
         db.execute(f"UPDATE {table} SET {column}=cast(zeroblob(20971520) AS TEXT)")
@@ -558,8 +564,8 @@ async def test_real_worker_harness_publish_to_durable_review_and_no_extra_author
             # Simulate a crash before the live outcome is observed: durable events suffice.
             await controller.observe([], tool=outcome.record)
             await controller.observe([], tool=outcome.record)
-            with reviews.documents._read() as db:
-                assert db is not None
+            with reviews.documents.control.read() as tx:
+                db = tx.sql
                 assert db.execute("SELECT count(*),sum(artifacts) FROM review_feed").fetchone() == (
                     1,
                     1,
@@ -601,7 +607,8 @@ def test_corrupt_review_pin_columns_remain_bounded(state, column) -> None:
     reviews, _, _ = state
     ref = publish(state)
     ingest_artifacts(reviews, "p", "s")
-    with reviews.documents._write() as db:
+    with reviews.documents.control.write() as tx:
+        db = tx.sql
         db.execute("DROP TRIGGER review_feed_update")
         db.execute(f"UPDATE review_feed SET {column}=cast(zeroblob(20971520) AS TEXT)")
     tracemalloc.start()
@@ -620,10 +627,12 @@ def test_unresolved_observation_capacity_and_completed_race(state, monkeypatch) 
         inventory.begin(source, f"pending{index}", f"pending{index}.txt", "text/plain")
     first = ingest_artifacts(reviews, "p", "s")
     assert not first["complete"]
-    with reviews.documents._read() as db:
+    with reviews.documents.control.read() as tx:
+        db = tx.sql
         assert db.execute("SELECT count(*) FROM review_feed").fetchone()[0] == 10
     assert ingest_artifacts(reviews, "p", "s", drain=True)["complete"]
-    with reviews.documents._read() as db:
+    with reviews.documents.control.read() as tx:
+        db = tx.sql
         assert db.execute("SELECT count(*) FROM review_feed").fetchone()[0] == 25
 
 
@@ -739,7 +748,8 @@ def test_legacy_response_receipt_digest_unchanged(state) -> None:
     }
     expected = digest(dump(["s", old_canonical, USER.role]))
     Findings(reviews).respond("p", "s", raw, USER)
-    with reviews.documents._read() as db:
+    with reviews.documents.control.read() as tx:
+        db = tx.sql
         assert (
             db.execute(
                 "SELECT fingerprint FROM review_operations WHERE operation_id='old-operation'"
@@ -799,7 +809,7 @@ def test_concurrent_newer_cursor_covers_older_pinned_target(state, monkeypatch) 
     reviews, _, _ = state
     publish(state)
     paused, release = threading.Event(), threading.Event()
-    original = reviews.documents._read
+    original = reviews.documents.control.read
     calls = [0]
     result = []
 
@@ -810,13 +820,13 @@ def test_concurrent_newer_cursor_covers_older_pinned_target(state, monkeypatch) 
             if calls[0] == 2:
                 paused.set()
                 assert release.wait(10)
-        with original() as db:
-            yield db
+        with original() as tx:
+            yield tx
 
     def old():
         result.append(ingest_artifacts(reviews, "p", "s", drain=True))
 
-    monkeypatch.setattr(reviews.documents, "_read", read)
+    monkeypatch.setattr(reviews.documents.control, "read", read)
     thread = threading.Thread(target=old, name="old-prefix")
     thread.start()
     try:
@@ -833,7 +843,8 @@ def test_concurrent_newer_cursor_covers_older_pinned_target(state, monkeypatch) 
 def test_corrupt_event_cannot_grant_another_sessions_private_artifact(state) -> None:
     reviews, _, _source = state
     publish(state)
-    with reviews.documents._write() as db:
+    with reviews.documents.control.write() as tx:
+        db = tx.sql
         db.execute("DROP TRIGGER artifact_events_no_update")
         db.execute(
             "UPDATE artifact_events SET record=json_set(record,"
@@ -841,7 +852,8 @@ def test_corrupt_event_cannot_grant_another_sessions_private_artifact(state) -> 
         )
     with pytest.raises(DocumentError, match="path/session"):
         ingest_artifacts(reviews, "p", "other")
-    with reviews.documents._read() as db:
+    with reviews.documents.control.read() as tx:
+        db = tx.sql
         assert db.execute("SELECT count(*) FROM review_feed").fetchone()[0] == 0
 
 

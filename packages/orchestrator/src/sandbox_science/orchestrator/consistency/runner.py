@@ -398,8 +398,8 @@ class ReviewerRunner:
                     }
                 )
                 continue
-            with self.store.documents._read() as db:  # pyright: ignore[reportPrivateUsage]
-                assert db is not None  # noqa: S101
+            with self.store.documents.control.read() as tx:
+                db = tx.sql
                 count = db.execute(
                     "SELECT count(*) FROM review_records WHERE review_id=? AND kind='finding'",
                     (self.review,),

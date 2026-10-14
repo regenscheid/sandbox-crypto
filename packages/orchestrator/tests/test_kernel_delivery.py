@@ -628,7 +628,7 @@ async def test_proof_timeout_returns_unknown_but_keeps_actual_snapshot_owner_unt
 
     def blocked():
         result = original()
-        retained.extend([result._descriptor, result._root])
+        retained.extend([result.descriptor, result.root])
         entered.set()
         assert release.wait(5)
         return result

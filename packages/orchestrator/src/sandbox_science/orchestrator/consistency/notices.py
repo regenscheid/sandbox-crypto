@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: MIT
 """Leased finding notices, acknowledged only by a durably saved author run."""
 
-# Logical modules share the control store's transaction machinery.
-# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
 from .store import Json, ReviewStore, clipped, dump
@@ -19,7 +17,8 @@ class FindingNotices:
             return []
         self.store.scope(project, session)
         now = self.store.clock()
-        with self.store.documents._write() as db:
+        with self.store.documents.control.write() as tx:
+            db = tx.sql
             # The latest state is authoritative. A response made before delivery
             # makes the older open notice unnecessary, without hiding its history.
             rows = db.execute(
@@ -57,7 +56,8 @@ class FindingNotices:
         return values
 
     def renew(self, project: str, session: str, run: str) -> None:
-        with self.store.documents._write() as db:
+        with self.store.documents.control.write() as tx:
+            db = tx.sql
             db.execute(
                 (
                     "UPDATE review_notices SET claim_until=? WHERE project=? AND "
@@ -67,7 +67,8 @@ class FindingNotices:
             )
 
     def release(self, project: str, session: str, run: str, keep: set[str] | None = None) -> None:
-        with self.store.documents._write() as db:
+        with self.store.documents.control.write() as tx:
+            db = tx.sql
             db.execute(
                 (
                     "UPDATE review_notices SET claimed_run=NULL,claim_until=NULL "
@@ -79,7 +80,8 @@ class FindingNotices:
             )
 
     def acknowledge(self, project: str, session: str, run: str, notices: list[str]) -> None:
-        with self.store.documents._write() as db:
+        with self.store.documents.control.write() as tx:
+            db = tx.sql
             db.execute(
                 (
                     "UPDATE review_notices SET "
@@ -93,8 +95,11 @@ class FindingNotices:
 
     def counts(self, project: str, session: str) -> Json:
         self.store.scope(project, session)
-        with self.store.documents._read() as db:
-            if not self.store.available(db) or db is None:
+        if self.store.documents.control.missing:
+            return {}
+        with self.store.documents.control.read() as tx:
+            db = tx.sql
+            if not self.store.available(db):
                 return {}
             rows = db.execute(
                 (

@@ -716,7 +716,7 @@ async def test_cli_cancelled_constructor_closes_owner_published_before_thread_re
     monkeypatch.setattr(cli, "_read_secret", lambda _: "test-secret-unused")
     task = asyncio.create_task(cli._run(args))
     assert await asyncio.to_thread(entered.wait, 5)
-    descriptor = owners[0].snapshot._descriptor
+    descriptor = owners[0].snapshot.descriptor
     task.cancel()
     task.cancel()
     await asyncio.sleep(0.01)

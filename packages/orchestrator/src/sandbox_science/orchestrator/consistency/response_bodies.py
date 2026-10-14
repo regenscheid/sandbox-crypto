@@ -6,8 +6,6 @@ evidence, scientific finding CAS or reviewer audit. Only the session MAIN author
 can correct an agent-authored explanation; findings grant no extra authority.
 """
 
-# These logical modules share the canonical transaction and bounded body engine.
-# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
 import hashlib
@@ -431,9 +429,10 @@ class ResponseBodies:
             type(body_revision) is not int or not 0 <= body_revision <= 999999999
         ):
             raise DocumentError(INVALID_REQUEST, "invalid response body revision")
-        with self.store.documents._read() as db:
-            if db is None:
-                raise DocumentError(NOT_FOUND, "no such response source")
+        if self.store.documents.control.missing:
+            raise DocumentError(NOT_FOUND, "no such response source")
+        with self.store.documents.control.read() as tx:
+            db = tx.sql
             result = projection(
                 read(
                     db,
@@ -512,8 +511,8 @@ class ResponseBodies:
             dump(["response_edit", session, value.model_dump(mode="json"), author.role])
         )
         findings = Findings(self.store)
-        with self.store.documents._read() as db:
-            assert db is not None  # noqa: S101 - writer initialized
+        with self.store.documents.control.read() as tx:
+            db = tx.sql
             replay = self._replay(db, project, session, author, value, fingerprint)
             if replay:
                 return replay
@@ -523,37 +522,41 @@ class ResponseBodies:
         if (current["revision"], current["sha256"]) != (value.base, value.sha256):
             raise DocumentError(CONFLICT, "response source changed since this edit was drafted")
         prepared = prepare(value.body, author, current)
-        with self.store.documents._write() as db:
+        with self.store.documents.control.write() as tx:
+            db = tx.sql
             replay = self._replay(db, project, session, author, value, fingerprint)
             if replay:
                 return replay
-            found = findings._get(db, project, session, value.finding)
+            found = findings.load(db, project, session, value.finding)
             if found["revision"] != value.expected:
                 raise DocumentError(CONFLICT, "finding changed since this source edit was drafted")
             commit(db, current, author, prepared)
             result = projection(read(db, value.finding, value.response_revision, full=False))
-            findings._operation(db, project, author.actor, value.operation_id, fingerprint, result)
+            findings.record_operation(
+                db, project, author.actor, value.operation_id, fingerprint, result
+            )
         return result
 
     def reconcile(self, project: str) -> None:
         """Bounded legacy discovery; unknown proof is held, never a queue-wide veto."""
-        with self.store.documents._read() as db:
-            assert db is not None  # noqa: S101 - initialized writer
+        with self.store.documents.control.read() as tx:
+            db = tx.sql
             rows = list(db.execute(legacy_query(), (project,)))
         for seq, finding, revision in rows:
             try:
                 if not isinstance(finding, bytes) or len(finding) > 128:
                     raise DocumentError(INTERNAL, "legacy response identity exceeds its bound")
                 name = finding.decode()
-                with self.store.documents._read() as db:
-                    assert db is not None  # noqa: S101 - writer initialized
+                with self.store.documents.control.read() as tx:
+                    db = tx.sql
                     parent = read(db, name, revision, project=project)
                 actor = Author.model_validate(parent["original_author"])
                 prepared = prepare(parent["body"], actor)
             except (DocumentError, ValueError, TypeError):
                 # Store only the bounded canonical transition identity. Its full
                 # immutable bytes remain the audit; unknown prose is not attributed.
-                with self.store.documents._write() as db:
+                with self.store.documents.control.write() as tx:
+                    db = tx.sql
                     db.execute(
                         "INSERT OR IGNORE INTO review_response_discovery "
                         "SELECT rowid,finding_id,revision,? FROM review_transitions WHERE rowid=?",
@@ -563,7 +566,8 @@ class ResponseBodies:
                         ),
                     )
                 continue
-            with self.store.documents._write() as db:
+            with self.store.documents.control.write() as tx:
+                db = tx.sql
                 if (
                     db.execute(
                         "SELECT 1 FROM response_math_sources WHERE source=?", (parent["source"],)
