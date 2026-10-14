@@ -59,7 +59,11 @@ read -r -a image_rw <<<"$(list read_write)"
 
 checks=$(mktemp -d)
 trap 'rm -rf "$checks"' EXIT
-cp "$here/checks/check_image.py" "$here/checks/landlock.py" "$worker/executor.py" "$worker/pdfhelper.py" "$checks/"
+# The worker's in-sandbox files (SANDBOX_FILES in backends.py; a worker test keeps this in step).
+cp "$here/checks/check_image.py" "$here/checks/landlock.py" "$checks/"
+for name in executor provisioning pdfhelper daemon capture; do
+  cp "$worker/$name.py" "$checks/"
+done
 chmod -R a+rX "$checks"
 
 check_args=(--profile "$profile" --worker-files /checks)

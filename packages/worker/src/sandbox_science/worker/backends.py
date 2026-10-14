@@ -31,6 +31,17 @@ CAPTURE_SOURCE = Path(capture.__file__)
 PDF_HELPER_SOURCE = Path(pdfhelper.__file__)
 PROVISIONING_SOURCE = Path(provisioning.__file__)
 """The package-command wrappers and hook (provisioning.py), which the executor loads."""
+SANDBOX_FILES: tuple[Path, ...] = (
+    EXECUTOR_SOURCE,
+    PROVISIONING_SOURCE,
+    PDF_HELPER_SOURCE,
+    DAEMON_SOURCE,
+    CAPTURE_SOURCE,
+)
+"""Every file the executor runs from inside a sandbox, uploaded side by side into the
+executor's directory. They use only the standard library and each other (the executor
+loads its siblings by path), plus jupyter_client and pdf_oxide where those are installed;
+test_sandbox_payload.py checks both."""
 SCHED_SHIM_SOURCE = Path(__file__).with_name("shim") / "sched_self.c"
 SCHED_SHIM_NAME = "libsandbox-science-sched.so"
 COMMAND_TIMEOUT = 120.0
@@ -242,13 +253,7 @@ class OpenShellBackend:
             "sandbox", "exec", "-n", sandbox, "--no-tty", "--no-login-shell", "--",
             "mkdir", "-p", settings.executor_dir, settings.project_root,
         )  # fmt: skip
-        files = [
-            EXECUTOR_SOURCE,
-            PROVISIONING_SOURCE,
-            PDF_HELPER_SOURCE,
-            DAEMON_SOURCE,
-            CAPTURE_SOURCE,
-        ]
+        files = list(SANDBOX_FILES)
         if settings.sched_shim:
             files.append(await self._shim())
         for path in files:
