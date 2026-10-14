@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EventPage, MessageListing } from './api-types';
+import { ApiError } from './http';
 import {
   ChatFeed,
   chatEntries,
@@ -9,6 +10,7 @@ import {
   pendingMessages,
   sendMessage,
   stoppedText,
+  tokensText,
   thinking,
   type ChatMessage,
   type RunEvent,
@@ -134,6 +136,25 @@ describe("a session's chat, polled", () => {
     expect(view.service).toBe(true);
   });
 
+  it('reads again a run the session names before the run is known (404), and goes on', async () => {
+    const { state, asked, feed } = server();
+    state.lease = 'r1';
+    const reads = (feed as unknown as { reads: { events: unknown } }).reads;
+    const answer = reads.events as (run: string, after: number) => Promise<EventPage>;
+    let known = false;
+    reads.events = async (run: string, after: number) => {
+      if (!known) throw new ApiError(404, 'not_found', 'no run r1');
+      return answer(run, after);
+    };
+    const first = await feed.read();
+    expect(first.run).toMatchObject({ run: 'r1', events: [] });
+    known = true;
+    state.events.set('r1', [event(1, 'started')]);
+    const second = await feed.read();
+    expect(second.run?.events).toEqual([event(1, 'started')]);
+    expect(asked.filter((item) => item.startsWith('events'))).toEqual(['events r1 0']);
+  });
+
   it('moves to a new run once it holds the session', async () => {
     const { state, feed } = server();
     state.lease = 'r1';
@@ -154,6 +175,7 @@ describe('the transcript of a run', () => {
       event(4, 'assistant', {
         text: 'Let me check.',
         tool_calls: [{ id: 'c1', name: 'python', arguments: '{"code": "1"}' }],
+        usage: { model: 'model-a', input_tokens: 1200, output_tokens: 34 },
       }),
       event(5, 'tool', {
         name: 'python',
@@ -173,6 +195,7 @@ describe('the transcript of a run', () => {
         seq: 4,
         text: 'Let me check.',
         calls: [{ name: 'python', arguments: '{"code": "1"}' }],
+        usage: 'model-a: 1,200 input and 34 output tokens',
       },
       { kind: 'tool', seq: 5, name: 'python', outcome: 'succeeded, exit code 0', result: '1' },
       { kind: 'note', seq: 6, text: 'Notices from jobs: j1.', problem: false },
@@ -184,7 +207,10 @@ describe('the transcript of a run', () => {
 
   it('takes no field of the wrong type, and says how a run stopped', () => {
     const [assistant] = chatEntries([event(1, 'assistant', { text: 5, tool_calls: 'x' })]);
-    expect(assistant).toEqual({ kind: 'assistant', seq: 1, text: '', calls: [] });
+    expect(assistant).toEqual({ kind: 'assistant', seq: 1, text: '', calls: [], usage: null });
+    expect(tokensText({ model: null, input_tokens: 5, output_tokens: null })).toBe(
+      '5 input and unreported output tokens',
+    );
     expect(stoppedText({ stopped: 'error', failure: 'model' })).toBe(
       'The run failed. Failure: model.',
     );
@@ -218,7 +244,12 @@ describe('the transcript of a run', () => {
     expect(messageState({ ...message(1, 'refused'), reason: 'budget' })).toBe(
       "Refused: the project's model budget is spent",
     );
-    expect(messageState(message(1, 'held', 'r1'))).toMatch(/^Held/);
+    expect(messageState(message(1, 'held', 'r1'))).toBe(
+      'Held: the run that saw it was interrupted',
+    );
+    expect(messageState({ ...message(1, 'held', 'r1'), reason: '5 runs failed in a row' })).toBe(
+      'Held: 5 runs failed in a row',
+    );
   });
 });
 

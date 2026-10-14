@@ -14,7 +14,7 @@ import type {
   RunEvent,
   RunLease,
 } from './api-types';
-import { get, post } from './http';
+import { ApiError, get, post } from './http';
 import { guardedWrite } from './mutation';
 
 export type { ChatMessage, RunEvent, RunLease };
@@ -122,7 +122,15 @@ export class ChatFeed {
     }
     const run = this.#run;
     for (let page = 0; run && !this.#finished && page < PAGES_PER_READ; page++) {
-      const found = await this.reads.events(run.run, run.events.at(-1)?.seq ?? 0, signal);
+      let found: EventPage;
+      try {
+        found = await this.reads.events(run.run, run.events.at(-1)?.seq ?? 0, signal);
+      } catch (caught) {
+        // A run the session names before it has written anything is not known yet: read
+        // again at the next poll, rather than end the whole chat as missing.
+        if (caught instanceof ApiError && caught.status === 404) break;
+        throw caught;
+      }
       run.state = found.state;
       run.events = [...run.events, ...found.events];
       if (found.events.length < PAGE) {
@@ -163,7 +171,14 @@ export class ChatFeed {
 export type ChatEntry =
   | { kind: 'started'; seq: number; text: string }
   | { kind: 'user'; seq: number; text: string }
-  | { kind: 'assistant'; seq: number; text: string; calls: { name: string; arguments: string }[] }
+  | {
+      kind: 'assistant';
+      seq: number;
+      text: string;
+      calls: { name: string; arguments: string }[];
+      /** This model call's tokens, as the gateway reported them; null when not recorded. */
+      usage: string | null;
+    }
   | { kind: 'tool'; seq: number; name: string; outcome: string; result: string }
   | { kind: 'note'; seq: number; text: string; problem: boolean };
 
@@ -205,6 +220,19 @@ function outcomeText(value: unknown): string {
 }
 
 /**
+ * One model call's tokens, as an `assistant` event's `usage` keeps them (RS-14): the model
+ * and its input and output tokens, saying when the gateway left a count out.
+ */
+export function tokensText(value: unknown): string | null {
+  const usage = record(value);
+  if (Object.keys(usage).length === 0) return null;
+  const count = (key: string) =>
+    typeof usage[key] === 'number' ? (usage[key] as number).toLocaleString('en-US') : 'unreported';
+  const model = text(usage['model']);
+  return `${model ? `${model}: ` : ''}${count('input_tokens')} input and ${count('output_tokens')} output tokens`;
+}
+
+/**
  * The transcript of a run's events, in order. A `model` event (a model call began) shows
  * nothing itself; `thinking` says whether one is in progress.
  */
@@ -224,7 +252,13 @@ export function chatEntries(events: readonly RunEvent[]): ChatEntry[] {
         name: text(record(call)['name']),
         arguments: text(record(call)['arguments']),
       }));
-      entries.push({ kind: 'assistant', seq, text: text(data['text']), calls });
+      entries.push({
+        kind: 'assistant',
+        seq,
+        text: text(data['text']),
+        calls,
+        usage: tokensText(data['usage']),
+      });
     } else if (kind === 'tool')
       entries.push({
         kind: 'tool',
@@ -298,7 +332,7 @@ export function messageState(message: ChatMessage): string {
     case 'delivered':
       return `Delivered to ${message.run ?? 'a run'}`;
     case 'held':
-      return 'Held: the run that saw it was interrupted';
+      return `Held: ${message.reason ?? 'the run that saw it was interrupted'}`;
     case 'refused':
       return message.reason === 'budget'
         ? "Refused: the project's model budget is spent"

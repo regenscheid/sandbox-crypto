@@ -113,6 +113,7 @@
             {:else if entry.kind === 'assistant'}
               <h3>Agent</h3>
               {#if entry.text}<Markdown source={entry.text} />{/if}
+              {#if entry.usage}<p class="muted">{entry.usage}</p>{/if}
               {#each entry.calls as call, index (index)}
                 <details>
                   <summary>Calls <code>{call.name}</code></summary>
