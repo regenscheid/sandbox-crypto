@@ -64,12 +64,8 @@ class MechanicalFindings:
         # only a bounded owner projection crosses into Python, never a body.
         row = db.execute(
             (
-                "SELECT CASE WHEN typeof(o.payload)='text' AND "
-                "length(CAST(o.payload AS BLOB))<=32768 THEN CASE WHEN "
-                "json_valid(o.payload) THEN CASE WHEN "
-                "json_type(o.payload,'$.owner')='object' THEN "
-                "substr(CAST(json_extract(o.payload,'$.owner') AS BLOB),1,8193) "
-                "END END END,j.revision FROM math_jobs j "
+                "SELECT CASE WHEN json_type(o.payload,'$.owner')='object' THEN "
+                "json_extract(o.payload,'$.owner') END,j.revision FROM math_jobs j "
                 "JOIN math_observations o USING(check_id) "
                 "LEFT JOIN math_comment_jobs c USING(check_id) "
                 "LEFT JOIN math_response_jobs r USING(check_id) WHERE j.document IS ? "
@@ -88,7 +84,7 @@ class MechanicalFindings:
                 job["check_id"],
             ),
         ).fetchone()
-        if not row or row[0] is None or len(row[0]) > 8192:
+        if not row or row[0] is None:
             return None
         try:
             raw: object = json.loads(row[0])

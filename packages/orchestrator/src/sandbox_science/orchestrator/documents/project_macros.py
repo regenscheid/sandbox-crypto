@@ -111,33 +111,16 @@ def read(db: sqlite3.Connection | None, project: str, revision: int | None = Non
     if db is None:
         raise DocumentError(INTERNAL, "pinned project macro revision is missing")
     row = db.execute(
-        "SELECT substr(CAST(definitions AS BLOB),1,16385),substr(CAST(sha256 AS BLOB),1,65) "
-        "FROM project_macro_revisions WHERE project=? AND revision=?",
+        "SELECT definitions,sha256 FROM project_macro_revisions WHERE project=? AND revision=?",
         (project, revision),
     ).fetchone()
-    try:
-        if row is None or len(row[0]) > MAX_BYTES or len(row[1]) != 64:
-            raise ValueError
-        value = json.loads(row[0])
-        if not isinstance(value, dict) or any(
-            not isinstance(v, str) for v in cast(Json, value).values()
-        ):
-            raise ValueError
-        definitions = validate(cast(dict[str, str], value))
-        if (
-            dump(definitions).encode() != row[0]
-            or hashlib.sha256(row[0]).hexdigest() != row[1].decode()
-        ):
-            raise ValueError
-    except (ValueError, TypeError, UnicodeDecodeError, RecursionError, DocumentError):
-        raise DocumentError(
-            INTERNAL, "retained project macros are invalid or exceed bounds"
-        ) from None
+    if row is None:
+        raise DocumentError(INTERNAL, "pinned project macro revision is missing")
     return {
         "project": project,
         "revision": revision,
-        "sha256": row[1].decode(),
-        "macros": definitions,
+        "sha256": row[1],
+        "macros": cast(dict[str, str], json.loads(row[0])),
     }
 
 
@@ -166,13 +149,12 @@ class ProjectMacros:
         with self.documents.control.write() as tx:
             db = tx.sql
             replay = db.execute(
-                "SELECT substr(CAST(fingerprint AS BLOB),1,65),revision "
-                "FROM project_macro_operations "
+                "SELECT fingerprint,revision FROM project_macro_operations "
                 "WHERE project=? AND actor=? AND operation=?",
                 (project, author.actor, change.operation_id),
             ).fetchone()
             if replay:
-                if replay[0] != fingerprint.encode():
+                if replay[0] != fingerprint:
                     raise DocumentError(CONFLICT, "operation ID already names another macro change")
                 return {**read(db, project, replay[1]), "replayed": True}
             current = read(db, project)
@@ -249,20 +231,15 @@ def job_context(db: sqlite3.Connection | None, check: str, project: str) -> Json
     if db is None:
         return {**read(db, project, 0), "known": False, "anchors": []}
     row = db.execute(
-        "SELECT revision,substr(CAST(sha256 AS BLOB),1,65),substr(CAST(anchors AS BLOB),1,16385) "
-        "FROM math_macro_pins WHERE check_id=? AND project=?",
+        "SELECT revision,sha256,anchors FROM math_macro_pins WHERE check_id=? AND project=?",
         (check, project),
     ).fetchone()
     if row is None:
         return {**read(db, project, 0), "known": False, "anchors": []}
     setting = read(db, project, row[0])
-    try:
-        if row[1] != setting["sha256"].encode() or len(row[2]) > 16384:
-            raise ValueError
-        anchors = _anchors(row[2])
-    except (ValueError, TypeError, UnicodeDecodeError, RecursionError):
-        raise DocumentError(INTERNAL, "retained math macro pin is invalid") from None
-    return {**setting, "known": True, "anchors": anchors}
+    if row[1] != setting["sha256"]:
+        raise DocumentError(INTERNAL, "math macro pin does not bind its setting")
+    return {**setting, "known": True, "anchors": cast(list[Json], json.loads(row[2]))}
 
 
 def current(db: sqlite3.Connection, check: str, project: str) -> bool:
@@ -302,55 +279,20 @@ def response_saved(
 
 def response_anchors(db: sqlite3.Connection, source: str) -> list[Json]:
     row = db.execute(
-        "SELECT substr(CAST(anchors AS BLOB),1,16385) FROM response_macro_anchors WHERE source=?",
-        (source,),
+        "SELECT anchors FROM response_macro_anchors WHERE source=?", (source,)
     ).fetchone()
     if row is None:
         return [{"unknown": True}]
-    return _anchors(row[0])
-
-
-def _anchors(raw: bytes) -> list[Json]:
-    try:
-        if len(raw) > MAX_BYTES:
-            raise ValueError
-        parsed = json.loads(raw)
-        if not isinstance(parsed, list) or len(cast(list[Any], parsed)) > 8:
-            raise ValueError
-        for anchor in cast(list[Any], parsed):
-            if anchor == {"unknown": True}:
-                continue
-            if not isinstance(anchor, dict) or set(cast(Json, anchor)) != {
-                "document",
-                "revision",
-                "sha256",
-            }:
-                raise ValueError
-            anchor = cast(Json, anchor)
-            if (
-                not isinstance(anchor["document"], str)
-                or re.fullmatch(r"doc-[0-9a-f]{24}", anchor["document"]) is None
-                or type(anchor["revision"]) is not int
-                or not 1 <= anchor["revision"] <= 999999999
-                or not isinstance(anchor["sha256"], str)
-                or re.fullmatch(r"[0-9a-f]{64}", anchor["sha256"]) is None
-            ):
-                raise ValueError
-        return cast(list[Json], parsed)
-    except (ValueError, TypeError, UnicodeDecodeError, RecursionError):
-        raise DocumentError(
-            INTERNAL, "retained macro anchors are invalid or exceed bounds"
-        ) from None
+    return cast(list[Json], json.loads(row[0]))
 
 
 def finding_anchors(db: sqlite3.Connection, project: str, finding: str) -> list[Json]:
     row = db.execute(
-        "SELECT substr(CAST(anchors AS BLOB),1,16385) FROM review_findings "
-        "WHERE finding_id=? AND project=?",
+        "SELECT anchors FROM review_findings WHERE finding_id=? AND project=?",
         (finding, project),
     ).fetchone()
     try:
-        if row is None or len(row[0]) > 16384:
+        if row is None:
             raise ValueError
         anchors = json.loads(row[0])
         if not isinstance(anchors, list) or len(cast(list[Any], anchors)) > 32:
@@ -373,17 +315,13 @@ def finding_anchors(db: sqlite3.Connection, project: str, finding: str) -> list[
             ):
                 raise ValueError
             saved = db.execute(
-                "SELECT substr(CAST(sha256 AS BLOB),1,65) FROM revisions r JOIN documents d "
+                "SELECT sha256 FROM revisions r JOIN documents d "
                 "USING(document_id) WHERE d.project_id=? AND r.document_id=? AND r.number=?",
                 (project, document, revision),
             ).fetchone()
-            if (
-                saved is None
-                or re.fullmatch(b"[0-9a-f]{64}", saved[0]) is None
-                or (sha is not None and sha != saved[0].decode())
-            ):
+            if saved is None or (sha is not None and sha != saved[0]):
                 raise ValueError
-            pin = {"document": document, "revision": revision, "sha256": saved[0].decode()}
+            pin = {"document": document, "revision": revision, "sha256": saved[0]}
             if pin not in pins:
                 pins.append(pin)
         if len(pins) > 8:
@@ -497,45 +435,21 @@ def response_view(
 
 def resolved(db: sqlite3.Connection, check: str, context: Json) -> Json | None:
     row = db.execute(
-        "SELECT substr(CAST(definitions AS BLOB),1,65537),"
-        "substr(CAST(problems AS BLOB),1,32769),held,substr(CAST(context_key AS BLOB),1,65) "
-        "FROM math_macro_contexts WHERE check_id=?",
+        "SELECT definitions,problems,held,context_key FROM math_macro_contexts WHERE check_id=?",
         (check,),
     ).fetchone()
     if row is None:
         return None
-    try:
-        if (
-            len(row[0]) > 65536
-            or len(row[1]) > 32768
-            or type(row[2]) is not int
-            or row[2] not in (0, 1)
-        ):
-            raise ValueError
-        definitions, problems = json.loads(row[0]), json.loads(row[1])
-        if (
-            not isinstance(definitions, dict)
-            or any(not isinstance(v, str) for v in cast(Json, definitions).values())
-            or len(cast(Json, definitions)) > MAX_MACROS
-            or any(len(v) > MAX_MACRO for v in cast(Json, definitions).values())
-        ):
-            raise ValueError
-        if not isinstance(problems, list) or any(
-            not isinstance(p, str) for p in cast(list[Any], problems)
-        ):
-            raise ValueError
-        content: Json = {
-            **context,
-            "effective": cast(Json, definitions),
-            "problems": cast(list[str], problems),
-            "held": bool(row[2]),
-        }
-        key = hashlib.sha256(dump(content).encode()).hexdigest()
-        if row[3] != key.encode():
-            raise ValueError
-        return {**content, "key": key}
-    except (ValueError, TypeError, UnicodeError, RecursionError):
-        raise DocumentError(INTERNAL, "retained effective macro context is invalid") from None
+    content: Json = {
+        **context,
+        "effective": cast(Json, json.loads(row[0])),
+        "problems": cast(list[str], json.loads(row[1])),
+        "held": bool(row[2]),
+    }
+    key = hashlib.sha256(dump(content).encode()).hexdigest()
+    if row[3] != key:
+        raise DocumentError(INTERNAL, "effective macro context does not bind its pins")
+    return {**content, "key": key}
 
 
 def save_resolution(

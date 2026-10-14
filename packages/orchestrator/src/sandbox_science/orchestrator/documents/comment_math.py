@@ -180,7 +180,7 @@ class CommentMath:
             value = cast(Json, value)
             if set(value) != {"revision", "author"}:
                 raise DocumentError(INTERNAL, "comment block ownership proof is missing")
-            raw = bodies.dump(value["author"]).encode() if value["author"] else None
+            raw = bodies.dump(value["author"]) if value["author"] else None
             actor = self.jobs.proof_author(raw)
             if value["revision"] is not None and (
                 type(value["revision"]) is not int or not 1 <= value["revision"] <= revision

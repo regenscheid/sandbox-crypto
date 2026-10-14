@@ -13,7 +13,7 @@ import math
 import re
 import sqlite3
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from sandbox_science.contracts import new_id
 from sandbox_science.orchestrator.aio import threaded
@@ -23,7 +23,6 @@ from sandbox_science.orchestrator.mathcheck import Formula, MathCheck
 from .engine import attach
 from .errors import CONFLICT, INTERNAL, DocumentError
 from .identity import Mapped
-from .models import Author
 from .operations import unlay
 
 Json = dict[str, Any]
@@ -83,8 +82,7 @@ class MathJobs:
             return CommentMath(self).fence(db, check, owner, comment)
         row = db.execute(
             (
-                "SELECT substr(CAST(j.document AS "
-                "BLOB),1,129),j.revision,j.cursor,j.attribution_cursor FROM math_jobs "
+                "SELECT j.document,j.revision,j.cursor,j.attribution_cursor FROM math_jobs "
                 "j JOIN revisions r ON r.document_id=j.document AND "
                 "r.number=j.revision JOIN documents d ON d.document_id=j.document JOIN "
                 "math_sources s ON s.document=j.document WHERE j.check_id=? AND "
@@ -95,14 +93,7 @@ class MathJobs:
         ).fetchone()
         if row is None:
             raise DocumentError(CONFLICT, "math check ownership expired or changed")
-        if (
-            len(row[0]) > 128
-            or any(type(value) is not int or value < 0 for value in row[1:3])
-            or row[2] > 20000
-            or (row[3] is not None and (type(row[3]) is not int or not 0 <= row[3] <= row[1]))
-        ):
-            raise DocumentError(INTERNAL, "stored math lease/cursor exceeds its bounds")
-        return (row[0].decode(), *row[1:])
+        return tuple(row)
 
     def retry_unavailable(
         self, project: str, configuration: dict[str, object] | None = None
@@ -165,7 +156,7 @@ class MathJobs:
             # Recover the same immutable work after restart; a live process is fenced.
             old = db.execute(
                 (
-                    "SELECT substr(CAST(j.check_id AS BLOB),1,129) FROM math_jobs j JOIN "
+                    "SELECT j.check_id FROM math_jobs j JOIN "
                     "math_job_scope s USING(check_id) WHERE s.project=? AND "
                     "j.state='running' AND (j.lease_until<=? OR j.owner=?) ORDER BY "
                     "j.created LIMIT 1"
@@ -173,9 +164,6 @@ class MathJobs:
                 (project, now, owner),
             ).fetchone()
             if old:
-                if len(old[0]) > 128:
-                    raise DocumentError(INTERNAL, "stored math identity exceeds its bound")
-                old = (old[0].decode(),)
                 db.execute(
                     "UPDATE math_jobs SET owner=?,lease_until=? WHERE check_id=?",
                     (owner, now + LEASE, old[0]),
@@ -188,7 +176,7 @@ class MathJobs:
                 return None
             source = db.execute(
                 (
-                    "SELECT substr(CAST(document AS BLOB),1,129),CASE WHEN "
+                    "SELECT document,CASE WHEN "
                     "completed<target THEN completed+1 ELSE target END FROM math_sources "
                     "WHERE project=? AND (completed<target OR retry_requested=1) AND "
                     "NOT EXISTS (SELECT 1 FROM math_jobs WHERE "
@@ -205,13 +193,7 @@ class MathJobs:
                 from .response_math import ResponseMath
 
                 return ResponseMath(self).claim(db, project, owner, now)
-            if (
-                len(source[0]) > 128
-                or type(source[1]) is not int
-                or not 1 <= source[1] <= 1_000_000_000
-            ):
-                raise DocumentError(INTERNAL, "stored math source cursor exceeds its bound")
-            source = (source[0].decode(), source[1])
+            source = tuple(source)
             if db.execute("SELECT count(*) FROM math_jobs").fetchone()[0] >= self.limits.jobs:
                 db.execute(
                     (
@@ -222,14 +204,10 @@ class MathJobs:
                 )
                 return None
             row = db.execute(
-                (
-                    "SELECT substr(CAST(sha256 AS BLOB),1,65) FROM revisions WHERE "
-                    "document_id=? AND number=?"
-                ),
-                source,
+                "SELECT sha256 FROM revisions WHERE document_id=? AND number=?", source
             ).fetchone()
-            if row is None or len(row[0]) != 64 or not re.fullmatch(b"[0-9a-f]{64}", row[0]):
-                raise DocumentError(INTERNAL, "queued immutable revision is missing or invalid")
+            if row is None:
+                raise DocumentError(INTERNAL, "queued immutable revision is missing")
             check = new_id("math")
             db.execute(
                 (
@@ -237,7 +215,7 @@ class MathJobs:
                     "math_jobs(check_id,document,revision,source_sha256,state,owner,lease_u"
                     "ntil,attribution_cursor,created) VALUES(?,?,?,?,'running',?,?,?,?)"
                 ),
-                (check, *source, row[0].decode(), owner, now + LEASE, source[1], now),
+                (check, *source, row[0], owner, now + LEASE, source[1], now),
             )
             db.execute(
                 "UPDATE math_sources SET blocked=NULL,retry_requested=0 WHERE document=?",
@@ -249,17 +227,6 @@ class MathJobs:
             return check
 
     def job(self, check: str) -> Json:
-        # Prefix in SQL before decoding, including corrupted historical records.
-        bounds = {
-            "check_id": 128,
-            "document": 128,
-            "source_sha256": 64,
-            "state": 32,
-            "owner": 128,
-            "configuration": 4096,
-            "runtime": 32,
-            "reason": 1000,
-        }
         names = (
             "check_id",
             "document",
@@ -280,83 +247,40 @@ class MathJobs:
             "created",
             "ended",
         )
-        fields = ",".join(
-            f"substr(CAST({name} AS BLOB),1,{bounds[name] + 1})" if name in bounds else name
-            for name in names
-        )
         with self.documents.control.read() as tx:
             db = tx.sql
             row = db.execute(
-                "SELECT " + fields + " FROM math_jobs WHERE check_id=?",  # noqa: S608 - fixed columns
+                "SELECT " + ",".join(names) + " FROM math_jobs WHERE check_id=?",  # noqa: S608 - fixed columns
                 (check,),
             ).fetchone()
             if row is None:
                 raise DocumentError(INTERNAL, "math job disappeared")
             value: Json = dict(zip(names, row, strict=True))
-            try:
-                for name, limit in bounds.items():
-                    if value[name] is not None:
-                        if len(value[name]) > limit:
-                            raise ValueError
-                        value[name] = value[name].decode("utf-8")
-                project = db.execute(
-                    "SELECT substr(CAST(project AS BLOB),1,129) FROM math_job_scope"
-                    " WHERE check_id=?",
-                    (check,),
-                ).fetchone()
-                if project is None or len(project[0]) > 128:
-                    raise ValueError
-                value["project"] = project[0].decode("utf-8")
-                if not re.fullmatch("[0-9a-f]{64}", value["source_sha256"]) or value[
-                    "state"
-                ] not in ("running", "finished"):
-                    raise ValueError
-                for name in ("revision", "cursor", "available", "rejected", "unavailable"):
-                    if type(value[name]) is not int or not 0 <= value[name] <= 1_000_000_000:
-                        raise ValueError
-                if value["revision"] < 1 or value["cursor"] > 20000:
-                    raise ValueError
-                for name in ("spans", "attribution_cursor"):
-                    if value[name] is not None and (
-                        type(value[name]) is not int
-                        or not 0 <= value[name] <= (20000 if name == "spans" else value["revision"])
-                    ):
-                        raise ValueError
-                for name in ("created", "ended", "lease_until"):
-                    if value[name] is not None and (
-                        not isinstance(value[name], int | float) or not math.isfinite(value[name])
-                    ):
-                        raise ValueError
-                from .comment_math import metadata
+            (value["project"],) = db.execute(
+                "SELECT project FROM math_job_scope WHERE check_id=?", (check,)
+            ).fetchone()
+            from .comment_math import metadata
 
-                comment = metadata(db, check)
-                if comment is not None:
-                    value["comment"] = comment
-                from .response_math import metadata as response_metadata
+            comment = metadata(db, check)
+            if comment is not None:
+                value["comment"] = comment
+            from .response_math import metadata as response_metadata
 
-                response = response_metadata(db, check)
-                if response is not None:
-                    value["response"] = response
-                elif value["document"] is None:
-                    raise ValueError
-                from .project_macros import job_context, resolved
+            response = response_metadata(db, check)
+            if response is not None:
+                value["response"] = response
+            elif value["document"] is None:
+                raise DocumentError(INTERNAL, "math job names no source")
+            from .project_macros import job_context, resolved
 
-                value["macro_context"] = job_context(db, check, value["project"])
-                value["effective_macro_context"] = resolved(db, check, value["macro_context"])
-                return value
-            except (ValueError, TypeError, UnicodeDecodeError):
-                raise DocumentError(INTERNAL, "stored math job exceeds its schema bounds") from None
+            value["macro_context"] = job_context(db, check, value["project"])
+            value["effective_macro_context"] = resolved(db, check, value["macro_context"])
+            return value
 
     @staticmethod
-    def proof_author(raw: bytes | None) -> Json | None:
-        if raw is None:
-            return None
-        if len(raw) > 8192:
-            raise DocumentError(INTERNAL, "stored math ownership exceeds its bound")
-        try:
-            return Author.model_validate_json(raw).model_dump(mode="json")
-        except ValueError:
-            raise DocumentError(INTERNAL, "stored math ownership is invalid") from None
+    def proof_author(raw: str | None) -> Json | None:
+        """A block owner's author, as the owner proof keeps its JSON."""
+        return None if raw is None else cast(Json, json.loads(raw))
 
     def pin(self, check: str, owner: str, identity: dict[str, object]) -> bool:
         value = dump(identity)
@@ -366,11 +290,10 @@ class MathJobs:
             db = tx.sql
             self._fence(db, check, owner)
             old = db.execute(
-                "SELECT substr(CAST(configuration AS BLOB),1,4097) FROM math_jobs WHERE check_id=?",
-                (check,),
+                "SELECT configuration FROM math_jobs WHERE check_id=?", (check,)
             ).fetchone()[0]
             if old is not None:
-                return old == value.encode()
+                return old == value
             db.execute("UPDATE math_jobs SET configuration=? WHERE check_id=?", (value, check))
             return True
 
@@ -400,7 +323,7 @@ class MathJobs:
                 r[0]: {"revision": r[1], "author": self.proof_author(r[2])}
                 for r in db.execute(
                     (
-                        "SELECT block,revision,substr(CAST(author AS BLOB),1,8193) FROM "
+                        "SELECT block,revision,author FROM "
                         "math_job_owners WHERE check_id=? AND block IN (SELECT value FROM "
                         "json_each(?))"
                     ),
@@ -414,18 +337,15 @@ class MathJobs:
             rows = list(
                 db.execute(
                     (
-                        "SELECT number,substr(CAST(block_map AS BLOB),1,?),substr(CAST(author "
-                        "AS BLOB),1,8193) FROM revisions WHERE document_id=? AND number<=? "
-                        "ORDER BY number DESC LIMIT ?"
+                        "SELECT number,block_map,author FROM revisions WHERE document_id=? "
+                        "AND number<=? ORDER BY number DESC LIMIT ?"
                     ),
-                    (MAP_BYTES + 1, document, cursor, self.limits.history_per_step),
+                    (document, cursor, self.limits.history_per_step),
                 )
             )
         added: dict[str, Json] = {}
         for number, raw, raw_author in rows:
-            if len(raw) > MAP_BYTES or len(raw_author) > 8192:
-                raise DocumentError(INTERNAL, "historical math provenance exceeds source bounds")
-            author = Author.model_validate_json(raw_author).model_dump(mode="json")
+            author = json.loads(raw_author)
             for block in json.loads(raw)["blocks"]:
                 if (
                     block["id"] in missing
@@ -641,22 +561,18 @@ class MathJobs:
             db = tx.sql
             row = db.execute(
                 (
-                    "SELECT substr(CAST(r.text AS BLOB),1,1048577),substr(CAST(r.block_map "
-                    "AS BLOB),1,16777217),substr(CAST(r.sha256 AS BLOB),1,65) FROM "
+                    "SELECT r.text,r.block_map,r.sha256 FROM "
                     "revisions r JOIN documents d USING(document_id) WHERE d.project_id=? "
                     "AND r.document_id=? AND r.number=?"
                 ),
                 (job["project"], job["document"], job["revision"]),
             ).fetchone()
-        if row is None or len(row[0]) > 1048576 or len(row[1]) > MAP_BYTES or len(row[2]) != 64:
-            raise DocumentError(INTERNAL, "pinned math source is missing or exceeds its bounds")
-        if (
-            hashlib.sha256(row[0]).hexdigest() != job["source_sha256"]
-            or row[2].decode() != job["source_sha256"]
-        ):
+        if row is None:
+            raise DocumentError(INTERNAL, "pinned math source is missing")
+        if row[2] != job["source_sha256"]:
             raise DocumentError(INTERNAL, "math job digest does not bind the immutable source")
         try:
-            return attach(row[0].decode(), json.loads(row[1]))
+            return attach(row[0], json.loads(row[1]))
         except (ValueError, TypeError, KeyError, RecursionError):
             raise DocumentError(INTERNAL, "pinned math source identity is invalid") from None
 
@@ -858,9 +774,8 @@ class MathJobs:
             rows = list(
                 db.execute(
                     (
-                        "SELECT substr(CAST(j.check_id AS BLOB),1,129),"
-                        "substr(CAST(j.document AS BLOB),1,129),j.revision,"
-                        "substr(CAST(j.state AS BLOB),1,33),j.cursor,j.spans,j.available,"
+                        "SELECT j.check_id,j.document,j.revision,j.state,j.cursor,j.spans,"
+                        "j.available,"
                         "j.rejected,j.unavailable,j.created FROM math_jobs j JOIN math_job_scope"
                         " s USING(check_id) WHERE s.project=? AND j.rowid<? "
                         "AND (s.session IS NULL OR ? IS NULL OR s.session=?) ORDER BY j.rowid "
@@ -869,17 +784,6 @@ class MathJobs:
                     (project, cursor, session, session),
                 )
             )
-            for row in rows:
-                if (
-                    len(row[0]) > 128
-                    or (row[1] is not None and len(row[1]) > 128)
-                    or len(row[3]) > 32
-                ):
-                    raise DocumentError(INTERNAL, "stored math listing identity exceeds its bound")
-            rows = [
-                (r[0].decode(), r[1].decode() if r[1] else None, r[2], r[3].decode(), *r[4:])
-                for r in rows
-            ]
             checks: list[Json] = [
                 dict(
                     zip(
@@ -934,8 +838,7 @@ class MathJobs:
                 dict(zip(("document", "target", "completed", "blocked", "running"), r, strict=True))
                 for r in db.execute(
                     (
-                        "SELECT substr(CAST(document AS BLOB),1,129),target,completed,"
-                        "substr(CAST(blocked AS BLOB),1,1001),EXISTS(SELECT 1 FROM math_jobs j "
+                        "SELECT document,target,completed,blocked,EXISTS(SELECT 1 FROM math_jobs j "
                         "WHERE j.document=math_sources.document AND j.state='running') FROM "
                         "math_sources WHERE project=? AND "
                         "(completed<target OR retry_requested=1 "
@@ -947,14 +850,6 @@ class MathJobs:
                     (project,),
                 )
             ]
-            for entry in queue:
-                if len(entry["document"]) > 128 or (
-                    entry["blocked"] is not None and len(entry["blocked"]) > 1000
-                ):
-                    raise DocumentError(INTERNAL, "stored math queue exceeds its bound")
-                entry["document"] = entry["document"].decode()
-                if entry["blocked"] is not None:
-                    entry["blocked"] = entry["blocked"].decode()
             comments = comment_queue(db, project)
             responses = response_queue(db, project, session=session)
             return {
@@ -1004,7 +899,7 @@ class MathJobs:
             rows = list(
                 db.execute(
                     (
-                        "SELECT ordinal,substr(CAST(payload AS BLOB),1,32769) FROM "
+                        "SELECT ordinal,payload FROM "
                         "math_observations WHERE check_id=? AND ordinal>=? AND (? IS NULL OR "
                         "span=?) ORDER BY ordinal LIMIT 21"
                     ),
@@ -1013,8 +908,6 @@ class MathJobs:
             )
         values: list[Json] = []
         for ordinal, raw in rows[:20]:
-            if len(raw) > 32768:
-                raise DocumentError(INTERNAL, "stored math evidence exceeds its bound")
             values.append({"ordinal": ordinal, **json.loads(raw)})
         return {
             "check": self.job(check),
