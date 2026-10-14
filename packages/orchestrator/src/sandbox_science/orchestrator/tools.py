@@ -45,8 +45,9 @@ from .consistency.controller import AUTHOR_NAMES, ReviewController
 from .documents.errors import DocumentError
 from .documents.mathcontroller import MathController
 from .documents.tool import NAMES as DOCUMENT_TOOLS
-from .documents.tool import DocumentTool, with_notices
-from .jobs import BACKGROUND, JOB_SPECS, JobTools
+from .documents.tool import DocumentTool, WorkRequests, with_notices
+from .hooks import TurnHook
+from .jobs import BACKGROUND, JOB_SPECS, JobNotices, JobTools
 from .kernel_delivery import KernelDeliveryController
 from .model import ToolCall, ToolSpec
 from .plan_tools import NAMES as PLAN_TOOLS
@@ -254,6 +255,8 @@ class ToolOutcome:
 
     text: str
     record: dict[str, Any] = field(default_factory=dict[str, Any])
+    whole: bool = False
+    """The result must reach the model as it is, with no notices riding on it."""
 
 
 def operation_id(prefix: str, call: ToolCall) -> str:
@@ -356,6 +359,7 @@ class Toolbox:
             # A complete current plan may exceed the ordinary clipped-output
             # budget. Do not truncate it and then acknowledge a false reread.
             # Leave unrelated notices unseen for their existing later paths.
+            outcome.whole = True
             return outcome
         if self.documents is not None:
             try:
@@ -366,22 +370,16 @@ class Toolbox:
             if notices:
                 outcome.text = with_notices(outcome.text, notices)
                 outcome.record["document_notices"] = notices
-        if self.jobs is not None:
-            try:
-                notices = await self.jobs.notices(max_chars=self.output_chars // 4)
-            except Exception:
-                _log.exception("the job notices failed; will retry at the next safe point")
-            else:
-                if notices:
-                    # Job output is untrusted tool data, never a system instruction.
-                    text = outcome.text
-                    combined = dump({"tool_result": text, "job_notices": notices})
-                    while len(combined) > self.output_chars and len(text) > 100:
-                        text = self._bound(text[: len(text) // 2])
-                        combined = dump({"tool_result": text, "job_notices": notices})
-                    outcome.text = combined
-                    outcome.record["job_notices"] = notices
         return outcome
+
+    def turn_hooks(self) -> tuple[TurnHook, ...]:
+        """New hooks for this run's notice sources, in the order they reach the model."""
+        hooks: list[TurnHook] = []
+        if self.documents is not None:
+            hooks.append(WorkRequests(self.documents))
+        if self.jobs is not None:
+            hooks.append(JobNotices(self.jobs, max_chars=self.output_chars // 4))
+        return tuple(hooks)
 
     async def _call(self, call: ToolCall, operation: str, model: str | None) -> ToolOutcome:
         if self.plans is not None:
@@ -574,7 +572,7 @@ class Toolbox:
             limit //= 2
 
     def _bound(self, text: str) -> str:
-        return _bound(text, self.output_chars // 2)
+        return bound(text, self.output_chars // 2)
 
     # Files.
 
@@ -632,7 +630,7 @@ class Toolbox:
         request = ListFilesRequest.model_validate({"context": self.context, **_known(args, "path")})
         listing = await self.client.list_files(request)
         entries = [
-            {"name": _bound(entry.name, 256), "type": entry.type, "size": entry.size}
+            {"name": bound(entry.name, 256), "type": entry.type, "size": entry.size}
             for entry in listing.entries
         ]
         shown = min(len(entries), SHOWN_ENTRIES)
@@ -665,7 +663,7 @@ class Toolbox:
         lines = [
             f"{d.host}:{d.port} reachable"
             if d.admitted
-            else f"{d.host}:{d.port} refused: {_bound(d.reason, 300)}"
+            else f"{d.host}:{d.port} refused: {bound(d.reason, 300)}"
             for d in result.decisions
         ]
         return ToolOutcome("\n".join(lines), {"admissions": decisions})
@@ -711,7 +709,7 @@ def _describe(execution: Execution, limit: int, replayed: bool) -> dict[str, Any
                 summary["signal"] = result.signal
         for stream in (result.stdout, result.stderr):
             if stream is not None and stream.total_bytes:
-                summary[stream.name] = _bound(stream.text, limit)
+                summary[stream.name] = bound(stream.text, limit)
                 if stream.truncated:
                     summary[f"{stream.name}_total_bytes"] = stream.total_bytes
         outputs: list[str] = [_output(output.data, limit) for output in result.outputs]
@@ -724,11 +722,11 @@ def _describe(execution: Execution, limit: int, replayed: bool) -> dict[str, Any
         if result.error is not None:
             error: dict[str, Any] = {
                 "kind": result.error.kind.value,
-                "message": _bound(result.error.message, limit),
+                "message": bound(result.error.message, limit),
             }
             if result.error.traceback:
                 traceback = "\n".join(result.error.traceback[-TRACEBACK_LINES:])
-                error["traceback"] = _bound(traceback, limit)
+                error["traceback"] = bound(traceback, limit)
             summary["error"] = error
         if result.kernel is not None:
             summary["kernel_generation"] = result.kernel.generation
@@ -751,11 +749,11 @@ def _describe(execution: Execution, limit: int, replayed: bool) -> dict[str, Any
         if result.state_lost:
             summary["state_lost"] = "the kernel restarted before this cell; earlier state is gone"
         if result.notices:
-            summary["platform_notices"] = [_bound(notice, limit) for notice in result.notices]
+            summary["platform_notices"] = [bound(notice, limit) for notice in result.notices]
     if execution.location is not None:
         summary["ran_on"] = {
             "sandbox": execution.location.sandbox_id,
-            "host": _bound(execution.location.hostname, 256),
+            "host": bound(execution.location.hostname, 256),
             "isolation_tier": execution.location.isolation_tier,
         }
         before = execution.location.environment_revision
@@ -777,12 +775,12 @@ def _describe(execution: Execution, limit: int, replayed: bool) -> dict[str, Any
 def _output(data: dict[str, str], limit: int) -> str:
     for mime in ("text/latex", "text/markdown", "text/plain"):
         if mime in data:
-            return _bound(data[mime], limit)
+            return bound(data[mime], limit)
     kinds = ", ".join(sorted(data))
-    return _bound(f"[{kinds} output, not shown]", limit)
+    return bound(f"[{kinds} output, not shown]", limit)
 
 
-def _bound(text: str, limit: int) -> str:
+def bound(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     half = limit // 2
@@ -875,6 +873,6 @@ def _known(args: dict[str, Any], *names: str) -> dict[str, Any]:
 
 def _failure(kind: ErrorKind, message: str) -> ToolOutcome:
     return ToolOutcome(
-        dump({"error": {"kind": kind.value, "message": _bound(message, 4000)}}),
+        dump({"error": {"kind": kind.value, "message": bound(message, 4000)}}),
         {"error": kind.value},
     )

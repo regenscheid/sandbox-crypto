@@ -16,6 +16,7 @@ from pydantic import TypeAdapter, ValidationError
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator import cli, prompt_bundle
 from sandbox_science.orchestrator.documents import DocumentStore
+from sandbox_science.orchestrator.hooks import TurnHook
 from sandbox_science.orchestrator.loop import SYSTEM_PROMPT, run_task
 from sandbox_science.orchestrator.model import (
     Message,
@@ -276,23 +277,20 @@ async def test_retention_legacy_and_save_before_ack(tmp_path, monkeypatch, failu
     projects.open_session("p", "s", dedicated=False)
     acknowledged = []
 
-    class JobState:
-        def __init__(self, state):
-            pass
-
-        def acknowledge(self, context, run, ids):
+    class Hook(TurnHook):
+        async def acknowledge(self, record):
             entries = projects.runs("p", "s")
             assert len(entries) == 1
             assert (
                 projects.run("p", "s", entries[0].name).prompt_provenance == kept.prompt_provenance
             )
-            acknowledged.append(ids)
+            acknowledged.append(record.job_notice_ids)
 
-    monkeypatch.setattr(cli, "JobState", JobState)
     args = argparse.Namespace(transcript=None, state_dir=tmp_path)
-    assert cli._keep(args, kept.model_dump(mode="json"), int(failure)) == int(failure)
+    fields = kept.model_dump(mode="json")
+    assert await cli._save(args, fields, int(failure), [Hook()]) == int(failure)
     assert acknowledged == [[]]
-    assert cli._keep(args, kept.model_dump(mode="json"), 0) == 1
+    assert await cli._save(args, fields, 0, [Hook()]) == 1
     assert acknowledged == [[]]
 
 
