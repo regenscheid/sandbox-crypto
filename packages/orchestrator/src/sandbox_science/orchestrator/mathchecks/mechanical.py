@@ -64,17 +64,21 @@ class MechanicalFindings:
                 "SELECT CASE WHEN json_type(o.payload,'$.owner')='object' THEN "
                 "json_extract(o.payload,'$.owner') END,j.revision FROM math_jobs j "
                 "JOIN math_observations o USING(check_id) "
-                "LEFT JOIN math_comment_jobs c USING(check_id) "
-                "LEFT JOIN math_response_jobs r USING(check_id) WHERE j.document IS ? "
-                "AND c.entry_id IS ? AND r.source IS ? AND o.block=? AND o.span=? "
+                "LEFT JOIN math_text_jobs x USING(check_id) WHERE j.document IS ? "
+                "AND x.subject_type IS ? AND x.subject_id IS ? AND o.block=? AND o.span=? "
                 "AND o.status IN ('accepted','rejected') AND j.revision<=? "
                 "AND j.rowid<(SELECT rowid FROM math_jobs WHERE check_id=?) "
                 "ORDER BY j.rowid DESC LIMIT 1"
             ),
             (
                 job["document"],
-                job.get("comment", {}).get("entry_id"),
-                job.get("response", {}).get("source"),
+                *(
+                    ("comment", job["comment"]["entry_id"])
+                    if "comment" in job
+                    else ("response", job["response"]["source"])
+                    if "response" in job
+                    else (None, None)
+                ),
                 item["block"],
                 item["span"],
                 job["revision"],

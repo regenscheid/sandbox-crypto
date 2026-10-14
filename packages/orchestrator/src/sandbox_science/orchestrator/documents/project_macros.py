@@ -16,7 +16,7 @@ import hashlib
 import json
 import re
 import sqlite3
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 
 from pydantic import Field, JsonValue, ValidationError
 
@@ -210,8 +210,8 @@ def job_context(db: sqlite3.Connection | None, check: str, project: str) -> Json
         None
         if db is None
         else db.execute(
-            "SELECT j.macro_revision,r.source FROM math_jobs j LEFT JOIN math_response_jobs r "
-            "USING(check_id) WHERE j.check_id=?",
+            "SELECT j.macro_revision,r.subject_id FROM math_jobs j LEFT JOIN math_text_jobs r "
+            "ON r.check_id=j.check_id AND r.subject_type='response' WHERE j.check_id=?",
             (check,),
         ).fetchone()
     )
@@ -460,36 +460,29 @@ def save_resolution(db: sqlite3.Connection, check: str, held: bool) -> None:
     db.execute("UPDATE math_jobs SET macro_held=? WHERE check_id=?", (int(held), check))
 
 
-def _sources() -> tuple[tuple[str, str, str, str], ...]:
+_TEXT_CHECK: Final = (
+    "EXISTS(SELECT 1 FROM math_text_jobs x WHERE x.check_id=j.check_id "
+    "AND x.subject_type=s.subject_type AND x.subject_id=s.subject_id)"
+)
+
+
+def _sources() -> tuple[tuple[str, str, str], ...]:
     return (
         (
             "math_sources",
-            "document",
-            "j.document=s.document AND NOT EXISTS(SELECT 1 FROM math_comment_jobs c "
-            "WHERE c.check_id=j.check_id)",
+            "j.document=s.document AND NOT EXISTS(SELECT 1 FROM math_text_jobs x "
+            "WHERE x.check_id=j.check_id)",
             "1",
         ),
-        (
-            "comment_math_sources",
-            "entry_id",
-            "EXISTS(SELECT 1 FROM math_comment_jobs c WHERE c.check_id=j.check_id "
-            "AND c.entry_id=s.entry_id)",
-            "s.target>0",
-        ),
-        (
-            "response_math_sources",
-            "source",
-            "EXISTS(SELECT 1 FROM math_response_jobs r WHERE r.check_id=j.check_id "
-            "AND r.source=s.source)",
-            "s.target>0",
-        ),
+        ("text_math_sources", _TEXT_CHECK, "s.subject_type='comment' AND s.target>0"),
+        ("text_math_sources", _TEXT_CHECK, "s.subject_type='response' AND s.target>0"),
     )
 
 
-def _candidates(table: str, key: str, join: str, condition: str) -> str:
+def _candidates(table: str, join: str, condition: str) -> str:
     # All fragments come exclusively from _sources, never caller text.
     return (
-        f"SELECT s.{key} FROM {table} s "  # noqa: S608 - fixed schema names
+        f"SELECT s.rowid FROM {table} s "  # noqa: S608 - fixed schema names
         f"WHERE s.project=? AND s.completed=s.target AND s.retry_requested=0 AND {condition} AND "
         f"EXISTS(SELECT 1 FROM math_jobs j WHERE {join} AND j.revision=s.target) AND "
         f"NOT EXISTS(SELECT 1 FROM math_jobs j WHERE {join} "
@@ -498,9 +491,9 @@ def _candidates(table: str, key: str, join: str, condition: str) -> str:
 
 
 def needs_refresh(db: sqlite3.Connection, project: str) -> bool:
-    for table, key, join, condition in _sources():
+    for table, join, condition in _sources():
         if db.execute(
-            "SELECT 1 FROM (" + _candidates(table, key, join, condition) + ")",  # noqa: S608 - fixed SQL
+            "SELECT 1 FROM (" + _candidates(table, join, condition) + ")",  # noqa: S608 - fixed SQL
             (project, head(db, project)),
         ).fetchone():
             return True
@@ -510,10 +503,10 @@ def needs_refresh(db: sqlite3.Connection, project: str) -> bool:
 def refresh(db: sqlite3.Connection, project: str) -> None:
     """Admit at most 32 current sources per source kind; write no backlog copies."""
     revision = head(db, project)
-    for table, key, join, condition in _sources():
+    for table, join, condition in _sources():
         db.execute(
-            f"UPDATE {table} SET retry_requested=1 WHERE {key} IN ("  # noqa: S608 - fixed schema
-            + _candidates(table, key, join, condition)
+            f"UPDATE {table} SET retry_requested=1 WHERE rowid IN ("  # noqa: S608 - fixed schema
+            + _candidates(table, join, condition)
             + ")",
             (project, revision),
         )

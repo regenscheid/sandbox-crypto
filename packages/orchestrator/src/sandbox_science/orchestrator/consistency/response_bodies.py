@@ -229,9 +229,9 @@ def commit(
         ),
     )
     db.execute(
-        "INSERT INTO "
-        "response_math_sources(source,finding_id,decision_revision,project,session,target,blocked) "
-        "VALUES(?,?,?,?,?,?,?) ON CONFLICT(source) DO UPDATE SET "
+        "INSERT INTO text_math_sources(subject_type,subject_id,parent,parent_revision,"
+        "project,session,target,blocked) VALUES('response',?,?,?,?,?,?,?) "
+        "ON CONFLICT(subject_type,subject_id) DO UPDATE SET "
         "target=excluded.target,blocked=excluded.blocked",
         (
             parent["source"],
@@ -390,7 +390,9 @@ class ResponseBodies:
                 db = tx.sql
                 if (
                     db.execute(
-                        "SELECT 1 FROM response_math_sources WHERE source=?", (parent["source"],)
+                        "SELECT 1 FROM text_math_sources WHERE subject_type='response' "
+                        "AND subject_id=?",
+                        (parent["source"],),
                     ).fetchone()
                     is None
                 ):
@@ -406,8 +408,8 @@ def legacy_query() -> str:
         "THEN CASE WHEN json_valid(t.payload) THEN json_extract(t.payload,'$.action') "
         "IN ('fix','rebut') AND json_extract(t.payload,'$.author.kind')='agent' "
         "AND json_extract(t.payload,'$.author.role')='main' ELSE 0 END ELSE 0 END "
-        "AND NOT EXISTS(SELECT 1 FROM response_math_sources s WHERE s.finding_id=t.finding_id "
-        "AND s.decision_revision=t.revision) AND NOT EXISTS(SELECT 1 FROM "
+        "AND NOT EXISTS(SELECT 1 FROM text_math_sources s WHERE s.subject_type='response' "
+        "AND s.parent=t.finding_id AND s.parent_revision=t.revision) AND NOT EXISTS(SELECT 1 FROM "
         "review_response_discovery d WHERE d.finding_id=t.finding_id AND "
         "d.decision_revision=t.revision) "
         "ORDER BY t.rowid LIMIT 2"

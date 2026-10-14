@@ -225,7 +225,6 @@ These are the reviewer's tables in the control store's schema
 | `review_transitions` | Every finding revision with its status, actor and reason, append-only |
 | `review_notices` | Findings due for delivery to the author, with their claim and delivery |
 | `review_response_pins`, `review_response_discovery` | The explanation body revision each confirmation review pinned, and older responses held from checking because their author is unknown ([finding prose math](FINDING-PROSE-MATH.md)); the explanation bodies and their revisions are `text_revisions` of kind `response` ([living documents](LIVING-DOCUMENTS.md)) |
-| `response_math_sources`, `math_response_jobs` | Each explanation's math-check cursor, and which checks are of explanations |
 
 ## Not built
 

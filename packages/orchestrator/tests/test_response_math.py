@@ -222,7 +222,7 @@ async def test_reflags_unavailable_removal_empty_macros_and_no_recursive_sources
         ResponseBodies(reviews).get("p", "s", child["finding_id"], child["revision"])
     with reviews.documents.control.read() as tx:
         db = tx.sql
-        assert db.execute("SELECT count(*) FROM response_math_sources").fetchone()[0] == 1
+        assert db.execute("SELECT count(*) FROM text_math_sources").fetchone()[0] == 1
 
 
 def test_body_queue_receipt_atomicity_and_immutable_rows(stores):
@@ -240,7 +240,7 @@ def test_body_queue_receipt_atomicity_and_immutable_rows(stores):
     assert ResponseBodies(reviews).get("p", "s", finding, decision)["revision"] == 1
     with reviews.documents.control.read() as tx:
         db = tx.sql
-        assert db.execute("SELECT target FROM response_math_sources").fetchone() == (1,)
+        assert db.execute("SELECT target FROM text_math_sources").fetchone() == (1,)
     with (
         pytest.raises(sqlite3.IntegrityError, match="immutable"),
         reviews.documents.control.write() as tx,
@@ -327,13 +327,13 @@ def test_source_cache_cannot_rebind_canonical_project_session_or_field(stores):
     finding, decision = response(reviews)
     with docs.control.write() as tx:
         db = tx.sql
-        db.execute("UPDATE response_math_sources SET project='other'")
+        db.execute("UPDATE text_math_sources SET project='other'")
     with pytest.raises(DocumentError):
         MathJobs(reviews).claim("other", "owner")
     assert maths(reviews) == []
     with docs.control.write() as tx:
         db = tx.sql
-        db.execute("UPDATE response_math_sources SET project='p',session='other'")
+        db.execute("UPDATE text_math_sources SET project='p',session='other'")
     with pytest.raises(DocumentError, match="canonical session"):
         MathJobs(reviews).claim("p", "owner")
     # Reads derive scope from the immutable scientific response, never this cache.
@@ -349,7 +349,7 @@ def test_initial_body_queue_failure_rolls_back_scientific_response(stores):
     with docs.control.write() as tx:
         db = tx.sql
         db.execute(
-            "CREATE TRIGGER queue_fault BEFORE INSERT ON response_math_sources "
+            "CREATE TRIGGER queue_fault BEFORE INSERT ON text_math_sources "
             "BEGIN SELECT RAISE(ABORT,'queue fault'); END"
         )
     with pytest.raises(sqlite3.IntegrityError, match="queue fault"):

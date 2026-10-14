@@ -1113,6 +1113,138 @@ BEGIN SELECT RAISE(ABORT, 'text revisions are immutable'); END""",
         schema.execute(statement)
 
 
+_TEXT_MATH: Final = (
+    # Each kind keeps its order, which claims follow.
+    (
+        "comment_math_sources",
+        "INSERT INTO text_math_sources(subject_type,subject_id,project,session,parent,"
+        "parent_revision,target,completed,macro_revision,retry_requested,blocked) "
+        "SELECT 'comment',entry_id,project,NULL,document,NULL,target,completed,"
+        "macro_revision,retry_requested,blocked FROM comment_math_sources ORDER BY rowid",
+    ),
+    (
+        "response_math_sources",
+        "INSERT INTO text_math_sources(subject_type,subject_id,project,session,parent,"
+        "parent_revision,target,completed,macro_revision,retry_requested,blocked) "
+        "SELECT 'response',source,project,session,finding_id,decision_revision,target,"
+        "completed,0,retry_requested,blocked FROM response_math_sources ORDER BY rowid",
+    ),
+    (
+        "math_comment_jobs",
+        "INSERT INTO math_text_jobs SELECT check_id,'comment',entry_id,macro_revision,"
+        "macro_sha256 FROM math_comment_jobs ORDER BY rowid",
+    ),
+    (
+        "math_response_jobs",
+        "INSERT INTO math_text_jobs SELECT check_id,'response',source,NULL,NULL "
+        "FROM math_response_jobs ORDER BY rowid",
+    ),
+)
+
+_JOB_SCOPE: Final = """CREATE VIEW math_job_scope AS
+    SELECT j.check_id,s.project,NULL AS session FROM math_jobs j
+    JOIN math_sources s USING(document)
+    UNION ALL SELECT j.check_id,f.project,f.session FROM math_jobs j JOIN math_text_jobs r
+    ON r.check_id=j.check_id AND r.subject_type='response' JOIN text_math_sources s
+    ON s.subject_type='response' AND s.subject_id=r.subject_id JOIN review_findings f
+    ON f.finding_id=s.parent WHERE j.document IS NULL AND s.project=f.project
+    AND s.session=f.session"""
+
+_TEXT_CHECKS: Final = """CREATE VIEW math_current_checks AS
+    SELECT j.check_id,j.document AS source,j.revision FROM math_jobs j
+    JOIN documents d ON d.document_id=j.document
+    WHERE NOT EXISTS(SELECT 1 FROM math_text_jobs x WHERE x.check_id=j.check_id)
+    AND d.head=j.revision AND j.rowid=(SELECT max(k.rowid) FROM math_jobs k
+    WHERE k.document=j.document AND k.revision=d.head AND NOT EXISTS
+    (SELECT 1 FROM math_text_jobs x WHERE x.check_id=k.check_id))
+    UNION ALL
+    SELECT j.check_id,'comment:'||c.subject_id,j.revision FROM math_jobs j
+    JOIN math_text_jobs c ON c.check_id=j.check_id AND c.subject_type='comment'
+    JOIN documents d ON d.document_id=j.document
+    JOIN text_math_sources s ON s.subject_type='comment' AND s.subject_id=c.subject_id
+    JOIN text_revisions b ON b.subject_type='comment' AND b.subject_id=c.subject_id
+    AND b.revision=j.revision
+    JOIN annotation_entries original ON original.entry_id=c.subject_id
+    JOIN annotation_threads t ON t.thread_id=original.thread_id
+    WHERE t.document_id=j.document AND s.parent=j.document AND s.project=d.project_id
+    AND original.kind IN ('create','reply')
+    AND s.target=j.revision AND d.head=c.macro_revision AND b.origin=(
+      SELECT e.entry_id FROM annotation_entries e WHERE e.thread_id=original.thread_id
+      AND (e.entry_id=original.entry_id OR (e.kind='edit' AND original.number=1)
+      OR (e.kind='edit_body' AND json_extract(e.payload,'$.entry')=original.entry_id))
+      ORDER BY e.number DESC LIMIT 1)
+    AND j.rowid=(SELECT max(k.rowid) FROM math_jobs k JOIN math_text_jobs x
+    USING(check_id) WHERE x.subject_type='comment' AND x.subject_id=c.subject_id
+    AND k.revision=j.revision AND x.macro_revision=c.macro_revision) UNION ALL
+    SELECT j.check_id,r.subject_id,j.revision FROM math_jobs j JOIN math_text_jobs r
+    ON r.check_id=j.check_id AND r.subject_type='response'
+    JOIN text_math_sources s ON s.subject_type='response' AND s.subject_id=r.subject_id
+    JOIN review_findings f ON f.finding_id=s.parent
+    JOIN text_revisions b ON b.subject_type='response' AND b.subject_id=s.subject_id
+    AND b.revision=j.revision
+    WHERE j.document IS NULL AND f.origin='review' AND s.project=f.project AND s.session=f.session
+    AND b.parent=s.parent AND b.parent_revision=s.parent_revision
+    AND s.target=j.revision AND j.source_sha256=b.sha256
+    AND j.rowid=(SELECT max(k.rowid) FROM math_jobs k JOIN math_text_jobs x USING(check_id)
+                WHERE x.subject_type='response' AND x.subject_id=r.subject_id
+                AND k.revision=j.revision)"""
+
+
+def _text_math(schema: Schema) -> None:
+    """Version 16: the math-check queues of comment bodies and explanations and their
+    checks' links move into one queue, ``text_math_sources``, and one link table,
+    ``math_text_jobs``, each under its kind of text (B-04). A comment's queue names its
+    document as its parent, and its checks the document revision and hash their macros
+    came from; an explanation's queue names its finding and decision revision. The two
+    views over them are made again. A row the new tables refuse refuses the migration."""
+    for statement in (
+        """CREATE TABLE text_math_sources (
+    subject_type TEXT NOT NULL
+        CHECK (length(subject_type) BETWEEN 1 AND 32 AND subject_type NOT GLOB '*[^a-z_]*'),
+    subject_id TEXT NOT NULL CHECK (length(CAST(subject_id AS BLOB)) BETWEEN 1 AND 128),
+    project TEXT NOT NULL CHECK (length(CAST(project AS BLOB)) BETWEEN 1 AND 128),
+    session TEXT CHECK (session IS NULL OR length(CAST(session AS BLOB)) BETWEEN 1 AND 128),
+    parent TEXT CHECK (parent IS NULL OR length(CAST(parent AS BLOB)) BETWEEN 1 AND 128),
+    parent_revision INTEGER
+        CHECK (parent_revision IS NULL OR parent_revision BETWEEN 1 AND 999999999),
+    target INTEGER NOT NULL CHECK (target BETWEEN 0 AND 999999999),
+    completed INTEGER NOT NULL DEFAULT 0 CHECK (completed BETWEEN 0 AND 999999999),
+    macro_revision INTEGER NOT NULL DEFAULT 0 CHECK (macro_revision BETWEEN 0 AND 999999999),
+    retry_requested INTEGER NOT NULL DEFAULT 0 CHECK (retry_requested IN (0, 1)),
+    blocked TEXT CHECK (blocked IS NULL OR length(CAST(blocked AS BLOB)) <= 4096),
+    PRIMARY KEY (subject_type, subject_id)
+) STRICT""",
+        """CREATE TABLE math_text_jobs (
+    check_id TEXT PRIMARY KEY REFERENCES math_jobs(check_id),
+    subject_type TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    macro_revision INTEGER
+        CHECK (macro_revision IS NULL OR macro_revision BETWEEN 0 AND 999999999),
+    macro_sha256 TEXT CHECK (macro_sha256 IS NULL
+        OR (length(macro_sha256) = 64 AND macro_sha256 NOT GLOB '*[^0-9a-f]*')),
+    FOREIGN KEY (subject_type, subject_id) REFERENCES text_math_sources(subject_type, subject_id)
+) STRICT""",
+        "CREATE INDEX math_text_jobs_subjects ON math_text_jobs(subject_type,subject_id)",
+        "DROP VIEW math_current_checks",
+        "DROP VIEW math_job_scope",
+    ):
+        schema.execute(statement)
+    for table, statement in _TEXT_MATH:
+        try:
+            schema.execute(statement)
+        except sqlite3.IntegrityError as error:
+            raise RefusedRowError(f"a row of {table} fails its check ({error})") from None
+    for table in (
+        "math_comment_jobs",
+        "math_response_jobs",
+        "comment_math_sources",
+        "response_math_sources",
+    ):
+        schema.execute(f"DROP TABLE {table}")
+    schema.execute(_JOB_SCOPE)
+    schema.execute(_TEXT_CHECKS)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -1128,6 +1260,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _event_log,
     _feed_cursors,
     _text_revisions,
+    _text_math,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

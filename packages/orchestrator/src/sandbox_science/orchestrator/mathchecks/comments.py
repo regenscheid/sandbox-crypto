@@ -27,13 +27,13 @@ Json = dict[str, Any]
 
 def metadata(db: sqlite3.Connection, check: str) -> Json | None:
     row = db.execute(
-        "SELECT c.entry_id,c.macro_revision,c.macro_sha256,b.identity_floor,j.revision,"
+        "SELECT c.subject_id,c.macro_revision,c.macro_sha256,b.identity_floor,j.revision,"
         "t.document_id=j.document AND original.kind IN ('create','reply') "
-        "FROM math_comment_jobs c JOIN math_jobs j USING(check_id) LEFT JOIN "
+        "FROM math_text_jobs c JOIN math_jobs j USING(check_id) LEFT JOIN "
         "text_revisions b ON b.subject_type='comment' "
-        "AND b.subject_id=c.entry_id AND b.revision=j.revision LEFT JOIN annotation_entries "
-        "original ON original.entry_id=c.entry_id LEFT JOIN annotation_threads t "
-        "ON t.thread_id=original.thread_id WHERE c.check_id=?",
+        "AND b.subject_id=c.subject_id AND b.revision=j.revision LEFT JOIN annotation_entries "
+        "original ON original.entry_id=c.subject_id LEFT JOIN annotation_threads t "
+        "ON t.thread_id=original.thread_id WHERE c.check_id=? AND c.subject_type='comment'",
         (check,),
     ).fetchone()
     if row is None:
@@ -55,16 +55,16 @@ class CommentMath:
     def claim(self, db: sqlite3.Connection, project: str, owner: str, now: float) -> str | None:
         validate_sources(db, project)
         row = db.execute(
-            "SELECT s.entry_id,s.document,s.target,d.head FROM comment_math_sources s "
-            "JOIN documents d ON d.document_id=s.document JOIN annotation_entries original "
-            "ON original.entry_id=s.entry_id JOIN annotation_threads t "
-            "ON t.thread_id=original.thread_id AND t.document_id=s.document "
-            "WHERE s.project=? AND d.project_id=s.project "
+            "SELECT s.subject_id,s.parent,s.target,d.head FROM text_math_sources s "
+            "JOIN documents d ON d.document_id=s.parent JOIN annotation_entries original "
+            "ON original.entry_id=s.subject_id JOIN annotation_threads t "
+            "ON t.thread_id=original.thread_id AND t.document_id=s.parent "
+            "WHERE s.subject_type='comment' AND s.project=? AND d.project_id=s.project "
             "AND s.target>0 AND (s.completed<s.target OR s.retry_requested=1 OR "
             "s.macro_revision<d.head) "
             "AND (s.blocked IS NULL OR s.blocked NOT LIKE 'Legacy writer%') "
             "AND (s.blocked IS NULL OR s.blocked NOT LIKE 'Derived body identity%') "
-            "AND NOT EXISTS(SELECT 1 FROM math_jobs j WHERE j.document=s.document "
+            "AND NOT EXISTS(SELECT 1 FROM math_jobs j WHERE j.document=s.parent "
             "AND j.state='running') ORDER BY s.rowid LIMIT 1",
             (project,),
         ).fetchone()
@@ -73,8 +73,8 @@ class CommentMath:
         entry, document, revision, macro_revision = row
         if db.execute("SELECT count(*) FROM math_jobs").fetchone()[0] >= self.jobs.limits.jobs:
             db.execute(
-                "UPDATE comment_math_sources SET blocked='math job history quota reached' "
-                "WHERE entry_id=?",
+                "UPDATE text_math_sources SET blocked='math job history quota reached' "
+                "WHERE subject_type='comment' AND subject_id=?",
                 (entry,),
             )
             return None
@@ -93,13 +93,14 @@ class CommentMath:
             (check, document, revision, hashes[0], owner, now + LEASE, now),
         )
         db.execute(
-            "INSERT INTO math_comment_jobs VALUES(?,?,?,?)",
+            "INSERT INTO math_text_jobs VALUES(?,'comment',?,?,?)",
             (check, entry, macro_revision, hashes[1]),
         )
 
         pin(db, check, project)
         db.execute(
-            "UPDATE comment_math_sources SET retry_requested=0,blocked=NULL WHERE entry_id=?",
+            "UPDATE text_math_sources SET retry_requested=0,blocked=NULL "
+            "WHERE subject_type='comment' AND subject_id=?",
             (entry,),
         )
         if hashes[2] is not None:
@@ -113,7 +114,8 @@ class CommentMath:
                 (hashes[2], now, check),
             )
             db.execute(
-                "UPDATE comment_math_sources SET completed=max(completed,?) WHERE entry_id=?",
+                "UPDATE text_math_sources SET completed=max(completed,?) "
+                "WHERE subject_type='comment' AND subject_id=?",
                 (revision, entry),
             )
         return check
@@ -121,17 +123,18 @@ class CommentMath:
     def fence(self, db: sqlite3.Connection, check: str, owner: str, meta: Json) -> tuple[Any, ...]:
         row = db.execute(
             "SELECT j.document,j.revision,j.cursor "
-            "FROM math_jobs j JOIN math_comment_jobs c USING(check_id) "
-            "JOIN text_revisions b ON b.subject_type='comment' AND b.subject_id=c.entry_id "
+            "FROM math_jobs j JOIN math_text_jobs c ON c.check_id=j.check_id "
+            "AND c.subject_type='comment' "
+            "JOIN text_revisions b ON b.subject_type='comment' AND b.subject_id=c.subject_id "
             "AND b.revision=j.revision "
-            "JOIN comment_math_sources s ON s.entry_id=c.entry_id "
-            "JOIN annotation_entries original ON original.entry_id=c.entry_id "
+            "JOIN text_math_sources s ON s.subject_type='comment' AND s.subject_id=c.subject_id "
+            "JOIN annotation_entries original ON original.entry_id=c.subject_id "
             "JOIN annotation_threads t ON t.thread_id=original.thread_id "
             "JOIN documents d ON d.document_id=j.document JOIN revisions r ON "
             "r.document_id=j.document AND r.number=c.macro_revision WHERE j.check_id=? "
             "AND j.state='running' AND j.owner=? AND j.lease_until>? "
             "AND j.source_sha256=b.sha256 AND c.macro_sha256=r.sha256 "
-            "AND s.document=j.document AND s.project=d.project_id",
+            "AND s.parent=j.document AND s.project=d.project_id",
             (check, owner, self.store.clock()),
         ).fetchone()
         if row is None:
@@ -188,20 +191,23 @@ class CommentMath:
 
     def finish(self, db: sqlite3.Connection, job: Json) -> None:
         db.execute(
-            "UPDATE comment_math_sources SET completed=max(completed,?),"
-            "macro_revision=max(macro_revision,?),blocked=NULL WHERE entry_id=?",
+            "UPDATE text_math_sources SET completed=max(completed,?),"
+            "macro_revision=max(macro_revision,?),blocked=NULL "
+            "WHERE subject_type='comment' AND subject_id=?",
             (job["revision"], job["comment"]["macro_revision"], job["comment"]["entry_id"]),
         )
 
     def retry(self, db: sqlite3.Connection, project: str, configuration: str | None) -> None:
         db.execute(
-            "UPDATE comment_math_sources SET retry_requested=1 WHERE project=? "
-            "AND completed=target AND EXISTS(SELECT 1 FROM math_jobs j JOIN math_comment_jobs c "
-            "USING(check_id) WHERE c.entry_id=comment_math_sources.entry_id AND j.revision=target "
-            "AND c.macro_revision=comment_math_sources.macro_revision AND j.rowid=(SELECT "
-            "max(k.rowid) FROM math_jobs k JOIN math_comment_jobs x USING(check_id) "
-            "WHERE x.entry_id=c.entry_id AND k.revision=j.revision AND "
-            "x.macro_revision=c.macro_revision) AND j.state='finished' AND "
+            "UPDATE text_math_sources AS s SET retry_requested=1 WHERE s.subject_type='comment' "
+            "AND s.project=? AND s.completed=s.target AND EXISTS(SELECT 1 FROM math_jobs j "
+            "JOIN math_text_jobs c USING(check_id) WHERE c.subject_type='comment' "
+            "AND c.subject_id=s.subject_id AND j.revision=s.target "
+            "AND c.macro_revision=s.macro_revision AND j.rowid=(SELECT "
+            "max(k.rowid) FROM math_jobs k JOIN math_text_jobs x USING(check_id) "
+            "WHERE x.subject_type='comment' AND x.subject_id=c.subject_id "
+            "AND k.revision=j.revision AND x.macro_revision=c.macro_revision) "
+            "AND j.state='finished' AND "
             "(j.unavailable>0 OR (? IS NOT NULL AND j.configuration!=?)))",
             (project, configuration, configuration),
         )
@@ -211,11 +217,12 @@ def remaining(db: sqlite3.Connection, project: str) -> bool:
     validate_sources(db, project)
     return (
         db.execute(
-            "SELECT 1 FROM comment_math_sources s JOIN documents d ON d.document_id=s.document "
-            "WHERE s.project=? AND s.target>0 AND (s.completed<s.target OR s.retry_requested=1 "
+            "SELECT 1 FROM text_math_sources s JOIN documents d ON d.document_id=s.parent "
+            "WHERE s.subject_type='comment' AND s.project=? AND s.target>0 "
+            "AND (s.completed<s.target OR s.retry_requested=1 "
             "OR s.macro_revision<d.head OR EXISTS(SELECT 1 FROM math_jobs j "
-            "JOIN math_comment_jobs c USING(check_id) WHERE c.entry_id=s.entry_id "
-            "AND j.state='running')) LIMIT 1",
+            "JOIN math_text_jobs c USING(check_id) WHERE c.subject_type='comment' "
+            "AND c.subject_id=s.subject_id AND j.state='running')) LIMIT 1",
             (project,),
         ).fetchone()
         is not None
@@ -225,11 +232,12 @@ def remaining(db: sqlite3.Connection, project: str) -> bool:
 def reconcile(db: sqlite3.Connection, project: str) -> None:
     validate_sources(db, project)
     db.execute(
-        "UPDATE comment_math_sources AS s SET blocked='Legacy writer changed the canonical "
-        "body; automatic checks are held' WHERE s.project=? AND s.target>0 AND EXISTS("
+        "UPDATE text_math_sources AS s SET blocked='Legacy writer changed the canonical "
+        "body; automatic checks are held' WHERE s.subject_type='comment' AND s.project=? "
+        "AND s.target>0 AND EXISTS("
         "SELECT 1 FROM text_revisions b JOIN annotation_entries original "
-        "ON original.entry_id=s.entry_id WHERE b.subject_type='comment' "
-        "AND b.subject_id=s.entry_id AND b.revision=s.target "
+        "ON original.entry_id=s.subject_id WHERE b.subject_type='comment' "
+        "AND b.subject_id=s.subject_id AND b.revision=s.target "
         "AND b.origin!=(SELECT e.entry_id FROM annotation_entries e "
         "WHERE e.thread_id=original.thread_id AND (e.entry_id=original.entry_id OR "
         "(e.kind='edit' AND original.number=1) OR (e.kind='edit_body' "
@@ -242,17 +250,16 @@ def reconcile(db: sqlite3.Connection, project: str) -> None:
 def queue(db: sqlite3.Connection, project: str) -> list[Json]:
     validate_sources(db, project)
     rows = db.execute(
-        "SELECT s.document,s.entry_id,s.target,s.completed,s.blocked,EXISTS(SELECT "
-        "1 FROM math_jobs j "
-        "JOIN math_comment_jobs c USING(check_id) WHERE c.entry_id=s.entry_id AND "
-        "j.state='running'),"
-        "s.macro_revision,d.head FROM comment_math_sources s JOIN documents d ON "
-        "d.document_id=s.document "
-        "WHERE s.project=? AND (s.blocked IS NOT NULL OR s.completed<s.target OR "
-        "s.retry_requested=1 "
-        "OR s.macro_revision<d.head OR EXISTS(SELECT 1 FROM math_jobs j JOIN math_comment_jobs c "
-        "USING(check_id) WHERE c.entry_id=s.entry_id AND j.state='running')) ORDER "
-        "BY s.rowid LIMIT 21",
+        "SELECT s.parent,s.subject_id,s.target,s.completed,s.blocked,EXISTS(SELECT "
+        "1 FROM math_jobs j JOIN math_text_jobs c USING(check_id) WHERE "
+        "c.subject_type='comment' AND c.subject_id=s.subject_id AND j.state='running'),"
+        "s.macro_revision,d.head FROM text_math_sources s JOIN documents d ON "
+        "d.document_id=s.parent "
+        "WHERE s.subject_type='comment' AND s.project=? AND (s.blocked IS NOT NULL "
+        "OR s.completed<s.target OR s.retry_requested=1 "
+        "OR s.macro_revision<d.head OR EXISTS(SELECT 1 FROM math_jobs j JOIN math_text_jobs c "
+        "USING(check_id) WHERE c.subject_type='comment' AND c.subject_id=s.subject_id "
+        "AND j.state='running')) ORDER BY s.rowid LIMIT 21",
         (project,),
     )
     return [
@@ -274,11 +281,12 @@ def queue(db: sqlite3.Connection, project: str) -> list[Json]:
 def validate_sources(db: sqlite3.Connection, project: str) -> None:
     if (
         db.execute(
-            "SELECT 1 FROM comment_math_sources s LEFT JOIN annotation_entries e "
-            "ON e.entry_id=s.entry_id LEFT JOIN annotation_threads t ON t.thread_id=e.thread_id "
-            "LEFT JOIN documents d ON d.document_id=t.document_id WHERE s.project=? AND "
-            "(e.kind IS NULL OR e.kind NOT IN ('create','reply') OR t.document_id IS NULL "
-            "OR s.document IS NOT t.document_id OR s.project IS NOT d.project_id) LIMIT 1",
+            "SELECT 1 FROM text_math_sources s LEFT JOIN annotation_entries e "
+            "ON e.entry_id=s.subject_id LEFT JOIN annotation_threads t ON t.thread_id=e.thread_id "
+            "LEFT JOIN documents d ON d.document_id=t.document_id WHERE s.subject_type='comment' "
+            "AND s.project=? AND (e.kind IS NULL OR e.kind NOT IN ('create','reply') "
+            "OR t.document_id IS NULL OR s.parent IS NOT t.document_id "
+            "OR s.project IS NOT d.project_id) LIMIT 1",
             (project,),
         ).fetchone()
         is not None

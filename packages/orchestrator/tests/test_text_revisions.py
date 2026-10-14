@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
-"""Text revisions (B-04): comment bodies and finding explanations keep their revisions
-in one table; version 15 moves both there, and a store answers as before."""
+"""Text revisions and their math checks (B-04): comment bodies and finding explanations
+keep their revisions in one table (version 15) and their math-check queues and check
+links in one queue and one link table (version 16); a migrated store answers as before."""
 
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ from sandbox_science.orchestrator.documents.project_macros import response_view
 from sandbox_science.orchestrator.mathchecks.jobs import MathJobs
 from sandbox_science.orchestrator.mathchecks.notices import MathNotices
 
-from .control_versions import TEXT_REVISIONS, older_store
+from .control_versions import TEXT_MATH, TEXT_REVISIONS, older_store
 from .test_comment_math import comment
 from .test_comment_math import edit as edit_comment
 from .test_document_math import BAD, ScriptedChecker, create, drain
@@ -72,17 +73,70 @@ async def test_bodies_read_back_every_revision(stores):
     assert found["notices"]
 
 
+async def more(docs: DocumentStore, reviews: ReviewStore, made: dict[str, Any]) -> None:
+    """A third revision of the comment and of the explanation, with their checks run."""
+    edit_comment(docs, made["doc"], made["entry"], f"third {BAD}", op="edit-3")
+    edit_response(reviews, made["finding"], made["decision"], f"third {BAD}", op="explain-3")
+    await drain(reviews, ScriptedChecker())
+
+
+def shape(found: dict[str, Any]) -> dict[str, Any]:
+    """The answers without the IDs a new check or finding draws at random."""
+    return {
+        # The entry that recorded a revision is drawn at random too.
+        "comment": {k: v for k, v in found["comment"].items() if k != "history_entry"},
+        "explanations": found["explanations"],
+        "checks": [
+            (c["kind"], c["revision"], c["state"], c["rejected"], c["unavailable"])
+            for c in found["checks"]["checks"]
+        ],
+        "queue": found["checks"]["queue"],
+        "findings": sorted(
+            (f["origin"], f["status"], f["revision"], f["statement"])
+            for f in found["findings"]["findings"]
+        ),
+        "notices": len(found["notices"]),
+    }
+
+
 @pytest.mark.asyncio
-async def test_bodies_from_version_14_answer_as_before(stores, tmp_path):
+@pytest.mark.parametrize("version", [TEXT_REVISIONS - 1, TEXT_MATH - 1])
+async def test_texts_from_an_older_version_answer_and_are_checked_as_before(
+    stores, tmp_path, version
+):
+    """A store copied back to version 14 or 15 answers as before after migrating, and
+    its texts' next revisions are queued and checked as the original store's are."""
     docs, reviews, clock = stores
     made = await history(docs, reviews)
     before = answers(docs, reviews, made)
     old = store_path(tmp_path / "old")
-    older_store(docs.path, old, TEXT_REVISIONS - 1)
+    older_store(docs.path, old, version)
     copied = DocumentStore(old)
     try:
         copied.initialize()  # the writer brings the store to the current version
-        assert answers(copied, ReviewStore(copied, clock=lambda: clock[0]), made) == before
+        moved = ReviewStore(copied, clock=lambda: clock[0])
+        assert answers(copied, moved, made) == before
+        await more(copied, moved, made)
+        went_on = shape(answers(copied, moved, made))
+    finally:
+        copied.close()
+    await more(docs, reviews, made)
+    assert went_on == shape(answers(docs, reviews, made))
+    assert len(went_on["checks"]) == len(before["checks"]["checks"]) + 2
+
+
+@pytest.mark.asyncio
+async def test_a_text_check_without_its_queue_is_refused(stores, tmp_path):
+    docs, reviews, _ = stores
+    await history(docs, reviews)
+    old = store_path(tmp_path / "old")
+    older_store(docs.path, old, TEXT_MATH - 1)
+    with sqlite3.connect(old) as db:
+        db.execute("DELETE FROM comment_math_sources")
+    copied = DocumentStore(old)
+    try:
+        with pytest.raises(ControlError, match=r"stays at version 15.*text_math_sources"):
+            copied.initialize()
     finally:
         copied.close()
 

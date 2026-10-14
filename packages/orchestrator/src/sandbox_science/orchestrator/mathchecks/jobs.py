@@ -138,10 +138,10 @@ class MathJobs:
                     "UPDATE math_sources SET retry_requested=1 WHERE project=? AND "
                     "completed=target AND EXISTS(SELECT 1 FROM math_jobs j WHERE "
                     "j.document=math_sources.document AND j.revision=target AND "
-                    "NOT EXISTS(SELECT 1 FROM math_comment_jobs c WHERE c.check_id=j.check_id) AND "
+                    "NOT EXISTS(SELECT 1 FROM math_text_jobs x WHERE x.check_id=j.check_id) AND "
                     "j.rowid=(SELECT max(k.rowid) FROM math_jobs k WHERE "
                     "k.document=j.document AND k.revision=j.revision AND NOT EXISTS "
-                    "(SELECT 1 FROM math_comment_jobs c WHERE c.check_id=k.check_id)) AND "
+                    "(SELECT 1 FROM math_text_jobs x WHERE x.check_id=k.check_id)) AND "
                     "j.state='finished' AND (j.unavailable>0 OR (? IS NOT NULL AND "
                     "j.configuration!=?)))"
                 ),
@@ -457,13 +457,9 @@ class MathJobs:
                     (document,),
                 )
                 db.execute(
-                    "UPDATE comment_math_sources SET blocked='math observation quota reached' "
-                    "WHERE entry_id=(SELECT entry_id FROM math_comment_jobs WHERE check_id=?)",
-                    (check,),
-                )
-                db.execute(
-                    "UPDATE response_math_sources SET blocked='math observation quota reached' "
-                    "WHERE source=(SELECT source FROM math_response_jobs WHERE check_id=?)",
+                    "UPDATE text_math_sources SET blocked='math observation quota reached' "
+                    "WHERE (subject_type,subject_id)=(SELECT subject_type,subject_id "
+                    "FROM math_text_jobs WHERE check_id=?)",
                     (check,),
                 )
                 return False

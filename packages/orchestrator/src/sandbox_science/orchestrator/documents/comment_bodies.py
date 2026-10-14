@@ -335,8 +335,8 @@ def commit(
     revision = prepared.base + 1
     TEXTS.append(db, entry, prepared.revision(revision, actor, origin=history))
     db.execute(
-        "INSERT INTO comment_math_sources(entry_id,document,project,target,blocked) "
-        "VALUES(?,?,?,?,?) ON CONFLICT(entry_id) DO UPDATE SET "
+        "INSERT INTO text_math_sources(subject_type,subject_id,parent,project,target,blocked) "
+        "VALUES('comment',?,?,?,?,?) ON CONFLICT(subject_type,subject_id) DO UPDATE SET "
         "target=excluded.target,blocked=excluded.blocked",
         (entry, document, project, revision, prepared.held),
     )
