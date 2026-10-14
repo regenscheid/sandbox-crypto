@@ -63,5 +63,6 @@ actual file-thread cancellation drainage, policy escalation denial and AGPL refu
 changed-update cancellation/recovery, MAIN offered-schema/handler agreement and
 read-only decoder compatibility. Fake
 package managers and disposable prefixes exercise the production API and policy
-path; no real OpenShell/package installation or runtime acceptance is claimed.
-Root owns full integration gates, independent review and real backend acceptance.
+path. Fresh combined gates pass11,464 Python/43 skips/two warnings/407.67s,828 web/42 post-build and all17 required checks/builds.
+
+[OpenShell Lab36](../.agents/docs/agent-reports/babbage-openshell-lab-36-2026-10-14.md) passed the actual scalar-first SymPy1.13.3→1.14.0 install/update, direct production MAIN handler, fresh guest version/function checks at both revisions, six artifacts, four events and known replay without new work. Runtime5c7/helper645 passed EXIT0/57.266s; complete owned teardown was independently cleared at2026-10-14T04:49:51.949614Z. This is metadata/command/functional observation, not installed-file restoration or model-loop proof. Fresh publication CI and delivery remain separate.

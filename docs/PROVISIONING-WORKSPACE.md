@@ -148,3 +148,10 @@ added. These local results are distinct from root's later integrated gates/runti
 ## Integrated viewer acceptance
 
 Root-owned [OpenShell Lab30](../.agents/docs/agent-reports/babbage-openshell-lab-30-2026-10-13.md) passed on signed clean `220cddd`, with exact corrected reader/GUI parity, real GP/Flint records, separate file approvals, native browser views, offline503 and120 stopped-environment GETs with unchanged SQL. All owned state was removed and independently checked. [PR #110](https://github.com/regenscheid/sandbox-crypto/pull/110) merged at `25159e1` on independently clear signed `70f9d12` after all four fresh checks passed (run `38415726829`). Primary main is clean/synced, locked dependencies checked and tree-identical to the reviewed head. The accepted report/archive remain immutable. The later [Lab31 comparison acceptance](../.agents/docs/agent-reports/babbage-openshell-lab-31-2026-10-13.md) completed on signed `ec1faea`: exact retained GP/Flint comparisons, canonical raw/ref/blob proof, native nine-difference pages in both directions and thirty paired reads while the original VM was Stopped. The first workspace interruption and original tuple/list helper assertion are preserved; source-reviewed root normalization qualifies unchanged complete SQL values, and helper-only `f0e0157` fixes that representation after teardown. All owned state was independently removed. Comparison final archive review/fresh CI delivery remains in progress; unchanged/base package-license visibility and GUI operator actions stay separate.
+
+
+The existing read-only detail decoder also accepts the bounded explicit `upgrade`
+action and labels it in the operation panel; omitted legacy action remains install.
+This adds no new fetch owner or action/permission control. The production worker
+and direct MAIN handler update path passed [Lab36](../.agents/docs/agent-reports/babbage-openshell-lab-36-2026-10-14.md);
+that run is backend acceptance and does not claim a new browser acceptance run.
