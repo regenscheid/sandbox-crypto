@@ -17,7 +17,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -65,6 +65,7 @@ class ControlStore:
         self.timeout = timeout
         self._lock = threading.RLock()
         self._db: sqlite3.Connection | None = None
+        self._after: list[Callable[[], None]] | None = None
 
     @property
     def missing(self) -> bool:
@@ -114,6 +115,8 @@ class ControlStore:
                 if not _busy(error):
                     raise
                 raise self._held() from error
+            after: list[Callable[[], None]] = []
+            self._after = after
             try:
                 yield Tx(db)
                 db.execute("COMMIT")
@@ -121,6 +124,20 @@ class ControlStore:
                 if db.in_transaction:
                     db.execute("ROLLBACK")
                 raise
+            finally:
+                self._after = None
+        for action in after:
+            action()
+
+    def after_commit(self, action: Callable[[], None]) -> None:
+        """Run ``action`` once the calling thread's open change commits, and never if it
+        rolls back: for state outside the database, such as a cache, that must not hold
+        what was never committed. ``action`` runs in that thread, after the lock on this
+        store's transactions is released; it must not fail, since the change stands."""
+        with self._lock:
+            if self._after is None or self._db is None or not self._db.in_transaction:
+                raise ControlError(INTERNAL, "after_commit needs an open change")
+            self._after.append(action)
 
     @contextmanager
     def read(self) -> Generator[Tx]:

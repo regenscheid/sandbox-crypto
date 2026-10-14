@@ -1,11 +1,15 @@
 # SPDX-License-Identifier: MIT
 """User source reconciliation, retained patch review, promotion and exact-ID reverts."""
 
+import sqlite3
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
+from sandbox_science.orchestrator.control import Tx
 from sandbox_science.orchestrator.documents import USER, Author, DocumentError, DocumentStore
 
 AGENT = Author(kind="agent", session_id="a", run_id="run-a", role="main")
@@ -304,3 +308,32 @@ def test_editing_preparation_runs_outside_writer_transaction(store: DocumentStor
     store.revert("p", doc, base=3, target=1, author=USER, reason="restore", operation_id="restore")
     store._cache.clear()
     edit(store, doc, 4, "# Heading\n\nUser $x$.\n\nLast.\n")
+
+
+def test_a_change_whose_commit_fails_leaves_no_parse_behind(
+    store: DocumentStore, monkeypatch: pytest.MonkeyPatch
+):
+    doc = create(store)
+    edit(store, doc, 1, "# Heading\n\nEntirely different $q$.\n\nExtra.\n\nAnother.\n")
+    write = store.control.write
+
+    @contextmanager
+    def failing() -> Generator[Tx]:
+        with write() as tx:
+            yield tx
+            raise sqlite3.OperationalError("disk I/O error")  # as a failed COMMIT
+
+    # A revert to revision 1 restores its text and IDs, but never commits.
+    with monkeypatch.context() as broken:
+        broken.setattr(store.control, "write", failing)
+        with pytest.raises(sqlite3.OperationalError):
+            store.revert("p", doc, base=2, target=1, author=USER, reason="r", operation_id="r")
+    # Another process saves the same text as an edit, which takes new IDs for the
+    # blocks revision 2 lacks.
+    fresh = DocumentStore(store.path)
+    try:
+        edit(fresh, doc, 2, "# Heading\n\nFirst $x$ and $y$.\n\nLast.\n", op="same-text")
+        assert store.mapped("p", doc).block_ids == fresh.mapped("p", doc).block_ids
+        assert store.mapped("p", doc).span_ids == fresh.mapped("p", doc).span_ids
+    finally:
+        fresh.close()
