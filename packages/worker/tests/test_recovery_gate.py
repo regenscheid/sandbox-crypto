@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import sqlite3
 import threading
 import tracemalloc
 from datetime import UTC, datetime
@@ -121,27 +122,22 @@ def test_existing_ready_gate_reconciles_unfinished_legacy_install_before_open(
 
 
 @pytest.mark.parametrize("field", ["operation", "mode"])
-def test_corrupt_large_gate_scalar_refuses_before_python_materialization(
-    tmp_path: Path, field: str
-) -> None:
+def test_a_corrupt_gate_scalar_is_refused_when_written(tmp_path: Path, field: str) -> None:
+    # Changed by C-08: the gate's values are checked when they are written (decision 3),
+    # so a corrupt one never reaches a read, which takes the row as it is.
     store = Store(tmp_path / "worker.db")
     try:
         store.bind_package_gate("env1", "binding")
+        before = store.package_gate("env1")
         query = (
             "UPDATE package_execution_gates SET operation=?,mode='hold'"
             if field == "operation"
             else "UPDATE package_execution_gates SET mode=?"
         )
-        store._db.execute(query, ("x" * 20_000_000,))
-        tracemalloc.start()
-        try:
-            with pytest.raises(WorkerError, match="invalid retained"):
-                store.package_gate("env1")
-            with pytest.raises(WorkerError, match="invalid retained"):
-                store.bind_package_gate("env1", "binding")
-            assert tracemalloc.get_traced_memory()[1] < 100_000
-        finally:
-            tracemalloc.stop()
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
+            store._db.execute(query, ("x" * 20_000_000,))
+        assert store.package_gate("env1") == before
+        store.bind_package_gate("env1", "binding")
     finally:
         store.close()
 
@@ -245,21 +241,16 @@ def test_deletion_requires_original_proof_at_both_boundaries(tmp_path: Path, pro
         store.close()
 
 
-def test_large_corrupt_original_binding_refuses_before_fetch_and_clear(tmp_path: Path) -> None:
+def test_a_large_original_binding_is_refused_when_written(tmp_path: Path) -> None:
+    # Changed by C-08: the binding's bound is checked when it is written (decision 3).
     store = Store(tmp_path / "worker.db")
     try:
         store.bind_package_gate("env1", "original")
         store.set_package_status("env1", "needs_recovery", "prv-first", 1)
-        store._db.execute("UPDATE package_execution_gates SET binding=?", ("x" * 20_000_000,))
-        tracemalloc.start()
-        try:
-            with pytest.raises(WorkerError, match="invalid retained package sandbox binding"):
-                store.guard_package_deletion("env1", "original")
-            with pytest.raises(WorkerError, match="invalid retained package sandbox binding"):
-                store.forget_package_gate("env1", binding="original")
-            assert tracemalloc.get_traced_memory()[1] < 100_000
-        finally:
-            tracemalloc.stop()
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
+            store._db.execute("UPDATE package_execution_gates SET binding=?", ("x" * 20_000_000,))
+        with pytest.raises(WorkerError, match="binding changed"):
+            store.guard_package_deletion("env1", "replacement")
         assert store.package_gate("env1").mode == "needs_recovery"
     finally:
         store.close()

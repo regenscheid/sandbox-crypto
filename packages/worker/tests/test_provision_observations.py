@@ -776,20 +776,13 @@ def test_ready_operation_empty_text_does_not_admit_original_wrong_sql_types(
 
 
 @pytest.mark.parametrize("blob", [False, True])
-def test_ready_operation_large_corruption_refuses_without_materializing_value(
-    store: Store, blob: bool
-) -> None:
+def test_a_large_corrupt_gate_operation_is_refused_when_written(store: Store, blob: bool) -> None:
+    # Changed by C-08: a gate's values are checked when they are written (decision 3), so
+    # no read meets a corrupt operation.
     value = b"x" * (20 * 1024 * 1024) if blob else "x" * (20 * 1024 * 1024)
-    store._db.execute(
-        "INSERT INTO package_execution_gates VALUES ('env',2,'ready',?,NULL,'')", (value,)
-    )
-    tracemalloc.start()
-    try:
-        with pytest.raises(WorkerError) as error:
-            store.provision_observations.summary("p", "env", since=0)
-        _, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
-    assert error.value.kind is ErrorKind.UNAVAILABLE
-    assert peak < 128 * 1024
+    with pytest.raises(sqlite3.IntegrityError, match=r"CHECK constraint failed|cannot store"):
+        store._db.execute(
+            "INSERT INTO package_execution_gates VALUES ('env',2,'ready',?,NULL,'')", (value,)
+        )
+    assert store.provision_observations.summary("p", "env", since=0) is not None
     assert not store._db.in_transaction
