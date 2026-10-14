@@ -472,18 +472,12 @@ class DocumentStore:
 
             for statement in ANNOTATION_SCHEMA:
                 db.execute(statement)
-            from .publication import prepare as prepare_publication
-
-            prepare_publication(db)
             from .mathqueue import prepare as prepare_math
 
             prepare_math(db)
             from .project_macros import prepare as prepare_macros
 
             prepare_macros(db)
-            from .exports import prepare as prepare_export_inputs
-
-            prepare_export_inputs(db)
             from .comment_bodies import SCHEMA as COMMENT_BODY_SCHEMA
 
             for statement in COMMENT_BODY_SCHEMA:
@@ -1905,10 +1899,7 @@ class DocumentStore:
                 _dumps(payload),
             ),
         )
-        from .publication import record_event
-
         assert cursor.lastrowid is not None  # noqa: S101 - this event was inserted
-        record_event(db, kind, info.document_id, cursor.lastrowid)
         from .mathqueue import record_event as record_math
 
         record_math(db, kind, info.document_id, cursor.lastrowid)

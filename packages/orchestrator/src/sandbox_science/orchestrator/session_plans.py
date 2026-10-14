@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Internal immutable session plans and attributed progress, without runtime wiring.
+"""Internal immutable session plans and attributed progress, used by `plan_tools` and the CLI.
 
 Authority is a trusted caller capability, never a field decoded from model requests.
 This module borrows DocumentStore's connection/transaction and never closes it.

@@ -19,6 +19,7 @@ import logging
 import os
 import signal
 import socket
+import sqlite3
 import subprocess
 import sys
 import time
@@ -260,6 +261,19 @@ async def test_c1_a_worker_starts_again_after_a_crash(
     finally:
         await started.manager.close()
         store.close()
+
+
+async def test_c1_a_store_with_delegated_run_executions_is_refused(tmp_path: Path) -> None:
+    # Delegated runs were removed; their old executions must not be read as ordinary ones.
+    path = tmp_path / "worker.sqlite3"
+    Store(path).close()
+    with contextlib.closing(sqlite3.connect(path)) as db, db:
+        db.execute(
+            "INSERT INTO executions VALUES ('exe-run', 'op-run', 'd', 'env1', 's1', 0, '{}',"
+            " 'run-v1')"
+        )
+    with pytest.raises(WorkerError, match="delegated-run executions"):
+        Store(path)
 
 
 async def test_c1_sigterm_stops_the_worker_cleanly_and_it_starts_again(tmp_path: Path) -> None:

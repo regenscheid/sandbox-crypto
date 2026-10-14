@@ -465,7 +465,7 @@ async def test_logical_quota_holds_checks_without_vetoing_edits(stores) -> None:
         assert db.execute("SELECT count(*) FROM math_observations").fetchone()[0] == 0
 
 
-def test_save_hook_fault_rolls_source_event_and_publication_back(stores, monkeypatch) -> None:
+def test_save_hook_fault_rolls_source_and_event_back(stores, monkeypatch) -> None:
     from sandbox_science.orchestrator.documents import mathqueue
 
     docs, _, _ = stores
@@ -1098,7 +1098,7 @@ async def test_valid_older_writer_revision_reconciles_without_losing_owner(
     docs, reviews, _ = stores
     doc = create(docs)
     await drain(reviews, ScriptedChecker())
-    # The older writer saves a normal immutable revision/event/publication, but
+    # The older writer saves a normal immutable revision and event, but
     # has no D82 hook. Do not manufacture source rows or alter revision evidence.
     with monkeypatch.context() as old:
         old.setattr(mathqueue, "record_event", lambda *args: None)
