@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
-import itertools
 import logging
 import math
 import posixpath
@@ -23,7 +22,6 @@ import sqlite3
 from collections import OrderedDict
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextvars import ContextVar
-from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
@@ -75,7 +73,6 @@ from sandbox_science.contracts import (
     WriteFileResult,
     new_id,
 )
-from sandbox_science.contracts.output_observations import Gap, OutputReport
 from sandbox_science.contracts.worker import (
     DEFAULT_OUTPUT_LIMIT,
     FEATURES,
@@ -94,11 +91,13 @@ from .connections import Activity, Connection, ConnectionHooks, EnvironmentConne
 from .errors import ExecutorRefusalError, WorkerError
 from .identity import execution_digest, same_execution
 from .kernels import KernelRegistry
+from .live import REQUEST, Live, time_limit
 from .output_observations import normalize as normalize_observation
 from .package_admission import LEGACY as PACKAGE_GATE_LEGACY
 from .package_admission import PackageAdmission, guard_reuse
 from .package_gate import PackageGate
 from .publication import Publication
+from .recovery import DaemonRecovery, RecoveryHooks
 from .replies import Range, epoch, integer
 from .revisions import Prepared, Revisions, package_commands
 from .shared_sync import SharedSync
@@ -108,7 +107,6 @@ from .usability import Usability
 
 _log = logging.getLogger(__name__)
 _EVENT = TypeAdapter[Event](Event)
-_REQUEST = TypeAdapter[ExecutionRequest](ExecutionRequest)
 _SOURCE_EVENT: ContextVar[tuple[str, int] | None] = ContextVar("executor_source", default=None)
 
 MAX_HELD_NOTICES = 20
@@ -119,8 +117,6 @@ _UNSYNCED = (
     "shared/ could not be synced with the project's other environments just now; "
     "it is synced again at the next call"
 )
-STARTUP_RECOVERY_ATTEMPTS = 5
-"""Recovery attempts at startup before the worker refuses to start."""
 EVENT_PAGE = 64
 """Events read from the store at a time when a client replays a stream."""
 OUTPUT_BUDGET = 4
@@ -143,13 +139,6 @@ current lockfile asked for instead, while it is current."""
 _EXECUTION = re.compile(r"exe-[0-9a-f]{24}")
 
 
-def _time_limit(request: ExecutionRequest) -> float:
-    """The request's time limit; a job's comes from the policy at submission when unset."""
-    if request.timeout_seconds is None:
-        raise WorkerError(ErrorKind.INTERNAL, "the job's time limit was never resolved")
-    return request.timeout_seconds
-
-
 def _seconds(value: object) -> float:
     if isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value):
         return max(0.0, float(value))
@@ -164,43 +153,6 @@ def _text(value: object, limit: int) -> str | None:
         return value
     half = limit // 2
     return f"{value[:half]}\n[… {len(value) - 2 * half} characters omitted …]\n{value[-half:]}"
-
-
-@dataclass
-class _Live:
-    execution: Execution
-    environment_id: str
-    changed: asyncio.Future[None]
-    final_source_seq: int | None = None
-    observation: OutputReport | None = None
-    observation_gap: Gap | None = "missing"
-    limit: int = DEFAULT_OUTPUT_LIMIT
-    cancel_requested: bool = False
-    dispatched: bool = False
-    reattached: bool = False
-    """An unseen kernel birth replayed after detach cannot establish a new start pin."""
-    watchdog: asyncio.Task[None] | None = None
-    cancel_watchdog: asyncio.Task[None] | None = None
-    stored: int = 0
-    """Bytes of stream text and rich output stored as events."""
-    events: int = 0
-    overflowed: bool = False
-    channel: ExecutorChannel | None = None
-    """The executor the execution was sent to: only it may cancel or lose it."""
-    notices: list[str] = field(default_factory=list[str])
-    """What syncing the project's shared files told before the execution ran (D79)."""
-    dispatched_at: float = 0.0
-    """When the request went to the executor, by the monotonic clock."""
-    final: tuple[ExecutionState, Result] | None = None
-    """The executor's outcome, held while the shared files sync after it (D79)."""
-    ended_at: float = 0.0
-    """When the executor reported the outcome, by the monotonic clock."""
-    revisions: int = 0
-    """``revision`` events it carried."""
-    lockfiles: int = 0
-    """Lockfiles its ``revision`` events brought or had asked for."""
-    lockfile_attempts: set[str] = field(default_factory=set[str])
-    """The attempts whose lockfiles its ``revision`` events brought."""
 
 
 Notices = Callable[[str, datetime], list[tuple[datetime, str]]]
@@ -252,7 +204,7 @@ class ExecutionManager:
         """Seconds the executor gets to confirm it cleaned up a cancelled capture."""
         self._closing_task: asyncio.Task[None] | None = None
         self.state_dir = state_dir
-        self._live: dict[str, _Live] = {}
+        self._live: dict[str, Live] = {}
         self._held_notices: OrderedDict[tuple[str, str], list[str]] = OrderedDict()
         """Notices from syncing shared files for file requests, by environment and session,
         for the session's next result there (D79)."""
@@ -270,10 +222,10 @@ class ExecutionManager:
                 on_event=lambda environment_id, message: self._on_event(environment_id, message),
                 on_closed=lambda environment_id, channel: self._on_closed(environment_id, channel),
                 daemon_identity=lambda environment_id: self._daemon_binding(environment_id),
-                incarnation_lost=lambda environment_id, previous: self._incarnation_lost(
+                incarnation_lost=lambda environment_id, previous: self._recovery.incarnation_lost(
                     environment_id, previous
                 ),
-                recycle=lambda environment_id: self._spawn(self._recycle_daemon(environment_id)),
+                recycle=lambda environment_id: self._spawn(self._recovery.recycle(environment_id)),
                 sync_package_gate=lambda environment_id, channel: self._admission.sync(
                     environment_id, channel
                 ),
@@ -313,8 +265,26 @@ class ExecutionManager:
             max_artifact_size=lambda: self.max_artifact_size,
             ack_timeout=lambda: self.capture_ack_timeout,
         )
+        self._recovery = DaemonRecovery(
+            store,
+            self._connections,
+            self._usability,
+            self._publication,
+            RecoveryHooks(
+                lives=lambda: self._live.values(),
+                lose=lambda live, what: self._lose(live, what),
+                spawn=lambda coroutine: self._spawn(coroutine),
+                watch=lambda live, timeout: self._watch(live, timeout),
+                watch_cancel=lambda live: self._watch_cancel(live),
+                send_cancel=lambda live: self._send_cancel(live),
+                connect=lambda environment_id: self._environment(environment_id),
+            ),
+            clock=clock,
+            timeouts=lambda: self.timeouts,
+            confirmed_daemon_loss=lambda: self.confirmed_daemon_loss,
+            recycle_daemon=lambda: self.recycle_daemon,
+        )
         self._streams_ended = False
-        self._pollers: dict[str, tuple[ExecutorChannel, asyncio.Task[Any]]] = {}
         self.job_resources: Callable[[str], Resources] | None = None
         self.confirmed_daemon_loss: Callable[[str], Awaitable[bool]] | None = None
         self.daemon_identity: Callable[[str], tuple[str, str] | None] | None = None
@@ -345,7 +315,7 @@ class ExecutionManager:
                 "sandbox daemon endpoints remain; explicitly release or recycle their "
                 "sandboxes before disabling daemon transport; startup refused",
             )
-        recovery: dict[str, list[_Live]] = {key: [] for key in endpoints}
+        recovery: dict[str, list[Live]] = {key: [] for key in endpoints}
         for execution_id, execution in self.store.unfinished():
             if execution is None:
                 self.store.mark_terminal(execution_id)
@@ -353,7 +323,7 @@ class ExecutionManager:
             last = max(execution.last_seq, self.store.last_seq(execution_id))
             try:
                 saved = self.store.recovery(execution_id)
-                request = _REQUEST.validate_json(saved[0]) if saved is not None else None
+                request = REQUEST.validate_json(saved[0]) if saved is not None else None
             except (ValueError, sqlite3.Error):
                 request = None
                 saved = None
@@ -369,225 +339,7 @@ class ExecutionManager:
             else:
                 self._lose(live, "the worker that restarted without a recoverable daemon dispatch")
         for environment_id in recovery:
-            await self._recover(environment_id, startup=True)
-
-    async def _recover(self, environment_id: str, *, startup: bool = False) -> None:
-        """Reattach the unfinished executions of an environment that lost their bridge.
-
-        One recovery runs for an environment at a time. Each attempt collects the
-        executions again, so one whose bridge was lost while a recovery ran is not left
-        behind, and attempts repeat with a capped backoff until none is left. Startup
-        waits for one attempt that reaches the daemon, and refuses to start without one.
-        """
-        if not self._usability.begin_recovery(environment_id):
-            return
-        delay = self.timeouts.recovery_retry
-        try:
-            for attempt in itertools.count(1):
-                try:
-                    reached = await self._recover_once(environment_id, startup=startup)
-                except Exception:
-                    if startup:
-                        raise
-                    _log.exception("recovering the executions of %s failed", environment_id)
-                    reached = False
-                if self._usability.closing or (
-                    reached and (startup or not self._unattached(environment_id))
-                ):
-                    break
-                if startup and attempt == STARTUP_RECOVERY_ATTEMPTS:
-                    raise WorkerError(
-                        ErrorKind.UNAVAILABLE,
-                        "cannot reconcile the sandbox daemon; startup refused",
-                    )
-                await asyncio.sleep(delay)
-                delay = min(2 * delay, self.timeouts.recovery_retry_max)
-        finally:
-            self._usability.end_recovery(environment_id)
-        if startup and not self._usability.closing and self._unattached(environment_id):
-            self._spawn(self._recover(environment_id))
-
-    def _unattached(self, environment_id: str) -> list[_Live]:
-        """An environment's unfinished dispatched executions that no open bridge carries."""
-        return [
-            live
-            for live in self._live.values()
-            if live.environment_id == environment_id
-            and live.dispatched
-            and live.execution.state not in TERMINAL_STATES
-            and (live.channel is None or live.channel.closed)
-        ]
-
-    def _keep_watchdog(self, live: _Live) -> None:
-        """Keep an existing watchdog across reconnects.
-
-        At startup, reconstruct one absolute deadline, including its original grace,
-        rather than refreshing it.
-        """
-        live.reattached = True
-        saved = self.store.recovery(live.execution.execution_id)
-        if saved is not None and (live.watchdog is None or live.watchdog.done()):
-            request = _REQUEST.validate_json(saved[0])
-            elapsed = max(
-                0.0,
-                (
-                    self.clock.now() - (live.execution.started_at or live.execution.submitted_at)
-                ).total_seconds(),
-            )
-            live.watchdog = self._spawn(self._watch(live, _time_limit(request) - elapsed))
-
-    async def _recover_once(self, environment_id: str, *, startup: bool) -> bool:
-        """One recovery attempt; whether it reached the daemon or found the sandbox gone."""
-        for live in self._unattached(environment_id):
-            self._keep_watchdog(live)
-        if self.confirmed_daemon_loss is not None and await self.confirmed_daemon_loss(
-            environment_id
-        ):
-            self._usability.sandbox_stopped(environment_id)
-            for live in self._unattached(environment_id):
-                self._lose(live, "the sandbox that was deleted, stopped or replaced")
-            return True
-        try:
-            channel = (await self._environment(environment_id)).channel
-        except WorkerError:
-            return False
-        if channel is None:
-            return False
-        try:
-            await self._reconcile_unknown(channel)
-        except WorkerError as exc:
-            await channel.shutdown()
-            if startup:
-                raise WorkerError(
-                    ErrorKind.UNAVAILABLE,
-                    "cannot quiesce unknown daemon tasks; startup refused",
-                ) from exc
-            for live in self._unattached(environment_id):
-                self._lose(live, "the sandbox executor incarnation")
-            return True
-        for live in self._unattached(environment_id):
-            if live.execution.state in TERMINAL_STATES:
-                continue
-            self._keep_watchdog(live)
-            saved = self.store.recovery(live.execution.execution_id)
-            if saved is None or channel.incarnation != saved[1]:
-                self._lose(live, "the sandbox executor incarnation")
-                continue
-            live.channel = channel
-            live.dispatched = True
-            environment = self._connections.get(environment_id)
-            if environment is not None:
-                environment.running.add(live.execution.execution_id)
-            if live.cancel_requested:
-                self.store.cancel_intent(live.execution.execution_id)
-                if live.cancel_watchdog is None or live.cancel_watchdog.done():
-                    live.cancel_watchdog = self._spawn(self._watch_cancel(live))
-                try:
-                    async with asyncio.timeout(self.timeouts.cancel_grace):
-                        await self._send_cancel(live)
-                        if live.execution.origin is not None:
-                            # Withdrawn provisioning ownership cannot leave an
-                            # installer running while the service starts accepting work.
-                            while live.execution.state not in TERMINAL_STATES:
-                                await self._replay(live, channel)
-                                if live.execution.state not in TERMINAL_STATES:
-                                    await asyncio.sleep(0.05)
-                except (WorkerError, TimeoutError):
-                    await channel.shutdown()
-                    self._lose(live, "the executor that did not confirm recovery cancellation")
-                    continue
-            try:
-                await self._replay(live, channel)
-            except WorkerError:
-                await channel.close()
-                break
-        self._poll(environment_id, channel)
-        return True
-
-    async def _reconcile_unknown(self, channel: ExecutorChannel) -> None:
-        """Withdraw control-created tasks whose ownership did not survive the worker.
-
-        Reconciliation can only cancel IDs; no sandbox claim can create work or widen
-        the saved limits of a known attempt.
-        """
-        known = {
-            key for key, live in self._live.items() if live.execution.state not in TERMINAL_STATES
-        }
-        try:
-            async with asyncio.timeout(self.timeouts.cancel_grace):
-                reply = await channel.request("active")
-                raw: Any = reply.get("executions")
-                if (
-                    not isinstance(raw, list)
-                    or len(cast(list[object], raw)) > 128
-                    or any(
-                        not isinstance(key, str) or re.fullmatch(r"exe-[0-9a-f]{24}", key) is None
-                        for key in cast(list[object], raw)
-                    )
-                ):
-                    raise WorkerError(ErrorKind.UNAVAILABLE, "invalid executor reconciliation")
-                unknown = set(cast(list[str], raw)) - known
-                for key in unknown:
-                    await channel.request("cancel", execution=key)
-                while unknown:
-                    reply = await channel.request("active")
-                    raw = reply.get("executions")
-                    if not isinstance(raw, list) or len(cast(list[object], raw)) > 128:
-                        raise WorkerError(ErrorKind.UNAVAILABLE, "invalid executor reconciliation")
-                    unknown.intersection_update(
-                        item for item in cast(list[object], raw) if isinstance(item, str)
-                    )
-                    if unknown:
-                        await asyncio.sleep(0.05)
-        except TimeoutError as exc:
-            raise WorkerError(ErrorKind.UNAVAILABLE, "unknown executor tasks did not stop") from exc
-
-    def _poll(self, environment_id: str, channel: ExecutorChannel) -> None:
-        previous = self._pollers.get(environment_id)
-        if previous is not None and not previous[1].done():
-            if previous[0] is channel:
-                return
-            previous[1].cancel()
-        self._pollers[environment_id] = (
-            channel,
-            self._spawn(self._poll_daemon(environment_id, channel)),
-        )
-
-    async def _replay(self, live: _Live, channel: ExecutorChannel) -> None:
-        saved = self.store.recovery(live.execution.execution_id)
-        reply = await channel.request(
-            "replay",
-            execution=live.execution.execution_id,
-            after=saved[2] if saved else 0,
-            reply_timeout=30,
-        )
-        if reply.get("found") is not True and live.execution.state not in TERMINAL_STATES:
-            self._lose(live, "the executor with no retained execution record")
-
-    async def _poll_daemon(self, environment_id: str, channel: ExecutorChannel) -> None:
-        """Replay the bridge's executions until it closes.
-
-        A failed bridge is closed, which starts a recovery. Any other failure, such as
-        one of the store, is logged and the poller goes on, waiting longer while it lasts.
-        """
-        delay = self.timeouts.poll_interval
-        while not self._usability.closing and not channel.closed:
-            try:
-                for live in list(self._live.values()):
-                    if (
-                        live.channel is channel
-                        and live.execution.state not in TERMINAL_STATES
-                        and live.final is None
-                    ):
-                        await self._replay(live, channel)
-                delay = self.timeouts.poll_interval
-            except WorkerError:
-                await channel.close()
-                return
-            except Exception:
-                _log.exception("polling the executor of %s failed", environment_id)
-                delay = min(2 * delay, self.timeouts.poll_retry_max)
-            await asyncio.sleep(delay)
+            await self._recovery.recover(environment_id, startup=True)
 
     async def release(self, environment_id: str) -> None:
         """Stop an environment's executor before its sandbox goes away.
@@ -651,7 +403,7 @@ class ExecutionManager:
             if live.execution.state not in TERMINAL_STATES and not recoverable:
                 self._lose(live, "the worker")
 
-    def _lose(self, live: _Live, what: str) -> None:
+    def _lose(self, live: Live, what: str) -> None:
         """End an attempt whose outcome is unknown, because ``what`` stopped during it."""
         message = f"{what} stopped during this attempt; its outcome is unknown"
         if live.execution.job is not None:
@@ -697,8 +449,8 @@ class ExecutionManager:
         else:
             _log.error("background task %s failed", name, exc_info=error)
 
-    def _track(self, execution: Execution, limit: int = DEFAULT_OUTPUT_LIMIT) -> _Live:
-        live = _Live(
+    def _track(self, execution: Execution, limit: int = DEFAULT_OUTPUT_LIMIT) -> Live:
+        live = Live(
             execution,
             execution.context.environment_id,
             asyncio.get_running_loop().create_future(),
@@ -707,15 +459,15 @@ class ExecutionManager:
         self._live[execution.execution_id] = live
         return live
 
-    def _save(self, live: _Live, **changes: Any) -> None:
+    def _save(self, live: Live, **changes: Any) -> None:
         live.execution = live.execution.model_copy(update=changes)
         self.store.update_execution(live.execution)
 
-    def _changed(self, live: _Live) -> None:
+    def _changed(self, live: Live) -> None:
         changed, live.changed = live.changed, asyncio.get_running_loop().create_future()
         changed.set_result(None)
 
-    def _emit(self, live: _Live, make: Callable[[int, datetime], Event]) -> None:
+    def _emit(self, live: Live, make: Callable[[int, datetime], Event]) -> None:
         seq = live.execution.last_seq + 1
         event = make(seq, self.clock.now())
         live.execution = live.execution.model_copy(update={"last_seq": seq})
@@ -726,7 +478,7 @@ class ExecutionManager:
         self.store.commit_event(live.execution, event, acknowledged)
         self._changed(live)
 
-    def _state(self, live: _Live, state: ExecutionState) -> None:
+    def _state(self, live: Live, state: ExecutionState) -> None:
         execution_id = live.execution.execution_id
         self._emit(
             live,
@@ -735,7 +487,7 @@ class ExecutionManager:
             ),
         )
 
-    def _finish(self, live: _Live, state: ExecutionState, result: Result) -> None:
+    def _finish(self, live: Live, state: ExecutionState, result: Result) -> None:
         """End an execution: its state event, result event and record are stored together."""
         if live.execution.state in TERMINAL_STATES:
             return
@@ -827,46 +579,6 @@ class ExecutionManager:
     def _daemon_binding(self, environment_id: str) -> tuple[str, str] | None:
         return self.daemon_identity(environment_id) if self.daemon_identity else None
 
-    async def _recycle_daemon(self, environment_id: str) -> None:
-        """Fence the whole VM, outside the execution lock, before publishing a replacement.
-
-        OpenShell can refuse a peer's /proc/environ after its ancestor daemon dies.
-        Owner-mark scans alone cannot prove its escaped children have stopped. Keep
-        the old endpoint durable until the managed lifecycle confirms stop/start.
-        """
-        if self.recycle_daemon is None:
-            raise WorkerError(
-                ErrorKind.UNAVAILABLE,
-                "executor incarnation lost; replacement refused until the sandbox is recycled",
-            )
-        binding = self.store.recycle_binding(environment_id)
-        if binding is None:
-            raise WorkerError(
-                ErrorKind.UNAVAILABLE,
-                "original sandbox identity was not recorded; replacement refused until "
-                "an operator confirms cleanup of the original sandbox",
-            )
-        old_incarnation = self.store.endpoint_incarnation(environment_id)
-        await self.recycle_daemon(environment_id, *binding)
-        if old_incarnation is not None:
-            # This callback proved termination of the original immutable VM
-            # binding. Incarnation change/transport failure alone never clears.
-            self._publication.sandbox_stopped(environment_id, old_incarnation, *binding)
-        self._usability.sandbox_stopped(environment_id)
-
-    def _incarnation_lost(self, environment_id: str, previous: str) -> None:
-        """End the executions sent to the daemon of incarnation ``previous``, now gone."""
-        for live in list(self._live.values()):
-            saved = self.store.recovery(live.execution.execution_id)
-            if (
-                live.environment_id == environment_id
-                and live.dispatched
-                and saved is not None
-                and saved[1] == previous
-                and live.execution.state not in TERMINAL_STATES
-            ):
-                self._lose(live, "the sandbox executor incarnation")
-
     def _hello(self, environment_id: str, channel: ExecutorChannel) -> None:
         """Note the package state a new executor reports."""
         self._observe(environment_id, channel.hello.get("environment"), "")
@@ -952,14 +664,7 @@ class ExecutionManager:
         self._connections.channels.discard(channel)
         self._admission.channel_closed(channel)
         if channel.daemon_token is not None and (self._usability.closing or not channel.detaching):
-            poller = self._pollers.get(environment_id)
-            if poller is not None and poller[0] is channel:
-                self._pollers.pop(environment_id, None)
-                if poller[1] is not asyncio.current_task():
-                    poller[1].cancel()
-            self._connections.closed(environment_id, channel)
-            if not self._usability.closing:
-                self._spawn(self._recover(environment_id))
+            self._recovery.bridge_lost(environment_id, channel)
             return
         # The executions sent to this executor end with it, whether or not its
         # environment's record still names it.
@@ -1069,7 +774,7 @@ class ExecutionManager:
         self._spawn(self._dispatch(live, request))
         return live.execution, True
 
-    async def _dispatch(self, live: _Live, request: ExecutionRequest) -> None:
+    async def _dispatch(self, live: Live, request: ExecutionRequest) -> None:
         """Send the request to its executor; whatever goes wrong, the execution ends."""
         try:
             await self._send(live, request)
@@ -1093,14 +798,14 @@ class ExecutionManager:
                 ),
             )
 
-    def _fail(self, live: _Live, error: ErrorInfo) -> None:
+    def _fail(self, live: Live, error: ErrorInfo) -> None:
         environment = self._connections.get(live.environment_id)
         if environment is not None:
             environment.running.discard(live.execution.execution_id)
             environment.last_used = self.clock.monotonic()
         self._finish(live, ExecutionState.FAILED, Result(error=error))
 
-    async def _send(self, live: _Live, request: ExecutionRequest) -> None:
+    async def _send(self, live: Live, request: ExecutionRequest) -> None:
         execution_id = live.execution.execution_id
         if live.cancel_requested or live.execution.state in TERMINAL_STATES:
             self._finish(
@@ -1137,7 +842,7 @@ class ExecutionManager:
         fields: dict[str, Any] = {
             "execution": execution_id,
             "session": request.context.session_id,
-            "timeout": _time_limit(request),
+            "timeout": time_limit(request),
             "limit": request.output_limit_bytes,
         }
         if isinstance(request, ShellRequest | JobRequest):
@@ -1196,12 +901,12 @@ class ExecutionManager:
         self.store.observation_dispatch(
             live.execution, channel.incarnation, identity, daemon=channel.daemon_token is not None
         )
-        live.watchdog = self._spawn(self._watch(live, _time_limit(request)))
+        live.watchdog = self._spawn(self._watch(live, time_limit(request)))
         await channel.request(request.kind, **fields)
         if channel.daemon_token is not None:
-            self._poll(request.context.environment_id, channel)
+            self._recovery.poll(request.context.environment_id, channel)
 
-    async def _watch(self, live: _Live, timeout: float) -> None:
+    async def _watch(self, live: Live, timeout: float) -> None:
         await self.clock.sleep(max(0, timeout + self.timeouts.watchdog_grace))
         if live.execution.state in TERMINAL_STATES or live.final is not None:
             return
@@ -1284,7 +989,7 @@ class ExecutionManager:
         finally:
             _SOURCE_EVENT.reset(token)
 
-    def _apply(self, live: _Live, environment_id: str, message: Message) -> None:
+    def _apply(self, live: Live, environment_id: str, message: Message) -> None:
         execution_id = live.execution.execution_id
         kind = message.get("event")
         if kind == "state" and message.get("state") == "running":
@@ -1410,7 +1115,7 @@ class ExecutionManager:
                     live.watchdog = None
                 self._spawn(self._end(live, live.channel))
 
-    async def _end(self, live: _Live, channel: ExecutorChannel) -> None:
+    async def _end(self, live: Live, channel: ExecutorChannel) -> None:
         """Copy the shared files the attempt changed into the project's copy, then end it (D79).
 
         A later call in another environment of the project then finds them there.
@@ -1437,7 +1142,7 @@ class ExecutionManager:
                     ),
                 )
 
-    def _complete(self, live: _Live, notices: list[str]) -> None:
+    def _complete(self, live: Live, notices: list[str]) -> None:
         """End the attempt with the outcome the executor reported, and the sync's notices."""
         if live.final is None:
             return
@@ -1515,7 +1220,7 @@ class ExecutionManager:
             )
             return [_UNSYNCED]
 
-    def _admit(self, live: _Live, size: int) -> bool:
+    def _admit(self, live: Live, size: int) -> bool:
         """Charge one stream or output event to the execution's budget; False once spent.
 
         Past the event count, events are only dropped; past the byte budget, which
@@ -1540,11 +1245,11 @@ class ExecutionManager:
             )
         return live.events <= MAX_EVENTS
 
-    async def _cancel_quietly(self, live: _Live) -> None:
+    async def _cancel_quietly(self, live: Live) -> None:
         with contextlib.suppress(WorkerError):
             await self.cancel(live.execution.execution_id)
 
-    def _result(self, environment_id: str, live: _Live, raw: dict[str, Any]) -> Result:
+    def _result(self, environment_id: str, live: Live, raw: dict[str, Any]) -> Result:
         """The executor's result, checked and bounded by the attempt's output limit."""
         after = self._revision_after(environment_id, live, raw)
         kernel, lost = self._kernels.kernel(
@@ -1611,7 +1316,7 @@ class ExecutionManager:
             notices=self._notices(environment_id, live),
         )
 
-    def _notices(self, environment_id: str, live: _Live) -> tuple[str, ...]:
+    def _notices(self, environment_id: str, live: Live) -> tuple[str, ...]:
         """Admission notices the session has not seen, each once (D69).
 
         A session's first result starts from its submission; later ones from the last
@@ -1636,7 +1341,7 @@ class ExecutionManager:
             return location
         return location.model_copy(update={"environment_revision": str(record.revision)})
 
-    def _revision_after(self, environment_id: str, live: _Live, raw: dict[str, Any]) -> str | None:
+    def _revision_after(self, environment_id: str, live: Live, raw: dict[str, Any]) -> str | None:
         """The environment's revision once the attempt's fingerprint is counted. A change
         seen only here is unmanaged, so it is no provisioning operation's, even when the
         execution is one's step."""
@@ -1655,7 +1360,7 @@ class ExecutionManager:
         """
         return self.revisions.observe(environment_id, fingerprint, changed_by)
 
-    async def _revised(self, environment_id: str, live: _Live, message: Message) -> None:
+    async def _revised(self, environment_id: str, live: Live, message: Message) -> None:
         """A change to the environment's packages that the executor saw (CP-4, CP-16).
 
         A managed change names the attempt that ran its package commands, which must be
@@ -1720,7 +1425,7 @@ class ExecutionManager:
             )
         self._ask_lockfile(environment_id, live)
 
-    def _ask_lockfile(self, environment_id: str, live: _Live) -> None:
+    def _ask_lockfile(self, environment_id: str, live: Live) -> None:
         """Ask for the current lockfile on behalf of ``live``, within its budget: every
         lockfile checked counts, those an execution's start and end ask for too."""
         if live.lockfiles < MAX_EXECUTION_LOCKFILES and self._want_lockfile(environment_id):
@@ -1960,7 +1665,7 @@ class ExecutionManager:
             )
         return live.execution
 
-    async def _watch_cancel(self, live: _Live) -> None:
+    async def _watch_cancel(self, live: Live) -> None:
         """A direct job cancel has its own deadline, independent of the wall-time limit."""
         await self.clock.sleep(self.timeouts.cancel_grace)
         if live.execution.state in TERMINAL_STATES or live.final is not None:
@@ -1970,7 +1675,7 @@ class ExecutionManager:
         if channel is not None:
             await channel.shutdown()
 
-    async def _send_cancel(self, live: _Live) -> None:
+    async def _send_cancel(self, live: Live) -> None:
         if live.execution.state not in (ExecutionState.CANCELLING, *TERMINAL_STATES):
             live.execution = live.execution.model_copy(update={"state": ExecutionState.CANCELLING})
             self._state(live, ExecutionState.CANCELLING)

@@ -1149,7 +1149,7 @@ def record_channels(worker: Harness, monkeypatch: pytest.MonkeyPatch) -> list[Ex
 
 
 class Records(logging.Handler):
-    """The manager's error records; ``error`` is set by the first."""
+    """The worker's error records; ``error`` is set by the first."""
 
     def __init__(self) -> None:
         super().__init__(logging.ERROR)
@@ -1167,7 +1167,8 @@ class Records(logging.Handler):
 @pytest.fixture
 def manager_errors() -> Iterator[Records]:
     records = Records()
-    logger = logging.getLogger("sandbox_science.worker.manager")
+    # The manager and the parts behind it (recovery among them) log under the package.
+    logger = logging.getLogger("sandbox_science.worker")
     logger.addHandler(records)
     try:
         yield records
