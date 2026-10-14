@@ -4,9 +4,10 @@
 Tests marked ``integration`` need OpenShell, KVM, a cluster or the public registries.
 They run only when ``SS_INTEGRATION=1``, so CI and ordinary local runs skip them.
 
-After each test module, no process may still run from the run's temporary directory:
-an executor, a sandbox daemon, a kernel or a command they started. A module that
-leaves one fails at its last test's teardown, and the processes are killed.
+After each test module, no process this run started may still run from the run's
+temporary directory: an executor, a sandbox daemon, a kernel or a command they started
+(``sandbox_science.testing.processes`` says how one is recognized). A module that leaves
+one fails at its last test's teardown, and the processes are killed.
 """
 
 import os
