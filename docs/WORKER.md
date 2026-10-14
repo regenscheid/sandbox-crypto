@@ -52,14 +52,15 @@ The [restricted child controller](DELEGATED-CHILD-CONTROLLER.md) supplies the
 original prompt, positive tools, canonical attempt journal and explicit model
 budgets. The worker trusts the authenticated controller's canonical attribution;
 it does not authenticate the control application's database. Worker shutdown
-drains host owners and detaches bridges; it does not close guest kernels or
-replace enrollment. Changed original binding, lost acknowledgement or unsupported
+drains host owners and detaches healthy eligible daemon bridges; it does not
+close those guest kernels or replace enrollment. Queued or unrecoverable attempts
+may retain the ordinary LOST outcome. Changed original binding, lost acknowledgement or unsupported
 peer holds without re-enrollment, retry or MAIN fallback. Live composition
 acceptance remains a separate gate from the local synthetic-guest tests.
 
 ## Worker API
 
-Every route needs `Authorization: Bearer <token>`: the pool's own token, which acts for every project, or a client's, which acts only for the projects its settings list ([clients](#clients-limited-to-projects)). Bodies are the JSON forms of the `sandbox_science.contracts` models. Errors return a `WorkerErrorResponse` carrying an error kind from the spec, with status 400, 403, 404, 409, 422, 500, 503 or 504 as the kind implies. The routes that name an execution, an artifact or a provisioning operation take an optional `project_id` query parameter; when it is given, one of another project is `not_found`.
+Ordinary routes need `Authorization: Bearer <token>`: the pool's own token, which acts for every project, or a client's, which acts only for the projects its settings list ([clients](#clients-limited-to-projects)). Bodies are the JSON forms of the `sandbox_science.contracts` models. Errors return a `WorkerErrorResponse` carrying an error kind from the spec, with status 400, 403, 404, 409, 422, 500, 503 or 504 as the kind implies. The routes that name an execution, an artifact or a provisioning operation take an optional `project_id` query parameter; when it is given, one of another project is `not_found`.
 
 | Route | Request → response |
 | --- | --- |

@@ -227,11 +227,11 @@ async def test_child_controller_uses_real_authenticated_selected_http(tmp_path, 
         assert live.run_admission is not None
         assert live.run_admission()
         # Observe the committed real intent before even the synthetic guest edge.
-        raw = (
-            documents._connection()
-            .execute("SELECT record FROM child_attempt_events ORDER BY sequence DESC LIMIT 1")
-            .fetchone()[0]
-        )
+        db = documents._connection()
+        assert db is not None
+        raw = db.execute(
+            "SELECT record FROM child_attempt_events ORDER BY sequence DESC LIMIT 1"
+        ).fetchone()[0]
         assert request.operation_id in raw
         assert request.code in raw
         dispatched.append(request)
@@ -292,6 +292,8 @@ async def test_child_controller_uses_real_authenticated_selected_http(tmp_path, 
             if mode == "positive":
                 assert result.held is None
                 assert result.cleanup == "done"
+                assert result.handback is not None
+                assert result.handback.result is not None
                 assert result.handback.result.status == "partial"
                 assert len(dispatched) == 1
                 assert len(model.inputs) == 2
