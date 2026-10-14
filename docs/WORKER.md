@@ -4,10 +4,13 @@ The selected-revision [recorded package inventory](PROVISIONING-WORKSPACE.md#rec
 adds `GET /v1/environments/{id}/provisioning/observations/revisions/{n}/packages`
 with required `project_id` and exact raw-record `pin`, plus `offset` and `limit`
 (at most eight). Strict `RevisionPackagePage` metadata includes unchanged/base/
-unmanaged entries and declared Conda licenses; pip licenses remain unknown.
+unmanaged entries and declared Conda and optional [pip licenses](PIP-LOCKFILE-LICENSES.md).
+Missing or ambiguous pip declarations remain unknown.
 The existing comparison reader owns its bounded thread/descriptor lane through
 cancellation. Reads perform no guest execution, wake, mutation or permission
-answer. Fresh integrated Lab32 runtime acceptance remains pending.
+answer. Lab32 acceptance is delivered in PR #113; its frozen evidence is unchanged.
+The additive pip declaration path is separately component-validated, with no new
+install or guest-runtime claim.
 
 The worker service runs research code for the orchestrator. It is trusted infrastructure, one per worker pool, outside every research sandbox. It starts an executor inside each sandbox and talks to it. The orchestrator reaches it only through the worker API, so the harness has no local execution path ([architecture](ARCHITECTURE.md)). [Execution tools](specs/tools.md) defines the behavior. The code is in `packages/worker` (`sandbox_science.worker`), the shared types in `packages/contracts`, and the orchestrator's client in `packages/orchestrator`.
 
