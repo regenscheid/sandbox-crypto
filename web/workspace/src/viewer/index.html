@@ -1,0 +1,32 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: MIT -->
+<!--
+  The PDF viewer, served only by the preview origin (docs/specs/pdf-viewer.md). It reads
+  one capability from its URL's fragment and talks to nothing but its own origin.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>PDF viewer</title>
+  </head>
+  <body>
+    <nav class="toolbar" aria-label="Pages">
+      <button type="button" id="previous" disabled>Previous</button>
+      <label
+        >Page <input id="page" type="number" min="1" value="1" inputmode="numeric" disabled
+      /></label>
+      <span id="count"></span>
+      <label>Label <input id="label" type="text" size="6" disabled /></label>
+      <button type="button" id="next" disabled>Next</button>
+      <button type="button" id="smaller" disabled aria-label="Zoom out">−</button>
+      <span id="zoom">100%</span>
+      <button type="button" id="larger" disabled aria-label="Zoom in">+</button>
+      <button type="button" id="anchor" disabled>Copy anchor</button>
+    </nav>
+    <p id="status" role="status">Opening the PDF…</p>
+    <main id="pages"></main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

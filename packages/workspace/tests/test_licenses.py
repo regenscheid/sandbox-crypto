@@ -49,7 +49,8 @@ def lockfile(**entries: dict[str, Any]) -> dict[str, Any]:
 
 
 def test_the_committed_lockfile_passes() -> None:
-    count, problems = check.npm_problems(json.loads(LOCKFILE.read_text()))
+    app = json.loads((LOCKFILE.parent / "package.json").read_text())
+    count, problems = check.npm_problems(json.loads(LOCKFILE.read_text()), app)
     assert problems == []
     assert count > 0
     assert check.main(["--npm", str(LOCKFILE)]) == 0
@@ -155,3 +156,136 @@ def test_installed_packages_must_name_the_lockfiles_license(tmp_path: Path) -> N
     (tmp_path / "node_modules" / "a" / "package.json").unlink()
     _, problems = check.installed_problems(data, tmp_path)
     assert "a@1.0.0: is not installed; run npm ci first" in problems
+
+
+APP = {
+    "name": "web",
+    "dependencies": {"canvas": "file:stubs/no-canvas"},
+    "overrides": {"canvas": "$canvas"},
+}
+
+
+def stubbed(**stub: Any) -> dict[str, Any]:
+    """A lockfile whose `canvas` is the app's own stub, as an npm override links it."""
+    data = lockfile(canvas={"resolved": "stubs/no-canvas", "link": True})
+    data["packages"]["stubs/no-canvas"] = {"name": "canvas", "version": "0.0.0", **stub}
+    return data
+
+
+def test_a_stub_the_app_overrides_a_package_with_passes() -> None:
+    assert check.npm_problems(stubbed(license="MIT"), APP) == (2, [])
+    file_override = {**APP, "overrides": {"canvas": "file:stubs/no-canvas"}}
+    assert check.npm_problems(stubbed(license="MIT"), file_override) == (2, [])
+
+
+def _relinked(path: str) -> dict[str, Any]:
+    data = lockfile(canvas={"resolved": path, "link": True})
+    data["packages"][path] = {"name": "canvas", "version": "0.0.0", "license": "MIT"}
+    return data
+
+
+@pytest.mark.parametrize(
+    ("data", "app", "reason"),
+    [
+        (stubbed(), APP, "license not declared"),
+        (stubbed(license="GPL-3.0-only"), APP, "is not allowed"),
+        # Without the app's package.json, or with a stub that replaces nothing, a local
+        # package is just a package that is not from the registry.
+        (stubbed(license="MIT"), None, "not the npm registry"),
+        (stubbed(license="MIT"), {**APP, "overrides": {}}, "not the npm registry"),
+        (
+            stubbed(license="MIT"),
+            {**APP, "overrides": {"canvas": "^1.0.0"}},
+            "not the npm registry",
+        ),
+        (stubbed(license="MIT"), {**APP, "dependencies": {}}, "not the npm registry"),
+        # A stub's entry gives a name, a version and a license, nothing more.
+        (stubbed(license="MIT", hasInstallScript=True), APP, "not the npm registry"),
+        (stubbed(license="MIT", dependencies={"a": "1.0.0"}), APP, "not the npm registry"),
+        (stubbed(license="MIT", peerDependencies={"a": "1.0.0"}), APP, "not the npm registry"),
+        (stubbed(license="MIT", bin={"a": "a.js"}), APP, "not the npm registry"),
+        (
+            stubbed(license="MIT", resolved="https://evil.example/x.tgz"),
+            APP,
+            "not the npm registry",
+        ),
+        (stubbed(license="MIT", name="other"), APP, "not the npm registry"),
+        (lockfile(canvas={"resolved": "stubs/missing", "link": True}), APP, "not the npm registry"),
+        (
+            lockfile(canvas={"resolved": "stubs/no-canvas", "link": True, "integrity": "x"}),
+            APP,
+            "not the npm registry",
+        ),
+        *(
+            (_relinked(path), APP, "not the npm registry")
+            for path in ("stubs/../x", "stubs//x", "stubs/x/../../y", "/abs/stubs/x", "./stubs/x")
+        ),
+    ],
+)
+def test_stubs_that_break_a_rule_are_refused(
+    data: dict[str, Any], app: dict[str, Any] | None, reason: str
+) -> None:
+    _, problems = check.npm_problems(data, app)
+    assert any(reason in problem for problem in problems), problems
+
+
+def installed_stub(root: Path, manifest: dict[str, Any] | None = None) -> Path:
+    stub = root / "stubs" / "no-canvas"
+    stub.mkdir(parents=True)
+    fields = {"name": "canvas", "version": "0.0.0", "license": "MIT", "private": True}
+    (stub / "package.json").write_text(json.dumps(manifest or fields))
+    (root / "node_modules").mkdir()
+    (root / "node_modules" / "canvas").symlink_to(Path("..") / "stubs" / "no-canvas")
+    return stub
+
+
+def test_an_installed_stub_must_be_the_linked_directory(tmp_path: Path) -> None:
+    data = stubbed(license="MIT")
+    installed_stub(tmp_path)
+    assert check.installed_problems(data, tmp_path) == (1, [])
+    (tmp_path / "node_modules" / "canvas").unlink()
+    (tmp_path / "node_modules" / "canvas").mkdir()
+    _, problems = check.installed_problems(data, tmp_path)
+    assert problems == ["canvas@None: is not linked to stubs/no-canvas"]
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"dependencies": {"y": "1.0.0"}},
+        {"optionalDependencies": {"y": "1.0.0"}},
+        {"scripts": {"install": "node -e 0"}},
+        {"bin": {"y": "y.js"}},
+        {"main": "index.js"},
+        {"exports": "./index.js"},
+    ],
+)
+def test_an_installed_stub_declares_nothing_to_run(tmp_path: Path, extra: dict[str, Any]) -> None:
+    fields = {"name": "canvas", "version": "0.0.0", "license": "MIT", **extra}
+    installed_stub(tmp_path, fields)
+    _, problems = check.installed_problems(stubbed(license="MIT"), tmp_path)
+    assert any("which a stub may not" in problem for problem in problems), problems
+
+
+def test_an_installed_stub_holds_only_its_package_json(tmp_path: Path) -> None:
+    stub = installed_stub(tmp_path)
+    (stub / "index.js").write_text("fetch('https://evil.example/');\n")
+    _, problems = check.installed_problems(stubbed(license="MIT"), tmp_path)
+    assert problems == [
+        "stubs/no-canvas@0.0.0: holds ['index.js', 'package.json'], not only a package.json"
+    ]
+
+
+def test_an_installed_stub_is_reached_through_no_symbolic_link(tmp_path: Path) -> None:
+    outside = tmp_path / "outside" / "evil"
+    outside.mkdir(parents=True)
+    (outside / "package.json").write_text(
+        json.dumps({"name": "canvas", "version": "0.0.0", "license": "MIT"})
+    )
+    app = tmp_path / "app"
+    (app / "stubs").mkdir(parents=True)
+    (app / "stubs" / "no-canvas").symlink_to(outside)
+    (app / "node_modules").mkdir()
+    (app / "node_modules" / "canvas").symlink_to(Path("..") / "stubs" / "no-canvas")
+    _, problems = check.installed_problems(stubbed(license="MIT"), app)
+    assert "stubs/no-canvas@0.0.0: is reached through a symbolic link" in problems

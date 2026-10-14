@@ -49,8 +49,8 @@ VIEWER_TYPES: Final = {
     ".css": "text/css; charset=utf-8",
     ".bcmap": "application/octet-stream",
     ".pfb": "application/octet-stream",
-    ".ttf": "font/ttf",
     ".json": "application/json",
+    ".txt": "text/plain; charset=utf-8",
 }
 """The only types the viewer's bundle is served as."""
 

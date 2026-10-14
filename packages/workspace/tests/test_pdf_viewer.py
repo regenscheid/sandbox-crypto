@@ -15,6 +15,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import parse_qs
 
 import pytest
 import pytest_asyncio
@@ -110,7 +111,7 @@ async def origins(aiohttp_client: ClientFactory, state_dir: Path, static_dir: Pa
 
 
 def capability_of(url: str) -> str:
-    return url.split("#", 1)[1]
+    return parse_qs(url.split("#", 1)[1])["c"][0]
 
 
 async def viewer_url(workspace: TestClient[Any, Any], revision: Any) -> Any:
@@ -139,6 +140,8 @@ async def test_a_capability_opens_its_pdf_and_nothing_else(origins, published) -
     assert response.status == 200
     link = await response.json()
     assert link["url"].startswith(f"{preview.origin}/viewer/#")
+    fragment = parse_qs(link["url"].split("#", 1)[1])
+    assert fragment["w"] == [preview.workspace_origin]
     opened = await viewer.get(f"/pdf/{capability_of(link['url'])}")
     assert opened.status == 200
     assert opened.headers["Content-Type"] == "application/pdf"
@@ -304,7 +307,8 @@ async def test_the_workspace_origin_never_serves_the_viewer(
     workspace = await aiohttp_client(
         create_app(ProjectStore(state_dir, readonly=True), static_dir, login_token=TOKEN)
     )
-    for path in ("/viewer/viewer.mjs", "/viewer/index.html", "/viewer/", "/viewer"):
+    # In any case, for a filesystem that ignores it.
+    for path in ("/viewer/viewer.mjs", "/viewer/index.html", "/viewer/", "/viewer", "/VIEWER/x"):
         response = await workspace.get(path)
         assert response.status == 404, path
         assert "viewer" not in await response.text(), path
@@ -330,6 +334,41 @@ async def test_the_workspace_may_frame_the_preview_origin_and_no_other(
     await log_in(plain)
     listing = await (await plain.get("/api/v0/projects/p1/artifacts")).json()
     assert listing["viewer"] is False
+
+
+async def test_the_preview_origin_serves_the_viewers_bundle_by_type(
+    aiohttp_client: ClientFactory, state_dir: Path, tmp_path: Path
+) -> None:
+    bundle = tmp_path / "viewer"
+    (bundle / "cmaps").mkdir(parents=True)
+    files = {
+        "index.html": "text/html; charset=utf-8",
+        "THIRD-PARTY-NOTICES.txt": "text/plain; charset=utf-8",
+        "cmaps/UniJIS-UCS2-H.bcmap": "application/octet-stream",
+    }
+    for name in [*files, "decoder.wasm", "font.ttf"]:
+        (bundle / name).write_bytes(b"bytes of " + name.encode())
+    (tmp_path / "secret.txt").write_text("not the bundle's")
+    documents = DocumentStore(store_path(state_dir), readonly=True)
+    viewer = await aiohttp_client(
+        create_preview_app(
+            documents,
+            Capabilities(Clock()),
+            workspace_origin=lambda: "http://127.0.0.1:8200",
+            viewer_dir=bundle,
+        )
+    )
+    for name, media in files.items():
+        response = await viewer.get(f"/viewer/{name}")
+        assert response.status == 200, name
+        assert response.headers["Content-Type"] == media
+        assert await response.read() == b"bytes of " + name.encode()
+    assert (await (await viewer.get("/viewer/")).read()) == b"bytes of index.html"
+    # Nothing the viewer does not ship is served: no WebAssembly, no TrueType font, nothing
+    # outside the bundle.
+    for path in ("/viewer/decoder.wasm", "/viewer/font.ttf", "/viewer/../secret.txt"):
+        assert (await viewer.get(path)).status == 404, path
+    documents.close()
 
 
 @pytest.mark.parametrize(

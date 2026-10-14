@@ -1,0 +1,7 @@
+{
+  "name": "@napi-rs/canvas",
+  "version": "0.0.0-not-installed",
+  "description": "Stands in for pdf.js's optional Node canvas, which the browser viewer never uses, so that no native binary is installed (docs/specs/pdf-viewer.md, PV-5).",
+  "private": true,
+  "license": "MIT"
+}

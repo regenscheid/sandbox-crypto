@@ -18,6 +18,7 @@
   "include": [
     "vite.config.ts",
     "svelte.config.js",
-    "vite.math.config.ts"
+    "vite.math.config.ts",
+    "vite.viewer.config.ts"
   ]
 }

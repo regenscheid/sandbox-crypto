@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Final
+from urllib.parse import urlencode
 
 from aiohttp import web
 from pydantic import TypeAdapter, ValidationError
@@ -130,7 +131,10 @@ async def viewer(request: web.Request) -> web.Response:
         # read first, so the time shown is never later than the real expiry.
         expires = datetime.now(UTC) + timedelta(seconds=CAPABILITY_SECONDS)
         capability = preview.capabilities.mint(project, artifact, revision, sha256)
-        answer = ViewerLink(url=f"{preview.origin}/viewer/#{capability}", expires_at=expires)
+        # The fragment never reaches a server. The workspace's origin is the only window
+        # the viewer posts anchors to (docs/specs/pdf-viewer.md, PV-6).
+        fragment = urlencode({"c": capability, "w": preview.workspace_origin})
+        answer = ViewerLink(url=f"{preview.origin}/viewer/#{fragment}", expires_at=expires)
         return api.dumps(answer.model_dump(mode="json"))
 
     return json_answer(await asyncio.to_thread(mint))
