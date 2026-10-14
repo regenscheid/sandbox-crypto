@@ -1290,6 +1290,83 @@ class Store:
         ).fetchone()
         return ArtifactRef.model_validate_json(row[0]) if row else None
 
+    def installer_artifact(
+        self, expected: ArtifactRef, *, insert: bool = False
+    ) -> ArtifactRef | None:
+        """A bounded exact host-generated installer reference; never replace/reseed one."""
+        if type(expected) is not ArtifactRef or type(insert) is not bool:
+            raise ValueError("invalid installer artifact type")
+        data = cast(dict[object, object], object.__getattribute__(expected, "__dict__"))
+        if (
+            type(data) is not dict
+            or len(data) != len(ArtifactRef.model_fields)
+            or any(type(key) is not str for key in data)
+            or set(data) != set(ArtifactRef.model_fields)
+            or object.__getattribute__(expected, "__pydantic_extra__") is not None
+            or type(expected.artifact_id) is not str
+            or re.fullmatch(r"art-inst-[0-9a-f]{32}", expected.artifact_id) is None
+            or type(expected.project_id) is not str
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", expected.project_id) is None
+            or type(expected.sha256) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", expected.sha256) is None
+            or type(expected.size) is not int
+            or not 0 < expected.size <= 64 * 1024
+            or type(expected.media_type) is not str
+            or expected.media_type != "application/vnd.sandbox-science.installer-log+json"
+            or type(expected.source_path) is not str
+            or re.fullmatch(
+                r"provisioning/[A-Za-z0-9][A-Za-z0-9._-]{0,127}/"
+                r"(?:version|resolve|install)-(?:conda|pip)\.json",
+                expected.source_path,
+            )
+            is None
+            or expected.produced_by is not None
+            or type(expected.created_at) is not datetime
+        ):
+            raise ValueError("invalid bounded installer artifact fields")
+
+        def read() -> ArtifactRef | None:
+            row = self._db.execute(
+                "SELECT typeof(record),length(CAST(record AS BLOB)),"
+                "substr(CAST(record AS BLOB),1,4097) FROM artifacts WHERE artifact_id=?",
+                (expected.artifact_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            if (
+                row[0] != "text"
+                or type(row[1]) is not int
+                or not 0 < row[1] <= 4096
+                or type(row[2]) is not bytes
+                or len(row[2]) != row[1]
+            ):
+                raise ValueError("retained installer artifact exceeds bounds")
+            try:
+
+                def pairs(items: list[tuple[str, object]]) -> dict[str, object]:
+                    result: dict[str, object] = {}
+                    for key, value in items:
+                        if key in result:
+                            raise ValueError("duplicate artifact key")
+                        result[key] = value
+                    return result
+
+                json.loads(row[2], object_pairs_hook=pairs)
+                value = ArtifactRef.model_validate_json(row[2], strict=True)
+            except (ValueError, TypeError, RecursionError):
+                raise ValueError("retained installer artifact invalid") from None
+            if value != expected:
+                raise ValueError("retained installer artifact identity changed")
+            return value
+
+        if not insert:
+            return read()
+        with self._transaction():
+            existing = read()
+            if existing is None:
+                self.insert_artifact(expected)
+            return expected
+
     # Provisioning operations (Conda provisioning), keyed by project like executions.
 
     def find_provision(self, project_id: str, operation_id: str) -> tuple[str, str] | None:

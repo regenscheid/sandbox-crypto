@@ -21,7 +21,7 @@ from typing import Annotated, Final, Literal, Self
 
 from pydantic import AfterValidator, Field, StringConstraints, model_validator
 
-from .artifacts import Sha256
+from .artifacts import ArtifactRef, Sha256
 from .context import ExecutionContext
 from .environments import PolicyRevision
 from .model import Contract, Identifier
@@ -36,7 +36,7 @@ from .revisions import (
     Subdir,
     Version,
 )
-from .worker import ErrorInfo
+from .worker import TERMINAL_STATES, ErrorInfo, ExecutionState
 
 MAX_SPECS: Final = 32
 """Specs of each kind one request may name."""
@@ -238,6 +238,55 @@ class CatalogRef(Contract):
     sha256: Sha256
 
 
+InstallerLabel = Literal[
+    "version-conda", "version-pip", "resolve-conda", "resolve-pip", "install-conda", "install-pip"
+]
+
+
+class InstallerStep(Contract):
+    """One original installer observation and its sanitized partial log (CP-16).
+
+    Pending log metadata never proves a step did not run. A version is the tool's
+    bounded self-report at the version observation, not authenticated binary identity.
+    """
+
+    label: InstallerLabel
+    installer: Literal["micromamba", "pip"]
+    operation_id: Identifier
+    execution_id: Identifier | None = None
+    attempt_id: Identifier | None = None
+    execution_state: ExecutionState | None = None
+    observed_version: (
+        Annotated[str, StringConstraints(pattern=r"^[0-9][0-9A-Za-z.!+_-]{0,63}\z")] | None
+    ) = None
+    log_status: Literal["pending", "stored", "unavailable"] = "pending"
+    log: ArtifactRef | None = None
+    unavailable_reason: Literal["artifact_unavailable", "metadata_unavailable"] | None = None
+
+    @model_validator(mode="after")
+    def _coherent(self) -> Self:
+        if self.installer != ("micromamba" if self.label.endswith("conda") else "pip"):
+            raise ValueError("installer does not match original step label")
+        if (self.execution_id is None) != (self.attempt_id is None):
+            raise ValueError("installer execution and attempt must be retained together")
+        if self.execution_state is not None and (
+            self.execution_id is None or self.execution_state not in TERMINAL_STATES
+        ):
+            raise ValueError("installer terminal fact lacks its original execution")
+        if self.observed_version is not None and (
+            not self.label.startswith("version-")
+            or self.execution_state is not ExecutionState.SUCCEEDED
+        ):
+            raise ValueError("installer version lacks its successful version observation")
+        if (self.log_status == "stored") != (self.log is not None):
+            raise ValueError("installer log status does not bind its artifact")
+        if self.log is not None and self.execution_state is None:
+            raise ValueError("installer log lacks a terminal execution observation")
+        if (self.log_status == "unavailable") != (self.unavailable_reason is not None):
+            raise ValueError("installer unavailable metadata lacks a fixed reason")
+        return self
+
+
 class ProvisionOperation(Contract):
     """A provisioning operation and everything it recorded (CP-16, CP-17, CP-25).
 
@@ -277,6 +326,9 @@ class ProvisionOperation(Contract):
     executions: tuple[Identifier, ...] = Field(default=(), max_length=128)
     """The executions it ran, in order: probes, dry runs, installs. Each can be read, and
     cancelled, like any other."""
+    installer_steps: tuple[InstallerStep, ...] | None = Field(default=None, max_length=8)
+    """None in legacy records. New records distinguish pending/unknown metadata from
+    sanitized artifacts actually retained, without claiming complete raw logs."""
     queue_position: Annotated[int, Field(ge=0)] | None = None
     """While queued: how many operations on the environment come before it."""
     submitted_at: datetime
@@ -284,6 +336,28 @@ class ProvisionOperation(Contract):
     ended_at: datetime | None = None
     seq: Annotated[int, Field(ge=0)] = 0
     """Counts the changes to this record; ``after`` asks for a later one."""
+
+    @model_validator(mode="after")
+    def _installer_scope(self) -> Self:
+        seen: set[str] = set()
+        for step in self.installer_steps or ():
+            if (
+                step.label in seen
+                or step.operation_id != f"{self.provision_id}.{step.label}"
+                or (step.execution_id is not None and step.execution_id not in self.executions)
+            ):
+                raise ValueError("installer step does not bind original operation/execution")
+            seen.add(step.label)
+            log = step.log
+            if log is not None and (
+                log.project_id != self.request.context.project_id
+                or log.size > 64 * 1024
+                or log.media_type != "application/vnd.sandbox-science.installer-log+json"
+                or log.source_path != f"provisioning/{self.provision_id}/{step.label}.json"
+                or log.produced_by is not None
+            ):
+                raise ValueError("installer log does not bind its project/generated source")
+        return self
 
 
 class ProvisioningQueue(Contract):
