@@ -415,7 +415,7 @@ async def test_actual_cli_keeps_selected_input_and_safe_failed_record(
         research_template="report",
     )
     monkeypatch.setattr(cli, "WorkerClient", Client)
-    monkeypatch.setattr(cli, "_read_secret", lambda _: "test-secret-unused-not-a-credential")
+    monkeypatch.setattr(cli, "read_secret", lambda _: "test-secret-unused-not-a-credential")
     monkeypatch.setattr(ScriptedModel, "from_json", lambda _: Model())
     assert await cli._run(args) == int(failure)
     assert len(calls) == 1

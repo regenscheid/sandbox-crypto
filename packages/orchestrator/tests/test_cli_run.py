@@ -52,7 +52,7 @@ def run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 
     monkeypatch.setattr(cli, "OpenAICompatibleModel", Model)
     monkeypatch.setattr(cli, "WorkerClient", Client)
-    monkeypatch.setattr(cli, "_read_secret", lambda _: "test-secret-unused")
+    monkeypatch.setattr(cli, "read_secret", lambda _: "test-secret-unused")
 
     def arguments(**changes: object) -> argparse.Namespace:
         values: dict[str, object] = {

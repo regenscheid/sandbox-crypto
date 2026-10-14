@@ -739,7 +739,7 @@ async def test_cli_cancelled_constructor_closes_owner_published_before_thread_re
     )
     monkeypatch.setattr(harness, "PlanTools", factory)
     monkeypatch.setattr(cli, "WorkerClient", Client)
-    monkeypatch.setattr(cli, "_read_secret", lambda _: "test-secret-unused")
+    monkeypatch.setattr(cli, "read_secret", lambda _: "test-secret-unused")
     task = asyncio.create_task(cli._run(args))
     assert await asyncio.to_thread(entered.wait, 5)
     task.cancel()

@@ -338,7 +338,7 @@ async def test_cli_closes_borrowed_store_and_models_after_publisher_drain_cancel
 
     monkeypatch.setattr(cli, "OpenAICompatibleModel", Model)
     monkeypatch.setattr(harness, "ArtifactPublisher", CancelledClosePublisher)
-    monkeypatch.setattr(cli, "_read_secret", lambda _: TOKEN)
+    monkeypatch.setattr(cli, "read_secret", lambda _: TOKEN)
     monkeypatch.setattr(harness, "run_task", interrupted)
     monkeypatch.setattr(DocumentStore, "close", close_store)
     args = argparse.Namespace(
