@@ -39,6 +39,8 @@ from sandbox_science.policy.approvals import (
     withdrawal_payload,
 )
 
+from .provision_events import checked_payload
+
 _log = logging.getLogger(__name__)
 
 SOURCE: Final = "worker"
@@ -83,6 +85,14 @@ class Permissions:
             # It is recorded: the operation waits for it, and reads again as it waits.
             _log.warning("permission request %d: %s", record.seq, exc)
         return record.seq
+
+    def observation(self, kind: str, payload: Mapping[str, object]) -> int:
+        """Append only bounded provision.* observations, never a permission answer."""
+        copied = checked_payload(kind, payload)
+        try:
+            return self._store().append(kind, SOURCE, copied).seq
+        except EventStoreError:
+            raise PermissionStoreError("provision observation append outcome unknown") from None
 
     def refresh(self) -> None:
         """Read the records added since the last look. Blocking."""

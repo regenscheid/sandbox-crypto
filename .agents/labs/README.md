@@ -374,8 +374,7 @@ no production import or runtime effect. Active `prepare`, `run` and read-only
 `inspect` require `--head <exact-signed-clean-runtime-head> --admit`, a fixed
 owned lab and explicit root coordination. Corrected helper-only `91125f4` is integrated at
 `24eac09`, with independent helper/setup/collector source clearance and exact
-original/ready/done producer-to-collector checks. Actual acceptance is pending;
-no Lab33 runtime PASS is claimed.
+original/ready/done producer-to-collector checks. That is the historical source-readiness checkpoint. Later actual acceptance and complete teardown passed; exact runtime pins and limits are retained in [the Lab33 report](../docs/agent-reports/babbage-openshell-lab-33-2026-10-13.md).
 
 Root freezes source/helper, starts only the normal gateway/cache/middleware and
 registers the documented endpoint-free profile with a visibly synthetic provider.
@@ -397,3 +396,30 @@ Export only bounded public evidence, scan the synthetic literal in memory and
 verify complete owned VM/unit/process/listener/private-state teardown independently.
 This fixture proves no authenticated delegation controller, model launcher, grant,
 inter-kernel filesystem isolation or scientific result.
+
+## Lab35: installer observations and provisioning events
+
+[`provisioning_observations.py`](provisioning_observations.py) defaults to an inert
+description. Explicit `run --head <signed-clean-head> --admit` requires the
+reviewed original isolated root setup and source bindings; it is not a retry or
+arbitrary-command interface. [Lab35](../docs/agent-reports/babbage-openshell-lab-35-2026-10-13.md)
+passed at runtime `d236b6b`/helper `fbbe3b61` in52.285s, with17 checked public
+records and independently verified complete teardown. Source/gates and actual
+runtime evidence remain pinned separately; fresh CI/delivery are pending.
+
+One original minimal VM and actual worker/client composition run scalar35 before
+python-flint and wheel-only ecdsa0.19.1, under the existing policy/cache. The helper
+admits at most16 actual executions/two unique operations/two installs, plus one
+explicit known-terminal replay, within1800s and finite operation caps. No operator
+answer, model/provider request or host execution is enabled. The normal policy
+attaches only the synthetic github-readonly fixture. Unknown effects hold their
+original identities and never authorize automatic re-execution.
+
+Original versions, sanitized artifact bytes/scopes and safe EventStore projections
+are checked through the actual production interfaces. All three memory-only
+client literals are excluded before every post-token public write; the pre-token
+marker records count0 separately. Root checks only its original provider-file
+literal in memory, then exports checked records and performs exact held-FD owned
+teardown. Private settings/provider contents and raw execution output are never
+exported or hashed. The helper is intentionally tied to its recorded product
+inputs; a later changed product tree requires separate review and repinning.

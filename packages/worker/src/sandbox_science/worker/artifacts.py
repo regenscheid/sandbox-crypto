@@ -36,7 +36,26 @@ class BlobWriter:
     def __init__(self, blobs: Blobs) -> None:
         self._blobs = blobs
         descriptor, name = tempfile.mkstemp(dir=blobs.root / "tmp")
-        self._file = os.fdopen(descriptor, "wb")
+        original = None
+        try:
+            original = os.fstat(descriptor)
+            self._file = os.fdopen(descriptor, "wb")
+        except BaseException:
+            try:
+                if original is not None:
+                    with contextlib.suppress(OSError):
+                        current = os.stat(name, follow_symlinks=False)
+                        if (current.st_dev, current.st_ino) == (original.st_dev, original.st_ino):
+                            os.unlink(name)
+            finally:
+                with contextlib.suppress(OSError):
+                    if original is None:
+                        os.close(descriptor)
+                    else:
+                        current = os.fstat(descriptor)
+                        if (current.st_dev, current.st_ino) == (original.st_dev, original.st_ino):
+                            os.close(descriptor)
+            raise
         self._path = Path(name)
         self._digest = hashlib.sha256()
         self.size = 0
