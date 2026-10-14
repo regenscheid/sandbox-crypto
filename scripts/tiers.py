@@ -46,12 +46,7 @@ def _collect_here(expression: str | None, output: Path) -> int:
     arguments = ["--collect-only", "-q", "-p", "no:cacheprovider"]
     if expression is not None:
         arguments += ["-m", expression]
-    with open(os.devnull, "w") as quiet:
-        stdout, sys.stdout = sys.stdout, quiet
-        try:
-            code = pytest.main(arguments, plugins=[recorder])
-        finally:
-            sys.stdout = stdout
+    code = pytest.main(arguments, plugins=[recorder])
     output.write_text(json.dumps(recorder.ids))
     # 5: nothing selected, which an empty tier may be.
     return 0 if code in (0, 5) else int(code)
@@ -64,7 +59,8 @@ def _collect(expression: str | None, output: Path) -> list[str]:
         command += ["--expression", expression]
     done = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, check=False)  # noqa: S603
     if done.returncode != 0:
-        raise SystemExit(f"collection failed ({expression or 'all tests'}):\n{done.stderr}")
+        report = f"{done.stdout}{done.stderr}".rstrip()
+        raise SystemExit(f"collection failed ({expression or 'all tests'}):\n{report}")
     return json.loads(output.read_text())
 
 
