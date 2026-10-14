@@ -475,7 +475,18 @@ class Provisioner:
                     changed.set_result(None)
         else:
             self._queues.pop(environment_id, None)
-        asyncio.get_running_loop().call_later(RETAIN, self._ops.pop, op.record.provision_id, None)
+
+        def retire(_task: asyncio.Task[None] | None = None) -> None:
+            asyncio.get_running_loop().call_later(
+                RETAIN, self._ops.pop, op.record.provision_id, None
+            )
+
+        # forget() locates environment owners through _ops. A terminal append
+        # can outlive retention, so begin eviction only after its task drains.
+        if op.task is not None and not op.task.done():
+            op.task.add_done_callback(retire)
+        else:
+            retire()
 
     # The operation.
 
@@ -533,13 +544,15 @@ class Provisioner:
                     op.record.provision_id, op.record.permission_request, "its operation failed"
                 )
         finally:
+            # The terminal record already classifies the installer. Observation
+            # persistence must not retain its queue turn; this task still owns
+            # and drains the append before close/forget can release its stores.
+            self._release(op)
             try:
                 if op.record.state is ProvisionState.FINISHED:
                     await self._observe(op.record, "provision.finished")
             except asyncio.CancelledError as error:
                 interrupted = interrupted or error
-            finally:
-                self._release(op)
         if interrupted is not None:
             raise interrupted
 
