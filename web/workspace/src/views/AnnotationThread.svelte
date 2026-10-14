@@ -51,7 +51,6 @@
   let persisted = $state(true);
   let historyRevision = initial.revision;
   const busy = $derived(posting.busy || read.loading);
-  const error = $derived(posting.error ?? read.error);
   $effect(() => {
     // A new thread revision starts the earlier entries again.
     if (thread.revision !== historyRevision) {
@@ -121,6 +120,8 @@
       disabled={busy}
       onclick={() => earlier.read()}>Load earlier thread entries</button
     >{/if}
+  <!-- Each failure shows beside its own control, so a newer one is never hidden. -->
+  {#if read.error}<ErrorMessage error={read.error} />{/if}
   {#each threadEntries(earlier.entries(), thread.entries) as entry (entry.entry_id)}
     <div class="entry">
       <p class="muted">
@@ -220,7 +221,7 @@
   {#if !persisted}<p role="alert">
       Browser storage is unavailable. Keep this tab open or copy your reply draft.
     </p>{/if}
-  {#if error}<ErrorMessage {error} />{/if}
+  {#if posting.error}<ErrorMessage error={posting.error} />{/if}
 </article>
 
 <style>
