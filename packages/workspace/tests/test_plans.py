@@ -267,7 +267,7 @@ async def test_absent_history_returns_null_without_creating_or_migrating_sql(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("damage", ["version", "pointer", "head", "large"])
+@pytest.mark.parametrize("damage", ["version", "pointer"])
 async def test_corrupt_history_is_503_not_null_or_unbounded_allocation(
     aiohttp_client, state_dir, static_dir, damage
 ):
@@ -280,13 +280,8 @@ async def test_corrupt_history_is_503_not_null_or_unbounded_allocation(
             if damage == "version":
                 db.execute("DROP TRIGGER session_plan_records_no_delete")
                 db.execute("DELETE FROM session_plan_records WHERE kind='version'")
-            elif damage == "pointer":
-                db.execute("DELETE FROM session_plan_projections WHERE kind='current'")
             else:
-                db.execute(
-                    "UPDATE session_plan_projections SET record=? WHERE kind='current'",
-                    ("x" * (20_000_000 if damage == "large" else 1),),
-                )
+                db.execute("DELETE FROM session_plan_projections WHERE kind='current'")
         client = await create(aiohttp_client, state_dir, static_dir)
         tracemalloc.start()
         try:

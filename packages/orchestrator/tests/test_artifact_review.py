@@ -7,6 +7,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import sqlite3
 import sys
 import threading
 import tracemalloc
@@ -72,6 +73,12 @@ async def worker_url(tmp_path: Path):
 
 @pytest.fixture
 def state(tmp_path: Path):
+    made = build(tmp_path)
+    yield made
+    made[0].documents.close()
+
+
+def build(tmp_path: Path):
     projects = ProjectStore(tmp_path)
     projects.create("p", "minimal", "sha256:" + "a" * 64)
     session = projects.open_session("p", "s", dedicated=False)
@@ -90,8 +97,7 @@ def state(tmp_path: Path):
         tool_call="publish-call",
         worker_endpoint_sha256="a" * 64,
     )
-    yield reviews, inventory, source
-    documents.close()
+    return reviews, inventory, source
 
 
 def publish(
@@ -480,26 +486,47 @@ def test_corrupt_giant_blob_is_clipped_before_python_and_never_copied(state) -> 
     )
 
 
+def test_the_evidence_checks_keep_artifacts_feed_and_evidence(tmp_path, monkeypatch) -> None:
+    from sandbox_science.orchestrator.control import migrations
+
+    with monkeypatch.context() as old:  # a store from before version 7
+        old.setattr(migrations, "MIGRATIONS", migrations.MIGRATIONS[:5])
+        old.setattr(migrations, "VERSION", migrations.BASELINE + 4)
+        old_state = build(tmp_path)
+        reviews, inventory, _ = old_state
+        publish(old_state)
+        ingest_artifacts(reviews, "p", "s")
+        review = dispatch(reviews)
+        evidence = items(reviews, review)
+        payloads = [reviews.evidence("p", "s", review, e["evidence"]) for e in evidence]
+        before = (inventory.list("p"), inventory.events("p"), evidence, payloads)
+        reviews.documents.close()
+    documents = DocumentStore(store_path(tmp_path))
+    documents.initialize()  # the writer brings the store to the current version
+    try:
+        inventory = ArtifactInventory(documents)
+        reviews = ReviewStore(documents, artifacts=inventory)
+        evidence = items(reviews, review)
+        payloads = [reviews.evidence("p", "s", review, e["evidence"]) for e in evidence]
+        assert (inventory.list("p"), inventory.events("p"), evidence, payloads) == before
+    finally:
+        documents.close()
+
+
 @pytest.mark.parametrize(
     ("table", "column"), [("artifact_events", "record"), ("artifact_operations", "request")]
 )
-def test_corrupt_large_metadata_refuses_before_json_allocation(state, table, column) -> None:
+def test_large_metadata_is_refused_when_written(state, table, column) -> None:
     reviews, inventory, source = state
     publish(state)
     inventory.begin(source, "pending", "pending.txt", "text/plain")
-    with reviews.documents.control.write() as tx:
+    refused = pytest.raises(sqlite3.IntegrityError, match="CHECK")
+    with refused, reviews.documents.control.write() as tx:
         db = tx.sql
         if table == "artifact_events":
             db.execute("DROP TRIGGER artifact_events_no_update")
-        db.execute(f"UPDATE {table} SET {column}=cast(zeroblob(20971520) AS TEXT)")
-    tracemalloc.start()
-    try:
-        with pytest.raises(DocumentError):
-            ingest_artifacts(reviews, "p", "s")
-        _, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
-    assert peak < 512 * 1024
+        db.execute(f"UPDATE {table} SET {column}=?", ("x" * 20971520,))
+    assert "complete" in ingest_artifacts(reviews, "p", "s")
 
 
 @pytest.mark.asyncio
@@ -603,22 +630,16 @@ async def test_real_worker_harness_publish_to_durable_review_and_no_extra_author
 
 
 @pytest.mark.parametrize("column", ["sha256", "locator", "payload"])
-def test_corrupt_review_pin_columns_remain_bounded(state, column) -> None:
+def test_oversized_review_pin_columns_are_refused_when_written(state, column) -> None:
     reviews, _, _ = state
     ref = publish(state)
     ingest_artifacts(reviews, "p", "s")
-    with reviews.documents.control.write() as tx:
+    refused = pytest.raises(sqlite3.IntegrityError, match="CHECK")
+    with refused, reviews.documents.control.write() as tx:
         db = tx.sql
         db.execute("DROP TRIGGER review_feed_update")
-        db.execute(f"UPDATE review_feed SET {column}=cast(zeroblob(20971520) AS TEXT)")
-    tracemalloc.start()
-    try:
-        with pytest.raises(DocumentError):
-            reviews.artifact_pin("p", "s", ref)
-        _, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
-    assert peak < 1024 * 1024
+        db.execute(f"UPDATE review_feed SET {column}=?", ("x" * 20971520,))
+    assert reviews.artifact_pin("p", "s", ref) is not None
 
 
 def test_unresolved_observation_capacity_and_completed_race(state, monkeypatch) -> None:

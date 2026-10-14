@@ -262,8 +262,9 @@ Reservations count unknown outcomes and zero-byte publications. Revision count
 limits also count zero-byte files. Completion rechecks byte/count/metadata budgets,
 including tightened limits; preserving a previously reserved known worker outcome
 does not depend on new retention capacity. Full retention refuses new work rather
-than deleting unresolved history. SQL clips variable metadata/BLOB fields before
-Python allocation. Logical budgets do not claim to bound SQLite/WAL physical disk
+than deleting unresolved history. The tables check metadata sizes, JSON and states
+when they are written (schema version 7), and reads take rows as they are; only
+artifact content reads stay bounded by the caller's limit. Logical budgets do not claim to bound SQLite/WAL physical disk
 usage or total process RSS; operation retries, receipts and revision bytes consume
 their documented retention budgets. There is no purge or retention UI.
 
@@ -272,7 +273,7 @@ their documented retention budgets. There is no purge or retention UI.
 Tests compose the actual authenticated worker HTTP API with control retention,
 including binary/PDF-shaped bytes without parsing them. Hostile cases cover unknown
 publication replies, exact pinned retry after path change/restart, endpoint changes,
-quota tightening, zero-byte/count/metadata limits, corrupt large SQLite fields,
+quota tightening, zero-byte/count/metadata limits, oversized writes refused,
 receipt substitution, transfer digest/size/header errors, redirects, deadlines,
 transaction rollback, forged context/USER attribution and repeated cancellation.
 These are local fixtures, not OpenShell evidence.

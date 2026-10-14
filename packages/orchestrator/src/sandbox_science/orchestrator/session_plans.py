@@ -412,9 +412,8 @@ def _json(value: object, limit: int = MAX_RECORD) -> str:
         ) from error
 
 
-def _decode[M: PlanModel](model: type[M], raw: object) -> M:
-    if not isinstance(raw, bytes) or len(raw) > MAX_RECORD:
-        raise DocumentError(INTERNAL, "retained plan metadata is unavailable")
+def _decode[M: PlanModel](model: type[M], raw: str) -> M:
+    """A record as its model, from the JSON the table holds (checked when written)."""
     try:
         return model.model_validate_json(raw, strict=True)
     except (ValidationError, ValueError, TypeError, RecursionError) as error:
@@ -508,23 +507,17 @@ class SessionPlans:
                 )
             )
         for project, versions, progress, records in budgets:
-            count, size, bad, version_count, progress_count = db.execute(
-                "SELECT count(*),coalesce(sum(bytes),0),coalesce(sum(CASE WHEN "
-                "typeof(bytes)!='integer' OR bytes<512 OR bytes>? OR "
-                "bytes!=length(CAST(record AS BLOB))+512 THEN 1 ELSE 0 "
-                "END),0),coalesce(sum(kind='version'),0),coalesce(sum(kind='progress'),0)"
-                " FROM session_plan_records WHERE ? IS NULL OR project=?",
-                (MAX_RECORD + 512, project, project),
+            count, size, version_count, progress_count = db.execute(
+                "SELECT count(*),coalesce(sum(bytes),0),coalesce(sum(kind='version'),0),"
+                "coalesce(sum(kind='progress'),0) FROM session_plan_records "
+                "WHERE ? IS NULL OR project=?",
+                (project, project),
             ).fetchone()
-            projection_count, projection_size, projection_bad = db.execute(
-                "SELECT count(*),coalesce(sum(bytes),0),coalesce(sum(CASE WHEN "
-                "typeof(bytes)!='integer' OR bytes<512 OR bytes>? OR "
-                "bytes!=length(CAST(record AS BLOB))+512 THEN 1 ELSE 0 END),0) FROM "
-                "session_plan_projections WHERE ? IS NULL OR project=?",
-                (MAX_RECORD + 512, project, project),
+            projection_count, projection_size = db.execute(
+                "SELECT count(*),coalesce(sum(bytes),0) FROM session_plan_projections "
+                "WHERE ? IS NULL OR project=?",
+                (project, project),
             ).fetchone()
-            if bad or projection_bad:
-                raise DocumentError(INTERNAL, "retained plan accounting is invalid")
             if (
                 count + projection_count > records
                 or version_count > versions
@@ -545,9 +538,9 @@ class SessionPlans:
         self, db: sqlite3.Connection, scope: PlanScope, kind: str, identifier: str, model: type[M]
     ) -> M | None:
         row = db.execute(
-            "SELECT substr(CAST(record AS BLOB),1,?) FROM session_plan_projections WHERE "
+            "SELECT record FROM session_plan_projections WHERE "
             "project=? AND session=? AND kind=? AND id=?",
-            (MAX_RECORD + 1, scope.project_id, scope.session_id, kind, identifier),
+            (scope.project_id, scope.session_id, kind, identifier),
         ).fetchone()
         return self._scope(_decode(model, row[0]), scope) if row else None
 
@@ -561,9 +554,9 @@ class SessionPlans:
         model: type[M],
     ) -> M:
         row = db.execute(
-            "SELECT substr(CAST(record AS BLOB),1,?) FROM session_plan_records WHERE "
+            "SELECT record FROM session_plan_records WHERE "
             "project=? AND session=? AND kind=? AND id=? AND number=?",
-            (MAX_RECORD + 1, scope.project_id, scope.session_id, kind, identifier, number),
+            (scope.project_id, scope.session_id, kind, identifier, number),
         ).fetchone()
         if not row:
             raise DocumentError(NOT_FOUND, "plan record not found in this session")
@@ -665,8 +658,7 @@ class SessionPlans:
             ("progress", head.progress_cursor),
         ):
             row = db.execute(
-                "SELECT CASE WHEN typeof(number)='integer' THEN number END "
-                "FROM session_plan_records WHERE project=? AND session=? AND kind=? "
+                "SELECT number FROM session_plan_records WHERE project=? AND session=? AND kind=? "
                 "AND id=? ORDER BY number DESC LIMIT 1",
                 (scope.project_id, scope.session_id, kind, ref.plan_id),
             ).fetchone()
@@ -720,11 +712,10 @@ class SessionPlans:
         self, db: sqlite3.Connection, scope: PlanScope, ref: PlanRef, step: str
     ) -> PlanProgress | None:
         row = db.execute(
-            "SELECT CASE WHEN typeof(number)='integer' THEN number END,"
-            "substr(CAST(record AS BLOB),1,?) FROM session_plan_records WHERE "
+            "SELECT number,record FROM session_plan_records WHERE "
             "project=? AND session=? AND kind='progress' AND id=? AND key=? ORDER BY "
             "number DESC LIMIT 1",
-            (MAX_RECORD + 1, scope.project_id, scope.session_id, ref.plan_id, step),
+            (scope.project_id, scope.session_id, ref.plan_id, step),
         ).fetchone()
         if row is None:
             return None
@@ -791,9 +782,9 @@ class SessionPlans:
             {"authority": authority.model_dump(mode="json"), "action": action, "request": payload}
         )
         row = db.execute(
-            "SELECT substr(CAST(record AS BLOB),1,?) FROM session_plan_records WHERE "
+            "SELECT record FROM session_plan_records WHERE "
             "project=? AND session=? AND kind='request' AND id=? AND number=0",
-            (MAX_RECORD + 1, authority.scope.project_id, authority.scope.session_id, identifier),
+            (authority.scope.project_id, authority.scope.session_id, identifier),
         ).fetchone()
         if row:
             request = _decode(PlanRequest, row[0])
@@ -1408,12 +1399,10 @@ class SessionPlans:
         if after > target or target > maximum or type(limit) is not int or not 1 <= limit <= 16:
             raise DocumentError(INVALID_REQUEST, "invalid scoped plan page bounds")
         rows = db.execute(
-            "SELECT CASE WHEN typeof(number)='integer' THEN number END,substr(CAST(record"
-            " AS BLOB),1,?) FROM session_plan_records WHERE project=? AND session=? AND "
-            "kind=? AND id=? AND number>? AND number<=? AND (? IS NULL OR key=?) ORDER BY"
+            "SELECT number,record FROM session_plan_records WHERE project=? AND session=? "
+            "AND kind=? AND id=? AND number>? AND number<=? AND (? IS NULL OR key=?) ORDER BY"
             " number LIMIT ?",
             (
-                MAX_RECORD + 1,
                 scope.project_id,
                 scope.session_id,
                 kind,
@@ -1429,11 +1418,9 @@ class SessionPlans:
         size = 0
         more = False
         for number, raw in rows:
-            if not isinstance(raw, bytes) or len(raw) > MAX_RECORD or type(number) is not int:
-                raise DocumentError(INTERNAL, "retained plan page metadata is invalid")
             if key is None and number != after + 1:
                 raise DocumentError(INTERNAL, "retained scoped plan history has a gap")
-            if len(items) == limit or size + len(raw) > MAX_PAGE:
+            if len(items) == limit or size + len(raw.encode()) > MAX_PAGE:
                 more = True
                 break
             item = self._scope(_decode(model, raw), scope)
@@ -1455,7 +1442,7 @@ class SessionPlans:
             if isinstance(item, PlanEvent):
                 self._event(db, scope, number)
             items.append(item)
-            size += len(raw)
+            size += len(raw.encode())
             after = number
         if key is None and not more and after != target:
             raise DocumentError(INTERNAL, "retained scoped plan history has a gap")

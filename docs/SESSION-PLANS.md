@@ -160,7 +160,8 @@ cursor.
 `PlanLimits` allows bounded operator overrides for retention counts and metadata.
 Every immutable row, zero-content mutation, event, operation receipt and current
 projection counts. Metadata accounting uses canonical record bytes plus a fixed
-512-byte per-row reservation for bounded keys/row overhead; it is a logical
+512-byte per-row reservation for bounded keys/row overhead, which the tables check
+when a row is written (schema version 7); it is a logical
 admission budget, not an exact SQLite/WAL/disk/RSS bound. There is no eviction,
 expiry or silent forgetting of unresolved history. A full or tightened quota
 refuses a new plan mutation atomically and leaves existing plans readable. It
@@ -181,5 +182,5 @@ inventory.
 Local tests cover attributed USER edits and stale CAS; stable, changed and
 removed steps; delegated track and version fences; workflow and progress races;
 explicit outcomes; exact restart replay and scoped cursors; transactional quotas
-and rollback; corruption and allocation bounds; immutable history and readonly
+and rollback; oversized or miscounted writes refused; immutable history and readonly
 behavior. They are synthetic control-store tests.
