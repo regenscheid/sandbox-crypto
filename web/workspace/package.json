@@ -12,8 +12,17 @@
     "dev": "vite",
     "build": "vite build",
     "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings && tsc -p tsconfig.node.json",
+    "format": "prettier --write src",
+    "format:check": "prettier --check src",
     "test": "vitest run",
     "build:math": "vite build --config vite.math.config.ts && node server/copy-math-licenses.mjs"
+  },
+  "prettier": {
+    "printWidth": 100,
+    "singleQuote": true,
+    "plugins": [
+      "prettier-plugin-svelte"
+    ]
   },
   "dependencies": {
     "katex": "0.18.9",
@@ -22,6 +31,8 @@
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "7.3.1",
+    "prettier": "3.9.9",
+    "prettier-plugin-svelte": "4.1.1",
     "svelte-check": "4.7.6",
     "typescript": "6.0.3",
     "vite": "8.3.3",

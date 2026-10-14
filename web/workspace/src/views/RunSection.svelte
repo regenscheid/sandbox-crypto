@@ -32,9 +32,19 @@
       <p class="muted">Loading…</p>
     {:then found}
       {#if found.review_summary?.reviews?.length}
-        <p role="status">Consistency review: {found.review_summary.pending ? "pending at the saved run boundary" : found.review_summary.outcome ?? "see session review history"}. {#if found.review_summary.counts}Unresolved counts: {JSON.stringify(found.review_summary.counts)}.{/if}</p>
+        <p role="status">
+          Consistency review: {found.review_summary.pending
+            ? 'pending at the saved run boundary'
+            : (found.review_summary.outcome ?? 'see session review history')}. {#if found.review_summary.counts}Unresolved
+            counts: {JSON.stringify(found.review_summary.counts)}.{/if}
+        </p>
       {/if}
-      {#if found.math_summary?.renderer || found.math_summary?.pending}<p role="status">Document math: {found.math_summary.pending ? 'pending at the saved run boundary' : 'see recorded checks'} · renderer {found.math_summary.renderer ?? 'unavailable'}. {#if found.math_summary.counts}Unresolved: {JSON.stringify(found.math_summary.counts)}.{/if}</p>{/if}
+      {#if found.math_summary?.renderer || found.math_summary?.pending}<p role="status">
+          Document math: {found.math_summary.pending
+            ? 'pending at the saved run boundary'
+            : 'see recorded checks'} · renderer {found.math_summary.renderer ?? 'unavailable'}. {#if found.math_summary.counts}Unresolved:
+            {JSON.stringify(found.math_summary.counts)}.{/if}
+        </p>{/if}
       <RunView run={found} />
     {:catch error}
       <ErrorMessage {error} />

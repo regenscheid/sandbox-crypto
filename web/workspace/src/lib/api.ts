@@ -7,8 +7,16 @@
  * requires of a POST; there is nothing else to send.
  */
 import type { ServerBlock } from './attach';
-import { KERNEL_DEADLINE_MS, KernelReadError, kernelObservation, kernelReadsAllowed, stopKernelReadsForLogout, validKernelScope,
-  type KernelObservation, type KernelScope } from './kernels';
+import {
+  KERNEL_DEADLINE_MS,
+  KernelReadError,
+  kernelObservation,
+  kernelReadsAllowed,
+  stopKernelReadsForLogout,
+  validKernelScope,
+  type KernelObservation,
+  type KernelScope,
+} from './kernels';
 
 export interface ProjectSummary {
   project_id: string;
@@ -42,8 +50,13 @@ export interface Project {
 }
 
 export interface MacroContext {
-  project: string; revision: number; sha256: string; macros: Record<string,string>;
-  known?: boolean; key?: string; problems?: string[];
+  project: string;
+  revision: number;
+  sha256: string;
+  macros: Record<string, string>;
+  known?: boolean;
+  key?: string;
+  problems?: string[];
 }
 
 export interface RunEntry {
@@ -143,8 +156,18 @@ export interface RunRecord {
   failure?: 'model' | 'tool' | 'harness' | 'cleanup' | null;
   final_text: string | null;
   review_notice_ids?: string[];
-  math_summary?: { pending?: boolean; renderer?: string; counts?: Record<string, number>; detail?: string };
-  review_summary?: { pending?: boolean; outcome?: string; counts?: Record<string, number>; reviews?: string[] };
+  math_summary?: {
+    pending?: boolean;
+    renderer?: string;
+    counts?: Record<string, number>;
+    detail?: string;
+  };
+  review_summary?: {
+    pending?: boolean;
+    outcome?: string;
+    counts?: Record<string, number>;
+    reviews?: string[];
+  };
   messages: Message[];
   tools: ToolRecord[];
 }
@@ -298,8 +321,13 @@ export interface DocumentChange {
   revision: number;
   patch_id: string | null;
   message: string;
-  conflicts: { block?: string; math?: string; now?: string; at_base?: string;
-    changed_by?: { revision: number; author: Author }[] }[];
+  conflicts: {
+    block?: string;
+    math?: string;
+    now?: string;
+    at_base?: string;
+    changed_by?: { revision: number; author: Author }[];
+  }[];
   unnamed: string[];
 }
 
@@ -315,35 +343,87 @@ export interface PatchPreview {
 
 /** Immutable anchor context, projected onto the selected document revision. */
 export interface CommentAnchor {
-  revision: number; block: string; math: string | null;
-  start: number | null; end: number | null; kind: 'block' | 'math' | 'range';
-  quote: string; quote_truncated: boolean; before: string; after: string;
+  revision: number;
+  block: string;
+  math: string | null;
+  start: number | null;
+  end: number | null;
+  kind: 'block' | 'math' | 'range';
+  quote: string;
+  quote_truncated: boolean;
+  before: string;
+  after: string;
 }
 export interface CommentBodySource {
-  entry_id: string; revision?: number; sha256?: string; body?: string;
-  author?: Author | null; original_author?: Author; held?: string;
+  entry_id: string;
+  revision?: number;
+  sha256?: string;
+  body?: string;
+  author?: Author | null;
+  original_author?: Author;
+  held?: string;
 }
 export interface CommentEntry {
-  entry_id: string; number: number; kind: 'create' | 'reply' | 'edit' | 'edit_body' | 'resolve' | 'reopen';
-  author: Author; body: string; created_at: number;
+  entry_id: string;
+  number: number;
+  kind: 'create' | 'reply' | 'edit' | 'edit_body' | 'resolve' | 'reopen';
+  author: Author;
+  body: string;
+  created_at: number;
   body_source?: CommentBodySource;
-  payload: { revision?: number; changed_blocks?: string[]; outside_anchor?: string[]; changed_blocks_total?: number; changed_blocks_truncated?: boolean;
-    outside_anchor_total?: number; outside_anchor_truncated?: boolean;
-    addressed_to?: string; request_id?: string; anchor?: Record<string, unknown>;
-    entry?: string; base?: number; sha256?: string; body_revision?: number };
+  payload: {
+    revision?: number;
+    changed_blocks?: string[];
+    outside_anchor?: string[];
+    changed_blocks_total?: number;
+    changed_blocks_truncated?: boolean;
+    outside_anchor_total?: number;
+    outside_anchor_truncated?: boolean;
+    addressed_to?: string;
+    request_id?: string;
+    anchor?: Record<string, unknown>;
+    entry?: string;
+    base?: number;
+    sha256?: string;
+    body_revision?: number;
+  };
 }
 export interface CommentThread {
-  thread_id: string; anchor: CommentAnchor; opener: Author; created_at: number;
-  revision: number; status: 'open' | 'resolved'; entries_before: number | null;
+  thread_id: string;
+  anchor: CommentAnchor;
+  opener: Author;
+  created_at: number;
+  revision: number;
+  status: 'open' | 'resolved';
+  entries_before: number | null;
   entries: CommentEntry[];
-  requests: { request_id: string; session_id: string; entry_id: string;
-    state: 'queued' | 'delivered' | 'responded'; delivered_run: string | null; responded_entry: string | null }[];
+  requests: {
+    request_id: string;
+    session_id: string;
+    entry_id: string;
+    state: 'queued' | 'delivered' | 'responded';
+    delivered_run: string | null;
+    responded_entry: string | null;
+  }[];
   view_revision: number;
-  attachment: { status: 'current' | 'moved' | 'stale' | 'orphaned'; quote: string; current: string | null };
+  attachment: {
+    status: 'current' | 'moved' | 'stale' | 'orphaned';
+    quote: string;
+    current: string | null;
+  };
 }
-export interface CommentListing { threads: CommentThread[]; next_after: string | null }
-export interface CommentChange { thread_id: string; entry_id: string; revision: number;
-  request_id: string | null; outcome: string; replayed?: boolean }
+export interface CommentListing {
+  threads: CommentThread[];
+  next_after: string | null;
+}
+export interface CommentChange {
+  thread_id: string;
+  entry_id: string;
+  revision: number;
+  request_id: string | null;
+  outcome: string;
+  replayed?: boolean;
+}
 
 export class ApiError extends Error {
   constructor(
@@ -365,7 +445,9 @@ async function failure(response: Response): Promise<ApiError> {
   let message = `the server answered ${response.status}`;
   let details: Record<string, unknown> = {};
   try {
-    const body = (await response.json()) as { error?: { kind?: string; message?: string; details?: Record<string, unknown> } };
+    const body = (await response.json()) as {
+      error?: { kind?: string; message?: string; details?: Record<string, unknown> };
+    };
     kind = body.error?.kind ?? kind;
     message = body.error?.message ?? message;
     details = body.error?.details ?? {};
@@ -404,53 +486,79 @@ async function observeKernels(scope: KernelScope, signal: AbortSignal): Promise<
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let cancellation: Promise<unknown> | undefined;
   const cancelBody = (): Promise<unknown> => {
-    cancellation ??= (reader ? reader.cancel() : response?.body?.cancel() ?? Promise.resolve()).catch(() => undefined);
+    cancellation ??= (
+      reader ? reader.cancel() : (response?.body?.cancel() ?? Promise.resolve())
+    ).catch(() => undefined);
     return cancellation;
   };
-  const abort = () => { controller.abort(); if (response) void cancelBody(); };
-  signal.addEventListener('abort', abort, {once: true});
+  const abort = () => {
+    controller.abort();
+    if (response) void cancelBody();
+  };
+  signal.addEventListener('abort', abort, { once: true });
   const deadline = setTimeout(abort, KERNEL_DEADLINE_MS);
   try {
-    response = await fetch(`/api/v0/projects/${part(scope.projectId)}/sessions/${part(scope.sessionId)}/kernels`, {
-      headers: {Accept: 'application/json'}, signal: controller.signal, redirect: 'error', cache: 'no-store',
-    });
-    if (controller.signal.aborted || response.redirected || response.type === 'opaqueredirect') throw new KernelReadError(0);
+    response = await fetch(
+      `/api/v0/projects/${part(scope.projectId)}/sessions/${part(scope.sessionId)}/kernels`,
+      {
+        headers: { Accept: 'application/json' },
+        signal: controller.signal,
+        redirect: 'error',
+        cache: 'no-store',
+      },
+    );
+    if (controller.signal.aborted || response.redirected || response.type === 'opaqueredirect')
+      throw new KernelReadError(0);
     // Error bodies carry no useful kernel data. Cancel rather than parsing/retaining arbitrary text.
-    if (!response.ok) { await cancelBody(); throw new KernelReadError(response.status); }
+    if (!response.ok) {
+      await cancelBody();
+      throw new KernelReadError(response.status);
+    }
     if (!response.body) throw new KernelReadError(0);
     const declared = response.headers.get('content-length');
-    if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > 12 * 1024)) throw new KernelReadError(0);
+    if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > 12 * 1024))
+      throw new KernelReadError(0);
     reader = response.body.getReader();
     const chunks: Uint8Array[] = [];
-    let size = 0, reads = 0;
+    let size = 0,
+      reads = 0;
     while (true) {
       const chunk = await reader.read();
       if (controller.signal.aborted) throw new KernelReadError(0);
       if (chunk.done) break;
       if (++reads > 256) throw new KernelReadError(0);
       if (chunk.value.length > 12 * 1024 - size) throw new KernelReadError(0);
-      chunks.push(chunk.value); size += chunk.value.length;
+      chunks.push(chunk.value);
+      size += chunk.value.length;
     }
     const bytes = new Uint8Array(size);
     let offset = 0;
-    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
-    return kernelObservation(JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(bytes)) as unknown, scope);
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return kernelObservation(
+      JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown,
+      scope,
+    );
   } catch (error) {
     if (error instanceof KernelReadError) throw error;
     throw new KernelReadError(0);
   } finally {
     await cancelBody();
     reader?.releaseLock();
-    clearTimeout(deadline); signal.removeEventListener('abort', abort);
+    clearTimeout(deadline);
+    signal.removeEventListener('abort', abort);
     kernelReadOwned = false;
   }
 }
 
 export const api = {
   kernels: (project: string, session: string, environment: string, signal: AbortSignal) =>
-    observeKernels({projectId: project, sessionId: session, environmentId: environment}, signal),
+    observeKernels({ projectId: project, sessionId: session, environmentId: environment }, signal),
   projectMacros: (project: string) => get<MacroContext>(`/projects/${part(project)}/macros`),
-  changeMacros: (project: string, value: Record<string, unknown>) => post<MacroContext>(`/projects/${part(project)}/macros`, value),
+  changeMacros: (project: string, value: Record<string, unknown>) =>
+    post<MacroContext>(`/projects/${part(project)}/macros`, value),
   projects: () => get<{ projects: ProjectSummary[] }>('/projects'),
   project: (project: string) =>
     get<{ project: Project }>(`/projects/${part(project)}`).then((found) => found.project),
@@ -474,15 +582,26 @@ export const api = {
   changeDocument: (project: string, document: string, change: Record<string, unknown>) =>
     post<DocumentChange>(`/projects/${part(project)}/documents/${part(document)}/changes`, change),
   comments: (project: string, document: string, revision: number, after: string | null = null) =>
-    get<CommentListing>(`/projects/${part(project)}/documents/${part(document)}/comments?revision=${revision}` +
-      (after === null ? '' : `&after=${part(after)}`)),
-  commentThread: (project: string, document: string, thread: string, before: number | null = null) =>
-    get<CommentThread>(`/projects/${part(project)}/documents/${part(document)}/comments/${part(thread)}` +
-      (before === null ? '' : `?before=${before}`)),
+    get<CommentListing>(
+      `/projects/${part(project)}/documents/${part(document)}/comments?revision=${revision}` +
+        (after === null ? '' : `&after=${part(after)}`),
+    ),
+  commentThread: (
+    project: string,
+    document: string,
+    thread: string,
+    before: number | null = null,
+  ) =>
+    get<CommentThread>(
+      `/projects/${part(project)}/documents/${part(document)}/comments/${part(thread)}` +
+        (before === null ? '' : `?before=${before}`),
+    ),
   changeComment: (project: string, document: string, change: Record<string, unknown>) =>
     post<CommentChange>(`/projects/${part(project)}/documents/${part(document)}/comments`, change),
   previewPatch: (project: string, document: string, patch: string) =>
-    get<PatchPreview>(`/projects/${part(project)}/documents/${part(document)}/patches/${part(patch)}/preview`),
+    get<PatchPreview>(
+      `/projects/${part(project)}/documents/${part(document)}/patches/${part(patch)}/preview`,
+    ),
   history: (project: string, document: string) =>
     get<DocumentHistory>(`/projects/${part(project)}/documents/${part(document)}/history`),
   mathRepair: (request: MathRepairRequest) => post<MathRepairAnswer>('/math-repair', request),

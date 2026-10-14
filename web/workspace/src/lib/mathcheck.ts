@@ -22,7 +22,12 @@ export function checkFormula(formula: Formula) {
   };
   // A size skip is inconclusive, as in the GUI. It is never accepted math.
   if (formula.tex.length > MAX_FORMULA) {
-    return { ...common, status: 'unavailable', error: 'formula exceeds renderer limit', remedy: null };
+    return {
+      ...common,
+      status: 'unavailable',
+      error: 'formula exceeds renderer limit',
+      remedy: null,
+    };
   }
   const tex = formula.tex.trim();
   const definition = definesMacros(tex);
@@ -30,9 +35,12 @@ export function checkFormula(formula: Formula) {
     return { ...common, status: 'unavailable', error: 'formula defines a macro', remedy: null };
   }
   const macros = macroSet(formula.macros);
-  const render = (candidate: string) => katex.renderToString(candidate, {
-    ...KATEX_OPTIONS, displayMode: formula.display, macros: macros.forFormula(),
-  });
+  const render = (candidate: string) =>
+    katex.renderToString(candidate, {
+      ...KATEX_OPTIONS,
+      displayMode: formula.display,
+      macros: macros.forFormula(),
+    });
   try {
     render(tex);
     return { ...common, status: 'accepted', error: null, remedy: null };
@@ -47,7 +55,9 @@ export function checkFormula(formula: Formula) {
       try {
         render(candidate);
         return { ...common, status: 'rejected', error, remedy: candidate };
-      } catch { /* A repair must pass the same renderer. */ }
+      } catch {
+        /* A repair must pass the same renderer. */
+      }
     }
     return { ...common, status: 'rejected', error, remedy: null };
   }

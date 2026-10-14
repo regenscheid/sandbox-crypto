@@ -25,7 +25,12 @@
     document = null,
     macros = undefined,
     mismatches = $bindable([]),
-  }: { source: string; document?: DocumentInput | null; macros?: MacroSet; mismatches?: Mismatch[] } = $props();
+  }: {
+    source: string;
+    document?: DocumentInput | null;
+    macros?: MacroSet;
+    mismatches?: Mismatch[];
+  } = $props();
   const projectMacros = getContext<(() => MacroSet) | undefined>('project-macros');
   /** Counts what makes this text render again: repairs it waits for, or its turn in a go. */
   let arrivals = $state(0);
@@ -35,7 +40,11 @@
 
   const rendered = $derived.by(() => {
     void arrivals;
-    if (document === null) return { ...renderMarkdown(source, pageRepairs, kept, macros ?? projectMacros?.() ?? NO_MACROS), mismatches: [] };
+    if (document === null)
+      return {
+        ...renderMarkdown(source, pageRepairs, kept, macros ?? projectMacros?.() ?? NO_MACROS),
+        mismatches: [],
+      };
     return renderDocument(source, document, pageRepairs, kept);
   });
 

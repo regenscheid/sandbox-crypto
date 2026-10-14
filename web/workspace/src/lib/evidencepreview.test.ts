@@ -10,7 +10,9 @@ describe('raw pinned evidence preview', () => {
     expect(html).toMatch(/<pre[^>]*aria-label="Pinned evidence preview"[^>]*><\/pre>/);
   });
   it('escapes untrusted source without Markdown or HTML interpretation', () => {
-    const html = render(PinnedEvidencePreview, { props: { text: '<script>run()</script>\n**raw**' } }).body;
+    const html = render(PinnedEvidencePreview, {
+      props: { text: '<script>run()</script>\n**raw**' },
+    }).body;
     expect(html).toContain('&lt;script>run()&lt;/script>');
     expect(html).toContain('**raw**');
     expect(html).not.toContain('<script>');

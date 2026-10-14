@@ -24,7 +24,10 @@ describe('routes', () => {
       '#/projects/p1/documents/doc-1/revisions/3',
       { view: 'document', project: 'p1', document: 'doc-1', revision: 3 },
     ],
-    ['#/projects/p1/documents/doc-1/history', { view: 'history', project: 'p1', document: 'doc-1' }],
+    [
+      '#/projects/p1/documents/doc-1/history',
+      { view: 'history', project: 'p1', document: 'doc-1' },
+    ],
     ['#/projects/p1/documents/doc-1/revisions/0', { view: 'missing' }],
     ['#/projects/p1/documents/doc-1/revisions/x', { view: 'missing' }],
     ['#/projects/p1/documents/doc-1/revisions', { view: 'missing' }],

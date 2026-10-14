@@ -59,7 +59,12 @@ const INLINE_MATH: Record<string, 'inline' | 'display'> = {
   math_inline_double: 'display',
 };
 
-type BlockRule = (state: StateBlock, startLine: number, endLine: number, silent: boolean) => boolean;
+type BlockRule = (
+  state: StateBlock,
+  startLine: number,
+  endLine: number,
+  silent: boolean,
+) => boolean;
 
 /** Where a line's own text begins for a block at `indent`, as `getLines` finds it. */
 function lineFirst(state: StateBlock, line: number, indent: number): number {
@@ -100,7 +105,8 @@ function instrumented(rule: BlockRule): BlockRule {
       const end = index === 0 ? state.line : token.map[1];
       const begin = token.map[0];
       const firsts: number[] = [];
-      for (let line = begin; line < end; line += 1) firsts.push(lineFirst(state, line, state.blkIndent));
+      for (let line = begin; line < end; line += 1)
+        firsts.push(lineFirst(state, line, state.blkIndent));
       token.meta = { ...(token.meta ?? {}), place: { lines: [begin, end], firsts } };
     });
     return found;
@@ -132,7 +138,8 @@ export function bareTex(src: string, token: Token): string {
     const first = place.firsts[index];
     if (first === undefined) break;
     const prefix = src.slice(src.lastIndexOf('\n', first - 1) + 1, first);
-    if (prefix && lines[index]!.startsWith(prefix)) lines[index] = lines[index]!.slice(prefix.length);
+    if (prefix && lines[index]!.startsWith(prefix))
+      lines[index] = lines[index]!.slice(prefix.length);
   }
   return lines.join('\n');
 }
@@ -140,7 +147,8 @@ export function bareTex(src: string, token: Token): string {
 /** The blocks and spans of `src`'s tokens, as the server derives them. */
 export function blockMap(src: string, tokens: Token[]): BrowserParse {
   const lineStarts = [0];
-  for (let index = 0; index < src.length; index += 1) if (src[index] === '\n') lineStarts.push(index + 1);
+  for (let index = 0; index < src.length; index += 1)
+    if (src[index] === '\n') lineStarts.push(index + 1);
   const lineEnd = (line: number) =>
     line + 1 < lineStarts.length ? lineStarts[line + 1]! - 1 : src.length;
   const blocks: BrowserBlock[] = [];
@@ -152,11 +160,21 @@ export function blockMap(src: string, tokens: Token[]): BrowserParse {
     if (!place) throw new Error(`the parser left a ${kind} without its place`);
     let [begin, end] = place.lines;
     // Trailing blank lines belong to no block (as the server's strip(" \t")).
-    while (end - begin > 1 && !/[^ \t]/.test(src.slice(place.firsts[end - begin - 1], lineEnd(end - 1)))) {
+    while (
+      end - begin > 1 &&
+      !/[^ \t]/.test(src.slice(place.firsts[end - begin - 1], lineEnd(end - 1)))
+    ) {
       end -= 1;
     }
     const parent = stack.length ? stack[stack.length - 1]! : null;
-    blocks.push({ index: blocks.length, kind, parent, depth: stack.length, lines: [begin, end], token });
+    blocks.push({
+      index: blocks.length,
+      kind,
+      parent,
+      depth: stack.length,
+      lines: [begin, end],
+      token,
+    });
     return blocks.length - 1;
   };
 
@@ -188,7 +206,8 @@ export function blockMap(src: string, tokens: Token[]): BrowserParse {
     } else {
       const kind = LEAF[token.type] ?? 'other';
       const index = add(token, kind);
-      if (kind === 'equation') spans.push({ block: index, kind: 'display', tex: token.content, token });
+      if (kind === 'equation')
+        spans.push({ block: index, kind: 'display', tex: token.content, token });
     }
   }
   return { blocks, spans };

@@ -25,8 +25,16 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
         role: 'assistant',
         content: 'Computing.',
         tool_calls: [
-          { id: 'call-1', type: 'function', function: { name: 'python', arguments: '{"code": "x = 41"}' } },
-          { id: 'call-2', type: 'function', function: { name: 'shell', arguments: '{"script": "echo"}' } },
+          {
+            id: 'call-1',
+            type: 'function',
+            function: { name: 'python', arguments: '{"code": "x = 41"}' },
+          },
+          {
+            id: 'call-2',
+            type: 'function',
+            function: { name: 'shell', arguments: '{"script": "echo"}' },
+          },
         ],
       },
       { role: 'tool', tool_call_id: 'call-2', content: '{"state": "failed", "exit_code": 1}' },

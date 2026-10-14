@@ -52,8 +52,10 @@ describe('math spans', () => {
 
 describe('normalization', () => {
   it('reads backslash delimiters as the dollar forms', () => {
-    const input = 'Inline \\(\\lambda = 2^{128}\\) and display:\n\\[\n\\Pr[X] \\approx q^2\n\\]\nafter';
-    const dollars = 'Inline $\\lambda = 2^{128}$ and display:\n\n$$\n\\Pr[X] \\approx q^2\n$$\nafter';
+    const input =
+      'Inline \\(\\lambda = 2^{128}\\) and display:\n\\[\n\\Pr[X] \\approx q^2\n\\]\nafter';
+    const dollars =
+      'Inline $\\lambda = 2^{128}$ and display:\n\n$$\n\\Pr[X] \\approx q^2\n$$\nafter';
     expect(math(input)).toEqual([
       [false, '\\lambda = 2^{128}'],
       [true, '\\Pr[X] \\approx q^2'],
@@ -94,7 +96,13 @@ describe('normalization', () => {
     // (D65): a digit may follow a closing dollar, and inline math may span lines.
     const cases: [string, [boolean, string][]][] = [
       ['with $h = gf^{-1}$ here', [[false, 'h = gf^{-1}']]],
-      ['both $x$ and $y$.', [[false, 'x'], [false, 'y']]],
+      [
+        'both $x$ and $y$.',
+        [
+          [false, 'x'],
+          [false, 'y'],
+        ],
+      ],
       ['costs $5 and $10 today', []],
       ['between $5/$6 per unit', [[false, '5/']]], // Pandoc: no math
       ['a lone $ sign', []],
@@ -104,7 +112,13 @@ describe('normalization', () => {
       ['code `$x$` stays', []],
       ['across $x\ny$ lines', [[false, 'x\ny']]], // Pandoc: no math
       ['already $$x$$ double', [[true, 'x']]],
-      ['block\n$$\na $b$ c\n$$\nafter $d$', [[true, 'a $b$ c'], [false, 'd']]],
+      [
+        'block\n$$\na $b$ c\n$$\nafter $d$',
+        [
+          [true, 'a $b$ c'],
+          [false, 'd'],
+        ],
+      ],
       ['escaped \\{ $\\{x\\}$ set', [[false, '\\{x\\}']]],
       ['```\n$x$\n```', []],
     ];
@@ -112,7 +126,8 @@ describe('normalization', () => {
   });
 
   it('reads the portable single-dollar form and its exceptions', () => {
-    const input = 'Inline \\(h = gf^{-1}\\) and display:\n\\[\nfG - gF = q\n\\]\nprice $5 and $x$ kept';
+    const input =
+      'Inline \\(h = gf^{-1}\\) and display:\n\\[\nfG - gF = q\n\\]\nprice $5 and $x$ kept';
     expect(math(input)).toEqual([
       [false, 'h = gf^{-1}'],
       [true, 'fG - gF = q'],

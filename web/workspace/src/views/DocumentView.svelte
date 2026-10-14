@@ -23,7 +23,10 @@
     revision,
   }: { projectId: string; documentId: string; revision: number | null } = $props();
   let refresh = $state(0);
-  const loading = $derived.by(() => { refresh; return api.document(projectId, documentId, revision); });
+  const loading = $derived.by(() => {
+    refresh;
+    return api.document(projectId, documentId, revision);
+  });
   let mismatches: Mismatch[] = $state([]);
 
   function lines(found: Mismatch): string {
@@ -41,11 +44,18 @@
 {:then found}
   {@const info = found.document}
   {@const shown = found.revision}
-  {@const macros = macroSet(found.macros, `${projectId}:${found.macro_context?.key ?? 'legacy-document'}`)}
-  {#if found.macro_context?.problems?.length}<p role="status">{found.macro_context.problems.join('; ')}</p>{/if}
+  {@const macros = macroSet(
+    found.macros,
+    `${projectId}:${found.macro_context?.key ?? 'legacy-document'}`,
+  )}
+  {#if found.macro_context?.problems?.length}<p role="status">
+      {found.macro_context.problems.join('; ')}
+    </p>{/if}
   <!-- A first revision added every block: marking them all would say nothing. -->
   {@const blocks =
-    shown.parent === null ? found.blocks.map((block) => ({ ...block, status: 'kept' })) : found.blocks}
+    shown.parent === null
+      ? found.blocks.map((block) => ({ ...block, status: 'kept' }))
+      : found.blocks}
   {@const input = { blocks, macros }}
   <h1>{found.title ?? info.title}</h1>
   <dl class="facts">
@@ -87,7 +97,7 @@
   </dl>
 
   {#key `${info.document_id}:${shown.number}`}
-    <DocumentEditor {projectId} {found} refreshed={() => refresh += 1} />
+    <DocumentEditor {projectId} {found} refreshed={() => (refresh += 1)} />
   {/key}
 
   {#if shown.warnings.length > 0}
@@ -96,7 +106,9 @@
       {#each shown.warnings as warning, index (index)}
         <li>
           <code>{warning.kind}</code>
-          {#if warning.block}<span class="muted">in {warning.block}{warning.math ? `, ${warning.math}` : ''}</span>{/if}:
+          {#if warning.block}<span class="muted"
+              >in {warning.block}{warning.math ? `, ${warning.math}` : ''}</span
+            >{/if}:
           {warning.message}
         </li>
       {/each}
@@ -111,8 +123,8 @@
 
   {#if !found.matched}
     <p class="problem">
-      The server could not parse this revision as its block map was made, with a parser of
-      another version, so its formulas are shown without their IDs.
+      The server could not parse this revision as its block map was made, with a parser of another
+      version, so its formulas are shown without their IDs.
     </p>
   {/if}
 
@@ -120,8 +132,8 @@
     <div class="mismatch" role="note">
       <p>
         The browser reads this revision differently from the server in {mismatches.length}
-        {mismatches.length === 1 ? 'place' : 'places'} (LD-9). Those parts are shown without
-        their IDs, outlined:
+        {mismatches.length === 1 ? 'place' : 'places'} (LD-9). Those parts are shown without their IDs,
+        outlined:
       </p>
       <ul>
         {#each mismatches as mismatch, index (index)}

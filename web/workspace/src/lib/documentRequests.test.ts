@@ -5,8 +5,11 @@ import { documentAnswered, documentRequest } from './documentRequests';
 afterEach(() => vi.unstubAllGlobals());
 it('keeps the operation ID for an uncertain request, changing it only after acknowledgement or payload change', async () => {
   const storage = new Map<string, string>();
-  vi.stubGlobal('sessionStorage', { getItem: (key: string) => storage.get(key) ?? null,
-    setItem: (key: string, value: string) => storage.set(key, value), removeItem: (key: string) => storage.delete(key) });
+  vi.stubGlobal('sessionStorage', {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => storage.set(key, value),
+    removeItem: (key: string) => storage.delete(key),
+  });
   const body = { action: 'source', base: 1, text: 'Unsaved insertion.', reason: 'Edit' };
   const first = await documentRequest('p', 'retry', body);
   expect(await documentRequest('p', 'retry', body)).toEqual(first);
@@ -22,7 +25,14 @@ it('keeps the operation ID for an uncertain request, changing it only after ackn
   documentAnswered(changed);
 });
 it('isolates ownership scope and retains retries when storage is unavailable', async () => {
-  vi.stubGlobal('sessionStorage', { getItem() { throw new Error('blocked'); }, setItem() { throw new Error('blocked'); } });
+  vi.stubGlobal('sessionStorage', {
+    getItem() {
+      throw new Error('blocked');
+    },
+    setItem() {
+      throw new Error('blocked');
+    },
+  });
   const body = { action: 'revert', base: 3, target: 1, reason: 'Restore' };
   const first = await documentRequest('p', 'memory-retry', body);
   expect(await documentRequest('p', 'memory-retry', body)).toEqual(first);

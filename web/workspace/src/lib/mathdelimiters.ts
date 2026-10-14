@@ -43,8 +43,21 @@ import { isBlank, isEscaped as isEscapedLikeDollars, MAX_BLOCK_LINES } from './d
 
 /** Display environments that are math by themselves (the original's list). */
 export const DISPLAY_ENVIRONMENTS: ReadonlySet<string> = new Set([
-  'equation', 'equation*', 'align', 'align*', 'alignat', 'alignat*', 'gather', 'gather*',
-  'multline', 'multline*', 'flalign', 'flalign*', 'eqnarray', 'eqnarray*', 'displaymath',
+  'equation',
+  'equation*',
+  'align',
+  'align*',
+  'alignat',
+  'alignat*',
+  'gather',
+  'gather*',
+  'multline',
+  'multline*',
+  'flalign',
+  'flalign*',
+  'eqnarray',
+  'eqnarray*',
+  'displaymath',
 ]);
 
 /** A math token's closing delimiter, when it is not its opening one. */

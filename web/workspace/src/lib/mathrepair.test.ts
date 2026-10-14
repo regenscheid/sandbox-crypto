@@ -109,16 +109,19 @@ describe('deterministic LaTeX repairs', () => {
         "Unexpected end of input in a macro argument, expected '}' at end of input: \\frac{a}{b",
       ),
     ).toContain('\\frac{a}{b}');
-    expect(repairTex('\\left( x', "Expected '\\right', got 'EOF' at end of input: \\left( x")[0]).toBe(
-      '\\left( x \\right.',
-    );
+    expect(
+      repairTex('\\left( x', "Expected '\\right', got 'EOF' at end of input: \\left( x")[0],
+    ).toBe('\\left( x \\right.');
     expect(repairTex('x^', "Expected group after '^' at position 2: x^\u0332")[0]).toBe('x');
   });
 });
 
 describe('commands the repairs never make', () => {
   it('leave an escaped backslash alone: \\\\R is a line break and an R', () => {
-    const candidates = repairTex('a \\\\R b \\\\label{x} c \\R', 'Undefined control sequence: \\foo');
+    const candidates = repairTex(
+      'a \\\\R b \\\\label{x} c \\R',
+      'Undefined control sequence: \\foo',
+    );
     expect(candidates[0]).toBe('a \\\\R b \\\\label{x} c \\mathbb{R}');
   });
 
@@ -221,8 +224,46 @@ describe('commands the repairs never make', () => {
         out.push(text);
       }
     };
-    const definers = new Set(['\\def', '\\gdef', '\\edef', '\\xdef', '\\let', '\\futurelet', '\\global', '\\long', '\\newcommand', '\\renewcommand', '\\providecommand']);
-    const alphabet = ['\\', '\\', '%', 'v', 'e', 'r', 'b', 'verb', '\\verb', '\\def', 'def', '*', '|', '\n', '\r', '\u0301', '{', '}', ' ', '@', 'a', ' ', '\t', '\\%', '\\\\'];
+    const definers = new Set([
+      '\\def',
+      '\\gdef',
+      '\\edef',
+      '\\xdef',
+      '\\let',
+      '\\futurelet',
+      '\\global',
+      '\\long',
+      '\\newcommand',
+      '\\renewcommand',
+      '\\providecommand',
+    ]);
+    const alphabet = [
+      '\\',
+      '\\',
+      '%',
+      'v',
+      'e',
+      'r',
+      'b',
+      'verb',
+      '\\verb',
+      '\\def',
+      'def',
+      '*',
+      '|',
+      '\n',
+      '\r',
+      '\u0301',
+      '{',
+      '}',
+      ' ',
+      '@',
+      'a',
+      ' ',
+      '\t',
+      '\\%',
+      '\\\\',
+    ];
     let seed = 12345;
     const random = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
     const misses: string[] = [];
@@ -234,7 +275,8 @@ describe('commands the repairs never make', () => {
       const stream = tokens(tex);
       if (stream === null) continue;
       checked += 1;
-      if (stream.some((token) => definers.has(token)) && definesMacros(tex) === null) misses.push(tex);
+      if (stream.some((token) => definers.has(token)) && definesMacros(tex) === null)
+        misses.push(tex);
     }
     expect(checked).toBeGreaterThan(200_000);
     expect(misses.slice(0, 5)).toEqual([]);
@@ -243,7 +285,10 @@ describe('commands the repairs never make', () => {
   it('read \\verb openers that never close in linear time', () => {
     // Each with a delimiter of its own: looking for each one's to the end of the line
     // took time quadratic in their number.
-    const openers = Array.from({ length: 20_000 }, (_, i) => `\\verb${String.fromCharCode(0x4e00 + i)}`);
+    const openers = Array.from(
+      { length: 20_000 },
+      (_, i) => `\\verb${String.fromCharCode(0x4e00 + i)}`,
+    );
     const started = performance.now();
     expect(definesMacros(`${openers.join('')}\\def`)).toBe('def');
     expect(performance.now() - started).toBeLessThan(200);
@@ -286,9 +331,9 @@ describe('Unicode transliteration', () => {
 
   it('flattens matrices and cases', () => {
     expect(texToUnicode('\\begin{pmatrix} 1 & 2 \\\\ 3 & 4 \\end{pmatrix}')).toBe('(1 2; 3 4)');
-    expect(
-      texToUnicode('\\begin{cases} 1 & x > 0 \\\\ 0 & \\text{otherwise} \\end{cases}'),
-    ).toBe('{ 1 if x > 0; 0 if otherwise }');
+    expect(texToUnicode('\\begin{cases} 1 & x > 0 \\\\ 0 & \\text{otherwise} \\end{cases}')).toBe(
+      '{ 1 if x > 0; 0 if otherwise }',
+    );
   });
 
   it('keeps unknown macros readable', () => {
@@ -413,14 +458,22 @@ describe('recovery ladder', () => {
         throw new OutOfTime();
       },
     };
-    const options = { displayMode: false, error: 'Undefined control sequence: \\Tr', settings: {}, repairs };
+    const options = {
+      displayMode: false,
+      error: 'Undefined control sequence: \\Tr',
+      settings: {},
+      repairs,
+    };
     expect(recoverMath(outOfTime, '\\Tr x', options)).toEqual({ status: 'unfinished' });
     await repairs.settled();
     expect(asked).toBe(0);
     expect(repairs.isPending(repairKey('\\Tr x', false))).toBe(false);
     // A model's repair the page already has still shows.
     repairs.set(repairKey('\\Tr x', false), { tex: 'x', model: 'rev' });
-    expect(recoverMath(outOfTime, '\\Tr x', options)).toMatchObject({ status: 'repaired', how: 'model' });
+    expect(recoverMath(outOfTime, '\\Tr x', options)).toMatchObject({
+      status: 'repaired',
+      how: 'model',
+    });
   });
 
   it('describes errors compactly', () => {
@@ -445,7 +498,10 @@ describe('model repairs', () => {
       settings: {},
       repairs,
     };
-    expect(recoverMath(katex, '\\broken', options)).toMatchObject({ status: 'fallback', state: 'pending' });
+    expect(recoverMath(katex, '\\broken', options)).toMatchObject({
+      status: 'fallback',
+      state: 'pending',
+    });
     await Promise.resolve();
     held.answers[0]!({ enabled: true, tex: ' x^2 ', model: 'reviewer' });
     await repairs.settled();
@@ -491,7 +547,11 @@ describe('model repairs', () => {
     const told: number[] = [];
     repairs.subscribe((keys) => told.push(keys.size));
     for (let index = 0; index < 300; index += 1) {
-      repairs.request(`k${index}`, { tex: `x${index}`, display: false, error: 'e' }, () => undefined);
+      repairs.request(
+        `k${index}`,
+        { tex: `x${index}`, display: false, error: 'e' },
+        () => undefined,
+      );
     }
     expect(repairs.isPending('k299')).toBe(true);
     await repairs.settled();
@@ -503,10 +563,13 @@ describe('model repairs', () => {
 
   it('tells its listeners once a frame, however many answers arrive in it', async () => {
     const frames: (() => void)[] = [];
-    const repairs = new ModelRepairs(async (request) => ({ enabled: true, tex: `${request.tex}2` }), {
-      maxActive: 8,
-      nextFrame: (callback) => frames.push(callback),
-    });
+    const repairs = new ModelRepairs(
+      async (request) => ({ enabled: true, tex: `${request.tex}2` }),
+      {
+        maxActive: 8,
+        nextFrame: (callback) => frames.push(callback),
+      },
+    );
     const told: number[] = [];
     repairs.subscribe((keys) => told.push(keys.size));
     repairs.request('first', { tex: 'first', display: false, error: 'e' }, () => undefined);
@@ -784,11 +847,19 @@ describe('the marks', () => {
     expect(html).not.toMatch(/[\u202E\u2066]/);
     expect(html.match(/⟦U\+202E⟧/g)).toHaveLength(2);
     expect(html.match(/⟦U\+2066⟧/g)).toHaveLength(2);
-    expect(html).toContain('<span class="math-message">KaTeX could not render this: Double superscript');
+    expect(html).toContain(
+      '<span class="math-message">KaTeX could not render this: Double superscript',
+    );
   });
 
   it('lay out displayed math within a paragraph as displayed', () => {
-    const fallback = { status: 'fallback', unicode: 'x', error: 'e', state: 'pending', reason: null } as const;
+    const fallback = {
+      status: 'fallback',
+      unicode: 'x',
+      error: 'e',
+      state: 'pending',
+      reason: null,
+    } as const;
     expect(recoveredHtml(fallback, 'span', true, '$$x$$')).toMatch(
       /^<span class="math math-display math-approximated"/,
     );
