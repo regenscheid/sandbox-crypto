@@ -249,7 +249,8 @@ async def _run_task(
                 return transcript
             if turn + 1 < max_turns and await _requests(toolbox, transcript):
                 continue
-            if toolbox.jobs is not None:
+            # On the last turn a job notice waits for the next run; the answer stands.
+            if toolbox.jobs is not None and turn + 1 < max_turns:
                 notices = await toolbox.jobs.notices()
                 if notices:
                     transcript.messages.append(

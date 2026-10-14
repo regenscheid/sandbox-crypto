@@ -71,7 +71,9 @@ notice deduplication.
 
 At turn start, after a tool call and before accepting a final model answer,
 the harness reconciles all worker submission pages. It returns a bounded
-batch of previously unseen completions, deferring the rest. Each completion
+batch of previously unseen completions, deferring the rest. On the run's last
+turn it skips the check before the final answer: the answer stands, and the
+next run receives the notice. Each completion
 states the outcome, exit code, elapsed time and output tail. Fetch failures
 do not mark any undelivered notice seen. Notices seen during a run enter its
 `job_notice_ids`, and are acknowledged only after the CLI saves that run's

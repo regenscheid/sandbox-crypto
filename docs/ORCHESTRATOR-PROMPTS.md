@@ -119,10 +119,13 @@ produce an achieved outcome. Plan text/evidence remain attributed assertions,
 without scientific verification, permission expansion or automatic effect-to-step
 lineage.
 
-Each adapter operation retains and rechecks the original bounded session-registry
-snapshot. A short project lock precedes control SQL; neither is held across a
-worker await. Any observed registry replacement, including close/reopen ABA or
-an unrelated project edit, conservatively invalidates the old run adapter.
+Each adapter operation rereads the run's own session record under a short project
+lock and compares it with the record read when the run started. The lock precedes
+control SQL; neither is held across a worker await. Closing the session, or
+closing and reopening it, invalidates the old run adapter, since a reopen records
+a new `opened_at` and `kernel_notice_lifetime`. Other sessions opening or closing
+in the same project do not. Neither does a policy revision: the worker enforces
+the project's current policy on each effect.
 An explicitly started new run can read retained logical-session history. This is
 a local admission fence, not an atomic control-store-to-guest launch guarantee;
 already admitted work may settle without automatic cancellation or kernel restart.
