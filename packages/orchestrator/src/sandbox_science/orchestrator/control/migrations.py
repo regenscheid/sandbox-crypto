@@ -945,6 +945,40 @@ BEGIN SELECT RAISE(ABORT, 'events are append-only'); END""",
         schema.execute(statement)
 
 
+def _feed_cursors(schema: Schema) -> None:
+    """Version 14: the reviewer's cursors on the document and artifact events move into
+    one table, ``feed_cursors``, each under its feed (B-04); ``review_artifact_cursors``
+    and ``review_windows.document_cursor`` go, every cursor copied, 0 or not. A cursor
+    the table refuses refuses the migration."""
+    schema.execute(
+        """CREATE TABLE feed_cursors (
+    feed TEXT NOT NULL CHECK (length(feed) BETWEEN 1 AND 32 AND feed NOT GLOB '*[^a-z_]*'),
+    project TEXT NOT NULL,
+    session TEXT NOT NULL,
+    cursor INTEGER NOT NULL CHECK (cursor BETWEEN 0 AND 9223372036854775807),
+    PRIMARY KEY (feed, project, session)
+) STRICT"""
+    )
+    for table, statement in (
+        (
+            "review_artifact_cursors",
+            "INSERT INTO feed_cursors SELECT 'artifact',project,session,cursor "
+            "FROM review_artifact_cursors ORDER BY rowid",
+        ),
+        (
+            "review_windows",
+            "INSERT INTO feed_cursors SELECT 'document',project,session,document_cursor "
+            "FROM review_windows ORDER BY rowid",
+        ),
+    ):
+        try:
+            schema.execute(statement)
+        except sqlite3.IntegrityError as error:
+            raise RefusedRowError(f"a cursor of {table} fails its check ({error})") from None
+    schema.execute("DROP TABLE review_artifact_cursors")
+    schema.execute("ALTER TABLE review_windows DROP COLUMN document_cursor")
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -958,6 +992,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _run_tree,
     _receipts,
     _event_log,
+    _feed_cursors,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

@@ -214,8 +214,7 @@ These are the reviewer's tables in the control store's schema
 | Table | Holds |
 | --- | --- |
 | `review_config` | Each project's numbered reviewer configurations, append-only |
-| `review_windows` | Each session's review state: the author-work watermark, document cursor, last dispatch, retry end, failures and manual requests |
-| `review_artifact_cursors` | Each session's cursor in the artifact inventory's events |
+| `review_windows` | Each session's review state: the author-work watermark, last dispatch, retry end, failures and manual requests |
 | `review_feed` | Observations of author work (document revisions, execution projections, artifact events), with what they count toward the triggers, append-only |
 | `review_runs` | Each review: its kind, owner lease, feed range, model alias, rubric, configuration, classifier, usage, cap and coverage |
 | `review_evidence`, `review_grants`, `review_reads` | A review's snapshot items, the evidence it may read, and each read it made, append-only |

@@ -31,6 +31,9 @@ RECEIPTS = migrations.BASELINE + 10
 EVENT_LOG = migrations.BASELINE + 11
 """The version that moved the documents' and the reviewer's events into ``control_events``."""
 
+FEED_CURSORS = migrations.BASELINE + 12
+"""The version that moved the reviewer's feed cursors into ``feed_cursors``."""
+
 EMPTY_SHA = "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
 """The SHA-256 of ``{}``, the empty macro setting."""
 
@@ -74,6 +77,15 @@ _EVENTS = (
     "INSERT INTO review_events(project,session,kind,payload,created) "
     "SELECT project,session,kind,payload,(julianday(time)-2440587.5)*86400.0 "
     "FROM src.control_events WHERE subject_type IN ('review','finding') ORDER BY seq",
+)
+
+_CURSORS = (
+    # The cursors version 14 moved, from feed_cursors.
+    "INSERT INTO review_artifact_cursors SELECT project,session,cursor "
+    "FROM src.feed_cursors WHERE feed='artifact'",
+    "UPDATE review_windows SET document_cursor=coalesce((SELECT cursor FROM src.feed_cursors c "
+    "WHERE c.feed='document' AND c.project=review_windows.project "
+    "AND c.session=review_windows.session),0)",
 )
 
 
@@ -135,6 +147,9 @@ def older_store(source: Path, target: Path, version: int) -> None:
                 db.execute(statement)
         if version < EVENT_LOG:
             for statement in _EVENTS:
+                db.execute(statement)
+        if version < FEED_CURSORS:
+            for statement in _CURSORS:
                 db.execute(statement)
         db.execute("COMMIT")
     finally:

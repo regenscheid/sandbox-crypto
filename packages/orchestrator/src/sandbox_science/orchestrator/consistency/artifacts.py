@@ -18,6 +18,7 @@ from sandbox_science.contracts.artifact_inventory import (
 )
 from sandbox_science.contracts.model import Contract
 from sandbox_science.orchestrator.aio import OwnedExecutor
+from sandbox_science.orchestrator.control.feeds import FeedCursor
 from sandbox_science.orchestrator.documents.errors import (
     CONFLICT,
     INVALID_REQUEST,
@@ -33,6 +34,8 @@ if TYPE_CHECKING:
 
 TEXT_BYTES: Final = 64 * 1024
 PAGE: Final = 10
+ARTIFACT_FEED: Final = FeedCursor("artifact")
+"""How far each session's reviewer has read the project's artifact events."""
 _TEXT_TYPES = frozenset(
     ("text/plain", "text/markdown", "text/csv", "text/tab-separated-values", "application/json")
 )
@@ -192,8 +195,10 @@ def ingest_artifacts(
         target = tx.sql.execute(
             "SELECT coalesce(max(seq),0) FROM artifact_events WHERE project=?", (project,)
         ).fetchone()[0]
-    after, unknown_more = 0, False
-    for _ in range(10 if drain else 1):
+    after, unknown_more, pages = 0, False, 10 if drain else 1
+    # A page another ingestor committed first does not count: it moved the cursor, so
+    # every retry starts further on.
+    while pages:
         page = _read_page(store, project, session, target)
         after, target = page.after, page.target
         events = _project_events(store, project, session, page.events)
@@ -201,7 +206,7 @@ def ingest_artifacts(
         end = page.events[-1][0] if page.events else after
         if not _commit_page(store, project, session, page, events, uncertain, end):
             continue  # another ingestor owns this prefix; retry a fresh bounded page
-        after = end
+        after, pages = end, pages - 1
         unknown_more = len(page.unknown) > PAGE
         if after >= target and not unknown_more:
             break
@@ -227,11 +232,7 @@ def _read_page(store: ReviewStore, project: str, session: str, target: int) -> _
     coexisting ingestor already covered more), and the unseen unresolved operations."""
     with store.documents.control.read() as tx:
         db = tx.sql
-        row = db.execute(
-            "SELECT cursor FROM review_artifact_cursors WHERE project=? AND session=?",
-            (project, session),
-        ).fetchone()
-        after = row[0] if row else 0
+        after = ARTIFACT_FEED.position(db, project, session)
         actual_head = db.execute(
             "SELECT coalesce(max(seq),0) FROM artifact_events WHERE project=?",
             (project,),
@@ -350,14 +351,7 @@ def _commit_page(
     False, and nothing written, when another ingestor moved the cursor meanwhile."""
     with store.documents.control.write() as tx:
         db = tx.sql
-        db.execute(
-            "INSERT OR IGNORE INTO review_artifact_cursors VALUES(?,?,0)", (project, session)
-        )
-        actual = db.execute(
-            "SELECT cursor FROM review_artifact_cursors WHERE project=? AND session=?",
-            (project, session),
-        ).fetchone()[0]
-        if actual != page.after:
+        if not ARTIFACT_FEED.advance(db, project, session, page.after, end):
             return False
         for item in events:
             store.record_observation(
@@ -394,10 +388,6 @@ def _commit_page(
                     complete=False,
                     effects=True,
                 )
-        db.execute(
-            "UPDATE review_artifact_cursors SET cursor=? WHERE project=? AND session=?",
-            (end, project, session),
-        )
     return True
 
 
