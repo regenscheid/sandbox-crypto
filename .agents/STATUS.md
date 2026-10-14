@@ -1,6 +1,6 @@
 # Status
 
-Updated 2026-10-14, main `0e6a662`. This file is replaced, not appended to, and stays under 10 KB. History is in the git log, PR descriptions and [lab reports](docs/agent-reports/).
+Updated 2026-10-14, main `3cc20f6`. This file is replaced, not appended to, and stays under 10 KB. History is in the git log, PR descriptions and [lab reports](docs/agent-reports/).
 
 ## Phase and focus
 
@@ -14,8 +14,9 @@ Updated 2026-10-14, main `0e6a662`. This file is replaced, not appended to, and 
 - **Worker:** OpenShell VM sandboxes at tier 3 on babbage, with probed isolation tiers; shell calls, persistent Python and Sage kernels, file handoff and PDF tools; background jobs; an executor daemon that keeps executions and kernels through worker restarts; idle suspension and resume; on-demand host admission.
 - **Provisioning (D84):** Conda and pip installs as queued operations with one permission request per install, AGPL refusal, environment revisions with lockfiles, explicit named Conda upgrades, installer observations and events, and a recovery fence after uncertain installs. Restoring a revision, uninstall, pip upgrade and disk limits are not built.
 - **Harness (CLI):** the tool loop with a scripted or OpenAI-compatible model, projects and sessions, the planning phase with live progress (D86), living documents in the SQLite control store (D85), comments and work requests, automatic consistency review, mechanical math findings (D82) and the low-cost job watcher.
-- **Workspace GUI:** login, documents with editing and conflicts, comments, findings, session plans with editing, jobs, the kernel panel, the provisioning view, and math rendering with repairs.
-- **Not yet:** chat in the GUI, a run with a real model, the ledger and board, the PDF viewer, approvals in the GUI, MCP connectors in the harness. The delegation code is unwired and is being archived (plan decision 2).
+- **Workspace GUI:** login; documents with editing, conflicts and history; comments; review findings; session plans with editing; finished runs' transcripts; jobs; the kernel panel; the provisioning view; math rendering with repairs. It reads runs the CLI made and cannot start one.
+- **Built but unwired, being removed** (plan decision 2): delegation (child controller, dispatcher, run kernels, records, attempts) and document files in environments (catalog, outbox, delivery, worker source adapter), kept on the tags `archive/delegation-2026-10` and `archive/document-sync-2026-10`; also the dead `orchestrator/reviews.py`.
+- **Not built:** chat in the GUI, a run with a real model, the ledger and board, the PDF viewer, approvals in the GUI (the policy middleware's CLI answers them), an MCP client in the harness, the connector auth service.
 - **Tests:** about 11,500 Python tests (11,464 passed, 43 opt-in skips at the last full run) and 828 web tests; CI runs Python 3.12 and 3.13 and the web checks.
 
 ## Refactoring plan
@@ -30,7 +31,10 @@ The [plan](refactor-plan/PLAN.md) has five phases. The owner answered its decisi
 | 3. Shared building blocks for the M2 features | Later |
 | 4. The M2 exit path: chat, a real model, ledger and board, PDF viewer, then delegation and MCP | Later |
 
-Phase 0 is done when the bug tests pass, the unwired modules are gone and the suite still passes, STATUS is under 10 KB, and the size guard runs in CI. Done so far: raw evidence left git and history was rewritten (#123); `scripts/check_repo_hygiene.py` runs in CI.
+Phase 0 is done when the bug tests pass, the unwired modules are gone and the suite still passes, STATUS is under 10 KB, and the size guard runs in CI. Phase 0 so far:
+- **Merged:** raw evidence out of git, history rewritten, `scripts/check_repo_hygiene.py` in CI (#123); A-01, a second workbook no longer disables the first session's effect tools and a policy revision no longer blocks them, and A-10, a last-turn job notice no longer discards the final answer (#125).
+- **In flight:** removing the unwired delegation and document-sync code; the workspace's 503 when the worker is unavailable (E-02, #124); the web formatter (E-16, #127); the tracking files and decision records (F-02, F-10, #126); CI guards and dead suppressions (F-03 in part, F-12, #128).
+- **Next:** the worker bug fixes C-01, C-10, C-11 and C-15, then Phase 1.
 
 ## M2 exit path
 
@@ -67,8 +71,8 @@ Each has a recommendation; nothing here blocks Phase 0.
 
 ## Last five merges
 
+- #125 `3cc20f6`: A-01 and A-10, the plan fence on the run's own session and last-turn answers.
 - #123 `0e6a662`: raw lab evidence out of git; the refactoring plan.
 - #122 `6e9608a`: explicit named Conda upgrades, accepted in [Lab36](docs/agent-reports/babbage-openshell-lab-36-2026-10-14.md).
 - #121: Conda installer observations and provisioning events, accepted in [Lab35](docs/agent-reports/babbage-openshell-lab-35-2026-10-13.md).
-- #120: the restricted child controller and authenticated worker transport (unwired delegation), [Lab34](docs/agent-reports/babbage-openshell-lab-34-2026-10-13.md).
-- #119: declared pip license metadata in lockfiles.
+- #120: the restricted child controller and authenticated worker transport (unwired delegation).

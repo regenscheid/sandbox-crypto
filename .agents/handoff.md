@@ -1,12 +1,12 @@
 # Handoff
 
-Updated 2026-10-14, main `0e6a662`. For the next agent: where things stand, how work is done, and what is next. This file is replaced, not appended to, and stays under 8 KB. Read it with [STATUS.md](STATUS.md), the [refactoring plan](refactor-plan/PLAN.md) and [CONVENTIONS.md](CONVENTIONS.md).
+Updated 2026-10-14, main `3cc20f6`. For the next agent: where things stand, how work is done, and what is next. This file is replaced, not appended to, and stays under 8 KB. Read it with [STATUS.md](STATUS.md), the [refactoring plan](refactor-plan/PLAN.md) and [CONVENTIONS.md](CONVENTIONS.md).
 
 ## Where things stand
 
 - **The code:** M1 passed on babbage. Much of M2 is built (see [STATUS](STATUS.md#what-works-today)), but the GUI cannot yet start or chat with a run, no real model has run, and the ledger, board and PDF viewer are missing.
 - **The refactoring plan:** six reviews of main at `6e9608a` found 97 findings ([notes](refactor-plan/notes/)). The [plan](refactor-plan/PLAN.md) orders them in five phases. The owner answered its scope questions on 2026-10-14 and asked for autonomous work through the plan, with its recommendations adopted; [PLAN-CHANGES](PLAN-CHANGES.md) records each decision.
-- **Phase 0 is in progress** in parallel lanes, each in its own worktree with its own PR. Its items: the bug fixes (A-01, C-01, A-10, C-10, E-02, C-11, C-15), removing the unwired code (A-03, C-05, D-10, B-11, C-18, F-07), the web formatter (E-16), and the tracking files, decision records and CI guards (F-02, F-10, F-03 in part, F-12).
+- **Phase 0 is in progress** in parallel lanes, each in its own worktree with its own PR. Merged: A-01 and A-10 (#125). In flight: removing the unwired delegation and document-sync code (A-03, C-05, D-10, B-11, C-18, F-07; kept on the tags `archive/delegation-2026-10` and `archive/document-sync-2026-10`), E-02 (#124), the web formatter E-16 (#127), the tracking files and decision records (#126), and the CI guards and dead suppressions (#128). [STATUS](STATUS.md#refactoring-plan) keeps the list current.
 - **Raw lab evidence** left git on 2026-10-14 and history was rewritten (#123). The pre-rewrite repository and the evidence are kept privately on babbage; reports name archived files by SHA-256.
 - **Lab state:** no lab, VM or private state is running.
 - **Heartbeat:** a conversation task, *Retry stalled orchestrator*, was created at the owner's request on 2026-10-13. It checks every five minutes and resumes a stalled session with the same model, leaving active work alone.
@@ -22,7 +22,7 @@ Updated 2026-10-14, main `0e6a662`. For the next agent: where things stand, how 
 
 ## What is next
 
-1. Finish Phase 0: merge each lane's PR once CI is green and a review is clear. Then check the plan's Phase 0 exit: the bug tests pass, the unwired modules are gone and the suite still passes, STATUS is under 10 KB, the size guard runs in CI.
+1. Finish Phase 0: merge each lane's PR once CI is green and a review is clear; then the worker bug fixes C-01, C-10, C-11 and C-15. Then check the plan's Phase 0 exit: the bug tests pass, the unwired modules are gone and the suite still passes, STATUS is under 10 KB, the size guard runs in CI.
 2. Start Phase 1 (test seams): F-04 steps 1–3 (a `Clock` protocol, timeouts as parameters, waiting on events), F-06 and C-13 (shared test support, one worker harness), F-05 (characterization tests for the loop, the worker manager and the workspace routes), C-14 and C-12, then F-03's CI tiers.
 3. Record in the plans-and-delegation spec the owner's answers of 2026-10-14 to its questions 3 and 4 (the plan, Phase 4 item 7) when delegation is rebuilt.
 
