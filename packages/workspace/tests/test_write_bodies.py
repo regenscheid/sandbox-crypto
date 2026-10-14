@@ -58,3 +58,21 @@ async def test_a_body_over_its_limit_is_a_json_413(
     )
     error = await error_of(response, 413, "invalid_request")
     assert error["message"] == f"{what} exceeds its byte limit"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [b"\xef\xbb\xbf{}", "{}".encode("utf-16-le"), b"{}"],
+    ids=["utf8-bom", "utf16", "unknown-charset"],
+)
+async def test_a_body_that_is_not_plain_utf8_json_is_refused(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path, raw: bytes
+) -> None:
+    client = await workspace(aiohttp_client, state_dir, static_dir)
+    charset = "; charset=no-such-charset" if raw == b"{}" else ""
+    response = await client.post(
+        WRITES["review request"],
+        data=raw,
+        headers={**origin(client), "Content-Type": "application/json" + charset},
+    )
+    await error_of(response, 400, "invalid_request")

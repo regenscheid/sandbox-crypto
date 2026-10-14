@@ -25,7 +25,11 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 // The modules are loaded afresh per test (a reload), so ApiError comes from the same load.
-const fresh = async () => ({ ...(await import('./mutation')), ...(await import('./http')) });
+const fresh = async () => ({
+  ...(await import('./mutation')),
+  ...(await import('./http')),
+  ...(await import('./session')),
+});
 
 describe('typed drafts', () => {
   it('survive a reload, by kind and scope, and are cleared', async () => {
@@ -72,6 +76,16 @@ describe('typed drafts', () => {
       stored: false,
     });
   });
+  it('never bring an older stored draft back after a later save could not be stored', async () => {
+    const { DraftStore } = await fresh();
+    const notes = new DraftStore<Note>('note', validNote, 200);
+    expect(notes.save('p:a', { base: 1, text: 'older' })).toBe(true);
+    expect(notes.save('p:a', { base: 2, text: 'x'.repeat(300) })).toBe(false);
+    expect(notes.load('p:a')).toMatchObject({ draft: { base: 2 }, stored: false });
+    vi.resetModules();
+    const reloaded = new (await fresh()).DraftStore<Note>('note', validNote, 200);
+    expect(reloaded.load('p:a').draft).toBeNull();
+  });
 });
 
 describe('guarded writes', () => {
@@ -99,17 +113,56 @@ describe('guarded writes', () => {
     await reloaded('note', 'p:a', body, send);
     expect(sent[3]).not.toBe(sent[0]);
   });
-  it.each([409, 400])('forget the ID after a definitive %i refusal', async (status) => {
-    const { guardedWrite, ApiError } = await fresh();
+  it.each([409, 400, 401])(
+    'keep the ID after a %i, and forget it only after a result',
+    async (status) => {
+      const { guardedWrite, ApiError } = await fresh();
+      const sent: string[] = [];
+      let answer: unknown = new ApiError(status, 'refused', 'no');
+      const send = async (change: { operation_id: string }) => {
+        sent.push(change.operation_id);
+        if (answer instanceof Error) throw answer;
+        return answer;
+      };
+      await expect(guardedWrite('note', 'p:a', { base: 1 }, send)).rejects.toMatchObject({
+        status,
+      });
+      answer = 'saved';
+      expect(await guardedWrite('note', 'p:a', { base: 1 }, send)).toBe('saved');
+      expect(sent[1]).toBe(sent[0]);
+      expect(storage.size).toBe(0);
+    },
+  );
+  it('keep the ID through a sign-out and a reload, so a lost save is not applied twice', async () => {
+    const page = await fresh();
     const sent: string[] = [];
-    const send = async (change: { operation_id: string }) => {
-      sent.push(change.operation_id);
-      throw new ApiError(status, 'conflict', 'stale');
-    };
-    await expect(guardedWrite('note', 'p:a', { base: 1 }, send)).rejects.toMatchObject({ status });
-    await expect(guardedWrite('note', 'p:a', { base: 1 }, send)).rejects.toMatchObject({ status });
-    expect(sent[0]).not.toBe(sent[1]);
-    expect(storage.size).toBe(0);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_path: string, init: RequestInit) => {
+        sent.push((JSON.parse(String(init.body)) as { operation_id: string }).operation_id);
+        throw new TypeError('connection reset');
+      }),
+    );
+    const body = { action: 'create', body: 'hello' };
+    await expect(
+      page.guardedWrite('comment', 'p:d', body, (c) => page.post('/x', c)),
+    ).rejects.toMatchObject({ status: 0 });
+    page.signOut();
+    await expect(
+      page.guardedWrite('comment', 'p:d', body, (c) => page.post('/x', c)),
+    ).rejects.toMatchObject({ status: 401 });
+    vi.resetModules();
+    const reloaded = await fresh();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_path: string, init: RequestInit) => {
+        sent.push((JSON.parse(String(init.body)) as { operation_id: string }).operation_id);
+        return new Response('{"ok":true}');
+      }),
+    );
+    await reloaded.guardedWrite('comment', 'p:d', body, (c) => reloaded.post('/x', c));
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toBe(sent[0]);
   });
   it('give a different change, scope or kind its own ID', async () => {
     const { guardedWrite, ApiError } = await fresh();

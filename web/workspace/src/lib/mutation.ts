@@ -7,12 +7,11 @@
  * - `DraftStore<T>` keeps one kind of draft, by scope, in memory and in sessionStorage,
  *   checking each stored value against that kind's own validator.
  * - `guardedWrite` sends a change with an operation ID. The ID depends on the change's
- *   kind, scope and body, so sending the same change again after an unknown outcome
- *   (status 0 or 5xx) reuses it and the server replays the first answer instead of
- *   applying the change twice. A definitive answer forgets the ID.
- * - `writeState` tells a conflict (409), a refusal and an unknown outcome apart.
+ *   kind, scope and body, and is kept until a result: after any failure, sending the
+ *   same change again reuses it, so the server replays the first answer instead of
+ *   applying the change twice. A conflict or refusal answered again is answered the
+ *   same way; a changed draft is a new body and gets a new ID.
  */
-import { ApiError } from './http';
 
 /** What a stored draft looked like when it was read. */
 export interface LoadedDraft<T> {
@@ -58,20 +57,31 @@ export class DraftStore<T> {
     }
   }
 
-  /** Keep `draft`; false when it is invalid or could not be stored for a reload. */
+  /**
+   * Keep `draft`; false when it is invalid or could not be stored for a reload, in which
+   * case it is kept in memory only and any older stored copy is removed.
+   */
   save(scope: string, draft: T): boolean {
     if (!this.valid(draft)) return false;
     const key = this.key(scope);
     drafts.set(key, { draft: copy(draft), stored: false });
     try {
       const encoded = JSON.stringify({ format: FORMAT, scope, draft });
-      if (new TextEncoder().encode(encoded).length > this.maxBytes) return false;
-      sessionStorage.setItem(key, encoded);
-      drafts.set(key, { draft: copy(draft), stored: true });
-      return true;
+      if (new TextEncoder().encode(encoded).length <= this.maxBytes) {
+        sessionStorage.setItem(key, encoded);
+        drafts.set(key, { draft: copy(draft), stored: true });
+        return true;
+      }
     } catch {
-      return false;
+      /* Removed below. */
     }
+    // An older stored copy must not come back as the current draft after a reload.
+    try {
+      sessionStorage.removeItem(key);
+    } catch {
+      /* Nothing more can be done; the memory copy is current. */
+    }
+    return false;
   }
 
   /** False when the stored copy could not be removed. */
@@ -85,14 +95,6 @@ export class DraftStore<T> {
       return false;
     }
   }
-}
-
-type WriteState = 'conflict' | 'refused' | 'uncertain';
-
-/** How a failed write ended: a revision conflict, a refusal, or an unknown outcome. */
-function writeState(error: unknown): WriteState {
-  if (!(error instanceof ApiError) || error.status === 0 || error.status >= 500) return 'uncertain';
-  return error.status === 409 ? 'conflict' : 'refused';
 }
 
 const operations = new Map<string, string>();
@@ -114,8 +116,7 @@ function forget(key: string): void {
 
 /**
  * Send `body` with an operation ID through `send`; resolves with the answer or throws
- * its `ApiError`. The ID is kept until a definitive answer, so a retry of the same
- * change after an unknown outcome reuses it.
+ * its `ApiError`. The ID is kept until a result, so a retry of the same change reuses it.
  */
 export async function guardedWrite<B extends object, R>(
   kind: string,
@@ -139,12 +140,9 @@ export async function guardedWrite<B extends object, R>(
       /* The draft's own warning says the tab cannot keep it. */
     }
   }
-  try {
-    const answer = await send({ ...body, operation_id: id });
-    forget(key);
-    return answer;
-  } catch (error) {
-    if (writeState(error) !== 'uncertain') forget(key);
-    throw error;
-  }
+  // Only a result forgets the ID. After any failure, even a refusal or a sign-out, the
+  // earlier attempt may have committed; the same change sent again must replay it.
+  const answer = await send({ ...body, operation_id: id });
+  forget(key);
+  return answer;
 }

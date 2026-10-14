@@ -83,8 +83,10 @@ async def json_body(request: web.Request, what: str, *, limit: int | None = None
     """A write's JSON body; anything else is a 400 that names ``what``."""
     raw = await read_body(request, what, limit=limit)
     try:
-        return json.loads(raw)
-    except (ValueError, RecursionError):  # UnicodeDecodeError is a ValueError
+        # Decoded as declared (UTF-8 by default) first: json.loads would also guess
+        # UTF-16 or skip a byte-order mark in bytes.
+        return json.loads(raw.decode(request.charset or "utf-8"))
+    except (ValueError, LookupError, RecursionError):  # UnicodeDecodeError is a ValueError
         raise ProjectError(ErrorKind.INVALID_REQUEST, f"invalid {what}") from None
 
 
