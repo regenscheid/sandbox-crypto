@@ -26,13 +26,14 @@ policy and these checks have not passed.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Final, cast, get_args
+from typing import Final, NoReturn, cast, get_args
 
 from aiohttp import hdrs, web
 
@@ -105,6 +106,7 @@ CLIENT_INFO: Final[JsonObject] = {"name": "sandbox-science-mcp-proxy", "version"
 SESSION_ID: Final = "Mcp-Session-Id"
 PROTOCOL_VERSION: Final = "MCP-Protocol-Version"
 MAX_LIST_PAGES: Final = 32
+_RECORDING_LOCKS: Final = 64
 """Pages of ``tools/list`` the proxy reads to learn a server's tools."""
 MAX_RECORDED_TEXT: Final = 256
 MAX_RESPONSE_BYTES: Final = 32 * 1024 * 1024
@@ -255,6 +257,9 @@ class McpProxy:
         self._requests = requests
         self._now = now
         self._approvals = Approvals()
+        self._recording = tuple(asyncio.Lock() for _ in range(_RECORDING_LOCKS))
+        """Held while a permission request is recorded, by its fingerprint: identical
+        escalations handled at once record one request."""
         self._store = store
         self._callers = callers
         self._ceiling = ceiling
@@ -685,12 +690,7 @@ class McpProxy:
             hashlib.sha256(params).hexdigest(),
         )
         now = self._now()
-        if self._requests is not None:
-            try:
-                self._approvals.load(self._requests(self._approvals.last_seq))
-            except Exception:
-                # Without the records no answer is known; the call waits, as before.
-                _log.exception("could not read permission requests from the event store")
+        await self._refresh_approvals()
         match self._approvals.resolve(key, now):
             case Denied(answer):
                 raise RefusalError(
@@ -712,18 +712,7 @@ class McpProxy:
                         AUDIT_UNAVAILABLE, "the approved call could not be recorded"
                     ) from exc
             case Unrecorded():
-                try:
-                    seq = await self._events.record(
-                        "escalation", {**call.finding(decision), "target": key.payload()}
-                    )
-                except Exception as exc:
-                    # No permission request exists, so the caller must not wait for an approval.
-                    _log.exception("could not record an escalation")
-                    raise RefusalError(
-                        AUDIT_UNAVAILABLE, "the permission request could not be recorded"
-                    ) from exc
-                data = {"request": seq} if seq is not None else None
-                raise RefusalError(APPROVAL_REQUIRED, decision.reason, data=data)
+                await self._escalate(call, decision, key)
             case Waiting(pending):
                 raise RefusalError(
                     APPROVAL_REQUIRED,
@@ -749,6 +738,54 @@ class McpProxy:
             case _:
                 # A state this code does not know refuses: only the cases above proceed.
                 raise RefusalError(ESCALATION_TIMED_OUT, "the permission request is undecided")
+
+    def prime_approvals(self) -> None:
+        """Read the permission requests and answers already stored, before serving, so that
+        no call folds the whole store. Blocking."""
+        self._load_approvals()
+
+    def _load_approvals(self) -> None:
+        if self._requests is None:
+            return
+        try:
+            self._approvals.load(self._requests(self._approvals.last_seq))
+        except Exception:
+            # Without the records no answer is known; the call waits, as before.
+            _log.exception("could not read permission requests from the event store")
+
+    async def _refresh_approvals(self) -> None:
+        # The store is SQLite: read it on a thread, never on the event loop.
+        if self._requests is not None:
+            await asyncio.to_thread(self._load_approvals)
+
+    async def _escalate(self, call: Call, decision: Decision, key: RequestKey) -> NoReturn:
+        """Record a permission request for ``key``, once, and refuse the call: an identical
+        call handled at the same time waits on its fingerprint's lock, then finds the
+        request recorded and waits on it instead."""
+        fingerprint = key.fingerprint()
+        async with self._recording[int(fingerprint[:8], 16) % _RECORDING_LOCKS]:
+            await self._refresh_approvals()
+            pending = self._approvals.pending(key)
+            if pending is not None:
+                raise RefusalError(
+                    APPROVAL_REQUIRED,
+                    f"{decision.reason} (permission request {pending.seq}, still waiting)",
+                    data={"request": pending.seq},
+                )
+            try:
+                seq = await self._events.record(
+                    "escalation", {**call.finding(decision), "target": key.payload()}
+                )
+            except Exception as exc:
+                # No permission request exists, so the caller must not wait for an approval.
+                _log.exception("could not record an escalation")
+                raise RefusalError(
+                    AUDIT_UNAVAILABLE, "the permission request could not be recorded"
+                ) from exc
+            # Known at once, so a retry before the next read waits on it too.
+            await self._refresh_approvals()
+        data = {"request": seq} if seq is not None else None
+        raise RefusalError(APPROVAL_REQUIRED, decision.reason, data=data)
 
     def _target(self, server: McpServer, session: Session | None) -> Target:
         return Target(

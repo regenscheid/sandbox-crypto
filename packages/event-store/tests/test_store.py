@@ -84,6 +84,21 @@ def test_appends_build_a_chain(path: Path) -> None:
         assert reader.head() == Checkpoint(5, records[-1].hash)
 
 
+def test_a_reader_can_read_only_some_kinds(path: Path) -> None:
+    with EventStore(path) as store:
+        for kind in ("monitor", "escalation", "monitor", "approval", "alert", "denial"):
+            store.append(kind, SOURCE, {})
+    with StoreReader(path) as reader:
+        assert [r.seq for r in reader.records(kinds=("escalation", "approval", "denial"))] == [
+            2,
+            4,
+            6,
+        ]
+        assert [r.seq for r in reader.records(after=2, kinds=("escalation", "approval"))] == [4]
+        assert list(reader.records(kinds=())) == []
+        assert [r.seq for r in reader.records()] == [1, 2, 3, 4, 5, 6]
+
+
 def test_a_reopened_store_continues_its_chain(path: Path) -> None:
     with EventStore(path) as store:
         first = store.append("alert", SOURCE, {})

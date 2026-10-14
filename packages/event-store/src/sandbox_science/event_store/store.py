@@ -26,7 +26,7 @@ import asyncio
 import sqlite3
 import threading
 import time
-from collections.abc import Callable, Generator, Iterator, Mapping
+from collections.abc import Callable, Collection, Generator, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import astuple, dataclass, field
 from datetime import UTC, datetime
@@ -346,9 +346,22 @@ class StoreReader:
         except sqlite3.Error as exc:
             raise EventStoreError(f"cannot read the event store {self._path}: {exc}") from exc
 
-    def records(self, after: int = 0) -> Iterator[Record]:
-        """Records after sequence number ``after``; raises RecordError at a malformed one."""
-        for row in self.rows(after):
+    def records(self, after: int = 0, kinds: Collection[str] | None = None) -> Iterator[Record]:
+        """Records after sequence number ``after``, only of ``kinds`` when given; raises
+        RecordError at a malformed one."""
+        if kinds is None:
+            for row in self.rows(after):
+                yield record_from_row(row)
+            return
+        if not kinds:
+            return
+        marks = ",".join("?" * len(kinds))
+        query = _SELECT + f" WHERE seq > ? AND kind IN ({marks}) ORDER BY seq"
+        try:
+            cursor = self._db.execute(query, (after, *kinds))
+        except sqlite3.Error as exc:
+            raise EventStoreError(f"cannot read the event store {self._path}: {exc}") from exc
+        for row in cursor:
             yield record_from_row(row)
 
     def schema_problems(self) -> list[str]:

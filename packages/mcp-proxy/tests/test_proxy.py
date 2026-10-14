@@ -65,6 +65,7 @@ class Sink(Protocol):
 
     def kinds(self, kind: str) -> list[Mapping[str, Any]]: ...
     def records(self, after: int) -> list[Any]: ...
+    async def record(self, kind: str, payload: Mapping[str, object]) -> int: ...
     def append(self, kind: str, payload: Mapping[str, object]) -> int: ...
 
 
@@ -430,6 +431,27 @@ async def test_an_escalated_tool_is_held_and_recorded_as_pending(harness: Harnes
     assert escalation["attribution"]["level"] == "orchestrator"
     assert escalation["mcp_session"] == last_call(harness)["mcp_session"]
     assert "secret-ish" not in repr(harness.sink.events)
+
+
+async def test_concurrent_identical_escalations_record_one_request(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The store's writes yield to the event loop, as the real sink's do.
+    record = harness.sink.record
+
+    async def yielding(kind: str, payload: Mapping[str, object]) -> int:
+        await asyncio.sleep(0.05)
+        return await record(kind, payload)
+
+    monkeypatch.setattr(harness.sink, "record", yielding)
+    session = await harness.initialize()
+    arguments = {"url": "https://example.org/a"}
+    answers = await asyncio.gather(
+        harness.tool(session, "crawl", arguments), harness.tool(session, "crawl", arguments)
+    )
+    assert [reason(answer) for answer in answers] == ["approval_required"] * 2
+    assert len(harness.sink.kinds("escalation")) == 1
+    assert harness.fake.tool_calls() == []
 
 
 async def test_a_resolution_the_proxy_does_not_know_refuses_the_call(

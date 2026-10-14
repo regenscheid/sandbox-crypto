@@ -86,6 +86,7 @@ CREDENTIAL_UNENCRYPTED: Final = "credential_unencrypted"
 REASON_CODE_RE: Final = re.compile(r"[a-z][a-z0-9_]{0,63}")
 """OpenShell's format for reason codes; anything else is a middleware failure."""
 
+_RECORDING_LOCKS: Final = 64
 _URL_SCHEMES: Final = {"http": "http", "https": "https", "ws": "http", "wss": "https"}
 _DEFAULT_PORTS: Final = {"http": 80, "https": 443}
 # OpenShell labels the scheme by how a request reached its proxy, not by
@@ -271,6 +272,23 @@ class PolicyMiddleware:
         self._lock = threading.Lock()
         self._requests = requests
         self._approvals = Approvals()
+        self._recording = tuple(threading.Lock() for _ in range(_RECORDING_LOCKS))
+        """Held while a permission request is recorded, by its fingerprint: identical
+        escalations evaluated at once (on the gRPC thread pool) record one request."""
+
+    def prime_approvals(self) -> None:
+        """Read the permission requests and answers already stored, at startup, so that
+        no request's evaluation folds the whole store within its time budget."""
+        self._refresh_approvals()
+
+    def _refresh_approvals(self) -> None:
+        if self._requests is None:
+            return
+        try:
+            self._approvals.load(self._requests(self._approvals.last_seq))
+        except Exception:
+            # Without the records no answer is known; the request waits, as before.
+            _log.exception("could not read permission requests from the event store")
 
     def validate_config(self, config: Mapping[str, object] | None) -> str | None:
         """Return why a middleware entry's config is unacceptable, or None if it is valid.
@@ -421,12 +439,7 @@ class PolicyMiddleware:
             facts.path,
         )
         now = self._now()
-        if self._requests is not None:
-            try:
-                self._approvals.load(self._requests(self._approvals.last_seq))
-            except Exception:
-                # Without the records no answer is known; the request waits, as before.
-                _log.exception("could not read permission requests from the event store")
+        self._refresh_approvals()
         rule = decision.rule or "escalation"
         resolution = self._approvals.resolve(target, now)
 
@@ -462,18 +475,7 @@ class PolicyMiddleware:
             case Approved(answer):
                 return approved({"approval_seq": answer.seq, "request_seq": answer.request_seq})
             case Unrecorded():
-                try:
-                    seq = self._record(
-                        "escalation", facts, loaded, decision, operation, target=target
-                    )
-                except Exception:
-                    # No permission request exists, so the agent must not wait for an approval.
-                    _log.exception("could not record escalation of request %s", facts.request_id)
-                    return _deny(
-                        AUDIT_UNAVAILABLE, "the permission request could not be recorded", decision
-                    )
-                named = f" (permission request {seq})" if seq is not None else ""
-                return _deny(APPROVAL_REQUIRED, decision.reason + named, decision)
+                return self._escalate(facts, loaded, decision, operation, target)
             case Waiting(pending):
                 reason = f"{decision.reason} (permission request {pending.seq}, still waiting)"
                 return _deny(APPROVAL_REQUIRED, reason, decision)
@@ -494,6 +496,37 @@ class PolicyMiddleware:
             case _:
                 # A state this code does not know refuses: only the cases above proceed.
                 return _deny(ESCALATION_TIMED_OUT, "the permission request is undecided", decision)
+
+    def _escalate(
+        self,
+        facts: HttpRequestFacts,
+        loaded: LoadedPolicy,
+        decision: Decision,
+        operation: Operation | None,
+        target: RequestKey,
+    ) -> Verdict:
+        """Record a permission request for ``target``, once: an identical escalation
+        evaluated at the same time waits on its fingerprint's lock, then finds the request
+        recorded and waits on it instead. Every outcome is a refusal."""
+        fingerprint = target.fingerprint()
+        with self._recording[int(fingerprint[:8], 16) % _RECORDING_LOCKS]:
+            self._refresh_approvals()
+            pending = self._approvals.pending(target)
+            if pending is not None:
+                reason = f"{decision.reason} (permission request {pending.seq}, still waiting)"
+                return _deny(APPROVAL_REQUIRED, reason, decision)
+            try:
+                seq = self._record("escalation", facts, loaded, decision, operation, target=target)
+            except Exception:
+                # No permission request exists, so the agent must not wait for an approval.
+                _log.exception("could not record escalation of request %s", facts.request_id)
+                return _deny(
+                    AUDIT_UNAVAILABLE, "the permission request could not be recorded", decision
+                )
+            # Known at once, so a retry before the next read waits on it too.
+            self._refresh_approvals()
+        named = f" (permission request {seq})" if seq is not None else ""
+        return _deny(APPROVAL_REQUIRED, decision.reason + named, decision)
 
     def _monitor_findings(
         self, facts: HttpRequestFacts, loaded: LoadedPolicy

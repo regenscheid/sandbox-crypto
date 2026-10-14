@@ -32,6 +32,7 @@ from sandbox_science.event_store import EventStore, EventStoreError, StoreReader
 from sandbox_science.policy.approvals import (
     DENIAL,
     ESCALATION,
+    KINDS,
     Answer,
     Approvals,
     PermissionRequest,
@@ -100,7 +101,8 @@ class Permissions:
             return
         try:
             with StoreReader(self.path, timeout=STORE_TIMEOUT) as reader:
-                self._approvals.load(list(reader.records(after=self._approvals.last_seq)))
+                after = self._approvals.last_seq
+                self._approvals.load(list(reader.records(after=after, kinds=KINDS)))
         except EventStoreError as exc:
             raise PermissionStoreError(f"the event store cannot be read: {exc}") from exc
 
