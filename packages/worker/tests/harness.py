@@ -38,7 +38,7 @@ from sandbox_science.worker.channel import (
     ExecutorChannel,
     Message,
 )
-from sandbox_science.worker.connections import Connection
+from sandbox_science.worker.connections import Connection, EnvironmentConnections
 from sandbox_science.worker.kernels import _Observer
 from sandbox_science.worker.live import Live
 from sandbox_science.worker.manager import ExecutionManager
@@ -68,6 +68,10 @@ class ManagerView:
         self.manager = manager
 
     # Environment connections.
+
+    def connections(self) -> EnvironmentConnections:
+        """The manager's connections, for a part built beside it in a test."""
+        return self.manager._connections
 
     def connected(self) -> set[str]:
         """The environments the manager holds a connection record for."""

@@ -61,9 +61,9 @@ class PackageAdmission:
         self.connect = connect
         """How a request connects to an environment's executor: the manager's way."""
         self.spawn = spawn
+        """Starts a background task that the manager owns and cancels when it closes."""
         self.sync_through = sync
         """How a retry syncs an environment: the manager's ``sync_package_gate``."""
-        """Starts a background task that the manager owns and cancels when it closes."""
         self.daemon_identity = daemon_identity
         """The manager's daemon identity, which is set after it is built; None for none."""
         self._locks: dict[str, asyncio.Lock] = {}

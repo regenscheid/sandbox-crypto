@@ -82,7 +82,7 @@ class PackageChanges:
     def want_lockfile(self, environment_id: str) -> bool:
         """Ask the executor for the current lockfile if the current revision has none, as
         revision 0 has none at first; return whether it was asked. One request at a time
-        for each environment, and nothing waits for it. Executions ask (_ask_lockfile),
+        for each environment, and nothing waits for it. Executions ask (ask_lockfile),
         each within its budget: revision 0 gets its lockfile as the first one starts."""
         environment = self.connections.get(environment_id)
         channel = environment.channel if environment is not None else None

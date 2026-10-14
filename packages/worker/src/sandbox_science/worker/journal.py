@@ -95,12 +95,14 @@ class ExecutionJournal:
     def emit(self, live: Live, make: Callable[[int, datetime], Event]) -> None:
         seq = live.execution.last_seq + 1
         event = make(seq, self.clock.now())
-        live.execution = live.execution.model_copy(update={"last_seq": seq})
+        execution = live.execution.model_copy(update={"last_seq": seq})
         source = SOURCE_EVENT.get()
         acknowledged = (
-            source[1] if source is not None and source[0] == live.execution.execution_id else None
+            source[1] if source is not None and source[0] == execution.execution_id else None
         )
-        self.store.commit_event(live.execution, event, acknowledged)
+        self.store.commit_event(execution, event, acknowledged)
+        # Only a stored event takes its number: a failed write leaves no gap.
+        live.execution = execution
         self.changed(live)
 
     def state(self, live: Live, state: ExecutionState) -> None:
