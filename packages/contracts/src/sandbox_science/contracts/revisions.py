@@ -141,6 +141,9 @@ class PipDistribution(Contract):
     that came through the package cache is named by its files.pythonhosted.org URL."""
     sha256: Sha256 | None = None
     """The archive's SHA-256, where the installer recorded it (a direct-URL install)."""
+    license: License | None = None
+    """A bounded declaration from installed core metadata; absent or ambiguous is unknown.
+    This does not verify the license, its SPDX identifiers or permission to use it."""
 
 
 class Lockfile(Contract):
