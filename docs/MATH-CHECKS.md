@@ -8,8 +8,10 @@ use the same checker and bounds. Ledger entries and other finding prose are not
 checked. The renderer is unavailable until the operator configures it; an
 unavailable check never establishes rejection or a fix.
 
-`orchestrator.mathcheck.MathChecker` runs one formula in a fresh Node process;
-`check_many` runs a batch as one process per formula.
+`orchestrator.mathcheck.MathChecker` runs a batch of at most 32 formulas from one
+source in one fresh Node process (`check_many`), and more than one when the batch's
+formulas exceed one request's 256 KiB; each formula gets its own macro definitions,
+and no process serves two batches.
 It imports the same pinned KaTeX 0.18.9, options, bounded effective project/document macros
 and deterministic repair rules as the workspace GUI. Formula text is JSON
 data; it never selects JavaScript, a shell command, a path or a network endpoint.
@@ -59,10 +61,13 @@ temporary directory so an operator rollout cannot change the bytes mid-check.
 
 ## Bounds and failures
 
-- At most two processes and 32 admitted calls per checker; a batch has at most
-  32 unique span IDs. A default two-second deadline includes waiting for a
-  process slot; operators can choose 0.05 to 10 seconds.
-- Requests are at most 256 KiB, stdout at most 32 KiB and stderr at most 4 KiB.
+- At most two processes and 32 admitted formulas per checker; a batch has at
+  most 32 unique span IDs. A default two-second deadline for each process includes
+  waiting for a process slot; operators can choose 0.05 to 10 seconds. A batch
+  that misses it is unavailable as a whole.
+- A request (the batch) is at most 256 KiB, each formula's answer at most 32 KiB
+  and stderr at most 4 KiB. A formula that alone exceeds a request, or the
+  launcher's 20,000 UTF-16 units, is unavailable without being sent.
   No raw stderr is returned to callers. Trusted configuration reads require
   ordinary files and cap the bundle at 8 MiB and launcher at 64 KiB.
 - The GUI's 5,000 UTF-16-unit formula limit, 200 macros, 1,000 characters per
@@ -100,13 +105,16 @@ transaction (`ControlStore.subscribe` and `notify`). The target and
 completed cursors reference retained revisions rather than copying an unbounded
 queue on every save. Read-only workspace requests never advance state.
 
-Each saved revision is checked in turn and in full. The checker claims a
-document's revisions one after another, from the oldest unchecked one to the
-current one, and renders every parsed span of each under its effective macros,
-whether or not the formula changed; results of earlier revisions are not reused.
-Only the current revision's results can raise, reflag or close findings; older
-results stay as observations. D82 as amended on 2026-10-14 (check only the current
-revision when the checker reaches it, one Node process per batch) is not built yet.
+Only the current revision is checked (D82 as amended on 2026-10-14; refactoring
+plan, decision 7). When the checker reaches a document, it claims the revision that
+is current then and renders every parsed span of it under its effective macros;
+the revisions saved since the last check are superseded and never rendered. The
+same holds for a comment's and an explanation's body revisions. A save during a
+check is checked next. Block ownership still comes from the history: the last
+revision that added or changed a block proves its owner, whichever revision is
+checked. A reflag therefore counts a check that finds the block's formula failing
+after a newer proved edit, not every save. Results of earlier checks are not reused
+for unchanged formulas.
 Document front matter overrides the bounded [project setting](PROJECT-MACROS.md).
 An unchanged formula is therefore checked again after a front-matter or project
 macro change. A document revision atomically pins its save-time project setting;

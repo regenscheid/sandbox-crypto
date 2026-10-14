@@ -420,7 +420,8 @@ async def test_historical_owner_is_resumable_and_does_not_guess_latest_author(st
             operation_id=f"other-{revision}",
         )
     MathJobs(reviews)
-    # Check previous revisions first; only the current one can change findings.
+    # Only the current revision is checked (decision 7); its owner is still proven
+    # from the history.
     await drain(reviews, ScriptedChecker())
     (found,) = get(reviews)
     assert found["source"]["owner_revision"] == 1
@@ -432,7 +433,7 @@ async def test_historical_owner_is_resumable_and_does_not_guess_latest_author(st
         ).fetchone()
         assert proof[0] == 1
         assert json.loads(proof[1])["kind"] == "agent"
-        assert db.execute("SELECT count(*) FROM math_jobs").fetchone()[0] == 8
+        assert db.execute("SELECT count(*) FROM math_jobs").fetchone()[0] == 1
 
 
 @pytest.mark.asyncio
@@ -1236,3 +1237,28 @@ async def test_the_math_checks_keep_jobs_observations_and_findings(tmp_path, mon
         assert get(reviews) == findings
     finally:
         docs.close()
+
+
+@pytest.mark.asyncio
+async def test_only_the_current_revision_is_rendered(stores) -> None:
+    """Saves that the checker has not reached are superseded: five patches to a document
+    of ten formulas render ten formulas, not sixty (B-03, decision 7)."""
+    docs, reviews, _ = stores
+    text = "\n\n".join(f"Paragraph {n} with $x_{n}$." for n in range(10)) + "\n"
+    doc = docs.create("p", name="many", title="Many", text=text, author=MAIN).document_id
+    for revision in range(1, 6):
+        docs.edit_source(
+            "p",
+            doc,
+            base=revision,
+            text=text.replace("x_0", f"y_{revision}"),
+            author=USER,
+            reason="Edit",
+            operation_id=f"edit-{revision}",
+        )
+    checker = ScriptedChecker("accepted")
+    await drain(reviews, checker)
+    assert len(checker.calls) == 10
+    assert any(formula.tex == "y_5" for formula in checker.calls)
+    listing = MathJobs(reviews).listing("p")["checks"]
+    assert [(check["revision"], check["state"]) for check in listing] == [(6, "finished")]

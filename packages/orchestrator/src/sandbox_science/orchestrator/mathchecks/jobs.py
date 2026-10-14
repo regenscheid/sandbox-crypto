@@ -189,8 +189,7 @@ class MathJobs:
                 return None
             source = db.execute(
                 (
-                    "SELECT document,CASE WHEN "
-                    "completed<target THEN completed+1 ELSE target END FROM math_sources "
+                    "SELECT document,target FROM math_sources "
                     "WHERE project=? AND (completed<target OR retry_requested=1) AND "
                     "NOT EXISTS (SELECT 1 FROM math_jobs WHERE "
                     "document=math_sources.document AND state='running') ORDER BY rowid LIMIT 1"

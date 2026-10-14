@@ -45,7 +45,16 @@ def answer(**updates: object) -> str:
         "remedy": None,
     }
     result.update(updates)
-    return "print(" + repr(json.dumps(result)) + ")\n"
+    return "print(" + repr(json.dumps([result])) + ")\n"
+
+
+# A fake renderer that answers each formula of the batch it gets, and counts its runs.
+ECHO = (
+    "open(RUNS, 'a').write('run\\n')\n"
+    "print(json.dumps([{'protocol': 1, 'id': item['id'], 'engine': ENGINE, "
+    "'runtime': '24.20.0', 'options': OPTIONS, 'max_formula': 5000, "
+    "'status': 'accepted', 'error': None, 'remedy': None} for item in request]))\n"
+)
 
 
 @pytest.mark.asyncio
@@ -292,9 +301,62 @@ async def test_real_node_renderer(tmp_path: Path) -> None:
             Formula(id="m2", tex=r"\frac{a}{"),
             Formula(id="m3", tex=r"\sqrt{"),
             Formula(id="m4", tex="x" * 5001),
+            # One process runs the batch, but m1's macro is not defined for m5.
+            Formula(id="m5", tex=r"\F_{2}"),
         ]
     )
-    assert [item.status for item in results] == ["accepted", "rejected", "rejected", "unavailable"]
+    statuses = [item.status for item in results]
+    assert statuses == ["accepted", "rejected", "rejected", "unavailable", "rejected"]
     assert results[1].remedy == r"\frac{a}{}"
     assert results[2].remedy == r"\sqrt{}"
     assert all(item.bundle_sha256 == results[0].bundle_sha256 for item in results)
+
+
+def echo_checker(tmp_path: Path) -> MathChecker:
+    runs = str(tmp_path / "renderer.runs")
+    prelude = f"ENGINE={ENGINE!r}\nOPTIONS={OPTIONS!r}\nRUNS={runs!r}\n"
+    return fixture_checker(tmp_path, prelude + ECHO)
+
+
+def runs(tmp_path: Path) -> int:
+    path = tmp_path / "renderer.runs"
+    return len(path.read_text().splitlines()) if path.exists() else 0
+
+
+@pytest.mark.asyncio
+async def test_a_batch_runs_in_one_process_and_answers_in_order(tmp_path: Path) -> None:
+    checker = echo_checker(tmp_path)
+    formulas = [Formula(id=f"m{n}", tex=f"x_{n}") for n in range(32)]
+    results = await checker.check_many(formulas)
+    assert [result.id for result in results] == [formula.id for formula in formulas]
+    assert {result.status for result in results} == {"accepted"}
+    assert len({result.input_sha256 for result in results}) == 32
+    assert runs(tmp_path) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_batch_over_one_requests_bytes_is_split(tmp_path: Path) -> None:
+    checker = echo_checker(tmp_path)
+    large = {f"\\m{i}": "y" * 1000 for i in range(100)}  # about 105 KB each
+    formulas = [Formula(id=f"m{n}", tex="x", macros=large) for n in range(4)]
+    results = await checker.check_many(formulas)
+    assert {result.status for result in results} == {"accepted"}
+    assert runs(tmp_path) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_formula_too_long_for_the_launcher_does_not_spoil_its_batch(
+    tmp_path: Path,
+) -> None:
+    checker = echo_checker(tmp_path)
+    astral = Formula(id="wide", tex="\U0001d54f" * 15_000)  # 30,000 UTF-16 units
+    results = await checker.check_many([Formula(id="m1", tex="x"), astral])
+    assert [result.status for result in results] == ["accepted", "unavailable"]
+    assert results[1].error == "math request exceeds byte limit"
+
+
+@pytest.mark.asyncio
+async def test_an_answer_for_another_batch_is_inconclusive(tmp_path: Path) -> None:
+    checker = fixture_checker(tmp_path, answer())  # one answer, whatever it was asked
+    results = await checker.check_many([Formula(id="m1", tex="x"), Formula(id="m2", tex="y")])
+    assert [result.status for result in results] == ["unavailable", "unavailable"]

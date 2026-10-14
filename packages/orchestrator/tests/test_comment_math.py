@@ -708,3 +708,15 @@ def test_a_comment_at_its_byte_limit_is_kept(stores) -> None:
     body = "\u00e9" * 8192  # 8192 characters, 16384 bytes: the model's and the table's limits
     made = comment(docs, doc, body=body)
     assert Annotations(docs).body("p", doc, made["entry_id"])["body"] == body
+
+
+@pytest.mark.asyncio
+async def test_only_a_comments_current_body_is_rendered(stores) -> None:
+    docs, reviews, _ = stores
+    doc = create(docs, USER, "Document context.")
+    entry = comment(docs, doc, body="First $a$.")["entry_id"]
+    for n in range(3):
+        edit(docs, doc, entry, f"Body {n} $b_{n}$.", op=f"edit-{n}")
+    checker = ScriptedChecker("accepted")
+    await drain(reviews, checker)
+    assert [formula.tex for formula in checker.calls] == ["b_2"]

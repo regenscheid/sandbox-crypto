@@ -57,8 +57,7 @@ class CommentMath:
     def claim(self, db: sqlite3.Connection, project: str, owner: str, now: float) -> str | None:
         validate_sources(db, project)
         row = db.execute(
-            "SELECT s.entry_id,s.document,CASE WHEN s.completed<s.target "
-            "THEN s.completed+1 ELSE s.target END,d.head FROM comment_math_sources s "
+            "SELECT s.entry_id,s.document,s.target,d.head FROM comment_math_sources s "
             "JOIN documents d ON d.document_id=s.document JOIN annotation_entries original "
             "ON original.entry_id=s.entry_id JOIN annotation_threads t "
             "ON t.thread_id=original.thread_id AND t.document_id=s.document "
