@@ -983,6 +983,9 @@ class Driver:
         self.deleted = False
 
     def save(self, stage: str, value: dict[str, object]) -> None:
+        reserved = set(self.marker) | {"stage", "recorded_at", "in_memory_client_literals_checked"}
+        if type(value) is not dict or reserved.intersection(value):
+            raise RefusalError("public payload overrides envelope metadata")
         write_new(
             PREFIX + identifier(stage) + ".json",
             {**self.marker, "stage": stage, "recorded_at": datetime.now(UTC).isoformat(), **value},
@@ -1174,7 +1177,7 @@ class Driver:
         policy = bounded("policy.digest", 128).decode("ascii").strip()
         if policy != "sha256:" + INPUTS["examples/policy.yaml"]:
             raise RefusalError("original policy reference differs")
-        self.save("create-intent", {"environment_id": ENVIRONMENT, "profile": "minimal"})
+        self.save("create-intent", {"profile": "minimal"})
         remaining(self.deadline, 180)
         created = await self.owner.pool.create_environment(
             EnvironmentRequest(
@@ -1266,7 +1269,7 @@ class Driver:
             {
                 "revision": revision,
                 "name": "ecdsa",
-                "version": "0.19.1",
+                "package_version": "0.19.1",
                 "declared_license": distributions[0].license,
                 "scope": "bounded selected lockfile API; declaration, not verified license/permission",
             },
