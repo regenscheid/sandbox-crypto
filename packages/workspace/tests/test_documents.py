@@ -235,6 +235,23 @@ async def test_no_documents_yet(client: TestClient[Any, Any], state_dir: Path) -
     assert not store_path(state_dir).exists()
 
 
+async def test_a_store_this_version_cannot_use_is_503_with_the_reason(
+    client: TestClient[Any, Any], state_dir: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    import sqlite3
+
+    # A development store from before the schema baseline.
+    database = sqlite3.connect(store_path(state_dir))
+    database.execute("CREATE TABLE documents (document_id TEXT PRIMARY KEY)")
+    database.execute("PRAGMA user_version = 1")
+    database.commit()
+    database.close()
+    body = await get(client, "/api/v0/projects/p1/documents", 503)
+    assert body["error"]["kind"] == "unavailable"
+    assert "document export" in body["error"]["message"]
+    assert "document export" in caplog.text
+
+
 async def test_a_revision_the_parser_no_longer_reads_alike(
     client: TestClient[Any, Any], state_dir: Path, documents: dict[str, str]
 ) -> None:

@@ -171,11 +171,9 @@ identity and counters, and cap aggregate page/current materialization. Corrupt o
 unsupported retained state is refused rather than assigned a new cursor, actor or
 completion. Historical records have immutable update/delete triggers. SQLite
 I/O errors can still fail the whole transaction; the caller must report that
-failure. The schema is internal version 1. Writable construction initializes only
-its separate namespace; a readonly older control store reports that this history
-is not initialized and is never migrated by a read. A partial namespace is
-corrupt/unavailable for both readers and writers, rather than an empty history.
-Plan versions are internal records; they are not published to the artifact
+failure. The tables are part of the control store's schema
+([living documents](LIVING-DOCUMENTS.md#the-control-store)); a store without
+plans reads as an empty history. Plan versions are internal records; they are not published to the artifact
 inventory.
 
 ## Tests

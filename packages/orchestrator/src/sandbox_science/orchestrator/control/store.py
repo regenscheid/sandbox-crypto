@@ -15,12 +15,14 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from collections.abc import Callable, Generator
+import time
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from . import migrations
 from .errors import BUSY, INTERNAL, NOT_FOUND, ControlError
 
 DEFAULT_TIMEOUT: Final = 10.0
@@ -41,27 +43,24 @@ def _busy(error: sqlite3.OperationalError) -> bool:
 class ControlStore:
     """One process's connection to the control store at ``path``.
 
-    A writer creates the database when it first opens it and runs ``prepare`` in that
-    first transaction, to create or check the schema. A read-only store opens the
-    database only to read, refuses one whose ``user_version`` is not ``version``, and
-    is ``missing`` until a writer has made it. One lock serializes this object's
-    transactions across threads.
+    A writer creates the database when it first opens it, or brings it to the current
+    schema version, in that first transaction (migrations.py); before it opens the file
+    to write, it checks the file through a read-only connection and refuses one it
+    cannot use, without changing it. A read-only store opens the database only to read,
+    refuses one in another version, and is ``missing`` until a writer has made it. One
+    lock serializes this object's transactions across threads.
     """
 
     def __init__(
         self,
         path: Path,
         *,
-        version: int,
-        prepare: Callable[[sqlite3.Connection], None],
         readonly: bool = False,
         timeout: float = DEFAULT_TIMEOUT,
     ) -> None:
         self.path = path
         self.readonly = readonly
         self.timeout = timeout
-        self._version = version
-        self._prepare = prepare
         self._lock = threading.RLock()
         self._db: sqlite3.Connection | None = None
 
@@ -71,7 +70,15 @@ class ControlStore:
         ``not_found``: a lookup fails with that kind, and repositories that list records
         check ``missing`` first and return an empty listing."""
         with self._lock:
-            return self.readonly and self._db is None and not self.path.is_file()
+            if not self.readonly or self._db is not None:
+                return False
+            try:
+                self._connection()
+            except ControlError as error:
+                # A file the first writer has not filled yet is missing too; any other
+                # refusal is for read() to report.
+                return error.kind == NOT_FOUND
+            return False
 
     @property
     def in_transaction(self) -> bool:
@@ -104,11 +111,7 @@ class ControlStore:
             except sqlite3.OperationalError as error:
                 if not _busy(error):
                     raise
-                raise ControlError(
-                    BUSY,
-                    f"another change held the control store for over {self.timeout:g} "
-                    "seconds: try again (with the same operation ID, a retry is safe)",
-                ) from error
+                raise self._held() from error
             try:
                 yield Tx(db)
                 db.execute("COMMIT")
@@ -148,41 +151,73 @@ class ControlStore:
         if self.readonly:
             if not self.path.is_file():
                 raise ControlError(NOT_FOUND, "nothing has been stored yet")
-            db = sqlite3.connect(
-                self.path.resolve().as_uri() + "?mode=ro",
-                uri=True,
-                timeout=self.timeout,
-                isolation_level=None,
-                check_same_thread=False,
-            )
-            (version,) = db.execute("PRAGMA user_version").fetchone()
-            if version != self._version:
+            db = self._readonly()
+            try:
+                migrations.check(self.path, db, readonly=True)
+            except BaseException:
                 db.close()
-                raise ControlError(
-                    INTERNAL, f"{self.path} is in store format {version}, not {self._version}"
-                )
+                raise
         else:
             self.path.parent.mkdir(parents=True, exist_ok=True)
+            if self.path.is_file():
+                # Refuse a file this code cannot use before anything could change it:
+                # opening it to write could switch its journal or replay a crashed WAL.
+                probe = self._readonly()
+                try:
+                    migrations.check(self.path, probe, readonly=False)
+                finally:
+                    probe.close()
             db = sqlite3.connect(
                 self.path, timeout=self.timeout, isolation_level=None, check_same_thread=False
             )
             try:
                 self._open(db)
+            except sqlite3.OperationalError as error:
+                db.close()
+                if not _busy(error):
+                    raise
+                raise self._held() from error
             except BaseException:
                 db.close()
                 raise
         self._db = db
         return db
 
+    def _readonly(self) -> sqlite3.Connection:
+        return sqlite3.connect(
+            self.path.resolve().as_uri() + "?mode=ro",
+            uri=True,
+            timeout=self.timeout,
+            isolation_level=None,
+            check_same_thread=False,
+        )
+
+    def _held(self) -> ControlError:
+        return ControlError(
+            BUSY,
+            f"another change held the control store for over {self.timeout:g} "
+            "seconds: try again (with the same operation ID, a retry is safe)",
+        )
+
     def _open(self, db: sqlite3.Connection) -> None:
-        (mode,) = db.execute("PRAGMA journal_mode=WAL").fetchone()
+        # Switching a new file to WAL fails at once, without the busy timeout, while
+        # another process is creating it: wait for that as for any other lock.
+        deadline = time.monotonic() + self.timeout
+        while True:
+            try:
+                (mode,) = db.execute("PRAGMA journal_mode=WAL").fetchone()
+                break
+            except sqlite3.OperationalError as error:
+                if not _busy(error) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.01)
         if str(mode).lower() != "wal":
             raise ControlError(INTERNAL, f"{self.path} cannot use write-ahead logging")
         db.execute("PRAGMA synchronous=FULL")
         db.execute("PRAGMA foreign_keys=ON")
         db.execute("BEGIN IMMEDIATE")
         try:
-            self._prepare(db)
+            migrations.migrate(db, self.path)
             db.execute("COMMIT")
         finally:
             if db.in_transaction:

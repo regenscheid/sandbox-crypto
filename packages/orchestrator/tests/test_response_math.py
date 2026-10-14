@@ -396,57 +396,6 @@ async def test_latest_unavailable_and_stale_body_save_ack_cannot_resolve_or_boun
     assert maths(reviews)[0]["status"] == "confirmed fixed"
 
 
-def test_populated_source_neutral_job_migration_and_fault_rollback():
-    from sandbox_science.orchestrator.documents import mathqueue
-
-    db = sqlite3.connect(":memory:")
-    db.execute("PRAGMA foreign_keys=ON")
-    db.execute("CREATE TABLE documents(document_id TEXT PRIMARY KEY,project_id TEXT,head INTEGER)")
-    db.execute("CREATE TABLE review_findings(finding_id TEXT PRIMARY KEY)")
-    db.execute("INSERT INTO documents VALUES('doc','p',1)")
-    db.execute("INSERT INTO review_findings VALUES('finding')")
-    for sql in mathqueue.SCHEMA:
-        db.execute(sql.replace("document TEXT REFERENCES", "document TEXT NOT NULL REFERENCES"))
-    db.execute(
-        "INSERT INTO math_jobs(rowid,check_id,document,revision,source_sha256,state,created) "
-        "VALUES(42,'check','doc',1,?,'finished',1)",
-        ("a" * 64,),
-    )
-    db.execute(
-        "INSERT INTO math_observations VALUES('check',0,'b1','m1',?,'rejected','{}',2)", ("b" * 64,)
-    )
-    db.execute("INSERT INTO math_job_owners VALUES('check','b1',1,'{}',2)")
-    db.execute(
-        "INSERT INTO math_finding_state VALUES('finding','doc','b1','m1',1,?,1,'check',NULL)",
-        ("c" * 64,),
-    )
-    db.commit()
-    before = db.execute("SELECT rowid,* FROM math_jobs").fetchall()
-    # A real failure after rebuilding the parent must roll back its old schema,
-    # children and IDs together, rather than publishing a partial migration.
-    db.execute("BEGIN")
-    with (
-        pytest.raises(sqlite3.DatabaseError, match="fault"),
-        db,
-        patch.object(mathqueue, "SCHEMA", (*mathqueue.SCHEMA, "SELECT fault()")),
-    ):
-        mathqueue.prepare(db)
-    assert db.execute("PRAGMA table_info(math_jobs)").fetchall()[1][3] == 1
-    assert db.execute("SELECT rowid,* FROM math_jobs").fetchall() == before
-    with db:
-        db.execute("BEGIN")
-        mathqueue.prepare(db)
-    assert db.execute("SELECT rowid,* FROM math_jobs").fetchall() == before
-    assert db.execute("PRAGMA table_info(math_jobs)").fetchall()[1][3] == 0
-    assert db.execute("PRAGMA foreign_key_check").fetchall() == []
-    assert db.execute("PRAGMA defer_foreign_keys").fetchone() == (0,)
-    assert db.execute("SELECT count(*) FROM math_observations").fetchone() == (1,)
-    assert db.execute("SELECT count(*) FROM math_job_owners").fetchone() == (1,)
-    with pytest.raises(sqlite3.IntegrityError), db:
-        db.execute("DELETE FROM math_jobs WHERE check_id='check'")
-    db.close()
-
-
 @pytest.mark.asyncio
 async def test_ordinary_tool_uses_trusted_main_context_and_bounded_reads(stores):
     import json

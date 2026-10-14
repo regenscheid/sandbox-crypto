@@ -8,6 +8,7 @@ server-derived user attribution and the application's authenticated same-origin 
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from collections.abc import Callable
 from typing import Annotated, Final, Literal, cast
@@ -27,6 +28,8 @@ from . import api
 DOCUMENTS: Final = web.AppKey("documents", DocumentStore)
 WRITER: Final = web.AppKey("document_writer", DocumentStore)
 
+_log = logging.getLogger(__name__)
+
 _DOCUMENT_ID: Final = re.compile(r"doc-[0-9a-f]{24}")
 _REVISION: Final = re.compile(r"[1-9][0-9]{0,8}")
 _STATUS: Final = {
@@ -35,6 +38,7 @@ _STATUS: Final = {
     "not_found": (404, ErrorKind.NOT_FOUND),
     "conflict": (409, ErrorKind.CONFLICT),
     "busy": (503, ErrorKind.UNAVAILABLE),
+    "unavailable": (503, ErrorKind.UNAVAILABLE),
 }
 
 Json = dict[str, object]
@@ -270,6 +274,9 @@ def _reference(reference: str) -> bool:
 def api_error(error: DocumentError) -> web.Response:
     status, kind = _STATUS.get(error.kind, (500, ErrorKind.INTERNAL))
     message = error.message if status != 500 else "internal workspace error"
+    if error.kind == "unavailable":
+        # The control store is one this version cannot use, such as a newer one.
+        _log.error("the control store is unavailable: %s", error.message)
     return web.json_response(
         {"error": {"kind": kind.value, "message": message, "details": error.details}},
         status=status,

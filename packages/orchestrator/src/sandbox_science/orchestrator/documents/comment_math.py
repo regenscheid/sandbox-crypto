@@ -26,8 +26,6 @@ Json = dict[str, Any]
 
 
 def metadata(db: sqlite3.Connection, check: str) -> Json | None:
-    if db.execute("SELECT 1 FROM sqlite_master WHERE name='math_comment_jobs'").fetchone() is None:
-        return None
     row = db.execute(
         "SELECT substr(CAST(c.entry_id AS BLOB),1,129),c.macro_revision,"
         "substr(CAST(c.macro_sha256 AS BLOB),1,65),CASE WHEN "
@@ -275,11 +273,6 @@ def reconcile(db: sqlite3.Connection, project: str) -> None:
 
 
 def queue(db: sqlite3.Connection, project: str) -> list[Json]:
-    if (
-        db.execute("SELECT 1 FROM sqlite_master WHERE name='comment_math_sources'").fetchone()
-        is None
-    ):
-        return []
     validate_sources(db, project)
     rows = db.execute(
         "SELECT substr(CAST(s.document AS BLOB),1,129),substr(CAST(s.entry_id AS BLOB),1,129),"

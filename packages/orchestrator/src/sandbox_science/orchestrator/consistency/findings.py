@@ -20,14 +20,32 @@ from sandbox_science.orchestrator.documents.errors import (
 )
 from sandbox_science.orchestrator.documents.models import Author
 
-from .finding_schema import LEGACY_FIELDS, projection
 from .models import ConfirmationInput, EvidenceAnchor, FindingInput, FindingResponse, ReviewConfig
 from .store import MAX_ITEM_BYTES, ReviewStore, bounded_json, digest, dump, identifier, text
 
 # Heterogeneous persisted JSON is validated at the mutation boundary.
 Json = dict[str, Any]
 RESOLVED = ("confirmed fixed", "withdrawn")
-FIELDS = (*LEGACY_FIELDS, "origin", "math_check_id")
+_REVIEWED = (
+    "finding_id",
+    "project",
+    "session",
+    "review_id",
+    "severity",
+    "category",
+    "statement",
+    "anchors",
+    "remedy",
+    "status",
+    "revision",
+    "reflags",
+    "dedupe",
+    "supersedes",
+    "created",
+)
+"""The columns a reviewer's finding sets; a math finding sets ``origin`` and
+``math_check_id`` too."""
+FIELDS = (*_REVIEWED, "origin", "math_check_id")
 
 
 class Findings:
@@ -39,8 +57,8 @@ class Findings:
     def load(self, db: sqlite3.Connection, project: str, session: str, finding: str) -> Json:
         identifier(finding, "finding")
         row = db.execute(
-            "SELECT "  # noqa: S608 - fixed schema projection, all user values bound
-            + projection(db)
+            "SELECT "  # noqa: S608 - fixed column names, all user values bound
+            + ",".join(FIELDS)
             + " FROM review_findings WHERE project=? AND session=? AND finding_id=?",
             (project, session, finding),
         ).fetchone()
@@ -48,16 +66,10 @@ class Findings:
             raise DocumentError(NOT_FOUND, "no such scoped finding")
         result: Json = dict(zip(FIELDS, row, strict=True))
         result["anchors"] = json.loads(result["anchors"])
-        from .response_bodies import available as response_available
-
-        result["response_generation"] = (
-            db.execute(
-                "SELECT coalesce(max(rowid),0) FROM review_response_bodies WHERE finding_id=?",
-                (finding,),
-            ).fetchone()[0]
-            if response_available(db)
-            else 0
-        )
+        result["response_generation"] = db.execute(
+            "SELECT coalesce(max(rowid),0) FROM review_response_bodies WHERE finding_id=?",
+            (finding,),
+        ).fetchone()[0]
         result["source"] = (
             {"kind": "math", "check": result["math_check_id"]}
             if result["origin"] == "math"
@@ -85,8 +97,6 @@ class Findings:
             raise DocumentError(NOT_FOUND, "no such finding")
         with self.store.documents.control.read() as tx:
             db = tx.sql
-            if not self.store.available(db):
-                raise DocumentError(NOT_FOUND, "no such finding")
             result = self.load(db, project, session, finding)
             rows = list(
                 db.execute(
@@ -136,8 +146,6 @@ class Findings:
             return {"findings": [], "next_after": None}
         with self.store.documents.control.read() as tx:
             db = tx.sql
-            if not self.store.available(db):
-                return {"findings": [], "next_after": None}
             cursor = db.execute("SELECT coalesce(max(rowid),0)+1 FROM review_findings").fetchone()[
                 0
             ]
@@ -475,7 +483,7 @@ class Findings:
                 finding = new_id("finding")
                 db.execute(
                     "INSERT INTO review_findings("
-                    + ",".join(LEGACY_FIELDS)
+                    + ",".join(_REVIEWED)
                     + ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         finding,
@@ -712,36 +720,34 @@ class Findings:
                 from sandbox_science.orchestrator.documents.project_macros import (
                     dump as macro_dump,
                 )
-                from sandbox_science.orchestrator.documents.project_macros import exists
 
-                if exists(db):
-                    macro = current_body["macro_context"]
-                    pinned_macro = db.execute(
-                        "SELECT revision,substr(CAST(sha256 AS BLOB),1,65) FROM review_macro_pins "
-                        "WHERE review_id=? AND finding_id=?",
-                        (review, value.finding),
-                    ).fetchone()
-                    if pinned_macro != (macro["revision"], macro["sha256"].encode()):
+                macro = current_body["macro_context"]
+                pinned_macro = db.execute(
+                    "SELECT revision,substr(CAST(sha256 AS BLOB),1,65) FROM review_macro_pins "
+                    "WHERE review_id=? AND finding_id=?",
+                    (review, value.finding),
+                ).fetchone()
+                if pinned_macro != (macro["revision"], macro["sha256"].encode()):
+                    raise DocumentError(
+                        CONFLICT, "response macro context changed during confirmation"
+                    )
+                if value.decision != "inconclusive":
+                    response = cast(Json, pinned_finding.get("response") or {})
+                    raw_context = response.get("macro_context")
+                    context = cast(Json, raw_context) if isinstance(raw_context, dict) else {}
+                    # The snapshot resolved these exact immutable anchors and
+                    # setting. Overall review coverage is a separate guard;
+                    # ambiguity must not become a definitive source decision.
+                    if (
+                        context.get("known") is not True
+                        or context.get("held") is not False
+                        or context.get("key") != digest(macro_dump({**macro, "known": True}))
+                        or any(a.get("unknown") for a in macro["anchors"])
+                    ):
                         raise DocumentError(
-                            CONFLICT, "response macro context changed during confirmation"
+                            POLICY_DENIED,
+                            "response macro context is held or unknown; decide inconclusive",
                         )
-                    if value.decision != "inconclusive":
-                        response = cast(Json, pinned_finding.get("response") or {})
-                        raw_context = response.get("macro_context")
-                        context = cast(Json, raw_context) if isinstance(raw_context, dict) else {}
-                        # The snapshot resolved these exact immutable anchors and
-                        # setting. Overall review coverage is a separate guard;
-                        # ambiguity must not become a definitive source decision.
-                        if (
-                            context.get("known") is not True
-                            or context.get("held") is not False
-                            or context.get("key") != digest(macro_dump({**macro, "known": True}))
-                            or any(a.get("unknown") for a in macro["anchors"])
-                        ):
-                            raise DocumentError(
-                                POLICY_DENIED,
-                                "response macro context is held or unknown; decide inconclusive",
-                            )
             config = ReviewConfig.model_validate_json(run["config"])
             if value.decision in ("confirm", "reject"):
                 self.confirmation_reads(db, review, pinned_finding, pinned[1])

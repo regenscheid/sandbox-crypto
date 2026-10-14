@@ -99,8 +99,6 @@ class FindingNotices:
             return {}
         with self.store.documents.control.read() as tx:
             db = tx.sql
-            if not self.store.available(db):
-                return {}
             rows = db.execute(
                 (
                     "SELECT severity,status,count(*) FROM review_findings WHERE "

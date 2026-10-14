@@ -22,6 +22,7 @@ from typing import Any
 
 import pytest
 
+from sandbox_science.orchestrator.control import migrations
 from sandbox_science.orchestrator.documents import (
     USER,
     Author,
@@ -29,7 +30,6 @@ from sandbox_science.orchestrator.documents import (
     DocumentStore,
     Mapped,
 )
-from sandbox_science.orchestrator.documents.store import SCHEMA_VERSION
 
 FF = """---
 title: Fermat's little theorem over GF(17)
@@ -735,9 +735,10 @@ def test_a_read_only_store_reads_and_never_writes(store: DocumentStore, tmp_path
 def test_a_store_in_another_format_is_refused(tmp_path: Path) -> None:
     path = tmp_path / "control.sqlite3"
     db = sqlite3.connect(path)
-    db.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 1}")
+    db.execute(f"PRAGMA user_version = {migrations.VERSION + 1}")
+    db.execute(f"PRAGMA application_id = {migrations.APPLICATION_ID}")
     db.close()
-    with pytest.raises(DocumentError, match="store format"):
+    with pytest.raises(DocumentError, match="newer"):
         DocumentStore(path).documents("p1")
     other = tmp_path / "other.sqlite3"
     db = sqlite3.connect(other)

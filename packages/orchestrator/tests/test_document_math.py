@@ -1111,49 +1111,6 @@ def test_corrupt_admission_lease_and_listing_ids_refuse_before_fetch(stores) -> 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("prepare", [False, True])
-async def test_valid_older_writer_revision_reconciles_without_losing_owner(
-    stores, monkeypatch: pytest.MonkeyPatch, prepare: bool
-) -> None:
-    from sandbox_science.orchestrator.documents import mathqueue
-
-    docs, reviews, _ = stores
-    doc = create(docs)
-    await drain(reviews, ScriptedChecker())
-    # The older writer saves a normal immutable revision and event, but
-    # has no D82 hook. Do not manufacture source rows or alter revision evidence.
-    with monkeypatch.context() as old:
-        old.setattr(mathqueue, "record_event", lambda *args: None)
-        docs.edit_source(
-            "p",
-            doc,
-            base=1,
-            text=BAD + "\n\nOlder writer's unrelated USER edit.\n",
-            author=USER,
-            reason="Older writer",
-            operation_id="older-writer",
-        )
-    with docs.control.read() as tx:
-        db = tx.sql
-        assert db.execute("SELECT target,completed FROM math_sources").fetchone() == (1, 1)
-    if prepare:
-        reopened = DocumentStore(docs.path)
-        reopened.close()
-    jobs = MathJobs(reviews)
-    check = jobs.claim("p", "new-writer")
-    assert check
-    assert jobs.job(check)["revision"] == 2
-    assert await jobs.step(check, "new-writer", ScriptedChecker())
-    current = get(reviews)[0]
-    assert current["source"]["owner_revision"] == 1
-    assert current["source"]["checked_revision"] == 2
-    assert current["reflags"] == 0
-    with docs.control.read() as tx:
-        db = tx.sql
-        assert db.execute("SELECT target,completed FROM math_sources").fetchone() == (2, 2)
-
-
-@pytest.mark.asyncio
 async def test_completed_scientific_bound_survives_later_math_failure(stores, monkeypatch):
     import argparse
     from datetime import UTC, datetime

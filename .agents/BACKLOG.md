@@ -245,4 +245,5 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [x] Refactoring plan Phase 1, the conformance suite over the daemon (C-14): the local runs cover the stdio transport and the sandbox daemon
 - [ ] Refactoring plan Phase 1, the CI tiers (F-03)
 - [x] Refactoring plan Phase 2, lane S step 1 (B-01): `orchestrator/control` with a public `ControlStore` (`read()`/`write()` yielding a `Tx`, nested transactions refused) that the control-store repositories use; the file-level private-usage pragmas outside `kernel_delivery.py` removed
-- [ ] Refactoring plan Phase 2, lane S step 2 (B-02): one ordered migration list with a single schema version
+- [x] Refactoring plan Phase 2, lane S step 2 (B-02): one ordered migration list with a single schema version (`control/migrations.py`), re-baselined at version 2 (`control/baseline.sql`); development stores from before it are refused, with the export path in LIVING-DOCUMENTS; the tenants' DDL, version markers, table rebuilds and schema probes removed
+- [ ] Refactoring plan Phase 2, lane S, after B-02: remove the remaining legacy-data branches that only older writers could produce (`comment_math.reconcile` and `comment_bodies.current(allow_legacy=...)`, the legacy response discovery in `ResponseBodies.reconcile`, and the `ss-markdown-1` parser profile if decision 6 covers it)

@@ -252,41 +252,31 @@ async def test_absent_history_returns_null_without_creating_or_migrating_sql(
     else:
         with owner.control.read() as tx:
             db = tx.sql
-            assert db.execute(
-                "SELECT count(*) FROM sqlite_master WHERE name LIKE 'session_plan_%'"
-            ).fetchone() == (0,)
+            assert db.execute("SELECT count(*) FROM session_plan_records").fetchone() == (0,)
     owner.close()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("damage", ["partial", "version", "pointer", "head", "large"])
+@pytest.mark.parametrize("damage", ["version", "pointer", "head", "large"])
 async def test_corrupt_history_is_503_not_null_or_unbounded_allocation(
     aiohttp_client, state_dir, static_dir, damage
 ):
     owner = DocumentStore(store_path(state_dir))
     try:
-        if damage == "partial":
-            owner.initialize()
-            with owner.control.write() as tx:
-                db = tx.sql
+        journal = SessionPlans(owner)
+        seed(journal)
+        with owner.control.write() as tx:
+            db = tx.sql
+            if damage == "version":
+                db.execute("DROP TRIGGER session_plan_records_no_delete")
+                db.execute("DELETE FROM session_plan_records WHERE kind='version'")
+            elif damage == "pointer":
+                db.execute("DELETE FROM session_plan_projections WHERE kind='current'")
+            else:
                 db.execute(
-                    "CREATE TABLE session_plan_meta(singleton INTEGER PRIMARY KEY,version INTEGER)"
+                    "UPDATE session_plan_projections SET record=? WHERE kind='current'",
+                    ("x" * (20_000_000 if damage == "large" else 1),),
                 )
-        else:
-            journal = SessionPlans(owner)
-            seed(journal)
-            with owner.control.write() as tx:
-                db = tx.sql
-                if damage == "version":
-                    db.execute("DROP TRIGGER session_plan_records_no_delete")
-                    db.execute("DELETE FROM session_plan_records WHERE kind='version'")
-                elif damage == "pointer":
-                    db.execute("DELETE FROM session_plan_projections WHERE kind='current'")
-                else:
-                    db.execute(
-                        "UPDATE session_plan_projections SET record=? WHERE kind='current'",
-                        ("x" * (20_000_000 if damage == "large" else 1),),
-                    )
         client = await create(aiohttp_client, state_dir, static_dir)
         tracemalloc.start()
         try:

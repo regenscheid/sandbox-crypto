@@ -605,8 +605,7 @@ def test_readonly_and_old_namespace_are_honest(tmp_path):
     writer.initialize()
     reader = DocumentStore(path, readonly=True)
     try:
-        with pytest.raises(DocumentError, match="not initialized"):
-            SessionPlans(reader)
+        assert SessionPlans(reader).summary(actor()) is None
         plans = SessionPlans(writer)
         first = made(plans)
         read = SessionPlans(reader)
@@ -616,15 +615,6 @@ def test_readonly_and_old_namespace_are_honest(tmp_path):
     finally:
         reader.close()
         writer.close()
-
-
-def test_unsupported_schema_does_not_recreate_namespace(store):
-    SessionPlans(store)
-    with store.control.write() as tx:
-        db = tx.sql
-        db.execute("UPDATE session_plan_meta SET version=999")
-    with pytest.raises(DocumentError, match="unsupported"):
-        SessionPlans(store)
 
 
 def test_complete_page_byte_cap_and_full_current_bound(plans):
@@ -802,21 +792,6 @@ def test_missing_scoped_event_is_unavailable_not_silent_covered_prefix(store, pl
         db.execute("DELETE FROM session_plan_records WHERE kind='event' AND number=1")
     with pytest.raises(DocumentError, match="history has a gap"):
         plans.events(actor())
-
-
-def test_partial_namespace_refuses_both_readonly_and_writable_open(store):
-    store.initialize()
-    with store.control.write() as tx:
-        db = tx.sql
-        db.execute("CREATE TABLE session_plan_meta(singleton INTEGER PRIMARY KEY,version INTEGER)")
-    reader = DocumentStore(store.path, readonly=True)
-    try:
-        for owner in (reader, store):
-            with pytest.raises(DocumentError, match="schema is incomplete") as failure:
-                SessionPlans(owner)
-            assert failure.value.kind == "internal"
-    finally:
-        reader.close()
 
 
 def test_compact_current_keeps_all_steps_when_full_notes_exceed_current_limit(plans):

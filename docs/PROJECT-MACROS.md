@@ -51,8 +51,8 @@ expansion. Ordinary document edits retain the existing front-matter warning
 behavior rather than becoming settings writes.
 
 Each project retains at most 1,024 changed setting revisions and 4,096 operation
-receipts. No automatic setting history eviction occurs. Macro tables are
-additive; read-only legacy views do not create schema or mutate check cursors.
+receipts. No automatic setting history eviction occurs. Read-only views do not
+mutate check cursors.
 
 ## Exact contexts and uncertainty
 

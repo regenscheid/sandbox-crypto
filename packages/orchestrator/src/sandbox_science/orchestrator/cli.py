@@ -859,6 +859,6 @@ def main(argv: list[str] | None = None) -> int:
             action = _session(args)
     try:
         return asyncio.run(action)
-    except (WorkerAPIError, ModelError, ProjectError) as exc:
+    except (WorkerAPIError, ModelError, ProjectError, DocumentError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

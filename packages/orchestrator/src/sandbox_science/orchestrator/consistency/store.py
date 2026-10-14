@@ -31,8 +31,6 @@ from sandbox_science.orchestrator.documents.errors import (
 )
 from sandbox_science.orchestrator.projects import ProjectError, ProjectStore
 
-from .finding_schema import FINDING_INDEX, FINDING_TABLE
-from .finding_schema import prepare as prepare_findings
 from .models import ReviewConfig, ReviewOutcome, ReviewType, Scope
 from .prompt_bundle import (
     MAX_PROVENANCE_BYTES,
@@ -48,99 +46,6 @@ MAX_ITEM_BYTES: Final = 256 * 1024
 MAX_SNAPSHOT_BYTES: Final = 8 * 1024 * 1024
 MAX_SNAPSHOT_ITEMS: Final = 256
 LEASE_SECONDS: Final = 120
-
-SCHEMA: Final = (
-    """CREATE TABLE IF NOT EXISTS review_windows (
-      project TEXT NOT NULL,session TEXT NOT NULL,watermark INTEGER NOT NULL DEFAULT 0,
-      document_cursor INTEGER NOT NULL DEFAULT 0,last_dispatch REAL,retry_end INTEGER,
-      failures INTEGER NOT NULL DEFAULT 0,requested INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY(project,session)) STRICT""",
-    """CREATE TABLE IF NOT EXISTS review_artifact_cursors (
-      project TEXT NOT NULL,session TEXT NOT NULL,cursor INTEGER NOT NULL,
-      PRIMARY KEY(project,session)) STRICT""",
-    """CREATE TABLE IF NOT EXISTS review_config (
-      project TEXT NOT NULL,number INTEGER NOT NULL,payload TEXT NOT NULL,created REAL NOT NULL,
-      PRIMARY KEY(project,number)) STRICT""",
-    """CREATE TABLE IF NOT EXISTS review_feed (
-      seq INTEGER PRIMARY KEY AUTOINCREMENT,project TEXT NOT NULL,session TEXT NOT NULL,
-      source_key TEXT NOT NULL,kind TEXT NOT NULL,locator TEXT NOT NULL,payload TEXT NOT NULL,
-      sha256 TEXT NOT NULL,complete INTEGER NOT NULL,characters INTEGER NOT NULL,
-      structural INTEGER NOT NULL,artifacts INTEGER NOT NULL,cells INTEGER NOT NULL,
-      effects INTEGER NOT NULL,created REAL NOT NULL,UNIQUE(project,session,source_key)) STRICT""",
-    "CREATE INDEX IF NOT EXISTS review_feed_scope ON review_feed(project,session,seq)",
-    """CREATE TABLE IF NOT EXISTS review_runs (
-      review_id TEXT PRIMARY KEY,project TEXT NOT NULL,session TEXT NOT NULL,kind TEXT NOT NULL,
-      author_run TEXT NOT NULL,owner TEXT NOT NULL,state TEXT NOT NULL,start_seq INTEGER NOT NULL,
-      end_seq INTEGER NOT NULL,created REAL NOT NULL,ended REAL,lease_until REAL,
-      alias TEXT,resolved_model TEXT,rubric TEXT NOT NULL,config TEXT NOT NULL,
-      config_revision TEXT NOT NULL,classifier TEXT NOT NULL,summary TEXT NOT NULL DEFAULT '',
-      cap_reached INTEGER NOT NULL DEFAULT 0,input_tokens INTEGER NOT NULL DEFAULT 0,
-      output_tokens INTEGER NOT NULL DEFAULT 0,estimated_tokens INTEGER NOT NULL DEFAULT 0,
-      calls INTEGER NOT NULL DEFAULT 0,coverage_complete INTEGER NOT NULL,
-      confirmation_key TEXT) STRICT""",
-    """CREATE UNIQUE INDEX IF NOT EXISTS review_one_running
-      ON review_runs(project,session) WHERE state='running'""",
-    """CREATE TABLE IF NOT EXISTS review_evidence (
-      evidence_id TEXT PRIMARY KEY,review_id TEXT NOT NULL REFERENCES review_runs(review_id),
-      ordinal INTEGER NOT NULL,kind TEXT NOT NULL,locator TEXT NOT NULL,payload TEXT NOT NULL,
-      sha256 TEXT NOT NULL,complete INTEGER NOT NULL,UNIQUE(review_id,ordinal)) STRICT""",
-    """CREATE TABLE IF NOT EXISTS review_reads (
-      seq INTEGER PRIMARY KEY AUTOINCREMENT,
-      review_id TEXT NOT NULL REFERENCES review_runs(review_id),
-      evidence_id TEXT NOT NULL REFERENCES review_evidence(evidence_id),locator TEXT NOT NULL,
-      sha256 TEXT NOT NULL,created REAL NOT NULL) STRICT""",
-    """CREATE TABLE IF NOT EXISTS review_confirmation_targets (
-      review_id TEXT NOT NULL REFERENCES review_runs(review_id),finding_id TEXT NOT NULL,
-      revision INTEGER NOT NULL,PRIMARY KEY(review_id,finding_id)) STRICT""",
-    """CREATE TABLE IF NOT EXISTS review_grants (
-      review_id TEXT NOT NULL REFERENCES review_runs(review_id),
-      evidence_id TEXT NOT NULL REFERENCES review_evidence(evidence_id),
-      ordinal INTEGER NOT NULL,PRIMARY KEY(review_id,evidence_id),
-      UNIQUE(review_id,ordinal)) STRICT""",
-    """CREATE TABLE IF NOT EXISTS review_calls (
-      seq INTEGER PRIMARY KEY AUTOINCREMENT,project TEXT NOT NULL,review_id TEXT NOT NULL,
-      created REAL NOT NULL,input_tokens INTEGER,output_tokens INTEGER,resolved_model TEXT,
-      estimated_tokens INTEGER NOT NULL,answered INTEGER NOT NULL DEFAULT 0) STRICT""",
-    """CREATE TABLE IF NOT EXISTS review_records (
-      seq INTEGER PRIMARY KEY AUTOINCREMENT,
-      review_id TEXT NOT NULL REFERENCES review_runs(review_id),
-      kind TEXT NOT NULL,payload TEXT NOT NULL,created REAL NOT NULL) STRICT""",
-    FINDING_TABLE,
-    FINDING_INDEX,
-    """CREATE TABLE IF NOT EXISTS review_transitions (
-      seq INTEGER PRIMARY KEY AUTOINCREMENT,
-      finding_id TEXT NOT NULL REFERENCES review_findings(finding_id),
-      revision INTEGER NOT NULL,status TEXT NOT NULL,actor TEXT NOT NULL,reason TEXT NOT NULL,
-      payload TEXT NOT NULL,created REAL NOT NULL,UNIQUE(finding_id,revision)) STRICT""",
-    """CREATE TABLE IF NOT EXISTS review_operations (
-      project TEXT NOT NULL,actor TEXT NOT NULL,operation_id TEXT NOT NULL,
-      fingerprint TEXT NOT NULL,result TEXT NOT NULL,
-      PRIMARY KEY(project,actor,operation_id)) STRICT""",
-    """CREATE TABLE IF NOT EXISTS review_notices (
-      finding_id TEXT NOT NULL,revision INTEGER NOT NULL,project TEXT NOT NULL,
-      session TEXT NOT NULL,
-      claimed_run TEXT,claim_until REAL,delivered_run TEXT,
-      PRIMARY KEY(finding_id,revision)) STRICT""",
-    """CREATE TABLE IF NOT EXISTS review_events (
-      seq INTEGER PRIMARY KEY AUTOINCREMENT,project TEXT NOT NULL,session TEXT NOT NULL,
-      kind TEXT NOT NULL,payload TEXT NOT NULL,created REAL NOT NULL) STRICT""",
-    *tuple(
-        f"CREATE TRIGGER IF NOT EXISTS {table}_{verb.lower()} BEFORE {verb} ON {table} "
-        "BEGIN SELECT RAISE(ABORT, 'review evidence/history is immutable'); END"
-        for table in (
-            "review_feed",
-            "review_evidence",
-            "review_grants",
-            "review_confirmation_targets",
-            "review_reads",
-            "review_records",
-            "review_transitions",
-            "review_config",
-            "review_events",
-        )
-        for verb in ("UPDATE", "DELETE")
-    ),
-)
 
 
 def dump(value: object) -> str:
@@ -198,45 +103,9 @@ class ReviewStore:
     ) -> None:
         self.documents, self.clock, self.artifacts = documents, clock, artifacts
         if artifacts is None and not documents.control.missing:
-            with documents.control.read() as tx:
-                existing = (
-                    tx.sql.execute(
-                        "SELECT 1 FROM sqlite_master WHERE name='artifact_meta'"
-                    ).fetchone()
-                    is not None
-                )
-            if existing:
-                self.artifacts = ArtifactInventory(documents)
+            self.artifacts = ArtifactInventory(documents)
         if artifacts is not None and artifacts.documents is not documents:
             raise ValueError("artifact evidence must share the control connection")
-        if not documents.readonly:
-            with documents.control.write() as tx:
-                db = tx.sql
-                for statement in SCHEMA:
-                    db.execute(statement)
-                if (
-                    db.execute(
-                        "SELECT 1 FROM pragma_table_info('review_calls') "
-                        "WHERE name='prompt_provenance'"
-                    ).fetchone()
-                    is None
-                ):
-                    db.execute("ALTER TABLE review_calls ADD COLUMN prompt_provenance TEXT")
-                db.execute(
-                    "CREATE TRIGGER IF NOT EXISTS review_calls_prompt_immutable "
-                    "BEFORE UPDATE OF prompt_provenance ON review_calls "
-                    "BEGIN SELECT RAISE(ABORT, 'review prompt input is immutable'); END"
-                )
-                prepare_findings(db)
-                from .response_bodies import prepare_schema
-
-                prepare_schema(db)
-
-    def available(self, db: sqlite3.Connection) -> bool:
-        return (
-            db.execute("SELECT 1 FROM sqlite_master WHERE name='review_runs'").fetchone()
-            is not None
-        )
 
     def scope(self, project: str, session: str) -> None:
         try:
@@ -254,13 +123,11 @@ class ReviewStore:
         row = None
         if not self.documents.control.missing:
             with self.documents.control.read() as tx:
-                db = tx.sql
-                if self.available(db):
-                    row = db.execute(
-                        "SELECT payload FROM review_config WHERE project=? ORDER BY "
-                        "number DESC LIMIT 1",
-                        (project,),
-                    ).fetchone()
+                row = tx.sql.execute(
+                    "SELECT payload FROM review_config WHERE project=? ORDER BY number DESC "
+                    "LIMIT 1",
+                    (project,),
+                ).fetchone()
         value = ReviewConfig.model_validate_json(row[0]) if row else ReviewConfig()
         return value, digest(value.model_dump_json())
 
@@ -520,8 +387,6 @@ class ReviewStore:
             return False
         with self.documents.control.read() as tx:
             db = tx.sql
-            if not self.available(db):
-                return False
             row = db.execute(
                 (
                     "SELECT watermark,last_dispatch,retry_end,requested FROM "
@@ -561,24 +426,20 @@ class ReviewStore:
         self.scope(project, session)
         with self.documents.control.read() as tx:
             db = tx.sql
-            from sandbox_science.orchestrator.documents.project_macros import exists, head
+            from sandbox_science.orchestrator.documents.project_macros import head
 
             macro_match = (
                 "(NOT EXISTS(SELECT 1 FROM review_response_bodies b WHERE "
                 "b.finding_id=f.finding_id AND b.decision_revision=f.revision) OR EXISTS("
                 "SELECT 1 FROM review_macro_pins m WHERE m.review_id=t.review_id AND "
                 "m.finding_id=f.finding_id AND m.revision=?)) AND "
-                if exists(db)
-                else ""
             )
-            parameters: tuple[Any, ...] = (project, session)
-            if macro_match:
-                revision = head(db, project)
-                parameters += (revision, revision)
+            revision = head(db, project)
+            parameters = (project, session, revision, revision)
             return [
                 tuple(row)
                 for row in db.execute(
-                    "SELECT f.finding_id,f.revision FROM review_findings f WHERE project=? "  # noqa: S608 - fixed optional schema fragment
+                    "SELECT f.finding_id,f.revision FROM review_findings f WHERE project=? "  # noqa: S608 - fixed SQL fragments
                     "AND session=? AND category!='math' AND status='claimed fixed' "
                     "AND NOT EXISTS(SELECT 1 FROM "
                     "review_confirmation_targets t JOIN review_runs r USING(review_id) "
@@ -980,13 +841,14 @@ class ReviewStore:
 
     def load_run(self, db: sqlite3.Connection, project: str, session: str, review: str) -> Json:
         identifier(review, "rev")
-        row = db.execute(
+        cursor = db.execute(
             "SELECT * FROM review_runs WHERE project=? AND session=? AND review_id=?",
             (project, session, review),
-        ).fetchone()
+        )
+        row = cursor.fetchone()
         if row is None:
             raise DocumentError(NOT_FOUND, "no such review")
-        names = [c[1] for c in db.execute("PRAGMA table_info(review_runs)")]
+        names = [column[0] for column in cursor.description]
         return dict(zip(names, row, strict=True))
 
     def run(self, project: str, session: str, review: str) -> Json:
@@ -995,8 +857,6 @@ class ReviewStore:
             raise DocumentError(NOT_FOUND, "no such review")
         with self.documents.control.read() as tx:
             db = tx.sql
-            if not self.available(db):
-                raise DocumentError(NOT_FOUND, "no such review")
             found = self.load_run(db, project, session, review)
         found["config"] = json.loads(found["config"])
         found["classifier"] = json.loads(found["classifier"])
@@ -1238,36 +1098,18 @@ class ReviewStore:
         if self.documents.control.missing:
             return ProvenanceRead("absent")
         with self.documents.control.read() as tx:
-            db = tx.sql
-            if (
-                not self.available(db)
-                or db.execute("SELECT 1 FROM sqlite_master WHERE name='review_calls'").fetchone()
-                is None
-            ):
-                return ProvenanceRead("absent")
-            has_pin = (
-                db.execute(
-                    "SELECT 1 FROM pragma_table_info('review_calls') WHERE name='prompt_provenance'"
-                ).fetchone()
-                is not None
-            )
-            prefix = (
+            row = tx.sql.execute(
                 "SELECT CASE WHEN c.prompt_provenance IS NULL THEN 0 "
                 "WHEN typeof(c.prompt_provenance)='text' "
                 "AND length(CAST(c.prompt_provenance AS BLOB))<=? THEN 1 ELSE 2 END,"
                 "CASE WHEN typeof(c.prompt_provenance)='text' "
                 "AND length(CAST(c.prompt_provenance AS BLOB))<=? "
                 "THEN CAST(c.prompt_provenance AS BLOB) ELSE NULL END,"
-                if has_pin
-                else "SELECT 0,NULL,"
-            )
-            row = db.execute(
-                prefix + "substr(CAST(r.rubric AS BLOB),1,129) "
+                "substr(CAST(r.rubric AS BLOB),1,129) "
                 "FROM review_calls c JOIN review_runs r "
                 "ON c.review_id=r.review_id AND c.project=r.project "
                 "WHERE r.project=? AND r.session=? AND r.review_id=? AND c.seq=? LIMIT 1",
-                ((MAX_PROVENANCE_BYTES, MAX_PROVENANCE_BYTES) if has_pin else ())
-                + (project, session, review, call),
+                (MAX_PROVENANCE_BYTES, MAX_PROVENANCE_BYTES, project, session, review, call),
             ).fetchone()
         if row is None:
             return ProvenanceRead("absent")
@@ -1582,8 +1424,6 @@ class ReviewStore:
             return {"reviews": [], "next_after": None, "unreviewed": []}
         with self.documents.control.read() as tx:
             db = tx.sql
-            if not self.available(db):
-                return {"reviews": [], "next_after": None, "unreviewed": []}
             cursor = db.execute("SELECT coalesce(max(rowid),0)+1 FROM review_runs").fetchone()[0]
             if after is not None:
                 row = db.execute(

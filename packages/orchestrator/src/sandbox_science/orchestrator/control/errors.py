@@ -11,6 +11,9 @@ CONFLICT: Final = "conflict"
 POLICY_DENIED: Final = "policy_denied"
 BUSY: Final = "busy"
 """Another change held the store for longer than a change waits: try again."""
+UNAVAILABLE: Final = "unavailable"
+"""The file is not a control store this version can use, such as one in another schema
+version: the message says what to do."""
 INTERNAL: Final = "internal"
 
 

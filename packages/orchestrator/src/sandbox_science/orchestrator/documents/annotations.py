@@ -28,35 +28,6 @@ from .store import DocumentStore
 Json = dict[str, Any]
 ID = Annotated[str, Field(pattern=r"^b[0-9]{1,9}$")]
 THREAD: Final = re.compile(r"ann-[0-9a-f]{24}")
-SCHEMA: Final = (
-    """CREATE TABLE IF NOT EXISTS annotation_threads (
-      thread_id TEXT PRIMARY KEY, document_id TEXT NOT NULL REFERENCES documents(document_id),
-      anchor TEXT NOT NULL, opener TEXT NOT NULL, created_at REAL NOT NULL) STRICT""",
-    """CREATE TABLE IF NOT EXISTS annotation_entries (
-      entry_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES annotation_threads(thread_id),
-      number INTEGER NOT NULL, kind TEXT NOT NULL, author TEXT NOT NULL, body TEXT NOT NULL,
-      payload TEXT NOT NULL, created_at REAL NOT NULL, UNIQUE(thread_id, number)) STRICT""",
-    """CREATE TABLE IF NOT EXISTS annotation_operations (
-      project_id TEXT NOT NULL, actor TEXT NOT NULL, operation_id TEXT NOT NULL,
-      fingerprint TEXT NOT NULL, result TEXT NOT NULL,
-      PRIMARY KEY(project_id,actor,operation_id)) STRICT""",
-    """CREATE TABLE IF NOT EXISTS annotation_requests (
-      request_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, session_id TEXT NOT NULL,
-      thread_id TEXT NOT NULL REFERENCES annotation_threads(thread_id),
-      entry_id TEXT NOT NULL REFERENCES annotation_entries(entry_id), state TEXT NOT NULL,
-      claimed_run TEXT, claim_until REAL, delivered_run TEXT, delivered_at REAL,
-      responded_entry TEXT, UNIQUE(entry_id)) STRICT""",
-    (
-        "CREATE INDEX IF NOT EXISTS annotation_pending ON "
-        "annotation_requests(project_id,session_id,state)"
-    ),
-    *tuple(
-        f"CREATE TRIGGER IF NOT EXISTS {table}_{verb.lower()} BEFORE {verb} ON {table} "
-        "BEGIN SELECT RAISE(ABORT, 'annotations are append-only'); END"
-        for table in ("annotation_threads", "annotation_entries")
-        for verb in ("UPDATE", "DELETE")
-    ),
-)
 
 
 class AnchorInput(Contract):
@@ -328,12 +299,6 @@ class Annotations:
     def __init__(self, store: DocumentStore) -> None:
         self.store = store
 
-    def _available(self, db: sqlite3.Connection) -> bool:
-        return (
-            db.execute("SELECT 1 FROM sqlite_master WHERE name='annotation_threads'").fetchone()
-            is not None
-        )
-
     def _thread(
         self, db: sqlite3.Connection, document: str, thread: str, before: int | None = None
     ) -> Json:
@@ -458,8 +423,6 @@ class Annotations:
         current = self.store.mapped(project, info.document_id, revision or info.head)
         with self.store.control.read() as tx:
             db = tx.sql
-            if not self._available(db):
-                return {"threads": [], "next_after": None}
             start = 0
             if after is not None:
                 row = db.execute(
@@ -519,8 +482,6 @@ class Annotations:
         current = self.store.mapped(project, info.document_id, info.head)
         with self.store.control.read() as tx:
             db = tx.sql
-            if not self._available(db):
-                raise DocumentError(NOT_FOUND, "no such document thread")
             found = self._thread(db, info.document_id, thread, before)
         original = self.store.mapped(project, info.document_id, found["anchor"]["revision"])
         found["attachment"] = attachment(original, current, found["anchor"])

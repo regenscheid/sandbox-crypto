@@ -17,6 +17,7 @@ import json
 import os
 import re
 import socket
+import sqlite3
 import subprocess
 import sys
 from collections.abc import AsyncIterator, Iterator, Sequence
@@ -903,6 +904,38 @@ async def test_the_pdf_tools_read_cite_and_render_in_the_sandbox(client: WorkerC
 def test_the_pdf_tools_need_the_feature() -> None:
     client = WorkerClient("http://127.0.0.1:9", TOKEN)
     assert not {"pdf_pages", "pdf_render"} & {s.name for s in Toolbox(client, CONTEXT).specs}
+
+
+async def test_a_control_store_the_run_cannot_use_is_an_error_message(
+    worker_url: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    state, token = tmp_path / "harness-state", tmp_path / "token"
+    token.write_text(TOKEN)
+    created = await asyncio.to_thread(
+        cli.main,
+        ["project", "create", "--state-dir", str(state), "--project", "p1",
+         "--profile", "minimal", "--policy", "sha256:" + "c" * 64],
+    )  # fmt: skip
+    assert created == 0
+    # A development store from before the schema baseline.
+    database = sqlite3.connect(state / "control.sqlite3")
+    database.execute("CREATE TABLE documents (document_id TEXT PRIMARY KEY)")
+    database.execute("PRAGMA user_version = 1")
+    database.commit()
+    database.close()
+    script = tmp_path / "turns.json"
+    script.write_text(json.dumps([{"text": "done"}]))
+    capsys.readouterr()
+    status = await asyncio.to_thread(
+        cli.main,
+        ["run", "--worker", worker_url, "--token-file", str(token), "--project", "p1",
+         "--session", "a", "--state-dir", str(state), "--allow-unisolated",
+         "--script", str(script), "task"],
+    )  # fmt: skip
+    assert status == 1
+    err = capsys.readouterr().err
+    assert "error: control.sqlite3 is a development control store" in err
+    assert "Traceback" not in err
 
 
 async def test_projects_give_sessions_their_environments(

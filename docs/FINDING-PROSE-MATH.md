@@ -81,8 +81,7 @@ child resolution remain independent.
 Focused fixtures cover source authority, cross-run replay, parent independence,
 body/reviewer races, immutable original history, the initial empty-macro context,
 failed-edit budgets, unavailable retries, stale closing ACK, receipt/queue rollback,
-bounded corrupt reads, unknown legacy isolation and populated source-neutral job
-migration with child FKs/rollback. Workspace API and read-only rendering fixtures
+bounded corrupt reads and unknown legacy isolation. Workspace API and read-only rendering fixtures
 cover historical scope and original/current attribution. Checked in the browser in
 [finding prose math acceptance](../.agents/docs/agent-reports/finding-prose-math-2026-10-12.md).
 
