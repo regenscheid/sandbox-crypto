@@ -38,6 +38,7 @@ from sandbox_science.workspace.api import ProjectAnswer, ProjectListing, Session
 from sandbox_science.workspace.artifacts import ArtifactListing, ViewerLink
 from sandbox_science.workspace.chat import EventPage, MessageAnswer, MessageListing, Requested
 from sandbox_science.workspace.kernels import WorkspaceObservation
+from sandbox_science.workspace.ledger import LedgerEntry, LedgerHistory, LedgerListing
 from sandbox_science.workspace.plan_edits import BodyChange, EditReceipt
 from sandbox_science.workspace.plans import WorkspacePlan
 
@@ -64,6 +65,9 @@ MODELS: tuple[type[BaseModel], ...] = (
     Requested,
     ArtifactListing,
     ViewerLink,
+    LedgerListing,
+    LedgerEntry,
+    LedgerHistory,
 )
 HEADER = (
     "// SPDX-License-Identifier: MIT\n"

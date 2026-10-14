@@ -184,7 +184,7 @@ class Mutation(Contract):
     changes: list[EntryChange] = Field(min_length=1, max_length=32)
 
 
-class Link(Contract):
+class EntryLink(Contract):
     """A stored link: its kind, its target and the target's pinned revision."""
 
     kind: LinkKind
@@ -216,8 +216,8 @@ class EntryView(EntrySummary):
 
     statement: str
     fields: dict[str, Any]
-    links: list[Link]
-    incoming: list[Link]
+    links: list[EntryLink]
+    incoming: list[EntryLink]
     """Links other entries' current revisions hold to it, in the order those entries were
     made: as many as 200 from the one a read starts at."""
     incoming_total: int
@@ -232,7 +232,7 @@ class EntryPage(Contract):
     next_after: str | None
 
 
-class RevisionSummary(Contract):
+class EntryRevision(Contract):
     revision: int
     title: str
     status: str
@@ -248,7 +248,7 @@ class RevisionSummary(Contract):
 class EntryHistory(Contract):
     entry_id: str
     handle: str
-    revisions: list[RevisionSummary]
+    revisions: list[EntryRevision]
     next_before: int | None
 
 

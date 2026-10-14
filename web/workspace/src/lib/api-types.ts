@@ -105,6 +105,72 @@ export interface EditReceipt {
   receipt: PlanReceipt;
 }
 
+export interface EntryHistory {
+  entry_id: string;
+  handle: string;
+  revisions: EntryRevision[];
+  next_before: number | null;
+}
+
+/** A stored link: its kind, its target and the target's pinned revision. */
+export interface EntryLink {
+  kind: "answers" | "assumes" | "builds_on" | "restates" | "compares_to" | "supersedes" | "dominates" | "split_into" | "affects" | "concerns";
+  target: "entry" | "finding" | "block";
+  target_id: string;
+  revision: number | null;
+  block: string | null;
+  note: string | null;
+  handle: string | null;
+}
+
+export interface EntryPage {
+  entries: EntrySummary[];
+  next_after: string | null;
+}
+
+export interface EntryRevision {
+  revision: number;
+  title: string;
+  status: string;
+  statement_changed: boolean;
+  author: Record<string, unknown>;
+  reason: string;
+  operation_id: string;
+  provenance: Record<string, unknown> | null;
+  created: string;
+}
+
+/** An entry as a list shows it. */
+export interface EntrySummary {
+  entry_id: string;
+  handle: string;
+  type: "issue" | "claim" | "result" | "assumption" | "decision" | "task" | "reference";
+  origin: "published" | "project" | null;
+  revision: number;
+  title: string;
+  status: string;
+  updated: string;
+}
+
+/** An entry at one revision, with what it says, its outgoing links and who wrote it, and (at its current revision) the links other entries hold to it. */
+export interface EntryView {
+  entry_id: string;
+  handle: string;
+  type: "issue" | "claim" | "result" | "assumption" | "decision" | "task" | "reference";
+  origin: "published" | "project" | null;
+  revision: number;
+  title: string;
+  status: string;
+  updated: string;
+  statement: string;
+  fields: Record<string, unknown>;
+  links: EntryLink[];
+  incoming: EntryLink[];
+  head: number;
+  author: Record<string, unknown>;
+  reason: string;
+}
+
 export interface EnvironmentView {
   environment_id: string;
   default: boolean;
@@ -148,6 +214,27 @@ export interface KernelInfo {
   start_revision: number | null;
   current_revision: number | null;
   revision_status: "current" | "predates" | "unknown";
+}
+
+/** One ledger entry at one revision. */
+export interface LedgerEntry {
+  project_id: string;
+  observed_at: string;
+  entry: EntryView;
+}
+
+/** A page of a ledger entry's revisions. */
+export interface LedgerHistory {
+  project_id: string;
+  observed_at: string;
+  history: EntryHistory;
+}
+
+/** A page of a project's ledger entries. */
+export interface LedgerListing {
+  project_id: string;
+  observed_at: string;
+  page: EntryPage;
 }
 
 export interface LicenseObservation {

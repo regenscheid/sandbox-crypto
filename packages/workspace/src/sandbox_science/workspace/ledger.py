@@ -1,0 +1,139 @@
+# SPDX-License-Identifier: MIT
+"""The project ledger, read-only, for the GUI's ledger and board views (LG-34).
+
+``GET /api/v0/projects/{project}/ledger`` answers a page of entries, oldest first, each
+with its handle, type, status and title; ``type`` and ``status`` filter, ``after`` and
+``limit`` page. ``GET …/ledger/{entry}`` answers an entry at its current revision, or at
+``revision``, with its links and the links other entries hold to it; ``GET
+…/ledger/{entry}/history`` its revisions, newest first, before ``before``. An entry is
+named by its ID or its handle. Reads go through the read-only control store.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import re
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Final
+
+from aiohttp import web
+from pydantic import AwareDatetime
+
+from sandbox_science.contracts import Contract, ErrorKind, Identifier
+from sandbox_science.orchestrator.ledger import EntryHistory, EntryPage, EntryView, Ledger
+from sandbox_science.orchestrator.projects import ProjectError
+
+from .context import CONTEXT, identifier, json_answer
+
+PATH: Final = "/api/v0/projects/{project}/ledger"
+_ENTRY: Final = re.compile(r"entry-[0-9a-f]{24}|(?:I|C|R|A|D|T|REF)-[1-9][0-9]{0,8}")
+_NUMBER: Final = re.compile(r"[1-9][0-9]{0,8}")
+_WORD: Final = re.compile(r"[a-z_]{1,32}")
+
+
+class LedgerListing(Contract):
+    """A page of a project's ledger entries."""
+
+    project_id: Identifier
+    observed_at: AwareDatetime
+    page: EntryPage
+
+
+class LedgerEntry(Contract):
+    """One ledger entry at one revision."""
+
+    project_id: Identifier
+    observed_at: AwareDatetime
+    entry: EntryView
+
+
+class LedgerHistory(Contract):
+    """A page of a ledger entry's revisions."""
+
+    project_id: Identifier
+    observed_at: AwareDatetime
+    history: EntryHistory
+
+
+def add_routes(app: web.Application) -> None:
+    app.router.add_get(PATH, listing)
+    app.router.add_get(PATH + "/{entry}", entry)
+    app.router.add_get(PATH + "/{entry}/history", history)
+
+
+def _query(request: web.Request, allowed: set[str]) -> dict[str, str]:
+    query = dict(request.query)
+    if set(query) - allowed or len(query) != len(request.query) or request.can_read_body:
+        raise ProjectError(
+            ErrorKind.INVALID_REQUEST, f"the ledger read takes only {', '.join(sorted(allowed))}"
+        )
+    return query
+
+
+def _match(pattern: re.Pattern[str], value: str | None, what: str) -> str | None:
+    if value is not None and pattern.fullmatch(value) is None:
+        raise ProjectError(ErrorKind.INVALID_REQUEST, f"invalid {what}")
+    return value
+
+
+def _entry(request: web.Request) -> str:
+    value = _match(_ENTRY, request.match_info["entry"], "ledger entry")
+    assert value is not None  # noqa: S101 - a path part is always there
+    return value
+
+
+async def _answer(
+    request: web.Request, project: str, read: Callable[[Ledger], str]
+) -> web.Response:
+    context = request.app[CONTEXT]
+
+    def view() -> str:
+        context.projects.get(project)  # an unknown project is not found
+        return read(Ledger(context.documents))
+
+    async with asyncio.timeout(context.timeouts.call):
+        return json_answer(await asyncio.to_thread(view))
+
+
+async def listing(request: web.Request) -> web.Response:
+    project = identifier(request, "project")
+    query = _query(request, {"type", "status", "after", "limit"})
+    kind = _match(_WORD, query.get("type"), "entry type")
+    status = _match(_WORD, query.get("status"), "status")
+    after = _match(_ENTRY, query.get("after"), "cursor")
+    limit = int(_match(_NUMBER, query.get("limit", "50"), "limit") or 50)
+
+    def read(ledger: Ledger) -> str:
+        page = ledger.entries(project, kind=kind, status=status, after=after, limit=limit)
+        return LedgerListing(
+            project_id=project, observed_at=datetime.now(UTC), page=page
+        ).model_dump_json()
+
+    return await _answer(request, project, read)
+
+
+async def entry(request: web.Request) -> web.Response:
+    project, reference = identifier(request, "project"), _entry(request)
+    raw = _match(_NUMBER, _query(request, {"revision"}).get("revision"), "revision")
+
+    def read(ledger: Ledger) -> str:
+        found = ledger.entry(project, reference, None if raw is None else int(raw))
+        return LedgerEntry(
+            project_id=project, observed_at=datetime.now(UTC), entry=found
+        ).model_dump_json()
+
+    return await _answer(request, project, read)
+
+
+async def history(request: web.Request) -> web.Response:
+    project, reference = identifier(request, "project"), _entry(request)
+    raw = _match(_NUMBER, _query(request, {"before"}).get("before"), "revision")
+
+    def read(ledger: Ledger) -> str:
+        found = ledger.history(project, reference, before=None if raw is None else int(raw))
+        return LedgerHistory(
+            project_id=project, observed_at=datetime.now(UTC), history=found
+        ).model_dump_json()
+
+    return await _answer(request, project, read)
