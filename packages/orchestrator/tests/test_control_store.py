@@ -8,6 +8,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -390,3 +391,172 @@ def test_a_failing_after_commit_action_is_logged_and_the_others_still_run(
     with store.read() as tx:
         assert tx.sql.execute("SELECT project FROM job_runs").fetchall() == [("kept",)]
     store.close()
+
+
+def _v3_with_a_thread(path: Path, monkeypatch: pytest.MonkeyPatch, anchor: str) -> None:
+    """A version-3 store, from before the comment checks, with one comment thread."""
+    from sandbox_science.orchestrator.documents import USER, DocumentStore
+
+    with monkeypatch.context() as old:
+        old.setattr(migrations, "MIGRATIONS", migrations.MIGRATIONS[:2])
+        old.setattr(migrations, "VERSION", migrations.BASELINE + 1)
+        documents = DocumentStore(path)
+        doc = documents.create("p", name="n", title="N", text="x\n", author=USER).document_id
+        with documents.control.write() as tx:
+            tx.sql.execute(
+                "INSERT INTO annotation_threads VALUES ('ann-1', ?, ?, '{}', 1.0)", (doc, anchor)
+            )
+            # A child row: rebuilding its parent table must keep its foreign key.
+            tx.sql.execute(
+                "INSERT INTO annotation_entries VALUES "
+                "('cmt-1', 'ann-1', 1, 'create', '{}', 'A comment.', '{}', 1.0)"
+            )
+        documents.close()
+
+
+def test_the_comment_checks_keep_rows_triggers_and_views(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "control.sqlite3"
+    _v3_with_a_thread(path, monkeypatch, "{}")
+    before = sqlite3.connect(path)
+    kept = before.execute("SELECT rowid, * FROM annotation_threads").fetchall()
+    before.close()
+    _store(path).initialize()
+    db = sqlite3.connect(path)
+    assert db.execute("PRAGMA user_version").fetchone() == (migrations.VERSION,)
+    assert db.execute("SELECT rowid, * FROM annotation_threads").fetchall() == kept
+    assert db.execute("SELECT entry_id, thread_id FROM annotation_entries").fetchall() == [
+        ("cmt-1", "ann-1")
+    ]
+    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+        db.execute("UPDATE annotation_threads SET anchor = '[]'")
+    with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+        db.execute("INSERT INTO annotation_threads SELECT 'ann-2', document_id, 'no json', "
+                   "'{}', 1.0 FROM annotation_threads")  # fmt: skip
+    assert db.execute("SELECT count(*) FROM math_current_checks").fetchone() == (0,)
+    assert db.execute("PRAGMA foreign_key_check").fetchall() == []
+    db.close()
+
+
+def test_a_row_the_comment_checks_refuse_leaves_the_store_at_version_3(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "control.sqlite3"
+    _v3_with_a_thread(path, monkeypatch, "not json")
+    db = sqlite3.connect(path)
+    schema = db.execute("SELECT type, name, sql FROM sqlite_master ORDER BY name").fetchall()
+    db.close()
+    with pytest.raises(ControlError) as refused:
+        _store(path).initialize()
+    assert refused.value.kind == "unavailable"
+    message = refused.value.message
+    assert "stays at version 3" in message
+    assert "annotation_threads" in message
+    assert "CHECK" in message
+    assert "export" in message
+    db = sqlite3.connect(path)
+    assert db.execute("PRAGMA user_version").fetchone() == (migrations.BASELINE + 1,)
+    assert db.execute("SELECT anchor FROM annotation_threads").fetchall() == [("not json",)]
+    assert db.execute("SELECT type, name, sql FROM sqlite_master ORDER BY name").fetchall() == (
+        schema
+    )
+    db.close()
+
+
+def _in_memory() -> sqlite3.Connection:
+    db = sqlite3.connect(":memory:", isolation_level=None)
+    db.execute("PRAGMA foreign_keys=OFF")  # as migrate() runs
+    db.execute("BEGIN")
+    return db
+
+
+def test_rebuild_keeps_another_tables_trigger_that_names_the_table() -> None:
+    db = _in_memory()
+    db.execute("CREATE TABLE b (id TEXT PRIMARY KEY, n INTEGER) STRICT")
+    db.execute("CREATE TABLE a (id TEXT PRIMARY KEY) STRICT")
+    db.execute("CREATE TRIGGER a_ins AFTER INSERT ON a BEGIN INSERT INTO b VALUES (new.id, 1); END")
+    db.execute("INSERT INTO b VALUES ('x', 1)")
+    migrations.rebuild(
+        migrations.Schema(db),
+        "b",
+        "CREATE TABLE b (id TEXT PRIMARY KEY, n INTEGER CHECK (n > 0)) STRICT",
+    )
+    db.execute("INSERT INTO a VALUES ('y')")
+    assert db.execute("SELECT count(*) FROM b").fetchone() == (2,)
+    db.close()
+
+
+def test_rebuild_names_the_row_a_new_foreign_key_refuses() -> None:
+    db = _in_memory()
+    db.execute("CREATE TABLE parent (id TEXT PRIMARY KEY) STRICT")
+    db.execute("CREATE TABLE child (parent TEXT NOT NULL) STRICT")
+    db.execute("INSERT INTO child VALUES ('missing')")
+    with pytest.raises(migrations.RefusedRowError, match="row 1 of child names no row of parent"):
+        migrations.rebuild(
+            migrations.Schema(db),
+            "child",
+            "CREATE TABLE child (parent TEXT NOT NULL REFERENCES parent(id)) STRICT",
+        )
+    db.close()
+
+
+def test_foreign_keys_are_on_for_the_writer_after_a_migration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "control.sqlite3"
+    _v3_with_a_thread(path, monkeypatch, "{}")
+    store = _store(path)
+    store.initialize()
+    with store.write() as tx:
+        assert tx.sql.execute("PRAGMA foreign_keys").fetchone() == (1,)
+    with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"), store.write() as tx:
+        tx.sql.execute(
+            "INSERT INTO annotation_threads VALUES ('ann-2', 'doc-missing', '{}', '{}', 1.0)"
+        )
+    store.close()
+
+
+def test_a_writer_that_opens_during_a_migration_waits_and_does_not_migrate_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "control.sqlite3"
+    _v3_with_a_thread(path, monkeypatch, "{}")
+    started, release = threading.Event(), threading.Event()
+    calls: list[str] = []
+    step = migrations.MIGRATIONS[2]
+
+    def slow(schema: migrations.Schema) -> None:
+        calls.append(threading.current_thread().name)
+        step(schema)
+        started.set()
+        release.wait(5)
+
+    monkeypatch.setattr(
+        migrations, "MIGRATIONS", (*migrations.MIGRATIONS[:2], slow, *migrations.MIGRATIONS[3:])
+    )
+    first = threading.Thread(target=lambda: _store(path).initialize(), name="first")
+    first.start()
+    assert started.wait(5)
+    # A reader racing the migration sees the old version, and is told to open a writer.
+    with pytest.raises(ControlError) as refused, _store(path, readonly=True).read():
+        pass
+    assert refused.value.kind == "unavailable"
+    seen: list[int] = []
+
+    def second() -> None:
+        store = _store(path)
+        store.initialize()
+        with store.read() as tx:
+            seen.append(tx.sql.execute("PRAGMA user_version").fetchone()[0])
+        store.close()
+
+    waiting = threading.Thread(target=second, name="second")
+    waiting.start()
+    time.sleep(0.3)
+    assert not seen  # it waits on the first writer's transaction
+    release.set()
+    first.join(10)
+    waiting.join(10)
+    assert seen == [migrations.VERSION]
+    assert calls == ["first"]

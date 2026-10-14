@@ -87,9 +87,10 @@ document, 32-span steps, the eight-step live yield and existing global logical
 attempt/observation/ownership budgets. Quotas hold backlog visibly without
 evicting unresolved evidence or vetoing ordinary annotation saves. Canonical
 bounded annotation history retains its existing append-only storage contract;
-automatic compaction is absent. Metadata is prefix-bounded before decoding, even
-for damaged parent/queue/body rows. Complete body/maps are read one source at a
-time under the existing 16 KiB body and 16 MiB parsed-map bounds.
+automatic compaction is absent. The comment tables check bodies (16 KiB), maps
+(16 MiB), IDs, hashes and counters when they are written, and reads take them as
+they are ([living documents](LIVING-DOCUMENTS.md#the-control-store)). Complete
+body/maps are read one source at a time.
 
 Comment notices share closing-only delivery with document math and terminal
 reviewer findings, and the same maximum two author response rounds. Successful

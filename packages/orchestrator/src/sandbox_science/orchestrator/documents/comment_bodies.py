@@ -10,10 +10,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import sqlite3
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any
 
 from .blocks import parse
 from .engine import attach, block_map
@@ -44,21 +43,14 @@ def parent(
 ) -> tuple[str, str, str]:
     """Derive scope from the immutable original, never the derived queue."""
     row = db.execute(
-        "SELECT substr(CAST(t.thread_id AS BLOB),1,129),"
-        "substr(CAST(d.document_id AS BLOB),1,129),"
-        "substr(CAST(d.project_id AS BLOB),1,129) FROM annotation_entries e "
+        "SELECT t.thread_id,d.document_id,d.project_id FROM annotation_entries e "
         "JOIN annotation_threads t ON t.thread_id=e.thread_id JOIN documents d "
         "ON d.document_id=t.document_id WHERE e.entry_id=? AND e.kind IN ('create','reply')",
         (entry,),
     ).fetchone()
     if row is None:
         raise DocumentError(NOT_FOUND, "no such original comment source")
-    if any(not isinstance(v, bytes) or not 1 <= len(v) <= 128 for v in row):
-        raise DocumentError(INTERNAL, "retained comment parent exceeds its bounds")
-    try:
-        thread, actual_document, actual_project = (v.decode() for v in row)
-    except UnicodeDecodeError:
-        raise DocumentError(INTERNAL, "retained comment parent is invalid") from None
+    thread, actual_document, actual_project = row
     if (document is not None and document != actual_document) or (
         project is not None and project != actual_project
     ):
@@ -67,64 +59,27 @@ def parent(
 
 
 def read(db: sqlite3.Connection, entry: str, revision: int | None = None) -> Json:
-    """Clip persisted bytes before decoding, even for a damaged control store."""
+    """A body revision as it was written (the table checks its values then)."""
     row = db.execute(
-        "SELECT revision,coalesce(substr(CAST(body AS BLOB),1,16385),X''),"
-        "substr(CAST(sha256 AS BLOB),1,65),substr(CAST(block_map AS BLOB),1,?),"
-        "substr(CAST(author AS BLOB),1,8193),substr(CAST(owners AS BLOB),1,?),"
-        "next_block,next_span,substr(CAST(history_entry AS BLOB),1,129) "
-        "FROM annotation_body_revisions WHERE entry_id=? AND (? IS NULL OR revision=?) "
-        "ORDER BY revision DESC LIMIT 1",
-        (MAP_BYTES + 1, MAP_BYTES + 1, entry, revision, revision),
+        "SELECT revision,body,sha256,block_map,author,owners,next_block,next_span,"
+        "history_entry FROM annotation_body_revisions WHERE entry_id=? "
+        "AND (? IS NULL OR revision=?) ORDER BY revision DESC LIMIT 1",
+        (entry, revision, revision),
     ).fetchone()
     if row is None:
         raise DocumentError(NOT_FOUND, "no such immutable comment body revision")
-    try:
-        if (
-            type(row[0]) is not int
-            or not 1 <= row[0] <= 999999999
-            or len(row[1]) > 16384
-            or len(row[2]) != 64
-            or re.fullmatch(b"[0-9a-f]{64}", row[2]) is None
-            or len(row[3]) > MAP_BYTES
-            or len(row[4]) > 8192
-            or len(row[5]) > MAP_BYTES
-            or any(type(n) is not int or not 0 <= n <= 999999999 for n in row[6:8])
-            or len(row[8]) > 128
-            or hashlib.sha256(row[1]).hexdigest().encode() != row[2]
-        ):
-            raise ValueError
-        raw_map: object = json.loads(row[3])
-        raw_owners: object = json.loads(row[5])
-        if not isinstance(raw_map, dict) or not isinstance(raw_owners, dict):
-            raise ValueError
-        mapped, owners = cast(Json, raw_map), cast(Json, raw_owners)
-        for raw_proof in owners.values():
-            if not isinstance(raw_proof, dict):
-                raise ValueError
-            proof = cast(Json, raw_proof)
-            if set(proof) != {"revision", "author"}:
-                raise ValueError
-            if proof["revision"] is not None and (
-                type(proof["revision"]) is not int or not 1 <= proof["revision"] <= row[0]
-            ):
-                raise ValueError
-            if proof["author"] is not None:
-                Author.model_validate(proof["author"])
-        return {
-            "entry_id": entry,
-            "revision": row[0],
-            "body": row[1].decode(),
-            "sha256": row[2].decode(),
-            "block_map": mapped,
-            "author": Author.model_validate_json(row[4]).model_dump(mode="json"),
-            "owners": owners,
-            "next_block": row[6],
-            "next_span": row[7],
-            "history_entry": row[8].decode(),
-        }
-    except (ValueError, TypeError, KeyError, RecursionError):
-        raise DocumentError(INTERNAL, "retained comment body exceeds its exact schema") from None
+    return {
+        "entry_id": entry,
+        "revision": row[0],
+        "body": row[1],
+        "sha256": row[2],
+        "block_map": json.loads(row[3]),
+        "author": json.loads(row[4]),
+        "owners": json.loads(row[5]),
+        "next_block": row[6],
+        "next_span": row[7],
+        "history_entry": row[8],
+    }
 
 
 def current(
@@ -137,41 +92,24 @@ def current(
     """
     canonical_thread, _, _ = parent(db, entry)
     row = db.execute(
-        "SELECT substr(CAST(e.thread_id AS BLOB),1,129),e.number,"
-        "substr(CAST(e.author AS BLOB),1,8193),"
-        "coalesce(substr(CAST(e.body AS BLOB),1,16385),X'') FROM annotation_entries e "
+        "SELECT e.thread_id,e.number,e.author FROM annotation_entries e "
         "WHERE e.entry_id=? AND e.kind IN ('create','reply')",
         (entry,),
     ).fetchone()
     if row is None:
         raise DocumentError(NOT_FOUND, "name an original comment or reply entry")
-    if (
-        re.fullmatch(b"ann-[0-9a-f]{24}", row[0]) is None
-        or type(row[1]) is not int
-        or not 1 <= row[1] <= 999999999
-        or len(row[2]) > 8192
-        or len(row[3]) > 16384
-    ):
-        raise DocumentError(INTERNAL, "retained original comment exceeds its bounds")
-    thread = row[0].decode()
+    thread = row[0]
     if thread != canonical_thread:
         raise DocumentError(INTERNAL, "comment parent changed")
-    try:
-        original = Author.model_validate_json(row[2]).model_dump(mode="json")
-    except ValueError:
-        raise DocumentError(INTERNAL, "retained original comment author is invalid") from None
+    original = json.loads(row[2])
     latest = db.execute(
-        "SELECT substr(CAST(entry_id AS BLOB),1,129),coalesce(substr(CAST(body AS "
-        "BLOB),1,16385),X'') "
-        "FROM annotation_entries WHERE thread_id=? AND (entry_id=? OR "
+        "SELECT entry_id,body FROM annotation_entries WHERE thread_id=? AND (entry_id=? OR "
         "(kind='edit' AND ?=1) OR (kind='edit_body' AND json_extract(payload,'$.entry')=?)) "
         "ORDER BY number DESC LIMIT 1",
         (thread, entry, row[1], entry),
     ).fetchone()
     assert latest is not None  # noqa: S101 - original is in its own lineage
-    if len(latest[0]) > 128 or len(latest[1]) > 16384:
-        raise DocumentError(INTERNAL, "retained comment lineage exceeds its bounds")
-    body = latest[1].decode()
+    latest_entry, body = latest
     saved = db.execute(
         "SELECT 1 FROM annotation_body_revisions WHERE entry_id=? LIMIT 1", (entry,)
     ).fetchone()
@@ -180,38 +118,26 @@ def current(
             result = read(db, entry)
         else:
             header = db.execute(
-                "SELECT revision,substr(CAST(sha256 AS BLOB),1,65),"
-                "substr(CAST(author AS BLOB),1,8193),"
-                "substr(CAST(history_entry AS BLOB),1,129),CASE WHEN "
-                "json_type(block_map,'$.held')='text' THEN substr(CAST("
-                "json_extract(block_map,'$.held') AS BLOB),1,1001) ELSE NULL END "
-                "FROM annotation_body_revisions "
+                "SELECT revision,sha256,author,history_entry,CASE WHEN "
+                "json_type(block_map,'$.held')='text' THEN json_extract(block_map,'$.held') "
+                "ELSE NULL END FROM annotation_body_revisions "
                 "WHERE entry_id=? ORDER BY revision DESC LIMIT 1",
                 (entry,),
             ).fetchone()
             assert header is not None  # noqa: S101 - saved above
-            if (
-                type(header[0]) is not int
-                or not 1 <= header[0] <= 999999999
-                or re.fullmatch(b"[0-9a-f]{64}", header[1]) is None
-                or len(header[2]) > 8192
-                or len(header[3]) > 128
-                or (header[4] is not None and len(header[4]) > 1000)
-            ):
-                raise DocumentError(INTERNAL, "retained body header exceeds its bounds")
             result: Json = {
                 "entry_id": entry,
                 "revision": header[0],
-                "sha256": header[1].decode(),
-                "author": Author.model_validate_json(header[2]).model_dump(mode="json"),
-                "history_entry": header[3].decode(),
+                "sha256": header[1],
+                "author": json.loads(header[2]),
+                "history_entry": header[3],
                 "body": body,
             }
             if header[4] is not None:
-                result["held"] = header[4].decode()
+                result["held"] = header[4]
         if full and result["block_map"].get("held"):
             result["held"] = result["block_map"]["held"]
-        if result["history_entry"] != latest[0].decode() or result["sha256"] != sha(body):
+        if result["history_entry"] != latest_entry or result["sha256"] != sha(body):
             if not allow_legacy:
                 raise DocumentError(
                     CONFLICT, "a legacy writer changed this body; math checks are held"
@@ -223,7 +149,7 @@ def current(
                 block_map=None,
                 owners={},
                 author=None,
-                history_entry=latest[0].decode(),
+                history_entry=latest_entry,
                 held="Legacy writer changed the body; unchanged ownership is unknown",
             )
     else:
@@ -236,7 +162,7 @@ def current(
             "owners": {},
             "next_block": 0,
             "next_span": 0,
-            "history_entry": latest[0].decode(),
+            "history_entry": latest_entry,
             "author": None,
         }
     return {
@@ -381,16 +307,11 @@ def commit(
     prepared: PreparedBody,
 ) -> None:
     row = db.execute(
-        "SELECT revision,substr(CAST(sha256 AS BLOB),1,65) "
-        "FROM annotation_body_revisions WHERE entry_id=? "
+        "SELECT revision,sha256 FROM annotation_body_revisions WHERE entry_id=? "
         "ORDER BY revision DESC LIMIT 1",
         (entry,),
     ).fetchone()
-    if row != (
-        (prepared.base, prepared.base_sha256.encode() if prepared.base_sha256 else None)
-        if prepared.base
-        else None
-    ):
+    if row != ((prepared.base, prepared.base_sha256) if prepared.base else None):
         raise DocumentError(CONFLICT, "the comment body changed during preparation")
     revision = prepared.base + 1
     db.execute(

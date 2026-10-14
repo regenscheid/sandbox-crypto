@@ -7,7 +7,6 @@ actual-work cancellation ownership, lifecycle and closing delivery are shared.
 
 from __future__ import annotations
 
-import re
 import sqlite3
 from typing import TYPE_CHECKING, Any, cast
 
@@ -27,8 +26,7 @@ Json = dict[str, Any]
 
 def metadata(db: sqlite3.Connection, check: str) -> Json | None:
     row = db.execute(
-        "SELECT substr(CAST(c.entry_id AS BLOB),1,129),c.macro_revision,"
-        "substr(CAST(c.macro_sha256 AS BLOB),1,65),CASE WHEN "
+        "SELECT c.entry_id,c.macro_revision,c.macro_sha256,CASE WHEN "
         "json_type(b.block_map,'$.identity_floor')='integer' THEN "
         "json_extract(b.block_map,'$.identity_floor') ELSE NULL END,j.revision,"
         "t.document_id=j.document AND original.kind IN ('create','reply') "
@@ -41,22 +39,12 @@ def metadata(db: sqlite3.Connection, check: str) -> Json | None:
     ).fetchone()
     if row is None:
         return None
-    if (
-        len(row[0]) > 128
-        or re.fullmatch(b"cmt-[0-9a-f]{24}", row[0]) is None
-        or type(row[1]) is not int
-        or not 1 <= row[1] <= 999999999
-        or re.fullmatch(b"[0-9a-f]{64}", row[2]) is None
-        or type(row[3]) is not int
-        or type(row[4]) is not int
-        or not 1 <= row[3] <= row[4] <= 999999999
-        or row[5] != 1
-    ):
-        raise DocumentError(INTERNAL, "retained comment math identity exceeds its bounds")
+    if row[3] is None or not row[3] <= row[4] or row[5] != 1:
+        raise DocumentError(INTERNAL, "comment math check does not bind its comment body")
     return {
-        "entry_id": row[0].decode(),
+        "entry_id": row[0],
         "macro_revision": row[1],
-        "macro_sha256": row[2].decode(),
+        "macro_sha256": row[2],
         "identity_floor": row[3],
     }
 
@@ -68,8 +56,7 @@ class CommentMath:
     def claim(self, db: sqlite3.Connection, project: str, owner: str, now: float) -> str | None:
         validate_sources(db, project)
         row = db.execute(
-            "SELECT substr(CAST(s.entry_id AS BLOB),1,129),"
-            "substr(CAST(s.document AS BLOB),1,129),CASE WHEN s.completed<s.target "
+            "SELECT s.entry_id,s.document,CASE WHEN s.completed<s.target "
             "THEN s.completed+1 ELSE s.target END,d.head FROM comment_math_sources s "
             "JOIN documents d ON d.document_id=s.document JOIN annotation_entries original "
             "ON original.entry_id=s.entry_id JOIN annotation_threads t "
@@ -85,13 +72,7 @@ class CommentMath:
         ).fetchone()
         if row is None:
             return None
-        if (
-            len(row[0]) > 128
-            or len(row[1]) > 128
-            or any(type(n) is not int or not 1 <= n <= 999999999 for n in row[2:])
-        ):
-            raise DocumentError(INTERNAL, "retained comment math cursor exceeds its bounds")
-        entry, document, revision, macro_revision = row[0].decode(), row[1].decode(), row[2], row[3]
+        entry, document, revision, macro_revision = row
         if db.execute("SELECT count(*) FROM math_jobs").fetchone()[0] >= self.jobs.limits.jobs:
             db.execute(
                 "UPDATE comment_math_sources SET blocked='math job history quota reached' "
@@ -100,28 +81,23 @@ class CommentMath:
             )
             return None
         hashes = db.execute(
-            "SELECT substr(CAST(b.sha256 AS BLOB),1,65),substr(CAST(r.sha256 AS BLOB),1,65),"
-            "CASE WHEN json_type(b.block_map,'$.held')='text' THEN substr(CAST("
-            "json_extract(b.block_map,'$.held') AS BLOB),1,1001) ELSE NULL END "
+            "SELECT b.sha256,r.sha256,CASE WHEN json_type(b.block_map,'$.held')='text' "
+            "THEN json_extract(b.block_map,'$.held') ELSE NULL END "
             "FROM annotation_body_revisions b JOIN revisions r ON r.document_id=? "
             "AND r.number=? WHERE b.entry_id=? AND b.revision=?",
             (document, macro_revision, entry, revision),
         ).fetchone()
-        if (
-            hashes is None
-            or any(re.fullmatch(b"[0-9a-f]{64}", h) is None for h in hashes[:2])
-            or (hashes[2] is not None and len(hashes[2]) > 1000)
-        ):
-            raise DocumentError(INTERNAL, "queued comment revision or macro context is invalid")
+        if hashes is None:
+            raise DocumentError(INTERNAL, "queued comment revision or macro context is missing")
         check = new_id("math")
         db.execute(
             "INSERT INTO math_jobs(check_id,document,revision,source_sha256,state,owner,"
             "lease_until,created) VALUES(?,?,?,?,'running',?,?,?)",
-            (check, document, revision, hashes[0].decode(), owner, now + LEASE, now),
+            (check, document, revision, hashes[0], owner, now + LEASE, now),
         )
         db.execute(
             "INSERT INTO math_comment_jobs VALUES(?,?,?,?)",
-            (check, entry, macro_revision, hashes[1].decode()),
+            (check, entry, macro_revision, hashes[1]),
         )
         from .project_macros import pin
 
@@ -138,7 +114,7 @@ class CommentMath:
                 "UPDATE math_jobs SET state='finished',unavailable=1,reason=?,ended=?,"
                 "owner=NULL,lease_until=NULL "
                 "WHERE check_id=?",
-                (hashes[2].decode(), now, check),
+                (hashes[2], now, check),
             )
             db.execute(
                 "UPDATE comment_math_sources SET completed=max(completed,?) WHERE entry_id=?",
@@ -148,7 +124,7 @@ class CommentMath:
 
     def fence(self, db: sqlite3.Connection, check: str, owner: str, meta: Json) -> tuple[Any, ...]:
         row = db.execute(
-            "SELECT substr(CAST(j.document AS BLOB),1,129),j.revision,j.cursor "
+            "SELECT j.document,j.revision,j.cursor "
             "FROM math_jobs j JOIN math_comment_jobs c USING(check_id) "
             "JOIN annotation_body_revisions b ON b.entry_id=c.entry_id AND b.revision=j.revision "
             "JOIN comment_math_sources s ON s.entry_id=c.entry_id "
@@ -163,17 +139,10 @@ class CommentMath:
         ).fetchone()
         if row is None:
             raise DocumentError(CONFLICT, "comment math ownership or source pin changed")
-        bodies.parent(db, meta["entry_id"], row[0].decode())
-        if (
-            len(row[0]) > 128
-            or type(row[1]) is not int
-            or not 1 <= row[1] <= 999999999
-            or type(row[2]) is not int
-            or not 0 <= row[2] <= 20000
-            or metadata(db, check) != meta
-        ):
-            raise DocumentError(INTERNAL, "retained comment math fence exceeds its bounds")
-        return row[0].decode(), row[1], row[2], None
+        bodies.parent(db, meta["entry_id"], row[0])
+        if metadata(db, check) != meta:
+            raise DocumentError(INTERNAL, "comment math check no longer binds its comment body")
+        return row[0], row[1], row[2], None
 
     def load(self, job: Json) -> Mapped:
         with self.documents.control.read() as tx:
@@ -275,8 +244,7 @@ def reconcile(db: sqlite3.Connection, project: str) -> None:
 def queue(db: sqlite3.Connection, project: str) -> list[Json]:
     validate_sources(db, project)
     rows = db.execute(
-        "SELECT substr(CAST(s.document AS BLOB),1,129),substr(CAST(s.entry_id AS BLOB),1,129),"
-        "s.target,s.completed,substr(CAST(s.blocked AS BLOB),1,1001),EXISTS(SELECT "
+        "SELECT s.document,s.entry_id,s.target,s.completed,s.blocked,EXISTS(SELECT "
         "1 FROM math_jobs j "
         "JOIN math_comment_jobs c USING(check_id) WHERE c.entry_id=s.entry_id AND "
         "j.state='running'),"
@@ -289,32 +257,20 @@ def queue(db: sqlite3.Connection, project: str) -> list[Json]:
         "BY s.rowid LIMIT 21",
         (project,),
     )
-    values: list[Json] = []
-    for document, entry, target, completed, blocked, running, macro, head in rows:
-        if (
-            len(document) > 128
-            or len(entry) > 128
-            or (blocked is not None and len(blocked) > 1000)
-            or any(
-                type(n) is not int or not 0 <= n <= 999999999
-                for n in (target, completed, macro, head)
-            )
-        ):
-            raise DocumentError(INTERNAL, "retained comment math queue exceeds its bounds")
-        values.append(
-            {
-                "document": document.decode(),
-                "entry": entry.decode(),
-                "kind": "comment",
-                "target": target,
-                "completed": completed,
-                "blocked": blocked.decode() if blocked else None,
-                "running": running,
-                "macro_revision": macro,
-                "macro_target": head,
-            }
-        )
-    return values
+    return [
+        {
+            "document": document,
+            "entry": entry,
+            "kind": "comment",
+            "target": target,
+            "completed": completed,
+            "blocked": blocked or None,
+            "running": running,
+            "macro_revision": macro,
+            "macro_target": head,
+        }
+        for document, entry, target, completed, blocked, running, macro, head in rows
+    ]
 
 
 def validate_sources(db: sqlite3.Connection, project: str) -> None:

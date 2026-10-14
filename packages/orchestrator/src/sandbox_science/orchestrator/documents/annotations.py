@@ -299,6 +299,22 @@ class Annotations:
     def __init__(self, store: DocumentStore) -> None:
         self.store = store
 
+    @staticmethod
+    def _replay(
+        db: sqlite3.Connection, project: str, author: Author, operation: str, fingerprint: str
+    ) -> Json | None:
+        """The first result of a change made under ``operation``, if it was made."""
+        row = db.execute(
+            "SELECT fingerprint,result FROM annotation_operations WHERE project_id=? "
+            "AND actor=? AND operation_id=?",
+            (project, author.actor, operation),
+        ).fetchone()
+        if row is None:
+            return None
+        if row[0] != fingerprint:
+            raise DocumentError(CONFLICT, "operation ID already names another annotation change")
+        return {**json.loads(row[1]), "replayed": True}
+
     def _thread(
         self, db: sqlite3.Connection, document: str, thread: str, before: int | None = None
     ) -> Json:
@@ -544,22 +560,9 @@ class Annotations:
         fingerprint = digest(dump([info.document_id, value.model_dump(mode="json")]))
         with self.store.control.read() as tx:
             db = tx.sql
-            replay = db.execute(
-                "SELECT substr(CAST(fingerprint AS BLOB),1,65),"
-                "substr(CAST(result AS BLOB),1,16385) "
-                "FROM annotation_operations WHERE project_id=? AND actor=? AND operation_id=?",
-                (project, author.actor, value.operation_id),
-            ).fetchone()
+            replay = self._replay(db, project, author, value.operation_id, fingerprint)
             if replay is not None:
-                if replay[0] != fingerprint.encode():
-                    raise DocumentError(
-                        CONFLICT, "operation ID already names another annotation change"
-                    )
-                if len(replay[1]) > 16384:
-                    raise DocumentError(
-                        INVALID_REQUEST, "retained annotation outcome exceeds its bound"
-                    )
-                return {**json.loads(replay[1]), "replayed": True}
+                return replay
         body_parent: Json | None = None
         body_entry: str | None = None
         if isinstance(value, EditBody) or (
@@ -579,13 +582,12 @@ class Annotations:
                     body_entry = value.entry
                 else:
                     original = db.execute(
-                        "SELECT substr(CAST(entry_id AS BLOB),1,129) FROM annotation_entries "
-                        "WHERE thread_id=? AND number=1",
+                        "SELECT entry_id FROM annotation_entries WHERE thread_id=? AND number=1",
                         (value.thread,),
                     ).fetchone()
-                    if original is None or re.fullmatch(b"cmt-[0-9a-f]{24}", original[0]) is None:
+                    if original is None:
                         raise DocumentError(NOT_FOUND, "no such original comment body")
-                    body_entry = original[0].decode()
+                    body_entry = original[0]
                 body_parent = comment_bodies.current(db, body_entry or "", allow_legacy=True)
             if body_parent["thread"] != value.thread:
                 raise DocumentError(NOT_FOUND, "the body belongs to another thread")
@@ -624,24 +626,9 @@ class Annotations:
             report = scope_report(before, after, thread["anchor"], value.revision)
         with self.store.control.write() as tx:
             db = tx.sql
-            replay = db.execute(
-                (
-                    "SELECT substr(CAST(fingerprint AS BLOB),1,65),"
-                    "substr(CAST(result AS BLOB),1,16385) FROM annotation_operations WHERE "
-                    "project_id=? AND actor=? AND operation_id=?"
-                ),
-                (project, author.actor, value.operation_id),
-            ).fetchone()
+            replay = self._replay(db, project, author, value.operation_id, fingerprint)
             if replay is not None:
-                if replay[0] != fingerprint.encode():
-                    raise DocumentError(
-                        CONFLICT, "operation ID already names another annotation change"
-                    )
-                if len(replay[1]) > 16384:
-                    raise DocumentError(
-                        INVALID_REQUEST, "retained annotation outcome exceeds its bound"
-                    )
-                return {**json.loads(replay[1]), "replayed": True}
+                return replay
             found = self.store.find(db, project, info.document_id)
             thread_id = new_id("ann") if isinstance(value, CreateComment) else value.thread
             payload: Json = {}

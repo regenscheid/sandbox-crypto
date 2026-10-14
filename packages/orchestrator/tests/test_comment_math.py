@@ -649,7 +649,7 @@ async def test_derived_source_cannot_borrow_another_canonical_parent(stores, pro
     with docs.control.write() as tx:
         db = tx.sql
         db.execute("UPDATE math_jobs SET document=? WHERE check_id=?", (other, old))
-    with pytest.raises(DocumentError, match="identity exceeds"):
+    with pytest.raises(DocumentError, match="does not bind its comment body"):
         jobs.job(old)
     assert MathNotices(reviews).pending("p", "s", "wrong-parent", set()) == []
 
@@ -684,26 +684,21 @@ async def test_parser_bounds_hold_checks_without_vetoing_canonical_saves(stores)
 
 
 @pytest.mark.asyncio
-async def test_blocked_projection_does_not_materialize_corrupt_reason(stores):
-    import tracemalloc
-
-    from sandbox_science.orchestrator.documents.mathcontroller import MathController
-
+async def test_an_oversized_blocked_reason_is_refused_when_written(stores):
     docs, reviews, _ = stores
     doc = create(docs, USER, "Context.")
     source = comment(docs, doc)
     await drain(reviews, ScriptedChecker())
-    jobs = MathJobs(reviews)
-    check = next(r["check_id"] for r in jobs.listing("p")["checks"] if r.get("kind") == "comment")
-    with docs.control.write() as tx:
-        db = tx.sql
-        db.execute(
+    with pytest.raises(sqlite3.IntegrityError, match="CHECK"), docs.control.write() as tx:
+        tx.sql.execute(
             "UPDATE comment_math_sources SET blocked=? WHERE entry_id=?",
-            ("x" * (20 * 1024 * 1024), source["entry_id"]),
+            ("x" * 5000, source["entry_id"]),
         )
-    tracemalloc.start()
-    try:
-        assert MathController(reviews, "p", "s", "bound", checker=None).blocked(check)
-        assert tracemalloc.get_traced_memory()[1] < 100_000
-    finally:
-        tracemalloc.stop()
+
+
+def test_a_comment_at_its_byte_limit_is_kept(stores) -> None:
+    docs, _, _ = stores
+    doc = create(docs)
+    body = "\u00e9" * 8192  # 8192 characters, 16384 bytes: the model's and the table's limits
+    made = comment(docs, doc, body=body)
+    assert Annotations(docs).body("p", doc, made["entry_id"])["body"] == body

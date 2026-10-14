@@ -241,7 +241,9 @@ class ControlStore:
         if str(mode).lower() != "wal":
             raise ControlError(INTERNAL, f"{self.path} cannot use write-ahead logging")
         db.execute("PRAGMA synchronous=FULL")
-        db.execute("PRAGMA foreign_keys=ON")
+        # Migrations run with foreign keys off, as a table rebuild needs (they cannot be
+        # switched inside a transaction); migrate() checks them all before committing.
+        db.execute("PRAGMA foreign_keys=OFF")
         db.execute("BEGIN IMMEDIATE")
         try:
             migrations.migrate(db, self.path)
@@ -249,6 +251,7 @@ class ControlStore:
         finally:
             if db.in_transaction:
                 db.execute("ROLLBACK")
+            db.execute("PRAGMA foreign_keys=ON")
 
 
 def store_path(state_dir: Path) -> Path:

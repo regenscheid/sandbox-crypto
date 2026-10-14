@@ -15,10 +15,11 @@ store (docs/LIVING-DOCUMENTS.md).
 To change the schema, append a step to ``MIGRATIONS``. Never edit a step that has
 shipped, or ``baseline.sql``: databases made with them keep them. A step gets a
 ``Schema``, which runs one statement at a time and refuses transaction control, since
-the step runs inside the writer's transaction. A step that rebuilds a table (create the
-new one, copy the rows, drop the old one, rename) first runs
-``PRAGMA defer_foreign_keys=ON``, because ``foreign_keys`` cannot be switched off inside
-a transaction, and runs ``PRAGMA foreign_key_check`` before it ends.
+the step runs inside the writer's transaction. The steps run with foreign keys off, so
+that a step can rebuild a table (create the new one, copy the rows, drop the old one,
+rename: ``rebuild``); ``migrate`` checks every foreign key before the change commits.
+A row the new schema refuses leaves the store at its version, with a ``ControlError``
+(``unavailable``) that names the table and the check.
 """
 
 from __future__ import annotations
@@ -56,6 +57,26 @@ class Schema:
 
 
 type Migration = Callable[[Schema], None]
+
+
+class RefusedRowError(Exception):
+    """A row of the store that a migration step's new definition refuses."""
+
+
+_KEEP: Final = (
+    "To keep its documents, export them with the harness version that made the store and "
+    'import them into a fresh store (docs/LIVING-DOCUMENTS.md, "A store a migration '
+    'refuses").'
+)
+
+
+def _broken_key(db: sqlite3.Connection | Schema, table: str | None = None) -> str | None:
+    """The first row that names no row of the table its foreign key points to, among the
+    rows of ``table`` and of the rows that point to it, or anywhere when ``table`` is None."""
+    for child, rowid, parent, _ in db.execute("PRAGMA foreign_key_check").fetchall():
+        if table is None or table in (child, parent):
+            return f"row {rowid} of {child} names no row of {parent}"
+    return None
 
 
 def _baseline(schema: Schema) -> None:
@@ -109,7 +130,140 @@ BEGIN SELECT RAISE(ABORT, 'run records are written once'); END""",
         schema.execute(statement)
 
 
-MIGRATIONS: Final[tuple[Migration, ...]] = (_baseline, _projects)
+def rebuild(schema: Schema, table: str, create: str) -> None:
+    """Make ``table`` again as ``create`` (``CREATE TABLE <table> (...)``) defines it, with
+    its rows and rowids, its indexes and triggers, the other tables' triggers that name it,
+    and the store's views: SQLite cannot add a constraint to a table. A row the new
+    definition refuses fails the step with ``RefusedRowError``."""
+    if not create.startswith(f"CREATE TABLE {table} ("):
+        raise ControlError(INTERNAL, f"a rebuild of {table} needs its CREATE TABLE")
+    attached = schema.execute(
+        "SELECT sql FROM sqlite_master WHERE tbl_name=? AND type IN ('index','trigger') "
+        "AND sql IS NOT NULL ORDER BY rowid",
+        (table,),
+    ).fetchall()
+    named = re.compile(rf"\b{re.escape(table)}\b")
+    others = [
+        (name, sql)
+        for name, sql in schema.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name<>? "
+            "ORDER BY rowid",
+            (table,),
+        ).fetchall()
+        if named.search(sql)
+    ]
+    views = schema.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type='view' ORDER BY rowid"
+    ).fetchall()
+    for name, _ in views:
+        schema.execute(f'DROP VIEW "{name}"')
+    for name, _ in others:
+        schema.execute(f'DROP TRIGGER "{name}"')
+    columns = ", ".join(
+        f'"{row[1]}"' for row in schema.execute(f'PRAGMA table_info("{table}")').fetchall()
+    )
+    schema.execute(create.replace(f"CREATE TABLE {table} (", f"CREATE TABLE {table}__new (", 1))
+    try:
+        schema.execute(
+            f"INSERT INTO {table}__new (rowid, {columns}) "  # noqa: S608 - the store's own names
+            f"SELECT rowid, {columns} FROM {table} ORDER BY rowid"
+        )
+    except sqlite3.IntegrityError as error:  # a row the new definition refuses
+        raise RefusedRowError(f"a row of {table} fails its check ({error})") from None
+    schema.execute(f"DROP TABLE {table}")
+    schema.execute(f"ALTER TABLE {table}__new RENAME TO {table}")
+    for (sql,) in attached:
+        schema.execute(sql)
+    for _, sql in others:
+        schema.execute(sql)
+    for _, sql in views:
+        schema.execute(sql)
+    # The rows keep their keys, so only a new foreign key or a new key can break one.
+    if (broken := _broken_key(schema, table)) is not None:
+        raise RefusedRowError(f"the new definition of {table} breaks a foreign key: {broken}")
+
+
+def _comment_checks(schema: Schema) -> None:
+    """Version 4: comments and their bodies and math checks check their own values when
+    they are written (decision 3), so reads take them as they are."""
+    for table, create in (
+        (
+            "annotation_threads",
+            """CREATE TABLE annotation_threads (
+    thread_id TEXT PRIMARY KEY CHECK (length(CAST(thread_id AS BLOB)) BETWEEN 1 AND 128),
+    document_id TEXT NOT NULL REFERENCES documents(document_id),
+    anchor TEXT NOT NULL CHECK (json_valid(anchor)),
+    opener TEXT NOT NULL
+        CHECK (json_valid(opener) AND length(CAST(opener AS BLOB)) <= 8192),
+    created_at REAL NOT NULL) STRICT""",
+        ),
+        (
+            "annotation_entries",
+            """CREATE TABLE annotation_entries (
+    entry_id TEXT PRIMARY KEY CHECK (length(CAST(entry_id AS BLOB)) BETWEEN 1 AND 128),
+    thread_id TEXT NOT NULL REFERENCES annotation_threads(thread_id),
+    number INTEGER NOT NULL CHECK (number BETWEEN 1 AND 999999999),
+    kind TEXT NOT NULL
+        CHECK (kind IN ('create', 'reply', 'edit', 'edit_body', 'resolve', 'reopen')),
+    author TEXT NOT NULL
+        CHECK (json_valid(author) AND length(CAST(author AS BLOB)) <= 8192),
+    body TEXT NOT NULL CHECK (length(CAST(body AS BLOB)) <= 16384),
+    payload TEXT NOT NULL CHECK (json_valid(payload)),
+    created_at REAL NOT NULL, UNIQUE(thread_id, number)) STRICT""",
+        ),
+        (
+            "annotation_operations",
+            """CREATE TABLE annotation_operations (
+    project_id TEXT NOT NULL, actor TEXT NOT NULL, operation_id TEXT NOT NULL,
+    fingerprint TEXT NOT NULL
+        CHECK (length(fingerprint) = 64 AND fingerprint NOT GLOB '*[^0-9a-f]*'),
+    result TEXT NOT NULL CHECK (json_valid(result)),
+    PRIMARY KEY(project_id,actor,operation_id)) STRICT""",
+        ),
+        (
+            "annotation_body_revisions",
+            """CREATE TABLE annotation_body_revisions (
+    entry_id TEXT NOT NULL REFERENCES annotation_entries(entry_id),
+    revision INTEGER NOT NULL CHECK (revision BETWEEN 1 AND 999999999),
+    history_entry TEXT NOT NULL REFERENCES annotation_entries(entry_id),
+    body TEXT NOT NULL CHECK (length(CAST(body AS BLOB)) <= 16384),
+    sha256 TEXT NOT NULL CHECK (length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'),
+    block_map TEXT NOT NULL
+        CHECK (json_valid(block_map) AND length(CAST(block_map AS BLOB)) <= 16777216),
+    author TEXT NOT NULL
+        CHECK (json_valid(author) AND length(CAST(author AS BLOB)) <= 8192),
+    owners TEXT NOT NULL
+        CHECK (json_valid(owners) AND length(CAST(owners AS BLOB)) <= 16777216),
+    next_block INTEGER NOT NULL CHECK (next_block BETWEEN 0 AND 999999999),
+    next_span INTEGER NOT NULL CHECK (next_span BETWEEN 0 AND 999999999),
+    PRIMARY KEY(entry_id,revision)) STRICT""",
+        ),
+        (
+            "comment_math_sources",
+            """CREATE TABLE comment_math_sources (
+    entry_id TEXT PRIMARY KEY REFERENCES annotation_entries(entry_id),
+    document TEXT NOT NULL REFERENCES documents(document_id),
+    project TEXT NOT NULL CHECK (length(CAST(project AS BLOB)) BETWEEN 1 AND 128),
+    target INTEGER NOT NULL CHECK (target BETWEEN 0 AND 999999999),
+    completed INTEGER NOT NULL DEFAULT 0 CHECK (completed BETWEEN 0 AND 999999999),
+    macro_revision INTEGER NOT NULL DEFAULT 0 CHECK (macro_revision BETWEEN 0 AND 999999999),
+    retry_requested INTEGER NOT NULL DEFAULT 0 CHECK (retry_requested IN (0, 1)),
+    blocked TEXT CHECK (blocked IS NULL OR length(CAST(blocked AS BLOB)) <= 4096)) STRICT""",
+        ),
+        (
+            "math_comment_jobs",
+            """CREATE TABLE math_comment_jobs (
+    check_id TEXT PRIMARY KEY REFERENCES math_jobs(check_id),
+    entry_id TEXT NOT NULL REFERENCES annotation_entries(entry_id),
+    macro_revision INTEGER NOT NULL CHECK (macro_revision BETWEEN 0 AND 999999999),
+    macro_sha256 TEXT NOT NULL
+        CHECK (length(macro_sha256) = 64 AND macro_sha256 NOT GLOB '*[^0-9a-f]*')) STRICT""",
+        ),
+    ):
+        rebuild(schema, table, create)
+
+
+MIGRATIONS: Final[tuple[Migration, ...]] = (_baseline, _projects, _comment_checks)
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""
 
@@ -180,9 +334,19 @@ def migrate(db: sqlite3.Connection, path: Path) -> None:
     version = check(path, db, readonly=False)
     pending = MIGRATIONS if version == 0 else MIGRATIONS[version - BASELINE + 1 :]
     schema = Schema(db)
+    stays = f"{path.name} stays at version {version}"
     for step in pending:
-        step(schema)
+        try:
+            step(schema)
+        except RefusedRowError as refused:
+            raise ControlError(
+                UNAVAILABLE, f"{stays}: version {VERSION} refuses it, as {refused}. {_KEEP}"
+            ) from None
         if not db.in_transaction:
             raise ControlError(INTERNAL, "a migration step ended the writer's transaction")
     if pending:
+        if (broken := _broken_key(db)) is not None:
+            raise ControlError(
+                UNAVAILABLE, f"{stays}: version {VERSION} refuses it, as {broken}. {_KEEP}"
+            )
         db.execute(f"PRAGMA user_version = {VERSION}")
