@@ -21,7 +21,41 @@
     projectId,
     documentId,
     revision,
-  }: { projectId: string; documentId: string; revision: number | null } = $props();
+    block = null,
+  }: {
+    projectId: string;
+    documentId: string;
+    revision: number | null;
+    /** A block to bring into view and mark, as a finding's anchor names it. */
+    block?: string | null;
+  } = $props();
+  /**
+   * Bring the block into view and mark it. The text renders after the article mounts, so
+   * the block is looked for again as it changes, until it is found.
+   */
+  function focusBlock(node: HTMLElement, wanted: string | null) {
+    let id = wanted;
+    const apply = (): boolean => {
+      const found = id ? node.querySelector(`[data-block="${CSS.escape(id)}"]`) : null;
+      for (const marked of node.querySelectorAll('.focused'))
+        if (marked !== found) marked.classList.remove('focused');
+      if (!found || found.classList.contains('focused')) return found !== null;
+      found.classList.add('focused');
+      found.scrollIntoView({ block: 'center' });
+      return true;
+    };
+    const watcher = new MutationObserver(() => {
+      if (apply()) watcher.disconnect();
+    });
+    if (!apply()) watcher.observe(node, { childList: true, subtree: true });
+    return {
+      update(next: string | null) {
+        id = next;
+        if (!apply()) watcher.observe(node, { childList: true, subtree: true });
+      },
+      destroy: () => watcher.disconnect(),
+    };
+  }
   let refresh = $state(0);
   const loading = $derived.by(() => {
     refresh;
@@ -146,7 +180,12 @@
   {#if shown.tombstone}
     <p>The document was deleted in this revision. Its earlier revisions remain.</p>
   {:else}
-    <article class="document">
+    <!-- Only a block of this revision is looked for; another is said to be missing. -->
+    {@const known = block !== null && found.blocks.some((item) => item.id === block)}
+    {#if block !== null && !known}<p role="status">
+        Block {block} is not in this revision; the link may name an earlier one.
+      </p>{/if}
+    <article class="document" use:focusBlock={known ? block : null}>
       <Markdown source={found.text} document={input} bind:mismatches />
     </article>
   {/if}

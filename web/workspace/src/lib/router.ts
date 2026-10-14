@@ -5,8 +5,9 @@
  * - `#/` the projects;
  * - `#/projects/<project>` one project;
  * - `#/projects/<project>/sessions/<session>` one session and its runs;
- * - `#/projects/<project>/documents/<document>` a living document's current revision, and
- *   `…/revisions/<number>` one of its revisions;
+ * - `#/projects/<project>/documents/<document>` a living document's current revision,
+ *   `…/revisions/<number>` one of its revisions, and `…/revisions/<number>/blocks/<block>`
+ *   that revision with one block in focus (a finding's anchor, say);
  * - `#/projects/<project>/documents/<document>/history` who changed what in it.
  */
 
@@ -14,7 +15,13 @@ export type Route =
   | { view: 'projects' }
   | { view: 'project'; project: string }
   | { view: 'session'; project: string; session: string }
-  | { view: 'document'; project: string; document: string; revision: number | null }
+  | {
+      view: 'document';
+      project: string;
+      document: string;
+      revision: number | null;
+      block: string | null;
+    }
   | { view: 'history'; project: string; document: string }
   | { view: 'missing' };
 
@@ -45,12 +52,21 @@ export function parseRoute(hash: string): Route {
     return { view: 'session', project, session: name };
   }
   if (parts[2] === 'documents') {
-    if (parts.length === 4) return { view: 'document', project, document: name, revision: null };
+    if (parts.length === 4)
+      return { view: 'document', project, document: name, revision: null, block: null };
     if (parts.length === 5 && parts[4] === 'history') {
       return { view: 'history', project, document: name };
     }
-    const number = parts.length === 6 && parts[4] === 'revisions' ? revision(parts[5]) : null;
-    if (number !== null) return { view: 'document', project, document: name, revision: number };
+    const number =
+      (parts.length === 6 || parts.length === 8) && parts[4] === 'revisions'
+        ? revision(parts[5])
+        : null;
+    const block =
+      parts.length === 8 && parts[6] === 'blocks' && /^b[0-9]{1,9}$/.test(parts[7]!)
+        ? parts[7]!
+        : null;
+    if (number !== null && (parts.length === 6 || block !== null))
+      return { view: 'document', project, document: name, revision: number, block };
   }
   return { view: 'missing' };
 }
@@ -63,9 +79,16 @@ export function sessionHref(project: string, session: string): string {
   return `${projectHref(project)}/sessions/${encodeURIComponent(session)}`;
 }
 
-export function documentHref(project: string, document: string, revision?: number): string {
+export function documentHref(
+  project: string,
+  document: string,
+  revision?: number,
+  block?: string,
+): string {
   const base = `${projectHref(project)}/documents/${encodeURIComponent(document)}`;
-  return revision === undefined ? base : `${base}/revisions/${revision}`;
+  if (revision === undefined) return base;
+  const shown = `${base}/revisions/${revision}`;
+  return block === undefined ? shown : `${shown}/blocks/${encodeURIComponent(block)}`;
 }
 
 export function historyHref(project: string, document: string): string {

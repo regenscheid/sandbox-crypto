@@ -54,6 +54,7 @@
           projectId={route.project}
           documentId={route.document}
           revision={route.revision}
+          block={route.block}
         />
       {/key}
     {:else if route.view === 'history'}

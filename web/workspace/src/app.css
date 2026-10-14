@@ -464,6 +464,12 @@ div.math-skipped {
   border-left-color: var(--link);
 }
 
+/* The block a link brought into focus, such as a finding's anchor. */
+.document .focused {
+  outline: 2px solid var(--link);
+  outline-offset: 3px;
+}
+
 .document [data-unmatched] {
   outline: 1px dashed var(--failed);
   outline-offset: 2px;
