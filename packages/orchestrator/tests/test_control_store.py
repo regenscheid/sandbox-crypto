@@ -390,3 +390,54 @@ def test_a_failing_after_commit_action_is_logged_and_the_others_still_run(
     with store.read() as tx:
         assert tx.sql.execute("SELECT project FROM job_runs").fetchall() == [("kept",)]
     store.close()
+
+
+def _v3_with_a_thread(path: Path, monkeypatch: pytest.MonkeyPatch, anchor: str) -> None:
+    """A version-3 store, from before the comment checks, with one comment thread."""
+    from sandbox_science.orchestrator.documents import USER, DocumentStore
+
+    with monkeypatch.context() as old:
+        old.setattr(migrations, "MIGRATIONS", migrations.MIGRATIONS[:2])
+        old.setattr(migrations, "VERSION", migrations.BASELINE + 1)
+        documents = DocumentStore(path)
+        doc = documents.create("p", name="n", title="N", text="x\n", author=USER).document_id
+        with documents.control.write() as tx:
+            tx.sql.execute(
+                "INSERT INTO annotation_threads VALUES ('ann-1', ?, ?, '{}', 1.0)", (doc, anchor)
+            )
+        documents.close()
+
+
+def test_the_comment_checks_keep_rows_triggers_and_views(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "control.sqlite3"
+    _v3_with_a_thread(path, monkeypatch, "{}")
+    before = sqlite3.connect(path)
+    kept = before.execute("SELECT rowid, * FROM annotation_threads").fetchall()
+    before.close()
+    _store(path).initialize()
+    db = sqlite3.connect(path)
+    assert db.execute("PRAGMA user_version").fetchone() == (migrations.VERSION,)
+    assert db.execute("SELECT rowid, * FROM annotation_threads").fetchall() == kept
+    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+        db.execute("UPDATE annotation_threads SET anchor = '[]'")
+    with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+        db.execute("INSERT INTO annotation_threads SELECT 'ann-2', document_id, 'no json', "
+                   "'{}', 1.0 FROM annotation_threads")  # fmt: skip
+    assert db.execute("SELECT count(*) FROM math_current_checks").fetchone() == (0,)
+    assert db.execute("PRAGMA foreign_key_check").fetchall() == []
+    db.close()
+
+
+def test_a_row_the_comment_checks_refuse_leaves_the_store_at_version_3(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "control.sqlite3"
+    _v3_with_a_thread(path, monkeypatch, "not json")
+    with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+        _store(path).initialize()
+    db = sqlite3.connect(path)
+    assert db.execute("PRAGMA user_version").fetchone() == (migrations.BASELINE + 1,)
+    assert db.execute("SELECT anchor FROM annotation_threads").fetchall() == [("not json",)]
+    db.close()

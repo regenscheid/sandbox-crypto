@@ -109,7 +109,122 @@ BEGIN SELECT RAISE(ABORT, 'run records are written once'); END""",
         schema.execute(statement)
 
 
-MIGRATIONS: Final[tuple[Migration, ...]] = (_baseline, _projects)
+def rebuild(schema: Schema, table: str, create: str) -> None:
+    """Make ``table`` again as ``create`` (``CREATE TABLE <table> (...)``) defines it, with
+    its rows and rowids, its indexes and triggers, and the store's views: SQLite cannot
+    add a constraint to a table. A row the new definition refuses fails the step."""
+    if not create.startswith(f"CREATE TABLE {table} ("):
+        raise ControlError(INTERNAL, f"a rebuild of {table} needs its CREATE TABLE")
+    schema.execute("PRAGMA defer_foreign_keys=ON")
+    attached = schema.execute(
+        "SELECT sql FROM sqlite_master WHERE tbl_name=? AND type IN ('index','trigger') "
+        "AND sql IS NOT NULL ORDER BY rowid",
+        (table,),
+    ).fetchall()
+    views = schema.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type='view' ORDER BY rowid"
+    ).fetchall()
+    for name, _ in views:
+        schema.execute(f'DROP VIEW "{name}"')
+    columns = ", ".join(
+        f'"{row[1]}"' for row in schema.execute(f'PRAGMA table_info("{table}")').fetchall()
+    )
+    schema.execute(create.replace(f"CREATE TABLE {table} (", f"CREATE TABLE {table}__new (", 1))
+    schema.execute(
+        f"INSERT INTO {table}__new (rowid, {columns}) "  # noqa: S608 - the store's own names
+        f"SELECT rowid, {columns} FROM {table} ORDER BY rowid"
+    )
+    schema.execute(f"DROP TABLE {table}")
+    schema.execute(f"ALTER TABLE {table}__new RENAME TO {table}")
+    for (sql,) in attached:
+        schema.execute(sql)
+    for _, sql in views:
+        schema.execute(sql)
+    if schema.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        raise ControlError(INTERNAL, f"the rebuild of {table} broke a foreign key")
+
+
+def _comment_checks(schema: Schema) -> None:
+    """Version 4: comments and their bodies and math checks check their own values when
+    they are written (decision 3), so reads take them as they are."""
+    for table, create in (
+        (
+            "annotation_threads",
+            """CREATE TABLE annotation_threads (
+    thread_id TEXT PRIMARY KEY CHECK (length(CAST(thread_id AS BLOB)) BETWEEN 1 AND 128),
+    document_id TEXT NOT NULL REFERENCES documents(document_id),
+    anchor TEXT NOT NULL CHECK (json_valid(anchor)),
+    opener TEXT NOT NULL
+        CHECK (json_valid(opener) AND length(CAST(opener AS BLOB)) <= 8192),
+    created_at REAL NOT NULL) STRICT""",
+        ),
+        (
+            "annotation_entries",
+            """CREATE TABLE annotation_entries (
+    entry_id TEXT PRIMARY KEY CHECK (length(CAST(entry_id AS BLOB)) BETWEEN 1 AND 128),
+    thread_id TEXT NOT NULL REFERENCES annotation_threads(thread_id),
+    number INTEGER NOT NULL CHECK (number BETWEEN 1 AND 999999999),
+    kind TEXT NOT NULL
+        CHECK (kind IN ('create', 'reply', 'edit', 'edit_body', 'resolve', 'reopen')),
+    author TEXT NOT NULL
+        CHECK (json_valid(author) AND length(CAST(author AS BLOB)) <= 8192),
+    body TEXT NOT NULL CHECK (length(CAST(body AS BLOB)) <= 16384),
+    payload TEXT NOT NULL CHECK (json_valid(payload)),
+    created_at REAL NOT NULL, UNIQUE(thread_id, number)) STRICT""",
+        ),
+        (
+            "annotation_operations",
+            """CREATE TABLE annotation_operations (
+    project_id TEXT NOT NULL, actor TEXT NOT NULL, operation_id TEXT NOT NULL,
+    fingerprint TEXT NOT NULL
+        CHECK (length(fingerprint) = 64 AND fingerprint NOT GLOB '*[^0-9a-f]*'),
+    result TEXT NOT NULL CHECK (json_valid(result)),
+    PRIMARY KEY(project_id,actor,operation_id)) STRICT""",
+        ),
+        (
+            "annotation_body_revisions",
+            """CREATE TABLE annotation_body_revisions (
+    entry_id TEXT NOT NULL REFERENCES annotation_entries(entry_id),
+    revision INTEGER NOT NULL CHECK (revision BETWEEN 1 AND 999999999),
+    history_entry TEXT NOT NULL REFERENCES annotation_entries(entry_id),
+    body TEXT NOT NULL CHECK (length(CAST(body AS BLOB)) <= 16384),
+    sha256 TEXT NOT NULL CHECK (length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'),
+    block_map TEXT NOT NULL
+        CHECK (json_valid(block_map) AND length(CAST(block_map AS BLOB)) <= 16777216),
+    author TEXT NOT NULL
+        CHECK (json_valid(author) AND length(CAST(author AS BLOB)) <= 8192),
+    owners TEXT NOT NULL
+        CHECK (json_valid(owners) AND length(CAST(owners AS BLOB)) <= 16777216),
+    next_block INTEGER NOT NULL CHECK (next_block BETWEEN 0 AND 999999999),
+    next_span INTEGER NOT NULL CHECK (next_span BETWEEN 0 AND 999999999),
+    PRIMARY KEY(entry_id,revision)) STRICT""",
+        ),
+        (
+            "comment_math_sources",
+            """CREATE TABLE comment_math_sources (
+    entry_id TEXT PRIMARY KEY REFERENCES annotation_entries(entry_id),
+    document TEXT NOT NULL REFERENCES documents(document_id),
+    project TEXT NOT NULL CHECK (length(CAST(project AS BLOB)) BETWEEN 1 AND 128),
+    target INTEGER NOT NULL CHECK (target BETWEEN 0 AND 999999999),
+    completed INTEGER NOT NULL DEFAULT 0 CHECK (completed BETWEEN 0 AND 999999999),
+    macro_revision INTEGER NOT NULL DEFAULT 0 CHECK (macro_revision BETWEEN 0 AND 999999999),
+    retry_requested INTEGER NOT NULL DEFAULT 0 CHECK (retry_requested IN (0, 1)),
+    blocked TEXT CHECK (blocked IS NULL OR length(CAST(blocked AS BLOB)) <= 4096)) STRICT""",
+        ),
+        (
+            "math_comment_jobs",
+            """CREATE TABLE math_comment_jobs (
+    check_id TEXT PRIMARY KEY REFERENCES math_jobs(check_id),
+    entry_id TEXT NOT NULL REFERENCES annotation_entries(entry_id),
+    macro_revision INTEGER NOT NULL CHECK (macro_revision BETWEEN 0 AND 999999999),
+    macro_sha256 TEXT NOT NULL
+        CHECK (length(macro_sha256) = 64 AND macro_sha256 NOT GLOB '*[^0-9a-f]*')) STRICT""",
+        ),
+    ):
+        rebuild(schema, table, create)
+
+
+MIGRATIONS: Final[tuple[Migration, ...]] = (_baseline, _projects, _comment_checks)
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""
 
