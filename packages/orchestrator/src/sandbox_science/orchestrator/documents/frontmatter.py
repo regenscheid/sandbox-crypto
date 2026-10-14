@@ -126,12 +126,12 @@ def read_front_matter(content: str) -> FrontMatter:
                 macros["\\" + match[1]] = text
     return FrontMatter(
         title=None if title is None else str(title),
-        macros=_bounded(macros, problems),
+        macros=bounded_macros(macros, problems),
         problems=tuple(problems),
     )
 
 
-def _bounded(macros: dict[str, str], problems: list[str]) -> dict[str, str]:
+def bounded_macros(macros: dict[str, str], problems: list[str]) -> dict[str, str]:
     """The macros without those that define others or expand without bound."""
     kept: dict[str, str] = {}
     for name, body in macros.items():

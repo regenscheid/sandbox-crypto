@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: MIT
 """Live harness driver for durable document math work; no idle scheduler or model."""
 
-# Logical modules share control-store connections and queue leases.
-# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
 import asyncio
@@ -55,8 +53,11 @@ class MathController:
         from .comment_math import metadata
         from .response_math import metadata as response_metadata
 
-        with self.store.documents._read() as db:
-            if db is not None and (response := response_metadata(db, check)) is not None:
+        if self.store.documents.control.missing:
+            return False
+        with self.store.documents.control.read() as tx:
+            db = tx.sql
+            if (response := response_metadata(db, check)) is not None:
                 return bool(
                     db.execute(
                         "SELECT blocked IS NOT NULL AND blocked!='' FROM "
@@ -64,7 +65,7 @@ class MathController:
                         (response["source"],),
                     ).fetchone()[0]
                 )
-            if db is not None and (meta := metadata(db, check)) is not None:
+            if (meta := metadata(db, check)) is not None:
                 return bool(
                     db.execute(
                         "SELECT blocked IS NOT NULL AND blocked!='' "
@@ -72,7 +73,7 @@ class MathController:
                         (meta["entry_id"],),
                     ).fetchone()[0]
                 )
-            return db is not None and bool(
+            return bool(
                 db.execute(
                     (
                         "SELECT blocked IS NOT NULL AND blocked!='' FROM math_sources "
@@ -117,8 +118,11 @@ class MathController:
         from .project_macros import needs_refresh
         from .response_math import remaining as response_remaining
 
-        with self.store.documents._read() as db:
-            return db is not None and (
+        if self.store.documents.control.missing:
+            return False
+        with self.store.documents.control.read() as tx:
+            db = tx.sql
+            return (
                 needs_refresh(db, self.project)
                 or remaining(db, self.project)
                 or response_remaining(db, self.project)
@@ -171,7 +175,8 @@ class MathController:
 
     def release_work(self) -> None:
         # Cursor/proofs/results survive; a later owner can resume immediately.
-        with self.store.documents._write() as db:
+        with self.store.documents.control.write() as tx:
+            db = tx.sql
             db.execute(
                 "UPDATE math_jobs SET lease_until=0 WHERE owner=? AND state='running'",
                 (self.owner,),

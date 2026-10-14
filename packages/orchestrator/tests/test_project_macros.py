@@ -52,8 +52,8 @@ def test_positive_user_cas_replay_and_retained_revisions(stores):
         api.change("p", {**payload, "macros": {}}, USER)
     with pytest.raises(DocumentError, match="retain the draft"):
         api.change("p", {**payload, "operation_id": "stale"}, USER)
-    with pytest.raises(sqlite3.IntegrityError, match="immutable"), docs._write() as db:
-        db.execute("UPDATE project_macro_revisions SET definitions='{}'")
+    with pytest.raises(sqlite3.IntegrityError, match="immutable"), docs.control.write() as tx:
+        tx.sql.execute("UPDATE project_macro_revisions SET definitions='{}'")
 
 
 @pytest.mark.parametrize(
@@ -78,7 +78,8 @@ def test_invalid_settings_refuse_without_creating_revision(stores, bad):
 
 def test_setting_fault_rolls_back_head_receipt_and_revision(stores):
     docs, _, _ = stores
-    with docs._write() as db:
+    with docs.control.write() as tx:
+        db = tx.sql
         db.execute(
             "CREATE TRIGGER fail_macro_receipt BEFORE INSERT ON project_macro_operations "
             "BEGIN SELECT RAISE(ABORT,'fixture'); END"
@@ -86,7 +87,8 @@ def test_setting_fault_rolls_back_head_receipt_and_revision(stores):
     with pytest.raises(sqlite3.IntegrityError):
         change(docs, {r"\F": "x"})
     assert ProjectMacros(docs).get("p")["revision"] == 0
-    with docs._read() as db:
+    with docs.control.read() as tx:
+        db = tx.sql
         assert db.execute("SELECT count(*) FROM project_macro_revisions").fetchone() == (0,)
 
 
@@ -185,7 +187,8 @@ def test_historical_document_context_is_pinned_and_legacy_is_unknown(stores):
     saved = view(docs, "p", document=doc, revision=1, historical=True)
     assert saved["known"]
     assert saved["macros"][r"\F"] == "before"
-    with docs._write() as db:
+    with docs.control.write() as tx:
+        db = tx.sql
         db.execute("DROP TRIGGER document_macro_pins_delete")
         db.execute("DELETE FROM document_macro_pins")
     unknown = view(docs, "p", document=doc, revision=1, historical=True)
@@ -240,7 +243,8 @@ def test_new_macro_context_queues_a_new_confirmation_without_spending_old_retrie
 def test_corrupt_definition_read_is_bounded_before_parse(stores):
     docs, _, _ = stores
     change(docs, {r"\F": "x"})
-    with docs._write() as db:
+    with docs.control.write() as tx:
+        db = tx.sql
         db.execute("DROP TRIGGER project_macro_revisions_update")
         db.execute("UPDATE project_macro_revisions SET definitions=?", ("x" * 20_000_000,))
     tracemalloc.start()

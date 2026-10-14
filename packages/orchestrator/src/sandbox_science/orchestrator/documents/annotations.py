@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: MIT
 """Append-only document annotations and durable, scoped user work requests."""
 
-# One logical store is split into modules; annotation transactions share its internals.
-# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
 import hashlib
@@ -330,10 +328,9 @@ class Annotations:
     def __init__(self, store: DocumentStore) -> None:
         self.store = store
 
-    def _available(self, db: sqlite3.Connection | None) -> bool:
+    def _available(self, db: sqlite3.Connection) -> bool:
         return (
-            db is not None
-            and db.execute("SELECT 1 FROM sqlite_master WHERE name='annotation_threads'").fetchone()
+            db.execute("SELECT 1 FROM sqlite_master WHERE name='annotation_threads'").fetchone()
             is not None
         )
 
@@ -459,7 +456,8 @@ class Annotations:
             raise DocumentError(INVALID_REQUEST, "invalid document revision")
         info = self.store.document(project, reference)
         current = self.store.mapped(project, info.document_id, revision or info.head)
-        with self.store._read() as db:
+        with self.store.control.read() as tx:
+            db = tx.sql
             if not self._available(db):
                 return {"threads": [], "next_after": None}
             assert db is not None  # noqa: S101
@@ -487,8 +485,8 @@ class Annotations:
         previous = after
         size = len(dump({"threads": [], "next_after": "ann-" + "f" * 24}).encode())
         for thread_id in ids[:limit]:
-            with self.store._read() as db:
-                assert db is not None  # noqa: S101
+            with self.store.control.read() as tx:
+                db = tx.sql
                 thread = self._thread(db, info.document_id, thread_id)
             saved = thread["anchor"]
             if saved["revision"] > (revision or info.head):
@@ -520,7 +518,8 @@ class Annotations:
             raise DocumentError(INVALID_REQUEST, "invalid entry cursor")
         info = self.store.document(project, reference)
         current = self.store.mapped(project, info.document_id, info.head)
-        with self.store._read() as db:
+        with self.store.control.read() as tx:
+            db = tx.sql
             if not self._available(db):
                 raise DocumentError(NOT_FOUND, "no such document thread")
             assert db is not None  # noqa: S101
@@ -534,10 +533,10 @@ class Annotations:
         if not isinstance(entry, str) or re.fullmatch(r"cmt-[0-9a-f]{24}", entry) is None:
             raise DocumentError(INVALID_REQUEST, "invalid original comment entry")
         info = self.store.document(project, reference)
-        with self.store._read() as db:
+        with self.store.control.read() as tx:
+            db = tx.sql
             if (
-                db is None
-                or db.execute(
+                db.execute(
                     "SELECT 1 FROM annotation_entries e JOIN annotation_threads t USING(thread_id) "
                     "WHERE t.document_id=? AND e.entry_id=?",
                     (info.document_id, entry),
@@ -584,8 +583,8 @@ class Annotations:
             )
         info = self.store.document(project, reference)
         fingerprint = digest(dump([info.document_id, value.model_dump(mode="json")]))
-        with self.store._read() as db:
-            assert db is not None  # noqa: S101 - writer initialized
+        with self.store.control.read() as tx:
+            db = tx.sql
             replay = db.execute(
                 "SELECT substr(CAST(fingerprint AS BLOB),1,65),"
                 "substr(CAST(result AS BLOB),1,16385) "
@@ -607,8 +606,8 @@ class Annotations:
         if isinstance(value, EditBody) or (
             isinstance(value, ReplyComment) and value.action == "edit"
         ):
-            with self.store._read() as db:
-                assert db is not None  # noqa: S101 - writer initialized
+            with self.store.control.read() as tx:
+                db = tx.sql
                 if (
                     db.execute(
                         "SELECT 1 FROM annotation_threads WHERE document_id=? AND thread_id=?",
@@ -664,7 +663,8 @@ class Annotations:
                 else None
             )
             report = scope_report(before, after, thread["anchor"], value.revision)
-        with self.store._write() as db:
+        with self.store.control.write() as tx:
+            db = tx.sql
             replay = db.execute(
                 (
                     "SELECT substr(CAST(fingerprint AS BLOB),1,65),"
@@ -683,7 +683,7 @@ class Annotations:
                         INVALID_REQUEST, "retained annotation outcome exceeds its bound"
                     )
                 return {**json.loads(replay[1]), "replayed": True}
-            row = self.store._find(db, project, info.document_id)
+            found = self.store.find(db, project, info.document_id)
             thread_id = new_id("ann") if isinstance(value, CreateComment) else value.thread
             payload: Json = {}
             if isinstance(value, CreateComment):
@@ -808,10 +808,10 @@ class Annotations:
                 "request_id": request_id,
                 "outcome": kind,
             }
-            self.store._event(
+            self.store.record_event(
                 db,
                 "annotation.created" if number == 1 else "annotation.changed",
-                row.info,
+                found,
                 author,
                 {**result, "author": author.model_dump(mode="json"), "action": kind},
             )
@@ -827,7 +827,8 @@ class Annotations:
         """Lease a bounded batch; acknowledge only after the enclosing run is durable."""
         if len(seen) >= 128:
             return []
-        with self.store._write() as db:
+        with self.store.control.write() as tx:
+            db = tx.sql
             rows = db.execute(
                 "SELECT r.request_id,r.thread_id,t.document_id,e.body,t.anchor,"
                 "(SELECT max(number) FROM annotation_entries WHERE thread_id=t.thread_id) "
@@ -870,7 +871,8 @@ class Annotations:
             return values
 
     def renew(self, project: str, session: str, run: str) -> None:
-        with self.store._write() as db:
+        with self.store.control.write() as tx:
+            db = tx.sql
             db.execute(
                 (
                     "UPDATE annotation_requests SET claim_until=? WHERE project_id=? "
@@ -882,7 +884,8 @@ class Annotations:
     def release(
         self, project: str, session: str, run: str, *, keep: set[str] | None = None
     ) -> None:
-        with self.store._write() as db:
+        with self.store.control.write() as tx:
+            db = tx.sql
             db.execute(
                 "UPDATE annotation_requests SET claimed_run=NULL,claim_until=NULL "
                 "WHERE project_id=? AND session_id=? AND claimed_run=? "
@@ -892,7 +895,8 @@ class Annotations:
             )
 
     def acknowledge(self, project: str, session: str, run: str, requests: list[str]) -> None:
-        with self.store._write() as db:
+        with self.store.control.write() as tx:
+            db = tx.sql
             for request in requests:
                 db.execute(
                     (

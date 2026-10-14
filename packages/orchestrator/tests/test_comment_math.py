@@ -145,7 +145,8 @@ def test_edit_authority_cas_replay_and_requests(stores):
         api.change("p", doc, {**payload, "operation_id": "stale"}, MAIN)
     user = comment(docs, doc, "original request", USER, "user")
     # Work requests remain pinned to the original immutable entry.
-    with docs._write() as db:
+    with docs.control.write() as tx:
+        db = tx.sql
         db.execute(
             "INSERT INTO "
             "annotation_requests(request_id,project_id,session_id,thread_id,entry_id,state) "
@@ -383,7 +384,8 @@ async def test_accepted_owner_and_legacy_cache_do_not_make_dependency_a_failed_e
     if legacy_cache:
         # Faithful old-code state: accepted observation/check pointer was saved,
         # but the mutable cached owner/identity still described the rejection.
-        with docs._write() as db:
+        with docs.control.write() as tx:
+            db = tx.sql
             db.execute("UPDATE math_finding_state SET owner_revision=1,input_sha256=?", ("f" * 64,))
     # An intervening unavailable retry cannot hide the prior available proof.
     MathJobs(reviews).retry_unavailable("p", {"operator": "unavailable"})
@@ -459,7 +461,8 @@ async def test_previous_assessment_and_user_decision_json_are_bounded_before_par
     check = jobs.claim("p", "owner")
     assert check
     job = jobs.job(check)
-    with docs._write() as db:
+    with docs.control.write() as tx:
+        db = tx.sql
         mechanism = MechanicalFindings(reviews)
         anchor = found["anchors"][0]
         item = {"block": anchor["block"], "span": anchor["math"]}
@@ -490,7 +493,8 @@ async def test_unknown_retained_resolution_actor_is_bounded_and_preserved(stores
     source_fixture(docs, "comment")
     await drain(reviews, ScriptedChecker())
     found = get(reviews)[0]
-    with docs._write() as db:
+    with docs.control.write() as tx:
+        db = tx.sql
         db.execute("DROP TRIGGER review_transitions_update")
         db.execute("UPDATE review_transitions SET actor=?", (actor,))
         tracemalloc.start()
@@ -550,7 +554,8 @@ def test_atomic_revision_scheduling_and_append_only_history(stores):
     docs, _, _ = stores
     doc = create(docs, USER, "Context.")
     source = comment(docs, doc)
-    with docs._write() as db:
+    with docs.control.write() as tx:
+        db = tx.sql
         db.execute(
             "CREATE TEMP TRIGGER fail_annotation_receipt BEFORE INSERT ON annotation_operations "
             "BEGIN SELECT RAISE(ABORT,'synthetic receipt failure'); END"
@@ -558,10 +563,12 @@ def test_atomic_revision_scheduling_and_append_only_history(stores):
     with pytest.raises(sqlite3.IntegrityError, match="synthetic receipt"):
         edit(docs, doc, source["entry_id"], "changed")
     assert Annotations(docs).body("p", doc, source["entry_id"])["revision"] == 1
-    with docs._read() as db:
+    with docs.control.read() as tx:
+        db = tx.sql
         assert db.execute("SELECT target FROM comment_math_sources").fetchone()[0] == 1
         assert db.execute("SELECT count(*) FROM annotation_entries").fetchone()[0] == 1
-    with docs._write() as db:
+    with docs.control.write() as tx:
+        db = tx.sql
         for sql in (
             "UPDATE annotation_body_revisions SET body='changed'",
             "DELETE FROM annotation_body_revisions",
@@ -625,7 +632,8 @@ async def test_derived_source_cannot_borrow_another_canonical_parent(stores, pro
     original = jobs.job(old)
     with pytest.raises(DocumentError, match="canonical parent"):
         jobs.load({**original, "document": other, "project": project})
-    with docs._write() as db:
+    with docs.control.write() as tx:
+        db = tx.sql
         db.execute(
             "UPDATE comment_math_sources SET document=?,project=? WHERE entry_id=?",
             (other, project, source["entry_id"]),
@@ -638,7 +646,8 @@ async def test_derived_source_cannot_borrow_another_canonical_parent(stores, pro
     with pytest.raises(DocumentError, match="scoped comment body"):
         Annotations(docs).body(project, other, source["entry_id"])
     assert Annotations(docs).body("p", doc, source["entry_id"])["body"] == BAD
-    with docs._write() as db:
+    with docs.control.write() as tx:
+        db = tx.sql
         db.execute("UPDATE math_jobs SET document=? WHERE check_id=?", (other, old))
     with pytest.raises(DocumentError, match="identity exceeds"):
         jobs.job(old)
@@ -686,7 +695,8 @@ async def test_blocked_projection_does_not_materialize_corrupt_reason(stores):
     await drain(reviews, ScriptedChecker())
     jobs = MathJobs(reviews)
     check = next(r["check_id"] for r in jobs.listing("p")["checks"] if r.get("kind") == "comment")
-    with docs._write() as db:
+    with docs.control.write() as tx:
+        db = tx.sql
         db.execute(
             "UPDATE comment_math_sources SET blocked=? WHERE entry_id=?",
             ("x" * (20 * 1024 * 1024), source["entry_id"]),

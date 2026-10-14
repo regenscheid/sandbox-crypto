@@ -5,8 +5,6 @@ Only source admission/loading/ownership differs. Renderer, observation limits,
 actual-work cancellation ownership, lifecycle and closing delivery are shared.
 """
 
-# One logical SQLite store and source adapter intentionally share internals.
-# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
 import re
@@ -180,8 +178,8 @@ class CommentMath:
         return row[0].decode(), row[1], row[2], None
 
     def load(self, job: Json) -> Mapped:
-        with self.documents._read() as db:
-            assert db is not None  # noqa: S101 - canonical store initialized
+        with self.documents.control.read() as tx:
+            db = tx.sql
             bodies.parent(db, job["comment"]["entry_id"], job["document"], job["project"])
             saved = bodies.read(db, job["comment"]["entry_id"], job["revision"])
         if saved["sha256"] != job["source_sha256"]:
@@ -201,8 +199,8 @@ class CommentMath:
         return mapped.parsed.front_matter.macros if mapped.parsed.front_matter else {}
 
     def attribution(self, check: str, owner: str, blocks: set[str]) -> dict[str, Json]:
-        with self.documents._read() as db:
-            assert db is not None  # noqa: S101 - canonical store initialized
+        with self.documents.control.read() as tx:
+            db = tx.sql
             meta = metadata(db, check)
             assert meta is not None  # noqa: S101 - dispatcher selected comment adapter
             _, revision, _, _ = self.fence(db, check, owner, meta)
@@ -216,7 +214,7 @@ class CommentMath:
             if set(value) != {"revision", "author"}:
                 raise DocumentError(INTERNAL, "comment block ownership proof is missing")
             raw = bodies.dump(value["author"]).encode() if value["author"] else None
-            actor = self.jobs._proof_author(raw)
+            actor = self.jobs.proof_author(raw)
             if value["revision"] is not None and (
                 type(value["revision"]) is not int or not 1 <= value["revision"] <= revision
             ):

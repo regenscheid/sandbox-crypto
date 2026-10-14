@@ -127,18 +127,18 @@ class PlanEditor:
             plans = SessionPlans(inspector)
             if plans.summary(authority) is not None:
                 return
-            with inspector._read() as db:  # pyright: ignore[reportPrivateUsage]
-                if (
-                    db is not None
-                    and db.execute(
-                        "SELECT 1 FROM session_plan_records WHERE project=? AND session=? "
-                        "UNION ALL SELECT 1 FROM session_plan_projections WHERE project=? "
-                        "AND session=? LIMIT 1",
-                        (authority.scope.project_id, authority.scope.session_id) * 2,
-                    ).fetchone()
-                    is not None
-                ):
-                    raise ProjectError(ErrorKind.UNAVAILABLE, "session plan is damaged")
+            if not inspector.control.missing:
+                with inspector.control.read() as tx:
+                    if (
+                        tx.sql.execute(
+                            "SELECT 1 FROM session_plan_records WHERE project=? AND session=? "
+                            "UNION ALL SELECT 1 FROM session_plan_projections WHERE project=? "
+                            "AND session=? LIMIT 1",
+                            (authority.scope.project_id, authority.scope.session_id) * 2,
+                        ).fetchone()
+                        is not None
+                    ):
+                        raise ProjectError(ErrorKind.UNAVAILABLE, "session plan is damaged")
             raise ProjectError(ErrorKind.NOT_FOUND, "this session has no plan to edit")
         finally:
             inspector.close()
@@ -216,7 +216,7 @@ class PlanEditor:
                 project + ".lock",
                 os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
                 0o600,
-                dir_fd=original._root,  # pyright: ignore[reportPrivateUsage]
+                dir_fd=original.root,
             )
             if not stat.S_ISREG(os.fstat(lock).st_mode) or os.fstat(lock).st_nlink != 1:
                 raise ProjectError(ErrorKind.UNAVAILABLE, "project lock is not a regular file")
@@ -230,7 +230,7 @@ class PlanEditor:
             if not self._database_matches() or _inode(os.fstat(lock)) != _inode(
                 os.stat(
                     project + ".lock",
-                    dir_fd=original._root,  # pyright: ignore[reportPrivateUsage]
+                    dir_fd=original.root,
                     follow_symlinks=False,
                 )
             ):

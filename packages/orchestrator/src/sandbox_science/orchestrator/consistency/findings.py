@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: MIT
 """Finding mutation grants and append-only, expected-revision transitions."""
 
-# Logical modules share control-store transactions and immutable evidence internals.
-# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
 import json
@@ -38,7 +36,7 @@ class Findings:
     def __init__(self, store: ReviewStore) -> None:
         self.store = store
 
-    def _get(self, db: sqlite3.Connection, project: str, session: str, finding: str) -> Json:
+    def load(self, db: sqlite3.Connection, project: str, session: str, finding: str) -> Json:
         identifier(finding, "finding")
         row = db.execute(
             "SELECT "  # noqa: S608 - fixed schema projection, all user values bound
@@ -83,10 +81,13 @@ class Findings:
         self.store.scope(project, session)
         if before is not None and (type(before) is not int or before < 1 or before > 999999999):
             raise DocumentError(INVALID_REQUEST, "invalid finding history cursor")
-        with self.store.documents._read() as db:
-            if not self.store.available(db) or db is None:
+        if self.store.documents.control.missing:
+            raise DocumentError(NOT_FOUND, "no such finding")
+        with self.store.documents.control.read() as tx:
+            db = tx.sql
+            if not self.store.available(db):
                 raise DocumentError(NOT_FOUND, "no such finding")
-            result = self._get(db, project, session, finding)
+            result = self.load(db, project, session, finding)
             rows = list(
                 db.execute(
                     (
@@ -117,8 +118,8 @@ class Findings:
         ]
         from .response_bodies import pin as response_pin
 
-        with self.store.documents._read() as db:
-            assert db is not None  # noqa: S101 - finding was read
+        with self.store.documents.control.read() as tx:
+            db = tx.sql
             for raw_entry in result["history"]:
                 entry = cast(Json, raw_entry)
                 body = response_pin(db, finding, entry["revision"])
@@ -131,8 +132,11 @@ class Findings:
         self, project: str, session: str, *, after: str | None = None, unresolved: bool = False
     ) -> Json:
         self.store.scope(project, session)
-        with self.store.documents._read() as db:
-            if not self.store.available(db) or db is None:
+        if self.store.documents.control.missing:
+            return {"findings": [], "next_after": None}
+        with self.store.documents.control.read() as tx:
+            db = tx.sql
+            if not self.store.available(db):
                 return {"findings": [], "next_after": None}
             cursor = db.execute("SELECT coalesce(max(rowid),0)+1 FROM review_findings").fetchone()[
                 0
@@ -164,7 +168,7 @@ class Findings:
             values: list[Json] = []
             size = 0
             for finding in ids[:20]:
-                value = self._get(db, project, session, finding)
+                value = self.load(db, project, session, finding)
                 added = len(dump(value).encode()) + 32
                 if values and size + added > 1024 * 1024:
                     break
@@ -243,7 +247,7 @@ class Findings:
             return {**json.loads(row[1]), "replayed": True}
         return None
 
-    def _operation(
+    def record_operation(
         self,
         db: sqlite3.Connection,
         project: str,
@@ -257,7 +261,7 @@ class Findings:
             (project, actor, operation, fingerprint, dump(result)),
         )
 
-    def _transition(
+    def transition(
         self,
         db: sqlite3.Connection,
         found: Json,
@@ -347,11 +351,12 @@ class Findings:
         dedupe = digest(dump([value.category, sorted(identities, key=dump)]))
         fingerprint = digest(dump(value.model_dump(mode="json")))
         actor = f"review:{review}"
-        with self.store.documents._write() as db:
+        with self.store.documents.control.write() as tx:
+            db = tx.sql
             replay = self._replay(db, project, actor, value.operation_id, fingerprint)
             if replay:
                 return replay
-            run = self.store._run(db, project, session, review)
+            run = self.store.load_run(db, project, session, review)
             self.store.owner(run, owner)
             config = ReviewConfig.model_validate_json(run["config"])
             count = db.execute(
@@ -362,7 +367,7 @@ class Findings:
                 db.execute("UPDATE review_runs SET cap_reached=1 WHERE review_id=?", (review,))
                 return {"outcome": "finding_cap", "cap_reached": True}
             if value.supersedes is not None:
-                superseded = self._get(db, project, session, value.supersedes)
+                superseded = self.load(db, project, session, value.supersedes)
                 if superseded["origin"] == "math":
                     raise DocumentError(POLICY_DENIED, "math findings cannot be superseded")
             existing = db.execute(
@@ -384,7 +389,7 @@ class Findings:
             )
             status = "inconclusive" if incomplete else "open"
             if existing:
-                found = self._get(db, project, session, existing[0])
+                found = self.load(db, project, session, existing[0])
                 previous = {
                     key: found[key]
                     for key in (
@@ -428,7 +433,9 @@ class Findings:
                         "VALUES(?,'deferred_reflag',?,?)",
                         (review, dump({**result, "assessment": assessment}), self.store.clock()),
                     )
-                    self._operation(db, project, actor, value.operation_id, fingerprint, result)
+                    self.record_operation(
+                        db, project, actor, value.operation_id, fingerprint, result
+                    )
                     return result
                 ranks = {"fail": 0, "warn": 1, "note": 2}
                 if ranks[value.severity] <= ranks[found["severity"]]:
@@ -450,7 +457,7 @@ class Findings:
                     found.update(assessment)
                 if found["reflags"] + 1 >= config.max_reflags:
                     status = "unaddressed"
-                result = self._transition(
+                result = self.transition(
                     db,
                     found,
                     status,
@@ -488,8 +495,8 @@ class Findings:
                         self.store.clock(),
                     ),
                 )
-                found = self._get(db, project, session, finding)
-                result = self._transition(
+                found = self.load(db, project, session, finding)
+                result = self.transition(
                     db,
                     found,
                     status,
@@ -524,7 +531,7 @@ class Findings:
                 ),
                 (review, dump(result), self.store.clock()),
             )
-            self._operation(db, project, actor, value.operation_id, fingerprint, result)
+            self.record_operation(db, project, actor, value.operation_id, fingerprint, result)
         return result
 
     def respond(self, project: str, session: str, raw: object, author: Author) -> Json:
@@ -568,8 +575,8 @@ class Findings:
             pinned.append(locator)
         anchors: list[Json] = []
         for a in value.evidence:
-            with self.store.documents._read() as db:
-                assert db is not None  # noqa: S101
+            with self.store.documents.control.read() as tx:
+                db = tx.sql
                 row = db.execute(
                     (
                         "SELECT e.review_id FROM review_evidence e JOIN review_runs r "
@@ -607,11 +614,12 @@ class Findings:
             if author.kind == "agent" and target["origin"] == "review"
             else None
         )
-        with self.store.documents._write() as db:
+        with self.store.documents.control.write() as tx:
+            db = tx.sql
             replay = self._replay(db, project, actor, value.operation_id, fingerprint)
             if replay:
                 return replay
-            found = self._get(db, project, session, value.finding)
+            found = self.load(db, project, session, value.finding)
             if found["origin"] == "math" and author.kind != "user":
                 raise DocumentError(
                     POLICY_DENIED,
@@ -628,7 +636,7 @@ class Findings:
                 "dismiss": "withdrawn",
                 "reopen": "open",
             }[value.action]
-            result = self._transition(db, found, status, actor, value.explanation, payload)
+            result = self.transition(db, found, status, actor, value.explanation, payload)
             if prepared_body is not None:
                 response_commit(
                     db,
@@ -636,7 +644,7 @@ class Findings:
                     author,
                     prepared_body,
                 )
-            self._operation(db, project, actor, value.operation_id, fingerprint, result)
+            self.record_operation(db, project, actor, value.operation_id, fingerprint, result)
         # Immutable revision pins become confirmation evidence. A crash here cannot
         # lose them: the durable transition payload is also included in the snapshot.
         for locator in pinned:
@@ -659,11 +667,12 @@ class Findings:
         anchors = [self.validate_anchor(project, session, review, a) for a in value.anchors]
         actor = f"review:{review}"
         fingerprint = digest(dump(value.model_dump(mode="json")))
-        with self.store.documents._write() as db:
+        with self.store.documents.control.write() as tx:
+            db = tx.sql
             replay = self._replay(db, project, actor, value.operation_id, fingerprint)
             if replay:
                 return replay
-            run = self.store._run(db, project, session, review)
+            run = self.store.load_run(db, project, session, review)
             self.store.owner(run, owner)
             pinned = db.execute(
                 (
@@ -679,7 +688,7 @@ class Findings:
                     POLICY_DENIED, "finding response is outside the confirmation snapshot"
                 )
             pinned_finding = bounded_json(pinned[0], MAX_ITEM_BYTES)
-            found = self._get(db, project, session, value.finding)
+            found = self.load(db, project, session, value.finding)
             if found["origin"] == "math":
                 raise DocumentError(
                     POLICY_DENIED, "only the mechanical check decides math findings"
@@ -762,7 +771,7 @@ class Findings:
             reflag = value.decision in ("reject", "reject_rebuttal")
             if reflag and found["reflags"] + 1 >= config.max_reflags:
                 status = "unaddressed"
-            result = self._transition(
+            result = self.transition(
                 db,
                 found,
                 status,
@@ -771,7 +780,7 @@ class Findings:
                 {"review": review, "anchors": anchors, "decision": value.decision},
                 reflag=reflag,
             )
-            self._operation(db, project, actor, value.operation_id, fingerprint, result)
+            self.record_operation(db, project, actor, value.operation_id, fingerprint, result)
         return result
 
     @staticmethod
@@ -868,7 +877,8 @@ class Findings:
         self, project: str, session: str, reason: str, *, notices: set[str] | None = None
     ) -> None:
         """End bounded author rounds; a claimed fix stays explicitly unconfirmed."""
-        with self.store.documents._write() as db:
+        with self.store.documents.control.write() as tx:
+            db = tx.sql
             ids = [
                 r[0]
                 for r in db.execute(
@@ -882,16 +892,16 @@ class Findings:
             for finding in ids:
                 if notices is not None and not any(n.startswith(finding + "-r") for n in notices):
                     continue
-                found = self._get(db, project, session, finding)
-                self._transition(db, found, "unaddressed", "platform:review-bound", reason, {})
+                found = self.load(db, project, session, finding)
+                self.transition(db, found, "unaddressed", "platform:review-bound", reason, {})
 
     def supersede(self, project: str, session: str) -> None:
         """Only replaced anchored blocks count; unrelated document edits do not."""
         self.store.scope(project, session)
-        with self.store.documents._read() as db:
-            assert db is not None  # noqa: S101
+        with self.store.documents.control.read() as tx:
+            db = tx.sql
             found = [
-                self._get(db, project, session, r[0])
+                self.load(db, project, session, r[0])
                 for r in db.execute(
                     (
                         "SELECT finding_id FROM review_findings WHERE project=? AND "
@@ -961,11 +971,12 @@ class Findings:
                 )
             if replaceable and (replacements or artifact_replacements):
                 prepared.append((finding, replacements, artifact_replacements))
-        with self.store.documents._write() as db:
+        with self.store.documents.control.write() as tx:
+            db = tx.sql
             for finding, replacements, artifact_replacements in prepared:
-                current = self._get(db, project, session, finding["finding_id"])
+                current = self.load(db, project, session, finding["finding_id"])
                 if current["status"] == "open" and current["revision"] == finding["revision"]:
-                    self._transition(
+                    self.transition(
                         db,
                         current,
                         "superseded",

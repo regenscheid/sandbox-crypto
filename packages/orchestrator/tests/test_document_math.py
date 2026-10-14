@@ -147,7 +147,8 @@ async def test_agent_origin_and_user_exclusion(stores) -> None:
     assert get(reviews)[0]["status"] == "open"
     assert get(reviews)[0]["reflags"] == 0
     assert MathNotices(reviews).pending("p", "s", "r1", set()) == []
-    with docs._read() as db:
+    with docs.control.read() as tx:
+        db = tx.sql
         assert db.execute("SELECT excluded FROM math_finding_state").fetchone()[0]
 
 
@@ -158,7 +159,8 @@ async def test_unknown_user_and_reviewer_have_no_author_findings(stores) -> None
     await drain(reviews, ScriptedChecker())
     assert get(reviews) == []
     # Real checks are retained even though there is no eligible recipient.
-    with docs._read() as db:
+    with docs.control.read() as tx:
+        db = tx.sql
         assert db.execute("SELECT rejected FROM math_jobs").fetchone()[0] == 1
 
 
@@ -254,7 +256,8 @@ async def test_old_revision_owner_and_stale_result_cannot_relabel_or_close(store
     patch(docs, doc, r"\unknown{user}", "later-user", USER)
     # R1 is checked after USER R2: retained proof must still name the R1 agent.
     assert await jobs.step(first, "owner", ScriptedChecker("accepted"))
-    with docs._read() as db:
+    with docs.control.read() as tx:
+        db = tx.sql
         proof = json.loads(db.execute("SELECT payload FROM math_observations").fetchone()[0])
         assert proof["owner"]["author"]["session_id"] == "s"
         assert proof["owner"]["revision"] == 1
@@ -345,7 +348,8 @@ async def test_unchanged_revision_recovery_keeps_immutable_attempts(stores, init
     jobs.retry_unavailable("p", ScriptedChecker().identity())
     await drain(reviews, ScriptedChecker())
     assert len(get(reviews)) == 1
-    with docs._read() as db:
+    with docs.control.read() as tx:
+        db = tx.sql
         rows = db.execute(
             "SELECT revision,unavailable,rejected FROM math_jobs ORDER BY rowid"
         ).fetchall()
@@ -416,7 +420,8 @@ async def test_historical_owner_is_resumable_and_does_not_guess_latest_author(st
     await drain(reviews, ScriptedChecker())
     (found,) = get(reviews)
     assert found["source"]["owner_revision"] == 1
-    with docs._read() as db:
+    with docs.control.read() as tx:
+        db = tx.sql
         proof = db.execute(
             "SELECT revision,author FROM math_job_owners WHERE check_id=?",
             (found["math_check_id"],),
@@ -458,7 +463,8 @@ async def test_logical_quota_holds_checks_without_vetoing_edits(stores) -> None:
         reason="Other",
         operation_id="edit-quota",
     )
-    with docs._read() as db:
+    with docs.control.read() as tx:
+        db = tx.sql
         row = db.execute("SELECT target,completed,blocked FROM math_sources").fetchone()
         assert row[:2] == (2, 0)
         assert "quota" in row[2]
@@ -480,7 +486,8 @@ def test_save_hook_fault_rolls_source_and_event_back(stores, monkeypatch) -> Non
             "p", doc, base=1, text="New text.\n", author=USER, reason="Edit", operation_id="fault"
         )
     assert docs.document("p", doc).head == 1
-    with docs._read() as db:
+    with docs.control.read() as tx:
+        db = tx.sql
         assert db.execute("SELECT target FROM math_sources").fetchone()[0] == 1
         assert db.execute("SELECT count(*) FROM revisions").fetchone()[0] == 1
 
@@ -489,7 +496,8 @@ def test_save_hook_fault_rolls_source_and_event_back(stores, monkeypatch) -> Non
 async def test_math_commit_fault_rolls_observation_finding_and_cursor_back(stores) -> None:
     docs, reviews, _ = stores
     create(docs)
-    with docs._write() as db:
+    with docs.control.write() as tx:
+        db = tx.sql
         db.execute(
             "CREATE TRIGGER synthetic_math_fault BEFORE INSERT ON math_notices "
             "BEGIN SELECT RAISE(ABORT,'synthetic fault'); END"
@@ -503,9 +511,11 @@ async def test_math_commit_fault_rolls_observation_finding_and_cursor_back(store
         await jobs.step(check, "owner", ScriptedChecker())
     assert get(reviews) == []
     assert jobs.job(check)["cursor"] == 0
-    with docs._read() as db:
+    with docs.control.read() as tx:
+        db = tx.sql
         assert db.execute("SELECT count(*) FROM math_observations").fetchone()[0] == 0
-    with docs._write() as db:
+    with docs.control.write() as tx:
+        db = tx.sql
         db.execute("DROP TRIGGER synthetic_math_fault")
     assert await jobs.step(check, "owner", ScriptedChecker())
 
@@ -517,11 +527,13 @@ async def test_corrupt_job_prefix_bound_and_source_hash_binding(stores) -> None:
     jobs = MathJobs(reviews)
     check = jobs.claim("p", "owner")
     assert check
-    with docs._write() as db:
+    with docs.control.write() as tx:
+        db = tx.sql
         db.execute("UPDATE math_jobs SET reason=? WHERE check_id=?", ("x" * 20_000_000, check))
     with pytest.raises(DocumentError, match="bounds"):
         jobs.job(check)
-    with docs._write() as db:
+    with docs.control.write() as tx:
+        db = tx.sql
         db.execute(
             "UPDATE math_jobs SET reason=NULL,source_sha256=? WHERE check_id=?", ("b" * 64, check)
         )
@@ -577,7 +589,8 @@ async def test_oversized_formula_is_unavailable_without_renderer_and_rest_contin
     await drain(reviews, checker)
     assert len(checker.calls) == 1
     assert len(get(reviews)) == 1
-    with docs._read() as db:
+    with docs.control.read() as tx:
+        db = tx.sql
         assert db.execute("SELECT spans,rejected,unavailable FROM math_jobs").fetchone() == (
             2,
             1,
@@ -627,7 +640,8 @@ async def test_configuration_drift_during_await_and_mixed_runtime_are_unavailabl
 
     await drain(reviews, Runtime())
     assert get(reviews) == []
-    with docs._read() as db:
+    with docs.control.read() as tx:
+        db = tx.sql
         assert (
             db.execute(
                 "SELECT count(*) FROM math_observations WHERE status!='unavailable'"
@@ -683,7 +697,8 @@ async def test_closing_only_delivery_success_and_final_turn_pending(stores) -> N
     assert get(reviews)[0]["status"] == "open"
     assert get(reviews)[0]["reflags"] == 0
     # Delivered is not acknowledged before a durable save.
-    with docs._read() as db:
+    with docs.control.read() as tx:
+        db = tx.sql
         assert db.execute("SELECT delivered_run FROM math_notices").fetchone()[0] is None
         assert db.execute("SELECT run FROM math_ignored").fetchone()[0] == "saved"
 
@@ -768,7 +783,8 @@ async def test_actual_commit_thread_owned_through_repeated_cancellation(
     task.cancel()
     await asyncio.sleep(0)
     assert not task.done()
-    with docs._read() as db:
+    with docs.control.read() as tx:
+        db = tx.sql
         assert db.execute("SELECT lease_until FROM math_jobs").fetchone()[0] > 1000
     release.set()
     with pytest.raises(asyncio.CancelledError):
@@ -933,12 +949,14 @@ async def test_math_notice_ack_only_after_durable_run_save(stores, monkeypatch, 
     args = argparse.Namespace(state_dir=docs.path.parent, transcript=None)
     assert cli._keep(args, fields, 0) == 1
     assert get(reviews)[0]["status"] == "open"
-    with docs._read() as db:
+    with docs.control.read() as tx:
+        db = tx.sql
         assert db.execute("SELECT delivered_run FROM math_notices").fetchone()[0] is None
     monkeypatch.setattr(ProjectStore, "save_run", original)
     assert cli._keep(args, fields, 0) == 0
     assert get(reviews)[0]["status"] == ("open" if failure else "unaddressed")
-    with docs._read() as db:
+    with docs.control.read() as tx:
+        db = tx.sql
         assert db.execute("SELECT delivered_run FROM math_notices").fetchone()[0] == "saved"
     assert (
         ProjectStore(docs.path.parent)
@@ -966,7 +984,8 @@ async def test_staged_bound_rebinds_after_failed_save_and_rechecks_current_evide
     notices.bound("p", "s", "new-saved", ids)
     notices.acknowledge("p", "s", "old-save-failed", list(ids))
     assert get(reviews)[0]["status"] == "open"
-    with docs._read() as db:
+    with docs.control.read() as tx:
+        db = tx.sql
         assert db.execute("SELECT run FROM math_ignored").fetchone()[0] == "new-saved"
         assert db.execute("SELECT delivered_run FROM math_notices").fetchone()[0] is None
     expected = "unaddressed"
@@ -993,7 +1012,8 @@ async def test_staged_bound_rebinds_after_failed_save_and_rechecks_current_evide
     # current source/USER/evidence is fenced again inside this transaction.
     notices.acknowledge("p", "s", "new-saved", list(ids))
     assert get(reviews)[0]["status"] == expected
-    with docs._read() as db:
+    with docs.control.read() as tx:
+        db = tx.sql
         assert db.execute("SELECT delivered_run FROM math_notices").fetchone()[0] == "new-saved"
 
 
@@ -1074,11 +1094,13 @@ def test_corrupt_admission_lease_and_listing_ids_refuse_before_fetch(stores) -> 
     create(docs)
     jobs = MathJobs(reviews)
     check = jobs.claim("p", "owner")
-    with docs._write() as db:
+    with docs.control.write() as tx:
+        db = tx.sql
         db.execute("UPDATE math_jobs SET lease_until=? WHERE check_id=?", (float("inf"), check))
     with pytest.raises(DocumentError, match="lease"):
         jobs.claim("p", "other")
-    with docs._write() as db:
+    with docs.control.write() as tx:
+        db = tx.sql
         # Remove only the new immutable context pin in this corrupt-row fixture,
         # so its FK does not prevent testing the original admission read bound.
         db.execute("DROP TRIGGER math_macro_pins_delete")
@@ -1111,7 +1133,8 @@ async def test_valid_older_writer_revision_reconciles_without_losing_owner(
             reason="Older writer",
             operation_id="older-writer",
         )
-    with docs._read() as db:
+    with docs.control.read() as tx:
+        db = tx.sql
         assert db.execute("SELECT target,completed FROM math_sources").fetchone() == (1, 1)
     if prepare:
         reopened = DocumentStore(docs.path)
@@ -1125,7 +1148,8 @@ async def test_valid_older_writer_revision_reconciles_without_losing_owner(
     assert current["source"]["owner_revision"] == 1
     assert current["source"]["checked_revision"] == 2
     assert current["reflags"] == 0
-    with docs._read() as db:
+    with docs.control.read() as tx:
+        db = tx.sql
         assert db.execute("SELECT target,completed FROM math_sources").fetchone() == (2, 2)
 
 

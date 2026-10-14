@@ -314,8 +314,8 @@ async def confirm(path: Path) -> None:
         final = Findings(reviews).get(PROJECT, SESSION, marker["finding"])
         assert ended["state"] == "passed"
         assert final["status"] == "confirmed fixed"
-        with documents._read() as db:
-            assert db is not None
+        with documents.control.read() as tx:
+            db = tx.sql
             audited = {
                 row[0]
                 for row in db.execute(

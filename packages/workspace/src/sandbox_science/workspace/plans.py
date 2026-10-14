@@ -234,11 +234,10 @@ class PlanReader:
                 return None
             raise
         result = plans.compact_current(PlanAuthority(scope=scope, role="user", user_id=login))
-        if result is None:
-            with self.documents._read() as db:  # pyright: ignore[reportPrivateUsage]
+        if result is None and not self.documents.control.missing:
+            with self.documents.control.read() as tx:
                 if (
-                    db is not None
-                    and db.execute(
+                    tx.sql.execute(
                         "SELECT 1 FROM session_plan_records WHERE project=? AND session=? "
                         "UNION ALL SELECT 1 FROM session_plan_projections WHERE "
                         "project=? AND session=? LIMIT 1",

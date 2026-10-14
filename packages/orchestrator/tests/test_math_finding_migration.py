@@ -44,7 +44,8 @@ def legacy(tmp_path: Path) -> DocumentStore:
     projects.create("p", "minimal", "sha256:" + "a" * 64)
     projects.open_session("p", "s", dedicated=False)
     docs = DocumentStore(store_path(tmp_path))
-    with docs._write() as db:
+    with docs.control.write() as tx:
+        db = tx.sql
         for sql in storage.SCHEMA:
             db.execute(LEGACY if sql == finding_schema.FINDING_TABLE else sql)
         db.execute(
@@ -81,8 +82,8 @@ def test_populated_legacy_readonly_and_writer_migration_preserves_identity(tmp_p
     finally:
         reader.close()
     reviews = ReviewStore(docs)
-    with docs._read() as db:
-        assert db is not None
+    with docs.control.read() as tx:
+        db = tx.sql
         assert db.execute(
             "SELECT rowid," + ",".join(finding_schema.LEGACY_FIELDS) + " FROM review_findings"
         ).fetchone() == (42, *HEADER)
@@ -101,8 +102,8 @@ def test_populated_legacy_readonly_and_writer_migration_preserves_identity(tmp_p
 
     with pytest.raises(DocumentError, match="changed"):
         Findings(reviews).respond("p", "s", {**response, "operation_id": "stale"}, USER)
-    with docs._write() as db, pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
-        db.execute(
+    with docs.control.write() as tx, pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+        tx.sql.execute(
             "DELETE FROM review_findings WHERE finding_id='finding-aaaaaaaaaaaaaaaaaaaaaaaa'"
         )
     ReviewStore(docs)
@@ -116,8 +117,8 @@ def test_migration_failure_rolls_old_parent_history_and_schema_back(
     monkeypatch.setattr(finding_schema, "FINDING_INDEX", "THIS IS NOT SQL")
     with pytest.raises(sqlite3.OperationalError):
         ReviewStore(docs)
-    with docs._read() as db:
-        assert db is not None
+    with docs.control.read() as tx:
+        db = tx.sql
         assert len(db.execute("PRAGMA table_info(review_findings)").fetchall()) == 15
         assert db.execute("SELECT * FROM review_findings").fetchone() == HEADER
         assert db.execute("SELECT revision FROM review_transitions").fetchall() == [(7,)]

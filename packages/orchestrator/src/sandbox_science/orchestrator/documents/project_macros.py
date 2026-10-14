@@ -7,8 +7,6 @@ the existing math admission loop; neither settings nor source saves render math.
 
 from __future__ import annotations
 
-# Logical modules share the canonical transaction and bounded macro validator.
-# pyright: reportPrivateUsage=false
 import hashlib
 import json
 import re
@@ -20,7 +18,7 @@ from pydantic import Field, ValidationError
 from sandbox_science.contracts.model import Contract
 
 from .errors import CONFLICT, INTERNAL, INVALID_REQUEST, POLICY_DENIED, DocumentError
-from .frontmatter import MAX_MACRO, MAX_MACROS, _bounded
+from .frontmatter import MAX_MACRO, MAX_MACROS, bounded_macros
 from .models import Author
 
 if TYPE_CHECKING:
@@ -101,7 +99,7 @@ def validate(definitions: dict[str, str]) -> dict[str, str]:
     ):
         raise DocumentError(INVALID_REQUEST, "macro names and definitions exceed their bounds")
     problems: list[str] = []
-    result = _bounded(definitions, problems)
+    result = bounded_macros(definitions, problems)
     if problems:
         raise DocumentError(INVALID_REQUEST, "; ".join(problems)[:1000])
     return result
@@ -116,7 +114,7 @@ def resolve(project: dict[str, str], document: dict[str, str]) -> tuple[dict[str
     if len(combined) > MAX_MACROS:
         combined = dict(list(combined.items())[:MAX_MACROS])
         problems.append(f"only {MAX_MACROS} effective macros are used; document definitions win")
-    return _bounded(combined, problems), problems
+    return bounded_macros(combined, problems), problems
 
 
 def prepare(db: sqlite3.Connection) -> None:
@@ -192,8 +190,10 @@ class ProjectMacros:
 
     def get(self, project: str, revision: int | None = None) -> Json:
         self._project(project)
-        with self.documents._read() as db:
-            return read(db, project, revision)
+        if self.documents.control.missing:
+            return read(None, project, revision)
+        with self.documents.control.read() as tx:
+            return read(tx.sql, project, revision)
 
     def change(self, project: str, value: object, author: Author) -> Json:
         self._project(project)
@@ -206,7 +206,8 @@ class ProjectMacros:
         definitions = validate(change.macros)
         encoded = dump(definitions)
         fingerprint = hashlib.sha256(dump(change.model_dump()).encode()).hexdigest()
-        with self.documents._write() as db:
+        with self.documents.control.write() as tx:
+            db = tx.sql
             replay = db.execute(
                 "SELECT substr(CAST(fingerprint AS BLOB),1,65),revision "
                 "FROM project_macro_operations "
@@ -482,7 +483,8 @@ def view(
     anchors: list[Json] | None = None,
     project_revision: int | None = None,
 ) -> Json:
-    with documents._read() as db:
+    with documents.control.read() as tx:
+        db = tx.sql
         setting = read(db, project)
         known = True
         if project_revision is not None:
@@ -497,7 +499,7 @@ def view(
                     "WHERE document=? AND revision=?",
                     (document, revision),
                 ).fetchone()
-                if exists(db) and db is not None
+                if exists(db)
                 else None
             )
             known = row is not None
@@ -520,17 +522,16 @@ def view(
 def response_view(
     documents: DocumentStore, project: str, source: str, *, body_revision: int | None = None
 ) -> Json:
-    with documents._read() as db:
-        anchors = (
-            response_anchors(db, source) if exists(db) and db is not None else [{"unknown": True}]
-        )
+    with documents.control.read() as tx:
+        db = tx.sql
+        anchors = response_anchors(db, source) if exists(db) else [{"unknown": True}]
         saved = (
             db.execute(
                 "SELECT project_revision FROM response_macro_revisions "
                 "WHERE source=? AND body_revision=?",
                 (source, body_revision),
             ).fetchone()
-            if exists(db) and db is not None and body_revision is not None
+            if exists(db) and body_revision is not None
             else None
         )
     return view(

@@ -161,12 +161,9 @@ def contexts(store: ReviewStore, project: str, finding: Json) -> Json:
         view,
     )
 
-    with store.documents._read() as db:  # pyright: ignore[reportPrivateUsage]
-        anchors = (
-            finding_anchors(db, project, finding["finding_id"])
-            if db is not None
-            else [{"unknown": True}]
-        )
+    # The finding was read from the store, so it exists.
+    with store.documents.control.read() as tx:
+        anchors = finding_anchors(tx.sql, project, finding["finding_id"])
     if finding["origin"] == "math":
         job = MathJobs(store).job(finding["math_check_id"])
         if job["project"] != project:

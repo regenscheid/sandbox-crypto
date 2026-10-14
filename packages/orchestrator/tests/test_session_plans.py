@@ -135,7 +135,8 @@ def status(plans, ref, value, *, operation="status", authority=None, expected=No
 
 
 def rows(store):
-    with store._read() as db:
+    with store.control.read() as tx:
+        db = tx.sql
         return tuple(
             db.execute("SELECT kind,count(*) FROM session_plan_records GROUP BY kind")
         ), tuple(db.execute("SELECT kind,count(*) FROM session_plan_projections GROUP BY kind"))
@@ -143,7 +144,8 @@ def rows(store):
 
 def damage(store, table, kind, transform, *, identifier=None):
     """Corrupt only the disposable record under test, bypassing its immutable trigger."""
-    with store._write() as db:
+    with store.control.write() as tx:
+        db = tx.sql
         if table == "session_plan_records":
             db.execute("DROP TRIGGER session_plan_records_no_update")
         assert table in {"session_plan_records", "session_plan_projections"}
@@ -485,7 +487,8 @@ def test_progress_and_metadata_quotas_leave_prior_state(store):
 
 def test_immutable_records_and_commit_failure_leave_no_partial_plan(store):
     plans = SessionPlans(store)
-    with store._write() as db:
+    with store.control.write() as tx:
+        db = tx.sql
         db.execute(
             "CREATE TRIGGER fail_plan_receipt BEFORE INSERT ON session_plan_records "
             "WHEN NEW.kind='request' BEGIN SELECT RAISE(ABORT,'injected receipt failure'); END"
@@ -493,12 +496,13 @@ def test_immutable_records_and_commit_failure_leave_no_partial_plan(store):
     with pytest.raises(sqlite3.IntegrityError, match="receipt failure"):
         made(plans)
     assert rows(store) == ((), ())
-    with store._write() as db:
+    with store.control.write() as tx:
+        db = tx.sql
         db.execute("DROP TRIGGER fail_plan_receipt")
     made(plans)
     for verb in ("UPDATE session_plan_records SET key='x'", "DELETE FROM session_plan_records"):
-        with pytest.raises(sqlite3.IntegrityError, match="immutable"), store._write() as db:
-            db.execute(verb)
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"), store.control.write() as tx:
+            tx.sql.execute(verb)
 
 
 @pytest.mark.parametrize(
@@ -526,7 +530,8 @@ def test_corrupt_progress_fingerprint_cannot_certify_current_completion(store, p
 
 def test_corrupt_large_projection_is_clipped_before_python_allocation(store, plans):
     made(plans)
-    with store._write() as db:
+    with store.control.write() as tx:
+        db = tx.sql
         db.execute(
             "UPDATE session_plan_projections SET record=? WHERE kind='current'", ("x" * 20_000_000,)
         )
@@ -615,7 +620,8 @@ def test_readonly_and_old_namespace_are_honest(tmp_path):
 
 def test_unsupported_schema_does_not_recreate_namespace(store):
     SessionPlans(store)
-    with store._write() as db:
+    with store.control.write() as tx:
+        db = tx.sql
         db.execute("UPDATE session_plan_meta SET version=999")
     with pytest.raises(DocumentError, match="unsupported"):
         SessionPlans(store)
@@ -640,13 +646,15 @@ def test_complete_page_byte_cap_and_full_current_bound(plans):
 def test_summary_checks_one_canonical_mutation_without_building_current(store, plans):
     first = made(plans)
     update(plans, first.ref)
-    with store._read() as db:
+    with store.control.read() as tx:
+        db = tx.sql
         statements = []
         db.set_trace_callback(statements.append)
     try:
         summary = plans.summary(actor())
     finally:
-        with store._read() as db:
+        with store.control.read() as tx:
+            db = tx.sql
             db.set_trace_callback(None)
     assert summary.progress_cursor == 1
     assert len(summary.model_dump_json().encode()) < 8192
@@ -715,7 +723,8 @@ def test_replay_cannot_substitute_valid_other_record(store, plans):
 
 def test_schema_and_corrupt_accounting_do_not_damage_document_saves(store, plans):
     made(plans)
-    with store._write() as db:
+    with store.control.write() as tx:
+        db = tx.sql
         db.execute("UPDATE session_plan_projections SET bytes=0 WHERE kind='head'")
     with pytest.raises(DocumentError, match="accounting"):
         SessionPlans(store)
@@ -733,7 +742,8 @@ def test_valid_same_actor_receipt_substitution_cannot_rebind_request(store, plan
     first = made(plans)
     original = update(plans, first.ref, status="in_progress", operation="first")
     replacement = update(plans, first.ref, cursor=1, operation="second")
-    with store._write() as db:
+    with store.control.write() as tx:
+        db = tx.sql
         db.execute("DROP TRIGGER session_plan_records_no_update")
         for rowid, raw in db.execute(
             "SELECT rowid,record FROM session_plan_records WHERE kind='request'"
@@ -786,7 +796,8 @@ def test_summary_and_event_page_cannot_hide_user_edit_author(store, plans):
 def test_missing_scoped_event_is_unavailable_not_silent_covered_prefix(store, plans):
     first = made(plans)
     update(plans, first.ref)
-    with store._write() as db:
+    with store.control.write() as tx:
+        db = tx.sql
         db.execute("DROP TRIGGER session_plan_records_no_delete")
         db.execute("DELETE FROM session_plan_records WHERE kind='event' AND number=1")
     with pytest.raises(DocumentError, match="history has a gap"):
@@ -795,7 +806,8 @@ def test_missing_scoped_event_is_unavailable_not_silent_covered_prefix(store, pl
 
 def test_partial_namespace_refuses_both_readonly_and_writable_open(store):
     store.initialize()
-    with store._write() as db:
+    with store.control.write() as tx:
+        db = tx.sql
         db.execute("CREATE TABLE session_plan_meta(singleton INTEGER PRIMARY KEY,version INTEGER)")
     reader = DocumentStore(store.path, readonly=True)
     try:
@@ -859,7 +871,8 @@ def test_unfiltered_history_cannot_silently_skip_missing_record(store, plans, ki
         update(plans, first.ref, cursor=1, operation="second")
     else:
         status(plans, first.ref, "active")
-    with store._write() as db:
+    with store.control.write() as tx:
+        db = tx.sql
         db.execute("DROP TRIGGER session_plan_records_no_delete")
         db.execute("DELETE FROM session_plan_records WHERE kind=? AND number=1", (kind,))
     with pytest.raises(DocumentError, match="history has a gap"):

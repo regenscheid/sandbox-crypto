@@ -681,14 +681,14 @@ def test_a_change_and_its_events_commit_together(
     store: DocumentStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ids = _ff(store)
-    original = store._event
+    original = store.record_event
 
     def failing(db: sqlite3.Connection, kind: str, *args: Any) -> None:
         if kind == "document.revision_created":
             raise RuntimeError("the event could not be written")
         original(db, kind, *args)
 
-    monkeypatch.setattr(store, "_event", failing)
+    monkeypatch.setattr(store, "record_event", failing)
     with pytest.raises(RuntimeError):
         store.patch(
             "p1",

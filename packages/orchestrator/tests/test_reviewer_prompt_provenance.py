@@ -221,14 +221,16 @@ async def test_actual_multi_turn_input_is_reserved_before_call_with_fresh_schema
 def test_atomic_pin_counter_rollback_owner_and_concurrent_budget(store):
     reviews, documents, review = store
     pin = bundle().provenance
-    with documents._write() as db:
+    with documents.control.write() as tx:
+        db = tx.sql
         db.execute(
             "CREATE TRIGGER fail_counter BEFORE UPDATE OF calls ON review_runs "
             "BEGIN SELECT RAISE(ABORT, 'synthetic counter failure'); END"
         )
     with pytest.raises(sqlite3.IntegrityError, match="synthetic counter"):
         reserve(reviews, review, prompt_provenance=pin)
-    with documents._write() as db:
+    with documents.control.write() as tx:
+        db = tx.sql
         assert db.execute("SELECT count(*) FROM review_calls").fetchone() == (0,)
         assert db.execute(
             "SELECT calls,estimated_tokens FROM review_runs WHERE review_id=?", (review,)
@@ -248,7 +250,8 @@ def test_legacy_readonly_projection_and_writable_migration_preserve_rows(store):
     reviews, documents, review = store
     call = reserve(reviews, review)
     assert call is not None
-    with documents._write() as db:
+    with documents.control.write() as tx:
+        db = tx.sql
         version = db.execute("PRAGMA user_version").fetchone()[0]
         db.execute("DROP TRIGGER review_calls_prompt_immutable")
         db.execute("ALTER TABLE review_calls DROP COLUMN prompt_provenance")
@@ -256,8 +259,8 @@ def test_legacy_readonly_projection_and_writable_migration_preserve_rows(store):
     try:
         historical = ReviewStore(readonly)
         assert historical.call_provenance("p", "s", review, call).status == "legacy"
-        with readonly._read() as db:
-            assert db is not None
+        with readonly.control.read() as tx:
+            db = tx.sql
             assert not db.execute(
                 "SELECT 1 FROM pragma_table_info('review_calls') WHERE name='prompt_provenance'"
             ).fetchone()
@@ -276,7 +279,8 @@ def test_legacy_readonly_projection_and_writable_migration_preserve_rows(store):
     for _ in range(2):
         upgraded = ReviewStore(documents)
         assert upgraded.call_provenance("p", "s", review, call).status == "legacy"
-    with documents._read() as db:
+    with documents.control.read() as tx:
+        db = tx.sql
         assert db.execute("PRAGMA user_version").fetchone()[0] == version
         assert db.execute("SELECT seq,estimated_tokens,answered FROM review_calls").fetchall() == [
             (call, 100, 0)
@@ -303,8 +307,8 @@ def test_historical_text_usage_idempotence_immutable_pin_and_foreign_scope(store
     assert ReviewStore(documents).call_provenance("p", "s", review, call).provenance == historical
     for project, session in (("q", "s"), ("p", "other")):
         assert reviews.call_provenance(project, session, review, call).status == "absent"
-    with pytest.raises(sqlite3.IntegrityError, match="immutable"), documents._write() as db:
-        db.execute("UPDATE review_calls SET prompt_provenance=NULL WHERE seq=?", (call,))
+    with pytest.raises(sqlite3.IntegrityError, match="immutable"), documents.control.write() as tx:
+        tx.sql.execute("UPDATE review_calls SET prompt_provenance=NULL WHERE seq=?", (call,))
 
 
 @pytest.mark.parametrize("kind", ["oversized", "utf8", "invalid", "digest", "version"])
@@ -319,7 +323,8 @@ def test_corrupt_retained_metadata_refuses_before_large_python_allocation(store,
         "digest": encode_provenance(bundle().provenance).replace('"reviewer"', '"main"', 1),
         "version": encode_provenance(assemble_reviewer(RUBRIC, "old-rubric", SPECS).provenance),
     }
-    with documents._write() as db:
+    with documents.control.write() as tx:
+        db = tx.sql
         db.execute("DROP TRIGGER review_calls_prompt_immutable")
         sql = (
             "UPDATE review_calls SET prompt_provenance=CAST(? AS TEXT) WHERE seq=?"
@@ -343,7 +348,8 @@ def test_corrupt_retained_metadata_refuses_before_large_python_allocation(store,
 async def test_failed_attempt_keeps_exact_charge_pin_and_unknown_model(store, monkeypatch, failure):
     reviews, documents, review = store
     if failure == "timeout":
-        with documents._write() as db:
+        with documents.control.write() as tx:
+            db = tx.sql
             db.execute(
                 "UPDATE review_runs SET config=? WHERE review_id=?",
                 (ReviewConfig(time_seconds=0.02).model_dump_json(), review),
@@ -372,7 +378,8 @@ async def test_failed_attempt_keeps_exact_charge_pin_and_unknown_model(store, mo
             await task
     else:
         await asyncio.wait_for(task, 1)
-    with documents._read() as db:
+    with documents.control.read() as tx:
+        db = tx.sql
         call, answered = db.execute("SELECT seq,answered FROM review_calls").fetchone()
     assert answered == 0
     pin = reviews.call_provenance("p", "s", review, call).provenance
