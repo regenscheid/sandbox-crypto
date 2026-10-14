@@ -9,6 +9,7 @@ record, the events and the messages.
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
@@ -17,7 +18,7 @@ import pytest
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.contracts.worker import TERMINAL_STATES
 from sandbox_science.orchestrator import cli
-from sandbox_science.orchestrator.chat import session_lease
+from sandbox_science.orchestrator.chat import RunChat, session_lease
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.projects import ProjectStore
@@ -229,3 +230,94 @@ async def test_an_event_that_cannot_be_written_does_not_stop_the_run(
     record = await harness.run("run-1", [Reply("Still answered.")])
     assert (record.stopped, record.final_text) == ("answered", "Still answered.")
     assert "the started event of run" in caplog.text
+
+
+CONTEXT = ExecutionContext(project_id="p", session_id="s", environment_id="env")
+
+
+async def test_a_lease_renewed_on_the_injected_clock_outlives_its_first_minute(
+    tmp_path: Path,
+) -> None:
+    clock = FakeClock(datetime.now(UTC))
+    projects, state = store(tmp_path, clock)
+    async with session_lease(state, CONTEXT, "run-a", clock=clock):
+        for _ in range(12):  # three minutes, in steps under the renewal interval
+            await eventually(lambda: clock.sleepers > 0)
+            clock.advance(14)
+            await asyncio.sleep(0.05)
+        assert state.lease("p", "s") is not None
+    assert state.lease("p", "s") is None
+    projects.close()
+
+
+@pytest.mark.parametrize("kind", ["conflict", "busy"])
+async def test_a_lost_lease_stops_the_run_that_held_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    """RS-5: another holder took the session (conflict), or no renewal succeeded for
+    half the lease (busy): the holder stops, and its release leaves the session free."""
+    projects = ProjectStore(tmp_path)
+    projects.create("p", "minimal", "sha256:" + "a" * 64)
+    projects.open_session("p", "s", dedicated=False)
+    state = RunState(projects.control, lease_seconds=0.4)
+
+    def lost(*args: object) -> None:
+        raise ControlError(kind, "the lease is gone")
+
+    async def hold() -> None:
+        async with session_lease(state, CONTEXT, "run-a"):
+            monkeypatch.setattr(RunState, "renew", lost)
+            await asyncio.sleep(30)
+
+    with pytest.raises(ControlError) as stopped:
+        await asyncio.wait_for(hold(), 5)
+    assert stopped.value.kind == "conflict"
+    assert "lost the lease" in stopped.value.message
+    assert state.lease("p", "s") is None
+    projects.close()
+
+
+async def test_every_page_of_queued_messages_reaches_the_run(tmp_path: Path) -> None:
+    projects, state = store(tmp_path)
+    for number in range(201):
+        state.post("p", "s", f"m-{number}", f"text {number}", author="user")
+    chat = RunChat(state, CONTEXT, run="r", run_id="r", task=None)
+    first = await chat.pending()
+    assert len(first) == 201
+    chat.offered.update(m.message_id for m in first[:200])
+    assert [m.message_id for m in await chat.pending()] == ["m-200"]
+    projects.close()
+
+
+async def test_an_oversized_event_keeps_head_tail_and_usage(tmp_path: Path) -> None:
+    projects, state = store(tmp_path)
+    state.acquire("p", "s", "r", "holder")
+    chat = RunChat(state, CONTEXT, run="r", run_id="r", task=None)
+    await chat.write("tool", {"result": "a" + "x" * 100_000 + "z"})
+    calls = [{"id": f"c{n}", "name": "shell", "arguments": "y" * 40} for n in range(3000)]
+    usage = {"model": "m", "input_tokens": 1, "output_tokens": 2}
+    await chat.write("assistant", {"turn": 1, "text": "t", "tool_calls": calls, "usage": usage})
+    tool, assistant = state.events("p", "s", "r")
+    result = cast(str, tool.data["result"])
+    assert result.startswith("a")
+    assert result.endswith("z")
+    assert "characters omitted" in result
+    assert assistant.data["usage"] == usage
+    assert assistant.data["tool_calls"] == [{"omitted": 3000}]
+    projects.close()
+
+
+async def test_a_long_answer_is_cut_in_its_event_and_whole_in_the_record(
+    harness: Harness,
+) -> None:
+    answer = "BEGIN " + "y" * 40_000 + " END"
+    record = await harness.run("run-1", [Reply(answer)])
+    state = runs(harness)
+    (entry,) = ProjectStore(harness.state).runs(PROJECT, SESSION)
+    (reply,) = [e for e in state.events(PROJECT, SESSION, entry.name) if e.kind == "assistant"]
+    text = cast(str, reply.data["text"])
+    assert record.final_text == answer
+    assert "characters omitted" in text
+    assert text.startswith("BEGIN ")
+    assert text.endswith(" END")
+    assert len(text) < 17_000

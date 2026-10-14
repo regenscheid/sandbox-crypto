@@ -24,7 +24,15 @@ from typing import Protocol
 
 from pydantic import TypeAdapter, ValidationError
 
-from sandbox_science.contracts import ErrorKind, ExecutionContext, Identifier, Location, new_id
+from sandbox_science.contracts import (
+    SYSTEM_CLOCK,
+    Clock,
+    ErrorKind,
+    ExecutionContext,
+    Identifier,
+    Location,
+    new_id,
+)
 from sandbox_science.contracts.worker import Language
 
 from . import mathchecks
@@ -278,6 +286,7 @@ class Harness:
         reviewer: Role | None = None,
         checker: Checker | None = None,
         settings: Settings | None = None,
+        clock: Clock = SYSTEM_CLOCK,
     ) -> None:
         """``checker`` is the configured math checker; without it, math checks report
         the renderer unavailable. A reviewer and a checker need stores."""
@@ -286,6 +295,8 @@ class Harness:
         self.client, self.main, self.stores = client, main, stores
         self.watcher, self.reviewer, self.checker = watcher, reviewer, checker
         self.settings = settings or Settings()
+        self.clock = clock
+        """The time the run's messages and leases are read in."""
 
     async def run(self, request: RunRequest, sink: RunSink) -> Finished:
         """Admit the run (``admit``), then run it (``start``)."""
@@ -358,6 +369,7 @@ class Harness:
             run=run_name(admitted.started_at, admitted.run_id),
             run_id=admitted.run_id,
             task=admitted.request.task,
+            clock=self.clock,
         )
 
     async def _toolbox(

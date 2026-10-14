@@ -19,6 +19,8 @@ its record.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
 import secrets
@@ -29,12 +31,14 @@ from typing import Any, Final, cast
 
 from pydantic import JsonValue
 
-from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ExecutionContext
+from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ExecutionContext, wait_or_sleep
 
-from .aio import lease, threaded
+from .aio import threaded
+from .control import ControlError
+from .control.errors import CONFLICT
 from .hooks import Closing, Notice, Point, RunView, TurnHook
 from .projects import ModelUsage, RunRecord
-from .runstate import MAX_EVENT_BYTES, ChatMessage, EventKind, RunState
+from .runstate import MAX_EVENT_BYTES, PAGE, ChatMessage, EventKind, RunState
 from .tools import bound
 
 _log = logging.getLogger(__name__)
@@ -70,14 +74,31 @@ class RunChat:
         self.texts: dict[str, str] = {}
 
     async def pending(self) -> list[ChatMessage]:
-        """Queued messages this run has not offered yet, oldest first."""
+        """Queued messages this run has not offered yet, oldest first, every page."""
         context = self.context
-        found = await threaded(
-            self.state.messages, context.project_id, context.session_id, state="queued"
-        )
-        fresh = [message for message in found if message.message_id not in self.offered]
+        fresh: list[ChatMessage] = []
+        after = 0
+        while True:
+            page = await threaded(
+                self.state.messages,
+                context.project_id,
+                context.session_id,
+                after=after,
+                state="queued",
+            )
+            fresh.extend(message for message in page if message.message_id not in self.offered)
+            if len(page) < PAGE:
+                break
+            after = page[-1].number
         self.texts.update((message.message_id, message.text) for message in fresh)
         return fresh
+
+    async def offer(self, found: Sequence[ChatMessage]) -> None:
+        """Mark messages offered to this run, which must still hold the session."""
+        context = self.context
+        ids = [message.message_id for message in found]
+        await threaded(self.state.offer, context.project_id, context.session_id, ids, self.run)
+        self.offered.update(ids)
 
     async def arrived(self) -> None:
         """Return once a message waits for this run."""
@@ -94,6 +115,7 @@ class RunChat:
                 self.run,
                 kind,
                 _bounded(data),
+                holding=True,
             )
         except Exception:
             _log.exception("the %s event of run %s could not be written", kind, self.run)
@@ -116,7 +138,8 @@ class UserMessages(TurnHook):
 
     async def _take(self) -> tuple[Notice, ...]:
         found = await self.chat.pending()
-        self.chat.offered.update(message.message_id for message in found)
+        if found:
+            await self.chat.offer(found)
         return tuple(
             Notice(SOURCE, (message.message_id,), message.text, None, user=True)
             for message in found
@@ -142,6 +165,7 @@ class UserMessages(TurnHook):
                 context.session_id,
                 list(ids),
                 self.chat.run,
+                holding=True,
             )
 
 
@@ -285,13 +309,19 @@ def _scalar(value: object) -> JsonValue:
 
 
 def _bounded(data: dict[str, Any]) -> dict[str, JsonValue]:
-    """``data`` with every text short enough for an event, keeping head and tail."""
+    """``data`` with every text short enough for an event, keeping head and tail. Tool
+    calls too many to fit are left out, with their count, so the rest survives."""
     limit = TEXT_CHARS
     while True:
         found = cast(dict[str, JsonValue], _bound(data, limit))
-        if len(_encoded(found)) <= MAX_EVENT_BYTES - 1024 or limit <= 64:
+        if len(_encoded(found)) <= MAX_EVENT_BYTES - 1024:
             return found
-        limit //= 2
+        if limit > 64:
+            limit //= 2
+        elif isinstance(calls := data.get("tool_calls"), list):
+            data = {**data, "tool_calls": [{"omitted": len(cast(list[object], calls))}]}
+        else:
+            return found
 
 
 def _bound(value: object, limit: int) -> object:
@@ -312,18 +342,51 @@ def _encoded(data: dict[str, JsonValue]) -> bytes:
 async def session_lease(
     state: RunState, context: ExecutionContext, run: str, *, clock: Clock = SYSTEM_CLOCK
 ) -> AsyncGenerator[None]:
-    """Hold the session's run lease (RS-5) for ``run``, renewing it; ``busy`` while
-    another run holds it."""
+    """Hold the session's run lease (RS-5) for ``run``, renewing it four times a lease;
+    ``busy`` while another run holds it.
+
+    A lease is lost when another holder took the session, or when no renewal succeeded
+    for half the lease's time. The run then stops: the task that holds the lease is
+    cancelled, and leaving raises ``conflict``.
+    """
     holder = secrets.token_hex(16)
     project, session = context.project_id, context.session_id
     await threaded(state.acquire, project, session, run, holder)
+    owner = asyncio.current_task()
+    stopping, lost = asyncio.Event(), asyncio.Event()
+
+    async def renewals() -> None:
+        renewed = clock.monotonic()
+        while not await wait_or_sleep(clock, stopping, state.lease_seconds / 4):
+            taken = False
+            try:
+                await threaded(state.renew, project, session, holder)
+                renewed = clock.monotonic()
+                continue
+            except ControlError as error:
+                taken = error.kind == CONFLICT
+                _log.warning("the lease of run %s was not renewed: %s", run, error.message)
+            except Exception:
+                _log.exception("the lease of run %s was not renewed", run)
+            if taken or clock.monotonic() - renewed > state.lease_seconds / 2:
+                _log.error("run %s lost the lease of session %s; it stops", run, session)
+                lost.set()
+                if owner is not None:
+                    owner.cancel()
+                return
+
+    renewing = asyncio.create_task(renewals())
     try:
-        async with lease(
-            lambda: state.renew(project, session, holder),
-            interval=state.lease_seconds / 4,
-            name="session run",
-            clock=clock,
-        ):
-            yield
+        yield
+    except asyncio.CancelledError:
+        if not lost.is_set() or owner is None:
+            raise
+        owner.uncancel()
+        raise ControlError(
+            CONFLICT, f"run {run} lost the lease of session {session!r} and stopped"
+        ) from None
     finally:
+        stopping.set()
+        with contextlib.suppress(Exception):
+            await renewing
         await threaded(state.release, project, session, holder)
