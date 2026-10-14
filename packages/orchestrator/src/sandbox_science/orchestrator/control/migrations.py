@@ -15,10 +15,9 @@ store (docs/LIVING-DOCUMENTS.md).
 To change the schema, append a step to ``MIGRATIONS``. Never edit a step that has
 shipped, or ``baseline.sql``: databases made with them keep them. A step gets a
 ``Schema``, which runs one statement at a time and refuses transaction control, since
-the step runs inside the writer's transaction. A step that rebuilds a table (create the
-new one, copy the rows, drop the old one, rename) first runs
-``PRAGMA defer_foreign_keys=ON``, because ``foreign_keys`` cannot be switched off inside
-a transaction, and runs ``PRAGMA foreign_key_check`` before it ends.
+the step runs inside the writer's transaction. The steps run with foreign keys off, so
+that a step can rebuild a table (create the new one, copy the rows, drop the old one,
+rename: ``rebuild``); ``migrate`` checks every foreign key before the change commits.
 """
 
 from __future__ import annotations
@@ -115,7 +114,6 @@ def rebuild(schema: Schema, table: str, create: str) -> None:
     add a constraint to a table. A row the new definition refuses fails the step."""
     if not create.startswith(f"CREATE TABLE {table} ("):
         raise ControlError(INTERNAL, f"a rebuild of {table} needs its CREATE TABLE")
-    schema.execute("PRAGMA defer_foreign_keys=ON")
     attached = schema.execute(
         "SELECT sql FROM sqlite_master WHERE tbl_name=? AND type IN ('index','trigger') "
         "AND sql IS NOT NULL ORDER BY rowid",
@@ -300,4 +298,6 @@ def migrate(db: sqlite3.Connection, path: Path) -> None:
         if not db.in_transaction:
             raise ControlError(INTERNAL, "a migration step ended the writer's transaction")
     if pending:
+        if db.execute("PRAGMA foreign_key_check").fetchone() is not None:
+            raise ControlError(INTERNAL, "a migration step broke a foreign key")
         db.execute(f"PRAGMA user_version = {VERSION}")

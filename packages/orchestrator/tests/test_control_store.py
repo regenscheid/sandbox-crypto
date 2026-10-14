@@ -405,6 +405,11 @@ def _v3_with_a_thread(path: Path, monkeypatch: pytest.MonkeyPatch, anchor: str) 
             tx.sql.execute(
                 "INSERT INTO annotation_threads VALUES ('ann-1', ?, ?, '{}', 1.0)", (doc, anchor)
             )
+            # A child row: rebuilding its parent table must keep its foreign key.
+            tx.sql.execute(
+                "INSERT INTO annotation_entries VALUES "
+                "('cmt-1', 'ann-1', 1, 'create', '{}', 'A comment.', '{}', 1.0)"
+            )
         documents.close()
 
 
@@ -420,6 +425,9 @@ def test_the_comment_checks_keep_rows_triggers_and_views(
     db = sqlite3.connect(path)
     assert db.execute("PRAGMA user_version").fetchone() == (migrations.VERSION,)
     assert db.execute("SELECT rowid, * FROM annotation_threads").fetchall() == kept
+    assert db.execute("SELECT entry_id, thread_id FROM annotation_entries").fetchall() == [
+        ("cmt-1", "ann-1")
+    ]
     with pytest.raises(sqlite3.IntegrityError, match="append-only"):
         db.execute("UPDATE annotation_threads SET anchor = '[]'")
     with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
