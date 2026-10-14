@@ -3,6 +3,9 @@
 -- Never edit this file: a database made from it keeps it. A change to the schema is a
 -- new step at the end of MIGRATIONS in migrations.py.
 
+-- A control store's application_id: "SScs", migrations.APPLICATION_ID.
+PRAGMA application_id = 1397973875;
+
 -- Documents, revisions, patches, operation IDs and events (documents/store.py)
 CREATE TABLE documents (
     document_id TEXT PRIMARY KEY,

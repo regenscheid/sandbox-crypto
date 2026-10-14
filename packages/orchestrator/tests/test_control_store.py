@@ -4,7 +4,11 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 import sqlite3
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -84,42 +88,144 @@ def test_the_document_error_is_the_control_error() -> None:
     assert DocumentError is ControlError
 
 
-def _database(path: Path, version: int) -> str:
-    """A database in ``version`` with one row, and the digest of its bytes."""
+def _files(path: Path) -> dict[str, str]:
+    """Each of the database's files (main, -wal, -shm) and the digest of its bytes. A
+    reader of a WAL database may add an empty -wal and -shm: compare with ``_kept``."""
+    return {
+        found.name: hashlib.sha256(found.read_bytes()).hexdigest()
+        for found in sorted(path.parent.glob(path.name + "*"))
+    }
+
+
+def _database(path: Path, version: int, application: int = 0, *, wal: bool = True) -> None:
+    """An SQLite database in ``version`` with one table and one row."""
     db = sqlite3.connect(path)
-    db.execute("PRAGMA journal_mode=WAL")
+    if wal:
+        db.execute("PRAGMA journal_mode=WAL")
     db.execute("CREATE TABLE documents (document_id TEXT PRIMARY KEY)")
     db.execute("INSERT INTO documents VALUES ('doc-1')")
     db.execute(f"PRAGMA user_version = {version}")
+    db.execute(f"PRAGMA application_id = {application}")
     db.commit()
     db.close()
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _kept(before: dict[str, str], path: Path) -> bool:
+    """Whether each file that was there before is unchanged."""
+    after = _files(path)
+    return {name: after.get(name) for name in before} == before
+
+
+def _refused(path: Path, match: str) -> ControlError:
+    """The refusal of ``path`` by a writer and by a reader, the same for both."""
+    errors = []
+    for readonly in (False, True):
+        store = _store(path, readonly=readonly)
+        with pytest.raises(ControlError, match=match) as raised, store.read():
+            pass
+        store.close()
+        errors.append(raised.value)
+    assert errors[0].kind == errors[1].kind == "unavailable"
+    return errors[0]
 
 
 def test_a_development_store_from_before_the_baseline_is_refused_unchanged(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "control.sqlite3"
-    digest = _database(path, migrations.BASELINE - 1)
-    for readonly in (False, True):
-        store = _store(path, readonly=readonly)
-        with pytest.raises(ControlError, match="document export") as raised, store.read():
-            pass
-        assert raised.value.kind == "internal"
-        assert "move the file aside" in raised.value.message
-        store.close()
-    assert hashlib.sha256(path.read_bytes()).hexdigest() == digest
+    _database(path, migrations.BASELINE - 1)
+    before = _files(path)
+    error = _refused(path, "document export")
+    assert "move the file aside" in error.message
+    assert _kept(before, path)
+
+
+def test_a_store_whose_writer_crashed_is_refused_with_its_wal_unchanged(
+    tmp_path: Path,
+) -> None:
+    live = tmp_path / "live" / "control.sqlite3"
+    live.parent.mkdir()
+    _database(live, migrations.BASELINE - 1)
+    holder = sqlite3.connect(live, isolation_level=None)
+    holder.execute("PRAGMA wal_autocheckpoint=0")
+    holder.execute("INSERT INTO documents VALUES ('doc-2')")
+    path = tmp_path / "crashed" / "control.sqlite3"
+    path.parent.mkdir()
+    for suffix in ("", "-wal"):  # the files as a crash leaves them
+        shutil.copy(f"{live}{suffix}", f"{path}{suffix}")
+    holder.close()
+    before = _files(path)
+    _refused(path, "document export")
+    assert _kept(before, path)
 
 
 def test_a_newer_store_is_refused_unchanged(tmp_path: Path) -> None:
     path = tmp_path / "control.sqlite3"
-    digest = _database(path, migrations.VERSION + 1)
-    for readonly in (False, True):
-        store = _store(path, readonly=readonly)
-        with pytest.raises(ControlError, match="newer"), store.read():
-            pass
-        store.close()
-    assert hashlib.sha256(path.read_bytes()).hexdigest() == digest
+    _database(path, migrations.VERSION + 1, migrations.APPLICATION_ID)
+    before = _files(path)
+    _refused(path, "newer")
+    assert _kept(before, path)
+
+
+@pytest.mark.parametrize("version", [0, migrations.BASELINE, migrations.VERSION + 1])
+def test_another_applications_database_is_refused_unchanged(tmp_path: Path, version: int) -> None:
+    path = tmp_path / "control.sqlite3"
+    _database(path, version, wal=False)
+    before = _files(path)
+    _refused(path, "not a control store")
+    assert _kept(before, path)
+    db = sqlite3.connect(path)
+    assert db.execute("PRAGMA journal_mode").fetchone() == ("delete",)
+    db.close()
+
+
+def test_a_file_that_is_not_sqlite_is_refused_unchanged(tmp_path: Path) -> None:
+    path = tmp_path / "control.sqlite3"
+    path.write_bytes(b"not a database " * 100)
+    before = _files(path)
+    _refused(path, "not a control store")
+    assert _kept(before, path)
+
+
+def test_a_reader_racing_the_first_writer_finds_the_store_missing(tmp_path: Path) -> None:
+    path = tmp_path / "control.sqlite3"
+    sqlite3.connect(path).close()  # created, nothing written yet
+    reader = _store(path, readonly=True)
+    assert reader.missing
+    _store(path).initialize()
+    assert not reader.missing
+    reader.close()
+
+
+_FIRST_OPEN = """
+import sys, time
+from pathlib import Path
+from sandbox_science.orchestrator.control import ControlStore
+time.sleep(max(0.0, float(sys.argv[2]) - time.time()))
+ControlStore(Path(sys.argv[1])).initialize()
+"""
+
+
+def test_concurrent_first_opens_wait_for_each_other(tmp_path: Path) -> None:
+    # Six processes create each of three new stores at the same moment.
+    paths = [tmp_path / f"t{trial}" / "control.sqlite3" for trial in range(3)]
+    start = str(time.time() + 3)
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", _FIRST_OPEN, str(path), start],
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for path in paths
+        for _ in range(6)
+    ]
+    for process in processes:
+        _, err = process.communicate(timeout=120)
+        assert process.returncode == 0, err
+    for path in paths:
+        db = sqlite3.connect(path)
+        assert db.execute("PRAGMA user_version").fetchone() == (migrations.VERSION,)
+        db.close()
 
 
 def test_a_writer_runs_the_pending_steps_all_or_nothing(
@@ -129,11 +235,11 @@ def test_a_writer_runs_the_pending_steps_all_or_nothing(
     _store(path).initialize()
     baseline = migrations.MIGRATIONS
 
-    def add_notes(db: sqlite3.Connection) -> None:
-        db.execute("CREATE TABLE notes (text TEXT NOT NULL) STRICT")
+    def add_notes(schema: migrations.Schema) -> None:
+        schema.execute("CREATE TABLE notes (text TEXT NOT NULL) STRICT")
 
-    def fail(db: sqlite3.Connection) -> None:
-        db.execute("SELECT no_such_function()")
+    def fail(schema: migrations.Schema) -> None:
+        schema.execute("SELECT no_such_function()")
 
     monkeypatch.setattr(migrations, "MIGRATIONS", (*baseline, add_notes, fail))
     monkeypatch.setattr(migrations, "VERSION", migrations.BASELINE + 2)
@@ -159,11 +265,40 @@ def test_a_writer_runs_the_pending_steps_all_or_nothing(
     reader.close()
 
 
+@pytest.mark.parametrize("statement", ["COMMIT", "-- a comment\n  begin", "ROLLBACK", "VACUUM"])
+def test_a_step_cannot_end_the_writers_transaction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, statement: str
+) -> None:
+    path = tmp_path / "control.sqlite3"
+    _store(path).initialize()
+
+    def ending(schema: migrations.Schema) -> None:
+        schema.execute("CREATE TABLE notes (text TEXT)")
+        schema.execute(statement)
+
+    monkeypatch.setattr(migrations, "MIGRATIONS", (*migrations.MIGRATIONS, ending))
+    monkeypatch.setattr(migrations, "VERSION", migrations.BASELINE + 1)
+    with pytest.raises(ControlError, match="inside the writer's transaction"):
+        _store(path).initialize()
+    db = sqlite3.connect(path)
+    assert db.execute("PRAGMA user_version").fetchone() == (migrations.BASELINE,)
+    assert db.execute("SELECT 1 FROM sqlite_master WHERE name='notes'").fetchone() is None
+    db.close()
+
+
+def test_a_new_store_carries_the_application_id(tmp_path: Path) -> None:
+    path = tmp_path / "control.sqlite3"
+    _store(path).initialize()
+    db = sqlite3.connect(path)
+    assert db.execute("PRAGMA application_id").fetchone() == (migrations.APPLICATION_ID,)
+    db.close()
+
+
 def test_the_baseline_is_never_edited() -> None:
     # A database made from the baseline keeps it: change the schema by appending a
     # step to migrations.MIGRATIONS instead.
     text = Path(migrations.__file__).with_name("baseline.sql").read_bytes()
     assert (
         hashlib.sha256(text).hexdigest()
-        == "24ee67e37dc5db1fc6d6a852beaebcc02c9f38812a84fe58251a157eeee0e310"
+        == "f78d0068e2cf6a2ad8339b2de73106b04d2d3cb5e18eb421ac2a8e1c4717c2aa"
     )

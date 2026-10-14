@@ -37,11 +37,13 @@ from typing import Final
 
 from aiohttp import web
 
+from sandbox_science.orchestrator.documents import DocumentError
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
 from .app import create_app
+from .documents import WRITER
 from .mathrepair import MathRepairService, gateway_service, reviewer_alias
 
 _log = logging.getLogger("sandbox_science.workspace")
@@ -205,6 +207,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             job_state = JobState(args.state_dir)
         except (OSError, UnicodeError, ValueError) as exc:
             parser.error(f"cannot configure job worker: {exc}")
+        except DocumentError as exc:
+            print(f"error: {exc.message}", file=sys.stderr)
+            return 1
     login_token = secrets.token_urlsafe(32)
     try:
         app = create_app(
@@ -218,6 +223,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     except OSError as exc:
         print(f"error: {exc} (build the web app: npm run build)", file=sys.stderr)
+        return 1
+    try:
+        # The writer brings the control store to the current schema now, so that the
+        # read-only views can read it, or the server does not start, saying why.
+        app[WRITER].initialize()
+    except DocumentError as exc:
+        print(f"error: {exc.message}", file=sys.stderr)
         return 1
     if repair.enabled:
         _log.info(

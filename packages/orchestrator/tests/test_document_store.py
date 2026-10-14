@@ -736,6 +736,7 @@ def test_a_store_in_another_format_is_refused(tmp_path: Path) -> None:
     path = tmp_path / "control.sqlite3"
     db = sqlite3.connect(path)
     db.execute(f"PRAGMA user_version = {migrations.VERSION + 1}")
+    db.execute(f"PRAGMA application_id = {migrations.APPLICATION_ID}")
     db.close()
     with pytest.raises(DocumentError, match="newer"):
         DocumentStore(path).documents("p1")

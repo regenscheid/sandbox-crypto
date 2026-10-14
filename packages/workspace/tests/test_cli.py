@@ -7,12 +7,15 @@ import asyncio
 import contextlib
 import re
 import signal
+import sqlite3
 import sys
 from pathlib import Path
 
 import aiohttp
 import pytest
 
+from sandbox_science.orchestrator.control import migrations
+from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.workspace import cli
 
 COMMAND = Path(sys.executable).parent / "sandbox-science-workspace"
@@ -74,6 +77,69 @@ def test_a_missing_build_or_state_directory_is_an_error(
     no_build = cli.main([*common, "--state-dir", str(tmp_path), "--static", str(tmp_path)])
     assert no_build == 1
     assert "npm run build" in capsys.readouterr().err
+
+
+def test_the_server_brings_the_control_store_up_to_date_or_says_why_not(
+    state_dir: Path,
+    static_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    served: list[bool] = []
+
+    async def serve(*_: object) -> None:
+        served.append(True)
+
+    monkeypatch.setattr(cli, "serve", serve)
+    args = ["serve", "--state-dir", str(state_dir), "--static", str(static_dir)]
+    store = DocumentStore(store_path(state_dir))
+    store.initialize()
+    store.close()
+
+    def add_notes(schema: migrations.Schema) -> None:
+        schema.execute("CREATE TABLE notes (text TEXT NOT NULL) STRICT")
+
+    # A later version adds a step: the server's writer runs it before the views read.
+    with monkeypatch.context() as later:
+        later.setattr(migrations, "MIGRATIONS", (*migrations.MIGRATIONS, add_notes))
+        later.setattr(migrations, "VERSION", migrations.BASELINE + 1)
+        assert cli.main(args) == 0
+        reader = DocumentStore(store_path(state_dir), readonly=True)
+        assert reader.documents("p1") == []
+        reader.close()
+    assert served == [True]
+    # This version cannot use a newer store: the server does not start, and says why.
+    assert cli.main(args) == 1
+    assert served == [True]
+    assert "newer than this version's" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("worker", [False, True])
+def test_an_old_control_store_stops_the_server_with_the_reason(
+    state_dir: Path,
+    static_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    worker: bool,
+) -> None:
+    async def serve(*_: object) -> None:
+        raise AssertionError("the server must not start")
+
+    monkeypatch.setattr(cli, "serve", serve)
+    database = sqlite3.connect(store_path(state_dir))
+    database.execute("CREATE TABLE documents (document_id TEXT PRIMARY KEY)")
+    database.execute("PRAGMA user_version = 1")
+    database.commit()
+    database.close()
+    token = tmp_path / "worker.token"
+    token.write_text("test-secret-worker-token")
+    extra = ["--worker", "http://127.0.0.1:9", "--worker-token-file", str(token)]
+    args = ["serve", "--state-dir", str(state_dir), "--static", str(static_dir)]
+    assert cli.main([*args, *(extra if worker else [])]) == 1
+    err = capsys.readouterr().err
+    assert "error: control.sqlite3 is a development control store" in err
+    assert "Traceback" not in err
 
 
 @pytest.mark.asyncio

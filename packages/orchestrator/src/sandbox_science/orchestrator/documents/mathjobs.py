@@ -32,8 +32,6 @@ BATCH = 32
 LEASE = 120
 
 
-
-
 class Checker(Protocol):
     def identity(self) -> dict[str, object]: ...
 
