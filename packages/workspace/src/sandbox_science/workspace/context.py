@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Final
+from typing import Final, cast
 
 from aiohttp import hdrs, web
 from pydantic import TypeAdapter, ValidationError
@@ -42,10 +42,36 @@ class WorkspaceContext:
 
 
 CONTEXT: Final = web.AppKey("workspace_context", WorkspaceContext)
+LOOPBACK_NAMES: Final = ("localhost", "127.0.0.1", "[::1]")
 
 USER_ID: Final = USER.user
 """The workspace's one user, as plan records name it: the same for every login, as the
 documents' USER author is."""
+
+
+def listener(request: web.Request) -> tuple[str, int] | None:
+    """The address and port the request came in on."""
+    transport = request.transport
+    sockname: object = transport.get_extra_info("sockname") if transport is not None else None
+    if not isinstance(sockname, tuple):
+        return None
+    address = cast(tuple[object, ...], sockname)
+    if len(address) < 2 or not isinstance(address[0], str) or not isinstance(address[1], int):
+        return None
+    return address[0], address[1]
+
+
+def own_hosts(request: web.Request) -> frozenset[str]:
+    """The ``Host`` values that name this server: its loopback names and its address."""
+    address = listener(request)
+    if address is None:
+        return frozenset()
+    ip, port = address
+    names = {*LOOPBACK_NAMES, f"[{ip}]" if ":" in ip else ip}
+    hosts = {f"{name}:{port}" for name in names}
+    if port == 80:
+        hosts.update(names)
+    return frozenset(hosts)
 
 
 def identifier(request: web.Request, name: str) -> str:

@@ -37,7 +37,7 @@ import secrets
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Final, cast
+from typing import Final
 
 from aiohttp import hdrs, web
 
@@ -50,6 +50,7 @@ from sandbox_science.orchestrator.worker_client import WorkerClient
 
 from . import (
     api,
+    artifacts,
     chat,
     documents,
     errors,
@@ -61,7 +62,7 @@ from . import (
     provisioning,
     reviews,
 )
-from .context import CONTEXT, WorkspaceContext, json_body
+from .context import CONTEXT, WorkspaceContext, json_body, listener, own_hosts
 from .errors import json_error
 from .mathrepair import (
     MathRepairService,
@@ -69,6 +70,7 @@ from .mathrepair import (
     SessionLimitError,
     parse_request,
 )
+from .preview import Preview
 
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 
@@ -77,7 +79,6 @@ SESSION_COOKIE: Final = "sandbox_science_workspace"
 MAX_SESSIONS: Final = 64
 """Sessions kept at once; logging in beyond it ends the oldest."""
 MAX_TOKEN: Final = 256
-LOOPBACK_NAMES: Final = ("localhost", "127.0.0.1", "[::1]")
 SAFE_METHODS: Final = frozenset({hdrs.METH_GET, hdrs.METH_HEAD})
 
 CONTENT_SECURITY_POLICY: Final = "; ".join(
@@ -94,6 +95,16 @@ CONTENT_SECURITY_POLICY: Final = "; ".join(
         "frame-ancestors 'none'",
     )
 )
+
+
+def content_security_policy(preview_origin: str) -> str:
+    """The workspace's CSP; with the PDF viewer on, it may frame that origin and no
+    other (docs/specs/pdf-viewer.md, PV-2)."""
+    if not preview_origin:
+        return CONTENT_SECURITY_POLICY
+    return f"{CONTENT_SECURITY_POLICY}; frame-src {preview_origin}"
+
+
 SECURITY_HEADERS: Final = {
     "Content-Security-Policy": CONTENT_SECURITY_POLICY,
     "X-Content-Type-Options": "nosniff",
@@ -164,35 +175,10 @@ def is_api(path: str) -> bool:
     return path == "/api" or path.startswith("/api/")
 
 
-def _listener(request: web.Request) -> tuple[str, int] | None:
-    """The address and port the request came in on."""
-    transport = request.transport
-    sockname: object = transport.get_extra_info("sockname") if transport is not None else None
-    if not isinstance(sockname, tuple):
-        return None
-    address = cast(tuple[object, ...], sockname)
-    if len(address) < 2 or not isinstance(address[0], str) or not isinstance(address[1], int):
-        return None
-    return address[0], address[1]
-
-
 def cookie_name(request: web.Request) -> str:
     """The session cookie's name, which carries the server's port."""
-    listener = _listener(request)
-    return SESSION_COOKIE if listener is None else f"{SESSION_COOKIE}-{listener[1]}"
-
-
-def _own_hosts(request: web.Request) -> frozenset[str]:
-    """The ``Host`` values that name this server: its loopback names and its address."""
-    listener = _listener(request)
-    if listener is None:
-        return frozenset()
-    ip, port = listener
-    names = {*LOOPBACK_NAMES, f"[{ip}]" if ":" in ip else ip}
-    hosts = {f"{name}:{port}" for name in names}
-    if port == 80:
-        hosts.update(names)
-    return frozenset(hosts)
+    address = listener(request)
+    return SESSION_COOKIE if address is None else f"{SESSION_COOKIE}-{address[1]}"
 
 
 def create_app(
@@ -207,6 +193,7 @@ def create_app(
     job_worker: WorkerClient | None = None,
     job_state: JobState | None = None,
     timeouts: api.Timeouts = api.TIMEOUTS,
+    preview: Preview | None = None,
 ) -> web.Application:
     """The workspace's application. ``check_host`` is off only for a listener that is not
     on loopback, where the names that reach it are not known. Without ``math_repair``,
@@ -215,7 +202,8 @@ def create_app(
     directory of ``store``, with a read-only connection for views and a separate lazy
     writer for explicit user changes. ``store`` and a ``document_store`` given must be
     read-only (``ValueError`` otherwise), since every view reads through them. The
-    application closes ``job_worker``."""
+    application closes ``job_worker``. With ``preview``, it lists published artifacts with
+    links that open a PDF in the viewer on the preview origin, and may frame that origin."""
     if not store.readonly:
         raise ValueError("the workspace's project store must be read-only")
     if document_store is not None and not document_store.readonly:
@@ -235,7 +223,7 @@ def create_app(
     @web.middleware
     async def guard(request: web.Request, handler: Handler) -> web.StreamResponse:
         host = request.headers.get(hdrs.HOST, "").lower()
-        if check_host and host not in _own_hosts(request):
+        if check_host and host not in own_hosts(request):
             return _refusal("This server answers only to its own address.")
         if request.method not in SAFE_METHODS:
             origin = request.headers.get(hdrs.ORIGIN, "").lower()
@@ -258,6 +246,8 @@ def create_app(
 
     async def secure(request: web.Request, response: web.StreamResponse) -> None:
         response.headers.update(SECURITY_HEADERS)
+        if preview is not None:
+            response.headers["Content-Security-Policy"] = content_security_policy(preview.origin)
 
     async def login(request: web.Request) -> web.StreamResponse:
         session = sessions.login(request.query.get("token", ""))
@@ -327,10 +317,13 @@ def create_app(
         job_state=job_state,
         timeouts=timeouts,
     )
+    if preview is not None:
+        app[artifacts.PREVIEW] = preview
     app.on_response_prepare.append(secure)
     app.on_cleanup.append(close)
     for feature in (
         api,
+        artifacts,
         documents,
         project_settings,
         reviews,
@@ -366,7 +359,9 @@ class StaticFiles:
 
     async def handle(self, request: web.Request) -> web.StreamResponse:
         segments = _segments(request.match_info["path"])
-        if segments is None or segments[:1] == ["api"]:
+        # The PDF viewer's bundle sits in the build's viewer/ directory, but only the
+        # preview origin serves it: the renderer never runs on the workspace's origin.
+        if segments is None or segments[:1] in (["api"], ["viewer"]):
             raise web.HTTPNotFound()
         if not segments:
             return self._file(self.index)
