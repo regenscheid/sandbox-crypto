@@ -523,3 +523,14 @@ def test_a_response_explanation_at_its_byte_limit_is_kept(stores) -> None:
     body = "\U0001d465" * 8192  # 8192 characters, 32768 bytes: the model's and the table's
     edit(reviews, finding, decision, body)
     assert ResponseBodies(reviews).get("p", "s", finding, decision)["body"] == body
+
+
+@pytest.mark.asyncio
+async def test_only_an_explanations_current_body_is_rendered(stores) -> None:
+    _, reviews, _ = stores
+    finding, decision = response(reviews, body="First $a$.")
+    for n in range(3):
+        edit(reviews, finding, decision, f"Body {n} $b_{n}$.", op=f"edit-{n}")
+    checker = ScriptedChecker("accepted")
+    await drain(reviews, checker)
+    assert [formula.tex for formula in checker.calls if formula.tex != "excluded"] == ["b_2"]

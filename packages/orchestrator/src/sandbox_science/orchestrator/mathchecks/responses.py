@@ -55,9 +55,7 @@ class ResponseMath:
 
     def claim(self, db: sqlite3.Connection, project: str, owner: str, now: float) -> str | None:
         row = db.execute(
-            "SELECT s.source,s.finding_id,s.decision_revision,"
-            "CASE WHEN s.completed<s.target THEN s.completed+1 ELSE "
-            "s.target END "
+            "SELECT s.source,s.finding_id,s.decision_revision,s.target "
             "FROM response_math_sources s JOIN review_findings f ON f.finding_id=s.finding_id "
             "WHERE s.project=? AND s.target>0 "
             "AND (s.completed<s.target OR s.retry_requested=1) AND "
