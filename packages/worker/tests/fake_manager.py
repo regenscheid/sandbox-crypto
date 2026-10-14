@@ -393,7 +393,7 @@ def pins() -> dict[str, tuple[str, str]]:
 def conda(tool: str, args: list[str]) -> int:
     prefix = Path(sys.prefix)
     command, names = arguments(args)
-    if command != "install":
+    if command not in ("install", "update"):
         return 0
     names = [spec_name(name) for name in names]
     if "--dry-run" in args:
@@ -442,6 +442,10 @@ def conda(tool: str, args: list[str]) -> int:
             f"lib/{version}/site-packages/{name}-{entry['version']}.dist-info/INSTALLER",
         ]
         record_path = prefix / "conda-meta" / f"{name}-{entry['version']}-{entry['build']}.json"
+        if command == "update":
+            for previous in (prefix / "conda-meta").glob(f"{name}-*.json"):
+                if json.loads(previous.read_text()).get("name") == name:
+                    previous.unlink()
         record_path.write_text(json.dumps(record))
         site = Path(sysconfig.get_paths()["purelib"])
         (site / f"{name}-{entry['version']}.dist-info").mkdir(exist_ok=True)
