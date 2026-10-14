@@ -118,10 +118,11 @@ class RunService:
                 await self.clock.sleep(self.poll)
         finally:
             for (project, session), active in list(self.active.items()):
-                if active.task is not None:
-                    active.task.cancel()
-                    with contextlib.suppress(BaseException):
-                        await active.task
+                if active.task is None or active.task.done():
+                    continue  # it ended on its own
+                active.task.cancel()
+                with contextlib.suppress(BaseException):
+                    await active.task
                 if active.run is not None:
                     await self._ended(project, session, active.run)
 
@@ -158,9 +159,10 @@ class RunService:
                 active = self.active[key] = _Active()
                 active.task = asyncio.create_task(self._run(*key, active))
 
-    async def _ended(self, project: str, session: str, run: str) -> None:
+    async def _ended(self, project: str, session: str, run: str, *, hold: bool = True) -> None:
         """End a run whose holder is gone (RS-12): from its record if it was saved,
-        otherwise as ``interrupted``, with the messages it was offered held."""
+        otherwise as ``interrupted``, with the messages it was offered held, or, for a
+        run that stopped itself (``hold`` false), left queued for the next run (RS-9)."""
         runs = self.runs
         try:
             record = await threaded(self.stores.projects.run, project, session, run)
@@ -183,8 +185,9 @@ class RunService:
                 "final_text": None,
                 "record": None,
             }
-            offered = await threaded(runs.offered_to, project, session, run)
-            await threaded(runs.hold, project, session, offered)
+            if hold:
+                offered = await threaded(runs.offered_to, project, session, run)
+                await threaded(runs.hold, project, session, offered)
         if not await threaded(runs.ended, project, session, run):
             await threaded(runs.append, project, session, run, "stopped", stopped)
 
@@ -195,19 +198,25 @@ class RunService:
         except asyncio.CancelledError:
             if not active.stop.is_set():
                 raise
-            # Cancelled before the run began: its messages wait for the user too.
+            # Cancelled outside its loop: what it was offered waits for the user too.
             await threaded(self.runs.hold, project, session, active.message_ids)
+            if active.run is not None:
+                await self._ended(project, session, active.run)
             return
         except ControlError as error:
-            if error.kind != BUSY:
-                raise
-            # Another run, or another service, took the session first.
-            _log.info("session %s is busy: %s", session, error.message)
-            self.waiting_until[key] = self.clock.monotonic() + self.retry
-            return
+            if error.kind == BUSY:
+                # Another run, or another service, took the session first.
+                _log.info("session %s is busy: %s", session, error.message)
+                self.waiting_until[key] = self.clock.monotonic() + self.retry
+                return
+            _log.warning("a run of session %s stopped: %s", session, error.message)
+            failed = True
         except Exception:
             _log.exception("a run of session %s could not run", session)
             failed = True
+        if failed and active.run is not None:
+            # A run that stopped without its record (a lost lease) still ends.
+            await self._ended(project, session, active.run, hold=False)
         if not failed:
             self.failures.pop(key, None)
             return

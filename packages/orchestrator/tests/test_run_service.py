@@ -23,8 +23,10 @@ from typing import Any, cast
 
 import pytest
 
+from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator import service as service_module
+from sandbox_science.orchestrator.artifact_publisher import ArtifactPublisher
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.harness import Harness as Core
@@ -46,7 +48,11 @@ from .loop_harness import worker as worker
 
 @contextlib.asynccontextmanager
 async def serving(
-    harness: Harness, *script: Reply, lease_seconds: float = 60.0, retry: float = 0.2
+    harness: Harness,
+    *script: Reply,
+    lease_seconds: float = 60.0,
+    retry: float = 0.2,
+    clock: Clock = SYSTEM_CLOCK,
 ) -> AsyncIterator[RunService]:
     """The run service on the harness's state directory, worker and gateway."""
     harness.gateway.script = list(script)
@@ -59,15 +65,16 @@ async def serving(
                 projects,
                 documents,
                 JobState(harness.state, control=documents.control),
-                RunState(projects.control, lease_seconds=lease_seconds),
+                RunState(projects.control, lease_seconds=lease_seconds, clock=clock),
             )
             core = Core(
                 client,
                 Role(model, "main"),
                 stores=stores,
                 settings=Settings(min_isolation_tier=None),
+                clock=clock,
             )
-            service = RunService(core, poll=0.02, retry=retry)
+            service = RunService(core, poll=0.02, retry=retry, clock=clock)
             task = asyncio.create_task(service.serve())
             try:
                 yield service
@@ -648,3 +655,107 @@ async def test_a_service_that_loses_the_session_logs_one_line(
     assert busy[0].exc_info is None
     assert harness.gateway.main == []
     assert not isinstance(busy[0].msg, ControlError)
+
+
+class Suspended:
+    """The system clock with wall time moved on: a suspend, as a lease sees it."""
+
+    def __init__(self) -> None:
+        self.offset = 0.0
+
+    def monotonic(self) -> float:
+        return time.monotonic()
+
+    def now(self) -> datetime:
+        return datetime.now(UTC) + timedelta(seconds=self.offset)
+
+    async def sleep(self, seconds: float) -> None:
+        await asyncio.sleep(seconds)
+
+
+async def test_a_run_that_lost_its_session_after_a_suspend_makes_no_effect(
+    harness: Harness,
+) -> None:
+    """RS-5: after a suspend, another holder may take the session; the old run's next
+    effect is refused, and it stops."""
+    wall, gate = Suspended(), Gate()
+    marker = harness.tmp / "after-the-takeover"
+    post(harness, "m-1", "Run a command.")
+    async with serving(
+        harness,
+        Reply(calls=[call("shell", script=f"touch {marker}")], before=gate),
+        Reply("Done."),
+        lease_seconds=4.0,
+        clock=wall,
+    ):
+        await asyncio.wait_for(gate.entered.wait(), 20)
+        other = RunState(ProjectStore(harness.state).control, lease_seconds=4.0, clock=wall)
+        lease = other.lease(PROJECT, SESSION)
+        assert lease is not None
+        wall.offset = 30.0  # the machine slept: by wall time the lease expired
+        other.acquire(PROJECT, SESSION, "second-run", "second-holder")
+        gate.release.set()  # the old run's model call returns, asking for a shell command
+        await eventually(lambda: other.ended(PROJECT, SESSION, lease.run), timeout=10)
+        stopped = [e.data for e in other.events(PROJECT, SESSION, lease.run) if e.kind == "stopped"]
+        other.release(PROJECT, SESSION, "second-holder")
+    assert not marker.exists()
+    assert [data["stopped"] for data in stopped] == ["error"]  # it stopped at the call
+    assert [data["failure"] for data in stopped] == ["harness"]
+    assert len(harness.gateway.main) == 1  # and asked its model nothing more
+
+
+async def test_a_cancel_as_the_run_closes_leaves_its_answer_and_record(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = ArtifactPublisher.aclose
+
+    async def slow_close(self: ArtifactPublisher) -> None:
+        state = runs(harness)
+        lease = state.lease(PROJECT, SESSION)
+        if lease is not None:
+            state.cancel(PROJECT, SESSION, lease.run)  # the user cancels as the run closes
+        await asyncio.sleep(0.3)
+        await original(self)
+
+    monkeypatch.setattr(ArtifactPublisher, "aclose", slow_close)
+    post(harness, "m-1", "Quick one.")
+    async with serving(harness, Reply("Quick answer.")):
+        (record,) = await ended(harness)
+    assert (record.stopped, record.final_text) == ("answered", "Quick answer.")
+    events = runs(harness).events(PROJECT, SESSION, names(harness)[0])
+    assert events[-1].data["stopped"] == "answered"
+    assert states(harness) == {"m-1": "delivered"}
+
+
+async def test_a_run_that_stops_for_its_lost_lease_ends_and_backs_off(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gate = Gate()
+    original = RunState.renew
+    stalled = {"on": False}
+
+    def renew(self: RunState, project: str, session: str, holder: str) -> None:
+        if stalled["on"]:
+            raise ControlError("busy", "the store is held")
+        original(self, project, session, holder)
+
+    monkeypatch.setattr(RunState, "renew", renew)
+    post(harness, "m-1", "Think.")
+    async with serving(
+        harness, Reply("Thought.", before=gate), lease_seconds=0.8, retry=60
+    ) as service:
+        await asyncio.wait_for(gate.entered.wait(), 20)
+        lease = runs(harness).lease(PROJECT, SESSION)
+        assert lease is not None
+        stalled["on"] = True
+        await eventually(lambda: runs(harness).ended(PROJECT, SESSION, lease.run), timeout=10)
+        stalled["on"] = False
+        gate.release.set()
+        assert service.failures == {(PROJECT, SESSION): 1}
+        assert (PROJECT, SESSION) in service.waiting_until
+    stopped = [
+        e.data for e in runs(harness).events(PROJECT, SESSION, lease.run) if e.kind == "stopped"
+    ]
+    assert [data["stopped"] for data in stopped] == ["interrupted"]
+    assert states(harness) == {"m-1": "queued"}
+    assert names(harness) == []

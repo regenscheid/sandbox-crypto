@@ -47,7 +47,7 @@ from .documents import DocumentError, DocumentStore, DocumentTool
 from .hooks import TurnHook
 from .jobs import JobTools
 from .jobstate import JobState
-from .loop import MAX_INPUT_CHARS, Interruption, Transcript, run_task
+from .loop import MAX_INPUT_CHARS, Interruption, Transcript, run_task, user_cancelled
 from .mathchecks.controller import MathController
 from .mathchecks.jobs import Checker
 from .model import ChatModel, Message
@@ -323,7 +323,8 @@ class Harness:
 
         A failure in the run or in closing what it made is recorded in the transcript;
         the first cancellation or exit propagates, except one while ``stop`` is set: the
-        user's, which ends the run ``cancelled``.
+        user's, which ends the run ``cancelled``, or, once its loop has ended, leaves the
+        run's own outcome.
         """
         if admitted.stateful != (self.stores is not None):
             raise ValueError("the run was admitted with other stores than this harness has")
@@ -356,11 +357,14 @@ class Harness:
                         hooks=hooks,
                     )
         except BaseException as error:
-            if interruption.error is not None:
+            if transcript is not None and user_cancelled(error, stop):
+                pass  # it came as the run closed: the run's own outcome stands
+            elif interruption.error is not None:
                 raise interruption.error from None
-            if not isinstance(error, Exception) or transcript is None:
+            elif not isinstance(error, Exception) or transcript is None:
                 raise
-            transcript.fail("cleanup")
+            else:
+                transcript.fail("cleanup")
         return Finished(
             admitted.run_id,
             admitted.context,

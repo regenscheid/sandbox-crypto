@@ -393,6 +393,16 @@ def _sections(system: str, toolbox: Toolbox, template: str | None) -> list[Secti
     return sections
 
 
+def user_cancelled(error: BaseException, stop: asyncio.Event | None) -> bool:
+    """Whether ``error`` is the user's cancel, while ``stop`` is set; if so, it is taken
+    back from the current task, which goes on."""
+    if not isinstance(error, asyncio.CancelledError) or stop is None or not stop.is_set():
+        return False
+    if (current := asyncio.current_task()) is not None:
+        current.uncancel()
+    return True
+
+
 async def run_task(
     model: ChatModel,
     toolbox: Toolbox,
@@ -464,16 +474,16 @@ async def run_task(
                     # until the caller durably saves this partial record, then ACKs them.
                     _log.exception("run %s failed during %s", run_id, transcript.phase)
                     transcript.fail(transcript.phase)
-                except asyncio.CancelledError:
-                    if stop is None or not stop.is_set():
+                except asyncio.CancelledError as error:
+                    if not user_cancelled(error, stop):
                         raise
-                    if (current := asyncio.current_task()) is not None:
-                        current.uncancel()
                     transcript.stopped, transcript.final_text = "cancelled", None
                 for hook in hooks:
                     if (summary := hook.summary()) is not None:
                         transcript.summaries[hook.name] = summary
     except BaseException as error:
+        if transcript is not None and user_cancelled(error, stop):
+            return transcript  # it came as the run closed: the run's own outcome stands
         if interruption.error is not None:
             raise interruption.error from None
         if not isinstance(error, Exception):

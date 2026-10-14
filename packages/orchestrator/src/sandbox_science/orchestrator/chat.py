@@ -27,6 +27,7 @@ import secrets
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any, Final, cast
 
 from pydantic import JsonValue
@@ -36,7 +37,7 @@ from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ExecutionContext, wai
 from .aio import threaded
 from .control import ControlError
 from .control.errors import CONFLICT
-from .hooks import Closing, Notice, Point, RunView, TurnHook
+from .hooks import Closing, Effect, Notice, Point, Refusal, RunView, TurnHook
 from .projects import ModelUsage, RunRecord
 from .runstate import MAX_EVENT_BYTES, PAGE, ChatMessage, EventKind, RunState
 from .tools import bound
@@ -140,6 +141,8 @@ class UserMessages(TurnHook):
 
     def __init__(self, chat: RunChat) -> None:
         self.chat = chat
+        self.lost = False
+        """Whether a call found the session held by another run."""
 
     async def _take(self) -> tuple[Notice, ...]:
         found = await self.chat.pending()
@@ -151,6 +154,8 @@ class UserMessages(TurnHook):
         )
 
     async def notices(self, point: Point, run: RunView) -> Sequence[Notice]:
+        if self.lost and point == "turn":
+            raise ControlError(CONFLICT, f"run {self.chat.run} no longer holds its session")
         # Before each model call, after every other source's notices: the user's word last.
         return await self._take() if point == "turn" else ()
 
@@ -163,6 +168,19 @@ class UserMessages(TurnHook):
     def summary(self) -> object | None:
         """The messages the run was started for, which its record's task joins."""
         return {"initial": list(self.chat.message_ids)} if self.chat.message_ids else None
+
+    async def gate(self, effect: Effect) -> Refusal | None:
+        """Before a call that may change something, the run must still hold its session.
+        One that lost it, as after a suspend, is refused the call, and stops before its
+        next model call."""
+        if effect in ("read", "cancel"):
+            return None
+        context = self.chat.context
+        held = await threaded(self.chat.state.lease, context.project_id, context.session_id)
+        if held is None or held.run != self.chat.run:
+            self.lost = True
+            return Refusal(CONFLICT, f"run {self.chat.run} no longer holds its session")
+        return None
 
     async def acknowledge(self, record: RunRecord) -> None:
         ids = record.delivered.get(SOURCE)
@@ -355,8 +373,9 @@ async def session_lease(
     ``busy`` while another run holds it.
 
     A lease is lost when another holder took the session, or when no renewal succeeded
-    for half the lease's time. The run then stops: the task that holds the lease is
-    cancelled, and leaving raises ``conflict``.
+    for half the lease's time, by the monotonic clock or by wall time (a suspend stops
+    the one, not the lease's expiry). The run then stops: the task that holds the lease
+    is cancelled, and leaving raises ``conflict``.
     """
     holder = secrets.token_hex(16)
     project, session = context.project_id, context.session_id
@@ -364,20 +383,26 @@ async def session_lease(
     owner = asyncio.current_task()
     stopping, lost = asyncio.Event(), asyncio.Event()
 
+    def overdue(renewed: float, wall: datetime) -> bool:
+        # Wall time too: a suspend stops the monotonic clock, not the lease's expiry.
+        half = state.lease_seconds / 2
+        return clock.monotonic() - renewed > half or (clock.now() - wall).total_seconds() > half
+
     async def renewals() -> None:
-        renewed = clock.monotonic()
+        renewed, wall = clock.monotonic(), clock.now()
         while not await wait_or_sleep(clock, stopping, state.lease_seconds / 4):
-            taken = False
-            try:
-                await threaded(state.renew, project, session, holder)
-                renewed = clock.monotonic()
-                continue
-            except ControlError as error:
-                taken = error.kind == CONFLICT
-                _log.warning("the lease of run %s was not renewed: %s", run, error.message)
-            except Exception:
-                _log.exception("the lease of run %s was not renewed", run)
-            if taken or clock.monotonic() - renewed > state.lease_seconds / 2:
+            taken = overdue(renewed, wall)
+            if not taken:
+                try:
+                    await threaded(state.renew, project, session, holder)
+                    renewed, wall = clock.monotonic(), clock.now()
+                    continue
+                except ControlError as error:
+                    taken = error.kind == CONFLICT
+                    _log.warning("the lease of run %s was not renewed: %s", run, error.message)
+                except Exception:
+                    _log.exception("the lease of run %s was not renewed", run)
+            if taken or overdue(renewed, wall):
                 _log.error("run %s lost the lease of session %s; it stops", run, session)
                 lost.set()
                 if owner is not None:
