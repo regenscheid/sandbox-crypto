@@ -9,6 +9,7 @@ reads as the requester's note, not evidence (coordinator, 2026-10-15).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Annotated, Final, Literal
 
 from pydantic import BeforeValidator, Field
@@ -47,6 +48,8 @@ class CheckBrief(Contract):
 
     check: CheckTarget
     note: Annotated[str, BeforeValidator(_note), Field(max_length=MAX_NOTE)] = ""
+    model: str | None = Field(default=None, min_length=1, max_length=128)
+    """A model alias the project lets a brief choose (PD-28)."""
 
 
 class WaitRequest(Contract):
@@ -146,6 +149,25 @@ SPECS: Final = (
     ),
 )
 NAMES: Final = frozenset(spec.name for spec in SPECS)
+
+
+def offered(models: Sequence[str]) -> tuple[ToolSpec, ...]:
+    """The tools a run is offered: ``delegate`` takes a ``model`` when the project lets
+    a brief choose one of ``models`` (PD-28)."""
+    if not models:
+        return SPECS
+    delegate, *rest = SPECS
+    schema = delegate.parameters
+    model = {
+        "type": "string",
+        "enum": list(models),
+        "description": "Optional: the model alias the checker runs on, of those the "
+        "project allows; without it, the delegated role's",
+    }
+    parameters = {**schema, "properties": {**schema["properties"], "model": model}}
+    return (ToolSpec(delegate.name, delegate.description, parameters), *rest)
+
+
 EFFECTS: Final[dict[str, Effect]] = {
     "wait_delegations": "read",
     "delegation_status": "read",

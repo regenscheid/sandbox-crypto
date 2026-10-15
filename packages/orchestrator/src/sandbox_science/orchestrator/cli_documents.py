@@ -60,21 +60,27 @@ async def _project_action(args: argparse.Namespace, store: ProjectStore) -> int:
 
             store.get(args.project)
             delegations = DelegationRecords(store.control)
-            changes = {
+            changes: dict[str, object] = {
                 name: value
                 for name in ("depth", "cap", "check_tokens", "check_turns")
                 if (value := getattr(args, name)) is not None
             }
+            if args.models is not None:  # empty: no choice
+                changes["models"] = tuple(m.strip() for m in args.models.split(",") if m.strip())
+            if args.fallback is not None:  # empty: none
+                changes["fallback"] = args.fallback.strip() or None
             found = (
                 delegations.configure(args.project, **changes)
                 if changes
                 else delegations.settings(args.project)
             )
             state = "off" if found.depth == 0 else "main runs delegate checks"
+            models = ", ".join(found.models) or "none"
             print(
                 f"project {args.project}: delegation depth {found.depth} ({state}); at most "
                 f"{found.cap} delegated runs at once; a check gets {found.check_tokens} "
-                f"tokens and {found.check_turns} turns"
+                f"tokens and {found.check_turns} turns; a brief may choose the models: "
+                f"{models}; fallback: {found.fallback or 'none'}"
             )
         case "macros":
             from .documents import USER, DocumentStore, store_path
@@ -426,6 +432,16 @@ def add_parsers(commands: Any) -> None:
     )
     projects.add_argument(
         "--check-turns", type=int, help="delegation: a check's turns, at most (12)"
+    )
+    projects.add_argument(
+        "--models",
+        help="delegation: the model aliases a brief may choose, comma-separated; empty for "
+        "none (the default)",
+    )
+    projects.add_argument(
+        "--fallback",
+        help="delegation: the alias a delegated run calls when the gateway lists none of "
+        "its own; empty for none (the default)",
     )
     sessions = commands.add_parser(
         "session", help="open a session, so the GUI can chat in it; or close one: stop its kernels"

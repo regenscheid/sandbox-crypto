@@ -24,9 +24,9 @@ import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Final, Literal, cast
+from typing import Annotated, Final, Literal, cast
 
-from pydantic import Field, JsonValue, ValidationError
+from pydantic import Field, JsonValue, ValidationError, field_validator
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, Identifier
 from sandbox_science.contracts.model import Contract
@@ -54,6 +54,11 @@ _COLUMNS: Final = (
 _JSON: Final = ("brief", "result", "errors", "models")
 
 
+MAX_MODELS: Final = 10
+Alias = Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$")]
+"""A model alias as the gateway names it, such as ``main`` or ``anthropic/claude``."""
+
+
 class DelegationSettings(Contract):
     """A project's delegation setting (PD-15, PD-38): what a project leaves out keeps
     its default."""
@@ -66,6 +71,19 @@ class DelegationSettings(Contract):
     """A check's tokens, at most: reserved from its root's share of the model budget."""
     check_turns: int = Field(default=12, ge=1, le=30)
     """A check's turns, at most, and no more than its parent has left."""
+    models: tuple[Alias, ...] = Field(default=(), max_length=MAX_MODELS)
+    """The model aliases a brief may choose (PD-28); none, the default, allows no choice,
+    and a brief that names none gets the delegated role's."""
+    fallback: Alias | None = None
+    """The alias a delegated run calls when the gateway lists none of the one it was to
+    call (PD-30); without it, such a delegation is refused."""
+
+    @field_validator("models")
+    @classmethod
+    def _distinct(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(value)) != len(value):
+            raise ValueError("an alias is listed once")
+        return value
 
 
 class Delegation(Contract):
@@ -136,7 +154,7 @@ class DelegationRecords:
         with self.control.read() as tx:
             return _settings(tx.sql, project)
 
-    def configure(self, project: str, **changes: int) -> DelegationSettings:
+    def configure(self, project: str, **changes: object) -> DelegationSettings:
         """Change some of the project's delegation setting, keeping the rest; the setting
         as it now is."""
         with self.control.write() as tx:

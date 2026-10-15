@@ -277,14 +277,18 @@ def call(name: str, /, **arguments: Any) -> tuple[str, Json]:
 
 @dataclass
 class Gateway:
-    """Answers the main alias from ``script``, delegated runs (on the main alias) from
-    ``delegated``, and the reviewer alias from ``reviewer``."""
+    """Answers the main alias from ``script``, delegated runs (on whichever alias, told
+    apart by their system prompt) from ``delegated``, and the reviewer alias from
+    ``reviewer``."""
 
     url: str = ""
     script: list[Reply] = field(default_factory=list[Reply])
     delegated: list[Reply] = field(default_factory=list[Reply])
     reviewer: Callable[[list[Message]], Reply] | None = None
     requests: dict[str, list[list[Message]]] = field(default_factory=dict[str, list[list[Message]]])
+    listed: list[str] | None = None
+    """The aliases ``GET /models`` lists; without them it answers 404, as a gateway that
+    cannot list them."""
     tools: dict[str, list[list[Json]]] = field(default_factory=dict[str, list[list[Json]]])
     """The tools each call carried, by alias."""
     numbered: int = 0
@@ -299,11 +303,18 @@ class Gateway:
         """What each delegated run's model call saw, in order."""
         return self.requests.get("delegated", [])
 
+    async def models(self, request: web.Request) -> web.Response:
+        if self.listed is None:
+            return web.Response(status=404, text="not found")
+        assert request.headers.get("Authorization") == f"Bearer {API_KEY}"
+        data = [{"id": alias, "object": "model"} for alias in self.listed]
+        return web.json_response({"object": "list", "data": data})
+
     async def handle(self, request: web.Request) -> web.Response:
         body = await request.json()
         alias, messages = str(body["model"]), cast(list[Message], body["messages"])
         child = alias == "delegated" or (
-            alias == "main" and str(messages[0].get("content", "")).startswith(DELEGATED)
+            alias != "reviewer" and str(messages[0].get("content", "")).startswith(DELEGATED)
         )
         key = "delegated" if child else alias
         self.requests.setdefault(key, []).append(messages)
@@ -350,6 +361,7 @@ async def gateway() -> AsyncIterator[Gateway]:
     found = Gateway()
     app = web.Application()
     app.router.add_post("/chat/completions", found.handle)
+    app.router.add_get("/models", found.models)
     async with TestServer(app) as server:
         found.url = str(server.make_url("/")).rstrip("/")
         yield found

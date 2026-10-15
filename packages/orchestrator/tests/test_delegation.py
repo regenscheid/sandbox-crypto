@@ -133,7 +133,7 @@ def released() -> tuple[asyncio.Event, Reply]:
     return event, Reply(calls=[], before=release)
 
 
-def configure(harness: Harness, **changes: int) -> None:
+def configure(harness: Harness, **changes: object) -> None:
     store = ProjectStore(harness.state)
     try:
         DelegationRecords(store.control).configure(PROJECT, **changes)
