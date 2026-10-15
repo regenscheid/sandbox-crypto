@@ -428,7 +428,7 @@ async def test_restart_loses_state_and_says_so(worker: Target) -> None:
 async def test_a_run_has_kernels_of_its_own(worker: Target) -> None:
     """PD-37: a cell naming a run runs in that run's kernel, which shares no state with
     the session's or another run's; the session's kernel status lists them all."""
-    await worker.run(kind="cell", code="x = 'session'")
+    first = await worker.run(kind="cell", code="x = 'session'")
     await worker.run(kind="cell", code="x = 'a'", run="run-a")
     in_a = await worker.run(kind="cell", code="x", run="run-a")
     in_b = await worker.run(kind="cell", code="x", run="run-b")
@@ -442,6 +442,12 @@ async def test_a_run_has_kernels_of_its_own(worker: Target) -> None:
     }
     assert len(set(kernels.values())) == 3
     assert set(kernels) == {"run-a", "run-b", None}
+    # The kernel each cell started on names its run too, over the daemon as over stdio.
+    assert [execution["kernel"]["run"] for execution in (in_a, in_b, in_session)] == [
+        "run-a",
+        "run-b",
+        None,
+    ]
     status, listing = await worker.post("/v1/kernels/status", {"context": worker.context})
     assert status == 200, listing
     assert sorted((k["run"] or "", k["language"]) for k in listing["kernels"]) == [
@@ -457,8 +463,16 @@ async def test_a_run_has_kernels_of_its_own(worker: Target) -> None:
     assert (restarted["run"], restarted["kernel_id"]) == ("run-a", kernels["run-a"])
     after = await worker.run(kind="cell", code="x", run="run-a")
     assert after["result"]["error"]["name"] == "NameError"
+    assert (after["kernel"]["run"], after["kernel"]["generation"]) == ("run-a", 2)
     session = await worker.run(kind="cell", code="x")
     assert session["result"]["outputs"][0]["data"]["text/plain"] == "'session'"
+    # The session's kernel keeps its own generation and start revision: a run's kernel
+    # starting is never taken for the session's.
+    for observed in (session["kernel"], session["result"]["kernel"]):
+        assert {key: observed[key] for key in ("kernel_id", "generation", "start_revision")} == {
+            key: first["result"]["kernel"][key]
+            for key in ("kernel_id", "generation", "start_revision")
+        }
     # A run that ends stops its own kernels only.
     status, closed = await worker.post(
         "/v1/sessions/close", {"context": worker.context, "run": "run-b"}
