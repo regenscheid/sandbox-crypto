@@ -195,6 +195,21 @@ describe('the check panel, when the entry moves on under it', () => {
           shown = entry({ revision: 4, head: 4, statement: 'The statement of r4.' });
           return reply(200, { ...answer, cleared_total: 1 });
         }
+        if (url.endsWith('/gate'))
+          return reply(200, {
+            project_id: 'p1',
+            observed_at: 'now',
+            gate: {
+              entry_id: 'entry-0123456789abcdef01234567',
+              handle: 'C-1',
+              revision: 3,
+              status: 'proposed',
+              applies: true,
+              holds: false,
+              clauses: [],
+              decisions: [],
+            },
+          });
         return reply(200, { project_id: 'p1', observed_at: 'now', entry: shown });
       }),
     );
