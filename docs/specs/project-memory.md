@@ -1,6 +1,6 @@
 # Project memory
 
-Date: 2026-10-14. **Status: Draft; awaiting the owner's review of this version.** The owner decided on 2026-10-14: a built-in memory tool with its own small store, not a living document; agents only propose and the user decides; every agent role receives the accepted entries; the memory is never a file in any environment; no ledger `lesson` type. The choices still open are under [open questions](#open-questions), each with a recommendation.
+Date: 2026-10-14. **Status: Approved (2026-10-14, by the owner); not built.** The owner decided: a built-in memory tool with its own small store, not a living document; agents only propose and the user decides; every agent role receives the accepted entries; the memory is never a file in any environment; no ledger `lesson` type; and the three questions below, as recommended.
 
 ## Scope
 
@@ -78,11 +78,11 @@ Terms:
 - *When* the user edits `mem-1` directly (revision 2), then accepts the proposal.
 - *Then* acceptance first shows the current text, and the accepted change becomes revision 3 with both authors in its history.
 
-## Open questions
+## Decided questions
 
-1. **Sizes.** *Recommended:* 1,000 characters an entry, 16,000 characters given to an agent (PM-1, PM-7). A larger bound costs every agent more context, the watcher on every check; a smaller one fills sooner.
-2. **What is left out when the memory is over its bound.** *Recommended:* the entries at the end of the Memory page's order, oldest accepted first, which the user can rearrange (PM-7). The alternative leaves out the oldest, which keeps recent lessons but drops the settled conventions that usually come first.
-3. **Proposal limits.** *Recommended:* 50 waiting proposals per project and 10 per run (PM-3), so that a run cannot bury the user in proposals.
+1. **Sizes.** *Decided by the owner (2026-10-14), as recommended:* 1,000 characters an entry, 16,000 characters given to an agent (PM-1, PM-7). A larger bound costs every agent more context, the watcher on every check; a smaller one fills sooner.
+2. **What is left out when the memory is over its bound.** *Decided by the owner (2026-10-14), as recommended:* the entries at the end of the Memory page's order, oldest accepted first, which the user can rearrange (PM-7). The alternative leaves out the oldest, which keeps recent lessons but drops the settled conventions that usually come first.
+3. **Proposal limits.** *Decided by the owner (2026-10-14), as recommended:* 50 waiting proposals per project and 10 per run (PM-3), so that a run cannot bury the user in proposals.
 
 ## Sources
 
