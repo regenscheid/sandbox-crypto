@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""The ledger's entry types and statuses, and the records a change and a read
+"""The ledger's entry types, statuses and links, and the records a change and a read
 carry (docs/specs/ledger.md, LG-1 to LG-5, LG-30)."""
 
 from __future__ import annotations
@@ -12,6 +12,19 @@ from sandbox_science.contracts.model import Contract, Identifier
 
 EntryType = Literal["issue", "claim", "result", "assumption", "decision", "task", "reference"]
 Origin = Literal["published", "project"]
+LinkKind = Literal[
+    "answers",
+    "assumes",
+    "builds_on",
+    "restates",
+    "compares_to",
+    "supersedes",
+    "dominates",
+    "split_into",
+    "affects",
+    "concerns",
+]
+
 PREFIXES: Final[dict[str, str]] = {
     "issue": "I",
     "claim": "C",
@@ -46,11 +59,42 @@ STATUSES: Final[dict[str, tuple[str, ...]]] = {
 DECIDED: Final = frozenset({"established", "obstructed", "refuted"})
 """Statuses only a decision in effect sets (LG-4, LG-7, LG-17)."""
 
+LINKS: Final[dict[str, tuple[tuple[str, ...], tuple[str, ...]]]] = {
+    # kind: (the types that may hold it, the types it may point to; "finding" and
+    # "block" are a review finding and a document block)
+    "answers": (("claim", "result"), ("issue",)),
+    "assumes": (("claim", "result", "decision"), ("assumption",)),
+    "builds_on": (("claim", "result", "issue"), ("claim", "result")),
+    "restates": (("claim", "result"), ("claim", "result")),
+    "compares_to": (("claim", "result"), ("claim", "result")),
+    "supersedes": (("claim", "result"), ("claim", "result")),
+    "dominates": (("result",), ("result",)),
+    "split_into": (("issue",), ("issue",)),
+    "affects": (("decision",), tuple(PREFIXES)),
+    "concerns": (("issue",), (*PREFIXES, "finding", "block")),
+}
+"""Which entries hold each kind of link, and what it points to (LG-5)."""
+
 Text = Annotated[str, Field(min_length=1, max_length=512)]
 Note = Annotated[str, Field(min_length=1, max_length=4096)]
 Statement = Annotated[str, Field(min_length=1, max_length=8192)]
 Reference = Annotated[str, Field(min_length=1, max_length=128)]
-"""An entry named by its ID or its handle."""
+"""An entry named by its ID, its handle, or ``new:<key>`` for an entry the same
+change creates."""
+
+
+class LinkInput(Contract):
+    """A link as a change gives it. An entry target is named by ``entry``; a review
+    finding by ``finding``; a document block by ``document``, ``revision`` and
+    ``block``. ``revision`` pins an entry target to a revision (``assumes`` needs one)."""
+
+    kind: LinkKind
+    entry: Reference | None = None
+    finding: Identifier | None = None
+    document: Identifier | None = None
+    block: Identifier | None = None
+    revision: Annotated[int, Field(ge=1, le=999999999, strict=True)] | None = None
+    note: Note | None = None
 
 
 class ClaimFields(Contract):
@@ -116,16 +160,20 @@ FIELDS: Final[dict[str, type[Contract]]] = {
 
 class EntryChange(Contract):
     """One entry a mutation creates (``type`` given, ``entry`` and ``expected`` not) or
-    revises (``entry`` and ``expected`` given). A revision replaces the fields it gives."""
+    revises (``entry`` and ``expected`` given). A revision replaces the fields it gives:
+    ``links`` replaces the entry's outgoing links."""
 
     entry: Reference | None = None
     expected: Annotated[int, Field(ge=1, le=999999999, strict=True)] | None = None
+    key: Identifier | None = None
+    """A created entry's key, which other changes of the mutation name as ``new:<key>``."""
     type: EntryType | None = None
     origin: Origin | None = None
     title: Text | None = None
     statement: Statement | None = None
     status: Annotated[str, Field(min_length=1, max_length=32)] | None = None
     fields: dict[str, JsonValue] | None = None
+    links: list[LinkInput] | None = Field(default=None, max_length=64)
 
 
 class Mutation(Contract):
@@ -134,6 +182,19 @@ class Mutation(Contract):
     operation_id: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")]
     reason: Note
     changes: list[EntryChange] = Field(min_length=1, max_length=32)
+
+
+class Link(Contract):
+    """A stored link: its kind, its target and the target's pinned revision."""
+
+    kind: LinkKind
+    target: Literal["entry", "finding", "block"]
+    target_id: str
+    revision: int | None = None
+    block: str | None = None
+    note: str | None = None
+    handle: str | None = None
+    """An entry target's handle, as it reads now."""
 
 
 class EntrySummary(Contract):
@@ -150,10 +211,17 @@ class EntrySummary(Contract):
 
 
 class EntryView(EntrySummary):
-    """An entry at one revision, with what it says and who wrote it."""
+    """An entry at one revision, with what it says, its outgoing links and who wrote it,
+    and (at its current revision) the links other entries hold to it."""
 
     statement: str
     fields: dict[str, Any]
+    links: list[Link]
+    incoming: list[Link]
+    """Links other entries' current revisions hold to it, in the order those entries were
+    made: as many as 200 from the one a read starts at."""
+    incoming_total: int
+    """How many there are in all."""
     head: int
     author: dict[str, Any]
     reason: str
