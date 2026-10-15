@@ -165,7 +165,7 @@ async def test_search_says_why_and_resources_stay_in_the_pack(harness: Harness, 
     assert json.loads(missed) == {
         "searched": 2,
         "found": [],
-        "note": "no skill matched these words; this covers only this search",
+        "note": "no skill matched; this covers only this search",
     }
     assert "one\ntwo" in notes
     assert "SS-MARKER-ALPHA-1" in sibling

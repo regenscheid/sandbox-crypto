@@ -5,15 +5,19 @@
 Before a run's first model call the run's task is scored against its skills, and so is
 each user message that arrives during the run, before the call that carries it; the call
 waits for the score at most ``wait`` seconds of the run's clock. A message under
-``MIN_WORDS`` distinct words is not scored. A skill is shown when it shares at least two
-of the message's words and scores at least half the best; at most ``MAX_SHOWN`` are
-shown, by name and description, in a notice framed by ``notices.SKILLS``. A skill the run
-was shown, in a notice a model call saw, or has loaded is not shown again; one in a
-notice the run dropped, as at a closing with no room for it, may be. Nothing is blocked
-and no load is forced (SK-36): the model decides. The run's record keeps each notice: its
-ID, which ``RunRecord.delivered`` names once a model call saw it, what it answered, the
-skills shown with their revisions, and how the scoring went. Scoring runs in a thread,
-pure and quick: one that outlasts the wait ends on its own, and nothing waits for it.
+``MIN_WORDS`` distinct words is not scored, by words or by meaning, and waits for
+nothing. A skill is shown when it shares at least two of the message's words and scores
+at least half the best, or, once the run has its skills' vectors, when its meaning comes
+close (``tool.SIMILAR``); the message's embedding counts toward the wait. At most
+``MAX_SHOWN`` are shown, by name and description, in a notice framed by
+``notices.SKILLS``. A skill the run was shown, in a notice a model call saw, or has
+loaded is not shown again; one in a notice the run dropped, as at a closing with no room
+for it, may be. Nothing is blocked and no load is forced (SK-36): the model decides. The
+run's record keeps each notice: its ID, which ``RunRecord.delivered`` names once a model
+call saw it, what it answered, the skills shown with their revisions, and how the
+scoring went, with why it was by words alone when an embedding model is set. Scoring by
+words runs in a thread, pure and quick: one that outlasts the wait ends on its own, and
+nothing waits for it; the embedding is cancelled.
 """
 
 from __future__ import annotations
@@ -27,8 +31,9 @@ from sandbox_science.contracts.clock import SYSTEM_CLOCK, Clock
 from sandbox_science.orchestrator.hooks import Notice, Point, RunView, TurnHook
 from sandbox_science.orchestrator.notices import SKILLS
 
+from .embeddings import EmbeddingError
 from .store import Entry
-from .tool import SkillTool, rank, words
+from .tool import SkillTool, hybrid, rank, words
 
 _log = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -39,20 +44,26 @@ MAX_SHOWN: Final = 5
 MIN_WORDS: Final = 3
 
 
-def matches(tool: SkillTool, text: str, skip: set[str]) -> list[Entry]:
-    """The run's skills that match ``text``, best first, without those in ``skip``."""
+def matches(
+    tool: SkillTool, text: str, skip: set[str], similar: dict[str, float] | None = None
+) -> list[Entry]:
+    """The run's skills that match ``text``, best first, without those in ``skip``: by its
+    words, or, with ``similar``, by its meaning (SK-29)."""
     query = words(text)
     if len(set(query)) < MIN_WORDS:
         return []
-    ranked = [
+    lexical = [
         (entry, score)
         for entry, matched, score in rank(tool.skills.entries, query)
         if len(matched) >= 2
     ]
-    if not ranked:
-        return []
-    best = ranked[0][1]
-    shown = [entry for entry, score in ranked if score >= best / 2 and entry.qualified not in skip]
+    best = lexical[0][1] if lexical else 0.0
+    by_words = {entry.qualified for entry, score in lexical if score >= best / 2}
+    shown = [
+        entry
+        for entry, _, meaning in hybrid(tool.skills.entries, text, similar or {})
+        if (entry.qualified in by_words or meaning is not None) and entry.qualified not in skip
+    ]
     return shown[:MAX_SHOWN]
 
 
@@ -99,18 +110,34 @@ class SkillDiscovery(TurnHook):
         what happened."""
         waiting = {skill for skills in self.pending.values() for skill in skills}
         skip = self.shown | waiting | set(self.tool.loaded)
+        text = "\n".join(texts)
         record: dict[str, Any] = {"answered": answered, "scoring": "lexical"}
         if messages:
             record["messages"] = list(messages)
-        try:
-            found = await self._bounded(
-                asyncio.to_thread(matches, self.tool, "\n".join(texts), skip)
-            )
-        except TimeoutError:
-            found, record["scoring"] = [], "timed_out"
-        except Exception:  # a failed score sends the call without a notice
-            _log.exception("scoring the skills for discovery failed")
-            found, record["scoring"] = [], "failed"
+
+        async def score() -> list[Entry]:
+            similar: dict[str, float] = {}
+            if self.tool.vectors is not None:
+                try:
+                    similar, why = await self.tool.similarity(text)
+                except EmbeddingError as error:
+                    why = f"failed: {error}"
+                if similar:  # only some packs compared by meaning: partial
+                    record["scoring"] = "partial" if why else "hybrid"
+                if why or not similar:
+                    record["embedding"] = (why or "none")[:300]
+            return await asyncio.to_thread(matches, self.tool, text, skip, similar)
+
+        if len(set(words(text))) < MIN_WORDS:
+            found: list[Entry] = []  # too short to score: no embedding, no wait
+        else:
+            try:
+                found = await self._bounded(score())
+            except TimeoutError:
+                found, record["scoring"] = [], "timed_out"
+            except Exception:  # a failed score sends the call without a notice
+                _log.exception("scoring the skills for discovery failed")
+                found, record["scoring"] = [], "failed"
         record["skills"] = [{"id": e.qualified, "revision": e.revision} for e in found]
         self.records.append(record)
         if not found:

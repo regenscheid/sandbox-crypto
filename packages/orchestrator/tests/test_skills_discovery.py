@@ -147,7 +147,9 @@ async def test_scoring_that_does_not_finish_sends_the_call_on_the_clock(
     clock, and then it goes out without a notice."""
     held = threading.Event()
 
-    def never(tool: SkillTool, text: str, skip: set[str]) -> list[Entry]:
+    def never(
+        tool: SkillTool, text: str, skip: set[str], similar: dict[str, float] | None = None
+    ) -> list[Entry]:
         held.wait(30)  # a peer that never answers, let go when the test ends
         return []
 

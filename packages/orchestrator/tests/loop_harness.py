@@ -298,6 +298,18 @@ class Gateway:
     tools: dict[str, list[list[Json]]] = field(default_factory=dict[str, list[list[Json]]])
     """The tools each call carried, by alias."""
     numbered: int = 0
+    embed: Callable[[str], list[float]] | None = None
+    """``POST /embeddings``'s vector for each text; without it that answers 404."""
+    embed_model: str = "embed-model-v1"
+    """The model ``/embeddings`` says answered."""
+    embed_status: int = 200
+    embed_cost: str | None = "0.001"
+    """``/embeddings``' cost header, per call."""
+    embed_hold: asyncio.Event | None = None
+    """While set to an unset event, ``/embeddings`` answers nothing: a peer that never
+    answers, until the test sets it."""
+    embedded: list[list[str]] = field(default_factory=list[list[str]])
+    """The texts of each ``/embeddings`` request, in order."""
 
     @property
     def main(self) -> list[list[Message]]:
@@ -325,6 +337,24 @@ class Gateway:
             for alias, calls in self.capable.items()
         ]
         return web.json_response({"data": data})
+
+    async def embeddings(self, request: web.Request) -> web.Response:
+        if self.embed is None:
+            return web.Response(status=404, text="not found")
+        assert request.headers.get("Authorization") == f"Bearer {API_KEY}"
+        texts = cast(list[str], (await request.json())["input"])
+        self.embedded.append(texts)
+        if self.embed_hold is not None:
+            await self.embed_hold.wait()
+        if self.embed_status != 200:
+            return web.Response(status=self.embed_status, text="the embedding model is down")
+        data = [
+            {"object": "embedding", "index": index, "embedding": self.embed(text)}
+            for index, text in reversed(list(enumerate(texts)))
+        ]
+        headers = {} if self.embed_cost is None else {"x-litellm-response-cost": self.embed_cost}
+        answer = {"object": "list", "model": self.embed_model, "data": data}
+        return web.json_response(answer, headers=headers)
 
     async def handle(self, request: web.Request) -> web.Response:
         body = await request.json()
@@ -383,6 +413,7 @@ async def gateway() -> AsyncIterator[Gateway]:
     app.router.add_post("/chat/completions", found.handle)
     app.router.add_get("/models", found.models)
     app.router.add_get("/model/info", found.model_info)
+    app.router.add_post("/embeddings", found.embeddings)
     async with TestServer(app) as server:
         found.url = str(server.make_url("/")).rstrip("/")
         yield found

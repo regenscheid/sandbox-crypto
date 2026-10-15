@@ -45,10 +45,16 @@ WINDOW: Final = timedelta(hours=24)
 """The daily cost limit's window (RS-6a)."""
 MAX_COST: Final = 1_000_000_000
 """The largest daily cost limit, in the gateway's currency."""
-CostRole = Literal["main", "delegated", "reviewer", "watcher"]
-"""Whose model calls a cost is for: the main agent's runs, delegated runs, the reviewer
-and the job watcher (lab 40, B5)."""
-COST_ROLES: Final[tuple[CostRole, ...]] = ("main", "delegated", "reviewer", "watcher")
+CostRole = Literal["main", "delegated", "reviewer", "watcher", "embeddings"]
+"""Whose model calls a cost is for: the main agent's runs, delegated runs, the reviewer,
+the job watcher (lab 40, B5), and the skills' embeddings (docs/specs/skills.md, SK-29)."""
+COST_ROLES: Final[tuple[CostRole, ...]] = (
+    "main",
+    "delegated",
+    "reviewer",
+    "watcher",
+    "embeddings",
+)
 MAX_MESSAGE_BYTES: Final = 65536
 MAX_EVENT_BYTES: Final = 65536
 PAGE: Final = 200
@@ -472,9 +478,9 @@ class RunState:
         """What the project's model calls cost by role, as the gateway reported it, in
         ``COST_ROLES``' order: the calls of its runs that started at ``since`` or later,
         main and delegated, from saved records' ``usage`` and the ``assistant`` events of
-        runs without a record; and the reviewer's and the job watcher's calls made at
-        ``since`` or later (lab 40, B5). Every call without ``since``. A role none of
-        whose calls the gateway priced is left out."""
+        runs without a record; and the reviewer's, the job watcher's and the skills'
+        embedding calls made at ``since`` or later (lab 40, B5). Every call without
+        ``since``. A role none of whose calls the gateway priced is left out."""
         first = "" if since is None else run_name(since, "")
         after = 0.0 if since is None else since.timestamp()
         cost = "json_extract(u, '$.cost')"
@@ -497,6 +503,7 @@ class RunState:
             for role, table, made in (
                 ("reviewer", "review_calls", "created"),
                 ("watcher", "job_watcher_calls", "requested_at"),
+                ("embeddings", "skill_embedding_calls", "created"),
             ):
                 rows += tx.sql.execute(
                     f"SELECT ?, sum(cost), count(cost) FROM {table} "  # noqa: S608
