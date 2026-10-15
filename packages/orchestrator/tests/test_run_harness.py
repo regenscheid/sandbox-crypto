@@ -3,13 +3,14 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
 import pytest
 
-from sandbox_science.contracts import ErrorKind, ExecutionContext, KernelInfo, KernelListing
+from sandbox_science.contracts import ErrorKind, ExecutionContext, KernelInfo, KernelObservation
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.harness import (
     Harness,
@@ -85,7 +86,16 @@ async def test_a_run_with_stores_resolves_its_session_runs_and_is_saved(tmp_path
     assert finished.context.environment_id == worker.environment_id == session.environment_id
     assert (finished.status, finished.transcript.final_text) == (0, "Answered.")
     names = [hook.name for hook in finished.hooks]
-    assert names == ["requests", "plans", "reviews", "math", "kernels", "messages", "events"]
+    assert names == [
+        "requests",
+        "plans",
+        "reviews",
+        "math",
+        "kernels",
+        "files",
+        "messages",
+        "events",
+    ]
     assert sink.notes[0].startswith("worker: pool p")
     assert (
         await save(
@@ -173,14 +183,15 @@ async def test_a_delegated_runs_kernels_stop_when_it_ends(tmp_path: Path) -> Non
         def __init__(self) -> None:
             self.closed: list[str | None] = []
 
-        async def kernel_status(self, context: ExecutionContext) -> KernelListing:
+        async def observe_kernels(self, context: ExecutionContext) -> KernelObservation:
             def kernel(run: str | None) -> KernelInfo:
                 return KernelInfo(kernel_id=f"k-{run}", language="python", generation=1, run=run)
 
-            return KernelListing(
+            return KernelObservation(
                 environment_id=context.environment_id,
                 session_id=context.session_id,
                 kernels=(kernel(None), kernel("left-behind")),
+                observed_at=datetime.now(UTC),
             )
 
         async def close_session(self, context: object, run: str | None = None) -> None:

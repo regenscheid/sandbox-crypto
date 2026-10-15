@@ -57,6 +57,7 @@ from .model import ToolCall, ToolSpec
 from .plan_tools import SPECS as PLAN_SPECS
 from .plan_tools import Plans, PlanTools
 from .provision import PROVISION_SPECS, PROVISIONING, ProvisionTools
+from .recording import FileRecorder, RecordedFiles, Written, with_recorded
 from .worker_client import WorkerAPIError, WorkerClient, dump
 
 _log = logging.getLogger(__name__)
@@ -261,6 +262,8 @@ class ToolOutcome:
     record: dict[str, Any] = field(default_factory=dict[str, Any])
     whole: bool = False
     """The result must reach the model as it is, with no notices riding on it."""
+    written: Written | None = None
+    """The files the call changed, which the run's recorder records (RA-27)."""
 
 
 @dataclass(frozen=True)
@@ -373,7 +376,9 @@ class Toolbox:
         plans: PlanTools | None = None,
         ledger: LedgerTool | None = None,
         check_kernels: bool = False,
+        sweep_left_kernels: bool = False,
         connectors: Connectors | None = None,
+        recorder: FileRecorder | None = None,
         kernel_run: str | None = None,
     ) -> None:
         self.client = client
@@ -387,6 +392,12 @@ class Toolbox:
         self.artifacts = artifacts
         self.plans = plans
         self.check_kernels = check_kernels
+        self.sweep_left_kernels = sweep_left_kernels
+        """The kernel check also closes the run kernels the session's earlier runs left
+        (PD-40), at its first observation of a connected executor."""
+        self.recorder = recorder
+        """Records the files calls write as artifact revisions (RA-27); ``None`` without
+        an artifact inventory."""
         self.kernel_run = kernel_run
         """A delegated run's own kernels: cells name it (PD-37); ``None`` uses the
         session's, which main runs share."""
@@ -535,6 +546,23 @@ class Toolbox:
                 ErrorKind.INTERNAL,
                 f"the {call.name} tool failed unexpectedly ({type(exc).__name__})",
             )
+        if self.recorder is not None and outcome.written is not None:
+            try:
+                recorded = await self.recorder.record(
+                    outcome.written,
+                    tool_call=call.id or operation,
+                    model=model,
+                    operation=operation,
+                )
+            except Exception as error:  # recording never costs the call its result
+                _log.exception("recording the files of the %s call failed", call.name)
+                outcome.record["recorded_files"] = {"failed": type(error).__name__}
+            else:
+                report = recorded.summary()
+                if report is not None:
+                    outcome.record["recorded_files"] = {**report, "files": recorded.files[:100]}
+                    if not entry.whole:
+                        outcome.text = with_recorded(outcome.text, report)
         if entry.whole:
             outcome.whole = True
             return outcome
@@ -563,7 +591,13 @@ class Toolbox:
         if self.math_checks is not None:
             hooks.append(MathChecks(self.math_checks))
         if self.check_kernels:
-            hooks.append(KernelCheck(self.client, self.context, run=self.kernel_run))
+            hooks.append(
+                KernelCheck(
+                    self.client, self.context, run=self.kernel_run, sweep=self.sweep_left_kernels
+                )
+            )
+        if self.recorder is not None:
+            hooks.append(RecordedFiles(self.recorder))
         return tuple(hooks)
 
     async def _call(
@@ -622,7 +656,9 @@ class Toolbox:
 
         execution = await self.client.run(request, on_submitted=submitted)
         record = {"execution": execution.model_dump(mode="json"), "replayed": replayed}
-        return ToolOutcome(self._summary(execution, replayed=replayed), record)
+        return ToolOutcome(
+            self._summary(execution, replayed=replayed), record, written=Written.of(execution)
+        )
 
     async def _pdf(self, kind: str, args: dict[str, Any], operation: str) -> ToolOutcome:
         """A PDF operation in the sandbox; the helper's JSON is formatted for the model."""
@@ -646,22 +682,25 @@ class Toolbox:
             "execution": execution.model_dump(mode="json"),
             "replayed": replayed,
         }
+        written = Written.of(execution)
         result = execution.result
         stdout = result.stdout if result is not None else None
         helper_error = result is not None and result.exit_code == PDF_HELPER_ERROR
         if stdout is None or (execution.state is not ExecutionState.SUCCEEDED and not helper_error):
-            return ToolOutcome(self._summary(execution, replayed=replayed), record)
+            return ToolOutcome(self._summary(execution, replayed=replayed), record, written=written)
         if stdout.truncated:
-            return _failure(
+            outcome = _failure(
                 ErrorKind.INVALID_REQUEST,
                 "the result was larger than the output limit; ask for fewer pages",
             )
+            outcome.written = written
+            return outcome
         try:
             document: object = json.loads(stdout.text)
         except (ValueError, RecursionError):
-            return ToolOutcome(self._summary(execution, replayed=replayed), record)
+            document = None
         if not isinstance(document, dict):
-            return ToolOutcome(self._summary(execution, replayed=replayed), record)
+            return ToolOutcome(self._summary(execution, replayed=replayed), record, written=written)
         parsed = cast(dict[str, Any], document)
         error = parsed.get("error")
         if isinstance(error, dict):
@@ -670,9 +709,11 @@ class Toolbox:
                 kind_of = ErrorKind(str(failure.get("kind")))
             except ValueError:
                 kind_of = ErrorKind.INTERNAL
-            return _failure(kind_of, str(failure.get("message", "the PDF helper failed")))
+            outcome = _failure(kind_of, str(failure.get("message", "the PDF helper failed")))
+            outcome.written = written
+            return outcome
         record["pdf"] = parsed
-        return ToolOutcome(self._bound(format_pdf(kind, parsed)), record)
+        return ToolOutcome(self._bound(format_pdf(kind, parsed)), record, written=written)
 
     async def _python(self, args: dict[str, Any], operation: str) -> ToolOutcome:
         return await self._cell("python", args, operation)
@@ -773,7 +814,9 @@ class Toolbox:
         )
         written = await self.client.write_file(request)
         return ToolOutcome(
-            dump({"written": request.path, **written.model_dump()}), {"write": written.model_dump()}
+            dump({"written": request.path, **written.model_dump()}),
+            {"write": written.model_dump()},
+            written=Written((request.path,)),
         )
 
     async def _list(self, args: dict[str, Any], operation: str) -> ToolOutcome:

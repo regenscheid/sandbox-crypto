@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from typing import cast
+from typing import Any, cast
 
 from sandbox_science.contracts import (
     ErrorKind,
@@ -13,6 +13,7 @@ from sandbox_science.contracts import (
     KernelInfo,
     KernelObservation,
 )
+from sandbox_science.orchestrator.kernel_check import KernelCheck
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolCall
 from sandbox_science.orchestrator.notices import KERNELS
@@ -145,3 +146,31 @@ async def test_a_delegated_run_restarts_its_own_kernel() -> None:
     )
     await run_task(model, box, "go", run_id="r")
     assert worker.restarted == [("python", "child")]
+
+
+async def test_a_main_run_closes_left_kernels_once_the_executor_is_connected() -> None:
+    """PD-40: the first observation fails (nothing connected yet); after the run's first
+    call, the next one succeeds and the sweep closes the kernels earlier runs left."""
+
+    class Unconnected(Worker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.closed: list[str | None] = []
+
+        async def observe_kernels(self, context: ExecutionContext) -> KernelObservation:
+            self.observed += 1
+            if self.observed == 1:
+                raise WorkerAPIError(ErrorKind.UNAVAILABLE, "the executor is not connected")
+            observation = await super().observe_kernels(context)
+            self.observed -= 1
+            return observation
+
+        async def close_session(self, context: ExecutionContext, run: str | None = None) -> None:
+            self.closed.append(run)
+
+    worker = Unconnected()
+    check = KernelCheck(cast(Any, worker), CONTEXT, sweep=True, keep=lambda: {"live-child"})
+    box = Toolbox(cast(WorkerClient, worker), CONTEXT)
+    model = ScriptedModel([turn(), turn(), ModelTurn("done")])
+    await run_task(model, box, "go", run_id="r", hooks=(check,))
+    assert worker.closed == ["child"]  # once, and never a run the tree keeps

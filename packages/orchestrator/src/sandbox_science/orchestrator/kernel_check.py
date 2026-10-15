@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Protocol
 
 from sandbox_science.contracts import ExecutionContext, KernelObservation
@@ -28,6 +28,8 @@ _log = logging.getLogger(__name__)
 class KernelObserver(Protocol):
     async def observe_kernels(self, context: ExecutionContext) -> KernelObservation: ...
 
+    async def close_session(self, context: ExecutionContext, run: str | None = None) -> object: ...
+
 
 class KernelCheck(TurnHook):
     """Tells a run about each kernel that predates its environment's package revision."""
@@ -35,12 +37,26 @@ class KernelCheck(TurnHook):
     name = "kernels"
 
     def __init__(
-        self, client: KernelObserver, context: ExecutionContext, *, run: str | None = None
+        self,
+        client: KernelObserver,
+        context: ExecutionContext,
+        *,
+        run: str | None = None,
+        sweep: bool = False,
+        keep: Callable[[], set[str]] = set,
     ) -> None:
         self.client, self.context = client, context
         self.run = run
         """The kernels the run's cells use: the session's (``None``) or a delegated run's
         own; it is told only about those."""
+        self.sweep = sweep
+        """A main run closes, at the first observation that succeeds, the run kernels its
+        session's earlier runs left when their harness stopped (PD-40): an executor that
+        is not connected yet is observed again at the next turn, after the run's first
+        call connected it."""
+        self.keep = keep
+        """Runs whose kernels the sweep leaves: the run's own live delegated runs, once
+        delegation starts them."""
         self.told: set[str] = set()
 
     async def notices(self, point: Point, run: RunView) -> Sequence[Notice]:
@@ -51,6 +67,8 @@ class KernelCheck(TurnHook):
         except Exception:  # an unavailable observation tells nothing
             _log.warning("the kernel observation failed; no kernel notice", exc_info=True)
             return ()
+        if self.sweep:
+            await self._sweep(observed)
         stale = [
             {
                 "notice_id": _notice_id(
@@ -71,6 +89,16 @@ class KernelCheck(TurnHook):
         ids = tuple(str(entry["notice_id"]) for entry in new)
         self.told.update(ids)
         return (Notice(self.name, ids, KERNELS.text, new),)
+
+    async def _sweep(self, observed: KernelObservation) -> None:
+        runs = {kernel.run for kernel in observed.kernels if kernel.run is not None}
+        try:
+            for left in sorted(runs - self.keep()):
+                await self.client.close_session(self.context, run=left)
+        except Exception:  # a cleanup: tried again at the next turn, never stops the run
+            _log.warning("could not close the kernels earlier runs left", exc_info=True)
+        else:
+            self.sweep = False
 
 
 def _notice_id(kernel: str, generation: int, revision: int | None) -> str:

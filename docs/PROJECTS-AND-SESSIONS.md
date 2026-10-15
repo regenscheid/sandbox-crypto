@@ -154,5 +154,5 @@ sandbox-science-harness project files --state-dir state --project p1 --expected 
 ```
 
 `--ignore` replaces the list (repeat it for several), `--ignore-defaults` starts from the
-defaults, and `--no-ignore` empties it. The harness's recording of the files is the next
-step of the stack; until then the settings are kept and shown only.
+defaults, and `--no-ignore` empties it. The harness reads them for each call it records
+the files of ([artifacts](ARTIFACTS.md#recording-the-files-calls-write)).
