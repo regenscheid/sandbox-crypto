@@ -82,6 +82,20 @@ export interface ChatMessage {
   offered: string | null;
 }
 
+/** A flag that was cleared (LG-29): who cleared it, when, and why. */
+export interface ClearedFlag {
+  flag_id: string;
+  cause: "assumption_revised" | "assumption_withdrawn" | "dependency_status" | "evidence_changed" | "spread";
+  source: Record<string, unknown>;
+  via: string | null;
+  revision: number;
+  raised: string;
+  cleared: string;
+  cleared_by: Record<string, unknown>;
+  reason: string;
+  operation_id: string;
+}
+
 export interface CompactPlan {
   event_cursor: number;
   head: PlanHead;
@@ -145,7 +159,7 @@ export interface EntryFinding {
   revision: number | null;
 }
 
-/** An open flag for reconsideration (LG-28): its cause, what it came from, the flag it spread from, the revision it was raised on, and the reviews whose snapshots held that revision. */
+/** An open flag for reconsideration (LG-28): its cause, what it came from, the flag it spread from, the revision it was raised on, the reviews whose snapshots held that revision, and the cleared flag it opens again, when the user reopened one. */
 export interface EntryFlag {
   flag_id: string;
   cause: "assumption_revised" | "assumption_withdrawn" | "dependency_status" | "evidence_changed" | "spread";
@@ -154,6 +168,7 @@ export interface EntryFlag {
   revision: number;
   raised: string;
   reviews: string[];
+  reopens: string | null;
 }
 
 export interface EntryHistory {
@@ -161,6 +176,7 @@ export interface EntryHistory {
   handle: string;
   revisions: EntryRevision[];
   next_before: number | null;
+  flags_cleared: ClearedFlag[];
 }
 
 /** A stored link: its kind, its target and the target's pinned revision. */

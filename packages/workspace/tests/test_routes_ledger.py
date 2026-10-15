@@ -218,3 +218,26 @@ async def test_the_user_clears_flags_through_the_workspace(
     assert (await response.json())["flags_cleared"] == [flag.flag_id]
     entry = LedgerEntry.model_validate(await (await client.get(BASE + "/R-1")).json()).entry
     assert (entry.flags, entry.open_flags) == ([], 0)
+    # The user reopens it, as a new flag; and clears every open flag on the entry at once.
+    reopen = {"flags": [flag.flag_id], "reason": "It does not.", "operation_id": "reopen-1"}
+    response = await client.post(BASE + "/R-1/flags/reopened", json=reopen, headers=origin(client))
+    assert response.status == 200, await response.text()
+    (again,) = (await response.json())["flags_reopened"]
+    history = LedgerHistory.model_validate(
+        await (await client.get(BASE + "/R-1/history")).json()
+    ).history
+    assert [(f.flag_id, f.reason) for f in history.flags_cleared] == [
+        (flag.flag_id, "It still holds.")
+    ]
+    await error_of(
+        await client.post(
+            BASE + "/R-1/flags",
+            json={**body, "cause": "spread", "operation_id": "both"},
+            headers=origin(client),
+        ),
+        400,
+        "invalid_request",
+    )
+    everything = {"reason": "Holds.", "operation_id": "clear-all"}
+    response = await client.post(BASE + "/R-1/flags", json=everything, headers=origin(client))
+    assert (await response.json())["flags_cleared"] == [again]

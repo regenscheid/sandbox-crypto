@@ -223,3 +223,9 @@ def test_the_user_clears_ledger_flags(state: Path, capsys: pytest.CaptureFixture
         capsys, "ledger", "clear", *where, "R-1", "--flag", flag.flag_id, "--reason", "Again."
     )
     assert (status, "conflict" in err) == (1, True)
+    status, out, _ = _run(
+        capsys, "ledger", "reopen", *where, "R-1", "--flag", flag.flag_id, "--reason", "No."
+    )
+    assert (status, len(json.loads(out)["flags_reopened"])) == (0, 1)
+    status, out, _ = _run(capsys, "ledger", "clear", *where, "R-1", "--all", "--reason", "Yes.")
+    assert (status, json.loads(out)["cleared_total"]) == (0, 1)

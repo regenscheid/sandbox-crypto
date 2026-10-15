@@ -842,17 +842,35 @@ class ReviewStore:
                 encoded = dump(locator)
                 items.append(EvidenceItem("document", encoded, encoded, digest(encoded), 1))
             if claimed.get("entry_revisions"):
-                from sandbox_science.orchestrator.ledger import Ledger
+                from sandbox_science.orchestrator.ledger import EntryView, Ledger
 
                 from .ledger import entry_item
 
+                heads: set[str] = set()
                 for pin in claimed["entry_revisions"]:
                     view = Ledger(self.documents).entry(project, pin["entry"], pin["revision"])
-                    location, item, ready = entry_item(view)
-                    encoded = dump(item)
-                    items.append(
-                        EvidenceItem("ledger", dump(location), encoded, digest(encoded), int(ready))
-                    )
+                    shown: list[tuple[EntryView, Json]] = [(view, {})]
+                    if view.head != view.revision and view.entry_id not in heads:
+                        # The entry as it reads now, so that a confirmation sees a revert.
+                        heads.add(view.entry_id)
+                        shown.append(
+                            (
+                                Ledger(self.documents).entry(project, view.entry_id),
+                                {"current": True},
+                            )
+                        )
+                    for each, more in shown:
+                        location, item, ready = entry_item(each)
+                        encoded = dump(item)
+                        items.append(
+                            EvidenceItem(
+                                "ledger",
+                                dump({**location, **more}),
+                                encoded,
+                                digest(encoded),
+                                int(ready),
+                            )
+                        )
             for raw in claimed.get("artifact_revisions", []) + claimed.get(
                 "artifact_replacements", []
             ):

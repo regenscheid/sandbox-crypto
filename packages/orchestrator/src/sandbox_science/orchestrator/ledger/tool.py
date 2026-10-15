@@ -34,6 +34,7 @@ from sandbox_science.orchestrator.model import ToolSpec
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 
 from .models import (
+    MAX_CLEARED,
     PREFIXES,
     STATUSES,
     ClaimKind,
@@ -41,6 +42,7 @@ from .models import (
     EntryPage,
     EntryType,
     EntryView,
+    FlagCause,
     Mutation,
     Scheme,
 )
@@ -271,7 +273,8 @@ SPECS: Final = (
         "establishing a result needs the project's gate, and a refusal names the clause "
         "that does not hold. A delegated agent creates entries, its decisions proposed, "
         "and adds evidence to entries, and changes nothing else. A change can clear open "
-        "flags (flags_cleared) for its reason: the entry still holds, or is revised to.",
+        "flags for its reason (the entry still holds, or is revised to): by ID "
+        "(flags_cleared), or all on an entry, or those of one cause (flags_cleared_on).",
         {
             "type": "object",
             "properties": {
@@ -280,7 +283,20 @@ SPECS: Final = (
                 "flags_cleared": {
                     "type": "array",
                     "items": {"type": "string", "pattern": "^flag-[0-9a-f]{24}$"},
-                    "maxItems": 64,
+                    "maxItems": MAX_CLEARED,
+                },
+                "flags_cleared_on": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "entry": _ENTRY,
+                            "cause": {"type": "string", "enum": list(get_args(FlagCause))},
+                        },
+                        "required": ["entry"],
+                        "additionalProperties": False,
+                    },
+                    "maxItems": 32,
                 },
                 "operation_id": {"type": "string"},
             },
@@ -439,7 +455,8 @@ class LedgerTool:
         return text, record
 
     def _change(self, args: dict[str, Any], operation: str, author: Author) -> str:
-        unknown = sorted(set(args) - {"reason", "changes", "flags_cleared", "operation_id"})
+        allowed = {"reason", "changes", "flags_cleared", "flags_cleared_on", "operation_id"}
+        unknown = sorted(set(args) - allowed)
         if unknown:
             raise DocumentError(INVALID_REQUEST, f"unknown arguments: {', '.join(unknown)}")
         result = self.ledger.change(

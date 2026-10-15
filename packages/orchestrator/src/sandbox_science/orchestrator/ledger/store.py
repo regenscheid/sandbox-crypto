@@ -48,9 +48,12 @@ from .models import (
     DECIDED,
     FIELDS,
     LINKS,
+    MAX_CLEARED,
     PREFIXES,
+    SHOWN_FLAGGED,
     STATUSES,
     ChangedEntry,
+    ClearedFlag,
     EntryChange,
     EntryFinding,
     EntryFlag,
@@ -110,6 +113,10 @@ def _first_status(kind: str, origin: str | None) -> str:
     if kind in ("claim", "result"):
         return "recorded" if origin == "published" else "proposed"
     return STATUSES[kind][0]
+
+
+LISTED_FLAGS: Final = 500
+"""The flags one change's event lists; it counts the rest."""
 
 
 def _refused(message: str) -> DocumentError:
@@ -261,7 +268,8 @@ class Ledger:
     def history(
         self, project: str, reference: str, *, before: int | None = None, limit: int = 50
     ) -> EntryHistory:
-        """An entry's revisions, newest first, before revision ``before``."""
+        """An entry's revisions, newest first, before revision ``before``; on the first
+        page, the flags cleared on it, latest first, with who cleared them and why."""
         self._project(project)
         if not 1 <= limit <= 200:
             raise DocumentError(INVALID_REQUEST, "a page holds 1 to 200 revisions")
@@ -276,6 +284,26 @@ class Ledger:
                 "ORDER BY r.revision DESC LIMIT ?",
                 (row.entry_id, before or row.head + 1, limit + 1),
             ).fetchall()
+            cleared = [
+                ClearedFlag(
+                    flag_id=f[0],
+                    cause=f[1],
+                    source=json.loads(f[2]),
+                    via=f[3],
+                    revision=f[4],
+                    raised=f[5],
+                    cleared=f[6],
+                    cleared_by=json.loads(f[7]),
+                    reason=f[8],
+                    operation_id=f[9],
+                )
+                for f in db.execute(
+                    "SELECT flag_id,cause,source,via,revision,raised,cleared,cleared_by,reason,"
+                    "operation_id FROM ledger_flags WHERE entry_id=? AND cleared IS NOT NULL "
+                    "ORDER BY cleared DESC,rowid DESC LIMIT 50",
+                    (row.entry_id,),
+                )
+            ]
         revisions = [
             EntryRevision(
                 revision=r[0],
@@ -295,6 +323,7 @@ class Ledger:
             handle=row.handle,
             revisions=revisions,
             next_before=revisions[-1].revision if len(rows) > limit else None,
+            flags_cleared=[] if before is not None else cleared,
         )
 
     # Changes.
@@ -341,14 +370,51 @@ class Ledger:
         self,
         project: str,
         reference: str,
+        flags: list[str] | None,
+        author: Author,
+        *,
+        reason: str,
+        operation_id: str,
+        cause: str | None = None,
+    ) -> MutationResult:
+        """Clear open flags on ``reference`` with ``reason`` (LG-29): those ``flags``
+        names, or else all its open flags, or those of ``cause``, in a change that
+        revises nothing. A flag on another entry is not found."""
+        if flags is None:
+            scope = {"entry": reference, "cause": cause}
+            return self.change(
+                project,
+                {"operation_id": operation_id, "reason": reason, "flags_cleared_on": [scope]},
+                author,
+            )
+        self._on(project, reference, flags)
+        return self.change(
+            project,
+            {"operation_id": operation_id, "reason": reason, "flags_cleared": flags},
+            author,
+        )
+
+    def reopen_flags(
+        self,
+        project: str,
+        reference: str,
         flags: list[str],
         author: Author,
         *,
         reason: str,
         operation_id: str,
     ) -> MutationResult:
-        """Clear open flags on ``reference`` with ``reason`` (LG-29): a change that clears
-        them and revises nothing. A flag on another entry is not found."""
+        """Open cleared flags on ``reference`` again, with ``reason``: the user's reversal
+        of a clearing (LG-29), each a new flag that names the one it reopens."""
+        self._on(project, reference, flags)
+        return self.change(
+            project,
+            {"operation_id": operation_id, "reason": reason, "flags_reopened": flags},
+            author,
+        )
+
+    def _on(self, project: str, reference: str, flags: list[str]) -> None:
+        """Refuse a flag that is not on ``reference``."""
         self._project(project)
         with self.control.read() as tx:
             db = tx.sql
@@ -362,11 +428,6 @@ class Ledger:
                     is None
                 ):
                     raise DocumentError(NOT_FOUND, f"{entry.handle} has no flag {flag}")
-        return self.change(
-            project,
-            {"operation_id": operation_id, "reason": reason, "flags_cleared": flags},
-            author,
-        )
 
     def change(
         self, project: str, raw: object, author: Author, *, provenance: Json | None = None
@@ -448,9 +509,10 @@ class Ledger:
                 )
         self._check_links(db, planned)
         self._check_published(db, planned)
-        self._check_decisions(db, planned, role)
+        gated = self._check_decisions(db, planned, role)
         now = self.clock()
         cleared = self._clear(db, project, mutation, author, role, now)
+        reopened = self._reopen(db, project, mutation, author, role, now)
         changed: list[ChangedEntry] = []
         for p in planned:
             self._write(db, project, p, mutation, author, provenance, now)
@@ -463,45 +525,37 @@ class Ledger:
                     created=p.created,
                 )
             )
-        revised = [
-            flags.Changed(
-                p.row.entry_id,
-                p.row.handle,
-                p.row.type,
-                p.row.head,
-                "statement" in p.changed,
-                p.status,
-                p.status_before,
-            )
-            for p in planned
-            if not p.created
-        ]
-
-        def announce(flag: flags.Raised) -> None:
-            self.events.append(
-                db,
-                "ledger.flag_raised",
-                project,
-                author.session_id,
-                flag.entry_id,
-                {
-                    "flag": flag.flag_id,
-                    "entry": flag.entry_id,
-                    "handle": flag.handle,
-                    "cause": flag.cause,
-                    "source": flag.source,
-                    "via": flag.via,
-                    "operation_id": mutation.operation_id,
-                },
-                now,
-            )
-
-        raised = flags.raise_flags(db, project, revised, now.isoformat(), announce)
+        raised = flags.raise_flags(
+            db, project, [self._changed(p) for p in planned], now.isoformat()
+        )
+        if role == "main":
+            for flag in raised:
+                if flag.entry_id in gated:
+                    raise gate.refused(
+                        flag.entry_id,
+                        "flags",
+                        f"the change that establishes {flag.handle} also flags it "
+                        f"({flag.cause}, from {flag.source['handle']}): make the change, "
+                        "reconsider the entry, and establish it after",
+                    )
+        self._announce(
+            db,
+            project,
+            author,
+            "ledger.flags_raised",
+            mutation,
+            [(f.flag_id, f.entry_id, f.handle, f.cause, f.source["handle"]) for f in raised],
+            now,
+        )
+        flagged = list(dict.fromkeys(flag.handle for flag in raised))
         result = MutationResult(
             operation_id=mutation.operation_id,
             entries=changed,
-            flagged=list(dict.fromkeys(flag.handle for flag in raised)),
-            flags_cleared=cleared,
+            flagged=flagged[:SHOWN_FLAGGED],
+            flagged_total=len(flagged),
+            flags_cleared=cleared[:SHOWN_FLAGGED],
+            cleared_total=len(cleared),
+            flags_reopened=reopened,
         )
         RECEIPTS.record(
             db,
@@ -851,12 +905,16 @@ class Ledger:
         if not p.created:
             p.changed = [*p.changed, "evidence"]
 
-    def _check_decisions(self, db: sqlite3.Connection, planned: list[_Planned], role: str) -> None:
+    def _check_decisions(
+        self, db: sqlite3.Connection, planned: list[_Planned], role: str
+    ) -> set[str]:
         """Statuses only a decision sets (LG-4): an entry becomes ``established``,
         ``obstructed`` or ``refuted``, and a decision ``reversed``, only in a change that
         puts in effect a decision that affects it. The main agent's decision to establish
         a result needs the gate (LG-17), and one that makes an issue obstructed needs an
-        accepted assessment (LG-7), which work records will carry."""
+        accepted assessment (LG-7), which work records will carry. Returns the entries
+        the gate passed, which the flags the change raises must spare."""
+        gated: set[str] = set()
         deciding = [
             p
             for p in planned
@@ -916,6 +974,7 @@ class Ledger:
                     held,
                 )
                 gate.establish(db, p.row.entry_id, p.row.handle, held, now, p.row.head)
+                gated.add(p.row.entry_id)
             elif p.status == "obstructed":
                 raise gate.refused(
                     p.row.entry_id,
@@ -924,6 +983,7 @@ class Ledger:
                     "claimed obstruction; work records are not built yet, so only the user's "
                     "decision makes an issue obstructed",
                 )
+        return gated
 
     def _rewrites(self, db: sqlite3.Connection, p: _Planned) -> bool:
         """Whether the change alters what a decision on ``p``'s entry rested on: its
@@ -948,6 +1008,34 @@ class Ledger:
             return p.evidence
         return evidence.stored(db, p.row.entry_id, p.row.head) if not p.created else []
 
+    @staticmethod
+    def _changed(p: _Planned) -> flags.Changed:
+        """``p`` as the flags read it, once written: what it changed, and the links and
+        evidence to other entries its revision gains."""
+        before = {(link.kind, link.target_id, link.revision) for link in p.previous}
+        pins = [
+            (link.kind, link.target_id, link.revision)
+            for link in (p.links if p.links is not None else [])
+            if link.kind in ("assumes", "builds_on")
+            and link.target == "entry"
+            and (link.kind, link.target_id, link.revision) not in before
+        ]
+        pins += [
+            ("evidence", link.target_id, link.revision)
+            for link in (p.evidence or [])
+            if link.target == "entry" and link.added == p.row.head
+        ]
+        return flags.Changed(
+            p.row.entry_id,
+            p.row.handle,
+            p.row.type,
+            p.row.head,
+            not p.created and "statement" in p.changed,
+            p.status,
+            p.status_before,
+            tuple(pin for pin in dict.fromkeys(pins) if pin[1] != p.row.entry_id),
+        )
+
     def _clear(
         self,
         db: sqlite3.Connection,
@@ -957,15 +1045,17 @@ class Ledger:
         role: str,
         now: datetime,
     ) -> list[str]:
-        """Clear the open flags the mutation names, with its reason (LG-29): the user's or
-        the main agent's to clear, never a delegated agent's."""
-        if not mutation.flags_cleared:
+        """Clear the open flags the mutation names, by ID or by entry and cause, with its
+        reason (LG-29): the user's or the main agent's to clear, never a delegated
+        agent's. One event records them all."""
+        if not mutation.flags_cleared and not mutation.flags_cleared_on:
             return []
         if role == "delegated":
             raise _refused("a delegated agent clears no flag")
-        for flag in dict.fromkeys(mutation.flags_cleared):
+        found: dict[str, tuple[str, str, str, str]] = {}
+        for flag in mutation.flags_cleared or ():
             row = db.execute(
-                "SELECT f.entry_id,f.cleared,f.cause,f.source,e.type,e.number "
+                "SELECT f.entry_id,f.cleared,f.cause,e.type,e.number,f.source "
                 "FROM ledger_flags f JOIN ledger_entries e USING(entry_id) "
                 "WHERE f.flag_id=? AND f.project=?",
                 (flag, project),
@@ -974,6 +1064,30 @@ class Ledger:
                 raise DocumentError(NOT_FOUND, f"no flag {flag} in this project")
             if row[1] is not None:
                 raise DocumentError(CONFLICT, f"flag {flag} is cleared already")
+            found[flag] = (
+                row[0],
+                f"{PREFIXES[row[3]]}-{row[4]}",
+                row[2],
+                json.loads(row[5])["handle"],
+            )
+        for scope in mutation.flags_cleared_on or ():
+            entry = self._find(db, project, scope.entry)
+            rows = db.execute(
+                "SELECT flag_id,cause,source FROM ledger_flags WHERE entry_id=? "
+                "AND cleared IS NULL AND (? IS NULL OR cause=?) ORDER BY raised,rowid LIMIT ?",
+                (entry.entry_id, scope.cause, scope.cause, MAX_CLEARED + 1),
+            ).fetchall()
+            if not rows:
+                raise DocumentError(
+                    CONFLICT,
+                    f"{entry.handle} has no open flag"
+                    + (f" of cause {scope.cause}" if scope.cause else ""),
+                )
+            for flag, cause, source in rows:
+                found[flag] = (entry.entry_id, entry.handle, cause, json.loads(source)["handle"])
+        if len(found) > MAX_CLEARED:
+            raise DocumentError(INVALID_REQUEST, f"a change clears at most {MAX_CLEARED} flags")
+        for flag in found:
             db.execute(
                 "UPDATE ledger_flags SET cleared=?,cleared_by=?,reason=?,operation_id=? "
                 "WHERE flag_id=?",
@@ -985,25 +1099,94 @@ class Ledger:
                     flag,
                 ),
             )
-            self.events.append(
-                db,
-                "ledger.flag_cleared",
-                project,
-                author.session_id,
-                row[0],
-                {
-                    "flag": flag,
-                    "entry": row[0],
-                    "handle": f"{PREFIXES[row[4]]}-{row[5]}",
-                    "cause": row[2],
-                    "source": json.loads(row[3]),
-                    "reason": mutation.reason,
-                    "run": author.run_id,
-                    "operation_id": mutation.operation_id,
-                },
-                now,
-            )
-        return list(dict.fromkeys(mutation.flags_cleared))
+        self._announce(
+            db,
+            project,
+            author,
+            "ledger.flags_cleared",
+            mutation,
+            [(flag, *rest) for flag, rest in found.items()],
+            now,
+        )
+        return list(found)
+
+    def _reopen(
+        self,
+        db: sqlite3.Connection,
+        project: str,
+        mutation: Mutation,
+        author: Author,
+        role: str,
+        now: datetime,
+    ) -> list[str]:
+        """Open cleared flags again, as new flags that name them (LG-29; settled question
+        2: the user can reverse what the main agent did). The user's only."""
+        if not mutation.flags_reopened:
+            return []
+        if role != "user":
+            raise _refused("only the user reopens a flag")
+        opened: list[str] = []
+        reopened: list[tuple[str, str, str, str, str]] = []
+        for old in dict.fromkeys(mutation.flags_reopened):
+            row = db.execute(
+                "SELECT f.entry_id,f.cleared,f.cause,f.source,f.via,f.key,e.head,e.type,"
+                "e.number FROM ledger_flags f JOIN ledger_entries e USING(entry_id) "
+                "WHERE f.flag_id=? AND f.project=?",
+                (old, project),
+            ).fetchone()
+            if row is None:
+                raise DocumentError(NOT_FOUND, f"no flag {old} in this project")
+            entry, cleared, cause, source, via, same, head, kind, number = row
+            if cleared is None:
+                raise DocumentError(CONFLICT, f"flag {old} is open")
+            flag = new_id("flag")
+            inserted = db.execute(
+                "INSERT INTO ledger_flags(flag_id,project,entry_id,revision,cause,source,via,"
+                "reopens,key,raised) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",
+                (flag, project, entry, head, cause, source, via, old, same, now.isoformat()),
+            ).rowcount
+            if not inserted:
+                raise DocumentError(CONFLICT, f"a flag like {old} is open on its entry again")
+            opened.append(flag)
+            handle = f"{PREFIXES[kind]}-{number}"
+            reopened.append((flag, entry, handle, cause, json.loads(source)["handle"]))
+        self._announce(db, project, author, "ledger.flags_reopened", mutation, reopened, now)
+        return opened
+
+    def _announce(
+        self,
+        db: sqlite3.Connection,
+        project: str,
+        author: Author,
+        kind: str,
+        mutation: Mutation,
+        found: list[tuple[str, str, str, str, str]],
+        now: datetime,
+    ) -> None:
+        """One event for the flags a change raised, cleared or reopened: as many as
+        ``LISTED_FLAGS`` of them, each its ID, entry, handle, cause and source, with
+        their count, the change's reason and the run (LG-29, LG-33)."""
+        if not found:
+            return
+        listed = [
+            {"flag": flag, "entry": entry, "handle": handle, "cause": cause, "from": source}
+            for flag, entry, handle, cause, source in found[:LISTED_FLAGS]
+        ]
+        self.events.append(
+            db,
+            kind,
+            project,
+            author.session_id,
+            found[0][1],
+            {
+                "operation_id": mutation.operation_id,
+                "reason": mutation.reason,
+                "run": author.run_id,
+                "total": len(found),
+                "flags": listed,
+            },
+            now,
+        )
 
     def _check_published(self, db: sqlite3.Connection, planned: list[_Planned]) -> None:
         """A published claim or result cites its reference through a ``supports`` link of
@@ -1229,8 +1412,8 @@ class Ledger:
         """The open flags on ``entry``, newest first, each with the reviews whose
         snapshots held the revision it was raised on (LG-28)."""
         found: list[EntryFlag] = []
-        for flag, cause, source, via, revision, raised in db.execute(
-            "SELECT flag_id,cause,source,via,revision,raised FROM ledger_flags "
+        for flag, cause, source, via, revision, raised, reopens in db.execute(
+            "SELECT flag_id,cause,source,via,revision,raised,reopens FROM ledger_flags "
             "WHERE entry_id=? AND cleared IS NULL ORDER BY raised DESC,rowid DESC LIMIT 50",
             (entry,),
         ):
@@ -1252,6 +1435,7 @@ class Ledger:
                     revision=revision,
                     raised=raised,
                     reviews=reviews,
+                    reopens=reopens,
                 )
             )
         return found

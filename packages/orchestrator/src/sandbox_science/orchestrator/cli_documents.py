@@ -276,7 +276,7 @@ def document(args: argparse.Namespace) -> int:
 def ledger(args: argparse.Namespace) -> int:
     """The user's ledger commands: ``check`` records that the user checked an entry at a
     revision, which the gate's independent check counts (LG-17); ``clear`` clears open
-    flags on an entry with a reason (LG-29)."""
+    flags on an entry with a reason, and ``reopen`` opens cleared ones again (LG-29)."""
     with contextlib.closing(ProjectStore(args.state_dir, readonly=True)) as projects:
         projects.get(args.project)
     store = DocumentStore(store_path(args.state_dir), producer="harness-cli")
@@ -298,6 +298,16 @@ def ledger(args: argparse.Namespace) -> int:
                 USER,
                 reason=args.reason,
                 operation_id=args.operation_id or new_id("clear"),
+                cause=args.cause,
+            )
+            if args.action == "clear"
+            else Ledger(store).reopen_flags(
+                args.project,
+                args.entry,
+                args.flag,
+                USER,
+                reason=args.reason,
+                operation_id=args.operation_id or new_id("reopen"),
             )
         )
         print(result.model_dump_json(indent=2))
@@ -413,8 +423,18 @@ def add_parsers(commands: Any) -> None:
         "clear", parents=[common], help="clear open flags on an entry, with the reason (LG-29)"
     )
     clear.add_argument("entry", help="the entry's handle (such as C-12) or ID")
-    clear.add_argument(
-        "--flag", action="append", required=True, help="a flag's ID (repeat for more)"
-    )
+    which = clear.add_mutually_exclusive_group(required=True)
+    which.add_argument("--flag", action="append", help="a flag's ID (repeat for more)")
+    which.add_argument("--cause", help="every open flag of this cause on the entry")
+    which.add_argument("--all", action="store_true", help="every open flag on the entry")
     clear.add_argument("--reason", required=True, help="why the entry still holds")
     clear.add_argument("--operation-id", help="retry with the same ID (default: a new one)")
+    reopen = ledger_actions.add_parser(
+        "reopen", parents=[common], help="open cleared flags on an entry again (LG-29)"
+    )
+    reopen.add_argument("entry", help="the entry's handle (such as C-12) or ID")
+    reopen.add_argument(
+        "--flag", action="append", required=True, help="a cleared flag's ID (repeat for more)"
+    )
+    reopen.add_argument("--reason", required=True, help="why it needs reconsidering")
+    reopen.add_argument("--operation-id", help="retry with the same ID (default: a new one)")

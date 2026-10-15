@@ -27,7 +27,7 @@ Json = dict[str, Any]
 
 LEDGER_FEED: Final = FeedCursor("ledger")
 _KINDS: Final = ("ledger.entry_created", "ledger.entry_revised")
-_FLAGS: Final = ("ledger.flag_raised", "ledger.flag_cleared")
+_FLAGS: Final = ("ledger.flags_raised", "ledger.flags_cleared")
 _STRUCTURAL: Final = ("claim", "result")
 """The entries that are a structural block when made (CR-10: "a theorem or claim")."""
 
@@ -154,22 +154,15 @@ def _observation(ledger: Ledger, project: str, entry: str, event: Json) -> Obser
 
 
 def _flag(kind: str, event: Json) -> Observation:
-    """A flag an agent's change raised, which is not the run's effect and makes no review
-    due, or an agent's clearing of one, with its reason."""
-    cleared = kind == "ledger.flag_cleared"
+    """The flags one agent's change raised, which are not the run's effect and make no
+    review due, or those it cleared, with its reason: one item, which lists as many as
+    the event does and counts them all."""
+    cleared = kind == "ledger.flags_cleared"
+    action = "cleared" if cleared else "raised"
     locator = {
-        "flag": event["flag"],
-        "entry": event["entry"],
-        "handle": event["handle"],
-        "cleared": cleared,
+        "flags": action,
+        "operation_id": event["operation_id"],
+        "total": event["total"],
         "run": event.get("run"),
     }
-    return (
-        f"ledger:{event['flag']}:{'cleared' if cleared else 'raised'}",
-        locator,
-        event,
-        0,
-        0,
-        True,
-        cleared,
-    )
+    return (f"ledger:flags:{event['operation_id']}:{action}", locator, event, 0, 0, True, cleared)
