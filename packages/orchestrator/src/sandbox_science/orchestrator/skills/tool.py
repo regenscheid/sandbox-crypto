@@ -152,8 +152,9 @@ class SkillTool:
         return text, {"skills": {**base, **record}}
 
     def _search(self, query: str) -> tuple[str, dict[str, Any]]:
-        words = _words(query)
-        found = _ranked(self.skills.entries, words)[:MAX_FOUND]
+        found = [(entry, matched) for entry, matched, _ in rank(self.skills.entries, words(query))][
+            :MAX_FOUND
+        ]
         answer: dict[str, Any] = {
             "searched": len(self.skills.entries),
             "found": [
@@ -292,14 +293,17 @@ def _strings(values: object) -> bool:
     return bool(items) and all(isinstance(value, str) and value for value in items)
 
 
-def _words(text: str) -> list[str]:
+def words(text: str) -> list[str]:
+    """``text``'s words as the ranking reads them: lowercase, without common words, and
+    without a plural's final s."""
     words = (word for word in _WORD.findall(text.lower()) if word not in _STOP)
     return [word[:-1] if len(word) > 3 and word.endswith("s") else word for word in words]
 
 
-def _ranked(entries: Sequence[Entry], query: list[str]) -> list[tuple[Entry, list[str]]]:
-    """The entries that share a word with ``query``, best first by BM25, with the words."""
-    docs = [_words(f"{entry.name.replace('-', ' ')} {entry.description}") for entry in entries]
+def rank(entries: Sequence[Entry], query: list[str]) -> list[tuple[Entry, list[str], float]]:
+    """The entries that share a word with ``query``, best first by BM25, with the words
+    and the score."""
+    docs = [words(f"{entry.name.replace('-', ' ')} {entry.description}") for entry in entries]
     if not docs or not query:
         return []
     average = sum(len(doc) for doc in docs) / len(docs) or 1.0
@@ -319,4 +323,4 @@ def _ranked(entries: Sequence[Entry], query: list[str]) -> list[tuple[Entry, lis
             )
         if matched:
             scored.append((-score, index, matched))
-    return [(entries[index], matched) for _, index, matched in sorted(scored)]
+    return [(entries[index], matched, -score) for score, index, matched in sorted(scored)]

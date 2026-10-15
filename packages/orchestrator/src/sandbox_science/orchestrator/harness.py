@@ -92,6 +92,7 @@ from .runstate import RunState
 from .session_plans import PlanRef, SessionPlans
 from .skills import SkillStore, SkillTool
 from .skills.builtin import builtin_pack
+from .skills.discovery import SkillDiscovery
 from .tools import HARNESS_TOOL_NAMES, Toolbox, ToolOutcome
 from .worker_client import WorkerAPIError, WorkerClient
 
@@ -508,8 +509,14 @@ class Harness:
                     )
                     hooks = toolbox.turn_hooks()
                     request = admitted.request
+                    # Discovery shows the skills that match the task, and each message.
+                    discovery = None
+                    if toolbox.skills is not None:
+                        task = None if request.queued else request.task
+                        discovery = SkillDiscovery(toolbox.skills, task, clock=self.clock)
+                        hooks = (*hooks, discovery)
                     if chat is not None:
-                        hooks = (*hooks, *await self._chat_hooks(admitted, chat))
+                        hooks = (*hooks, *await self._chat_hooks(admitted, chat, discovery))
                     transcript = await run_task(
                         self.role(request).model,
                         toolbox,
@@ -566,7 +573,9 @@ class Harness:
             found["run_share"] = self.settings.run_share  # of the daily cost limit
         return found
 
-    async def _chat_hooks(self, admitted: Admitted, chat: RunChat) -> tuple[TurnHook, ...]:
+    async def _chat_hooks(
+        self, admitted: Admitted, chat: RunChat, discovery: SkillDiscovery | None = None
+    ) -> tuple[TurnHook, ...]:
         """A run's budget, the user's messages, which reach the model last, and its
         events, which come last. A delegated run keeps its token limit, and its calls that
         may change something need its root's lease and the plan's leave (PD-34); the user
@@ -589,7 +598,8 @@ class Harness:
             return (*limit, SessionHeld(chat), fence, outcome, EventLog(chat))
         settings = self.settings
         kept = (ModelBudget(chat, settings.run_share),) if settings.cost_limits else ()
-        return (*kept, UserMessages(chat), EventLog(chat))
+        discover = discovery.about if discovery is not None else None
+        return (*kept, UserMessages(chat, discover), EventLog(chat))
 
     async def _delegations(
         self,
