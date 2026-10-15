@@ -30,6 +30,8 @@ The browser's views are E-06 and E-07 in the refactoring plan. Waking a session 
   - the project has spent its budget over the last 24 hours, its own calls included: `stopped="budget"`;
   - or the run's own calls have used its share of the budget: `stopped="run_budget"`. The share is half by default; `serve --run-share PERCENT` sets it, and the launcher's `[run_service] run_share`.
 
+  With delegation, a root's share bounds its whole tree, and the tree's calls in flight count at each check ([plans and delegation](plans-and-delegation.md), PD-38).
+
   The run ends as at its context limit. An answer that a closing round was taken for stands, and the run keeps its reason. The record, the `stopped` event and the GUI say why. A tool call already made finishes first, and its result is kept. Messages, work requests and notices that no model call saw wait for the next run, as at a run's start: with the budget spent, the messages are `refused` with `budget` and the requests wait (RS-6, RS-6b). `run` on the command line keeps no budget.
 - RS-7. **A message during a run.** A message queued while the run is active is delivered at the run's next safe point: before the next model call, or at once when the agent is waiting on jobs, which ends the wait with `user_message` ([tools](tools.md#background-jobs), item 6). It is not attached to a tool result. It goes in as a user message with the user's text as written. Unlike document text and notices, it is the user's instruction.
 - RS-8. A message queued when the run is about to end is not lost. If the message is there at the run's closing, the run continues and answers it. If it arrives after the closing, it starts the next run (RS-6).
