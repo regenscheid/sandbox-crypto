@@ -59,6 +59,28 @@ describe('saving plan text', () => {
   });
 });
 
+describe('the plan as shown', () => {
+  it('shows its text, its reasons and its outcome with hidden characters as code points', async () => {
+    const source = (await import('../views/PlanPanel.svelte?raw')).default;
+    for (const field of [
+      'plan.version.body.goal',
+      'plan.version.reason',
+      'plan.version.body.feasibility',
+      'output.title',
+      'output.description',
+      'output.evidence_standard',
+      'phase.title',
+      'step.title',
+      'step.description',
+      'step.evidence_standard',
+      'plan.head.outcome.summary',
+    ]) {
+      expect(source).toContain(`{visible(${field})}`);
+      expect(source).not.toContain(`{${field}}`);
+    }
+  });
+});
+
 describe('a text box holding hidden characters', () => {
   it.each(HIDDEN_CONTENT)('names each one in a text with %s', (_, text) => {
     const html = render(HiddenBanner, { props: { text } }).body;
