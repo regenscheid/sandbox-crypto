@@ -217,9 +217,68 @@ describe("the user's confirmation of an unverified result", () => {
     await open(root);
     button(root, 'Record my check of r3')!.click();
     await settle();
-    expect(root.textContent).toContain('The entry has a newer revision than the one you read');
+    expect(root.textContent!.replace(/\s+/g, ' ')).toContain(
+      'R-8 has a newer revision than the r3 you read, so nothing was recorded. Cancel, then ' +
+        'confirm it again to read it as it is now.',
+    );
     expect(calls.filter((call) => call.url.includes('/frontier/'))).toHaveLength(1);
     expect(root.querySelector('[role="status"]')).toBeNull();
+    // No check of the text read is offered again: the user cancels and reads it anew.
+    expect(button(root, 'Record my check of r3')!.disabled).toBe(true);
+    button(root, 'Cancel')!.click();
+    flushSync();
+    button(root, 'Confirm…')!.click();
+    await settle();
+    expect(button(root, 'Record my check of r3')!.disabled).toBe(false);
+  });
+
+  it('shows its fields, evidence and assumptions exactly, as the check pins them', async () => {
+    server({
+      entry: entry({
+        fields: { category: 'key-recovery', measures: { time: 140 } },
+        evidence: [
+          {
+            evidence_id: 'ev-1',
+            role: 'supports',
+            type: 'source_claim',
+            target: 'entry',
+            target_id: 'entry-0123456789abcdef01234599',
+            revision: 2,
+            block: null,
+            span: null,
+            sha256: null,
+            checked: null,
+            scope: 'Table 3, \u202Erow 2',
+            added: 1,
+            handle: 'REF-1',
+          },
+        ],
+        links: [
+          {
+            kind: 'assumes',
+            target: 'entry',
+            target_id: 'entry-0123456789abcdef01234598',
+            revision: 1,
+            block: null,
+            note: 'the core-SVP model',
+            handle: 'A-2',
+            session: null,
+          },
+        ],
+      }),
+      check: 200,
+    });
+    const root = show();
+    await open(root);
+    const shown = exact(root);
+    expect(shown).toContain(
+      JSON.stringify({ category: 'key-recovery', measures: { time: 140 } }, null, 2),
+    );
+    expect(shown).toContain(
+      '1. Supports, source claim: entry REF-1 (entry-0123456789abcdef01234599) r2\n' +
+        'Scope: Table 3, ⟦U+202E⟧row 2',
+    );
+    expect(shown).toContain('Assumes A-2 r1: the core-SVP model');
   });
 
   it('says when the result has moved on from the revision the frontier shows, and checks the one read', async () => {

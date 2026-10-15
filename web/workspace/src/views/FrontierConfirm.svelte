@@ -3,10 +3,11 @@
      LG-16 and LG-20 as amended, LG-17): a published result an agent recorded counts once
      the user checked it. The panel reads the result as it is now and shows everything the
      check pins as exact text (ApprovalText), then records the user's check of that
-     revision: a newer one is a conflict, which records nothing and says so. -->
+     revision: a newer one is a conflict, which records nothing, says so and offers the check
+     no more: the user cancels and confirms again, reading it as it is now. -->
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { api } from '../lib/api';
+  import { api, ApiError } from '../lib/api';
   import type { FrontierResult, LedgerEntry } from '../lib/api-types';
   import { Detail, noDetail } from '../lib/detail';
   import {
@@ -40,6 +41,8 @@
   let note = $state('');
   let problem = $state<string | null>(null);
   const saving = $state(idle());
+  /** The result has a newer revision than the one read: no check of it is offered again. */
+  const conflict = $derived(saving.error instanceof ApiError && saving.error.status === 409);
 
   async function confirm(): Promise<void> {
     if (entry === null) return;
@@ -80,14 +83,17 @@
       ></textarea></label
     >
     <p>
-      <button type="button" disabled={saving.busy} onclick={confirm}
+      <button type="button" disabled={saving.busy || conflict} onclick={confirm}
         >Record my check of r{entry.revision}</button
       >
       <button type="button" disabled={saving.busy} onclick={oncancel}>Cancel</button>
     </p>
     {#if problem}<p class="problem" role="alert">{problem}</p>{/if}
-    {#if checkFailure(saving.error)}
-      <p class="problem" role="alert">{checkFailure(saving.error)}</p>
+    {#if conflict}
+      <p class="problem" role="alert">
+        {entry.handle} has a newer revision than the r{entry.revision} you read, so nothing was recorded.
+        Cancel, then confirm it again to read it as it is now.
+      </p>
     {:else if saving.error}
       <ErrorMessage error={saving.error} />
     {/if}
