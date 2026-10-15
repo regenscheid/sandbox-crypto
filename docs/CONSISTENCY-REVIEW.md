@@ -19,9 +19,10 @@ cannot read through a reviewer grant, spend budget, raise a finding or finalize 
 With `--state-dir`, the harness observes its transcript, canonical execution projections,
 agent-authored document revisions, the session's agents' ledger revisions and the flags
 their changes raise or clear ([ledger](LEDGER.md))
-and durable explicit-publication artifact events. The reviewer uses a distinct
+and durable explicit-publication artifact events. The reviewer uses
 `--reviewer-model ALIAS` with the existing model gateway, or `--reviewer-script FILE`
-plus that alias for synthetic validation. The adapter limits each answer to 2,048 tokens
+plus that alias for synthetic validation. The alias may be MAIN's: the reviewer still has
+its own calls, limits, budget and records. The adapter limits each answer to 2,048 tokens
 and 64 KiB before the reviewer applies stricter response bounds. No alias makes zero
 reviewer model calls; required windows end failed, retry twice, then become visibly
 unreviewed. This never becomes a pass.

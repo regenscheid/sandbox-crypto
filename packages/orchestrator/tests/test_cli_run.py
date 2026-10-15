@@ -121,3 +121,22 @@ def test_the_command_reports_an_unreadable_script(run, capsys: pytest.CaptureFix
             "--script", str(missing), "task"]  # fmt: skip
     assert cli.main(argv) == 1
     assert capsys.readouterr().err.startswith("error: the --script file cannot be read: ")
+
+
+def test_one_alias_may_serve_every_role(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The gateway's one alias serves MAIN, the reviewer and the watcher until each role
+    has its own (PLAN-CHANGES, 2026-10-14): the run service starts with it (lab 38)."""
+    served: list[argparse.Namespace] = []
+
+    async def serve(args: argparse.Namespace) -> int:
+        served.append(args)
+        return 0
+
+    monkeypatch.setattr(cli, "_serve", serve)
+    alias = "sandbox-orchestrator"
+    argv = ["serve", "--worker", "http://127.0.0.1:9", "--token-file", str(tmp_path / "t"),
+            "--state-dir", str(tmp_path), "--model-url", "https://gateway.invalid/v1",
+            "--api-key-file", str(tmp_path / "k"), "--model", alias,
+            "--reviewer-model", alias, "--watcher-model", alias]  # fmt: skip
+    assert cli.main(argv) == 0
+    assert [(a.model, a.reviewer_model, a.watcher_model) for a in served] == [(alias,) * 3]
