@@ -554,6 +554,23 @@ class CategoryPage(Contract):
     next_after: str | None
 
 
+class DominatesLink(Contract):
+    """A ``dominates`` link that takes a result from the best known or from those not
+    compared (LG-22): the result that holds it, its reason, and who recorded it in which
+    revision of the holder."""
+
+    entry_id: str
+    handle: str
+    reason: str
+    author: dict[str, Any]
+    revision: int
+    target: str = ""
+    """The handle of the result it names."""
+    void: str | None = None
+    """Why it counts for nothing, when it does: the rule compares the two results now, or
+    it lies on a cycle of results that dominate one another."""
+
+
 class FrontierResult(Contract):
     """A result as the frontier shows it (LG-23): what it states, under which conditions,
     its measures, origin, status, who wrote it, the types of its evidence, the references
@@ -586,6 +603,9 @@ class FrontierResult(Contract):
     open_flags: int
     dominated_by: list[str] = Field(default_factory=list[str])
     """For a dominated result, the results that dominate it."""
+    linked_by: list[DominatesLink] = Field(default_factory=list[DominatesLink])
+    """Of those, the ones that hold a ``dominates`` link to it, with the link's reason
+    and author: the user can drop one."""
     would_dominate: list[str] = Field(default_factory=list[str])
     """For a candidate, the best known results it would dominate if established."""
 
@@ -639,6 +659,9 @@ class FrontierView(Contract):
     """Sets of groups whose conditions differ only in characters that look alike (a
     partial table: Unicode dashes and slashes, Cyrillic and Greek letters that look Latin,
     other scripts' digits): the user's spellings, kept apart, and shown as a warning."""
+    void_links: list[DominatesLink] = Field(default_factory=list[DominatesLink])
+    """The dominates links between eligible results that count for nothing, with why: the
+    user drops one, or one of its cycle, to settle it (LG-22)."""
     agent_revised: CategoryRevised | None = None
     """The main agent's revision of the category, when the user has not revised it since."""
     unplaced_more: int = 0

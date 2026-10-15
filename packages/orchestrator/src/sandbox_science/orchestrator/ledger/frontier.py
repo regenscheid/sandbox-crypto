@@ -21,6 +21,13 @@ measure is a number for both, it is at least as good on each and better on one; 
 best known are the eligible results no other dominates, and a result with a missing or
 non-numeric measure is listed beside them as not compared (LG-21). Project results not
 yet eligible are candidates, with the best known results they would dominate (LG-23).
+Where the rule cannot compare two eligible results of a category, the user or the main
+agent records that one dominates the other with a ``dominates`` link and its reason,
+which takes the dominated one from the best known, or from those not compared (LG-22).
+A link between two results the rule now compares counts for nothing, and so does one on a
+cycle of results that dominate one another, by links or by the rule, as the frontier reads
+them; a change that adds a link on such a cycle is refused, and the frontier lists the
+links that count for nothing, with why.
 """
 
 from __future__ import annotations
@@ -47,6 +54,7 @@ from .models import (
     CategoryMeasure,
     CategoryPage,
     CategoryRevised,
+    DominatesLink,
     FrontierGroup,
     FrontierResult,
     FrontierView,
@@ -279,14 +287,21 @@ def view(
         written = dict(zip(keys, (str(v) for v in values), strict=True))
         found = groups.setdefault(tuple(normal(v) for v in written.values()), (written, []))
         found[1].append(member)
+    found = [_group(category, written, members) for written, members in groups.values()]
+    above, voided = _linked(
+        db,
+        category,
+        [*(r for g in found for r in (*g.best, *g.dominated, *g.not_compared)), *unplaced],
+    )
     more = len(proposed) > MAX_CANDIDATES
     return FrontierView(
         category=category,
-        groups=[_group(category, written, members) for written, members in groups.values()],
-        unplaced=unplaced,
+        groups=[_dominated(group, above) for group in found],
+        unplaced=[_above(r, above.get(r.entry_id, [])) for r in unplaced],
         truncated=more,
         next_candidates_before=proposed[MAX_CANDIDATES - 1][2] if more else None,
         agent_revised=revised(db, project, category),
+        void_links=voided,
         lookalike=_lookalike([written for written, _ in groups.values()]),
     )
 
@@ -459,6 +474,173 @@ def _changes(before: Category, after: Category) -> list[str]:
     return changed
 
 
+def is_eligible(db: sqlite3.Connection, entry: str, origin: str | None, status: str) -> bool:
+    """Whether a result of ``origin`` that a change leaves in ``status`` is eligible by
+    its status (LG-20): a recorded published result or an established project one, or
+    one now disputed whose revision before it became disputed was either. Whether the
+    user confirmed an agent's published result, the frontier reads apart."""
+    wanted = _ELIGIBLE.get(origin or "")
+    if status != "disputed":
+        return status == wanted
+    before = db.execute(
+        "SELECT status FROM ledger_revisions WHERE entry_id=? AND status!='disputed' "
+        "ORDER BY revision DESC LIMIT 1",
+        (entry,),
+    ).fetchone()
+    return before is not None and before[0] == wanted
+
+
+def comparable(category: Category, a: Json, b: Json) -> bool:
+    """Whether the rule compares two results' fields (LG-21): their conditions are equal
+    on every condition key, as ``normal`` reads them, and every measure is a number for
+    both."""
+    first, second = _key(category, a), _key(category, b)
+    return first is not None and first == second and _numbers(category, a) and _numbers(category, b)
+
+
+def _key(category: Category, fields: Json) -> tuple[str, ...] | None:
+    """A result's conditions as the frontier groups them; None when one is missing."""
+    given = {normal(k): v for k, v in fields.get("conditions", {}).items()}
+    values = [given.get(normal(key)) for key in category.conditions]
+    return None if any(v is None for v in values) else tuple(normal(str(v)) for v in values)
+
+
+def _numbers(category: Category, fields: Json) -> bool:
+    measures = fields.get("measures", {})
+    return all(isinstance(measures.get(m.name), (int, float)) for m in category.measures)
+
+
+CYCLE: Final = (
+    "it closes a cycle of results that dominate one another, by dominates links or by the "
+    "rule: it counts for nothing until a link of the cycle is dropped"
+)
+RULED: Final = "the frontier compares the two results itself now: the rule decides"
+
+
+def _void(
+    category: Category, shown: dict[str, FrontierResult], links: list[tuple[str, str]]
+) -> dict[tuple[str, str], str]:
+    """The links of ``links`` (holders to targets, among ``shown``) that count for nothing,
+    each with why: one between two results the rule compares (M1), or one on a cycle of
+    links and the rule's dominance (M2). Within a group the rule's dominance is a strict
+    order, so a cycle through it passes from link to link, and reading the links' own
+    ends, with the rule between them, finds every one."""
+    void: dict[tuple[str, str], str] = {}
+    fields = {e: {"conditions": r.conditions, "measures": r.measures} for e, r in shown.items()}
+    edges: dict[str, set[str]] = {}
+    for holder, target in links:
+        if comparable(category, fields[holder], fields[target]):
+            void[(holder, target)] = RULED
+        else:
+            edges.setdefault(holder, set()).add(target)
+    ends = {e for pair in links if pair not in void for e in pair}
+    for a in ends:
+        for b in ends:
+            if (
+                a != b
+                and comparable(category, fields[a], fields[b])
+                and beats(category, fields[a]["measures"], fields[b]["measures"])
+            ):
+                edges.setdefault(a, set()).add(b)
+
+    def reaches(start: str, goal: str) -> bool:
+        seen, todo = {start}, [start]
+        while todo:
+            at = todo.pop()
+            if at == goal:
+                return True
+            for nxt in edges.get(at, ()):
+                if nxt not in seen:
+                    seen.add(nxt)
+                    todo.append(nxt)
+        return False
+
+    for holder, target in links:
+        if (holder, target) not in void and reaches(target, holder):
+            void[(holder, target)] = CYCLE
+    return void
+
+
+def _linked(
+    db: sqlite3.Connection, category: Category, eligible: list[FrontierResult]
+) -> tuple[dict[str, list[DominatesLink]], list[DominatesLink]]:
+    """The eligible results the ``dominates`` links of other eligible ones name, each
+    with those links: who holds it, its reason and who recorded it; and apart, the links
+    that count for nothing, each with why (M1, M2)."""
+    shown = {r.entry_id: r for r in eligible}
+    above: dict[str, list[DominatesLink]] = {}
+    if not shown:
+        return above, []
+    marks = ",".join("?" * len(shown))
+    rows = [
+        (holder, target, note, head)
+        for holder, target, note, head in db.execute(
+            "SELECT x.entry_id,x.target_id,x.note,e.head FROM ledger_links x "  # noqa: S608 - placeholders
+            "JOIN ledger_entries e ON e.entry_id=x.entry_id AND x.revision=e.head "
+            f"WHERE x.kind='dominates' "
+            f"AND x.target='entry' AND x.entry_id IN ({marks}) ORDER BY e.position,x.ordinal",
+            list(shown),
+        )
+        if target in shown and target != holder
+    ]
+    void = _void(category, shown, [(h, t) for h, t, _, _ in rows])
+    voided: list[DominatesLink] = []
+    for holder, target, note, head in rows:
+        # The holder's revision that added the link, which its author recorded.
+        added = db.execute(
+            "SELECT coalesce(max(r.revision),0)+1 FROM ledger_revisions r WHERE r.entry_id=? "
+            "AND r.revision<=? AND NOT EXISTS (SELECT 1 FROM ledger_links x WHERE "
+            "x.entry_id=r.entry_id AND x.revision=r.revision AND x.kind='dominates' "
+            "AND x.target='entry' AND x.target_id=?)",
+            (holder, head, target),
+        ).fetchone()[0]
+        author = db.execute(
+            "SELECT author FROM ledger_revisions WHERE entry_id=? AND revision=?",
+            (holder, added),
+        ).fetchone()[0]
+        link = DominatesLink(
+            entry_id=holder,
+            handle=shown[holder].handle,
+            target=shown[target].handle,
+            reason=note or "",
+            author=json.loads(author),
+            revision=added,
+            void=void.get((holder, target)),
+        )
+        if link.void is None:
+            above.setdefault(target, []).append(link)
+        else:
+            voided.append(link)
+    return above, voided
+
+
+def _above(result: FrontierResult, links: list[DominatesLink]) -> FrontierResult:
+    if not links:
+        return result
+    return result.model_copy(
+        update={
+            "dominated_by": [*result.dominated_by, *(link.handle for link in links)],
+            "linked_by": links,
+        }
+    )
+
+
+def _dominated(group: FrontierGroup, above: dict[str, list[DominatesLink]]) -> FrontierGroup:
+    """``group`` once the ``dominates`` links have taken the results they name from the
+    best known and from those not compared (LG-22)."""
+    if not any(r.entry_id in above for r in (*group.best, *group.dominated, *group.not_compared)):
+        return group
+    moved = [r for r in (*group.best, *group.not_compared) if r.entry_id in above]
+    dominated = [_above(r, above.get(r.entry_id, [])) for r in (*group.dominated, *moved)]
+    return group.model_copy(
+        update={
+            "best": [r for r in group.best if r.entry_id not in above],
+            "not_compared": [r for r in group.not_compared if r.entry_id not in above],
+            "dominated": dominated,
+        }
+    )
+
+
 def _group(category: Category, conditions: dict[str, str], members: list[_Member]) -> FrontierGroup:
     """One set of conditions' best known, dominated, not compared and candidate results."""
     compared = [r for r, eligible, _ in members if eligible and _numeric(category, r)]
@@ -500,6 +682,11 @@ def _numeric(category: Category, result: FrontierResult) -> bool:
 def dominates(category: Category, a: FrontierResult, b: FrontierResult) -> bool:
     """Whether ``a`` dominates ``b`` (LG-21): at least as good on every measure of the
     category, and better on one; both give every measure as a number."""
+    return beats(category, a.measures, b.measures)
+
+
+def beats(category: Category, a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """Whether measures ``a`` dominate measures ``b`` (LG-21), every one a number."""
     better = False
     for measure in category.measures:
         x, y = _number(a, measure.name), _number(b, measure.name)
@@ -511,10 +698,10 @@ def dominates(category: Category, a: FrontierResult, b: FrontierResult) -> bool:
     return better
 
 
-def _number(result: FrontierResult, name: str) -> float:
-    value = result.measures[name]
-    if isinstance(value, str):
-        raise ValueError(f"{result.handle} gives {name} as {value!r}, not a number")
+def _number(measures: dict[str, Any], name: str) -> float:
+    value = measures[name]
+    if not isinstance(value, (int, float)):
+        raise ValueError(f"{name} is {value!r}, not a number")
     return value
 
 

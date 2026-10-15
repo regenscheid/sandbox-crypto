@@ -179,6 +179,17 @@ export interface DamagedProject {
   error: string;
 }
 
+/** A ``dominates`` link that takes a result from the best known or from those not compared (LG-22): the result that holds it, its reason, and who recorded it in which revision of the holder. */
+export interface DominatesLink {
+  entry_id: string;
+  handle: string;
+  reason: string;
+  author: Record<string, unknown>;
+  revision: number;
+  target: string;
+  void: string | null;
+}
+
 /** The acknowledgement of one edit; the current plan is read separately. */
 export interface EditReceipt {
   project_id: string;
@@ -381,6 +392,7 @@ export interface FrontierResult {
   open_findings: number;
   open_flags: number;
   dominated_by: string[];
+  linked_by: DominatesLink[];
   would_dominate: string[];
 }
 
@@ -392,6 +404,7 @@ export interface FrontierView {
   truncated: boolean;
   next_candidates_before: number | null;
   lookalike: Record<string, string>[][];
+  void_links: DominatesLink[];
   agent_revised: CategoryRevised | null;
   unplaced_more: number;
 }

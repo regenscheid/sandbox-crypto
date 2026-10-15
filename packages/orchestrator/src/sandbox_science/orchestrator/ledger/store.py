@@ -557,6 +557,44 @@ class Ledger:
             author,
         )
 
+    def drop_dominates(
+        self,
+        project: str,
+        holder: str,
+        target: str,
+        revision: int,
+        author: Author,
+        *,
+        reason: str,
+        operation_id: str,
+    ) -> MutationResult:
+        """The user's dropping of ``holder``'s ``dominates`` link to ``target``, with the
+        reason (LG-22; the review's M3): a change to ``holder`` at ``revision``, the one
+        read, that keeps its other links. A later revision is a conflict."""
+        if author.kind != "user":
+            raise _refused("only the user drops a dominates link; an agent revises its links")
+        self._project(project)
+        with self.control.read() as tx:
+            entry = self._find(tx.sql, project, holder)
+            named = self._find(tx.sql, project, target).entry_id
+            links = self._links(tx.sql, entry.entry_id, min(revision, entry.head))
+        kept = [
+            _given(link)
+            for link in links
+            if not (link.kind == "dominates" and link.target == "entry" and link.target_id == named)
+        ]
+        if len(kept) == len(links):
+            raise DocumentError(NOT_FOUND, f"{entry.handle} holds no dominates link to {target}")
+        return self.change(
+            project,
+            {
+                "operation_id": operation_id,
+                "reason": reason,
+                "changes": [{"entry": entry.entry_id, "expected": revision, "links": kept}],
+            },
+            author,
+        )
+
     def reopen_flags(
         self,
         project: str,
@@ -679,6 +717,7 @@ class Ledger:
                     INVALID_REQUEST, f"the change to {p.row.handle} changes nothing"
                 )
         self._check_links(db, planned)
+        self._check_dominates(db, project, planned, role)
         self._check_published(db, planned)
         gated = self._check_decisions(db, planned, role)
         now = self.clock()
@@ -696,6 +735,7 @@ class Ledger:
                     created=p.created,
                 )
             )
+        self._check_cycles(db, project, planned)
         raised = flags.raise_flags(
             db, project, [self._changed(p) for p in planned], now.isoformat()
         )
@@ -856,8 +896,8 @@ class Ledger:
         holders, targets = LINKS[link.kind]
         if planned.row.type not in holders:
             raise DocumentError(INVALID_REQUEST, f"a {planned.row.type} holds no {link.kind} link")
-        if link.kind == "dominates":
-            raise DocumentError(INVALID_REQUEST, "dominates links come with the frontier")
+        if link.kind == "dominates" and link.note is None:
+            raise DocumentError(INVALID_REQUEST, "a dominates link states its reason")
         if link.kind == "compares_to" and link.note is None:
             raise DocumentError(INVALID_REQUEST, "a compares_to link states the difference")
         named = [link.entry, link.finding, link.document]
@@ -1420,6 +1460,79 @@ class Ledger:
                     "link of type source_claim",
                 )
 
+    def _check_dominates(
+        self, db: sqlite3.Connection, project: str, planned: list[_Planned], role: str
+    ) -> None:
+        """A ``dominates`` link a change adds (LG-22): the user's or the main agent's,
+        between two results of one category, both eligible as the change leaves them,
+        where the rule cannot compare them."""
+        by_id = {p.row.entry_id: p for p in planned}
+        for p in planned:
+            for link in _added(p, "dominates"):
+                if role == "delegated":
+                    raise _refused("a delegated agent records no dominates link")
+                other = by_id.get(link.target_id)
+                if other is not None:
+                    target = (other.row.handle, other.row.origin, other.status, other.fields)
+                else:
+                    row = db.execute(
+                        "SELECT e.type,e.number,e.origin,r.status,r.fields FROM ledger_entries e "
+                        "JOIN ledger_revisions r ON r.entry_id=e.entry_id AND r.revision=e.head "
+                        "WHERE e.entry_id=?",
+                        (link.target_id,),
+                    ).fetchone()
+                    target = (f"{PREFIXES[row[0]]}-{row[1]}", row[2], row[3], json.loads(row[4]))
+                handle, origin, status, fields = target
+                for name, entry, of, now in (
+                    (p.row.handle, p.row.entry_id, p.row.origin, p.status),
+                    (handle, link.target_id, origin, status),
+                ):
+                    if not frontier.is_eligible(db, entry, of, now):
+                        raise DocumentError(
+                            INVALID_REQUEST,
+                            f"{name} is not eligible for the frontier: a dominates link is "
+                            "between recorded published or established project results",
+                        )
+                name = p.fields.get("category")
+                category = None if name is None else frontier.read(db, project, name)
+                if category is None or fields.get("category") != name:
+                    raise DocumentError(
+                        INVALID_REQUEST,
+                        f"{p.row.handle} and {handle} are not results of one frontier category",
+                    )
+                if frontier.comparable(category, p.fields, fields):
+                    raise DocumentError(
+                        INVALID_REQUEST,
+                        f"the frontier compares {p.row.handle} and {handle} itself: their "
+                        "conditions are equal and their measures numbers",
+                    )
+
+    def _check_cycles(self, db: sqlite3.Connection, project: str, planned: list[_Planned]) -> None:
+        """Once a change is written, no ``dominates`` link it added lies on a cycle of
+        results that dominate one another, by links or by the rule (the review's M2), as
+        the frontier reads them: a disputed result as the revision before, and only the
+        results it holds eligible."""
+        added = {
+            (p.row.entry_id, link.target_id): p for p in planned for link in _added(p, "dominates")
+        }
+        if not added:
+            return
+        names = {p.fields.get("category") for p in added.values()} - {None}
+        for name in sorted(str(n) for n in names):
+            category = frontier.read(db, project, name)
+            if category is None:
+                continue
+            for link in frontier.view(db, project, category).void_links:
+                p = added.get((link.entry_id, _entry_id(db, project, link.target)))
+                if p is not None and link.void == frontier.CYCLE:
+                    raise DocumentError(
+                        INVALID_REQUEST,
+                        f"{link.handle} dominating {link.target} closes a cycle: "
+                        f"{link.target} already dominates {link.handle}, by dominates links "
+                        "or by the rule, through the results between, as the frontier "
+                        "reads them",
+                    )
+
     def _check_links(self, db: sqlite3.Connection, planned: list[_Planned]) -> None:
         """What holds once the change commits (LG-5, LG-30). ``supersedes`` and
         ``split_into`` links never lead back to their holder. An entry is superseded
@@ -1814,6 +1927,32 @@ def _status(row: _Row, before: str, status: str) -> str:
     if status == "proposed" and row.origin == "published":
         raise DocumentError(INVALID_REQUEST, "a published entry is recorded, not proposed")
     return status
+
+
+def _entry_id(db: sqlite3.Connection, project: str, handle: str) -> str:
+    """The ID of the result ``handle`` names in ``project``."""
+    number = int(handle.removeprefix(f"{PREFIXES['result']}-"))
+    row = db.execute(
+        "SELECT entry_id FROM ledger_entries WHERE project=? AND type='result' AND number=?",
+        (project, number),
+    ).fetchone()
+    return "" if row is None else row[0]
+
+
+def _given(link: EntryLink) -> Json:
+    """A stored link as a change gives it."""
+    value: Json = {"kind": link.kind}
+    if link.target == "entry":
+        value["entry"] = link.target_id
+    elif link.target == "finding":
+        value["finding"] = link.target_id
+    else:
+        value |= {"document": link.target_id, "block": link.block}
+    if link.revision is not None:
+        value["revision"] = link.revision
+    if link.note is not None:
+        value["note"] = link.note
+    return value
 
 
 def _added(p: _Planned, kind: str) -> list[EntryLink]:

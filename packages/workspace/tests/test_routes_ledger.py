@@ -182,6 +182,54 @@ async def test_the_user_records_a_check_through_the_workspace(
     assert (await client.post(url, json=body)).status == 403
 
 
+async def test_the_user_drops_a_dominates_link_through_the_workspace(
+    aiohttp_client: ClientFactory, seeded: Path, static_dir: Path
+) -> None:
+    """LG-22 (the review's M3): the user drops a dominates link an entry holds, with the
+    reason: same-origin, the user's, at the revision read."""
+    from sandbox_science.orchestrator.documents import USER
+
+    documents = DocumentStore(store_path(seeded))
+    try:
+        ledger = Ledger(documents)
+        category = {"category": "key-recovery", "target": "T", "kind": "K", "conditions": [],
+                    "measures": [{"name": "time", "unit": "bits", "direction": "lower"}],
+                    "reason": "r", "operation_id": "category"}  # fmt: skip
+        ledger.define_category("p1", category, USER)
+        reference = {"type": "reference", "title": "A paper", "statement": "A paper.",
+                     "fields": {"identifiers": {"eprint": "2024/123"},
+                                "published": "2024-02-01"}}  # fmt: skip
+        cite = [{"role": "supports", "type": "source_claim", "entry": "REF-1"}]
+
+        def published(time: object, **more: object) -> dict[str, object]:
+            return {"type": "result", "origin": "published", "title": "P", "statement": "s",
+                    "fields": {"category": "key-recovery", "measures": {"time": time}},
+                    "evidence": cite, **more}  # fmt: skip
+
+        p1 = published(120, links=[{"kind": "dominates", "entry": "R-1", "note": "Faster."}])
+        for op, change in (("ref", reference), ("p4", published("$2^n$")), ("p1", p1)):
+            ledger.change("p1", {"operation_id": op, "reason": "r", "changes": [change]}, USER)
+    finally:
+        documents.close()
+    client = await workspace(aiohttp_client, seeded, static_dir)
+    url = BASE + "/R-2/dominates/dropped"
+    body = {"target": "R-1", "revision": 1, "reason": "Not for small n.", "operation_id": "d"}
+    assert (await client.post(url, json=body)).status == 403
+    await error_of(
+        await client.post(url, json={**body, "revision": 0}, headers=origin(client)),
+        400,
+        "invalid_request",
+    )
+    response = await client.post(url, json=body, headers=origin(client))
+    assert response.status == 200, await response.text()
+    assert (await response.json())["entries"][0]["revision"] == 2
+    await error_of(
+        await client.post(url, json={**body, "operation_id": "again"}, headers=origin(client)),
+        409,
+        "conflict",
+    )
+
+
 async def test_the_user_clears_flags_through_the_workspace(
     aiohttp_client: ClientFactory, seeded: Path, static_dir: Path
 ) -> None:
