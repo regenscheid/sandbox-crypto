@@ -1487,8 +1487,27 @@ def _statement_math(schema: Schema) -> None:
 
 
 _RESERVED: Final = 8 * 1024 + 2 * 16 * 1024
-"""Metadata an unfinished artifact operation holds back: its request and the worker
-reference and receipt it may still record (``orchestrator/artifacts.py``)."""
+"""Metadata an operation in flight holds back: its request and the worker reference and
+receipt it may still record (``orchestrator/artifacts.py``)."""
+_RECEIPT: Final = 16 * 1024
+"""What an operation with a pinned worker reference may still record: its receipt."""
+
+
+def _operation_cost(row: str) -> str:
+    """The metadata an artifact operation counts: what it stored once it is done, or
+    held without a worker reference, which it never gets; what it stored and the receipt
+    it may still record, with a pinned worker reference; otherwise its reservation."""
+    stored = (
+        f"length(CAST({row}.request AS BLOB))+coalesce(length(CAST({row}.worker AS BLOB)),0)"
+        f"+coalesce(length(CAST({row}.receipt AS BLOB)),0)"
+    )
+    return (
+        f"(CASE WHEN {row}.state='done' OR ({row}.state='intent' AND {row}.receipt IS NOT NULL) "
+        f"THEN {stored} WHEN {row}.state='transfer' THEN {stored}+{_RECEIPT} "
+        f"ELSE {_RESERVED} END)"
+    )
+
+
 _USAGE_ROWS: Final = "INSERT OR IGNORE INTO artifact_usage(project) VALUES (NEW.project),('');"
 _USAGE_OF: Final = "WHERE project IN (NEW.project,'')"
 
@@ -1506,11 +1525,6 @@ def _artifact_usage(schema: Schema) -> None:
     metadata INTEGER NOT NULL DEFAULT 0 CHECK (metadata >= 0)) STRICT"""
     )
     record = "length(CAST(NEW.record AS BLOB))"
-    done = (
-        "length(CAST(NEW.request AS BLOB))+coalesce(length(CAST(NEW.worker AS BLOB)),0)"
-        "+coalesce(length(CAST(NEW.receipt AS BLOB)),0)"
-    )
-    old_done = done.replace("NEW.", "OLD.")
     for statement in (
         "CREATE TRIGGER artifact_usage_revision AFTER INSERT ON artifact_revisions BEGIN "  # noqa: S608 - constant SQL
         f"{_USAGE_ROWS} UPDATE artifact_usage SET revisions=revisions+1,"
@@ -1522,11 +1536,10 @@ def _artifact_usage(schema: Schema) -> None:
         f"+length(CAST(NEW.path AS BLOB))+length(NEW.id)+length(NEW.project) {_USAGE_OF}; END",
         "CREATE TRIGGER artifact_usage_operation AFTER INSERT ON artifact_operations BEGIN "  # noqa: S608 - constant SQL
         f"{_USAGE_ROWS} UPDATE artifact_usage SET operations=operations+1,metadata=metadata"
-        f"+(CASE WHEN NEW.state='done' THEN {done} ELSE {_RESERVED} END) {_USAGE_OF}; END",
+        f"+{_operation_cost('NEW')} {_USAGE_OF}; END",
         "CREATE TRIGGER artifact_usage_operation_change AFTER UPDATE ON artifact_operations "  # noqa: S608 - constant SQL
         f"BEGIN UPDATE artifact_usage SET metadata=metadata"
-        f"-(CASE WHEN OLD.state='done' THEN {old_done} ELSE {_RESERVED} END)"
-        f"+(CASE WHEN NEW.state='done' THEN {done} ELSE {_RESERVED} END) {_USAGE_OF}; END",
+        f"-{_operation_cost('OLD')}+{_operation_cost('NEW')} {_USAGE_OF}; END",
     ):
         schema.execute(statement)
     for scope in ("project", "''"):
@@ -1548,8 +1561,7 @@ def _artifact_usage(schema: Schema) -> None:
         WHERE artifact_usage.project IN (e.project,''))
     +(SELECT coalesce(sum(length(CAST(path AS BLOB))+length(id)+length(project)),0)
         FROM artifact_objects b WHERE artifact_usage.project IN (b.project,''))
-    +(SELECT coalesce(sum(CASE WHEN state='done' THEN {done.replace("NEW.", "")}
-        ELSE {_RESERVED} END),0) FROM artifact_operations o
+    +(SELECT coalesce(sum({_operation_cost("o")}),0) FROM artifact_operations o
         WHERE artifact_usage.project IN (o.project,''))"""  # noqa: S608 - constant SQL
     )
 

@@ -123,9 +123,15 @@ class ArtifactRevision(Contract):
     retention budget was full."""
     deleted: bool = False
     """A tombstone: the file was deleted (RA-3, RA-33). Its reference names no content."""
+    hash_source: Literal["capture", "sandbox"] | None = "capture"
+    """Where the hash came from: the worker's capture of the bytes it kept, or, for a
+    revision without its bytes, the file read in the sandbox, which the platform cannot
+    check. ``None`` for a tombstone."""
 
     @model_validator(mode="after")
     def _content(self) -> Self:
+        if self.content_retained != (self.hash_source == "capture"):
+            raise ValueError("kept bytes were captured; other hashes came from the sandbox")
         if self.deleted:
             if self.worker_snapshot is not None or self.content_retained or self.content_note:
                 raise ValueError("a tombstone keeps no content")

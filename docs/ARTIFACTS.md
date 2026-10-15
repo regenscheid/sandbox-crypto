@@ -255,15 +255,16 @@ are required. Defaults are:
 | Retained revision bytes per project / global | 2 GiB / 8 GiB |
 | Revision count per project / global | 50,000 / 200,000 |
 | Operation count per project / global | 100,000 / 400,000 |
-| Global metadata budget | 1 GiB |
+| Metadata budget per project / global | 256 MiB / 1 GiB |
 | Intent / worker or receipt / event or revision metadata | 8 KiB / 16 KiB / 16 KiB |
 | Concurrent admitted publications | 8 |
 | Metadata/event page | 10 records |
 
 The defaults are sized for recording every file executions write ([research
-artifacts](specs/research-artifacts.md), decision 9). Each unfinished operation
-reserves 40 KiB of metadata capacity before the remote call; a finished one counts
-what it stored. Reservations count unknown outcomes and zero-byte publications.
+artifacts](specs/research-artifacts.md), decision 9). An operation in flight reserves
+40 KiB of metadata capacity before the remote call; one with a pinned worker reference
+counts what it stored and the receipt it may still record; a finished one, or one held
+without a worker reference, which never finishes, counts what it stored. Reservations count unknown outcomes and zero-byte publications.
 The figures are kept per project and overall in `artifact_usage` by triggers on the
 artifact tables (control store version 20), so a budget check reads one row rather
 than every revision. `room()` tells a caller whether a new revision of a given size
@@ -283,12 +284,14 @@ Besides published revisions, the inventory records (research artifacts, RA-31 to
 RA-34; not yet called by the harness):
 
 - a file's SHA-256 and size without its bytes, with `content_retained: false` and
-  `content_note` `too_large` or `quota` (`record_metadata`). Its content read refuses,
-  saying the bytes were not kept; the same hash and size as the head adds only a
-  reproduction;
+  `content_note` `too_large` or `quota` (`record_metadata`). Its hash came from the file
+  read in the sandbox (`hash_source: sandbox`), which the platform cannot check, unlike a
+  captured revision's (`capture`). Its content read refuses, saying the bytes were not
+  kept; the same hash and size as the head adds only a reproduction, but bytes kept
+  later after a hash-only head are a new revision;
 - a tombstone for a deleted file (`record_deletion`): a revision with `deleted: true`,
-  no bytes, and an `artifact.deleted` event; nothing when the path has no live
-  artifact. Earlier revisions stay readable, and content written again later is a new
+  no bytes, and an `artifact.deleted` event, checked against the budget like any
+  revision; nothing when the path has no live artifact. Earlier revisions stay readable, and content written again later is a new
   revision rather than a reproduction of a deleted one.
 
 Their source can be `execution_record` (the worker reported the file written or

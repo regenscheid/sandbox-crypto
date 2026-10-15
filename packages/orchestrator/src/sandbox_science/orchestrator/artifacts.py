@@ -62,6 +62,10 @@ class ArtifactLimits(Contract):
     project_operations: int = Field(default=100_000, strict=True, ge=1, le=10_000_000)
     total_operations: int = Field(default=400_000, strict=True, ge=1, le=10_000_000)
     metadata_bytes: int = Field(default=_GiB, strict=True, ge=1024, le=16 * _GiB)
+    project_metadata_bytes: int = Field(
+        default=256 * 1024 * 1024, strict=True, ge=1024, le=16 * _GiB
+    )
+    """One project's share of the metadata, so it cannot stop every project's recording."""
 
 
 @dataclass(frozen=True)
@@ -109,7 +113,10 @@ class ArtifactInventory:
                 raise DocumentError(
                     INVALID_REQUEST, "artifact retention quota is full or has tightened"
                 )
-        if self._usage(db, None)[3] > limits.metadata_bytes:
+        if (
+            self._usage(db, None)[3] > limits.metadata_bytes
+            or self._usage(db, project)[3] > limits.project_metadata_bytes
+        ):
             raise DocumentError(INVALID_REQUEST, "artifact metadata retention quota is full")
 
     def room(self, project: str, size: int) -> Room:
@@ -119,8 +126,10 @@ class ArtifactInventory:
         limits = self.limits
         with self.documents.control.read() as tx:
             db = tx.sql
+            reserve = 2 * _MAX_RECORD + _MAX_REQUEST
             spare = (
-                self._usage(db, None)[3] + 2 * _MAX_RECORD + _MAX_REQUEST <= limits.metadata_bytes
+                self._usage(db, None)[3] + reserve <= limits.metadata_bytes
+                and self._usage(db, project)[3] + reserve <= limits.project_metadata_bytes
             )
             room: Room = "content" if size <= limits.artifact_bytes else "metadata"
             for scope, byte_limit, revision_limit, operation_limit in (
@@ -381,10 +390,13 @@ class ArtifactInventory:
         previous = self._revision(db, project, artifact, head) if head else None
         if deleted and (previous is None or previous.deleted):
             return None
+        # Bytes kept now are no reproduction of a revision that kept only a hash: they
+        # are recorded, and its hash, which the sandbox reported, is not taken on trust.
         reproduced = (
             not deleted
             and previous is not None
             and not previous.deleted
+            and (previous.content_retained or snapshot is None)
             and (previous.reference.sha256, previous.reference.size) == (sha256, size)
         )
         now = datetime.now(UTC)
@@ -412,6 +424,7 @@ class ArtifactInventory:
                 content_retained=snapshot is not None,
                 content_note=note,
                 deleted=deleted,
+                hash_source=None if deleted else "capture" if snapshot else "sandbox",
             )
             if row is None:
                 db.execute(
@@ -490,6 +503,7 @@ class ArtifactInventory:
                 tx.sql, source, logical_path, sha256=_EMPTY, size=0,
                 media_type="application/octet-stream", deleted=True,
             )  # fmt: skip
+            self._budget(tx.sql, source.context.project_id)
             return appended[0] if appended else None
 
     def _revision(

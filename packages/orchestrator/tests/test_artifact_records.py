@@ -157,6 +157,10 @@ def usage_rows(path: Path) -> dict[str, tuple[int, int, int, int]]:
 def recomputed(path: Path) -> dict[str, tuple[int, int, int, int]]:
     """The figures as the budget once summed them, from every row."""
     reserved = 8 * 1024 + 2 * 16 * 1024
+    stored = (
+        "length(CAST(request AS BLOB))+coalesce(length(CAST(worker AS BLOB)),0)"
+        "+coalesce(length(CAST(receipt AS BLOB)),0)"
+    )
     with sqlite3.connect(path) as db:
         found: dict[str, tuple[int, int, int, int]] = {}
         for scope in (
@@ -183,10 +187,9 @@ def recomputed(path: Path) -> dict[str, tuple[int, int, int, int]]:
                     "SELECT coalesce(sum(length(CAST(record AS BLOB))),0) FROM artifact_events",
                     "SELECT coalesce(sum(length(CAST(path AS BLOB))+length(id)+length(project)),0)"
                     " FROM artifact_objects",
-                    "SELECT coalesce(sum(CASE WHEN state='done' THEN length(CAST(request AS BLOB))"
-                    "+coalesce(length(CAST(worker AS BLOB)),0)"
-                    "+coalesce(length(CAST(receipt AS BLOB)),0)"
-                    f" ELSE {reserved} END),0) FROM artifact_operations",
+                    "SELECT coalesce(sum(CASE WHEN state='done' OR (state='intent' AND receipt "
+                    f"IS NOT NULL) THEN {stored} WHEN state='transfer' THEN {stored}+16384 "
+                    f"ELSE {reserved} END),0) FROM artifact_operations",
                 )
             )
             found[scope] = (revisions, data, operations, metadata)
@@ -244,3 +247,84 @@ def test_the_review_sees_a_record_without_its_bytes_as_unavailable(tmp_path: Pat
         ("unavailable", "the bytes were not kept (too_large)"),
         ("unavailable", "the file was deleted"),
     ]
+
+
+def test_the_usage_triggers_exist_at_the_current_version(tmp_path: Path) -> None:
+    """A later rebuild of an artifact table must keep them, or the figures go stale."""
+    inventory_at(tmp_path)
+    inventory_at(tmp_path).documents.initialize()
+    with sqlite3.connect(tmp_path / "control.sqlite3") as db:
+        triggers = dict(
+            db.execute(
+                "SELECT name,tbl_name FROM sqlite_master WHERE type='trigger' "
+                "AND name LIKE 'artifact_usage_%'"
+            )
+        )
+    assert triggers == {
+        "artifact_usage_revision": "artifact_revisions",
+        "artifact_usage_event": "artifact_events",
+        "artifact_usage_object": "artifact_objects",
+        "artifact_usage_operation": "artifact_operations",
+        "artifact_usage_operation_change": "artifact_operations",
+    }
+
+
+def test_a_held_operation_gives_back_its_reservation(tmp_path: Path) -> None:
+    inventory = inventory_at(tmp_path)
+    inventory.begin(SOURCE, "op1", "a.bin", None)
+    reserved = usage_rows(tmp_path / "control.sqlite3")["p1"][3]
+    assert reserved >= 40 * 1024  # in flight: the worst case is held back
+    inventory.hold(SOURCE, "op1", "a.bin", None, "worker unreachable")
+    held = usage_rows(tmp_path / "control.sqlite3")["p1"][3]
+    assert held < 4 * 1024  # never pinned, it never finishes: only what it stored counts
+    assert usage_rows(tmp_path / "control.sqlite3") == recomputed(tmp_path / "control.sqlite3")
+
+
+def test_one_project_cannot_fill_the_metadata_of_all(tmp_path: Path) -> None:
+    inventory = inventory_at(tmp_path, project_metadata_bytes=100_000)
+
+    def fill() -> int:
+        for index in range(1000):
+            try:
+                inventory.record_metadata(
+                    RECORDED, f"f{index}.bin", sha256=BIG, size=9, media_type="text/plain",
+                    note="quota",
+                )  # fmt: skip
+            except DocumentError as refused:
+                if "metadata" not in str(refused):
+                    raise
+                return index
+        raise AssertionError("the project's metadata never filled")
+
+    assert 0 < fill() < 1000
+    assert inventory.room("p1", 1) == "full"
+    assert inventory.room("p2", 1) == "content"  # another project still records
+
+
+def test_bytes_kept_after_a_hash_only_revision_are_a_new_revision(tmp_path: Path) -> None:
+    inventory = inventory_at(tmp_path)
+    data = b"first"
+    hashed, _ = inventory.record_metadata(
+        RECORDED, "out.bin", sha256=hashlib.sha256(data).hexdigest(), size=len(data),
+        media_type="application/octet-stream", note="quota",
+    )  # fmt: skip
+    assert latest(inventory, hashed.artifact_id).hash_source == "sandbox"
+    kept = record(inventory, "op1", data)
+    assert kept.revision is not None
+    assert (kept.reproduced, kept.revision.revision) == (False, 2)
+    revision = latest(inventory, hashed.artifact_id)
+    assert (revision.content_retained, revision.hash_source) == (True, "capture")
+    assert inventory.content("p1", kept.revision) == data
+    again, reproduced = inventory.record_metadata(
+        RECORDED, "out.bin", sha256=hashlib.sha256(data).hexdigest(), size=len(data),
+        media_type="application/octet-stream", note="quota",
+    )  # fmt: skip
+    assert (again, reproduced) == (kept.revision, True)  # a hash of bytes already kept
+
+
+def test_a_tombstone_is_checked_against_the_budget_too(tmp_path: Path) -> None:
+    inventory = inventory_at(tmp_path, project_revisions=1)
+    record(inventory, "op1", b"x", path="a.txt")
+    with pytest.raises(DocumentError, match="quota"):
+        inventory.record_deletion(RECORDED, "a.txt")
+    assert usage_rows(tmp_path / "control.sqlite3")["p1"][0] == 1  # nothing was added
