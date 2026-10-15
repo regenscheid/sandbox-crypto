@@ -58,7 +58,7 @@ from pydantic import TypeAdapter, ValidationError
 from sandbox_science.contracts import ErrorKind, Identifier
 
 from .chat import session_lease
-from .cli_documents import add_parsers, document, project, read_secret, session
+from .cli_documents import add_parsers, document, ledger, project, read_secret, session
 from .connectors import ProxyClient, check_proxy
 from .documents import DocumentError, DocumentStore, store_path
 from .harness import (
@@ -488,6 +488,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     add_parsers(commands)
     args = parser.parse_args(argv)
+    if args.command == "ledger":
+        try:
+            return ledger(args)
+        except (ProjectError, OSError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
     if args.command == "document":
         try:
             return document(args)

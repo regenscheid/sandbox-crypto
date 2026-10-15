@@ -23,6 +23,7 @@ from sandbox_science.contracts import ErrorKind, ExecutionContext, new_id
 from .documents import USER, Author, DocumentError, DocumentStore, store_path
 from .documents.errors import CONFLICT
 from .documents.tool import view_blocks
+from .ledger import Ledger
 from .mathchecks import subscribe as check_math
 from .projects import ProjectError, ProjectStore, ensure_environment
 from .worker_client import WorkerClient
@@ -272,6 +273,30 @@ def document(args: argparse.Namespace) -> int:
     return 0
 
 
+def ledger(args: argparse.Namespace) -> int:
+    """The user's ledger commands: ``check`` records that the user checked an entry at a
+    revision, which the gate's independent check counts (LG-17)."""
+    with contextlib.closing(ProjectStore(args.state_dir, readonly=True)) as projects:
+        projects.get(args.project)
+    store = DocumentStore(store_path(args.state_dir), producer="harness-cli")
+    try:
+        result = Ledger(store).check(
+            args.project,
+            args.entry,
+            args.revision,
+            USER,
+            operation_id=args.operation_id or new_id("check"),
+            note=args.note,
+        )
+        print(result.model_dump_json(indent=2))
+    except DocumentError as error:
+        print(f"error: {error.kind}: {error.message}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    return 0
+
+
 def add_parsers(commands: Any) -> None:
     projects = commands.add_parser("project", help="create, show or revise a project")
     projects.add_argument(
@@ -361,3 +386,14 @@ def add_parsers(commands: Any) -> None:
     delete = actions.add_parser("delete", parents=[common], help="delete a document")
     delete.add_argument("document")
     delete.add_argument("--reason", required=True)
+    ledger = commands.add_parser("ledger", help="the project ledger, as the user")
+    ledger_actions = ledger.add_subparsers(dest="action", required=True)
+    checked = ledger_actions.add_parser(
+        "check",
+        parents=[common],
+        help="record that you checked an entry at the revision you read (LG-17)",
+    )
+    checked.add_argument("entry", help="the entry's handle (such as C-12) or ID")
+    checked.add_argument("--revision", type=int, required=True, help="the revision you checked")
+    checked.add_argument("--note", help="what you checked, as the check's scope")
+    checked.add_argument("--operation-id", help="retry with the same ID (default: a new one)")

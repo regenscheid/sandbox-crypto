@@ -153,3 +153,30 @@ async def test_a_project_without_a_ledger_reads_empty(
     client = await workspace(aiohttp_client, state_dir, static_dir)
     listing: Any = await (await client.get("/api/v0/projects/p2/ledger")).json()
     assert listing["page"] == {"entries": [], "next_after": None}
+
+
+async def test_the_user_records_a_check_through_the_workspace(
+    aiohttp_client: ClientFactory, seeded: Path, static_dir: Path
+) -> None:
+    """LG-17: the user's record that they checked an entry at the revision they read:
+    same-origin, the user's, a conflict once the entry has moved on."""
+    client = await workspace(aiohttp_client, seeded, static_dir)
+    url = BASE + "/C-1/checks"
+    body = {"revision": 1, "note": "Steps 1-4.", "operation_id": "check-1"}
+    response = await client.post(url, json=body, headers=origin(client))
+    assert response.status == 200, await response.text()
+    assert (await response.json())["entries"][0]["revision"] == 2
+    entry = LedgerEntry.model_validate(await (await client.get(BASE + "/C-1")).json()).entry
+    (check,) = [e for e in entry.evidence if e.role == "independent_check"]
+    assert (check.checked, check.scope, entry.author["kind"]) == (1, "Steps 1-4.", "user")
+    await error_of(
+        await client.post(url, json={**body, "operation_id": "check-2"}, headers=origin(client)),
+        409,
+        "conflict",
+    )
+    await error_of(
+        await client.post(url, json={**body, "extra": 1}, headers=origin(client)),
+        400,
+        "invalid_request",
+    )
+    assert (await client.post(url, json=body)).status == 403

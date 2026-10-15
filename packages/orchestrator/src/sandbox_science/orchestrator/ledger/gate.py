@@ -10,8 +10,7 @@ refusal names the first clause that does not (``gate_not_met``):
    is neither ``synthetic`` nor ``unclassified``, and whose target is not a review nor an
    entry that is ``refuted``, ``withdrawn`` or ``superseded``;
 2. ``independent_check``: when evidence that counts is of type ``proof``, an
-   ``independent_check`` whose target the user produced, and which the user added or
-   whose target names the entry and the revision it checks, of a revision whose
+   ``independent_check`` the user added themselves, at the revision they checked, whose
    material the change keeps;
 3. ``computation``: computational evidence pinned to an artifact revision;
 4. ``review``: a completed consistency review covered the entry, with no unresolved
@@ -52,8 +51,9 @@ class Material:
     """What a check or review of an entry examined: a later revision that keeps all of it
     keeps the check (LG-17, as the coordinator decided on 2026-10-15): the statement
     (its text revision, None for one the change writes), the fields, the ``assumes``
-    links and every evidence link of a kind that can count, ``supports`` as well as
-    ``derivation``, so evidence added after a review is not what the review covered."""
+    links and every evidence link of a kind that bears on it, ``supports``,
+    ``derivation`` and ``contradicts``, so evidence of either sign added after a review
+    is not what the review covered."""
 
     statement: int | None
     fields: str
@@ -71,6 +71,14 @@ def supporting(link: EvidenceLink) -> bool:
     )
 
 
+def bearing(link: EvidenceLink) -> bool:
+    """Whether ``link`` bears on the entry: a link that can count, or one that
+    contradicts it with evidence of a type that could."""
+    return supporting(link) or (
+        link.role == "contradicts" and link.type not in _NOT_COUNTING and link.target != "review"
+    )
+
+
 def _pinned(link: EvidenceLink) -> tuple[object, ...]:
     return (link.role, link.type, link.target, link.target_id, link.revision, link.block, link.span)
 
@@ -84,7 +92,7 @@ def material(
         assumes=frozenset(
             (link.target_id, link.revision) for link in links if link.kind == "assumes"
         ),
-        evidence=frozenset(_pinned(link) for link in held if supporting(link)),
+        evidence=frozenset(_pinned(link) for link in held if bearing(link)),
     )
 
 
@@ -136,16 +144,16 @@ def establish(
         and link.type not in _NOT_COUNTING
         and link.checked is not None
         and examined.get(link.checked) == now
-        and by_user(db, link)
-        and (added_by_user(db, entry, link, before) or names(db, link, entry))
+        and link.added == link.checked + 1
+        and added_by_user(db, entry, link, before)
         for link in held
     ):
         raise refused(
             entry,
             "independent_check",
-            f"{handle} rests on a proof and has no independent check that counts: one whose "
-            "target the user produced, which the user added or whose target names the "
-            "entry and the revision it checks, of a revision whose statement, fields, "
+            f"{handle} rests on a proof and has no independent check that counts: one the "
+            "user added themselves, at the revision they checked (the workspace's check, "
+            "or the ledger check command), of a revision whose statement, fields, "
             "assumptions and evidence the change keeps (checks by delegations are not "
             "built yet)",
         )
@@ -175,45 +183,6 @@ def added_by_user(db: sqlite3.Connection, entry: str, link: EvidenceLink, before
         (entry, link.added),
     ).fetchone()
     return row is not None and row[0] == "user"
-
-
-def names(db: sqlite3.Connection, link: EvidenceLink, entry: str) -> bool:
-    """Whether the entry revision ``link`` points to names ``entry`` at the revision the
-    check examined, with a link or an evidence link pinned to it."""
-    if link.target != "entry" or link.checked is None:
-        return False
-    found = db.execute(
-        "SELECT 1 FROM ledger_links WHERE entry_id=? AND revision=? AND target='entry' "
-        "AND target_id=? AND target_revision=? UNION ALL "
-        "SELECT 1 FROM ledger_evidence WHERE entry_id=? AND revision=? AND target='entry' "
-        "AND target_id=? AND target_revision=? LIMIT 1",
-        (link.target_id, link.revision, entry, link.checked) * 2,
-    ).fetchone()
-    return found is not None
-
-
-def by_user(db: sqlite3.Connection, link: EvidenceLink) -> bool:
-    """Whether the user produced the target of ``link``: an entry revision the user
-    wrote, or a document block the user last changed at the pinned revision. An artifact
-    an agent run published and a review never are."""
-    if link.target == "entry":
-        row = db.execute(
-            "SELECT json_extract(author,'$.kind') FROM ledger_revisions "
-            "WHERE entry_id=? AND revision=?",
-            (link.target_id, link.revision),
-        ).fetchone()
-        return row is not None and row[0] == "user"
-    if link.target == "block":
-        row = db.execute(
-            "SELECT json_extract(r.author,'$.kind') FROM revisions r, "
-            "json_each(r.block_map,'$.blocks') b WHERE r.document_id=? AND r.number<=? "
-            "AND json_extract(b.value,'$.id')=? "
-            "AND json_extract(b.value,'$.status') IN ('added','changed') "
-            "ORDER BY r.number DESC LIMIT 1",
-            (link.target_id, link.revision, link.block),
-        ).fetchone()
-        return row is not None and row[0] == "user"
-    return False
 
 
 def examined(db: sqlite3.Connection, entry: str, revisions: set[int]) -> dict[int, Material]:

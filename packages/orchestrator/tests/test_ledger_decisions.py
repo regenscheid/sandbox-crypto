@@ -263,27 +263,84 @@ def test_a_review_or_a_set_aside_entry_is_not_evidence_that_counts(ledger: Ledge
     assert gate(ledger, "set-aside", 3).details["clause"] == "evidence"
 
 
-def test_a_user_target_is_a_check_only_when_the_user_added_it_or_it_names_the_revision(
+def test_a_check_counts_only_when_the_user_added_it_at_the_revision_they_checked(
     ledger: Ledger,
 ) -> None:
-    """Probe p4: the user's task "Buy milk." counted as an independent check."""
+    """Probes p4, p9 and p10 of the reviews of #277: the user's task "Buy milk.", the
+    user's issue that doubts a step and links to the claim, and an agent's entry the
+    user only retitled were each cited as the independent check. A check counts only
+    when the user added it themselves, at the revision they checked."""
     change(ledger, NEW["claim"], NEW["assumption"])
     proof = {"role": "derivation", "type": "proof", "entry": "A-1"}
     change(ledger, {"entry": "C-1", "expected": 1, "evidence": [proof]}, op="derive")
+    doubt = {
+        "type": "issue",
+        "title": "Step 3",
+        "statement": "I doubt step 3.",
+        "links": [{"kind": "concerns", "entry": "C-1", "revision": 2}],
+    }
     change(
-        ledger,
-        {"type": "task", "title": "Lunch", "statement": "Buy milk."},
-        op="user-task",
-        author=USER,
+        ledger, {"type": "task", "title": "Lunch", "statement": "Buy milk."}, doubt,
+        op="user-entries", author=USER,
+    )  # fmt: skip
+    verified = {
+        "type": "issue",
+        "title": "Verified",
+        "statement": "Every step of C-1 r2 verified.",
+        "links": [{"kind": "concerns", "entry": "C-1", "revision": 2}],
+    }
+    change(ledger, verified, op="agent-verified")
+    change(ledger, {"entry": "I-2", "expected": 1, "title": "Verified (user)"}, op="retitled",
+           author=USER)  # fmt: skip
+    for n, target in enumerate(("T-1", "I-1", "I-2")):
+        cited = {"role": "independent_check", "type": "proof", "entry": target, "checked": 2}
+        change(ledger, {"entry": "C-1", "expected": 2 + n, "evidence": [cited]}, op=f"c{n}")
+        assert gate(ledger, f"g{n}", 3 + n).details["clause"] == "independent_check"
+    # A check the user adds at a later revision than the one it names does not count.
+    late = {
+        "role": "independent_check",
+        "type": "proof",
+        "entry": "C-1",
+        "revision": 2,
+        "checked": 2,
+    }
+    change(ledger, {"entry": "C-1", "expected": 5, "evidence": [late]}, op="late", author=USER)
+    assert gate(ledger, "late-gate", 6).details["clause"] == "independent_check"
+    # The user's own check of the entry as it reads counts.
+    checked = ledger.check("p", "C-1", 6, USER, operation_id="user-check", note="Steps 1-4.")
+    assert checked.entries[0].revision == 7
+    (record,) = [e for e in ledger.entry("p", "C-1").evidence if e.added == 7]
+    assert (record.target_id, record.revision, record.checked, record.scope) == (
+        ledger.entry("p", "C-1").entry_id,
+        6,
+        6,
+        "Steps 1-4.",
     )
-    milk = {"role": "independent_check", "type": "proof", "entry": "T-1", "checked": 2}
-    change(ledger, {"entry": "C-1", "expected": 2, "evidence": [milk]}, op="milk")
-    assert gate(ledger, "milk-gate", 3).details["clause"] == "independent_check"
-    # A user's entry that pins C-1 at the revision it checked counts, whoever links it.
-    pinned = {"role": "supports", "type": "proof", "entry": "C-1", "revision": 2}
-    decision = {"type": "decision", "title": "Checked", "statement": "C-1 r2 checks out.",
-                "evidence": [pinned]}  # fmt: skip
-    change(ledger, decision, op="user-check", author=USER)
-    named = {"role": "independent_check", "type": "proof", "entry": "D-1", "checked": 2}
-    change(ledger, {"entry": "C-1", "expected": 3, "evidence": [named]}, op="named")
-    assert gate(ledger, "named-gate", 4).details["clause"] == "review"
+    assert gate(ledger, "checked", 7).details["clause"] == "review"
+
+
+def test_only_the_user_records_a_check_of_the_entry_as_it_reads(ledger: Ledger) -> None:
+    change(ledger, NEW["claim"])
+    with pytest.raises(DocumentError, match="not_permitted_for_role"):
+        ledger.check("p", "C-1", 1, MAIN, operation_id="agent")
+    with pytest.raises(DocumentError, match="at revision 1, not 2") as stale:
+        ledger.check("p", "C-1", 2, USER, operation_id="stale")
+    assert stale.value.kind == "conflict"
+    ledger.check("p", "C-1", 1, USER, operation_id="first")
+    assert ledger.check("p", "C-1", 1, USER, operation_id="first").replayed
+
+
+def test_contradicting_evidence_added_after_a_check_is_not_what_it_covered(
+    ledger: Ledger,
+) -> None:
+    """Probe p12: a delegated agent adds a contradicting source after the check; the
+    main agent established on the old check. Evidence of either sign is material."""
+    change(ledger, NEW["claim"], NEW["assumption"], NEW["reference"])
+    proof = {"role": "derivation", "type": "proof", "entry": "A-1"}
+    change(ledger, {"entry": "C-1", "expected": 1, "evidence": [proof]}, op="derive")
+    ledger.check("p", "C-1", 2, USER, operation_id="check")
+    assert gate(ledger, "checked", 3).details["clause"] == "review"
+    against = {"role": "contradicts", "type": "source_claim", "entry": "REF-1"}
+    change(ledger, {"entry": "C-1", "expected": 3, "evidence": [against]}, op="against",
+           author=DELEGATED)  # fmt: skip
+    assert gate(ledger, "contradicted", 4).details["clause"] == "independent_check"

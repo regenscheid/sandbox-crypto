@@ -288,6 +288,44 @@ class Ledger:
 
     # Changes.
 
+    def check(
+        self,
+        project: str,
+        reference: str,
+        revision: int,
+        author: Author,
+        *,
+        operation_id: str,
+        note: str | None = None,
+    ) -> MutationResult:
+        """The user's record that they checked ``reference`` at ``revision`` (LG-17): an
+        ``independent_check`` evidence link of the user's, on the entry as it reads at
+        that revision, with the note as its scope. It is a conflict when the entry has
+        moved on. Only the user records one; an agent's check counts for nothing."""
+        if author.kind != "user":
+            raise _refused("only the user records that they checked an entry")
+        self._project(project)
+        with self.control.read() as tx:
+            entry = self._find(tx.sql, project, reference).entry_id
+        check: Json = {
+            "role": "independent_check",
+            "type": "proof",
+            "entry": entry,
+            "revision": revision,
+            "checked": revision,
+        }
+        if note is not None:
+            check["scope"] = note
+        return self.change(
+            project,
+            {
+                "operation_id": operation_id,
+                "reason": note or f"The user checked revision {revision}.",
+                "changes": [{"entry": entry, "expected": revision, "evidence": [check]}],
+            },
+            author,
+        )
+
     def change(
         self, project: str, raw: object, author: Author, *, provenance: Json | None = None
     ) -> MutationResult:
