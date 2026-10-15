@@ -10,7 +10,9 @@ file here, as the coordinator gives it, so only the lab's own config holds its p
 writes the path alone and never opens the file.
 
 OUT gets every setting of examples/sandbox-science.toml, with absolute paths, the state
-directory DIR and, if given, the project ID and the MCP proxy for crypto-research-mcp.
+directory DIR and, if given, the project ID and the MCP proxy for crypto-research-mcp,
+with the tool index the example's commented [mcp_proxy] table gives it (``index`` and
+``about``), so that a lab adds nothing by hand (lab 40, B7).
 It is written with mode 600, and refused inside a git checkout. With the MCP proxy, the
 policy is examples/policy.yaml with crypto-research-mcp's address in place of its
 placeholder, written as policy.yaml beside OUT: the proxy reaches the server it names.
@@ -22,6 +24,7 @@ import argparse
 import os
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 from sandbox_science.launcher import toml
@@ -54,6 +57,19 @@ def mcp_policy(example: Path) -> str:
     return text
 
 
+def tool_index(example: Path) -> dict[str, object]:
+    """``index`` and ``about``, the tool index's settings, as the example's commented
+    ``[mcp_proxy]`` table, at its end, gives them."""
+    lines = example.read_text(encoding="utf-8").splitlines()
+    if "# [mcp_proxy]" not in lines:
+        raise SystemExit(f"{example} has no commented [mcp_proxy] table")
+    start = lines.index("# [mcp_proxy]")
+    table = tomllib.loads(
+        "\n".join(line.removeprefix("# ").removeprefix("#") for line in lines[start:])
+    )["mcp_proxy"]
+    return {key: table[key] for key in ("index", "about")}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("out", type=Path)
@@ -78,6 +94,7 @@ def main() -> int:
             "providers": ["crypto-research-mcp"],
             "servers": ["crypto-research-mcp"],
             "credentials": {f"crypto-research-mcp.{key}": key for key in CREDENTIALS},
+            **tool_index(EXAMPLE),
         }
         if args.provider_env_file is not None:
             proxy["provider_env_file"] = str(args.provider_env_file.expanduser().absolute())

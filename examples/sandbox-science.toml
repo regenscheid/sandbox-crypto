@@ -14,10 +14,11 @@ sessions = ["main", { id = "scratch", dedicated = true }]
 [model]
 url = "https://litellm-api.npages.org/v1"
 name = "sandbox-orchestrator"
-# Reviews and the workspace's math repairs, and the job watcher's check-ins on long jobs;
-# one alias may serve the main agent and these.
+# Reviews and the workspace's math repairs, the job watcher's check-ins on long jobs, and
+# delegated runs; one alias may serve the main agent and these.
 reviewer = "sandbox-orchestrator"
 watcher = "sandbox-orchestrator"
+delegated = "sandbox-orchestrator"
 # Only the run service reads this file; keep it mode 600.
 api_key_file = "~/.config/sandbox-science/secrets/litellm-harness.key"
 
