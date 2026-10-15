@@ -7,8 +7,8 @@ not built. The as-built sections come first; everything under
 [Proposals (not built)](#proposals-not-built) is design, not running code. The
 requirement for a planning phase and live plan progress is confirmed
 ([D86](DECISIONS.md)); the [plans and delegation](specs/plans-and-delegation.md)
-and [skills](specs/skills.md) specifications remain drafts, and this page does not
-approve their open questions. Standing authorization for autonomous work does not
+specification is approved, the [skills](specs/skills.md) specification remains a
+draft, and this page does not approve its open questions. Standing authorization for autonomous work does not
 acquire an approval gate because a plan is useful.
 
 ## Prompt inventory
@@ -212,11 +212,10 @@ There is no prompt catalog or external prompt loader, no skill loading
 ([skills](specs/skills.md)), no USER plan approval, no link from effects to plan
 steps, no liveness record for interrupted steps, no compaction,
 no resume prompt and no durable record of display-repair calls or spend.
-Delegation is not built: an earlier, unwired prototype, including its delegated-child
-prompt and controller, is kept on the tag `archive/delegation-2026-10`
-([archived pages](../.agents/docs/archive/README.md)), and delegation will be rebuilt
-as a role of the one loop ([refactoring plan](../.agents/refactor-plan/PLAN.md),
-Phase 4 item 7). [D86](DECISIONS.md) (amended 2026-10-14) records that the unused
+Delegation is built as a role of the one loop, with the prompts listed above. An earlier,
+unwired prototype, including its delegated-child prompt and controller, is kept on the
+tag `archive/delegation-2026-10` ([archived pages](../.agents/docs/archive/README.md)).
+[D86](DECISIONS.md) (amended 2026-10-14) records that the unused
 `awaiting_approval` state and the display-repair descriptor are to be removed; both
 are gone.
 

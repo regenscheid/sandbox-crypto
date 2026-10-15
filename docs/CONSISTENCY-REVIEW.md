@@ -102,8 +102,10 @@ model-turn budget. The reviewer has no worker client, author toolbox, file/netwo
 policy mutation or delegation. The separate call/hour, turn, time, response/context and
 soft token budgets reserve before awaiting a model. Actual provider usage is recorded;
 actual usage crossing the token budget makes the outcome capped, including a final
-response. These are role budgets, not monetary accounting: the project's actual spend
-ledger is not implemented and the gateway's hard spend cap remains the monetary boundary.
+response. These are role budgets in calls, turns, time and tokens. The cost the gateway
+reports for each call is kept with it and counts in the project's cost and its optional
+daily cost limit ([run service](specs/run-service.md), RS-6a); the gateway's own budget
+stays the hard cap.
 
 ## Findings, delivery and workspace
 
@@ -245,6 +247,5 @@ These are the reviewer's tables in the control store's schema
 ## Not built
 
 - Shell-written artifact inventory and revisions (CRF-6), rich outputs and file contents as evidence, and ledger-specific evidence.
-- Project spend accounting; the gateway's hard spend cap is the monetary boundary.
 - Automatic idle turns, a reviewer that outlives a run, and a push view.
 - Math checks of ledger fields other than statements and of reviewer, USER and platform prose (D82).

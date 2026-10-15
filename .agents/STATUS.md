@@ -1,80 +1,80 @@
 # Status
 
-Updated 2026-10-15, main `b8487377`. This file is replaced, not appended to, and stays under 10 KB. History is in the git log, PR descriptions and [lab reports](docs/agent-reports/).
+Updated 2026-10-15, main `326f4801`. This file is replaced, not appended to, and stays under 10 KB. History is in the git log, PR descriptions and [lab reports](docs/agent-reports/).
 
 ## Phase and focus
 
-- **Phase 1 (babbage).** M1's exit run passed ([lab 9](docs/agent-reports/babbage-openshell-lab-9-2026-10-11.md)). M2's exit checkpoint was met in [lab 39](docs/agent-reports/babbage-openshell-lab-39-2026-10-15.md), as a testing checkpoint.
-- **Next:** the first milestone for real use, which is plan items 7 and 9: delegation and MCP connectors ([below](#what-comes-next)).
-- **Focus:** the [revision and refactoring plan](refactor-plan/PLAN.md). Phases 0 to 3 are done apart from leftovers. Phase 4's M2 exit path is done; its items 7 and 9 and the frontier stack are open.
+- **Phase 1 (babbage).** M1's exit run passed ([lab 9](docs/agent-reports/babbage-openshell-lab-9-2026-10-11.md)), and M2's exit checkpoint was met in [lab 39](docs/agent-reports/babbage-openshell-lab-39-2026-10-15.md). **The first milestone for real use is met** in [lab 40](docs/agent-reports/babbage-openshell-lab-40-2026-10-15.md): plan items 7 and 9, delegation and MCP connectors with tools loaded on demand.
+- **Focus:** the [revision and refactoring plan](refactor-plan/PLAN.md). Phases 0 to 4 are done apart from leftovers. What is left is skills, compaction and the backlog ([below](#what-comes-next)), then Phase 5.
 - **How work is done:** the plan's [working rules](CONVENTIONS.md#working-rules) and the [handoff](handoff.md).
 
-## M2 exit checkpoint
+## First real use (lab 40)
 
-| Lab | Result |
-| --- | --- |
-| [37](docs/agent-reports/babbage-openshell-lab-37-2026-10-15.md) (#289) | The launcher, protocol 5 and a real-model chat passed. Two bugs fixed (#287, #288) |
-| [38](docs/agent-reports/babbage-openshell-lab-38-2026-10-15.md) (#305) | Not met: reviews rarely completed, the entry view hid evidence, the paper came from arXiv. Fixed in #295, #297 to #299, #303, #312 to #316 and #319 |
-| [39](docs/agent-reports/babbage-openshell-lab-39-2026-10-15.md) (#331) | **Met, with conditions** |
+The lab ran the whole path with the real model (`sandbox-orchestrator` in every role) and crypto-research-mcp through the proxy:
 
-Lab 39 ran the path with the real model and the MCP connector: a paper through the e-print tools, Sage and Python, a document with 21 checked formulas, a comment that woke the idle session, seven completed reviews, and the board with pinned evidence and the gate's answer ("5 of 6 clauses hold"). Two workbooks shared a container with distinct kernels, and a third ran in its own. Establishing a result was not reached; M2 does not ask for it.
+- A paper found and read through the e-print tools, loaded on demand. A run's first call took 14,000 to 15,500 input tokens, against 25,000 in lab 39.
+- A lemma proved in a document block, checked by a delegated run with a fresh context (`confirmed`, `complete`), linked as its independent check, and established by the main agent through the gate.
+- A published result quoting the paper, shown on the frontier as confirmed by the citation check.
+- A 135-digit number copied right (no finding) and with one digit changed (the platform's finding).
+- Two questions to the user, answered by a button and in the user's own words.
+- The gateway's costs, and the import of 162 skills, pinned to the project.
 
-The conditions it listed: #327 to #330 had to merge (they have), and two bugs stay open, B5 and B6 ([known issues](#known-issues)).
-
-## What comes next
-
-1. **Delegation** (plan item 7, [spec](../docs/specs/plans-and-delegation.md)): delegated runs as roles of the one loop. The run tree's parent link and kernels per run exist; nothing starts delegated runs. First piece, the owner's choice: a "check this claim" delegation, a fresh-context run whose report is the ledger's `independent_check`. Until then the user checks proved results.
-2. **MCP connectors for real research** (item 9): the client, the proxy, the launcher's proxy sandbox and the provider registered from the owner's file all work, and lab 39 made real calls. B5 comes first, since the connector's tools do not fit the daily budget; its fix is in review.
-3. Then Phase 5, which includes moving the domain packages out of the orchestrator, and the after-M2 backlog (questions to the user, editable figures, Vega-Lite and Mermaid charts, `view_image`).
+It found eight bugs, all fixed: B1, no check could be delegated with the owner's gateway (#394); B2, an agent's rebuttal came back as a notice and looped (#397); B3, the reviewer could not see what an established entry rests on (#402, #407); B4, an `mcp_tools` query loaded unrelated tools (#401); B5, the reviewer's cost was not counted (#403, #408); B6 to B8, a check's record, the lab config script and the category form's hint (#400, #404). The reviewer also matches narrated actions against what each run did (#406, #409, #411). **No lab has run since**, so B3, B4 and the narrated-action check are untested with a real model.
 
 ## What works today
 
-- **Launcher:** `sandbox-science up`, `down` and `status` run the worker, the run service, the workspace and, with `[mcp_proxy]`, the MCP proxy in its own OpenShell sandbox, from one config ([quickstart](../docs/QUICKSTART.md)). `down` suspends the research sandboxes. `up` registers the MCP provider from the owner's file.
-- **Infrastructure:** the policy library and middleware, the package cache, the MCP proxy with `compile-policy`, the hash-chained event store, and one approval state machine.
-- **Worker:** OpenShell VM sandboxes at tier 3, with persistent Python and Sage kernels (per delegated run too), file handoff, PDF tools and background jobs. One worker per state directory. Protocol 5 ([compatibility](../docs/COMPATIBILITY.md)). Conda and pip provisioning as queued operations (D84); restoring a revision, uninstall and disk limits are not built.
-- **Harness:** the tool loop with an OpenAI-compatible model; the run service for GUI chat, where a comment to an idle session starts a run and the model budget is kept at a run's safe points (#333); an MCP client; planning with live progress; living documents; comments and work requests; automatic consistency review, which reads the ledger; math checks of documents, comments and ledger statements; the job watcher; the project memory ([memory](../docs/MEMORY.md)), given to every role; and the files calls write, recorded as artifacts, with `find_artifacts` ([artifacts](../docs/ARTIFACTS.md)). Agents' writes refuse hidden characters (threat model A3).
-- **Ledger** ([ledger](../docs/LEDGER.md)): seven entry types, typed links, evidence with pinned targets, decisions and the gate, flags for reconsideration, statement math checks, `ledger_*` tools and a results-file import. The control store (`control.sqlite3`) is at schema version 25.
-- **Workspace GUI:** documents with editing and history; comments; review and finding views; plans; chat with the run's events as written; jobs; kernels; provisioning; math; the artifact list and a PDF viewer on a second origin; the ledger's board, issue list, entry view (evidence, findings, flags, the gate, "I checked this revision") and history; the Memory page. Hidden characters show as code points, and rendered text gets a banner.
-- **Model and connector:** the gateway's alias `sandbox-orchestrator` serves every role. crypto-research-mcp's Access token alone is enough; it lists 72 tools from seven servers.
-- **Not built:** the frontier, the pack import and export, work records, execution-pinned evidence; delegation; questions to the user; approvals in the GUI; skills; compaction of long conversations.
-- **Tests:** 12,417 Python tests are collected, 879 of them in the slow tier, and 1,379 web tests (at #333). A pull request's checks take about four minutes.
+- **Launcher:** `sandbox-science up`, `down` and `status` run the worker, the run service, the workspace and, with `[mcp_proxy]`, the MCP proxy in its own sandbox, from one config ([quickstart](../docs/QUICKSTART.md)).
+- **Infrastructure:** the policy library and middleware, the package cache, the MCP proxy, the hash-chained event store, and one approval state machine.
+- **Worker:** OpenShell VM sandboxes at tier 3 with persistent Python and Sage kernels (per delegated run too), file handoff, PDF tools, background jobs and Conda and pip provisioning. Protocol 5 ([compatibility](../docs/COMPATIBILITY.md)); the control store is at version 40.
+- **Harness:** the tool loop; the run service for GUI chat; an MCP client with an index and tools loaded on demand ([MCP connectors](../docs/MCP-CONNECTORS.md)); planning; living documents; comments; automatic consistency review; math checks; the job watcher; files calls write, recorded as artifacts; project memory ([memory](../docs/MEMORY.md)); `ask_user`, which asks the user a question ([questions](../docs/QUESTIONS.md)). Agents' writes refuse hidden characters (threat model A3).
+- **Delegation** ([spec](../docs/specs/plans-and-delegation.md)): off by default, per project (`project delegation --depth 1` or `2`). Checks (the platform writes the brief; the result has a verdict, coverage and any refutation) and tasks (the parent writes the brief; a track of the session plan, an outcome on an issue, result files pinned). Depth 2 lets a task delegate tasks once more. A run tree with handbacks to the direct parent, a cap on runs at once (10 by default), token and turn limits as bounds on a runaway child, a fallback model alias, and a dead tree ended on restart. A confirmed check counts as the `independent_check`.
+- **Ledger** ([ledger](../docs/LEDGER.md)): seven entry types, evidence with pinned targets (quotes and delegation outcomes too), decisions and the gate, flags, work records, and the frontier with categories, best known results, `dominates` links and history. The reviewer's citation check confirms an agent's published result; the platform's copied-number check compares long numbers with the artifacts before the model reviews.
+- **Cost:** each model call's cost as the gateway reports it, shown per run and by role (main, delegated, reviewer, watcher). There is no project token budget: LiteLLM enforces upstream, and a refusal ends the run (`gateway_budget`). A project may set a daily cost limit, off by default.
+- **Skills:** `skills import` takes a pack from git or an archive and pins it ([skills](../docs/SKILLS.md)). Runs do not see skills yet.
+- **Workspace GUI:** documents; comments; reviews and findings; plans; chat with open questions; jobs; kernels; provisioning; the artifact list and a PDF viewer; the ledger's board, issue list, entry view (evidence, quotes and their checks, work records, the gate, flags) and frontier pages with history; the Memory page; a session's run tree; the cost by role.
+- **Not built:** skills in runs (index, search, discovery); compaction; approvals in the GUI; execution-pinned evidence; editable figures, charts and `view_image`. The pack import is not planned.
+- **Tests:** 12,953 Python tests are collected, 879 of them in the slow tier, and 2,001 web tests (at #411). A pull request's checks take about four minutes.
 
 ## In progress
 
-- **The frontier stack,** lane S: #304 (categories, migration 26), #310 (best known results), #321 (`dominates` links), #323 (history, migration 27), each stacked on the one before. An Opus review found three high defects: a disputed result was shown with measures it was never eligible on, a cap could push recorded results out of the read, and an agent's published result counted as verified. The fixes are under way in the stack, and #326, off main, makes an entry leave `refuted`, `withdrawn` or `superseded` only by a decision.
-- **B5,** lane O, in three stacked parts: #332 (a listing leaves out the tools the policy denies), #334 (the tools as an index, loaded on demand) and #335 (the launcher's settings for the index). The index is about 1,200 to 1,800 tokens against 17,000.
-- **Queued,** lane S: B6, after the frontier.
+- **Skills spec** ([draft](../docs/specs/skills.md), #373, unmerged): revised to the owner's answers of 2026-10-15, and **waiting for the owner on two questions:** which built-in skills the platform ships, and how a pack's skill names that collide with a built-in skill are handled (question 15); and the system message's skill sections (question 16). Four drafted values need a yes: the index budget, the discovery notice's size and wait, what the import's model pass reads, and what is embedded. K1 (import and pinning, #376) is built; K2 (the index, search and loading) and K3 (discovery) wait for the answers.
+- Nothing else is open.
+
+## What comes next
+
+1. Skills K2 and K3 after the owner answers, the owner's priority.
+2. A lab to confirm lab 40's fixes, with skills once K2 lands.
+3. Compaction: a conversation over the limit stops with `context_limit`.
+4. Other [BACKLOG](BACKLOG.md) items: questions from delegated runs, a reference's read extent (LG-15), a basis for memory proposals (PM-3, PM-4), vouching for PDFs, charts as text and `view_image`, approvals in the GUI.
+5. Phase 5, which includes moving the domain packages out of the orchestrator.
 
 ## Known issues
 
-- **B5, high: the connector's tools are in every model call.** All 72 tools are about 17,000 tokens a call, and a run's calls cost about 25,000 tokens with them against 13,000 without. A project's 2,000,000-token day does not cover the path twice.
-- **B6, medium: nothing checks a number the model copied** against the computation that holds it. In lab 39 a 135-digit value was copied wrongly into the document and the ledger, and the reviews compared the two with each other. Queued for lane S.
-- **Flaky test:** `test_a_killed_service_leaves_a_run_the_next_one_ends_interrupted` in `test_run_service.py`. Rerun the job.
-- **CI stalls:** the `test (fast)` job sometimes ran until its limit with no log; #256 added a heartbeat that names what was stuck.
-- **Lab 39, not fixed:** `eprint_fulltext` found no passage, and `R-1` stayed proposed: the agent read a structural refusal as the gate's answer.
-- **Repeat runs fill `/tmp`:** use `-o tmp_path_retention_policy=failed`, and never put `--basetemp` in `/tmp`.
-- **Upgrades:** the orchestrator, the workspace and the worker upgrade together (protocol 5). Control stores before version 2 and worker stores before version 1 are refused; export documents first ([living documents](../docs/LIVING-DOCUMENTS.md)).
+- **Not fixed, from lab 40:**
+  - `eprint_fulltext` matches single words, so a phrase may find nothing (the server's behavior).
+  - A citation check and a finding can disagree: a quote `supported` beside a `fail` finding that it does not support the unit.
+  - The copied-number check reads decimal numbers, not names, hexadecimal or scientific forms.
+  - A check keeps the sandbox's write tools (`write_file`, `publish`, `provision`); it changes no entry, document or memory.
+  - The weaker model errs: stray tool calls, claimed edits it did not make. Labs keep it on purpose ([handoff](handoff.md#labs)).
+- **Background job slots:** a session has 4, and a delegation tree's runs can take them all, leaving its main run none. It needs a decision.
+- **CI stalls:** the `test (fast)` job has run until its limit with no log; #256 added a heartbeat that names what was stuck. Rerun the job.
+- **Upgrades:** the orchestrator, the workspace and the worker upgrade together. Control stores before version 2 and worker stores before version 1 are refused.
 
 ## Open questions
 
-Each has a recommendation; none blocks the current work, and the gateway key and the Access token work.
+Each has a recommendation; none blocks current work. The skills questions are under In progress.
 
-- **Per-role model aliases:** `sandbox-orchestrator` serves MAIN, the reviewer and the watcher until the owner sets one per role.
-- **Draft specs:** [skills](../docs/specs/skills.md) and [living documents](../docs/specs/living-documents.md) (question 15); [plans and delegation](../docs/specs/plans-and-delegation.md) questions 6 and 7.
-- **Math display** ([workspace](../docs/WORKSPACE.md#math-repairs)): LD-41's backslash form for `\(x\)` before a digit; the escaped-bracket rule; macro-defining formulas shown as written; front-matter macro limits; 60 model repairs per browser session per hour.
-- **Images** ([images](../docs/IMAGES.md)): no registry on babbage for now; G6K at x86-64-v3; GPL runtime libraries in `minimal`, with an SBOM before publishing; keep crypto-base's compilers, R and OpenJDK; projects may carry the IACR LaTeX classes.
+- **Models:** the config names `reviewer`, `watcher` and `delegated` aliases, all `sandbox-orchestrator` for now.
+- **PDF vouching:** whether the e-print server names a PDF's hash in a recorded result (asked of the owner). Until then a PDF quote confirms a result only through the user's check of the reference.
+- **Draft specs:** [living documents](../docs/specs/living-documents.md), question 15.
+- **Math display** ([workspace](../docs/WORKSPACE.md#math-repairs)): the backslash form for `\(x\)` before a digit; the escaped-bracket rule; macro-defining formulas as written; front-matter macro limits; 60 model repairs per browser session per hour.
+- **Images** ([images](../docs/IMAGES.md)): no registry on babbage; G6K at x86-64-v3; GPL runtime libraries in `minimal`, with an SBOM before publishing; crypto-base's compilers, R and OpenJDK; IACR LaTeX classes.
 - **MCP proxy** ([MCP connectors](../docs/MCP-CONNECTORS.md)): MCP 2026-07-28 only when a server needs it; binary results withheld; whether worker code may use `resources/read`, `prompts/get` and `completion/complete`.
 - **Event store:** installing the checkpoint timer from `examples/systemd` on babbage.
 - **Upstream reports** in [`.agents/upstream/`](upstream/): whether to file them.
-- **crypto-analysis-skills:** confirm the copyright holder before merging its MIT license.
+- **crypto-analysis-skills:** confirm the copyright holder before merging its MIT license; the import found no license.
 
 ## Known facts
 
 - OpenShell's VM driver README calls the driver experimental at v0.1.3; babbage's tier 3 depends on it (D43), and it has worked in every lab.
 - babbage restricts unprivileged user namespaces through AppArmor. Claude Desktop's shells are exempt, so qualification checks run from a plain terminal or `systemd-run --user`.
-
-## Last five merges
-
-- #333: the run service keeps the model budget at a run's safe points. #331: the lab 39 report.
-- #330: `find_artifacts` finds a file by the path it lists. #329: `up` moves a project to a changed policy.
-- #328: crypto-research-mcp's tools have no prefix in the example policy.

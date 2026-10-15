@@ -28,11 +28,11 @@ run identity and may retain configured model alias, actual resolved model and to
 call. An unavailable resolved model stays `None`. Delegated authority additionally
 requires an exact `PlanRef` and track grant. Constructing this internal DTO is not
 authentication; no model JSON, tool output, evidence link or stored status grants
-that authority. A caller must resolve it from its actual trusted context. No
-production caller constructs delegated authority yet: the delegation prototype that
-did is kept on the tag `archive/delegation-2026-10`, and delegation will be rebuilt
-as a role of the one loop ([refactoring plan](../.agents/refactor-plan/PLAN.md),
-Phase 4 item 7).
+that authority. A caller must resolve it from its actual trusted context. The one
+production caller is a delegated task's track tools (`delegation/tracks.py`), which
+resolve it from the run's own grant to one track of the active plan version
+([plans and delegation](specs/plans-and-delegation.md), PD-9, PD-12). An earlier
+prototype is kept on the tag `archive/delegation-2026-10`.
 
 Copied Pydantic models are strictly revalidated, including nested scope, grant,
 body, evidence and outcome fields. Agents cannot use the reserved USER run name,
