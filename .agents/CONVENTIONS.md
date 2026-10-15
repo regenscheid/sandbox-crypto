@@ -42,6 +42,7 @@ Planned members (created when work starts on them):
 | `event-store` | `sandbox_science.event_store` | Library: append-only event store with a hash chain (D74, shared) |
 | `connector-auth` | `sandbox_science.connector_auth` | Connector auth service (OAuth for MCP) |
 | `workspace` | `sandbox_science.workspace` | The research workspace's web server: the GUI's files and its API (D80) |
+| `launcher` | `sandbox_science.launcher` | `sandbox-science up`: starts, supervises and stops a local Sandbox Science from one config file, running the other members as commands, never importing them |
 | `testing` | `sandbox_science.testing` | Development only: support for this repository's tests (`FakeClock`, `eventually()`, the worker API client `WorkerApi`, the leftover-process check in `processes`, and a fake MCP server with TLS for the MCP proxy's and the harness's tests in `mcp`). A dev dependency; no production member imports it |
 
 The browser front end itself is not a member: it lives in `web/workspace/`, with Node's toolchain (D60, D80).

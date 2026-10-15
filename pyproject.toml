@@ -8,6 +8,7 @@ license = "MIT"
 dependencies = [
     "sandbox-science-contracts",
     "sandbox-science-event-store",
+    "sandbox-science-launcher",
     "sandbox-science-mcp-proxy",
     "sandbox-science-orchestrator",
     "sandbox-science-package-cache",
@@ -43,6 +44,7 @@ members = ["packages/*"]
 [tool.uv.sources]
 sandbox-science-contracts = { workspace = true }
 sandbox-science-event-store = { workspace = true }
+sandbox-science-launcher = { workspace = true }
 sandbox-science-mcp-proxy = { workspace = true }
 sandbox-science-orchestrator = { workspace = true }
 sandbox-science-policy = { workspace = true }

@@ -1,0 +1,279 @@
+# SPDX-License-Identifier: MIT
+"""The launcher's config file, ``sandbox-science.toml`` (docs/QUICKSTART.md).
+
+```toml
+state_dir = "~/.local/state/sandbox-science"
+
+[[projects]]
+id = "crypto"
+profile = "minimal"
+sessions = ["main"]
+
+[model]
+url = "https://litellm-api.npages.org/v1"
+name = "sandbox-orchestrator"
+api_key_file = "~/.config/sandbox-science/secrets/litellm-harness.key"
+
+[worker]
+policy = "examples/policy.yaml"
+
+[workspace]
+static = "web/workspace/dist"
+
+[openshell]
+cli = "~/.local/opt/openshell-0.1.3/bin/openshell"
+python = "/opt/sandbox-science/bin/python"
+isolation_tier = 3
+
+[openshell.environments]
+policy_store = "~/.local/state/openshell-lab/middleware/state"
+targets = "~/.local/state/openshell-lab/targets.yaml"
+ceiling = "~/.local/state/openshell-lab/middleware/pool-ceiling.yaml"
+profiles = { minimal = "sandbox-science/minimal:02f85b3" }
+```
+
+A relative path is against the file's directory, and ``~`` is the user's home. Every
+address is a loopback one. ``[openshell]`` is the worker's own table (docs/WORKER.md):
+the launcher passes it on with its paths made absolute, and runs its own OpenShell
+commands with its ``cli`` and ``env``. The model's key file is only named here: the
+launcher never reads it, and gives its path to the run service.
+"""
+
+from __future__ import annotations
+
+import ipaddress
+import tomllib
+from pathlib import Path
+from typing import Annotated, Literal, Self, cast
+from urllib.parse import urlsplit
+
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    ValidationError,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
+
+Identifier = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")]
+
+
+class LauncherError(Exception):
+    """What the launcher refuses, with a message for the user."""
+
+
+def _path(value: Path, info: ValidationInfo) -> Path:
+    """``value`` with ``~`` expanded, against the config file's directory if relative."""
+    context = cast(dict[str, Path], info.context or {})
+    return context.get("base", Path.cwd()) / value.expanduser()
+
+
+ConfigPath = Annotated[Path, AfterValidator(_path)]
+
+
+def split(address: str) -> tuple[str, int]:
+    """An address's host and port, as ``_loopback`` checked them."""
+    host, _, port = address.rpartition(":")
+    return host, int(port)
+
+
+def _loopback(value: str) -> str:
+    """``value`` as ``host:port`` with the port as a plain number, on a loopback address."""
+    host, colon, port = value.rpartition(":")
+    if not colon or not (port.isascii() and port.isdigit()) or not 0 < int(port) < 65536:
+        raise ValueError(f"{value!r} is not host:port, with a port from 1 to 65535")
+    try:
+        loopback = ipaddress.IPv4Address(host).is_loopback
+    except ValueError:
+        loopback = False
+    if not loopback:
+        raise ValueError(
+            f"{value!r} is not on loopback: everything the launcher starts listens on this "
+            "computer only, at an address such as 127.0.0.1:8200"
+        )
+    return f"{host}:{int(port)}"
+
+
+Listen = Annotated[str, AfterValidator(_loopback)]
+
+
+class _Strict(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class ModelConfig(_Strict):
+    url: str
+    """The OpenAI-compatible gateway, such as LiteLLM."""
+    name: str = Field(min_length=1)
+    """The model alias the main agent uses."""
+    api_key_file: ConfigPath
+    reviewer: str | None = Field(default=None, min_length=1)
+    """The reviewer's alias, for reviews and the workspace's math repairs; none by default."""
+
+    @field_validator("url")
+    @classmethod
+    def _gateway(cls, value: str) -> str:
+        parts = urlsplit(value)
+        host = parts.hostname or ""
+        try:
+            local = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            local = False  # a name, which could resolve anywhere: https only
+        if (parts.scheme == "https" and host) or (parts.scheme == "http" and local):
+            return value
+        raise ValueError(
+            "the model gateway's URL is https, or http on a loopback IP address such as "
+            "127.0.0.1: the key would go to it in the clear"
+        )
+
+
+class ProjectConfig(_Strict):
+    id: Identifier
+    profile: Identifier
+    """The base profile of the project's environments: a key of ``openshell.environments
+    .profiles``."""
+    sessions: tuple[Identifier, ...] = ("main",)
+    """Sessions opened for chat, each in the project's default environment."""
+
+
+class WorkerConfig(_Strict):
+    listen: Listen = "127.0.0.1:8100"
+    pool_id: Identifier = "local"
+    policy: ConfigPath
+    """The project policy granted to every project."""
+    log_level: Literal["debug", "info", "warning", "error"] = "info"
+
+
+class WorkspaceConfig(_Strict):
+    listen: Listen = "127.0.0.1:8200"
+    preview_listen: Listen | None = None
+    """The PDF viewer's origin; by default the next port on the same address."""
+    static: ConfigPath
+    """The web app's build: ``web/workspace/dist`` after ``npm run build``."""
+
+    def preview(self) -> str:
+        if self.preview_listen is not None:
+            return self.preview_listen
+        host, port = split(self.listen)
+        return f"{host}:{port + 1}"
+
+    @model_validator(mode="after")
+    def _preview(self) -> Self:
+        if self.preview_listen is None and split(self.listen)[1] == 65535:
+            raise ValueError("listen's next port is not a port: set preview_listen")
+        return self
+
+
+class EnvironmentsConfig(BaseModel):
+    """The worker's ``[openshell.environments]``; keys not named here pass on as they are."""
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+    policy_store: ConfigPath
+    targets: ConfigPath
+    ceiling: ConfigPath
+    event_store: ConfigPath | None = None
+    profiles: dict[Identifier, str] = Field(min_length=1)
+
+
+class OpenShellConfig(BaseModel):
+    """The worker's ``[openshell]``; keys not named here pass on as they are."""
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+    cli: str = "openshell"
+    env: dict[str, str] = Field(default_factory=dict[str, str])
+    """What the OpenShell CLI needs to reach the gateway, such as ``XDG_CONFIG_HOME``."""
+    environments: EnvironmentsConfig
+
+    @field_validator("cli")
+    @classmethod
+    def _cli(cls, value: str, info: ValidationInfo) -> str:
+        if "/" in value or value.startswith("~"):
+            return str(_path(Path(value), info))
+        return value
+
+    @field_validator("env")
+    @classmethod
+    def _paths(cls, value: dict[str, str], info: ValidationInfo) -> dict[str, str]:
+        """A value with a ``/`` in it, or that starts with ``~``, is a path: absolute, so
+        that every part reaches the same gateway, whatever its working directory. A URL
+        (``scheme://...``) is not a path, and stays as it is."""
+        return {
+            key: str(_path(Path(item), info))
+            if ("/" in item or item.startswith("~")) and "://" not in item
+            else item
+            for key, item in value.items()
+        }
+
+
+class LauncherConfig(_Strict):
+    state_dir: ConfigPath = Field(
+        default=Path("~/.local/state/sandbox-science"), validate_default=True
+    )
+    bin_dir: ConfigPath | None = None
+    """Where the ``sandbox-science-*`` commands are; by default beside this one's Python."""
+    start_timeout: float = Field(default=300.0, gt=0, le=3600)
+    """Seconds each part has to become ready."""
+    projects: tuple[ProjectConfig, ...] = Field(min_length=1)
+    model: ModelConfig
+    worker: WorkerConfig
+    workspace: WorkspaceConfig
+    openshell: OpenShellConfig
+
+    @model_validator(mode="after")
+    def _consistent(self) -> Self:
+        ids = [project.id for project in self.projects]
+        if len(set(ids)) != len(ids):
+            raise ValueError("each project is listed once")
+        profiles = self.openshell.environments.profiles
+        for project in self.projects:
+            if project.profile not in profiles:
+                raise ValueError(
+                    f"project {project.id}'s profile {project.profile!r} is not one of "
+                    f"openshell.environments.profiles: {', '.join(sorted(profiles))}"
+                )
+            if len(set(project.sessions)) != len(project.sessions):
+                raise ValueError(f"project {project.id} lists a session twice")
+        self._distinct(self.addresses())
+        return self
+
+    def addresses(self) -> dict[str, str]:
+        """Each address the launcher's parts listen on, by what listens there."""
+        return {
+            "worker": self.worker.listen,
+            "workspace": self.workspace.listen,
+            "workspace preview": self.workspace.preview(),
+        }
+
+    @staticmethod
+    def _distinct(addresses: dict[str, str]) -> None:
+        seen: dict[str, str] = {}
+        for name, address in addresses.items():
+            if address in seen:
+                raise ValueError(f"the {seen[address]} and the {name} both listen on {address}")
+            seen[address] = name
+
+
+def load_config(path: Path) -> LauncherConfig:
+    """The config in ``path``, checked; LauncherError says what is wrong with it."""
+    try:
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise LauncherError(
+            f"no config file at {path}: docs/QUICKSTART.md shows one to start from"
+        ) from None
+    except (OSError, UnicodeDecodeError) as exc:
+        raise LauncherError(f"cannot read {path}: {exc}") from None
+    except tomllib.TOMLDecodeError as exc:
+        raise LauncherError(f"{path} is not TOML: {exc}") from None
+    try:
+        return LauncherConfig.model_validate(raw, context={"base": path.absolute().parent})
+    except ValidationError as exc:
+        problems = "\n".join(
+            f"  {'.'.join(str(part) for part in error['loc']) or 'the file'}: {error['msg']}"
+            for error in exc.errors()
+        )
+        raise LauncherError(f"{path} is not a launcher config:\n{problems}") from None
