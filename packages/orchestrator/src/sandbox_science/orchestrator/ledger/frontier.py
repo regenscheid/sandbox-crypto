@@ -56,6 +56,7 @@ from .models import (
     CategoryPage,
     CategoryRevised,
     DominatesLink,
+    EvidenceLink,
     FrontierChange,
     FrontierGroup,
     FrontierHistory,
@@ -383,7 +384,8 @@ def _member(
     if fields.get("category") != name:
         return None
     eligible = disputed or status == _ELIGIBLE[origin]
-    unverified = eligible and origin == "published" and not _confirmed(db, entry, row[4])
+    confirmed = _confirmed(db, entry, row[4]) if eligible and origin == "published" else None
+    unverified = eligible and origin == "published" and confirmed is None
     eligible = eligible and not unverified
     candidate = not eligible and (
         unverified or (origin == "project" and status in ("proposed", "disputed"))
@@ -391,18 +393,110 @@ def _member(
     if not (eligible or candidate):
         return None
     shown = _result(db, row, fields, disputed=disputed, unverified=unverified, full=full)
+    if confirmed is not None:
+        shown = shown.model_copy(update={"confirmed_by": confirmed})
     return shown, eligible, candidate
 
 
-def _confirmed(db: sqlite3.Connection, entry: str, revision: int) -> bool:
-    """Whether the user confirmed published result ``entry`` as ``revision`` reads (LG-16
-    as amended). The user's latest revision of it must hold the same statement, fields,
-    assumptions and evidence, and the user must have written that material, by recording
-    the entry or by a revision that brought it in, or checked it (``ledger check``, or the
-    workspace's). A user's other edits, such as a title or a dropped link, confirm
-    nothing, and material an agent writes after the user's latest revision is not what
-    the user confirmed. The consistency reviewer's citation check (CR-4) is not built
-    yet."""
+def _confirmed(db: sqlite3.Connection, entry: str, revision: int) -> str | None:
+    """Who confirmed published result ``entry`` as ``revision`` reads (LG-16 as amended):
+    ``user`` when the user's latest revision holds that material and the user wrote it,
+    by recording the entry or by a revision that brought it in, or checked it (``ledger
+    check``, or the workspace's: a check of the entry itself, never another target such
+    as a delegation's outcome); else ``citation check`` when the consistency reviewer's
+    checks confirm each of its quotes (CR-4, ``_cited``); None when neither did. The
+    user's word comes first, so a result both confirm says ``user``. A user's other
+    edits, such as a title or a dropped link, confirm nothing, and material an agent
+    writes after the user's latest revision is not what the user confirmed."""
+    if _by_user(db, entry, revision):
+        return "user"
+    return "citation check" if _cited(db, entry, revision) else None
+
+
+def _cited(db: sqlite3.Connection, entry: str, revision: int) -> bool:
+    """Whether the consistency reviewer's checks confirm revision ``revision`` of
+    ``entry`` (CR-4; LG-16 as amended): it holds at least one quote, and each
+    - cites a reference that is not refuted, withdrawn or superseded, in a link that counts;
+    - of a PDF, is of a PDF the user vouches for (``_vouched``);
+    - has a ``supported`` check of the revision's statement, fields, assumptions and
+      evidence, its latest of them, and no ``unsupported`` check of any revision since,
+      so that a revision that returns to checked material does not return to its check."""
+    quotes = [link for link in evidence.stored(db, entry, revision) if link.target == "quote"]
+    material = gate.examined(db, entry, {revision}).get(revision)
+    if not quotes or material is None:
+        return False
+    digest = gate.fingerprint(material)
+    vouched: dict[str, set[str]] = {}
+    for link in quotes:
+        if not gate.counts(db, link):
+            return False
+        if (link.locator or {}).get("source") == "pdf":
+            if link.target_id not in vouched:
+                vouched[link.target_id] = _vouched(db, link.target_id)
+            if link.sha256 not in vouched[link.target_id]:
+                return False
+        latest = db.execute(
+            "SELECT verdict,created,rowid FROM citation_checks WHERE entry_id=? AND "
+            "evidence_id=? AND material=? ORDER BY created DESC, rowid DESC LIMIT 1",
+            (entry, link.evidence_id, digest),
+        ).fetchone()
+        if latest is None or latest[0] != "supported":
+            return False
+        if db.execute(
+            "SELECT 1 FROM citation_checks WHERE entry_id=? AND evidence_id=? AND "
+            "verdict='unsupported' AND (created>? OR (created=? AND rowid>?)) LIMIT 1",
+            (entry, link.evidence_id, latest[1], latest[1], latest[2]),
+        ).fetchone():
+            return False
+    return True
+
+
+def _vouched(db: sqlite3.Connection, reference: str) -> set[str]:
+    """The SHA-256s of the PDFs the user vouches for as ``reference``'s (LG-16 as
+    amended): those named by the revisions of it that the user checked (``ledger check``,
+    or the workspace's), whose PDF field, hash included, the revision pins. Vouching is
+    explicit: no other revision of the user's vouches, any more than a user's other edits
+    confirm a result, and an agent may name any artifact as a reference's PDF, one it
+    made included. The e-print server vouches for none yet: no e-print result names a
+    hash."""
+    head = db.execute("SELECT head FROM ledger_entries WHERE entry_id=?", (reference,)).fetchone()
+    if head is None:
+        return set()
+    checked = {
+        link.checked
+        for link in evidence.stored(db, reference, head[0])
+        if link.checked is not None
+        and _own_check(link, reference)
+        and gate.added_by_user(db, reference, link, head[0])
+    }
+    found: set[str] = set()
+    for revision in checked:
+        row = db.execute(
+            "SELECT json_extract(fields,'$.pdf.sha256') FROM ledger_revisions "
+            "WHERE entry_id=? AND revision=?",
+            (reference, revision),
+        ).fetchone()
+        if row is not None and row[0] is not None:
+            found.add(row[0])
+    return found
+
+
+def _own_check(link: EvidenceLink, entry: str) -> bool:
+    """Whether ``link`` is a check of ``entry`` itself, as ``ledger check`` records one:
+    an ``independent_check`` whose target is the entry, added by the revision after the
+    one it checked. Another target, such as a delegation's outcome, is not the user's
+    check, whoever added it."""
+    return (
+        link.role == "independent_check"
+        and link.target == "entry"
+        and link.target_id == entry
+        and link.checked is not None
+        and link.added == link.checked + 1
+    )
+
+
+def _by_user(db: sqlite3.Connection, entry: str, revision: int) -> bool:
+    """Whether the user confirmed ``entry`` as ``revision`` reads, as ``_confirmed`` says."""
     latest = db.execute(
         "SELECT max(revision) FROM ledger_revisions WHERE entry_id=? "
         "AND json_extract(author,'$.kind')='user'",
@@ -433,9 +527,8 @@ def _confirmed(db: sqlite3.Connection, entry: str, revision: int) -> bool:
     checked = {
         link.checked
         for link in evidence.stored(db, entry, latest)
-        if link.role == "independent_check"
-        and link.checked is not None
-        and link.added == link.checked + 1
+        if link.checked is not None
+        and _own_check(link, entry)
         and gate.added_by_user(db, entry, link, latest)
     }
     return now in gate.examined(db, entry, checked).values()

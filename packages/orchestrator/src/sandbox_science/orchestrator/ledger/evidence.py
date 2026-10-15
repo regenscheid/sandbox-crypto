@@ -186,7 +186,14 @@ def resolve(
 ) -> EvidenceLink:
     """``item`` as the link the new revision of ``holder`` adds, its target checked to
     exist in the project at the revision it pins."""
-    if holder.type not in EVIDENCE_HOLDERS:
+    if holder.type == "reference":
+        # A reference holds only checks of itself: the user's record that they checked
+        # a revision of it, which vouches for the PDF that revision names (LG-16).
+        if item.role != "independent_check" or entry is None or entry.entry_id != holder.entry_id:
+            raise DocumentError(
+                INVALID_REQUEST, "a reference holds no evidence but checks of itself"
+            )
+    elif holder.type not in EVIDENCE_HOLDERS:
         article = "an" if holder.type[0] in "aeiou" else "a"
         raise DocumentError(INVALID_REQUEST, f"{article} {holder.type} holds no evidence")
     if item.type == "unclassified":

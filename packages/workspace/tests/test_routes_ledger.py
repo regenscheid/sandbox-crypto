@@ -182,6 +182,30 @@ async def test_the_user_records_a_check_through_the_workspace(
     assert (await client.post(url, json=body)).status == 403
 
 
+async def test_the_user_checks_a_reference_through_the_workspace(
+    aiohttp_client: ClientFactory, seeded: Path, static_dir: Path
+) -> None:
+    """LG-16 as the coordinator decided: the user's check of a reference, which vouches
+    for the PDF the revision names, goes through the same route."""
+    documents = DocumentStore(store_path(seeded))
+    try:
+        reference = {"type": "reference", "title": "A paper", "statement": "A paper.",
+                     "fields": {"identifiers": {"eprint": "2024/123"},
+                                "published": "2024-02-01"}}  # fmt: skip
+        Ledger(documents).change(
+            "p1", {"operation_id": "ref", "reason": "r", "changes": [reference]}, MAIN
+        )
+    finally:
+        documents.close()
+    client = await workspace(aiohttp_client, seeded, static_dir)
+    body = {"revision": 1, "note": "Read the PDF.", "operation_id": "check-ref"}
+    response = await client.post(BASE + "/REF-1/checks", json=body, headers=origin(client))
+    assert response.status == 200, await response.text()
+    entry = LedgerEntry.model_validate(await (await client.get(BASE + "/REF-1")).json()).entry
+    (check,) = entry.evidence
+    assert (check.role, check.checked, entry.author["kind"]) == ("independent_check", 1, "user")
+
+
 async def test_the_user_drops_a_dominates_link_through_the_workspace(
     aiohttp_client: ClientFactory, seeded: Path, static_dir: Path
 ) -> None:

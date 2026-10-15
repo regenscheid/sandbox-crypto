@@ -37,6 +37,7 @@ const result = (unverified: boolean): FrontierResult => ({
   origin: 'published',
   disputed: false,
   unverified,
+  confirmed_by: unverified ? null : 'user',
   author: AGENT,
   conditions: { attack: 'dual' },
   measures: { time: 140 },

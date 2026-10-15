@@ -52,6 +52,7 @@ const result = (handle: string, fields: Partial<FrontierResult> = {}): FrontierR
   origin: 'project',
   disputed: false,
   unverified: false,
+  confirmed_by: null,
   author: { kind: 'user', user: 'owner' },
   conditions: { attack: 'dual' },
   measures: { time: 160 },

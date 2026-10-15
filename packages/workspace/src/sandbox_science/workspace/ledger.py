@@ -187,7 +187,8 @@ class CheckRequest(Contract):
 
 async def check(request: web.Request) -> web.Response:
     """POST …/ledger/{entry}/checks: the user checked the entry at ``revision``, the one
-    the page read; a later revision is a conflict. Same-origin, the user's only."""
+    the page read; a later revision is a conflict. A reference's check vouches for the
+    PDF the revision names (LG-16). Same-origin, the user's only."""
     project, reference = identifier(request, "project"), _entry(request)
     raw = await json_body(request, "ledger check JSON")
     try:

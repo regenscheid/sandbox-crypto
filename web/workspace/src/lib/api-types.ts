@@ -440,6 +440,7 @@ export interface FrontierResult {
   disputed: boolean;
   unverified: boolean;
   author: Record<string, unknown>;
+  confirmed_by: string | null;
   conditions: Record<string, string>;
   measures: Record<string, number | string>;
   evidence_types: string[];
