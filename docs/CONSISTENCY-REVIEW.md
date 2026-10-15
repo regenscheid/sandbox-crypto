@@ -17,7 +17,8 @@ cannot read through a reviewer grant, spend budget, raise a finding or finalize 
 ## Running and scheduling
 
 With `--state-dir`, the harness observes its transcript, canonical execution projections,
-agent-authored document revisions and durable explicit-publication artifact events. The reviewer uses a distinct
+agent-authored document revisions, the session's agents' ledger revisions ([ledger](LEDGER.md))
+and durable explicit-publication artifact events. The reviewer uses a distinct
 `--reviewer-model ALIAS` with the existing model gateway, or `--reviewer-script FILE`
 plus that alias for synthetic validation. The adapter limits each answer to 2,048 tokens
 and 64 KiB before the reviewer applies stricter response bounds. No alias makes zero
@@ -27,12 +28,12 @@ unreviewed. This never becomes a pass.
 Checkpoints start at live safe points after the configured minimum interval and document,
 artifact, kernel-cell or manual-request thresholds. The terminal rule classifier records
 its version, completion-claim match, durable run effects, open/claimed-fixed finding
-states and document/artifact ingestion coverage. Ordinary conversation without those triggers
+states and document/ledger/artifact ingestion coverage. Ordinary conversation without those triggers
 skips terminal review; failed/interrupted author loops do not run a terminal reviewer.
 
 Terminal holds process at most three bounded windows. Each window pins a contiguous
 feed prefix; unseen overflow retains its cursor. Terminal ingestion drains through a
-pinned document-event head in pages of 200, at most 10,000 events per boundary, and marks
+pinned document-event head, and a ledger-event head, in pages of 200, at most 10,000 events per boundary, and marks
 remaining backlog incomplete. A page's observations and its cursor commit in one change,
 as the artifact pages' do, and the session is checked once per call, not per item. A
 page that fails (an observation the store refuses) stops that ingestion as a whole: no
@@ -217,7 +218,7 @@ These are the reviewer's tables in the control store's schema
 | --- | --- |
 | `review_config` | Each project's numbered reviewer configurations, append-only |
 | `review_windows` | Each session's review state: the author-work watermark, last dispatch, retry end, failures and manual requests |
-| `review_feed` | Observations of author work (document revisions, execution projections, artifact events), with what they count toward the triggers, append-only |
+| `review_feed` | Observations of author work (document revisions, ledger revisions, execution projections, artifact events), with what they count toward the triggers, append-only |
 | `review_runs` | Each review: its kind, owner lease, feed range, model alias, rubric, configuration, classifier, usage, cap and coverage |
 | `review_evidence`, `review_grants`, `review_reads` | A review's snapshot items, the evidence it may read, and each read it made, append-only |
 | `review_confirmation_targets` | The finding revisions a confirmation review checks, append-only |

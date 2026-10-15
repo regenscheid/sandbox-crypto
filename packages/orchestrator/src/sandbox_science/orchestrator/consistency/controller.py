@@ -31,6 +31,7 @@ from sandbox_science.orchestrator.projects import recorded
 
 from .artifacts import ArtifactConsumer
 from .findings import Findings
+from .ledger import ingest_ledger
 from .models import ReviewType
 from .notices import FindingNotices
 from .rubric import CLASSIFIER_VERSION
@@ -237,6 +238,7 @@ class ReviewController:
         self.last_counts: Json | None = None
         self.documents_complete = True
         self.artifacts_complete = True
+        self.ledger_complete = True
         self.artifact_consumer = (
             ArtifactConsumer(store, *self.scope) if store.artifacts is not None else None
         )
@@ -323,6 +325,8 @@ class ReviewController:
                 )
         ingestion = await asyncio.to_thread(self.store.ingest_documents, *self.scope)
         self.documents_complete = ingestion["complete"]
+        ledger = await asyncio.to_thread(ingest_ledger, self.store, *self.scope)
+        self.ledger_complete = ledger["complete"]
         if self.artifact_consumer is not None:
             artifact_ingestion = await self.artifact_consumer.ingest()
             self.artifacts_complete = artifact_ingestion["complete"]
@@ -339,7 +343,9 @@ class ReviewController:
             owner=self.owner,
             alias=self.alias,
             classifier=classifier,
-            coverage_complete=self.documents_complete and self.artifacts_complete,
+            coverage_complete=self.documents_complete
+            and self.artifacts_complete
+            and self.ledger_complete,
         )
         if review is not None:
             self.review = review
@@ -391,6 +397,8 @@ class ReviewController:
         await self.observe(messages)
         ingestion = await asyncio.to_thread(self.store.ingest_documents, *self.scope, drain=True)
         self.documents_complete = ingestion["complete"]
+        ledger = await asyncio.to_thread(ingest_ledger, self.store, *self.scope, drain=True)
+        self.ledger_complete = ledger["complete"]
         artifact_ingestion = (
             await self.artifact_consumer.ingest(drain=True)
             if self.artifact_consumer is not None

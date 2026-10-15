@@ -82,6 +82,9 @@ describe('what the reviews panel says', () => {
     expect(
       locatorText({ entry: 'entry-1', handle: 'C-3', field: 'statement', body_revision: 2 }),
     ).toBe('the statement of ledger entry C-3');
+    expect(locatorText({ entry: 'entry-1', handle: 'C-3', revision: 2, run: 'r1' })).toBe(
+      'ledger entry C-3 revision 2',
+    );
     expect(locatorText({})).toBe('a pinned record');
     const item = { kind: 'document', locator: { document: 'doc-1', revision: 3 }, complete: false };
     expect(evidenceText(item as unknown as Evidence)).toBe(

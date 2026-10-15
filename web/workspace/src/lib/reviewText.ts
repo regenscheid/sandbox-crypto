@@ -116,6 +116,8 @@ export function locatorText(locator: Record<string, Json>): string {
     return `finding ${text(locator['finding'])} revision ${text(locator['revision'])}`;
   if (text(locator['entry']) && text(locator['field']))
     return `the ${text(locator['field'])} of ledger entry ${text(locator['handle']) || text(locator['entry'])}`;
+  if (text(locator['entry']))
+    return `ledger entry ${text(locator['handle']) || text(locator['entry'])} revision ${text(locator['revision'])}`;
   if (locator['artifact'] !== undefined)
     return `an artifact published by run ${text(locator['run']) || 'unknown'}`;
   return 'a pinned record';
