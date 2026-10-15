@@ -311,23 +311,29 @@ before the result goes back to the model, it records the files the worker report
 
 - It reads the project's [file settings](PROJECTS-AND-SESSIONS.md#files-executions-write)
   for each call: a project that records results only records nothing here, and the
-  ignore patterns leave files out.
-- It lists each directory once for the files' sizes. A file within the budget and
-  within 8 MiB is published through the run's `ArtifactPublisher`, under an operation
-  ID made from the execution and the path, so a replay finds the first receipt; a
+  ignore patterns leave files out, matched off the event loop; a path with a name no
+  artifact can have is left out with that reason.
+- It lists each directory once for the files' sizes; a directory that cannot be
+  listed, or whose listing was cut short, is the reason its files are left out. A file
+  within the budget and within 8 MiB is published through the run's `ArtifactPublisher`,
+  under an operation ID made from the execution and the path (for `write_file`, the
+  harness's operation ID for the call, never the model's call ID, which gateways number
+  per answer), so a replay finds the first receipt; a
   larger file, or one the budget has no room for, is recorded with its hash and size
   (read through the worker, which hashes the whole file) and `content_retained: false`.
   When the project's revision count is full, recording stops.
 - A deleted file that is a live artifact gets a tombstone.
-- One call records at most 100 files and 64 MiB of bytes; a file over 4 GiB, one gone
-  before it was recorded, and one the inventory refused are counted as left out, by
-  reason. The source is `execution_record`, with the run's role, parent run and
+- One call tries at most 100 files, tombstones and failures included, and keeps at most
+  64 MiB of bytes: each transfer is bounded by what is left, so a file that grew after
+  its listing cannot carry the call past it. A file over 4 GiB, one gone before it was
+  recorded, and one the inventory refused are counted as left out, by reason. The source is `execution_record`, with the run's role, parent run and
   delegation, the tool call, the model the gateway named, and the execution with its
   attempt's end; it says the worker reported the file, not that the call wrote it.
 - The call's record keeps `recorded_files` (counts, the files left out by reason, and
   up to 100 entries), the model's result carries the counts, and the run's record
   keeps up to 200 of its recorded files with their total in `summaries["files"]`.
-  Recording never fails a call.
+  Recording never fails a call: if it stops part way, the files recorded before stay,
+  and the report says it stopped.
 
 Background jobs' files and delegated runs' declared results (RA-38) are recorded in
 later steps, and the GUI shows them with the artifact list (RA-37).

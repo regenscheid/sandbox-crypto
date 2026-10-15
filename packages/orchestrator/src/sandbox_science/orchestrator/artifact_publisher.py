@@ -111,8 +111,10 @@ class ArtifactPublisher:
         tool_call: str,
         model: str | None = None,
         attribution: dict[str, Any] | None = None,
+        max_bytes: int | None = None,
     ) -> ArtifactPublicationOutcome:
-        """Reserve, snapshot once, pin the known outcome, then verify/retain exact bytes."""
+        """Reserve, snapshot once, pin the known outcome, then verify/retain exact bytes,
+        at most ``max_bytes`` of them (the inventory's limit when lower or not given)."""
         if request.context != self.context:
             raise ValueError("artifact publisher context differs")
         if not self._owner.admits:
@@ -125,14 +127,20 @@ class ArtifactPublisher:
                 ),
             )
         source = self.source(tool_call, model, **(attribution or {}))
-        return await self._owner.submit(self._publish(request, operation, source))
+        limit = self.inventory.limits.artifact_bytes
+        bound = limit if max_bytes is None else max(0, min(max_bytes, limit))
+        return await self._owner.submit(self._publish(request, operation, source, bound))
 
     def _binding(self) -> None:
         if self.client.base_url != self.endpoint:
             raise ValueError("artifact worker endpoint changed during publication")
 
     async def _publish(
-        self, request: PublishRequest, operation: str, source: ArtifactPublicationSource
+        self,
+        request: PublishRequest,
+        operation: str,
+        source: ArtifactPublicationSource,
+        bound: int,
     ) -> ArtifactPublicationOutcome:
         worker: ArtifactRef | None = None
         try:
@@ -175,9 +183,7 @@ class ArtifactPublisher:
             ):
                 raise ValueError("worker snapshot project/path differs from request")
             self._binding()
-            data = await self.client.verified_artifact_content(
-                pinned_worker, max_bytes=self.inventory.limits.artifact_bytes
-            )
+            data = await self.client.verified_artifact_content(pinned_worker, max_bytes=bound)
             self._binding()
             receipt = await self._sql(
                 lambda: self.inventory.finish(

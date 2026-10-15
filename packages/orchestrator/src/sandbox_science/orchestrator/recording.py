@@ -13,6 +13,7 @@ is what a revision says, never that the call wrote them (RA-34).
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import mimetypes
@@ -92,10 +93,12 @@ class Recorded:
     left_out: Counter[str] = field(default_factory=Counter[str])
     """Files not recorded, by reason."""
     incomplete: bool = False
+    failed: str | None = None
+    """Why recording stopped part way; the files recorded before stay."""
 
     def summary(self) -> dict[str, Any] | None:
         """The call's report for the model and its record; ``None`` when nothing happened."""
-        if not self.files and not self.left_out and not self.incomplete:
+        if not self.files and not self.left_out and not self.incomplete and not self.failed:
             return None
         report: dict[str, Any] = {
             "recorded": sum(1 for f in self.files if not f["deleted"]),
@@ -106,6 +109,8 @@ class Recorded:
             report["left_out"] = dict(self.left_out)
         if self.incomplete:
             report["incomplete"] = "the worker's list of changed files was cut short"
+        if self.failed:
+            report["failed"] = self.failed
         return report
 
 
@@ -128,20 +133,52 @@ class FileRecorder:
         """Up to ``MAX_LISTED`` of the run's recorded files, for its record (RA-36)."""
         self.total = 0
 
-    async def record(self, written: Written, *, tool_call: str, model: str | None) -> Recorded:
-        """Record one call's files; failures leave gaps and never fail the call."""
+    async def record(
+        self,
+        written: Written,
+        *,
+        tool_call: str,
+        model: str | None,
+        operation: str | None = None,
+    ) -> Recorded:
+        """Record one call's files; failures leave gaps and never fail the call, and the
+        files recorded before a failure stay recorded and reported. ``operation`` keys a
+        call without an execution, such as ``write_file`` (the harness's operation ID)."""
         recorded = Recorded(incomplete=written.incomplete)
         if not written.paths and not written.deleted:
             return recorded
+        try:
+            await self._record(written, recorded, tool_call, model, operation)
+        except Exception as error:  # recording never costs the call its result
+            _log.exception("recording the files of call %s stopped", tool_call)
+            recorded.failed = f"recording stopped part way ({type(error).__name__})"
+        finally:
+            self.total += len(recorded.files)
+            self.files.extend(recorded.files[: max(0, MAX_LISTED - len(self.files))])
+        return recorded
+
+    async def _record(
+        self,
+        written: Written,
+        recorded: Recorded,
+        tool_call: str,
+        model: str | None,
+        operation: str | None,
+    ) -> None:
         try:
             settings = self.settings.get(self.context.project_id)
         except DocumentError:
             _log.exception("the project's file settings could not be read")
             recorded.left_out["settings unavailable"] += len(written.paths) + len(written.deleted)
-            return recorded
+            return
         if settings.recording == "results":
-            return recorded
+            return
         rules = IgnoreRules(settings.ignore)
+        # Matching is bounded, but a thousand paths are still kept off the event loop.
+        paths, unusable = await asyncio.to_thread(_kept, rules, written.paths)
+        gone, unusable_gone = await asyncio.to_thread(_kept, rules, written.deleted)
+        if unusable + unusable_gone:
+            recorded.left_out["a name no artifact can have"] += unusable + unusable_gone
         execution = written.execution
         attribution: dict[str, Any] = {
             "kind": "execution_record",
@@ -153,16 +190,19 @@ class FileRecorder:
             attribution["execution_id"] = execution.execution_id
             attribution["attempt_state"] = _TERMINAL.get(execution.state)
         source = self.publisher.source(tool_call, model, **attribution)
-        paths = [p for p in written.paths if not rules.ignores(p)]
-        sizes = await self._sizes(paths)
+        key = execution.execution_id if execution is not None else operation or tool_call
+        sizes, unlisted = await self._sizes(paths)
         budget = MAX_BYTES
+        limit = self.publisher.inventory.limits.artifact_bytes
+        attempts = 0
         for index, path in enumerate(paths):
-            if len(recorded.files) >= MAX_FILES:
+            if attempts >= MAX_FILES:
                 recorded.left_out["over the 100-file limit of a call"] += len(paths) - index
                 break
+            attempts += 1  # every file tried counts, recorded or not
             size = sizes.get(path)
             if size is None:
-                recorded.left_out["gone, or not a regular file, when recorded"] += 1
+                recorded.left_out[unlisted.get(path, "gone, or not a regular file")] += 1
                 continue
             if size > MAX_HASHED:
                 recorded.left_out["larger than 4 GiB"] += 1
@@ -177,9 +217,8 @@ class FileRecorder:
                 if room == "content" and size > budget:
                     recorded.left_out["over the 64 MiB limit of a call"] += 1
                     continue
-                limit = self.publisher.inventory.limits.artifact_bytes
                 entry = await (
-                    self._content(path, execution, tool_call, model, attribution)
+                    self._content(path, key, tool_call, model, attribution, budget)
                     if room == "content"
                     else self._metadata(source, path, "too_large" if size > limit else "quota")
                 )
@@ -190,11 +229,14 @@ class FileRecorder:
             if entry is None:
                 recorded.left_out["could not be recorded"] += 1
                 continue
-            budget -= size if entry["content_retained"] else 0
+            if entry["content_retained"]:
+                budget -= entry["size"]  # the bytes kept, which the transfer bounded
             recorded.files.append(entry)
-        for path in written.deleted:
-            if rules.ignores(path):
-                continue
+        for index, path in enumerate(gone):
+            if attempts >= MAX_FILES:
+                recorded.left_out["over the 100-file limit of a call"] += len(gone) - index
+                break
+            attempts += 1
             try:
                 reference = await self.publisher.record_deletion(source, path)
             except (DocumentError, ValueError) as error:
@@ -203,46 +245,49 @@ class FileRecorder:
                 continue
             if reference is not None:
                 recorded.files.append(_entry(path, reference, deleted=True))
-        self.total += len(recorded.files)
-        self.files.extend(recorded.files[: MAX_LISTED - len(self.files)])
-        return recorded
 
-    async def _sizes(self, paths: Sequence[str]) -> dict[str, int]:
-        """Each regular file's size, from one listing of each directory."""
+    async def _sizes(self, paths: Sequence[str]) -> tuple[dict[str, int], dict[str, str]]:
+        """Each regular file's size, from one listing of each directory, and why the
+        others have none."""
         sizes: dict[str, int] = {}
+        unlisted: dict[str, str] = {}
         for directory in sorted({posixpath.dirname(p) or "." for p in paths[: MAX_FILES * 2]}):
+            here = [p for p in paths if (posixpath.dirname(p) or ".") == directory]
             try:
                 listing = await self.client.list_files(
                     ListFilesRequest(context=self.context, path=directory)
                 )
-            except (WorkerAPIError, ValueError):
+            except (WorkerAPIError, ValueError) as error:
+                _log.warning("listing %s failed: %s", directory, error)
+                unlisted.update(dict.fromkeys(here, "its directory could not be listed"))
                 continue
             entries: dict[str, FileEntry] = {e.name: e for e in listing.entries}
-            for path in paths:
-                if (posixpath.dirname(path) or ".") != directory:
-                    continue
+            for path in here:
                 entry = entries.get(posixpath.basename(path))
                 if entry is not None and entry.type == "file":
                     sizes[path] = entry.size
-        return sizes
+                elif entry is None and listing.truncated:
+                    unlisted[path] = "its directory's listing was cut short"
+        return sizes, unlisted
 
     async def _content(
         self,
         path: str,
-        execution: Execution | None,
+        key: str,
         tool_call: str,
         model: str | None,
         attribution: dict[str, Any],
+        budget: int,
     ) -> dict[str, Any] | None:
         artifact_path(path)
-        key = f"{execution.execution_id if execution else tool_call}\0{path}"
-        operation = "rec-" + hashlib.sha256(key.encode()).hexdigest()[:40]
+        operation = "rec-" + hashlib.sha256(f"{key}\0{path}".encode()).hexdigest()[:40]
         outcome = await self.publisher.publish(
             PublishRequest(context=self.context, path=path),
             operation,
             tool_call=tool_call,
             model=model,
             attribution=attribution,
+            max_bytes=budget,  # a file grown since its listing cannot pass the call's limit
         )
         receipt = outcome.receipt
         if receipt.state != "recorded" or receipt.revision is None:
@@ -312,3 +357,16 @@ def with_recorded(text: str, report: dict[str, Any]) -> str:
     if isinstance(value, dict):
         return json.dumps({**value, "recorded_files": report}, ensure_ascii=False)
     return f"{text}\n[recorded files: {json.dumps(report, ensure_ascii=False)}]"
+
+
+def _kept(rules: IgnoreRules, paths: Sequence[str]) -> tuple[list[str], int]:
+    """The paths the patterns keep, and how many have a name nothing can match."""
+    kept: list[str] = []
+    unusable = 0
+    for path in paths:
+        try:
+            if not rules.ignores(path):
+                kept.append(path)
+        except ValueError:
+            unusable += 1
+    return kept, unusable

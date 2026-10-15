@@ -524,8 +524,9 @@ class Harness:
             alias=alias,
         )
         # A delegated run's cells run in kernels of its own, which stop when it ends
-        # (PD-37); a main run uses the session's, and closes those its session's earlier
-        # runs left (PD-40): its runs run under it, so none of them is running yet.
+        # (PD-37); a main run uses the session's, and its kernel check closes those its
+        # session's earlier runs left (PD-40) at its first observation of a connected
+        # executor.
         kernel_run = admitted.run_id if admitted.request.parent is not None else None
         client = self.client
         if kernel_run is not None:
@@ -538,8 +539,6 @@ class Harness:
                     _log.warning("could not stop run %s's kernels: %s", kernel_run, exc)
 
             on_close(stop_kernels)
-        else:
-            await _close_left_run_kernels(client, context)
         return Toolbox(
             self.client,
             context,
@@ -553,23 +552,11 @@ class Harness:
             plans=plans,
             ledger=ledger,
             check_kernels=True,
+            sweep_left_kernels=kernel_run is None,
             connectors=connectors,
             kernel_run=kernel_run,
             recorder=recorder,
         )
-
-
-async def _close_left_run_kernels(client: WorkerClient, context: ExecutionContext) -> None:
-    """Close the kernels of delegated runs that ended without closing them: their
-    harness stopped first (PD-40). Only an executor already connected is asked, so a
-    run's start never wakes or starts its environment; an unconnected one keeps such
-    kernels until a later run finds it connected."""
-    try:
-        observed = await client.observe_kernels(context)
-        for run in sorted({kernel.run for kernel in observed.kernels if kernel.run is not None}):
-            await client.close_session(context, run=run)
-    except Exception as exc:  # a cleanup: it never stops the run
-        _log.warning("could not close the kernels earlier runs left: %s", exc)
 
 
 def closing(

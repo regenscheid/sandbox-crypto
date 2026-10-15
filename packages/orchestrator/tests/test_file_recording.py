@@ -4,6 +4,7 @@ artifacts, RA-27 to RA-35), through a real worker's HTTP API."""
 
 from __future__ import annotations
 
+import base64
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -13,7 +14,9 @@ from typing import Any
 import pytest
 import pytest_asyncio
 
+from sandbox_science.contracts import ErrorKind, WriteFileRequest
 from sandbox_science.contracts.artifact_inventory import ArtifactRevision
+from sandbox_science.orchestrator import recording as recording_module
 from sandbox_science.orchestrator.artifact_publisher import ArtifactPublisher
 from sandbox_science.orchestrator.artifacts import ArtifactInventory, ArtifactLimits
 from sandbox_science.orchestrator.documents import USER, DocumentStore
@@ -21,7 +24,7 @@ from sandbox_science.orchestrator.file_settings import DEFAULT_IGNORE, ProjectFi
 from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.recording import FileRecorder, RecordedFiles
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome
-from sandbox_science.orchestrator.worker_client import WorkerClient
+from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 
 from .test_artifact_publication import CONTEXT, TOKEN
 from .test_artifact_publication import worker_url as worker_url
@@ -190,3 +193,111 @@ async def test_a_full_budget_keeps_hashes_and_then_stops(worker_url: str, tmp_pa
     notes = {e.path: e.content_note for e in inventory.list("p1").entries}
     assert notes == {"sessions/s1/a": "quota", "sessions/s1/b": None}
     documents.close()
+
+
+async def test_a_pdf_helpers_files_are_recorded(recording: Recording) -> None:
+    pdf_oxide = pytest.importorskip("pdf_oxide")
+    client = recording.toolbox.client
+    capabilities = await client.capabilities(CONTEXT.environment_id)
+    toolbox = Toolbox(
+        client, CONTEXT, features=capabilities.features, artifacts=recording.toolbox.artifacts,
+        recorder=recording.recorder,
+    )  # fmt: skip
+    data = bytes(pdf_oxide.Pdf.from_markdown("# GF(17)\n\nEvery a has a^17 = a.\n").to_bytes())
+    await client.write_file(
+        WriteFileRequest(
+            context=CONTEXT, path="note.pdf", content_b64=base64.b64encode(data).decode()
+        )
+    )
+    arguments = {"path": "note.pdf", "page": 1, "dpi": 50}
+    call = ToolCall(id="render", name="pdf_render", arguments=json.dumps(arguments))
+    outcome = await toolbox.call(call, "op-render")
+    assert outcome.record["recorded_files"]["recorded"] == 1
+    (png,) = [path for path in recording.heads() if path.endswith(".png")]
+    assert recording.heads()[png].publication.tool_call == "render"
+
+
+async def test_every_file_tried_counts_toward_the_limit(
+    recording: Recording, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def refused(*args: Any, **kwargs: Any) -> Any:
+        raise WorkerAPIError(ErrorKind.UNAVAILABLE, "the worker is busy")
+
+    monkeypatch.setattr(recording.toolbox.artifacts, "publish", refused)
+    outcome = await recording.shell(
+        "mkdir -p many && for i in $(seq 1 105); do echo $i > many/$i; done"
+    )
+    assert outcome.record["recorded_files"]["left_out"] == {
+        "could not be recorded": 100, "over the 100-file limit of a call": 5,
+    }  # fmt: skip
+
+
+async def test_the_calls_byte_limit_counts_the_bytes_kept(
+    recording: Recording, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A file that grew after its listing cannot carry a call past its limit."""
+    monkeypatch.setattr(recording_module, "MAX_BYTES", 10)
+
+    async def small(paths: Any) -> tuple[dict[str, int], dict[str, str]]:
+        return dict.fromkeys(paths, 1), {}  # listed as 1 byte each: they grew
+
+    monkeypatch.setattr(recording.recorder, "_sizes", small)
+    outcome = await recording.shell("echo 1234567 > a.txt && echo 7654321 > b.txt")  # 8 bytes each
+    report = outcome.record["recorded_files"]
+    assert (report["recorded"], report["left_out"]) == (1, {"could not be recorded": 1})
+    kept = sum(e.reference.size for e in recording.heads().values() if e.content_retained)
+    assert kept <= 10
+
+
+async def test_two_write_files_with_one_model_call_id_keep_both(recording: Recording) -> None:
+    """Gateways that number calls per answer repeat call_0; the harness's operation differs."""
+    for operation, text in (("op-a", "first"), ("op-b", "second")):
+        arguments = json.dumps({"path": "notes.md", "content": text})
+        call = ToolCall(id="call_0", name="write_file", arguments=arguments)
+        await recording.toolbox.call(call, operation)
+    head = recording.heads()["sessions/s1/notes.md"]
+    assert head.reference.revision == 2
+    assert recording.inventory.content("p1", head.reference) == b"second"
+    empty = ToolCall(
+        id="", name="write_file", arguments=json.dumps({"path": "e.md", "content": "x"})
+    )
+    outcome = await recording.toolbox.call(empty, "op-c")
+    assert outcome.record["recorded_files"]["recorded"] == 1
+    assert recording.heads()["sessions/s1/e.md"].publication.tool_call == "op-c"
+
+
+async def test_tombstones_count_toward_the_limit(
+    recording: Recording, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await recording.shell("echo a > a && echo b > b && echo c > c")
+    monkeypatch.setattr(recording_module, "MAX_FILES", 2)
+    outcome = await recording.shell("rm a b c")
+    report = outcome.record["recorded_files"]
+    assert (report["deleted"], report["left_out"]) == (2, {"over the 100-file limit of a call": 1})
+
+
+async def test_a_directory_that_cannot_be_listed_says_so(
+    recording: Recording, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def unlisted(*args: Any, **kwargs: Any) -> Any:
+        raise WorkerAPIError(ErrorKind.UNAVAILABLE, "the executor went away")
+
+    monkeypatch.setattr(recording.toolbox.client, "list_files", unlisted)
+    outcome = await recording.shell("echo a > a.txt")
+    assert outcome.record["recorded_files"]["left_out"] == {"its directory could not be listed": 1}
+
+
+async def test_files_recorded_before_a_failure_stay(
+    recording: Recording, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await recording.shell("echo a > old.txt")
+
+    async def broken(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("the store went away")
+
+    monkeypatch.setattr(recording.toolbox.artifacts, "record_deletion", broken)
+    outcome = await recording.shell("echo b > new.txt && rm old.txt")
+    report = outcome.record["recorded_files"]
+    assert report["recorded"] == 1
+    assert "RuntimeError" in report["failed"]
+    assert [f["path"] for f in recording.recorder.files] == ["old.txt", "new.txt"]

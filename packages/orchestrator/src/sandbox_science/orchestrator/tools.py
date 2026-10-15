@@ -376,6 +376,7 @@ class Toolbox:
         plans: PlanTools | None = None,
         ledger: LedgerTool | None = None,
         check_kernels: bool = False,
+        sweep_left_kernels: bool = False,
         connectors: Connectors | None = None,
         recorder: FileRecorder | None = None,
         kernel_run: str | None = None,
@@ -391,6 +392,9 @@ class Toolbox:
         self.artifacts = artifacts
         self.plans = plans
         self.check_kernels = check_kernels
+        self.sweep_left_kernels = sweep_left_kernels
+        """The kernel check also closes the run kernels the session's earlier runs left
+        (PD-40), at its first observation of a connected executor."""
         self.recorder = recorder
         """Records the files calls write as artifact revisions (RA-27); ``None`` without
         an artifact inventory."""
@@ -545,10 +549,14 @@ class Toolbox:
         if self.recorder is not None and outcome.written is not None:
             try:
                 recorded = await self.recorder.record(
-                    outcome.written, tool_call=call.id, model=model
+                    outcome.written,
+                    tool_call=call.id or operation,
+                    model=model,
+                    operation=operation,
                 )
-            except Exception:  # recording never costs the call its result
+            except Exception as error:  # recording never costs the call its result
                 _log.exception("recording the files of the %s call failed", call.name)
+                outcome.record["recorded_files"] = {"failed": type(error).__name__}
             else:
                 report = recorded.summary()
                 if report is not None:
@@ -583,7 +591,11 @@ class Toolbox:
         if self.math_checks is not None:
             hooks.append(MathChecks(self.math_checks))
         if self.check_kernels:
-            hooks.append(KernelCheck(self.client, self.context, run=self.kernel_run))
+            hooks.append(
+                KernelCheck(
+                    self.client, self.context, run=self.kernel_run, sweep=self.sweep_left_kernels
+                )
+            )
         if self.recorder is not None:
             hooks.append(RecordedFiles(self.recorder))
         return tuple(hooks)
@@ -677,16 +689,18 @@ class Toolbox:
         if stdout is None or (execution.state is not ExecutionState.SUCCEEDED and not helper_error):
             return ToolOutcome(self._summary(execution, replayed=replayed), record, written=written)
         if stdout.truncated:
-            return _failure(
+            outcome = _failure(
                 ErrorKind.INVALID_REQUEST,
                 "the result was larger than the output limit; ask for fewer pages",
             )
+            outcome.written = written
+            return outcome
         try:
             document: object = json.loads(stdout.text)
         except (ValueError, RecursionError):
-            return ToolOutcome(self._summary(execution, replayed=replayed), record)
+            document = None
         if not isinstance(document, dict):
-            return ToolOutcome(self._summary(execution, replayed=replayed), record)
+            return ToolOutcome(self._summary(execution, replayed=replayed), record, written=written)
         parsed = cast(dict[str, Any], document)
         error = parsed.get("error")
         if isinstance(error, dict):
@@ -695,9 +709,11 @@ class Toolbox:
                 kind_of = ErrorKind(str(failure.get("kind")))
             except ValueError:
                 kind_of = ErrorKind.INTERNAL
-            return _failure(kind_of, str(failure.get("message", "the PDF helper failed")))
+            outcome = _failure(kind_of, str(failure.get("message", "the PDF helper failed")))
+            outcome.written = written
+            return outcome
         record["pdf"] = parsed
-        return ToolOutcome(self._bound(format_pdf(kind, parsed)), record)
+        return ToolOutcome(self._bound(format_pdf(kind, parsed)), record, written=written)
 
     async def _python(self, args: dict[str, Any], operation: str) -> ToolOutcome:
         return await self._cell("python", args, operation)
