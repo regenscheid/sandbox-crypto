@@ -16,6 +16,7 @@ Decision of the owner:
 Decision of the owner on the model budget: "I would expect budget to mostly be enforced upstream by LiteLLM", and "doing it as cost instead of tokens seems better, too."
 
 - **The gateway's budget** ([run service](../docs/specs/run-service.md), RS-6d). A call LiteLLM refuses because the key's, user's or team's budget is spent is not tried again, even as a 429: the run stops, `gateway_budget`, and the session's messages wait. Cost recording and an optional cost limit per project, in place of the default token budget, follow in their own changes.
+- **No reservations for delegated runs** ([plans and delegation](../docs/specs/plans-and-delegation.md), PD-38). The run tree's token reservations from the root's share of the budget are retired: a `delegate` reserves nothing, and each child keeps its project's check tokens and turns as a bound on a runaway run.
 
 Decisions of the coordinator on the review of delegation's checks in the gate (#355), which the owner can reverse:
 

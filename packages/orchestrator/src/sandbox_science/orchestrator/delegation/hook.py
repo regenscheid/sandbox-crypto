@@ -58,7 +58,6 @@ from sandbox_science.orchestrator.notices import (
 from sandbox_science.orchestrator.projects import RunRecord, run_name
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, dump
 
-from .budget import FLOOR, MIN_CHILD, TreeBudget
 from .models import Choice, ModelChoice
 from .outcome import Target, proof_reads
 from .prompt import brief_text, check_task, evidence_line
@@ -90,8 +89,6 @@ class Child:
     """The tokens its calls may use."""
     target: Target
     """The entry and revision it checks, which its result must name."""
-    tree: TreeBudget | None = None
-    """The root's share of the model budget, which the child's calls spend (PD-38)."""
     alias: str | None = None
     """The model alias it calls (PD-28, PD-30); ``None`` for the delegated role's."""
 
@@ -114,8 +111,6 @@ class ChildEnd:
     """Whether it read the entry it checks at that revision."""
     read_proofs: bool | None = None
     """Whether it read the target of each of the entry's proofs at its pinned revision."""
-    used: int = 0
-    """The tokens its calls used, as the budget counts them."""
 
 
 class ChildRunner(Protocol):
@@ -167,7 +162,6 @@ class Delegations(TurnHook):
         offer: bool,
         wake: Callable[[], Awaitable[None]] | None = None,
         over_budget: Callable[[], Awaitable[bool]] | None = None,
-        tree: TreeBudget | None = None,
         limits: DelegationSettings | None = None,
         models: ModelChoice | None = None,
         max_chars: int = 5000,
@@ -176,13 +170,12 @@ class Delegations(TurnHook):
     ) -> None:
         """``offer`` says whether the run gets the tools; ``max_turns`` bounds a child's
         turns; ``wake`` returns once the user writes to the session, which ends a wait;
-        ``over_budget`` says whether the project spent its model budget, and ``tree`` is the
-        run's share of it, from which each child's tokens are reserved. Notices together
-        take at most ``max_chars``, and a wait's result at most ``output_chars``."""
+        ``over_budget`` says whether the project spent its model budget. Nothing is
+        reserved for a child: it is bounded by its own tokens and turns (PD-38). Notices
+        together take at most ``max_chars``, and a wait's result at most ``output_chars``."""
         self.records, self.ledger, self.context = records, ledger, context
         self.parent, self.runner, self.max_turns = parent, runner, max_turns
         self.wake, self.over_budget, self.clock = wake, over_budget, clock
-        self.tree = tree
         self.limits = limits or DelegationSettings()
         """The project's cap and a check's tokens and turns (PD-38)."""
         self.models = models
@@ -238,16 +231,6 @@ class Delegations(TurnHook):
         entry = await threaded(self.ledger.entry, project, brief.check.entry, brief.check.revision)
         delegation_id, run_id = new_id("dlg"), new_id("run")
         tokens = self.limits.check_tokens
-        if self.tree is not None:
-            reserved = await self.tree.reserve(delegation_id, tokens)
-            if reserved is None:
-                raise WorkerAPIError(
-                    ErrorKind.UNAVAILABLE,
-                    f"limit_reached: this run's share of the model budget leaves less than "
-                    f"{MIN_CHILD} tokens for a check after the {FLOOR} it keeps for itself; "
-                    "wait for a running check to end, or do the work yourself",
-                )
-            tokens = reserved
         started = self.clock.now().astimezone(UTC)
         check: dict[str, JsonValue] = {
             "entry": entry.entry_id,
@@ -276,12 +259,7 @@ class Delegations(TurnHook):
             brief=written,
             started_at=started,
         )
-        try:
-            await threaded(self.records.start, project, session, delegation)
-        except BaseException:
-            if self.tree is not None:
-                self.tree.ended(delegation_id, 0)
-            raise
+        await threaded(self.records.start, project, session, delegation)
         child = Child(
             delegation_id,
             run_id,
@@ -295,7 +273,6 @@ class Delegations(TurnHook):
                 brief.check.revision,
                 proof_reads(entry.evidence),
             ),
-            tree=self.tree,
             alias=None if choice is None else choice.alias,
         )
         stop = asyncio.Event()
@@ -328,10 +305,8 @@ class Delegations(TurnHook):
     async def _run(self, child: Child, stop: asyncio.Event) -> None:
         """Run a child to its end, then write its outcome, however it ended."""
         ending = Ending("failed", "error")
-        used: int | None = None
         try:
             end = await self.runner(child, stop)
-            used = end.used
             ending = Ending(
                 observed(end),
                 end.stopped,
@@ -351,9 +326,6 @@ class Delegations(TurnHook):
             ending = Ending("cancelled", "cancelled")
         except Exception:
             _log.exception("delegated run %s failed", child.run_id)
-        if self.tree is not None:
-            # What it did not use returns to the root.
-            self.tree.ended(child.delegation_id, used)
         await self._end(child.delegation_id, ending)
 
     async def _end(self, delegation_id: str, ending: Ending) -> None:
@@ -487,12 +459,8 @@ class Delegations(TurnHook):
             delegation_id = child.delegation.delegation_id
             if child.task in left:
                 _log.error("delegated run %s did not end after its cancel", child.run_id)
-                if self.tree is not None:
-                    self.tree.ended(delegation_id)  # it counts as what it used so far
                 await self._end(delegation_id, Ending("interrupted", "cancelled"))
             elif child.task.cancelled():  # cancelled before it started: it wrote nothing
-                if self.tree is not None:
-                    self.tree.ended(delegation_id, 0)
                 await self._end(delegation_id, Ending("cancelled", "cancelled"))
 
     async def notices(self, point: Point, run: RunView) -> Sequence[Notice]:
