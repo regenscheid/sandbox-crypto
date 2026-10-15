@@ -65,6 +65,16 @@ A chat message can also be the answer. While the run that holds the session (its
 - **The session closes** (`session close`): its open questions close `cancelled`, "the session was closed". A run still waiting reads that as its result.
 - **The run's own close failed**, as when the store was busy as it was cancelled: at each look, about once a second, the run service closes every open question whose run holds no lease `interrupted`, "the run that asked ended without closing it". A run whose lease expired keeps its questions until the service ends it, as above.
 
-## Not built yet
+## The chat panel
 
-The chat panel that shows open questions with their age and takes the answers.
+The session's chat panel (`ChatQuestion.svelte`, `src/lib/questions.ts`) reads the session's questions with each poll, every 1.5 s.
+
+- **Open questions** show above the message box, oldest first, each with:
+  - how long ago it was asked;
+  - the agent's text exactly, through `ApprovalText`, with a preview apart;
+  - its options, with every character a person may not see shown as its code point (`visible`): a button for each when one is chosen, or check boxes and "Answer with the N chosen" when several may be;
+  - "Let the agent decide" and "Cancel the question".
+- **The message box hint.** While the run that holds the session waits for an answer, the box says "Your message will answer:" and the start of the oldest such question, and how many are open when there are several. The button then reads "Send as the answer". The question's card says the user's own words go in the message box.
+- **Stale questions.** An open question whose run no longer holds the session says that an answer may not reach it.
+- **After an answer.** Once an answer is sent, the card says so until the next read closes it.
+- **Closed questions** show below their run's transcript, saying how they closed: the options picked, the user's own words (and whether a message gave them), the decision left to the agent, the user's cancel, or the reason no answer came.

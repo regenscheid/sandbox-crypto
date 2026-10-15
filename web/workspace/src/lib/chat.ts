@@ -11,6 +11,8 @@ import type {
   EventPage,
   MessageAnswer,
   MessageListing,
+  Question,
+  QuestionListing,
   Requested,
   RunEvent,
   RunLease,
@@ -101,12 +103,16 @@ export interface ChatView {
   environment: EnvironmentState | null;
   /** The runs shown, oldest first; the last is the current one (RS-16). */
   runs: WatchedRun[];
+  /** The session's latest questions to the user, open and closed, oldest first. */
+  questions: Question[];
 }
 
 /** What one poll needs from the server, for one session. */
 export interface ChatReads {
   messages(after: number, signal?: AbortSignal): Promise<MessageListing>;
   events(run: string, after: number, signal?: AbortSignal): Promise<EventPage>;
+  /** The session's questions to the user; without it, the view has none. */
+  questions?(signal?: AbortSignal): Promise<QuestionListing>;
 }
 
 /** The most runs the panel shows; earlier ones are in the session's run list. */
@@ -140,6 +146,7 @@ export class ChatFeed {
   #lease: RunLease | null = null;
   #service = false;
   #environment: EnvironmentState | null = null;
+  #questions: Question[] = [];
   /** Read held messages again: a resume, or a new message, queues them. */
   #recheck = false;
   #polls = 0;
@@ -168,6 +175,8 @@ export class ChatFeed {
       after = listing.messages.at(-1)!.number;
     }
     this.#environment = environment;
+    // Read whole each poll: a session keeps few, and any may close.
+    if (this.reads.questions) this.#questions = (await this.reads.questions(signal)).questions;
     this.#follow();
     for (const run of this.#runs.values()) {
       if (this.#finished.has(run.run)) continue;
@@ -248,6 +257,7 @@ export class ChatFeed {
       service: this.#service,
       environment: this.#environment,
       runs,
+      questions: [...this.#questions],
     };
   }
 }

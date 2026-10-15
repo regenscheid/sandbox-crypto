@@ -3,7 +3,10 @@
   Chat with the session's main agent (docs/specs/run-service.md): the messages written and
   their states, the run that holds the session with its events as they arrive, and the
   run service's state. All text is shown as text, or as Markdown for the user's and the
-  agent's own words, as the run view shows them.
+  agent's own words, as the run view shows them. The agent's questions to the user
+  (docs/QUESTIONS.md) show above the message box while open, and below their run once
+  closed; while the run that holds the session waits for an answer, a message answers its
+  oldest open question, and the box says so.
 -->
 <script lang="ts">
   import { untrack } from 'svelte';
@@ -22,7 +25,16 @@
   } from '../lib/chat';
   import { chatDrafts } from '../lib/drafts';
   import { initialPoll, Poller, type PollState } from '../lib/poller';
+  import {
+    answering,
+    hintText,
+    openQuestions,
+    questionsApi,
+    type AnswerBody,
+    type Question,
+  } from '../lib/questions';
   import { idle, submit } from '../lib/submit';
+  import ChatQuestion from './ChatQuestion.svelte';
   import ChatRun from './ChatRun.svelte';
   import ChatWaiting from './ChatWaiting.svelte';
   import ErrorMessage from './ErrorMessage.svelte';
@@ -48,6 +60,12 @@
   const held = $derived(waiting.some((message) => message.state === 'held'));
   const starting = $derived(chat ? startingText(chat, waiting) : null);
   const bytes = $derived(messageBytes(draft.text));
+  const open = $derived(chat ? openQuestions(chat.questions) : []);
+  /** The question a message answers now: the oldest open one of the run holding the session. */
+  const next = $derived(chat ? answering(chat.questions, chat.lease) : null);
+  const waitingOn = $derived(open.filter((question) => question.run === chat?.lease?.run).length);
+  // Read again with each poll, so the questions' ages move on.
+  const now = $derived(chat ? Date.now() : 0);
 
   $effect(() => {
     const project = projectId,
@@ -56,6 +74,7 @@
     const reading = new ChatFeed({
       messages: (after, signal) => chatApi.messages(project, session, after, signal),
       events: (run, after, signal) => chatApi.events(project, session, run, after, signal),
+      questions: (signal) => questionsApi.list(project, session, signal),
     });
     feed = reading;
     const poller = new Poller(
@@ -97,6 +116,14 @@
     if (await submit(asking, () => chatApi.resume(projectId, sessionId).then(() => undefined)))
       feed?.recheck();
   }
+  function closedOf(run: WatchedRun): Question[] {
+    return (chat?.questions ?? []).filter(
+      (question) => question.run === run.run && question.state !== 'open',
+    );
+  }
+  async function answer(question: Question, body: AnswerBody) {
+    await questionsApi.answer(projectId, sessionId, question.question_id, body);
+  }
   async function cancel(run: string) {
     await submit(asking, async () => {
       await chatApi.cancel(projectId, sessionId, run);
@@ -121,6 +148,9 @@
       <details>
         <summary>Run <code>{run.run}</code>: {runState(run)}</summary>
         <ChatRun {run} />
+        {#each closedOf(run) as question (question.question_id)}
+          <ChatQuestion {question} {now} answer={(body) => answer(question, body)} />
+        {/each}
       </details>
     {/each}
     {#if current}
@@ -132,13 +162,31 @@
           >{/if}
       </p>
       <ChatRun run={current} />
+      {#each closedOf(current) as question (question.question_id)}
+        <ChatQuestion {question} {now} answer={(body) => answer(question, body)} />
+      {/each}
       {#if thinking(current)}<p role="status">The agent is thinking…</p>{/if}
     {/if}
     <ChatWaiting messages={waiting} {starting} />
     {#if held}<button disabled={asking.busy} onclick={resume}>Resume held messages</button>{/if}
     {#if asking.error}<ErrorMessage error={asking.error} />{/if}
   {/if}
+  {#each open as question (question.question_id)}
+    <ChatQuestion
+      {question}
+      {now}
+      byMessage={!closed && next?.question_id === question.question_id}
+      answer={(body) => answer(question, body)}
+    />
+    {#if question.run !== chat?.lease?.run}<p class="muted">
+        Its run no longer holds the session: an answer may not reach it.
+      </p>{/if}
+  {/each}
   {#if !closed}
+    {#if next}<p role="status" class="hint">
+        Your message will answer: <q>{hintText(next.text)}</q>{#if waitingOn > 1}
+          (the oldest of the {waitingOn} open questions){/if}
+      </p>{/if}
     <label
       >Message to the main agent<textarea
         aria-label="Message to the main agent"
@@ -153,7 +201,7 @@
       </p>{/if}
     <button
       disabled={sending.busy || !draft.text.trim() || bytes > MAX_MESSAGE_BYTES}
-      onclick={send}>Send</button
+      onclick={send}>{next ? 'Send as the answer' : 'Send'}</button
     >
     {#if sending.error}<ErrorMessage error={sending.error} />{/if}
     {#if !persisted}<p role="alert">
@@ -175,5 +223,8 @@
   }
   label {
     display: block;
+  }
+  .hint {
+    font-weight: bold;
   }
 </style>
