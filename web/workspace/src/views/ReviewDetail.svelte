@@ -2,7 +2,8 @@
 <!-- The chosen review: what it concluded and covered, its pinned evidence and audit records.
      Context a ledger entry's evidence pins (CR-14 as amended for lab 40's B3) is marked as
      such, not reviewed material, and leads to its target where the workspace has a page; a
-     delegation's outcome read whole shows as the run tree shows a delegation. -->
+     delegation's outcome read whole shows as the run tree shows a delegation, and a window's
+     actions as a table for each run. -->
 <script lang="ts">
   import type { ReviewBrowser, ReviewPanel } from '../lib/reviewBrowser';
   import { visible } from '../lib/text';
@@ -17,9 +18,11 @@
     reviewLine,
     usageText,
   } from '../lib/reviewText';
+  import { actionsOf, actionsText } from '../lib/reviewActions';
   import { contextLinks, contextTarget, contextText, outcomeOf } from '../lib/reviewContext';
   import DelegationCard from './DelegationCard.svelte';
   import ErrorMessage from './ErrorMessage.svelte';
+  import ReviewActions from './ReviewActions.svelte';
   import PinnedEvidencePreview from './PinnedEvidencePreview.svelte';
   let {
     panel,
@@ -47,6 +50,12 @@
   const outcome = $derived(
     shownItem?.kind === 'delegation' && panel.text.next === null
       ? outcomeOf(browser.text.text())
+      : null,
+  );
+  /** A window's actions read whole, shown as a table for each run. */
+  const actions = $derived(
+    shownItem?.kind === 'actions' && panel.text.next === null
+      ? actionsOf(browser.text.text())
       : null,
   );
 </script>
@@ -82,6 +91,9 @@
           {contextTarget(item) ||
             visible(evidenceText(item))}{#each contextLinks(projectId, item) as link, index (index)}
             · <a href={link.href}>{link.text}</a>{/each}
+        {:else if actionsText(item)}
+          <span class="context">Derived from the window's tool records:</span>
+          {actionsText(item)}
         {:else}
           {visible(evidenceText(item))}
         {/if}
@@ -102,6 +114,10 @@
         {projectId}
         {sessionId}
         delegation={outcome}
+      />{:else if actions}<ReviewActions
+        {projectId}
+        {sessionId}
+        {actions}
       />{:else}<PinnedEvidencePreview
         text={browser.text.text()}
       />{/if}{#if panel.text.next !== null}<button onclick={() => browser.text.list.more()}
