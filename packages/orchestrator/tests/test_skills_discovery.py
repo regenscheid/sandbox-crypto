@@ -168,6 +168,28 @@ async def test_scoring_that_does_not_finish_sends_the_call_on_the_clock(
     assert found.records == [{"answered": "task", "scoring": "timed_out", "skills": []}]
 
 
+async def test_a_cancelled_wait_cancels_the_work() -> None:
+    """The run's cancellation during the wait ends the scoring work too: nothing goes on
+    after the run, as an embedding would."""
+    started, ended = asyncio.Event(), asyncio.Event()
+
+    async def work() -> list[Entry]:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            ended.set()
+        return []
+
+    found = SkillDiscovery(_tool(*_ENTRIES), None, clock=FakeClock())
+    waiting = asyncio.ensure_future(found._bounded(work()))
+    await asyncio.wait_for(started.wait(), 5)
+    waiting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiting
+    await asyncio.wait_for(ended.wait(), 5)
+
+
 async def test_a_notice_no_call_saw_does_not_count_as_shown() -> None:
     """A notice the run dropped, as at a closing with no room for it, leaves its skills
     to be shown again; one a model call saw does not."""

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT
 """Discovery: the skills that match what the user asked, shown before the model answers
 (docs/specs/skills.md, SK-35 to SK-37, SK-21).
 
@@ -121,17 +122,20 @@ class SkillDiscovery(TurnHook):
         return Notice(self.name, (notice,), SKILLS.text, payload)
 
     async def _bounded(self, work: Awaitable[T]) -> T:
-        """``work``'s result, or ``TimeoutError`` once ``wait`` seconds of the clock pass."""
+        """``work``'s result, or ``TimeoutError`` once ``wait`` seconds of the clock pass.
+        However the wait ends, by the clock or by the run's cancellation, ``work`` is
+        cancelled if it has not finished."""
         task = asyncio.ensure_future(work)
         timer = asyncio.ensure_future(self.clock.sleep(self.wait))
         try:
             await asyncio.wait((task, timer), return_when=asyncio.FIRST_COMPLETED)
+            if not task.done():
+                raise TimeoutError
+            return task.result()
         finally:
             timer.cancel()
-        if not task.done():
-            task.cancel()
-            raise TimeoutError
-        return task.result()
+            if not task.done():
+                task.cancel()
 
     def summary(self) -> object | None:
         """Each discovery: its notice, what it answered, the skills shown, and how scoring
