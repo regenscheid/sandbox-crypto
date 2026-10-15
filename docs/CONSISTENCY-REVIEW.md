@@ -105,6 +105,8 @@ ledger is not implemented and the gateway's hard spend cap remains the monetary 
 
 ## Findings, delivery and workspace
 
+A reviewer's statement, remedy, confirmation explanation, checked statements and summary, and the main agent's response explanation and response body, hold no character the user may not see, as it is or as a character reference (`check_agent_text`, threat model A3): the user decides on them, and agents read them again. The check runs when they are written, after their line ends become line feeds; a reviewer whose summary is refused is told why and writes it again, once. The user's own explanations are kept as written.
+
 Findings retain severity, category, Markdown/LaTeX prose, exact anchors, remedy, revision,
 reflags and append-only attributed transitions. Reflags can strengthen the current
 severity/prose/remedy while retaining the previous

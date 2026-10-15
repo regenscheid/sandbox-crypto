@@ -29,7 +29,7 @@ from pydantic import ConfigDict, Field, ValidationError, model_validator
 from sandbox_science.contracts.model import Contract
 from sandbox_science.orchestrator.control import EventLog, Receipts
 
-from .documents.agent_text import check_agent_text
+from .documents.agent_text import agent_text
 from .documents.errors import CONFLICT, INVALID_REQUEST, NOT_FOUND, POLICY_DENIED, DocumentError
 from .documents.models import Author
 
@@ -249,8 +249,7 @@ def _clean(value: str, what: str, limit: int) -> str:
     character the user may not see, as it is or as a character reference (threat model,
     A3; ``check_agent_text``): every agent role receives an accepted entry, so a hidden
     instruction in one would reach them all."""
-    check_agent_text(value, what)  # as sent: refused, never stripped
-    text = value.strip()
+    text = agent_text(value, what).strip()  # refused as sent, never stripped first
     if not 1 <= len(text) <= limit:
         raise DocumentError(INVALID_REQUEST, f"{what} is 1 to {limit} characters")
     return text

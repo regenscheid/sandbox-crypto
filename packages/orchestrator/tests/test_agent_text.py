@@ -15,6 +15,10 @@ from sandbox_science.orchestrator.documents.agent_text import (
     ALLOWED,
     CATEGORIES,
     DEFAULT_IGNORABLE,
+    EMOJI_BASES,
+    KEYCAPS,
+    agent_text,
+    agent_values,
     blank_run,
     check_agent_text,
     hidden_characters,
@@ -30,6 +34,8 @@ def test_the_set_is_the_browsers() -> None:
     assert FIXTURE["allowed"] == sorted(ord(char) for char in ALLOWED)
     assert FIXTURE["categories"] == sorted(CATEGORIES)
     assert FIXTURE["default_ignorable"] == [list(pair) for pair in DEFAULT_IGNORABLE]
+    assert FIXTURE["emoji_bases"] == [list(pair) for pair in EMOJI_BASES]
+    assert FIXTURE["keycaps"] == {"bases": sorted(map(ord, KEYCAPS)), "mark": 0x20E3}
     # The file is ASCII, so the repository holds none of these characters as written.
     (FIXTURES / "hidden.fixtures.json").read_bytes().decode("ascii")
 
@@ -94,3 +100,33 @@ def test_a_reference_with_leading_zeros_or_two_characters_is_refused() -> None:
         with pytest.raises(DocumentError) as refused:
             check_agent_text(text)
         assert f"holds {code} written as {text}" in refused.value.message
+
+
+def test_an_emoji_may_ask_for_its_colour_form() -> None:
+    """The coordinator, 2026-10-15: U+FE0F right after an emoji, or in a keycap, is text."""
+    selector = chr(0xFE0F)
+    check_agent_text(f"Careful {chr(0x26A0)}{selector}, done {chr(0x2714)}{selector}.")
+    check_agent_text(f"Step 1{selector}{chr(0x20E3)}")
+    for text, at in ((f"a{selector}", 2), (f"1{selector}", 2), (f"{selector}x", 1)):
+        with pytest.raises(DocumentError) as refused:
+            check_agent_text(text)
+        assert f"U+FE0F VARIATION SELECTOR-16 at character {at}" in refused.value.message
+
+
+@pytest.mark.parametrize("case", FIXTURE["line_ends"], ids=lambda case: case["name"])
+def test_an_agents_line_ends_become_line_feeds(case: dict[str, Any]) -> None:
+    assert agent_text(case["text"]) == case["kept"]
+    with pytest.raises(DocumentError):
+        check_agent_text(case["text"])  # what is kept holds none
+
+
+def test_every_text_of_a_value_is_kept_and_checked_by_its_place() -> None:
+    kept = agent_values({"goal\r\n": ("a\r\nb", 3, None), "steps": [{"title": "x\ry"}]}, "p")
+    assert kept == {"goal\n": ("a\nb", 3, None), "steps": [{"title": "x\ny"}]}
+    with pytest.raises(DocumentError) as refused:
+        agent_values({"steps": [{"title": "ok"}, {"note": "a" + chr(0x202E)}]}, "the plan")
+    assert refused.value.message.startswith("the plan.steps[1].note holds U+202E")
+    with pytest.raises(DocumentError) as key:
+        agent_values({"k" + chr(0x200B): 1}, "the plan")
+    assert key.value.message.startswith("a key of the plan holds U+200B")
+    assert chr(0x200B) not in key.value.message

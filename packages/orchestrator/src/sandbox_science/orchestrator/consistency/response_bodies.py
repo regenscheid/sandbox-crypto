@@ -37,7 +37,7 @@ from sandbox_science.orchestrator.documents.project_macros import (
     response_view,
 )
 
-from .store import RECEIPTS, digest, dump, identifier, text
+from .store import RECEIPTS, agent_text, digest, dump, identifier
 
 if TYPE_CHECKING:
     from .store import ReviewStore
@@ -329,7 +329,7 @@ class ResponseBodies:
                 POLICY_DENIED, "only this session MAIN may edit its response source"
             )
         if value.body:
-            text(value.body)
+            value = value.model_copy(update={"body": agent_text(value.body, "the response")})
         fingerprint = digest(
             dump(["response_edit", session, value.model_dump(mode="json"), author.role])
         )

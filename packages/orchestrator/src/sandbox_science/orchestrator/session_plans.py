@@ -16,7 +16,7 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Annotated, Literal, Self, TypeVar
+from typing import Annotated, Literal, Self, TypeVar, cast
 
 from pydantic import (
     AwareDatetime,
@@ -30,6 +30,7 @@ from pydantic import (
 
 from sandbox_science.contracts import Contract, Identifier, new_id
 
+from .documents.agent_text import agent_text, agent_values, check_agent_text
 from .documents.errors import (
     CONFLICT,
     INTERNAL,
@@ -85,6 +86,20 @@ class PlanScope(PlanModel):
 class PlanRef(PlanModel):
     plan_id: Identifier
     version: Positive
+
+
+def _agent_fields(value: object, where: str) -> None:
+    """Refuse a plan change an agent makes whose text holds a character the user may not
+    see (threat model, A3): the user reads, edits and saves what an agent planned, and the
+    plan's text reaches agents again. Each field is named by its place."""
+    if isinstance(value, str):
+        check_agent_text(value, where)
+    elif isinstance(value, dict):
+        for key, item in cast(dict[str, object], value).items():
+            _agent_fields(item, f"{where}.{key}")
+    elif isinstance(value, list | tuple):
+        for index, item in enumerate(cast(list[object], value)):
+            _agent_fields(item, f"{where}[{index}]")
 
 
 class PlanAuthority(PlanModel):
@@ -396,6 +411,22 @@ def _checked[M: PlanModel](model: type[M], value: M) -> M:
         return model.model_validate(value.model_dump(mode="python"), strict=True)
     except (ValidationError, ValueError, TypeError) as error:
         raise DocumentError(INVALID_REQUEST, "invalid plan input or authority") from error
+
+
+def _kept[M: PlanModel](authority: PlanAuthority, model: type[M], value: M, where: str) -> M:
+    """An agent's plan text as it is kept: each line end a line feed, and checked for
+    characters the user may not see (threat model, A3); the user's as written."""
+    if authority.role == "user":
+        return value
+    kept = agent_values(value.model_dump(mode="python"), where)
+    try:
+        return model.model_validate(kept, strict=True)
+    except (ValidationError, ValueError, TypeError) as error:
+        raise DocumentError(INVALID_REQUEST, "invalid plan input or authority") from error
+
+
+def _kept_text(authority: PlanAuthority, value: str, where: str) -> str:
+    return value if authority.role == "user" else agent_text(value, where)
 
 
 def _json(value: object, limit: int = MAX_RECORD) -> str:
@@ -777,6 +808,8 @@ class SessionPlans:
     ) -> tuple[str, str, PlanReceipt | None]:
         # Canonical JSON tuples prevent user/run/operation delimiter ambiguity.
         operation = _checked_operation(operation)
+        if authority.role != "user":
+            _agent_fields(payload, "the plan")
         identifier = _digest([*authority.namespace, operation])
         digest = _digest(
             {"authority": authority.model_dump(mode="json"), "action": action, "request": payload}
@@ -898,10 +931,10 @@ class SessionPlans:
         """Create a new current plan after an explicit terminal predecessor, or first plan."""
         authority = _checked(PlanAuthority, authority)
         self._main(authority)
-        body = _checked(PlanBody, body)
+        body = _kept(authority, PlanBody, _checked(PlanBody, body), "the plan.body")
         _json(body, MAX_BODY)
         expected_current = _checked(PlanRef, expected_current) if expected_current else None
-        reason = _text(reason)
+        reason = _kept_text(authority, _text(reason), "the plan.reason")
         payload = {
             "body": body.model_dump(mode="json"),
             "reason": reason,
@@ -971,9 +1004,9 @@ class SessionPlans:
         authority = _checked(PlanAuthority, authority)
         self._main(authority)
         base = _checked(PlanRef, base)
-        body = _checked(PlanBody, body)
+        body = _kept(authority, PlanBody, _checked(PlanBody, body), "the plan.body")
         _json(body, MAX_BODY)
-        reason = _text(reason)
+        reason = _kept_text(authority, _text(reason), "the plan.reason")
         payload = {
             "base": base.model_dump(mode="json"),
             "body": body.model_dump(mode="json"),
@@ -1029,6 +1062,7 @@ class SessionPlans:
         """Append a current-version step assertion with a per-step optimistic cursor."""
         authority = _checked(PlanAuthority, authority)
         base = _checked(PlanRef, base)
+        note = _kept_text(authority, _text(note), "the plan.note")
         request = PlanProgress(
             scope=authority.scope,
             ref=base,
@@ -1036,7 +1070,7 @@ class SessionPlans:
             step_id=step_id,
             step_sha256="0" * 64,
             status=status,
-            note=_text(note),
+            note=note,
             evidence=evidence,
             author=authority,
             recorded_at=datetime.now(UTC),
@@ -1110,6 +1144,9 @@ class SessionPlans:
         base = _checked(PlanRef, base)
         status_revision = _counter(expected_status_revision)
         cursor = _counter(expected_progress_cursor)
+        reason = _kept_text(authority, _text(reason), "the plan.reason")
+        if outcome is not None:
+            outcome = _kept(authority, GoalOutcome, outcome, "the plan.outcome")
         change = PlanStatusChange(
             scope=authority.scope,
             ref=base,
@@ -1117,7 +1154,7 @@ class SessionPlans:
             progress_cursor=cursor,
             status=status,
             outcome=outcome,
-            reason=_text(reason),
+            reason=reason,
             author=authority,
             recorded_at=datetime.now(UTC),
         )

@@ -40,6 +40,7 @@ from sandbox_science.orchestrator.control import (
     Receipts,
 )
 
+from .agent_text import agent_text, check_agent_text
 from .blocks import BYTE_ORDER_MARK, Budget, check_text, normalize_newlines, parse
 from .checks import warnings
 from .engine import (
@@ -261,12 +262,17 @@ def _patch(row: Sequence[Any]) -> PatchInfo:
     )
 
 
-def _reason(reason: str) -> str:
+def _reason(reason: str, author: Author) -> str:
+    """A change's reason on one line. An agent's holds no character the user may not see
+    (threat model, A3): the history shows it beside the change, and a suggestion's beside
+    Apply."""
     text = _SPACE.sub(" ", reason).strip()
     if not text:
         raise DocumentError(INVALID_REQUEST, "give a short reason for the change")
     if len(text) > MAX_REASON:
         raise DocumentError(INVALID_REQUEST, f"the reason is longer than {MAX_REASON} characters")
+    if author.kind != "user":
+        check_agent_text(text, "the reason")
     return text
 
 
@@ -279,6 +285,22 @@ def _name(name: str) -> str:
             "starting with a letter or digit",
         )
     return stem
+
+
+def _agent_operations(operations: list[Operation]) -> list[Operation]:
+    """An agent's patch as it is kept: its new text with line feeds for line ends, and
+    refused when it holds a character the user may not see, as it is or as a character
+    reference (threat model, A3); the text it leaves alone, the user's included, is not
+    its to answer for."""
+    kept: list[Operation] = []
+    for number, operation in enumerate(operations, 1):
+        texts = {
+            name: agent_text(value, f"operation {number}'s text")
+            for name in ("markdown", "tex", "with_")
+            if isinstance(value := getattr(operation, name, None), str)
+        }
+        kept.append(operation.model_copy(update=texts))
+    return kept
 
 
 def _operations(raw: object) -> list[Operation]:
@@ -580,7 +602,11 @@ class DocumentStore:
             raise DocumentError(INVALID_REQUEST, f"a title has 1 to {MAX_TITLE} characters")
         text = normalize_newlines(text).removeprefix(BYTE_ORDER_MARK)
         check_text(text)
-        why = _reason(reason)
+        if author.kind == "agent":
+            # What an agent writes, the user reads before adopting it (threat model, A3).
+            check_agent_text(title, "the title")
+            check_agent_text(text, "the document's text")
+        why = _reason(reason, author)
         request = {"create": stem, "title": title, "session": session_id, "text": text}
         # Parsed before the write lock is taken, so other changes do not wait for it.
         made = _attempt(lambda: normalize(parse(text)))
@@ -685,7 +711,7 @@ class DocumentStore:
             raise DocumentError(POLICY_DENIED, "delegated authors change documents with patches")
         text = normalize_newlines(text).removeprefix(BYTE_ORDER_MARK)
         check_text(text)
-        why = _reason(reason)
+        why = _reason(reason, author)
         request = {"save": reference, "base": base, "text": text}
         # Parsed, and its IDs carried from the current revision, before the write lock is
         # taken; under it, they are used if the document is still as it was.
@@ -757,8 +783,10 @@ class DocumentStore:
                 "operation_id is up to 128 letters, digits, '.', '_', ':' and '-'",
             )
         parsed = _operations(operations)
+        if author.kind != "user":
+            parsed = _agent_operations(parsed)
         raw = [operation.model_dump(mode="json", by_alias=True) for operation in parsed]
-        why = _reason(reason)
+        why = _reason(reason, author)
         request = {"patch": reference, "base": base, "operations": raw, "reason": why}
         submission = _Submission(new_id("patch"), base, parsed, raw, why, author)
         # Checked before the write lock is taken, so other changes do not wait for it.
@@ -852,7 +880,7 @@ class DocumentStore:
                     }
                 ]
             )
-        why = _reason(reason)
+        why = _reason(reason, author)
         raw = [op.model_dump(mode="json", by_alias=True) for op in operations]
         submission = _Submission(new_id("patch"), base, operations, raw, why, author)
         budget.charge(len(text))
@@ -896,7 +924,7 @@ class DocumentStore:
         """Move a workbook document to project scope, keeping its identity and history."""
         self._user(author)
         self._operation_id(operation_id)
-        stem, why = _name(name), _reason(reason)
+        stem, why = _name(name), _reason(reason, author)
         request = {"promote": reference, "base": base, "name": stem, "reason": why}
         with self.control.write() as tx:
             db = tx.sql
@@ -964,7 +992,7 @@ class DocumentStore:
         """Append a user revision restoring the target's text and block/math IDs."""
         self._user(author)
         self._operation_id(operation_id)
-        why = _reason(reason)
+        why = _reason(reason, author)
         request = {"revert": reference, "base": base, "target": target, "reason": why}
         revision = self.revision(project_id, reference, target)
         if revision.info.tombstone:
@@ -1060,7 +1088,7 @@ class DocumentStore:
         """Deliberately apply reviewed operations, guarded by the preview's exact head."""
         self._user(author)
         self._operation_id(operation_id)
-        why = _reason(reason)
+        why = _reason(reason, author)
         request = {"apply_patch": reference, "patch": patch_id, "base": base, "reason": why}
         prepared = None
         try:
@@ -1399,7 +1427,7 @@ class DocumentStore:
             raise DocumentError(
                 POLICY_DENIED, "only the user or an owning session agent may delete"
             )
-        why = _reason(reason)
+        why = _reason(reason, author)
         request = {"delete": reference}
         with self.control.write() as tx:
             db = tx.sql

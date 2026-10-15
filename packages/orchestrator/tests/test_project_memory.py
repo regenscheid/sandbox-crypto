@@ -298,7 +298,8 @@ def test_an_agent_receives_whole_entries_up_to_the_bound(memory: ProjectMemory) 
         ("a\u061cb", "U+061C"),
         ("a\u0085b", "U+0085"),
         ("a\u2028b", "U+2028"),
-        ("\u2764\ufe0f", "U+FE0F"),
+        ("\u2764\ufe0e", "U+FE0E"),  # U+FE0F after an emoji is text
+        ("a\ufe0f", "U+FE0F"),
         ("\U0001f468\u200d\U0001f469", "U+200D"),
         ("evil \u202egnp.exe", "U+202E"),
         ("evil &#x202E;gnp.exe", "U+202E written as &#x202E;"),
