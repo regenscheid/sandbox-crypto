@@ -14,6 +14,7 @@
   import { frontierHref, ledgerHref, projectHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
   import Category from './FrontierCategory.svelte';
+  import CategoryForm from './FrontierCategoryForm.svelte';
   import Group from './FrontierGroup.svelte';
   import History from './FrontierHistory.svelte';
   import Link from './FrontierLink.svelte';
@@ -50,6 +51,8 @@
 
   /** What the user's last change did, in words. */
   let notice = $state<string | null>(null);
+  /** Whether the user's revision of the category is open. */
+  let revising = $state(false);
   /** Counts the user's changes on the page, so the history reads its first page again. */
   let changes = $state(0);
 
@@ -78,6 +81,22 @@
 
 {#if read}
   <Category category={read.category} revised={read.agent_revised} lookalike={read.lookalike} />
+  {#if revising}
+    <CategoryForm
+      {projectId}
+      current={read.category}
+      done={async (saved) => {
+        revising = false;
+        await done(
+          `Your revision r${saved.revision} of ${saved.category} is saved` +
+            (saved.replayed ? ' (already: the server replayed its answer).' : '.'),
+        );
+      }}
+      oncancel={() => (revising = false)}
+    />
+  {:else}
+    <p><button type="button" onclick={() => (revising = true)}>Revise this category…</button></p>
+  {/if}
   {#if read.truncated || before !== null}
     <p class="muted">{windowText(before, read.truncated)}</p>
   {/if}

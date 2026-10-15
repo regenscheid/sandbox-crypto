@@ -8,8 +8,10 @@
  */
 import type {
   ArtifactListing,
+  Category,
   FrontierAnswer,
   FrontierCategories,
+  FrontierCategory,
   FrontierHistoryAnswer,
   FrontierPastAnswer,
   LedgerEntry,
@@ -31,6 +33,7 @@ import type {
 import type { ArtifactFilter, ArtifactGroup, FileSettings } from './artifactFiles';
 import { artifactQuery, NO_FILTER } from './artifactFiles';
 import type { ServerBlock } from './attach';
+import type { CategoryBody } from './frontierForm';
 import { ApiError, get, post } from './http';
 import { signOut } from './session';
 
@@ -597,6 +600,12 @@ export const api = {
       `/projects/${part(project)}/frontier/${part(category)}` + (query ? `?${query}` : ''),
     );
   },
+  /** A category at its current revision. */
+  frontierDefinition: (project: string, category: string) =>
+    get<FrontierCategory>(`/projects/${part(project)}/frontier/${part(category)}/definition`),
+  /** The user's definition of a category, or its revision at `expected`, the revision read. */
+  defineCategory: (project: string, body: CategoryBody & { operation_id: string }) =>
+    post<Category>(`/projects/${part(project)}/frontier`, body),
   /** A category's changes to its best known results, newest first, before change `before`. */
   frontierHistory: (project: string, category: string, before: number | null = null) =>
     get<FrontierHistoryAnswer>(
