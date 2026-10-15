@@ -92,7 +92,8 @@ class ArtifactPublisher:
     ) -> tuple[tuple[ArtifactRevision, ...], int | None, set[str]]:
         """The project's artifacts at their latest revision, ten at a time, the most
         recently changed first, the next page's cursor, and which are results (RA-37).
-        ``path`` is one as this session's tools name it."""
+        ``path`` is one as this session's tools name it, or as the listing names it,
+        ``sessions/<session>/…``: an agent gives back the path it was shown (lab 39)."""
         project = self.context.project_id
         scoped = None if path is None else scoped_path(path, self.context.session_id)
 

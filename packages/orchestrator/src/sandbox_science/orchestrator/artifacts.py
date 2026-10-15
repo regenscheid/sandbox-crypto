@@ -763,8 +763,11 @@ class ArtifactInventory:
 
 def scoped_path(path: str, session: str) -> str:
     """The artifact path of a path as a session's tools name it: ``shared/…`` as it is,
-    any other in the session's own area."""
-    return _logical(_checked(path), session)
+    any other in the session's own area. A path in a session's area as the project's
+    listing names it, ``sessions/<session>/…``, is taken as it is: an agent gives back
+    the path ``find_artifacts`` showed it (lab 39)."""
+    checked = _checked(path)
+    return checked if checked.startswith("sessions/") else _logical(checked, session)
 
 
 def _checked(path: str) -> str:

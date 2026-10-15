@@ -358,7 +358,8 @@ time, the most recently changed first, from the same query as the GUI's list. Ea
 gives its path, artifact ID, revision, SHA-256, size, media type, when it was
 recorded, how (published, recorded from a call or declared), whether it is a result,
 and whether it was deleted or kept only its hash. It finds one by its path as the
-session's tools name it (`results/x.json`, or `shared/…`), by text in the path,
+session's tools name it (`results/x.json`, or `shared/…`) or as it lists it
+(`sessions/<session>/…`), by text in the path,
 by a media type or its start (`image/`), or results only, and pages with
 `before`. The answer fits the tool's output budget. The ledger's evidence
 description names it where it explains an artifact pin.
