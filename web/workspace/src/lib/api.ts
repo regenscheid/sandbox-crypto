@@ -19,6 +19,7 @@ import type {
   LedgerGate,
   LedgerHistory,
   LedgerListing,
+  LedgerWork,
   MemoryAnswer,
   MemoryChange,
   MemoryHistory,
@@ -541,6 +542,15 @@ export const api = {
   /** The gate for an entry as it reads now, each clause with why, and the decisions that affect it. */
   ledgerGate: (project: string, entry: string) =>
     get<LedgerGate>(`/projects/${part(project)}/ledger/${part(entry)}/gate`),
+  /** A page of the work records on an entry, newest first, before position `before`. */
+  ledgerWork: (project: string, entry: string, before: number | null = null, limit = 20) =>
+    get<LedgerWork>(
+      `/projects/${part(project)}/ledger/${part(entry)}/work?` +
+        new URLSearchParams({
+          limit: String(limit),
+          ...(before === null ? {} : { before: String(before) }),
+        }).toString(),
+    ),
   /** The consistency reviewer's checks of each quote an entry's revision holds, newest first. */
   ledgerCitations: (project: string, entry: string, revision: number) =>
     get<LedgerCitations>(

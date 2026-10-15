@@ -28,7 +28,7 @@
     /** Read the entry again, after the user's change to it. */
     changed?: () => Promise<void>;
   } = $props();
-  const fields = $derived(fieldRows(entry.fields, projectId));
+  const fields = $derived(fieldRows(entry.fields, projectId, entry.links));
 </script>
 
 <h1>{entry.handle}: {entry.title}</h1>

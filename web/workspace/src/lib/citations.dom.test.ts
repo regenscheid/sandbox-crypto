@@ -135,6 +135,13 @@ function server(shown: EntryView, read: LedgerCitations | number): string[] {
             )
           : reply(read);
       }
+      // The work records, read with a result: none here.
+      if (url.includes('/work?'))
+        return reply({
+          project_id: 'p1',
+          observed_at: 'now',
+          work: { entry_id: 'e', handle: 'X-1', records: [], next_before: null },
+        });
       if (url.endsWith('/gate')) {
         return reply({
           project_id: 'p1',

@@ -251,6 +251,15 @@ describe('the history', () => {
           state.entry = { ...state.entry, open_flags: 0, flags: [] };
           return new Response(JSON.stringify(answer({ cleared_total: 1 })));
         }
+        // The work records, read with a claim: none here.
+        if (url.includes('/work?'))
+          return new Response(
+            JSON.stringify({
+              project_id: 'p1',
+              observed_at: 'now',
+              work: { entry_id: 'e', handle: 'X-1', records: [], next_before: null },
+            }),
+          );
         if (url.endsWith('/gate')) {
           return new Response(
             JSON.stringify({

@@ -8,6 +8,7 @@
 import type { Author } from './api';
 import type { EntryLink, EntrySummary, EntryView } from './api-types';
 import { describeAuthor } from './authors';
+import { visible } from './text';
 import { PagedList, type ListState } from './pagedList';
 import {
   CATEGORY_NAME,
@@ -295,7 +296,11 @@ function valueText(value: unknown): string {
  * reference's citation), as rows of text. A field the view does not know yet is still
  * shown, under its own name.
  */
-export function fieldRows(fields: Record<string, unknown>, project: string): FieldRow[] {
+export function fieldRows(
+  fields: Record<string, unknown>,
+  project: string,
+  links: readonly EntryLink[] = [],
+): FieldRow[] {
   const known = Object.keys(FIELD_NAMES);
   const names = [
     ...known.filter((name) => name in fields),
@@ -303,18 +308,43 @@ export function fieldRows(fields: Record<string, unknown>, project: string): Fie
       .filter((name) => !known.includes(name))
       .sort(),
   ];
-  return names.map((name) => ({
-    key: name,
-    name: FIELD_NAMES[name] ?? statusText(name),
-    // A claim's kind is a word of the spec's, such as `negative_result`.
-    value: name === 'kind' ? statusText(valueText(fields[name])) : valueText(fields[name]),
-    href:
-      name === 'pdf'
-        ? pdfField(project, fields[name])
-        : name === 'category'
-          ? categoryField(project, fields[name])
-          : null,
-  }));
+  return names.map((name) => {
+    if (name === 'assessment') return assessmentField(project, fields[name], links);
+    return {
+      key: name,
+      name: FIELD_NAMES[name] ?? statusText(name),
+      // A claim's kind is a word of the spec's, such as `negative_result`. Every value is
+      // the author's text, each character a person may not see shown as its code point.
+      value: visible(
+        name === 'kind' ? statusText(valueText(fields[name])) : valueText(fields[name]),
+      ),
+      href:
+        name === 'pdf'
+          ? pdfField(project, fields[name])
+          : name === 'category'
+            ? categoryField(project, fields[name])
+            : null,
+    };
+  });
+}
+
+/**
+ * A decision's assessment (LG-7): the work record that accepted the obstruction it rests
+ * on, which is on the issue the decision affects; leading to that issue, whose work
+ * records list it.
+ */
+function assessmentField(project: string, value: unknown, links: readonly EntryLink[]): FieldRow {
+  const issue =
+    links
+      .map((link) => (link.kind === 'affects' && link.target === 'entry' ? link.handle : null))
+      .find((handle) => handle !== null && /^I-[1-9][0-9]{0,8}$/.test(handle)) ?? null;
+  const record = visible(valueText(value));
+  return {
+    key: 'assessment',
+    name: FIELD_NAMES.assessment!,
+    value: issue === null ? `work record ${record}` : `work record ${record}, on ${issue}`,
+    href: issue === null ? null : ledgerEntryHref(project, issue),
+  };
 }
 
 /**

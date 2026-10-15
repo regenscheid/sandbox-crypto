@@ -111,6 +111,13 @@ function server(state: { entry: EntryView; gate: GateView | null }) {
         state.gate = gate(true);
         return reply(answer);
       }
+      // The work records, read with a claim: none here.
+      if (url.includes('/work?'))
+        return reply({
+          project_id: 'p1',
+          observed_at: 'now',
+          work: { entry_id: 'e', handle: 'X-1', records: [], next_before: null },
+        });
       if (url.endsWith('/gate')) {
         return state.gate === null
           ? reply({ error: { kind: 'unavailable', message: 'the gate cannot be read now' } }, 503)
