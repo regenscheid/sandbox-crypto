@@ -23,6 +23,7 @@ It is not a place for results or evidence: those are artifacts, documents and, l
 - PM-7. **Which revision.** A run receives the revision current when it starts, and keeps it to its end; a suggestion accepted during a run reaches the next run. A delegated run receives the revision its root run started with, so the runs of one tree work from the same memory.
 - PM-8. **What is never given.** Pending and declined suggestions, comments, earlier revisions and the document's history are never part of a run's context. An agent reads them only with the document tools, as data (LD-23).
 - PM-9. **In the GUI.** The project page links to the memory and shows how many suggestions wait. The memory opens as a document, with each waiting suggestion's text, the run that proposed it and its reason, and the user accepts or declines each one there. Declining in the GUI is built with this.
+- PM-10. **No file in environments.** Unlike other documents (LD-3, LD-49), the memory is not written into any environment's `documents/` area, so no code in a sandbox can edit it as a file, and no direct edit (LD-50) can reach it. Runs receive its accepted text in their context (PM-5), and agents read it with `document_read`. A file a call writes at the memory's path, `documents/memory.md`, is an ordinary file of that environment, not the memory. *Rejected alternative:* syncing the file and turning edits of it into suggestions. A direct edit records the environment and possibly the execution, but not reliably which run or call made it (LD-10), so the user could not see who proposed the change; and any code in the sandbox, including a package or a downloaded script, could then queue suggestions for the user to review, which only agents' tool calls should do.
 
 ## A worked example
 
@@ -43,6 +44,11 @@ It is not a place for results or evidence: those are artifacts, documents and, l
 **PM-F1 Agents only suggest** (`scripted`; PM-2, PM-3)
 - *When* an agent patches the memory, and a request tries to turn its suggestion switch off or delete it.
 - *Then* the patch waits as a suggestion and the document is unchanged; the switch and the deletion are refused.
+
+**PM-F5 No file to edit** (`worker`; PM-10)
+- *Given* a project whose documents are synced into its environment (LD-49).
+- *When* a call lists `documents/` and then writes `documents/memory.md`.
+- *Then* the listing has no memory file; the written file changes no document and creates no suggestion; the memory is unchanged.
 
 **PM-F2 Accepted text reaches the next run** (`scripted`; PM-5, PM-7, PM-8)
 - *Given* a memory at revision 2 with one suggestion waiting.
