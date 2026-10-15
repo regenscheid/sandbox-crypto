@@ -1,6 +1,6 @@
 # Skills
 
-Built: importing skill packs from git or an archive, and pinning them in projects ([skills](specs/skills.md), SK-1 to SK-6, SK-32). Runs do not see skills yet: the index, the `skills` tool and discovery come next.
+Built: importing skill packs from git or an archive, and pinning them in projects ([skills](specs/skills.md), SK-1 to SK-6, SK-32), and the text of the built-in pack ([below](#the-built-in-pack), SK-40, SK-41). Runs do not see skills yet: the index, the `skills` tool, discovery, and the built-in pack's import and default pin come next.
 
 A skill is a directory with a `SKILL.md`: front matter with a `name` and a `description`, then a body. A pack is a set of skills, such as a repository's `skills/` directory. Each pack is imported under a source name, and a skill's qualified ID is `<source>/<name>`.
 
@@ -28,6 +28,16 @@ sandbox-science-harness skills list --state-dir STATE [--project P | --source cr
 ```
 
 A project pins one import of each source it uses: the source's latest, or the one whose commit, archive digest or snapshot starts with `--revision`, given by at least 12 hexadecimal digits; a prefix that names imports of different snapshots is refused. Pinning another import of the source moves the pin, and its revision counts the moves. A pin is refused when one of its skills has the name of a skill of another source the project pins; the refusal names the skills and the source (SK-4). `skills list` lists the imports, the latest first, or a source's, or a project's pins with their skills.
+
+## The built-in pack
+
+The platform's own skills are a pack in this repository, `skills/builtin/<name>/SKILL.md` (SK-40): `pdf-reading`, `literature-search`, `recording-results`, `computation`, `delegating-work`, `writing-documents` and `environment-setup`. They teach the platform's own tools and rules: reading and quoting PDFs, searching the literature through the connectors, recording and establishing results in the ledger, computing and keeping results as files, delegating checks and tasks, writing living documents, and installing software and reaching hosts. They are reference, not orders. The pack is versioned with the harness, and is imported and pinned like any pack, as the source `builtin`.
+
+To change a built-in skill, edit its `SKILL.md` in the pull request that changes the tool or rule it describes. A skill has standard front matter only: a `name` equal to its directory's name, and a `description` of one or two sentences on when to use it, at most 300 characters. Its body is short Markdown. Tool names go in inline code, such as `pdf_pages`; other identifiers, such as fields, values and paths, go in fenced code or plain text.
+
+`packages/orchestrator/tests/test_builtin_skills.py` guards the pack. It reads the pack with the import's own validator, which must accept every skill and leave out no file. It checks every inline-code span outside fenced code against the harness's tool table for the roles each skill is written for (SK-41), so a tool renamed or removed in the harness fails it, naming the skill, the identifier and the nearest tool name. A few other identifiers are allowed in inline code, each with the harness text that names it to the model. A new skill is added to the test's list of skills and their roles.
+
+The built-in skills are the project's own work, under the repository's MIT License. They are written anew for this platform: no text from Claude Science, Anthropic's skills or OpenScience's skills is copied or paraphrased (D56).
 
 ## Where it is kept
 
