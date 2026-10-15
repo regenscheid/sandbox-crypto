@@ -270,6 +270,8 @@ export const FIELD_NAMES: Record<string, string> = {
   version: 'Version',
   retrieved: 'Retrieved',
   pdf: 'PDF',
+  excluded_scope: 'Excluded scope',
+  assessment: 'Assessment',
 };
 
 function valueText(value: unknown): string {

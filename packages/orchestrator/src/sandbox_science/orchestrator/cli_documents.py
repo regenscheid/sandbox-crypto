@@ -326,7 +326,8 @@ def document(args: argparse.Namespace) -> int:
 def ledger(args: argparse.Namespace) -> int:
     """The user's ledger commands: ``check`` records that the user checked an entry at a
     revision, which the gate's independent check counts (LG-17), or a reference, which
-    vouches for the PDF the revision names (LG-16); ``clear`` clears open
+    vouches for the PDF the revision names (LG-16); ``assess`` accepts or rejects an
+    obstruction claimed on an issue (LG-7); ``clear`` clears open
     flags on an entry with a reason, and ``reopen`` opens cleared ones again (LG-29);
     ``drop`` drops a ``dominates`` link an entry holds, with a reason (LG-22)."""
     with contextlib.closing(ProjectStore(args.state_dir, readonly=True)) as projects:
@@ -343,6 +344,17 @@ def ledger(args: argparse.Namespace) -> int:
                 note=args.note,
             )
             if args.action == "check"
+            else Ledger(store).assess(
+                args.project,
+                args.entry,
+                args.claim,
+                args.verdict,
+                args.revision,
+                USER,
+                note=args.note,
+                operation_id=args.operation_id or new_id("assess"),
+            )
+            if args.action == "assess"
             else Ledger(store).clear_flags(
                 args.project,
                 args.entry,
@@ -513,6 +525,19 @@ def add_parsers(commands: Any) -> None:
     checked.add_argument("--revision", type=int, required=True, help="the revision you checked")
     checked.add_argument("--note", help="what you checked, as the check's scope")
     checked.add_argument("--operation-id", help="retry with the same ID (default: a new one)")
+    assessed = ledger_actions.add_parser(
+        "assess",
+        parents=[common],
+        help="accept or reject an obstruction claimed on an issue, at the revision you read (LG-7)",
+    )
+    assessed.add_argument("entry", help="the issue's handle (such as I-3) or ID")
+    assessed.add_argument("--claim", required=True, help="the claim's work record ID")
+    assessed.add_argument(
+        "--verdict", required=True, choices=("accepted", "rejected", "inconclusive")
+    )
+    assessed.add_argument("--revision", type=int, required=True, help="the revision you read")
+    assessed.add_argument("--note", required=True, help="what you read, and why")
+    assessed.add_argument("--operation-id", help="retry with the same ID (default: a new one)")
     clear = ledger_actions.add_parser(
         "clear", parents=[common], help="clear open flags on an entry, with the reason (LG-29)"
     )

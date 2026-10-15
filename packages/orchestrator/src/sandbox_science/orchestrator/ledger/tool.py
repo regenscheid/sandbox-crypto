@@ -173,7 +173,9 @@ _FIELDS = {
     "description": (
         "The type's own fields. A claim: kind. A result: kind, category, conditions "
         "(name: text) and measures (name: number or text). A reference: identifiers, "
-        "authors, published, version or retrieved, and pdf. Other types have none"
+        "authors, published, version or retrieved, and pdf. A decision that makes an "
+        "issue obstructed: excluded_scope and assessment (the user's accepting "
+        "assessment's work record). Other types have none"
     ),
     "properties": {
         "kind": {"type": "string", "enum": list(get_args(ClaimKind))},
@@ -189,6 +191,8 @@ _FIELDS = {
         "published": {"type": "string"},
         "version": {"type": "string"},
         "retrieved": {"type": "string"},
+        "excluded_scope": {"type": "string"},
+        "assessment": {"type": "string", "pattern": "^work-[0-9a-f]{24}$"},
         "pdf": {
             "type": "object",
             "properties": {

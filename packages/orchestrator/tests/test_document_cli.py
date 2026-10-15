@@ -224,6 +224,35 @@ def test_the_user_checks_a_reference(state: Path, capsys: pytest.CaptureFixture[
     assert json.loads(out)["entries"][0]["revision"] == 2
 
 
+def test_the_user_assesses_a_claimed_obstruction(
+    state: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``ledger assess``: the user accepts an obstruction claimed on an issue (LG-7)."""
+    from sandbox_science.orchestrator.ledger import Ledger
+
+    documents = DocumentStore(store_path(state))
+    ledger = Ledger(documents)
+    issue = {"type": "issue", "title": "Below 2^80?", "statement": "Is there one?"}
+    ledger.change("p1", {"operation_id": "made", "reason": "r", "changes": [issue]}, AGENT)
+    claim = ledger.change(
+        "p1",
+        {"operation_id": "claim", "reason": "r",
+         "work": [{"key": "t", "entry": "I-1", "tried": "Swept.", "ending": "limit",
+                   "limit": "time"},
+                  {"entry": "I-1", "tried": "No factor base.", "ending": "obstruction_claimed",
+                   "references": [{"work": "new:t"}]}]},
+        AGENT,
+    ).work[1]  # fmt: skip
+    documents.close()
+    where = ("--state-dir", str(state), "--project", "p1")
+    status, out, err = _run(
+        capsys, "ledger", "assess", *where, "I-1", "--claim", claim, "--verdict", "accepted",
+        "--revision", "1", "--note", "Read the argument.",
+    )  # fmt: skip
+    assert status == 0, err
+    assert len(json.loads(out)["work"]) == 1
+
+
 def test_the_user_drops_a_dominates_link(state: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """``ledger drop``: the user drops a dominates link an entry holds, with the reason."""
     from sandbox_science.orchestrator.documents import USER
