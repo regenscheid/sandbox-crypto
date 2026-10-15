@@ -67,6 +67,9 @@ class Pin:
     skills: tuple[str, ...]
     left_out: tuple[str, ...] = ()
     """For the built-in skills, those a pinned pack's skill of the same name replaces."""
+    changes: dict[str, Any] | None = None
+    """When a pin just moved: the revision it left, and the skills added, removed and
+    changed since (SK-28)."""
 
 
 @dataclass(frozen=True)
@@ -238,13 +241,18 @@ class SkillStore:
                         f"{', '.join(taken)} already defined by {other}, which the project pins",
                         {"source": other, "names": taken},
                     )
+            before = next(iter(_pins(db, project, source)), None)
             db.execute(
                 "INSERT INTO project_skill_pins VALUES(?,?,?,1,?,?) ON CONFLICT(project,source) "
                 "DO UPDATE SET import_id=excluded.import_id,revision=revision+1,"
                 "author=excluded.author,pinned=excluded.pinned WHERE import_id!=excluded.import_id",
                 (project, source, chosen.import_id, author.model_dump_json(), _now()),
             )
-            return _pins(db, project, source)[0]
+            pinned = _pins(db, project, source)[0]
+            if before is None or before.pinned.import_id == chosen.import_id:
+                return pinned
+            moved = _compare(db, before.pinned.snapshot, chosen.snapshot)
+            return replace(pinned, changes={"since": _revision(before.pinned), **moved})
 
     def effective(
         self,
@@ -270,7 +278,7 @@ class SkillStore:
             sources: list[str] = []
             for pin in _pins(db, project):
                 found = pin.pinned
-                revision = found.commit or found.archive_sha256 or found.ref or found.snapshot
+                revision = _revision(found)
                 sources.append(f"{pin.source}@{revision}")
                 for name, description, body in db.execute(
                     "SELECT name,description,body_sha256 FROM skill_skills WHERE snapshot=? "
@@ -526,18 +534,41 @@ def _keep(db: sqlite3.Connection, snapshot: Snapshot) -> None:
 def _changes(db: sqlite3.Connection, latest: Imported, snapshot: Snapshot) -> dict[str, list[str]]:
     """The skills added, removed and changed since ``latest``: a skill changed when any
     file in its directory did."""
-    before = _by_skill(
-        db.execute(
-            "SELECT path,blob,executable FROM skill_files WHERE snapshot=?", (latest.snapshot,)
-        ).fetchall()
+    after = [
+        (f.path, hashlib.sha256(f.content).hexdigest(), int(f.executable))
+        for f in snapshot.fetched.files
+    ]
+    return _changed(
+        _files(db, latest.snapshot),
+        after,
+        set(_names(db, latest.snapshot)),
+        {skill.name for skill in snapshot.skills},
     )
-    after = _by_skill(
-        [
-            (f.path, hashlib.sha256(f.content).hexdigest(), int(f.executable))
-            for f in snapshot.fetched.files
-        ]
-    )
-    old, new = set(_names(db, latest.snapshot)), {skill.name for skill in snapshot.skills}
+
+
+def _compare(db: sqlite3.Connection, old: str, new: str) -> dict[str, list[str]]:
+    """The skills added, removed and changed from the kept snapshot ``old`` to ``new``."""
+    names = set(_names(db, old)), set(_names(db, new))
+    return _changed(_files(db, old), _files(db, new), *names)
+
+
+def _files(db: sqlite3.Connection, snapshot: str) -> list[tuple[str, str, int]]:
+    rows = db.execute("SELECT path,blob,executable FROM skill_files WHERE snapshot=?", (snapshot,))
+    return [(row[0], row[1], row[2]) for row in rows.fetchall()]
+
+
+def _revision(found: Imported) -> str:
+    """How an import is named to the user: its commit, archive digest, ref or snapshot."""
+    return found.commit or found.archive_sha256 or found.ref or found.snapshot
+
+
+def _changed(
+    old_files: list[tuple[str, str, int]],
+    new_files: list[tuple[str, str, int]],
+    old: set[str],
+    new: set[str],
+) -> dict[str, list[str]]:
+    before, after = _by_skill(old_files), _by_skill(new_files)
     return {
         "added": sorted(new - old),
         "removed": sorted(old - new),

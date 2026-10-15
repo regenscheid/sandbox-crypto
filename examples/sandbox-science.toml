@@ -10,6 +10,8 @@ id = "crypto"
 profile = "minimal"
 # A session in the project's default environment, and one in an environment of its own.
 sessions = ["main", { id = "scratch", dedicated = true }]
+# The skill packs of [skills.packs] the project pins, besides the built-in skills.
+# skills = ["crypto"]
 
 [model]
 url = "https://litellm-api.npages.org/v1"
@@ -39,6 +41,18 @@ listen = "127.0.0.1:8200"
 # The PDF viewer's origin: another loopback address makes it another site.
 preview_listen = "127.0.0.2:8201"
 static = "../web/workspace/dist"
+
+# Skill packs (docs/SKILLS.md): uncomment, and name them in a project's skills. up imports
+# each once, on this computer with your git, and keeps the projects' pins; up
+# --update-skills or sandbox-science skills update fetches them again from their refs and
+# says what changed. embedding_model, the gateway's embedding alias if it has one, lets
+# runs find skills by meaning as well as words.
+# [skills]
+# embedding_model = "sandbox-embedding"
+#
+# [skills.packs.crypto]
+# git = "https://github.com/regenscheid/crypto-analysis-skills"
+# ref = "main"
 
 # The worker's [openshell] table (docs/WORKER.md), for the lab .agents/labs/lab_up.sh brings up.
 [openshell]

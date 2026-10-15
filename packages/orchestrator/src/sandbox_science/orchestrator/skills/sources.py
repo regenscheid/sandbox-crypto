@@ -236,7 +236,9 @@ def _git(repo: str, *args: str, data: bytes | None = None, limit: int | None = N
         raise ControlError(UNAVAILABLE, f"git {args[0]} took over {GIT_SECONDS:g} s") from None
     if done.returncode != 0:
         lines = done.stderr.decode(errors="replace").strip().splitlines()
-        said = lines[-1] if lines else f"stopped by signal {-done.returncode}"
+        # git's own reason, rather than the advice it may add after it.
+        fatal = [line for line in lines if line.startswith(("fatal:", "error:"))]
+        said = (fatal or lines or [f"stopped by signal {-done.returncode}"])[0 if fatal else -1]
         raise ControlError(NOT_FOUND, f"git {args[0]}: {said}"[:500])
     return done.stdout
 

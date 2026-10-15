@@ -2,22 +2,26 @@
 """Command line: a local Sandbox Science, up and down (docs/QUICKSTART.md).
 
 ```
-sandbox-science up [--config sandbox-science.toml]
+sandbox-science up [--config sandbox-science.toml] [--update-skills]
 sandbox-science down [--config sandbox-science.toml] [--keep-sandboxes]
 sandbox-science status [--config sandbox-science.toml]
+sandbox-science skills update [--config sandbox-science.toml] [--pack NAME ...]
 ```
 
 ``up`` checks the config, makes what the parts need in the state directory, and starts
 the worker, then grants the project policy, makes the projects and opens their
-sessions, then starts the run service and the workspace, each once the one before is
-ready. It prints the GUI's address and how to log in, and runs until Ctrl-C, SIGTERM,
-SIGHUP or SIGQUIT (or ``down``), when it stops the parts in reverse order, suspending
-the projects' research sandboxes before the worker (sandboxes.py). ``down
+sessions, imports and pins their skill packs (skills.py), then starts the run service
+and the workspace, each once the one before is ready. It prints the GUI's address and
+how to log in, and runs until Ctrl-C, SIGTERM, SIGHUP or SIGQUIT (or ``down``), when it
+stops the parts in reverse order, suspending the projects' research sandboxes before
+the worker (sandboxes.py). ``down
 --keep-sandboxes`` sends SIGUSR1 instead, which leaves them running. A part that stops
 by itself stops the rest, and leaves the sandboxes running. ``status`` exits 0 while an
 instance runs as it should, 3 when none runs, and 4 when something is wrong: a part
 stopped or silent, something left behind by a launcher that was killed, or research
-sandboxes running with the rest stopped.
+sandboxes running with the rest stopped. ``skills update`` imports the config's skill
+packs again from their refs and moves the projects' pins to them, saying what changed,
+whether an instance runs or not: runs started before it keep the skills they have.
 """
 
 from __future__ import annotations
@@ -35,7 +39,7 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import instance, mcp, parts, sandboxes
+from . import instance, mcp, parts, sandboxes, skills
 from .config import LauncherConfig, LauncherError, load_config
 from .instance import Record, RecordedPart
 from .state import Layout, check_private, write_private
@@ -57,6 +61,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ("up", "start everything, and stop it all on Ctrl-C"),
         ("down", "stop the instance running from the config's state directory"),
         ("status", "show what runs"),
+        ("skills", "fetch the skill packs again and move the projects' pins"),
     ):
         command = commands.add_parser(name, help=text)
         command.add_argument("--config", type=Path, default=Path("sandbox-science.toml"))
@@ -65,6 +70,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "--refresh-provider",
                 action="store_true",
                 help="register [mcp_proxy] provider_env_file's provider again, though it exists",
+            )
+            command.add_argument(
+                "--update-skills",
+                action="store_true",
+                help="fetch the skill packs again from their refs, and move the projects' pins",
+            )
+        if name == "skills":
+            command.add_argument("action", choices=("update",))
+            command.add_argument(
+                "--pack", action="append", default=[], help="only this pack of [skills.packs]"
             )
         if name == "down":
             command.add_argument(
@@ -77,9 +92,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         config = load_config(args.config)
         match args.command:
             case "up":
-                return up(config, args.config.absolute(), refresh=args.refresh_provider)
+                return up(
+                    config,
+                    args.config.absolute(),
+                    refresh=args.refresh_provider,
+                    update_skills=args.update_skills,
+                )
             case "down":
                 return down(config, args.config.absolute(), keep=args.keep_sandboxes)
+            case "skills":
+                return update_skills(config, args.pack)
             case _:
                 return status(config)
     except LauncherError as exc:
@@ -89,7 +111,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 130
 
 
-def up(config: LauncherConfig, path: Path, *, refresh: bool = False) -> int:
+def up(
+    config: LauncherConfig, path: Path, *, refresh: bool = False, update_skills: bool = False
+) -> int:
     parts.check(config)
     layout = Layout(config.state_dir)
     layout.make()
@@ -101,7 +125,9 @@ def up(config: LauncherConfig, path: Path, *, refresh: bool = False) -> int:
         for part in instance.stop_left_behind(earlier):
             print(f"stopped the {part.name} (process {part.pid}) an earlier launcher left running")
         parts.prepare(config)
-        return asyncio.run(_up(config, path, layout, record, refresh=refresh))
+        return asyncio.run(
+            _up(config, path, layout, record, refresh=refresh, update_skills=update_skills)
+        )
     finally:
         os.close(held)
 
@@ -148,6 +174,7 @@ async def _up(
     record: Callable[[list[Running]], None],
     *,
     refresh: bool = False,
+    update_skills: bool = False,
 ) -> int:
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
@@ -179,7 +206,9 @@ async def _up(
     )
     status = 0
     try:
-        await _start(config, layout, supervisor, outcome, hurry, refresh=refresh)
+        await _start(
+            config, layout, supervisor, outcome, hurry, refresh=refresh, update=update_skills
+        )
         _announce(config, path, layout)
         reason = await supervisor.watch()
         if reason is not None:
@@ -219,6 +248,7 @@ async def _start(
     hurry: asyncio.Event,
     *,
     refresh: bool = False,
+    update: bool = False,
 ) -> None:
     timeout = config.start_timeout
     if config.mcp_proxy is not None:
@@ -248,6 +278,8 @@ async def _start(
     existing = await _existing(config, layout, supervisor, timeout, harness_env)
     for argv in parts.project_argvs(config, layout, digest.group(), existing):
         await supervisor.run(" ".join(argv[1:3]), argv, layout.control, timeout, harness_env)
+    for line in await skills.keep(config, layout, supervisor, update=update):
+        print(line, flush=True)
     if config.mcp_proxy is not None:
         await mcp.start(config, layout, supervisor, parts.commands(config))
     print("starting the run service", flush=True)
@@ -319,6 +351,21 @@ def _announce(config: LauncherConfig, path: Path, layout: Layout) -> None:
         f"  Stop:     Ctrl-C, or sandbox-science down --config {path}\n",
         flush=True,
     )
+
+
+def update_skills(config: LauncherConfig, packs: Sequence[str]) -> int:
+    """Import the config's packs, or ``packs``, again, and move the projects' pins."""
+    layout = Layout(config.state_dir)
+    check_private(layout.root)  # before anything in it is read
+    if not config.skills.packs:
+        raise LauncherError("the config names no [skills.packs]")
+    if not layout.control.is_dir():
+        raise LauncherError("sandbox-science up makes the projects first")
+    supervisor = Supervisor(layout, asyncio.Event(), stop_timeout=config.stop_timeout)
+    lines = asyncio.run(skills.keep(config, layout, supervisor, update=True, only=packs))
+    for line in lines:
+        print(line)
+    return 0
 
 
 def down(config: LauncherConfig, path: Path, *, keep: bool) -> int:

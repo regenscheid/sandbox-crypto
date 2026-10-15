@@ -239,6 +239,8 @@ def harness_argv(config: LauncherConfig, layout: Layout) -> list[str]:
         watcher += ["--watcher-interval", f"{model.watcher_interval:g}"]
     delegated = ["--delegated-model", model.delegated] if model.delegated else []
     shared = [] if service.run_share is None else ["--run-share", str(service.run_share)]
+    if (embedding := config.skills.embedding_model) is not None:
+        shared += ["--skills-embedding-model", embedding]  # the skills' imports used it too
     math: list[str] = []
     if service.math_checks is not None:
         found = node(config)
