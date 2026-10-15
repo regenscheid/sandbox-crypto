@@ -30,6 +30,7 @@ from sandbox_science.orchestrator.ledger.models import (
     FlagCause,
     FlagID,
     GateView,
+    WorkPage,
 )
 from sandbox_science.orchestrator.projects import ProjectError
 
@@ -39,6 +40,7 @@ from .context import CONTEXT, identifier, json_answer, json_body
 PATH: Final = "/api/v0/projects/{project}/ledger"
 _ENTRY: Final = re.compile(r"entry-[0-9a-f]{24}|(?:I|C|R|A|D|T|REF)-[1-9][0-9]{0,8}")
 _NUMBER: Final = re.compile(r"[1-9][0-9]{0,8}")
+_POSITION: Final = re.compile(r"[1-9][0-9]{0,17}")
 _COUNT: Final = re.compile(r"0|[1-9][0-9]{0,8}")
 _WORD: Final = re.compile(r"[a-z_]{1,32}")
 
@@ -75,6 +77,14 @@ class LedgerCitations(Contract):
     citations: EntryCitations
 
 
+class LedgerWork(Contract):
+    """A page of the work records on a ledger entry, newest first (LG-6)."""
+
+    project_id: Identifier
+    observed_at: AwareDatetime
+    work: WorkPage
+
+
 class LedgerHistory(Contract):
     """A page of a ledger entry's revisions."""
 
@@ -88,6 +98,7 @@ def add_routes(app: web.Application) -> None:
     app.router.add_get(PATH + "/{entry}", entry)
     app.router.add_get(PATH + "/{entry}/history", history)
     app.router.add_get(PATH + "/{entry}/gate", gate_read)
+    app.router.add_get(PATH + "/{entry}/work", work_read)
     app.router.add_get(PATH + "/{entry}/citations", citations)
     app.router.add_post(PATH + "/{entry}/checks", check)
     app.router.add_post(PATH + "/{entry}/flags", clear)
@@ -202,6 +213,28 @@ async def citations(request: web.Request) -> web.Response:
         found = ledger.citations(project, reference, None if raw is None else int(raw))
         return LedgerCitations(
             project_id=project, observed_at=datetime.now(UTC), citations=found
+        ).model_dump_json()
+
+    return await read_answer(request, project, read)
+
+
+async def work_read(request: web.Request) -> web.Response:
+    """GET …/ledger/{entry}/work: the work records on an issue, claim or result, newest
+    first, as many as ``limit`` (1 to 100, 50 by default) before ``before`` (a record's
+    position), with ``next_before``; a read, which changes nothing."""
+    project, reference = identifier(request, "project"), _entry(request)
+    query = query_of(request, {"before", "limit"})
+    before = matched(_POSITION, query.get("before"), "before")
+    limit = int(matched(_NUMBER, query.get("limit", "50"), "limit") or 50)
+    if limit > 100:
+        raise ProjectError(ErrorKind.INVALID_REQUEST, "limit is 1 to 100")
+
+    def read(ledger: Ledger) -> str:
+        found = ledger.work(
+            project, reference, before=None if before is None else int(before), limit=limit
+        )
+        return LedgerWork(
+            project_id=project, observed_at=datetime.now(UTC), work=found
         ).model_dump_json()
 
     return await read_answer(request, project, read)
