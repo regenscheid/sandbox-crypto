@@ -439,6 +439,19 @@ describe('the transcript of a run', () => {
     expect(stoppedText({ stopped: 'plan_unread' })).toMatch(
       /^The run stopped without an answer: the session plan has open steps/,
     );
+    // Lab 41, B4: a connector server that could not be listed is unavailable, not missing.
+    const [started] = chatEntries([
+      event(1, 'started', {
+        run_id: 'r1',
+        connectors_unavailable: { papers: 'upstream_error: the server failed' },
+      }),
+    ]);
+    expect(started).toMatchObject({
+      text:
+        'Run r1 started. Connector servers unavailable, their listing failed: papers ' +
+        '(upstream_error: the server failed). The agent is told, and its first mcp_tools call ' +
+        'lists them again.',
+    });
     const [stopped] = chatEntries([event(1, 'stopped', { stopped: 'interrupted' })]);
     expect(stopped).toMatchObject({ problem: true });
   });

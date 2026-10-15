@@ -388,10 +388,18 @@ export function chatEntries(events: readonly RunEvent[]): ChatEntry[] {
   for (const { seq, kind, data } of events) {
     if (kind === 'started') {
       const answering = list(data['message_ids']).length;
+      // Lab 41, B4: a connector server whose listing failed is unavailable, not missing.
+      const unavailable = Object.entries(record(data['connectors_unavailable'])).map(
+        ([server, why]) => `${server} (${text(why)})`,
+      );
       entries.push({
         kind: 'started',
         seq,
-        text: `Run ${text(data['run_id'])} started${answering ? `, answering ${answering} ${answering === 1 ? 'message' : 'messages'}` : ''}.`,
+        text:
+          `Run ${text(data['run_id'])} started${answering ? `, answering ${answering} ${answering === 1 ? 'message' : 'messages'}` : ''}.` +
+          (unavailable.length
+            ? ` Connector servers unavailable, their listing failed: ${unavailable.join('; ')}. The agent is told, and its first mcp_tools call lists them again.`
+            : ''),
       });
     } else if (kind === 'user') entries.push({ kind: 'user', seq, text: text(data['text']) });
     else if (kind === 'assistant') {
