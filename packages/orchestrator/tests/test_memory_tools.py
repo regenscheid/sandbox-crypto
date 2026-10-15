@@ -263,7 +263,8 @@ async def test_main_and_delegated_runs_have_the_tools(tmp_path: Path) -> None:
     async def run(request: RunRequest) -> Finished:
         # As the run service does: the run holds the session's lease while it runs.
         admitted = await admit(worker, projects, request, Sink(), min_isolation_tier=None)
-        name = run_name(admitted.started_at, admitted.run_id)
+        # A delegated run's root holds the session for it.
+        name = request.parent or run_name(admitted.started_at, admitted.run_id)
         runs.acquire("p", "s", name, "test")
         try:
             return await harness.start(admitted, Sink())

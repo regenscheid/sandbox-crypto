@@ -4,6 +4,13 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 ## 2026-10-15
 
+Decisions of the coordinator on lane D's delegation plan, which the owner can reverse:
+
+- **Delegation is off by default, per project** (`project delegation --depth 1` turns it on). The first brief is a check of one ledger entry at one revision, the owner's first milestone after M2: its fresh-context report is to count as the `independent_check` (LG-17).
+- **A check by the same model, in a fresh context, counts as another agent** for LG-17, with the alias and model recorded in the outcome and the evidence.
+- **Children's limits.** A check gets 150,000 tokens and 12 turns, a general child 200,000 and 20, none more than 400,000, reserved from the parent's share of the budget. The project's daily budget stays a setting.
+- **The GUI shows each delegation's settings read-only** (plans-and-delegation question 7). Question 6 is decided when questions to the user are built; skills stay out of the brief until the skills spec is settled.
+
 Decision of the coordinator on lab 39's B6, which the owner can reverse:
 
 - **Copied numbers** ([consistency review spec](../docs/specs/consistency-review.md), CR-39). Before the model reviews a snapshot, the platform compares each number of 10 or more digits its ledger entries and document blocks state with the numbers its artifacts hold; one that nearly matches but does not becomes a `fail` finding of the review, with both values. It needs no model.

@@ -353,13 +353,16 @@ def unanswered(hooks: Sequence[TurnHook]) -> set[str]:
 def earlier_conversation(
     projects: ProjectStore, runs: RunState, project: str, session: str, budget: int
 ) -> list[Message]:
-    """The session's earlier runs as conversation (RS-10): each one's task and the
+    """The session's earlier main runs as conversation (RS-10): each one's task and the
     user's messages it delivered, then its answer, oldest first. A run that delivered
-    nothing is left out. The newest that fit in ``budget`` characters are kept, and a
-    line says how many were left out."""
+    nothing is left out, and so are delegated runs, whose outcomes reached their parents.
+    The newest that fit in ``budget`` characters are kept, and a line says how many were
+    left out."""
     turns: list[list[Message]] = []
     used = left_out = 0
     for entry in reversed(projects.runs(project, session)):
+        if entry.role != "main":
+            continue
         if left_out:
             left_out += 1
             continue

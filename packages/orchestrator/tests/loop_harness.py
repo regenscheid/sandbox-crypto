@@ -56,6 +56,8 @@ API_KEY = "test-secret-loop-characterization-gateway"
 POLICY = "sha256:" + "c" * 64
 PROJECT, SESSION = "p", "s"
 TASK = "Characterize the loop."
+DELEGATED = "You are a delegated research agent."
+"""How a delegated run's system prompt begins, which tells its calls apart."""
 PRIOR = Author(kind="agent", session_id=SESSION, run_id="prior", role="main", model="scripted")
 USER_PLANS = PlanAuthority(
     scope=PlanScope(project_id=PROJECT, session_id=SESSION), role="user", user_id="u"
@@ -253,6 +255,8 @@ class Reply:
     text: str | None = None
     calls: Sequence[tuple[str, Json]] = ()
     before: Callable[[], Awaitable[object]] | None = None
+    calls_from: Callable[[list[Message]], Sequence[tuple[str, Json]]] | None = None
+    """Makes the calls from what the model saw, for arguments only the run knows."""
     status: int = 200
     error: str = "synthetic gateway failure"
     """The body of an answer that is not a 200."""
@@ -265,10 +269,12 @@ def call(name: str, /, **arguments: Any) -> tuple[str, Json]:
 
 @dataclass
 class Gateway:
-    """Answers the main alias from ``script`` and the reviewer alias from ``reviewer``."""
+    """Answers the main alias from ``script``, delegated runs (on the main alias) from
+    ``delegated``, and the reviewer alias from ``reviewer``."""
 
     url: str = ""
     script: list[Reply] = field(default_factory=list[Reply])
+    delegated: list[Reply] = field(default_factory=list[Reply])
     reviewer: Callable[[list[Message]], Reply] | None = None
     requests: dict[str, list[list[Message]]] = field(default_factory=dict[str, list[list[Message]]])
     numbered: int = 0
@@ -278,11 +284,19 @@ class Gateway:
         """What each main model call saw, in order."""
         return self.requests.get("main", [])
 
+    @property
+    def children(self) -> list[list[Message]]:
+        """What each delegated run's model call saw, in order."""
+        return self.requests.get("delegated", [])
+
     async def handle(self, request: web.Request) -> web.Response:
         body = await request.json()
         alias, messages = str(body["model"]), cast(list[Message], body["messages"])
-        self.requests.setdefault(alias, []).append(messages)
-        if alias == "main":
+        child = alias == "main" and str(messages[0].get("content", "")).startswith(DELEGATED)
+        self.requests.setdefault("delegated" if child else alias, []).append(messages)
+        if child:
+            reply = self.delegated.pop(0) if self.delegated else Reply("(no delegated script)")
+        elif alias == "main":
             reply = self.script.pop(0) if self.script else Reply("(the script has ended)")
         else:
             assert self.reviewer is not None, alias
@@ -293,7 +307,8 @@ class Gateway:
             headers = {} if reply.retry_after is None else {"Retry-After": reply.retry_after}
             return web.Response(status=reply.status, text=reply.error, headers=headers)
         tool_calls: list[Json] = []
-        for name, arguments in reply.calls:
+        made = reply.calls_from(messages) if reply.calls_from is not None else reply.calls
+        for name, arguments in made:
             self.numbered += 1
             tool_calls.append(
                 {
@@ -442,9 +457,12 @@ class Harness:
         max_input_chars: int | None = None,
         reviewer: bool = False,
         options: Sequence[str] = (),
+        delegated: Sequence[Reply] = (),
     ) -> RunRecord:
-        """One ``run`` through the CLI; the record as the project keeps it."""
+        """One ``run`` through the CLI; the record as the project keeps it. Its delegated
+        runs answer from ``delegated``, in the order they call the model."""
         self.gateway.script = list(script)
+        self.gateway.delegated = list(delegated)
         self.gateway.requests.clear()
         transcript = self.tmp / f"{run_id}.json"
         token, key = self.tmp / "worker.token", self.tmp / "gateway.key"
@@ -465,6 +483,7 @@ class Harness:
         argv += list(options)
         assert await asyncio.to_thread(cli.main, [*argv, TASK]) == status
         assert not self.gateway.script, "the run ended before the script did"
+        assert not self.gateway.delegated, "the delegated runs ended before their script did"
         record = RunRecord.model_validate_json(transcript.read_text())
         store = ProjectStore(self.state)
         kept = [store.run(PROJECT, SESSION, entry.name) for entry in store.runs(PROJECT, SESSION)]

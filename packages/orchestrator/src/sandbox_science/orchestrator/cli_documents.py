@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: MIT
 """The user's project, session and document commands of ``sandbox-science-harness``.
 
-``project`` creates, shows or revises a project's record and its macros; ``session
-close`` stops a session's kernels; the ``document`` commands act on the living
-documents in the state directory's control store, as the user: an import is attributed
-to an import the user started, and the other changes to the user. An import into an
-existing document names the revision its file was made from (``--base``), which must
-be the current one, so that it never undoes revisions made since.
+``project`` creates, shows or revises a project's record, its macros and its settings:
+its model budget, its files and its delegation. ``session close`` stops a session's
+kernels; the ``document`` commands act on the living documents in the state directory's
+control store, as the user: an import is attributed to an import the user started, and
+the other changes to the user. An import into an existing document names the revision
+its file was made from (``--base``), which must be the current one, so that it never
+undoes revisions made since.
 """
 
 from __future__ import annotations
@@ -54,6 +55,16 @@ async def _project_action(args: argparse.Namespace, store: ProjectStore) -> int:
             if args.main_tokens is not None:
                 runs.set_budget(args.project, args.main_tokens)
             print(f"project {args.project}: {runs.budget(args.project)} MAIN tokens a day")
+        case "delegation":
+            from .delegation.records import DelegationRecords
+
+            store.get(args.project)
+            delegations = DelegationRecords(store.control)
+            if args.depth is not None:
+                delegations.set_depth(args.project, args.depth)
+            depth = delegations.depth(args.project)
+            state = "off" if depth == 0 else "main runs delegate checks"
+            print(f"project {args.project}: delegation depth {depth} ({state})")
         case "macros":
             from .documents import USER, DocumentStore, store_path
             from .documents.project_macros import ProjectMacros
@@ -355,7 +366,8 @@ def ledger(args: argparse.Namespace) -> int:
 def add_parsers(commands: Any) -> None:
     projects = commands.add_parser("project", help="create, show or revise a project")
     projects.add_argument(
-        "action", choices=("create", "show", "revise", "macros", "budget", "files")
+        "action",
+        choices=("create", "show", "revise", "macros", "budget", "files", "delegation"),
     )
     projects.add_argument("--state-dir", type=Path, required=True)
     projects.add_argument("--project", required=True)
@@ -386,6 +398,13 @@ def add_parsers(commands: Any) -> None:
         "--main-tokens",
         type=int,
         help="budget: the MAIN tokens the run service may spend over a rolling 24 hours; "
+        "omitted to read",
+    )
+    projects.add_argument(
+        "--depth",
+        type=int,
+        choices=(0, 1),
+        help="delegation: 1 lets main runs delegate checks, 0 (the default) does not; "
         "omitted to read",
     )
     sessions = commands.add_parser(

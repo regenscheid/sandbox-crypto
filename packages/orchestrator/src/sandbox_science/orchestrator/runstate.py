@@ -458,16 +458,17 @@ class RunState:
         data: dict[str, JsonValue],
         *,
         holding: bool = False,
+        holder: str | None = None,
     ) -> int:
         """Append an event to the run's; its number. With ``holding``, only while
-        ``run`` holds the session."""
+        ``holder`` holds the session for it: ``run`` itself, or a delegated run's root."""
         text = json.dumps(data, ensure_ascii=False, allow_nan=False)
         if len(text.encode()) > MAX_EVENT_BYTES:
             raise ControlError(INVALID_REQUEST, f"an event is at most {MAX_EVENT_BYTES} bytes")
         with self.control.write() as tx:
             db = tx.sql
             if holding:
-                _holding(db, project, session, run)
+                _holding(db, project, session, holder or run)
             (last,) = db.execute(
                 "SELECT coalesce(max(seq), 0) FROM run_events "
                 "WHERE project_id = ? AND session_id = ? AND run = ?",

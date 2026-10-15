@@ -399,15 +399,18 @@ async def _run_task(
 
 
 def _sections(
-    system: str, toolbox: Toolbox, template: str | None, memory: MemoryGiven | None
+    system: str | Section, toolbox: Toolbox, template: str | None, memory: MemoryGiven | None
 ) -> list[Section]:
-    """The MAIN system message's sections: the base, a research framing if one was
-    selected, the project memory if it has entries (PM-6), and the planning guidance
-    when plan tools are offered."""
+    """The system message's sections: the base, a research framing if one was selected,
+    the project memory if it has entries (PM-6), and the planning guidance when plan
+    tools are offered. A base given as a section, such as a delegated run's, is pinned
+    as it is."""
     builtin = system == SYSTEM_PROMPT
-    sections = [
-        Section("main", MAIN_VERSION, system) if builtin else Section("custom", None, system)
-    ]
+    if isinstance(system, Section):
+        base = system
+    else:
+        base = Section("main", MAIN_VERSION, system) if builtin else Section("custom", None, system)
+    sections = [base]
     if template is not None:
         if not builtin:
             raise ValueError("research templates require the builtin MAIN base")
@@ -440,11 +443,12 @@ async def run_task(
     stop: asyncio.Event | None = None,
     max_turns: int = 30,
     max_input_chars: int = MAX_INPUT_CHARS,
-    system: str = SYSTEM_PROMPT,
+    system: str | Section = SYSTEM_PROMPT,
     research_template: str | None = None,
     on_tool: Callable[[str, str, ToolOutcome], Awaitable[None]] | None = None,
     hooks: Sequence[TurnHook] | None = None,
     memory: MemoryGiven | None = None,
+    role: str = "main",
 ) -> Transcript:
     """Run a task, keeping an active originating-run lease while it waits or computes.
 
@@ -456,7 +460,8 @@ async def run_task(
     a ``task``, the run's first input is what its hooks offer before the first model
     call, such as the user's queued messages. A cancellation while ``stop`` is set is
     the user's: the run ends ``cancelled``, with what it observed, instead of raising.
-    ``memory`` is the project memory the run is given, which its record pins.
+    ``memory`` is the project memory the run is given, which its record pins, and
+    ``role`` the run's role, which its prompt pins name.
     """
     if max_input_chars < 1:
         raise ValueError("max_input_chars must be at least 1")
@@ -476,7 +481,7 @@ async def run_task(
                 ):
                     raise ValueError("MAIN planning capability assembly mismatch")
                 text, pins = assemble(
-                    "main",
+                    role,
                     _sections(system, toolbox, research_template, memory),
                     toolbox.specs,
                     memory=memory.pin if memory is not None else None,

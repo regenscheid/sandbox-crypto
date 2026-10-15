@@ -14,6 +14,8 @@ each hook acknowledge what the record names.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import functools
 import json
 import logging
 import sqlite3
@@ -22,7 +24,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Final, Protocol
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -41,11 +43,15 @@ from . import mathchecks
 from .aio import threaded
 from .artifact_publisher import ArtifactPublisher
 from .artifacts import ArtifactInventory
-from .chat import EventLog, ModelBudget, RunChat, UserMessages
+from .chat import EventLog, ModelBudget, RunChat, SessionHeld, UserMessages
 from .connectors import Connectors, ProxyClient
-from .consistency.controller import ReviewController
+from .consistency.controller import AUTHOR_SPECS, ReviewController
 from .consistency.models import ReviewConfig
 from .consistency.store import ReviewStore
+from .delegation import prompt as delegated_prompt
+from .delegation import specs as delegation_specs
+from .delegation.hook import Child, ChildEnd, Delegations
+from .delegation.records import DelegationRecords
 from .documents import DocumentError, DocumentStore, DocumentTool
 from .file_settings import ProjectFiles
 from .hooks import TurnHook
@@ -53,13 +59,21 @@ from .jobs import JobTools
 from .jobstate import JobState
 from .ledger import Ledger
 from .ledger.tool import LedgerTool
-from .loop import MAX_INPUT_CHARS, Interruption, Transcript, run_task, user_cancelled
+from .loop import (
+    MAX_INPUT_CHARS,
+    SYSTEM_PROMPT,
+    Interruption,
+    Transcript,
+    run_task,
+    user_cancelled,
+)
 from .mathchecks.controller import MathController
 from .mathchecks.jobs import Checker
 from .memory import MemoryEntry, ProjectMemory
 from .memory_prompt import for_reviewer, for_run, for_watcher
 from .memory_tools import MemoryTool
 from .model import ChatModel, Message
+from .plan_tools import NAMES as PLAN_NAMES
 from .plan_tools import PlanTools
 from .projects import (
     ProjectError,
@@ -80,6 +94,13 @@ Snapshot = tuple[int, tuple[MemoryEntry, ...]]
 """The project memory at a version: the version and its accepted entries in order."""
 
 _log = logging.getLogger(__name__)
+
+WITHHELD: Final = frozenset(
+    {spec.name for spec in AUTHOR_SPECS} | PLAN_NAMES | delegation_specs.NAMES
+)
+"""What a delegated run's role does not get (PD-16): the review tools, with which it would
+claim fixes, the plan tools, with which it would approve or change the plan, and the
+delegate tools (PD-15: one level for now)."""
 
 
 def tier_in_effect(location: Location) -> int | None:
@@ -187,13 +208,17 @@ class RunRequest:
     parent: str | None = None
     """A delegated run's parent: the name its record will be kept under (PD-32)."""
     delegation: str | None = None
-    """A delegated run's delegation. Nothing starts delegated runs yet."""
+    """A delegated run's delegation (``Harness.run_child``)."""
     memory_version: int | None = None
     """The project memory's version a run of a tree is given: the one its root run was
-    given (PM-8). Delegation must set it from the root run's own pin (its record's
-    ``prompt_provenance.memory.version``, as the harness read it), never from an agent's
-    arguments: the version decides what every run of the tree is told. Without it, a run
-    is given the memory as it is when it starts."""
+    given (PM-8). Delegation sets it from the version the root run was given, as the
+    harness read it, never from an agent's arguments: the version decides what every
+    run of the tree is told. Without it, a run is given the memory as it is when it
+    starts."""
+    max_turns: int | None = None
+    """A delegated run's turns, at most; ``None`` for the harness's setting."""
+    tokens: int | None = None
+    """A delegated run's token limit (``run_budget`` when its calls reach it)."""
 
     @property
     def queued(self) -> bool:
@@ -424,16 +449,18 @@ class Harness:
                 with interruption.protect():
                     memory = await self.memory(admitted)
                     chat = self.chat(admitted)
+                    delegations = await self._delegations(admitted, chat, memory)
                     toolbox = await self._toolbox(
-                        admitted, chat, lambda close: closing(stack, interruption, close), memory
+                        admitted,
+                        chat,
+                        lambda close: closing(stack, interruption, close),
+                        memory,
+                        delegations,
                     )
                     hooks = toolbox.turn_hooks()
-                    if chat is not None:
-                        budget = self.settings.run_share
-                        kept = () if budget is None else (ModelBudget(chat, budget),)
-                        # The user's messages reach the model last; the events come last.
-                        hooks = (*hooks, *kept, UserMessages(chat), EventLog(chat))
                     request = admitted.request
+                    if chat is not None:
+                        hooks = (*hooks, *self._chat_hooks(request, chat))
                     transcript = await run_task(
                         self.main.model,
                         toolbox,
@@ -441,12 +468,14 @@ class Harness:
                         run_id=admitted.run_id,
                         history=request.history,
                         stop=stop,
-                        max_turns=self.settings.max_turns,
+                        max_turns=request.max_turns or self.settings.max_turns,
                         max_input_chars=self.settings.max_input_chars,
+                        system=SYSTEM_PROMPT if request.parent is None else delegated_prompt.CHECK,
                         on_tool=sink.tool,
                         research_template=admitted.request.research_template,
                         hooks=hooks,
                         memory=for_run(*memory) if memory is not None else None,
+                        role=request.role,
                     )
         except BaseException as error:
             if transcript is not None and user_cancelled(error, stop):
@@ -467,6 +496,74 @@ class Harness:
             parent=admitted.request.parent,
             delegation=admitted.request.delegation,
         )
+
+    def _chat_hooks(self, request: RunRequest, chat: RunChat) -> tuple[TurnHook, ...]:
+        """A run's budget, the user's messages, which reach the model last, and its
+        events, which come last. A delegated run keeps its token limit, and its calls that
+        may change something wait on its root's lease; the user writes to the root."""
+        if request.parent is not None:
+            limit = () if request.tokens is None else (ModelBudget(chat, tokens=request.tokens),)
+            return (*limit, SessionHeld(chat), EventLog(chat))
+        share = self.settings.run_share
+        kept = () if share is None else (ModelBudget(chat, share),)
+        return (*kept, UserMessages(chat), EventLog(chat))
+
+    async def _delegations(
+        self, admitted: Admitted, chat: RunChat | None, memory: Snapshot | None
+    ) -> Delegations | None:
+        """A main run's delegations, when its project lets its runs delegate (PD-33)."""
+        stores, context = self.stores, admitted.context
+        if stores is None or admitted.request.parent is not None:
+            return None
+        records = DelegationRecords(stores.documents, clock=self.clock)
+        if await threaded(records.depth, context.project_id) < 1:
+            return None
+        # Every run of the tree is given the memory its root was (PM-8).
+        version = memory[0] if memory is not None else None
+        return Delegations(
+            records,
+            Ledger(stores.documents),
+            context,
+            parent=run_name(admitted.started_at, admitted.run_id),
+            runner=functools.partial(self.run_child, admitted, version),
+            max_turns=self.settings.max_turns,
+            wake=chat.arrived if chat is not None else None,
+            clock=self.clock,
+        )
+
+    async def run_child(
+        self, parent: Admitted, memory_version: int | None, child: Child, stop: asyncio.Event
+    ) -> ChildEnd:
+        """Run a delegated run of ``parent`` to its end and save its record (PD-34): in
+        the parent's session and environment, with the memory version its root was
+        given (PM-8). A cancel while ``stop`` is set ends it ``cancelled``."""
+        if self.stores is None:
+            raise ValueError("a delegated run needs the state directory's stores")
+        request = RunRequest(
+            parent.request.project,
+            parent.request.session,
+            child.task,
+            run_id=child.run_id,
+            parent=run_name(parent.started_at, parent.run_id),
+            delegation=child.delegation_id,
+            memory_version=memory_version,
+            max_turns=child.max_turns,
+            tokens=child.tokens,
+        )
+        admitted = dataclasses.replace(
+            parent, request=request, run_id=child.run_id, started_at=child.started_at
+        )
+        sink = _ChildSink(child.run_id)
+        finished = await self.start(admitted, sink, stop=stop)
+        await save(
+            finished.fields(),
+            finished.status,
+            finished.hooks,
+            projects=self.stores.projects,
+            error=sink.error,
+        )
+        transcript = finished.transcript
+        return ChildEnd(transcript.stopped, transcript.failure is not None, transcript.final_text)
 
     async def memory(self, admitted: Admitted) -> Snapshot | None:
         """The project memory the run and its reviewer are given, read once as the run
@@ -495,6 +592,8 @@ class Harness:
             prefix=1 + len(request.history) + (0 if request.queued else 1),
             parent=request.parent,
             delegation=request.delegation,
+            # A delegated run's root holds the session for it: one level, its parent.
+            holder=request.parent,
             clock=self.clock,
         )
 
@@ -504,13 +603,20 @@ class Harness:
         chat: RunChat | None,
         on_close: Callable[[Callable[[], Awaitable[object]]], None],
         memory: Snapshot | None = None,
+        delegations: Delegations | None = None,
     ) -> Toolbox:
         """The run's tools; ``on_close`` takes what closes each part the run made, and
-        ``memory`` is the project memory the run was given, which its reviewer is too."""
+        ``memory`` is the project memory the run was given, which its reviewer is too.
+
+        A delegated run gets its parent's tools without the review tools, the plan tools,
+        the delegate tools and connectors; it is not reviewed, and the user's messages do
+        not end its job waits (PD-34)."""
         stores, settings, alias = self.stores, self.settings, self.main.alias
         watcher, reviewer = self.watcher, self.reviewer
         context, run_id = admitted.context, admitted.run_id
         languages, features = admitted.languages, admitted.features
+        role = admitted.request.role
+        delegated = role == "delegated"
         jobs = JobTools(
             self.client,
             context,
@@ -521,7 +627,7 @@ class Harness:
             watcher_calls_per_hour=settings.watcher_calls_per_hour,
             first_check_seconds=settings.watcher_first_check,
             check_interval_seconds=settings.watcher_interval,
-            wake=chat.arrived if chat is not None else None,
+            wake=chat.arrived if chat is not None and not delegated else None,
             on_wait=chat.waiting if chat is not None else None,
             # The watcher is given the memory as it is at each check: a job can outlive
             # its run (PM-8).
@@ -532,7 +638,7 @@ class Harness:
             ),
         )
         connectors = None
-        if self.mcp is not None and self.mcp.project == context.project_id:
+        if self.mcp is not None and self.mcp.project == context.project_id and not delegated:
             # Listed at the run's start: a server added later is offered to the next run.
             connectors = Connectors(self.mcp.client, self.mcp.servers, session=context.session_id)
             await connectors.load(taken=HARNESS_TOOL_NAMES)
@@ -545,7 +651,7 @@ class Harness:
                 jobs=jobs,
                 connectors=connectors,
             )
-        documents = DocumentTool(stores.documents, context, run_id=run_id, alias=alias)
+        documents = DocumentTool(stores.documents, context, run_id=run_id, role=role, alias=alias)
         if chat is not None:
             chat.requests = documents.requests_waiting
         # Code in the sandbox has no route to the ledger: the agent imports what it
@@ -554,7 +660,7 @@ class Harness:
             Ledger(stores.documents),
             context,
             run_id=run_id,
-            role=admitted.request.role,
+            role=role,
             alias=alias,
             read=lambda request: self.client.read_file(request),
         )
@@ -563,42 +669,49 @@ class Harness:
             ProjectMemory(stores.documents),
             context,
             run_id=run_id,
-            role=admitted.request.role,
+            role=role,
             alias=alias,
         )
         inventory = ArtifactInventory(stores.documents)
-        reviews = ReviewController(
-            ReviewStore(stores.documents, artifacts=inventory, defaults=self.settings.reviews()),
-            context,
-            run_id=run_id,
-            model=reviewer.model if reviewer is not None else None,
-            alias=reviewer.alias if reviewer is not None else None,
-            author_alias=alias,
-            memory=for_reviewer(*memory) if memory is not None else None,
+        review_store = ReviewStore(
+            stores.documents, artifacts=inventory, defaults=self.settings.reviews()
         )
-        on_close(reviews.close)
+        reviews = None
+        if not delegated:
+            reviews = ReviewController(
+                review_store,
+                context,
+                run_id=run_id,
+                model=reviewer.model if reviewer is not None else None,
+                alias=reviewer.alias if reviewer is not None else None,
+                author_alias=alias,
+                memory=for_reviewer(*memory) if memory is not None else None,
+            )
+            on_close(reviews.close)
         artifacts = ArtifactPublisher(inventory, self.client, context, run_id=run_id, alias=alias)
         on_close(artifacts.aclose)
         recorder = FileRecorder(
             artifacts,
             ProjectFiles(stores.documents),
-            role=admitted.request.role,
+            role=role,
             parent_run=admitted.request.parent,
             delegation=admitted.request.delegation,
         )
         jobs.recorder = recorder
         math_checks = MathController(
-            reviews.store, context.project_id, context.session_id, run_id, checker=self.checker
+            review_store, context.project_id, context.session_id, run_id, checker=self.checker
         )
         # The plan tools hold nothing to close: the run's project store is the stores'.
-        plans = await threaded(
-            PlanTools,
-            SessionPlans(stores.documents),
-            stores.projects,
-            context,
-            run_id=run_id,
-            alias=alias,
-        )
+        plans = None
+        if not delegated:
+            plans = await threaded(
+                PlanTools,
+                SessionPlans(stores.documents),
+                stores.projects,
+                context,
+                run_id=run_id,
+                alias=alias,
+            )
         # A delegated run's cells run in kernels of its own, which stop when it ends
         # (PD-37); a main run uses the session's, and its kernel check closes those its
         # session's earlier runs left (PD-40) at its first observation of a connected
@@ -633,7 +746,25 @@ class Harness:
             connectors=connectors,
             kernel_run=kernel_run,
             recorder=recorder,
+            delegations=delegations,
+            withheld=WITHHELD if delegated else frozenset(),
         )
+
+
+class _ChildSink:
+    """A delegated run's progress, to the log; its events show it in the GUI."""
+
+    def __init__(self, run_id: str) -> None:
+        self.run_id = run_id
+
+    def note(self, text: str) -> None:
+        _log.info("delegated run %s: %s", self.run_id, text)
+
+    def error(self, text: str) -> None:
+        _log.warning("delegated run %s: %s", self.run_id, text)
+
+    async def tool(self, name: str, arguments: str, outcome: ToolOutcome) -> None:
+        return None
 
 
 def closing(

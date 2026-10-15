@@ -1911,6 +1911,56 @@ BEGIN SELECT RAISE(ABORT, 'frontier changes are kept as written'); END""",
         schema.execute(statement)
 
 
+def _delegations(schema: Schema) -> None:
+    """Version 28: delegations (plans-and-delegation spec, PD-11, PD-17, PD-35): each
+    one's parent run, its child run, its brief and, once the child ends, its outcome,
+    written once; and the run of the session that received it. Each project's setting
+    says how deep its runs may delegate; a project without a row does not delegate."""
+    for statement in (
+        """CREATE TABLE delegations (
+    delegation_id TEXT PRIMARY KEY
+        CHECK (length(delegation_id) = 28 AND delegation_id GLOB 'dlg-*'
+        AND substr(delegation_id, 5) NOT GLOB '*[^0-9a-f]*'),
+    project_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    parent TEXT NOT NULL CHECK (length(CAST(parent AS BLOB)) BETWEEN 1 AND 256),
+    run TEXT NOT NULL UNIQUE CHECK (length(CAST(run AS BLOB)) BETWEEN 1 AND 256),
+    kind TEXT NOT NULL CHECK (kind IN ('check')),
+    brief TEXT NOT NULL CHECK (json_valid(brief) AND json_type(brief) = 'object'
+        AND length(CAST(brief AS BLOB)) <= 65536),
+    started_at TEXT NOT NULL CHECK (length(started_at) BETWEEN 1 AND 64),
+    ended TEXT CHECK (ended IS NULL
+        OR ended IN ('returned', 'failed', 'cancelled', 'limit_reached', 'interrupted')),
+    stopped TEXT CHECK (stopped IS NULL OR length(stopped) BETWEEN 1 AND 64),
+    report TEXT CHECK (report IS NULL OR length(CAST(report AS BLOB)) <= 65536),
+    ended_at TEXT CHECK (ended_at IS NULL OR length(ended_at) BETWEEN 1 AND 64),
+    acknowledged TEXT
+        CHECK (acknowledged IS NULL OR length(CAST(acknowledged AS BLOB)) BETWEEN 1 AND 256),
+    CHECK ((ended IS NULL) = (ended_at IS NULL) AND (ended IS NULL) = (stopped IS NULL)),
+    CHECK (ended IS NOT NULL OR (report IS NULL AND acknowledged IS NULL)),
+    FOREIGN KEY (project_id, session_id) REFERENCES sessions (project_id, session_id)
+) STRICT""",
+        "CREATE INDEX delegations_waiting ON delegations (project_id, session_id, acknowledged)",
+        """CREATE TRIGGER delegations_kept BEFORE UPDATE ON delegations
+WHEN NEW.delegation_id IS NOT OLD.delegation_id OR NEW.project_id IS NOT OLD.project_id
+OR NEW.session_id IS NOT OLD.session_id OR NEW.parent IS NOT OLD.parent
+OR NEW.run IS NOT OLD.run OR NEW.kind IS NOT OLD.kind OR NEW.brief IS NOT OLD.brief
+OR NEW.started_at IS NOT OLD.started_at OR (OLD.ended IS NOT NULL AND (
+NEW.ended IS NOT OLD.ended OR NEW.stopped IS NOT OLD.stopped
+OR NEW.report IS NOT OLD.report OR NEW.ended_at IS NOT OLD.ended_at))
+OR (OLD.acknowledged IS NOT NULL AND NEW.acknowledged IS NOT OLD.acknowledged)
+BEGIN SELECT RAISE(ABORT, 'a delegation''s outcome is written once'); END""",
+        """CREATE TRIGGER delegations_no_delete BEFORE DELETE ON delegations
+BEGIN SELECT RAISE(ABORT, 'delegations are kept'); END""",
+        """CREATE TABLE project_delegation (
+    project_id TEXT PRIMARY KEY REFERENCES projects (project_id),
+    depth INTEGER NOT NULL CHECK (depth BETWEEN 0 AND 2),
+    updated_at TEXT NOT NULL
+) STRICT""",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -1938,6 +1988,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _ledger_flags,
     _frontier_categories,
     _frontier_changes,
+    _delegations,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

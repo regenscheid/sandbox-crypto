@@ -56,7 +56,7 @@ class Model:
 
 class Runs:
     """A project's harness, starting runs as the run service does: each holds the
-    session's lease while it runs."""
+    session's lease while it runs, a delegated run's parent for it."""
 
     def __init__(self, tmp_path: Path) -> None:
         self.projects = ProjectStore(tmp_path)
@@ -75,7 +75,8 @@ class Runs:
 
     async def run(self, request: RunRequest) -> Finished:
         admitted = await admit(self.worker, self.projects, request, Sink(), min_isolation_tier=None)
-        self.state.acquire("p", "s", run_name(admitted.started_at, admitted.run_id), "test")
+        holder = request.parent or run_name(admitted.started_at, admitted.run_id)
+        self.state.acquire("p", "s", holder, "test")
         try:
             return await self.harness.start(admitted, Sink())
         finally:
@@ -121,7 +122,15 @@ async def test_accepted_entries_reach_the_next_agent(runs: Runs) -> None:
     second = await runs.run(child)
     assert second.transcript.prompt_provenance is not None
     assert second.transcript.prompt_provenance.memory == pins.memory
-    assert runs.model.systems[1] == system
+    # The child's own system prompt holds the very section its root was given.
+    sections = second.transcript.prompt_provenance.sections
+    assert [s for s in sections if s.id == "memory"] == [
+        s for s in pins.sections if s.id == "memory"
+    ]
+    assert re.search(
+        r'<entry-[0-9a-f]{16} id="mem-1" revision="1">\nWrite finite', runs.model.systems[1]
+    )
+    assert "Install with provision." not in runs.model.systems[1]
     third = await runs.run(RunRequest("p", "s", "Go on.", run_id="run-3"))
     assert third.transcript.prompt_provenance is not None
     later = third.transcript.prompt_provenance.memory
