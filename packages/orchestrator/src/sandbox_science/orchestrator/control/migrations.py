@@ -1566,6 +1566,22 @@ def _artifact_usage(schema: Schema) -> None:
     )
 
 
+def _file_settings(schema: Schema) -> None:
+    """Version 21: each project's settings for the files its executions write (research
+    artifacts, RA-29, RA-39): ``all`` or ``results``, and its ignore patterns. A project
+    without a row has the defaults."""
+    schema.execute(
+        """CREATE TABLE project_file_settings (
+    project TEXT PRIMARY KEY CHECK (length(CAST(project AS BLOB)) BETWEEN 1 AND 128),
+    revision INTEGER NOT NULL CHECK (revision BETWEEN 1 AND 999999999),
+    recording TEXT NOT NULL CHECK (recording IN ('all', 'results')),
+    ignore TEXT NOT NULL CHECK (json_valid(ignore) AND json_type(ignore) = 'array'
+        AND length(CAST(ignore AS BLOB)) <= 65536),
+    author TEXT NOT NULL CHECK (json_valid(author) AND length(CAST(author AS BLOB)) <= 4096)
+) STRICT"""
+    )
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -1586,6 +1602,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _ledger_links,
     _statement_math,
     _artifact_usage,
+    _file_settings,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

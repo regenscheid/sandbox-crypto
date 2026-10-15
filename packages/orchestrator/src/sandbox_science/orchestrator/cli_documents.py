@@ -86,6 +86,8 @@ async def _project_action(args: argparse.Namespace, store: ProjectStore) -> int:
                 return 1
             finally:
                 documents.close()
+        case "files":
+            return _files(args, store)
         case _:
             record = store.set_policy(args.project, args.policy)
             print(f"project {record.project_id} now uses {record.policy}")
@@ -95,6 +97,47 @@ async def _project_action(args: argparse.Namespace, store: ProjectStore) -> int:
                         info = await ensure_environment(client, record, environment_id)
                         state = "not managed by the worker" if info is None else info.policy
                         print(f"environment {environment_id}: {state}")
+    return 0
+
+
+def _files(args: argparse.Namespace, store: ProjectStore) -> int:
+    """Show or change the project's file settings (research artifacts, RA-29, RA-39)."""
+    from .file_settings import DEFAULT_IGNORE, ProjectFiles
+
+    store.get(args.project)
+    documents = DocumentStore(store_path(args.state_dir), producer="user-cli")
+    try:
+        files = ProjectFiles(documents)
+        current = files.get(args.project)
+        changing = args.recording or args.ignore or args.ignore_defaults or args.no_ignore
+        if changing:
+            if args.expected is None or args.operation_id is None:
+                raise ValueError("file settings changes need --expected and --operation-id")
+            if args.no_ignore and (args.ignore or args.ignore_defaults):
+                raise ValueError("--no-ignore takes no patterns")
+            patterns = (
+                []
+                if args.no_ignore
+                else [*(DEFAULT_IGNORE if args.ignore_defaults else ()), *(args.ignore or ())]
+            )
+            if not (args.ignore or args.ignore_defaults or args.no_ignore):
+                patterns = list(current.ignore)
+            current, _ = files.change(
+                args.project,
+                {
+                    "expected": args.expected,
+                    "recording": args.recording or current.recording,
+                    "ignore": patterns,
+                    "operation_id": args.operation_id,
+                },
+                USER,
+            )
+        print(current.model_dump_json(indent=2))
+    except (DocumentError, ValueError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    finally:
+        documents.close()
     return 0
 
 
@@ -231,7 +274,9 @@ def document(args: argparse.Namespace) -> int:
 
 def add_parsers(commands: Any) -> None:
     projects = commands.add_parser("project", help="create, show or revise a project")
-    projects.add_argument("action", choices=("create", "show", "revise", "macros", "budget"))
+    projects.add_argument(
+        "action", choices=("create", "show", "revise", "macros", "budget", "files")
+    )
     projects.add_argument("--state-dir", type=Path, required=True)
     projects.add_argument("--project", required=True)
     projects.add_argument("--profile", help="create: the base profile, such as minimal")
@@ -241,8 +286,22 @@ def add_parsers(commands: Any) -> None:
     projects.add_argument(
         "--macros-file", type=Path, help="macros: bounded JSON definitions; omitted to read"
     )
-    projects.add_argument("--expected", type=int, help="macros: exact current settings revision")
-    projects.add_argument("--operation-id", help="macros: stable retry identity")
+    projects.add_argument(
+        "--expected", type=int, help="macros, files: exact current settings revision"
+    )
+    projects.add_argument("--operation-id", help="macros, files: stable retry identity")
+    projects.add_argument(
+        "--recording",
+        choices=("all", "results"),
+        help="files: record every written file, or only results and published files",
+    )
+    projects.add_argument(
+        "--ignore", action="append", metavar="PATTERN", help="files: an ignore pattern (repeat)"
+    )
+    projects.add_argument(
+        "--ignore-defaults", action="store_true", help="files: start from the default patterns"
+    )
+    projects.add_argument("--no-ignore", action="store_true", help="files: no ignore patterns")
     projects.add_argument(
         "--main-tokens",
         type=int,

@@ -94,6 +94,8 @@ All routes need the session and answer JSON. Every route that is a GET also answ
 | GET | `/api/v0/projects/{project}/artifacts/{artifact}/revisions/{revision}/viewer` | With `?sha256=`, the viewer's URL for that PDF revision on the preview origin, open for 10 minutes, and the path it was published from ([the PDF viewer's origin](#the-pdf-viewers-origin)) |
 | GET | `/api/v0/projects/{project}/macros` | The project's current versioned macro setting ([project macros](PROJECT-MACROS.md#changing-the-setting)) |
 | POST | `/api/v0/projects/{project}/macros` | Changes the setting: exact `expected` revision, bounded `macros` and `operation_id`, attributed to the USER on the server |
+| GET | `/api/v0/projects/{project}/files/settings` | The project's file settings ([projects and sessions](PROJECTS-AND-SESSIONS.md#files-executions-write)): `revision`, `recording` (`all` or `results`) and `ignore` patterns, with the `defaults` to start from |
+| POST | `/api/v0/projects/{project}/files/settings` | Changes them: exact `expected` revision, `recording`, at most 200 `ignore` patterns and `operation_id`, attributed to the USER on the server |
 | GET | `/api/v0/projects/{project}/sessions/{session}` | The `session` and its `runs`, oldest first: each run's `name`, `run_id` and `started_at` |
 | GET | `/api/v0/projects/{project}/sessions/{session}/runs/{run}` | The run's record ([run records](#run-records)), at most 64 MiB |
 | GET | `/api/v0/projects/{project}/sessions/{session}/runs/{run}/events` | The run's events after `after`, at most `limit` (200), and its state: `active`, `ended` or `interrupted` ([chat](#chat)) |
