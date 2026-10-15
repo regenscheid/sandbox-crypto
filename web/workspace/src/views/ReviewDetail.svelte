@@ -2,6 +2,7 @@
 <!-- The chosen review: what it concluded and covered, its pinned evidence and audit records. -->
 <script lang="ts">
   import type { ReviewBrowser, ReviewPanel } from '../lib/reviewBrowser';
+  import { visible } from '../lib/text';
   import type { Review } from '../lib/reviews';
   import {
     coverageText,
@@ -29,7 +30,7 @@
     <strong>Outcome:</strong>
     {outcomeText(review.state, leftUnreviewed(panel.unreviewed, review.review_id))}.
   </p>
-  {#if review.summary}<p class="prose">{review.summary}</p>{/if}
+  {#if review.summary}<p class="prose">{visible(review.summary)}</p>{/if}
   <p>{coverageText(review)}</p>
   <p class="muted">{usageText(review)}</p>
   <details>

@@ -7,6 +7,7 @@ import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 import FindingCard from '../views/FindingCard.svelte';
 import FindingTransition from '../views/FindingTransition.svelte';
+import LatestExplanation from '../views/LatestExplanation.svelte';
 import ResponseBody from '../views/ResponseBody.svelte';
 import { exactViews, HIDDEN_CONTENT, hostileMarkup } from './approvalTesting';
 import type { Finding, ResponseBody as Body, Transition } from './reviews';
@@ -119,16 +120,52 @@ describe("an agent's explanation", () => {
     expect(hostileMarkup(html)).toBe(false);
   });
 
+  it.each(HIDDEN_CONTENT)(
+    'shows the latest one exactly where the user decides, with %s',
+    (_, text) => {
+      const user = { ...transition('Mine.'), revision: 3, actor: 'user', response_body: undefined };
+      const entries = [
+        { ...transition('Older.'), revision: 1 },
+        { ...transition(text), actor: 'session:s' },
+        user,
+      ];
+      const html = render(LatestExplanation, { props: { entries } }).body;
+      // The main agent's step, not the user's later one: its reason, then its source.
+      expect(exactViews(html)).toEqual([visible(text), visible(text)]);
+      expect(html).toContain('by the main agent of session s (revision 2)');
+      expect(hostileMarkup(html)).toBe(false);
+    },
+  );
+
+  it('is read when the user opens the response, and shown above the decision', async () => {
+    const source = (await import('../views/FindingCard.svelte?raw')).default;
+    expect(source).toContain('if (event.currentTarget.open && !history.started');
+    const respond = source.slice(source.indexOf('<summary>Respond as user</summary>'));
+    expect(respond.indexOf('<LatestExplanation')).toBeGreaterThan(-1);
+    expect(respond.indexOf('<LatestExplanation')).toBeLessThan(respond.indexOf('<fieldset'));
+    expect(render(LatestExplanation, { props: { entries: [], loading: true } }).body).toContain(
+      'Reading the latest explanation',
+    );
+  });
+
+  it('a review summary shows hidden characters as code points', async () => {
+    for (const view of ['ReviewList', 'ReviewDetail']) {
+      const source = (await import(`../views/${view}.svelte?raw`)).default;
+      expect(source).toContain('{visible(review.summary)}');
+    }
+  });
+
   it('renders no text as HTML', () => {
     const views = import.meta.glob(
       [
         '../views/FindingCard.svelte',
         '../views/FindingTransition.svelte',
+        '../views/LatestExplanation.svelte',
         '../views/ResponseBody.svelte',
       ],
       { query: '?raw', import: 'default', eager: true },
     );
-    expect(Object.keys(views)).toHaveLength(3);
+    expect(Object.keys(views)).toHaveLength(4);
     for (const source of Object.values(views)) expect(String(source)).not.toContain('{@html');
   });
 });

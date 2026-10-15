@@ -16,6 +16,7 @@
   import ErrorMessage from './ErrorMessage.svelte';
   import FindingTransition from './FindingTransition.svelte';
   import HiddenBanner from './HiddenBanner.svelte';
+  import LatestExplanation from './LatestExplanation.svelte';
   import PinnedEvidencePreview from './PinnedEvidencePreview.svelte';
   import Markdown from '../lib/Markdown.svelte';
   import { macroSet } from '../lib/macros';
@@ -173,7 +174,13 @@
         {sessionId}
         {entry}
       />{/each}
-    <details>
+    <details
+      ontoggle={(event) => {
+        // The latest explanation is read when the user opens the response, so it shows
+        // above the decision without a click on the history.
+        if (event.currentTarget.open && !history.started && !pages.loading) void history.read();
+      }}
+    >
       <summary>Respond as user</summary>
       <p>
         {finding.origin === 'math'
@@ -181,13 +188,14 @@
           : 'A claimed fix stays unconfirmed until a confirmation review.'} Confirm and dismiss below
         are explicit user decisions.
       </p>
-      <!-- What the user decides on, exactly as agents read it (threat model, A3); the
-           explanations are exact in the history above. -->
+      <!-- What the user decides on, exactly as agents read it (threat model, A3): the
+           statement, the remedy and the latest explanation an agent gave. -->
       <ApprovalText text={finding.statement} label="The finding's statement, exactly" />
       {#if finding.remedy}<ApprovalText
           text={finding.remedy}
           label="Its suggested remedy, exactly"
         />{/if}
+      <LatestExplanation entries={history.entries()} loading={pages.loading} />
       <fieldset disabled={busy}>
         <p>
           Based on finding revision {draft.expected}. {#if draft.expected !== finding.revision}<button
