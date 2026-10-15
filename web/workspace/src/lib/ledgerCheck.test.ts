@@ -68,6 +68,7 @@ const evidence = (fields: Partial<EvidenceLink> = {}): EvidenceLink => ({
   span: null,
   sha256: 'ab'.repeat(32),
   checked: null,
+  locator: null,
   scope: null,
   added: 1,
   handle: null,
