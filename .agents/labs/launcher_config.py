@@ -11,13 +11,16 @@ writes the path alone and never opens the file.
 
 OUT gets every setting of examples/sandbox-science.toml, with absolute paths, the state
 directory DIR and, if given, the project ID and the MCP proxy for crypto-research-mcp.
-It is written with mode 600, and refused inside a git checkout.
+It is written with mode 600, and refused inside a git checkout. With the MCP proxy, the
+policy is examples/policy.yaml with crypto-research-mcp's address in place of its
+placeholder, written as policy.yaml beside OUT: the proxy reaches the server it names.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -28,6 +31,27 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 EXAMPLE = REPOSITORY / "examples/sandbox-science.toml"
 PROFILE = REPOSITORY / "examples/openshell/profiles/cloudflare-access.yaml"
 CREDENTIALS = ("CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET")
+PLACEHOLDER = re.compile(r"url: https://mcp\.example\.invalid/crypto-research\b[^\n]*")
+"""The example policy's placeholder line for crypto-research-mcp, with its comment."""
+SERVER = "https://research-mcp-api.npages.org/mcp"
+"""crypto-research-mcp's Access-protected address (docs/MCP-CONNECTORS.md)."""
+
+
+def write_private(path: Path, text: str) -> None:
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    os.fchmod(descriptor, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as written:
+        written.write(text)
+
+
+def mcp_policy(example: Path) -> str:
+    """The example policy, with crypto-research-mcp's address in place of its placeholder."""
+    text, count = PLACEHOLDER.subn(
+        f"url: {SERVER}   # the Access-protected address", example.read_text(encoding="utf-8")
+    )
+    if count != 1:
+        raise SystemExit(f"{example} has no single placeholder address for crypto-research-mcp")
+    return text
 
 
 def main() -> int:
@@ -60,10 +84,11 @@ def main() -> int:
             proxy["provider_profile"] = str(PROFILE)
         data["mcp_proxy"] = proxy
     out.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-    os.fchmod(descriptor, 0o600)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as written:
-        written.write(toml.dumps(data))
+    if args.mcp_proxy is not None:
+        policy = out.parent / "policy.yaml"
+        write_private(policy, mcp_policy(Path(data["worker"]["policy"])))
+        data["worker"]["policy"] = str(policy)
+    write_private(out, toml.dumps(data))
     load_config(out)  # the launcher takes it
     print(f"wrote {out}")
     return 0
