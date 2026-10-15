@@ -138,7 +138,8 @@ async def test_a_skill_loads_once_and_narration_is_not_evidence(
         "main",
         "main",
     )
-    assert loaded["sha256"] == hashlib.sha256(b"SS-MARKER-ALPHA-1\n").hexdigest()
+    alpha = hashlib.sha256(b"SS-MARKER-ALPHA-1\n").hexdigest()
+    assert (loaded["body_sha256"], loaded["served_sha256"]) == (alpha, alpha)
     assert loaded["revision"] == _git(pack, "rev-parse", "HEAD")
     assert second["loads"][0]["status"] == "already_loaded"
     assert sum(text.count("SS-MARKER-ALPHA-1") for text in _results(record)) == 1
@@ -173,7 +174,8 @@ async def test_search_says_why_and_resources_stay_in_the_pack(harness: Harness, 
     reads = _skill_records(record)[2:]
     assert [r["status"] for r in reads] == ["ok", "ok", "resource_outside_pack", "not_found"]
     assert reads[0]["path"] == "beta/reference/notes.md"
-    assert reads[0]["sha256"] == hashlib.sha256(b"one\ntwo\n").hexdigest()
+    notes = hashlib.sha256(b"one\ntwo\n").hexdigest()
+    assert (reads[0]["file_sha256"], reads[0]["served_sha256"]) == (notes, notes)
 
 
 def _settings(state: Path, *args: str) -> None:
@@ -211,7 +213,8 @@ async def test_skills_loaded_at_start_count_toward_the_cap(
         "revision": _git(pack, "rev-parse", "HEAD"),
         "role": "main",
         "alias": "main",
-        "sha256": alpha,
+        "body_sha256": alpha,
+        "served_sha256": alpha,
         "status": "loaded",
         "model": "scripted-main",
     }
@@ -236,7 +239,7 @@ async def test_a_skill_past_the_cap_at_the_start_is_named_and_recorded(
         ("ss/beta", "loaded"),
         ("ss/alpha", "over_budget"),
     ]
-    assert "sha256" not in started[1]
+    assert "body_sha256" not in started[1]
 
 
 async def test_an_excluded_skill_is_left_out(harness: Harness, pack: Path) -> None:
@@ -268,7 +271,7 @@ async def test_a_run_keeps_the_skills_it_started_with(harness: Harness, pack: Pa
     (old,), (new,) = (_skill_records(one)[0]["loads"], _skill_records(two)[0]["loads"])
     assert old["revision"] == first
     assert new["revision"] != first
-    assert old["sha256"] != new["sha256"]
+    assert old["body_sha256"] != new["body_sha256"]
 
 
 def test_the_index_is_shortened_deterministically() -> None:

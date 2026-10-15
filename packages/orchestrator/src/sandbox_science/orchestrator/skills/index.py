@@ -81,6 +81,9 @@ def give(
         for skill, body in bodies.items():
             entry = by_id[skill]
             head = f'id="{skill}" revision="{entry.revision}" sha256="{entry.body_sha256}"'
+            served_sha256 = hashlib.sha256(body.encode()).hexdigest()
+            if served_sha256 != entry.body_sha256:  # line ends or hidden characters shown
+                head += f' served_sha256="{served_sha256}"'
             parts.append(f"<skill-{code} {head}>\n{body}\n</skill-{code}>")
     if left:
         parts.append(

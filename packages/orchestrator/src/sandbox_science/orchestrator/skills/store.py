@@ -14,8 +14,8 @@ import hashlib
 import json
 import re
 import sqlite3
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Collection, Sequence
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, Final, cast
 
@@ -200,13 +200,17 @@ class SkillStore:
             )
             return _pins(db, project, source)[0]
 
-    def effective(self, project: str) -> SkillSet:
-        """The skills a run of ``project`` is given now."""
+    def effective(self, project: str, *, excluded: Collection[str] | None = None) -> SkillSet:
+        """The skills a run of ``project`` is given now, or, with ``excluded``, would be
+        given with those excluded instead of the settings'. Each description is served as
+        the bodies are (``served``)."""
         if self.control.missing:
             return SkillSet((), (), ())
         with self.control.read() as tx:
             db = tx.sql
             settings = _settings(db, project)
+            if excluded is not None:
+                settings = replace(settings, excluded=tuple(excluded))
             entries: list[Entry] = []
             sources: list[str] = []
             for pin in _pins(db, project):
@@ -218,7 +222,9 @@ class SkillStore:
                     "ORDER BY name",
                     (found.snapshot,),
                 ):
-                    entry = Entry(pin.source, name, description, body, found.snapshot, revision)
+                    entry = Entry(
+                        pin.source, name, served(description), body, found.snapshot, revision
+                    )
                     if entry.qualified not in settings.excluded:
                         entries.append(entry)
         given = {entry.qualified for entry in entries}
@@ -272,7 +278,11 @@ class SkillStore:
                 raise ControlError(
                     INVALID_REQUEST, f"the {key} list passes {SETTINGS_BYTES[key]:,} bytes"
                 )
-        given = {entry.qualified: entry for entry in self.effective(project).entries}
+        # As the new lists would make the set: a skill the change includes again counts.
+        given = {
+            entry.qualified: entry
+            for entry in self.effective(project, excluded=lists["excluded"]).entries
+        }
         chars = sum(
             len(self.served_body(entry))
             for skill in lists["always"]

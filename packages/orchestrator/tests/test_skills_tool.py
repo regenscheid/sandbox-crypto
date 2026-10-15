@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -21,8 +22,8 @@ from sandbox_science.contracts.context import ExecutionContext
 from sandbox_science.orchestrator import loop
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.documents import USER
-from sandbox_science.orchestrator.hooks import Notice
-from sandbox_science.orchestrator.model import ToolCall
+from sandbox_science.orchestrator.hooks import Notice, Point, RunView, TurnHook
+from sandbox_science.orchestrator.model import ModelTurn, ToolCall
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.skills import SkillStore, snapshot
 from sandbox_science.orchestrator.skills import tool as skills_tool
@@ -79,8 +80,29 @@ async def test_a_name_that_names_no_skill_costs_only_itself(projects: ProjectSto
     assert json.loads(text)["error"]["kind"] == "not_found"
 
 
+class _Jobs(TurnHook):
+    """A source with a job notice at every point, as job notices come."""
+
+    name = "jobs"
+
+    async def notices(self, point: Point, run: RunView) -> Sequence[Notice]:
+        return [Notice("jobs", ("job-1",), "job_notices", [{"job_id": "job-1"}])]
+
+
+class _Script:
+    """A model that loads ``alpha``, then answers."""
+
+    def __init__(self) -> None:
+        load = ToolCall("c1", "skills", json.dumps({"action": "load", "names": ["alpha"]}))
+        self.turns = [ModelTurn(None, (load,), model="m"), ModelTurn("Done.", model="m")]
+
+    async def complete(self, messages: object, tools: object) -> ModelTurn:
+        return self.turns.pop(0)
+
+
 async def test_a_notice_never_cuts_a_loaded_body(projects: ProjectStore) -> None:
-    """A tool-point notice rides on the next result that may be cut; never a skill's."""
+    """B2: a tool-point notice rides on the next result that may be cut, never on a
+    skill's; it reaches the model at a later safe point."""
     body = "HEAD\n" + "step. " * 2500 + "\nMIDDLE-MARKER\n" + "more. " * 2500 + "\nTAIL\n"
     tool = _tool(_store(projects, _skill("alpha", body)))
     toolbox = Toolbox(
@@ -88,20 +110,16 @@ async def test_a_notice_never_cuts_a_loaded_body(projects: ProjectStore) -> None
         ExecutionContext(project_id="p", session_id="s", environment_id="e"),
         skills=tool,
     )
-    arguments = json.dumps({"action": "load", "names": ["alpha"]})
-    outcome = await toolbox.call(ToolCall("c1", "skills", arguments), "op-1", model="m")
-
-    class Jobs:
-        name = "jobs"
-
-        async def notices(self, point: str, run: object) -> list[Notice]:
-            return [Notice("jobs", ("job-1",), "job_notices", [{"job_id": "job-1"}])]
-
-    transcript = loop.Transcript(messages=[])
-    await loop._attach([cast(Any, Jobs())], transcript, outcome, 20000)
-    assert "MIDDLE-MARKER" in outcome.text
-    assert "TAIL" in outcome.text
-    assert "job_notices" not in outcome.text  # it waits for a later safe point
+    transcript = await loop.run_task(
+        cast(Any, _Script()), toolbox, "Load alpha.", run_id="r", hooks=[_Jobs()]
+    )
+    (result,) = [m["content"] for m in transcript.messages if m.get("role") == "tool"]
+    assert "MIDDLE-MARKER" in result
+    assert "TAIL" in result
+    assert "job_notices" not in result
+    assert any(
+        "job-1" in str(m.get("content")) for m in transcript.messages if m.get("role") != "tool"
+    )
 
 
 async def test_a_read_is_text_or_binary_by_the_whole_file(projects: ProjectStore) -> None:
@@ -119,7 +137,7 @@ async def test_a_read_is_text_or_binary_by_the_whole_file(projects: ProjectStore
     assert "a" * 100 in text
     assert "é" not in text
     assert f"[first {MAX_READ - 1:,} of {len(content):,} bytes]" in text
-    assert record["sha256"] == hashlib.sha256(content[: MAX_READ - 1]).hexdigest()
+    assert record["file_sha256"] == hashlib.sha256(content[: MAX_READ - 1]).hexdigest()
     text, record = await _call(
         _tool(store), action="read", skill="alpha", path="reference/blob.bin"
     )
@@ -194,3 +212,54 @@ def test_settings_are_refused_as_the_store_would_refuse_them(projects: ProjectSt
     longest = tuple(f"{'s' * 60}{i:04d}/{'n' * 64}" for i in range(500))
     with pytest.raises(ControlError, match="the excluded list passes 65,536 bytes"):
         store.set_settings("p", USER, 1, always=(), excluded=longest)
+
+
+async def test_line_ends_are_plain_and_both_hashes_are_recorded(projects: ProjectStore) -> None:
+    """A CRLF body is given with line feeds, costs no more for its line ends, and counts
+    no hidden characters; the records name the pack's text's SHA-256 and the served one's
+    (review of #421)."""
+    raw = "Step one.\r\nStep two.\r\n"
+    text = f"---\r\nname: alpha\r\ndescription: A.\r\n---\r\n{raw}"
+    store = _store(projects, PackFile("alpha/SKILL.md", text.encode()))
+    (imported,) = store.imports("ss")
+    assert "hidden_characters" not in imported.report
+    tool = _tool(store)
+    answer, record = await _call(tool, action="load", names=["alpha"])
+    assert "Step one.\nStep two.\n" in answer
+    assert "U+000D" not in answer
+    (load,) = record["loads"]
+    served = hashlib.sha256(b"Step one.\nStep two.\n").hexdigest()
+    assert load["served_sha256"] == served
+    assert load["body_sha256"] == hashlib.sha256(raw.encode()).hexdigest()
+    assert (
+        f"as given here, with plain line ends and hidden characters shown: SHA-256 {served}"
+        in answer
+    )
+    assert tool.chars == len("Step one.\nStep two.\n")
+
+
+async def test_descriptions_are_served_as_bodies_are(projects: ProjectStore) -> None:
+    """A blank-looking character in a description shows as its code point in the index
+    and in search results."""
+    store = _store(
+        projects,
+        PackFile(
+            "beta/SKILL.md", "---\nname: beta\ndescription: Blank\u2800looking.\n---\nB\n".encode()
+        ),
+    )
+    tool = _tool(store)
+    section = tool.given.section
+    assert section is not None
+    assert "Blank⟦U+2800⟧looking." in section.text
+    answer, _ = await _call(tool, action="search", query="blank looking beta")
+    assert "\u2800" not in answer
+    assert "U+2800" in answer
+
+
+def test_settings_check_the_cap_as_the_new_lists_make_the_set(projects: ProjectStore) -> None:
+    """A change that includes a skill again and loads it at the start is checked with the
+    skill in the set (review of #421)."""
+    store = _store(projects, _skill("alpha", "a" * 60_000 + "\n"), _skill("beta", "b" * 60_000))
+    store.set_settings("p", USER, 0, always=("ss/alpha",), excluded=("ss/beta",))
+    with pytest.raises(ControlError, match="past the run's 100,000"):
+        store.set_settings("p", USER, 1, always=("ss/alpha", "ss/beta"), excluded=())

@@ -18,7 +18,11 @@ from typing import Any, Final, cast
 
 import yaml
 
-from sandbox_science.orchestrator.documents.agent_text import hidden_characters, visible
+from sandbox_science.orchestrator.documents.agent_text import (
+    hidden_characters,
+    newlines,
+    visible,
+)
 from sandbox_science.orchestrator.documents.frontmatter import NoAliases
 
 from .sources import Fetched, PackFile, Skipped
@@ -162,10 +166,10 @@ def body(text: str) -> str:
 
 
 def served(text: str) -> str:
-    """Pack text as a run is given it: each hidden character, and each that can pass for
-    other text, written as its code point (``visible``), so that none acts or passes
-    unseen in the model's context."""
-    return visible(text)
+    """Pack text as a run is given it: line ends made line feeds, as kept text's are, then
+    each hidden character, and each that can pass for other text, written as its code
+    point (``visible``), so that none acts or passes unseen in the model's context."""
+    return visible(newlines(text))
 
 
 def hidden(files: tuple[PackFile, ...]) -> list[dict[str, Any]]:
@@ -176,7 +180,7 @@ def hidden(files: tuple[PackFile, ...]) -> list[dict[str, Any]]:
             text = file.content.decode()
         except UnicodeDecodeError:
             continue  # binary: read as such, never shown as text
-        if count := len(hidden_characters(text)):
+        if count := len(hidden_characters(newlines(text))):  # a CR line end is no secret
             found.append({"path": file.path, "characters": count})
     return found
 
