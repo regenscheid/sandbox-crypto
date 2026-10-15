@@ -200,7 +200,8 @@ FIND_ARTIFACTS: Final = ToolSpec(
         "properties": {
             "path": {
                 "type": "string",
-                "description": "A file's path as you published it: in the workspace, or shared/…",
+                "description": "A file's path as you published it, in the workspace or "
+                "shared/…, or as this tool lists it, sessions/<session>/…",
             },
             "contains": {
                 "type": "string",

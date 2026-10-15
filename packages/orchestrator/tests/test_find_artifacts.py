@@ -101,6 +101,9 @@ async def test_a_later_run_finds_what_an_earlier_one_published(tmp_path: Path) -
         assert (await call(toolbox, "find_artifacts", media_type="image/"))["artifacts"] == []
         named = await call(toolbox, "find_artifacts", contains="order")
         assert [e["path"] for e in named["artifacts"]] == ["sessions/s1/results/order.json"]
+        # The path as the listing shows it finds the same file (lab 39).
+        listed = await call(toolbox, "find_artifacts", path="sessions/s1/results/order.json")
+        assert [e["artifact_id"] for e in listed["artifacts"]] == [found["artifact_id"]]
         shared = await call(toolbox, "find_artifacts", path="shared/qdsa.pdf")
         assert shared["artifacts"][0]["media_type"] == "application/pdf"
 
