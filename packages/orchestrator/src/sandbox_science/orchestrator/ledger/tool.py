@@ -16,7 +16,7 @@ import binascii
 import hashlib
 import json
 from collections.abc import Awaitable, Callable
-from typing import Annotated, Any, Final
+from typing import Annotated, Any, Final, get_args
 
 from pydantic import ConfigDict, Field, ValidationError
 
@@ -33,7 +33,17 @@ from sandbox_science.orchestrator.hooks import Effect
 from sandbox_science.orchestrator.model import ToolSpec
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 
-from .models import PREFIXES, STATUSES, EntryHistory, EntryPage, EntryType, EntryView, Mutation
+from .models import (
+    PREFIXES,
+    STATUSES,
+    ClaimKind,
+    EntryHistory,
+    EntryPage,
+    EntryType,
+    EntryView,
+    Mutation,
+    Scheme,
+)
 from .store import Ledger
 
 Json = dict[str, Any]
@@ -123,16 +133,48 @@ _EVIDENCE = {
     "required": ["role", "type"],
     "additionalProperties": False,
 }
+_STATUSES = sorted({status for statuses in STATUSES.values() for status in statuses})
+_FIELDS = {
+    "type": "object",
+    "description": (
+        "The type's own fields. A claim: kind. A result: kind, category, conditions "
+        "(name: text) and measures (name: number or text). A reference: identifiers, "
+        "authors, published, version or retrieved, and pdf. Other types have none"
+    ),
+    "properties": {
+        "kind": {"type": "string", "enum": list(get_args(ClaimKind))},
+        "category": {"type": "string"},
+        "conditions": {"type": "object", "additionalProperties": {"type": "string"}},
+        "measures": {"type": "object", "additionalProperties": {"type": ["number", "string"]}},
+        "identifiers": {
+            "type": "object",
+            "properties": {scheme: {"type": "string"} for scheme in get_args(Scheme)},
+            "additionalProperties": False,
+        },
+        "authors": {"type": "array", "items": {"type": "string"}},
+        "published": {"type": "string"},
+        "version": {"type": "string"},
+        "retrieved": {"type": "string"},
+        "pdf": {
+            "type": "object",
+            "properties": {
+                "artifact_id": {"type": "string"},
+                "revision": {"type": "integer"},
+                "sha256": {"type": "string"},
+            },
+            "required": ["artifact_id", "revision"],
+            "additionalProperties": False,
+        },
+    },
+    "additionalProperties": False,
+}
 _CHANGE = {
     "type": "object",
     "description": (
         "One entry to create (give type, title and statement; origin project for a "
         "claim or result; key to link to it from this change's other entries) or to "
         "revise (give entry and the revision you read as expected, then only what "
-        "changes). fields are the type's own: a claim's kind; a result's kind, "
-        "category, conditions and measures; a reference's identifiers (doi, eprint, "
-        "arxiv, nist, isbn, url), authors, published, version or retrieved, and pdf "
-        "(artifact_id, revision, and optionally its sha256). links replaces the "
+        "changes). links replaces the "
         "entry's outgoing links; evidence adds evidence links, and evidence_removed "
         "removes those with the IDs it names"
     ),
@@ -149,9 +191,11 @@ _CHANGE = {
         },
         "status": {
             "type": "string",
-            "enum": sorted({status for statuses in STATUSES.values() for status in statuses}),
+            "description": "The statuses of each type: "
+            + "; ".join(f"{kind}: {', '.join(statuses)}" for kind, statuses in STATUSES.items()),
+            "enum": _STATUSES,
         },
-        "fields": {"type": "object"},
+        "fields": _FIELDS,
         "links": {"type": "array", "items": _LINK, "maxItems": 64},
         "evidence": {"type": "array", "items": _EVIDENCE, "maxItems": 32},
         "evidence_removed": {"type": "array", "items": {"type": "string"}, "maxItems": 32},
@@ -170,7 +214,10 @@ SPECS: Final = (
             "type": "object",
             "properties": {
                 "type": {"type": "string", "enum": list(PREFIXES)},
-                "status": {"type": "string"},
+                "status": {
+                    "type": "string",
+                    "enum": _STATUSES,
+                },
                 "after": _ENTRY,
                 "limit": {"type": "integer", "minimum": 1, "maximum": 100},
             },

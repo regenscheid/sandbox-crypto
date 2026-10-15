@@ -659,3 +659,35 @@ async def test_a_read_of_many_findings_and_long_fields_stays_within_the_budget(
             break
         args = {"entry": "REF-1", **part["more"]}
     assert seen == [finding.finding_id for finding in findings]
+
+
+def test_the_change_schema_lists_the_values_the_ledger_takes() -> None:
+    """Lab 37: a model guessed the claim kind "computational"; the schema now lists the
+    allowed values, and each is one the ledger takes."""
+    from sandbox_science.orchestrator.ledger.models import (
+        STATUSES,
+        ClaimFields,
+        EvidenceInput,
+        ReferenceFields,
+    )
+    from sandbox_science.orchestrator.ledger.tool import SPECS
+
+    (spec,) = [s for s in SPECS if s.name == "ledger_change"]
+    change = spec.parameters["properties"]["changes"]["items"]["properties"]
+    fields = change["fields"]["properties"]
+    assert fields["kind"]["enum"] == [
+        "lemma", "theorem", "observation", "counterexample", "negative_result", "other"
+    ]  # fmt: skip
+    for kind in fields["kind"]["enum"]:
+        ClaimFields.model_validate({"kind": kind})
+    for scheme in fields["identifiers"]["properties"]:
+        ReferenceFields.model_validate({"identifiers": {scheme: "x"}})
+    described = change["status"]["description"]
+    for kind, statuses in STATUSES.items():
+        assert f"{kind}: {', '.join(statuses)}" in described
+    evidence = change["evidence"]["items"]["properties"]
+    for role in evidence["role"]["enum"]:
+        for kind in evidence["type"]["enum"]:
+            EvidenceInput.model_validate({"role": role, "type": kind, "entry": "C-1"})
+    assert "unclassified" not in evidence["type"]["enum"]
+    assert len(spec.description) <= 1024
