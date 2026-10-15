@@ -30,7 +30,7 @@ IDs are the version strings in the code.
 | Platform notices | `sandbox-notice-requests-1`, `-jobs-1`, `-jobs-attached-1`, `-plans-1`, `-review-findings-1`, `-review-counts-1`, `-math-1`, `-delegations-2`, `-delegations-attached-1`, `-delegations-running-2`, `-outcome-correction-1` | [notices.py](../packages/orchestrator/src/sandbox_science/orchestrator/notices.py) | User-role messages for document work requests, job completions, reviewer findings and counts, plan reread requirements, closing math findings, delegation outcomes, the delegated runs a closing answer waits for, and a delegated run's one correction of its result; job completions and delegation outcomes also ride on tool results |
 | Kernel package notice | `sandbox-kernels-1` | [notices.py](../packages/orchestrator/src/sandbox_science/orchestrator/notices.py) `KERNELS` | Before a model call in a stateful MAIN run, once per kernel and package revision ([kernel check](KERNEL-REVISIONS.md#kernel-check-before-each-turn)) |
 | Job watcher | `sandbox-job-watcher-1` | [jobs.py](../packages/orchestrator/src/sandbox_science/orchestrator/jobs.py) `WATCHER_PROMPT`; `watcher_prompt.py` | Each due check-in when a watcher alias is configured ([background jobs](BACKGROUND-JOBS.md), [watcher provenance](WATCHER-PROMPT-PROVENANCE.md)) |
-| Consistency reviewer | Rubric `sandbox-consistency-3`; assembly `sandbox-reviewer-bundle-1` | [consistency/rubric.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/rubric.py) `RUBRIC`; `consistency/runner.py` `SPECS` (five read-only review tools) | Each reviewer call ([consistency review](CONSISTENCY-REVIEW.md), [reviewer provenance](REVIEWER-PROMPT-PROVENANCE.md)) |
+| Consistency reviewer | Rubric `sandbox-consistency-4`; assembly `sandbox-reviewer-bundle-1` | [consistency/rubric.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/rubric.py) `RUBRIC`; `consistency/runner.py` `SPECS` (five read-only review tools) | Each reviewer call ([consistency review](CONSISTENCY-REVIEW.md), [reviewer provenance](REVIEWER-PROMPT-PROVENANCE.md)) |
 | Display math repair | Not versioned | [workspace/mathrepair.py](../packages/workspace/src/sandbox_science/workspace/mathrepair.py) `SYSTEM_PROMPT` | An opt-in repair request from the workspace |
 
 What each input does:
@@ -201,7 +201,7 @@ authority or proof of provider behavior:
   system text, `sandbox-job-watcher-1` and empty-tool pins are stored on each
   call reservation, atomically with its budget admission. Legacy rows stay unknown.
 - **Reviewer** ([reviewer provenance](REVIEWER-PROMPT-PROVENANCE.md)). The exact
-  `sandbox-consistency-3` rubric text and ordered six-tool pins are stored on each
+  `sandbox-consistency-4` rubric text and ordered six-tool pins are stored on each
   call reservation, atomically with its counters.
 - **Display repair.** No record: the prompt is `SYSTEM_PROMPT` in `mathrepair.py`, and
   nothing about a repair call is kept beyond the server's in-memory cache.
