@@ -141,10 +141,11 @@ sandbox-science-harness document show ff --state-dir state --project p1
 sandbox-science-harness document history ff --state-dir state --project p1
 sandbox-science-harness document suggestions ff on --state-dir state --project p1
 sandbox-science-harness document decide ff patch-… accept --state-dir state --project p1
+sandbox-science-harness document decide ff patch-… accept --base 4 --state-dir state --project p1
 sandbox-science-harness document delete ff --reason "…" --state-dir state --project p1
 ```
 
-`import` creates the document, or saves the file as its next revision, attributed to an import the user started; `--session` makes it a workbook document. A file saved over an existing document must name the revision it was made from with `--base`, which must be the current one, so an import never undoes revisions made since; `export` writes a revision's text to a file and says which revision it is. `show` prints the blocks with their IDs, `history` each revision with its author, reason and changed blocks, each block's revisions, and the patches with their states (LD-11).
+`import` creates the document, or saves the file as its next revision, attributed to an import the user started; `--session` makes it a workbook document. A file saved over an existing document must name the revision it was made from with `--base`, which must be the current one, so an import never undoes revisions made since; `export` writes a revision's text to a file and says which revision it is. `show` prints the blocks with their IDs, `history` each revision with its author, reason and changed blocks, each block's revisions, and the patches with their states (LD-11). `decide … accept` first prints the document's text as the suggestion would make it, exactly, each hidden character as its code point (`⟦U+202E⟧`), and accepts only when run again with `--base`, the revision that text was made against; if the document has moved on since, it is a conflict (threat model, A3).
 
 ## Comments and work requests
 

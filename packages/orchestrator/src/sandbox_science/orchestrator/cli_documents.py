@@ -21,6 +21,7 @@ from typing import Any
 from sandbox_science.contracts import ErrorKind, ExecutionContext, new_id
 
 from .documents import USER, Author, DocumentError, DocumentStore, store_path
+from .documents.agent_text import visible
 from .documents.errors import CONFLICT
 from .documents.tool import view_blocks
 from .ledger import Ledger
@@ -254,12 +255,33 @@ def document(args: argparse.Namespace) -> int:
                 taken = "as suggestions" if info.takes_suggestions else "directly"
                 print(f"document {info.name} takes agent patches {taken}")
             case "decide":
+                if args.decision == "accept" and args.base is None:
+                    # What the user accepts is what agents read: the text first, exactly,
+                    # each hidden character a code point (threat model, A3).
+                    preview = store.preview_patch(args.project, args.document, args.patch)
+                    if preview["proposed"] is None:
+                        why = preview["message"] or "it changes blocks it does not name"
+                        raise DocumentError(
+                            CONFLICT,
+                            f"suggestion {args.patch} does not apply to revision "
+                            f"{preview['base']}: {why}",
+                        )
+                    sys.stdout.write(visible(preview["proposed"]))
+                    print(
+                        f"error: the text above is revision {preview['base']} with suggestion "
+                        f"{args.patch}, exactly as it would be saved, each hidden character "
+                        "shown as its code point; to accept it, run again with --base "
+                        f"{preview['base']}",
+                        file=sys.stderr,
+                    )
+                    return 1
                 result = store.decide(
                     args.project,
                     args.document,
                     args.patch,
                     accept=args.decision == "accept",
                     author=USER,
+                    base=args.base,
                 )
                 print(result.model_dump_json(indent=2, exclude_defaults=True))
             case _:
@@ -405,6 +427,11 @@ def add_parsers(commands: Any) -> None:
     decide.add_argument("document")
     decide.add_argument("patch")
     decide.add_argument("decision", choices=("accept", "reject"))
+    decide.add_argument(
+        "--base",
+        type=int,
+        help="the revision the suggestion's text was shown against; accepting needs it",
+    )
     delete = actions.add_parser("delete", parents=[common], help="delete a document")
     delete.add_argument("document")
     delete.add_argument("--reason", required=True)

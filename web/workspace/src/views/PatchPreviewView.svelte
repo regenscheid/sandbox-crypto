@@ -6,6 +6,7 @@
 <script lang="ts">
   import type { PatchPreview } from '../lib/api';
   import { describeAuthor } from '../lib/authors';
+  import { visible } from '../lib/text';
   import ApprovalText from './ApprovalText.svelte';
 
   let {
@@ -24,7 +25,7 @@
   </p>
   <details>
     <summary>Retained operations</summary>
-    <pre>{JSON.stringify(preview.patch.operations, null, 2)}</pre>
+    <pre>{visible(JSON.stringify(preview.patch.operations, null, 2))}</pre>
   </details>
   {#if preview.message}<p role="alert">{preview.message}</p>{/if}
   {#if preview.proposed === null}

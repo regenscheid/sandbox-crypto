@@ -10,6 +10,7 @@
   import { Detail, noDetail } from '../lib/detail';
   import { newestFirst, reviewable } from '../lib/documentHistory';
   import { formatTime } from '../lib/format';
+  import { visible } from '../lib/text';
   import { documentHref, projectHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
   import PatchReview from './PatchReview.svelte';
@@ -67,7 +68,7 @@
               <span class="muted">accepted by {describeAuthor(revision.accepted_by)}</span>
             {/if}
           </td>
-          <td>{revision.reason}</td>
+          <td>{visible(revision.reason)}</td>
           <td>
             {revision.tombstone ? 'deleted the document' : describeChanges(revision)}
             {#if revision.warnings > 0}
@@ -143,7 +144,7 @@
                 {/if}
               </td>
               <td
-                >{patch.reason}
+                >{visible(patch.reason)}
                 {#if reviewable(patch)}
                   <PatchReview
                     {projectId}

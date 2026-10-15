@@ -56,6 +56,21 @@ describe('a patch the user applies', () => {
     expect(html).toMatch(/<button[^>]*disabled[^>]*>Apply reviewed patch/);
   });
 
+  it('shows the retained operations with hidden characters as code points', () => {
+    const value = preview('First.\n\nx\n');
+    const override = String.fromCodePoint(0x202e);
+    value.patch.operations = [{ op: 'replace', block: 'b2', markdown: `a${override}b` }];
+    const html = shown(value);
+    expect(hiddenCharacters(html)).toEqual([]);
+    expect(html).toContain('a⟦U+202E⟧b');
+  });
+
+  it('shows reasons in the history as code points too', async () => {
+    const source = (await import('../views/HistoryView.svelte?raw')).default;
+    expect(source).toContain('{visible(revision.reason)}');
+    expect(source).toContain('{visible(patch.reason)}');
+  });
+
   it('renders no text as HTML', () => {
     const views = import.meta.glob(
       ['../views/PatchPreviewView.svelte', '../views/PatchReview.svelte'],
