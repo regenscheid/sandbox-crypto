@@ -136,7 +136,7 @@ async def test_accepted_entries_reach_the_next_agent(runs: Runs) -> None:
     later = third.transcript.prompt_provenance.memory
     assert later is not None
     assert (later.version, later.entries) == (2, ("mem-1@1", "mem-2@1"))
-    assert "Install with provision." in runs.model.systems[2]
+    assert "Install with provision." in runs.model.systems[-1]
 
 
 async def test_a_long_memory_is_given_whole_entries_up_to_the_bound(runs: Runs) -> None:

@@ -80,16 +80,19 @@ GOLDEN = {
     ),
     "sandbox-notice-math-1": "c65c1f751f7b2928f15f0d846b816e2287eeb3ddd63fa63ad083226fe0cf19c9",
     "sandbox-kernels-1": "a0211d3dbc39708fdf924610123e76f5cb70c5c25d888c29188d858b594733d9",
-    "sandbox-notice-delegations-1": (
-        "d378f8306bae1e3999382a4418a5cec0fff74378287a2b88d0f51ec132baf1a3"
+    "sandbox-notice-delegations-2": (
+        "c5205b989bf47c287caabdd8f9b7c3c8a7190be02ab1cabfc53631e904c1157a"
     ),
     "sandbox-notice-delegations-attached-1": (
         "c1be06fbad94b08b6eceb24ac20ed31ad2f77b7664c262cd06c623fe99c7407e"
     ),
-    "sandbox-notice-delegations-running-1": (
-        "5070f934df9e602114dc0982511e869cafb4d6455e788c2df7cf58aebfcefd68"
+    "sandbox-notice-delegations-running-2": (
+        "c9a8bab83313d421f56598703924f57397727a0983b4c9156bcff6df39a9970a"
     ),
-    "sandbox-delegated-check-1": "f2f0d98c0594f576e931484791a84fc8db6d6031e8ae5328c4d6a87f83c59de3",
+    "sandbox-notice-outcome-correction-1": (
+        "4d308ab03dd3549555c60202b1690a59e7025667f6189cdb5abb4aa25cf6eae1"
+    ),
+    "sandbox-delegated-check-2": "d1b73f0ed37d5d5c31879c08f0877ebbb045a17a052bc8a37ae0bde186901488",
     "sandbox-job-watcher-1": "4b545fe81e35622bf1b894c435833d78fb122116f9364d429b21c6c3551e1ab1",
     "sandbox-consistency-2": "e5c5c248a9ba6109e984200bdfadf674c6c9b07cbef42d08a2586fece11cd874",
     "sandbox-memory-run-1": "b69cc482f75853487a499ac89b5701b148066e919842a9970e6e318b2bdce121",

@@ -7,8 +7,11 @@ parent, and returns; the harness runs the child in role ``delegated`` and saves 
 record, and the delegation's outcome is written when it ends. ``wait_delegations`` waits
 on some children, all or the first to end, and ends early when the user writes to the
 session; it returns whole outcomes, as many as fit, of any of the session's ended
-delegations. The tools are offered only when the project lets its runs delegate. As a
-turn hook, ``Delegations``, which every main run with the stores has:
+delegations. ``delegation_status`` reads one; ``cancel_delegation`` cancels one the run
+started and returns its outcome (PD-39). The tools are offered only when the project
+lets its runs delegate. An outcome gives the child's result when it validated, and
+otherwise its answer as returned with the errors (PD-17, PD-18, PD-20). As a turn hook,
+``Delegations``, which every main run with the stores has:
 
 - ends ``interrupted``, as the run starts, the session's delegations still running,
   whose process ended (PD-40);
@@ -55,7 +58,7 @@ from sandbox_science.orchestrator.worker_client import WorkerAPIError, dump
 
 from .prompt import brief_text
 from .records import Delegation, DelegationRecords, Ended, Ending
-from .specs import SPECS, CheckBrief, WaitRequest
+from .specs import SPECS, CheckBrief, Named, WaitRequest
 
 _log = logging.getLogger(__name__)
 
@@ -97,6 +100,11 @@ class ChildEnd:
     final_text: str | None
     refused: str | None = None
     """Why its plan fence refused its calls, if it did."""
+    result: dict[str, JsonValue] | None = None
+    """Its result, as its output schema validated it."""
+    errors: tuple[str, ...] = ()
+    alias: str | None = None
+    models: tuple[str, ...] = ()
 
 
 class ChildRunner(Protocol):
@@ -127,6 +135,8 @@ class _Running:
     run_id: str
     task: asyncio.Task[None]
     stop: asyncio.Event
+    limits: dict[str, int]
+    """Its turns and tokens, at most."""
 
 
 class Delegations(TurnHook):
@@ -173,9 +183,15 @@ class Delegations(TurnHook):
     # --- The tools ------------------------------------------------------------------
 
     async def call(self, name: str, args: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-        if name == "delegate":
-            return await self._delegate(CheckBrief.model_validate(args))
-        return await self._wait(WaitRequest.model_validate(args))
+        match name:
+            case "delegate":
+                return await self._delegate(CheckBrief.model_validate(args))
+            case "wait_delegations":
+                return await self._wait(WaitRequest.model_validate(args))
+            case "delegation_status":
+                return await self._status(Named.model_validate(args).delegation_id)
+            case _:
+                return await self._cancel_one(Named.model_validate(args).delegation_id)
 
     async def _delegate(self, brief: CheckBrief) -> tuple[str, dict[str, Any]]:
         if len(self._running()) >= MAX_RUNNING:
@@ -221,7 +237,9 @@ class Delegations(TurnHook):
         )
         stop = asyncio.Event()
         task = asyncio.create_task(self._run(child, stop), name=f"delegation {delegation_id}")
-        self.children[delegation_id] = _Running(delegation, run_id, task, stop)
+        self.children[delegation_id] = _Running(
+            delegation, run_id, task, stop, {"turns": child.max_turns, "tokens": child.tokens}
+        )
         started_with = {
             "delegation_id": delegation_id,
             "run": delegation.run,
@@ -236,7 +254,16 @@ class Delegations(TurnHook):
         ending = Ending("failed", "error")
         try:
             end = await self.runner(child, stop)
-            ending = Ending(observed(end), end.stopped, end.final_text, end.refused)
+            ending = Ending(
+                observed(end),
+                end.stopped,
+                end.final_text,
+                end.refused,
+                end.result,
+                end.errors,
+                end.alias,
+                end.models,
+            )
         except asyncio.CancelledError:
             # Cancelled outside its loop, before it started or while it was saved.
             if (current := asyncio.current_task()) is not None:
@@ -291,18 +318,45 @@ class Delegations(TurnHook):
             found = {i: await self._read(i) for i in ids}
         shown: list[dict[str, object]] = []
         for delegation in found.values():
-            if delegation.ended is None:
-                shown.append({**_named(delegation), "state": "running"})
-                continue
-            whole = outcome(delegation)
-            if len(dump({"reason": reason, "delegations": [*shown, whole]})) > self.output_chars:
-                shown.append({**summarized(delegation), "more": "wait on it again for all of it"})
-                continue
-            shown.append(whole)
-            self.returned.add(delegation.delegation_id)
+            used = len(dump({"reason": reason, "delegations": shown}))
+            shown.append(self._shown(delegation, used))
         result = {"reason": reason, "delegations": shown}
         ended = [i for i, d in found.items() if d.ended is not None]
         return dump(result), {"wait": {"reason": reason, "ended": ended}}
+
+    async def _status(self, delegation_id: str) -> tuple[str, dict[str, Any]]:
+        shown = self._shown(await self._read(delegation_id))
+        return dump(shown), {"status": {"delegation_id": delegation_id}}
+
+    async def _cancel_one(self, delegation_id: str) -> tuple[str, dict[str, Any]]:
+        """Cancel a running child (PD-39) and return its outcome; one that ended stays as
+        it ended."""
+        child = self.children.get(delegation_id)
+        if child is None:
+            raise WorkerAPIError(
+                ErrorKind.NOT_FOUND, f"this run started no delegation {delegation_id!r}"
+            )
+        cancelled = not child.task.done()
+        if cancelled:
+            await self._stopped([child])
+        found = await self._read(delegation_id)
+        shown = {**self._shown(found), "cancelled": cancelled}
+        return dump(shown), {"cancel": {"delegation_id": delegation_id, "cancelled": cancelled}}
+
+    def _shown(self, delegation: Delegation, used: int = 0) -> dict[str, object]:
+        """A delegation as a tool returns it: a running one's state, or an ended one's
+        whole outcome when it fits the output limit with the ``used`` characters before
+        it, which then counts as received once a model call has seen it; otherwise its
+        summary."""
+        if delegation.ended is None:
+            child = self.children.get(delegation.delegation_id)
+            limits = {"limits": child.limits} if child is not None else {}
+            return {**_named(delegation), "state": "running", **limits}
+        whole = outcome(delegation)
+        if used + len(dump(whole)) > self.output_chars:
+            return {**summarized(delegation), "more": "too long here: read it alone"}
+        self.returned.add(delegation.delegation_id)
+        return whole
 
     async def _read(self, delegation_id: str) -> Delegation:
         context = self.context
@@ -430,19 +484,39 @@ def _named(delegation: Delegation) -> dict[str, object]:
 
 
 def _ending(delegation: Delegation) -> dict[str, object]:
-    found = {**_named(delegation), "ended": delegation.ended, "stopped": delegation.stopped}
+    found = {
+        **_named(delegation),
+        "ended": delegation.ended,
+        "stopped": delegation.stopped,
+        "alias": delegation.alias,
+        "models": list(delegation.models),
+    }
     if delegation.refused is not None:
         found["refused"] = delegation.refused
     return found
 
 
 def outcome(delegation: Delegation) -> dict[str, object]:
-    """A delegation's whole outcome as its parent receives it (PD-20)."""
-    return {**_ending(delegation), "report": delegation.report}
+    """A delegation's whole outcome as its parent receives it (PD-20): how it ended, and
+    its result, or, when that is missing, its answer as returned and why it did not
+    validate."""
+    if delegation.result is not None:
+        return {**_ending(delegation), "result": delegation.result}
+    return {
+        **_ending(delegation),
+        "result": None,
+        "errors": list(delegation.errors),
+        "answer": delegation.report,
+    }
 
 
 def summarized(delegation: Delegation) -> dict[str, object]:
-    """A delegation's outcome as a notice gives it: the head of its report."""
-    report = delegation.report or ""
-    head = report if len(report) <= SUMMARY_CHARS else report[:SUMMARY_CHARS] + "…"
-    return {**_ending(delegation), "report_head": head, "report_chars": len(report)}
+    """A delegation's outcome as a notice gives it: its verdict and status, or without a
+    result the head of its answer."""
+    found = _ending(delegation)
+    if delegation.result is not None:
+        result = delegation.result
+        return {**found, "verdict": result.get("verdict"), "status": result.get("status")}
+    answer = delegation.report or ""
+    head = answer if len(answer) <= SUMMARY_CHARS else answer[:SUMMARY_CHARS] + "…"
+    return {**found, "result": None, "answer_head": head, "answer_chars": len(answer)}

@@ -2,12 +2,14 @@
 """Delegations and each project's delegation setting, in the control store.
 
 A delegation is written when its parent starts it, with its brief, and once more when
-its child ends, with its outcome: how the child ended, as the harness observed it, the
-child's final answer as it returned it, its report, and why the plan fence refused its
-calls, if it did (PD-17, PD-20, PD-34). Neither changes afterwards. The run that
-received the outcome is written once that run's record is saved (PD-35); until then,
-the outcome waits for the session's next main run. A delegation still running when its
-session's next main run starts has lost its process: it ends ``interrupted`` (PD-40).
+its child ends, with its outcome: how the child ended, as the harness observed it; the
+child's final answer as it returned it, its report; the result that answer gives, if it
+validated, and the validation errors; the model alias and the models the child ran on;
+and why the plan fence refused its calls, if it did (PD-17, PD-20, PD-29, PD-34).
+Neither changes afterwards. The run that received the outcome is written once that run's
+record is saved (PD-35); until then, the outcome waits for the session's next main run.
+A delegation still running when its session's next main run starts has lost its
+process: it ends ``interrupted`` (PD-40).
 
 Each project's setting is how deep its runs may delegate: 0, the default, offers no
 delegation; 1 lets main runs delegate. Each method is one transaction and may run in a
@@ -42,8 +44,9 @@ PAGE: Final = 50
 
 _COLUMNS: Final = (
     "delegation_id, parent, run, kind, brief, started_at, ended, stopped, report, "
-    "ended_at, refused, acknowledged"
+    "ended_at, refused, acknowledged, result, errors, alias, models"
 )
+_JSON: Final = ("brief", "result", "errors", "models")
 
 
 class Delegation(Contract):
@@ -67,6 +70,14 @@ class Delegation(Contract):
     """Why the plan fence refused the child's calls, as the platform observed it."""
     acknowledged: str | None = None
     """The run whose saved record says a model call of it saw the outcome."""
+    result: dict[str, JsonValue] | None = None
+    """The child's result, as its output schema validated it; ``None`` when missing."""
+    errors: tuple[str, ...] = ()
+    """Why the child's answers did not validate, in order."""
+    alias: str | None = None
+    """The model alias the child ran under."""
+    models: tuple[str, ...] = ()
+    """The models the gateway named for its calls, in order of first use."""
 
 
 @dataclass(frozen=True)
@@ -77,6 +88,10 @@ class Ending:
     stopped: str
     report: str | None = None
     refused: str | None = None
+    result: dict[str, JsonValue] | None = None
+    errors: tuple[str, ...] = ()
+    alias: str | None = None
+    models: tuple[str, ...] = ()
 
 
 class DelegationRecords:
@@ -125,7 +140,7 @@ class DelegationRecords:
                         delegation.parent,
                         delegation.run,
                         delegation.kind,
-                        json.dumps(delegation.brief, ensure_ascii=False),
+                        _json(delegation.brief),
                         delegation.started_at.astimezone(UTC).isoformat(),
                     ),
                 )
@@ -137,14 +152,18 @@ class DelegationRecords:
         with self.control.write() as tx:
             tx.sql.execute(
                 "UPDATE delegations SET ended = ?, stopped = ?, report = ?, ended_at = ?, "
-                "refused = ? WHERE project_id = ? AND session_id = ? AND delegation_id = ? "
-                "AND ended IS NULL",
+                "refused = ?, result = ?, errors = ?, alias = ?, models = ? WHERE "
+                "project_id = ? AND session_id = ? AND delegation_id = ? AND ended IS NULL",
                 (
                     ending.ended,
                     ending.stopped,
                     _kept(ending.report),
                     self._now(),
                     ending.refused[:2000] if ending.refused else None,
+                    _json(ending.result) if ending.result is not None else None,
+                    _json(list(ending.errors)) if ending.errors else None,
+                    ending.alias,
+                    _json(list(ending.models)) if ending.models else None,
                     project,
                     session,
                     delegation_id,
@@ -189,6 +208,10 @@ class DelegationRecords:
             )
 
 
+def _json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
 def _kept(report: str | None) -> str | None:
     if report is None or len(report) <= REPORT_CHARS:
         return report
@@ -214,5 +237,7 @@ def _one(db: sqlite3.Connection, project: str, session: str, delegation_id: str)
 def _delegation(row: tuple[object, ...]) -> Delegation:
     names = [name.strip() for name in _COLUMNS.split(",")]
     fields = dict(zip(names, row, strict=True))
-    fields["brief"] = json.loads(cast(str, fields["brief"]))
+    for name in _JSON:
+        if fields[name] is not None:
+            fields[name] = json.loads(cast(str, fields[name]))
     return Delegation.model_validate({k: v for k, v in fields.items() if v is not None})

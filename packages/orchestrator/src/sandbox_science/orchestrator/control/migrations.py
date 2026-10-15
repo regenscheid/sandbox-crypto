@@ -1964,6 +1964,41 @@ BEGIN SELECT RAISE(ABORT, 'delegations are kept'); END""",
         schema.execute(statement)
 
 
+def _delegation_results(schema: Schema) -> None:
+    """Version 29: a delegation's outcome gains the child's result as its output schema
+    validated it, the validation errors, and the model alias and the models it ran on
+    (PD-17, PD-18, PD-29), all written once with the rest of the outcome."""
+    for statement in (
+        "ALTER TABLE delegations ADD COLUMN result TEXT CHECK (result IS NULL "
+        "OR (json_valid(result) AND json_type(result) = 'object' "
+        "AND length(CAST(result AS BLOB)) <= 65536))",
+        "ALTER TABLE delegations ADD COLUMN errors TEXT CHECK (errors IS NULL "
+        "OR (json_valid(errors) AND json_type(errors) = 'array' "
+        "AND length(CAST(errors AS BLOB)) <= 16384))",
+        "ALTER TABLE delegations ADD COLUMN alias TEXT "
+        "CHECK (alias IS NULL OR length(CAST(alias AS BLOB)) BETWEEN 1 AND 256)",
+        "ALTER TABLE delegations ADD COLUMN models TEXT CHECK (models IS NULL "
+        "OR (json_valid(models) AND json_type(models) = 'array' "
+        "AND length(CAST(models AS BLOB)) <= 4096))",
+        "DROP TRIGGER delegations_kept",
+        """CREATE TRIGGER delegations_kept BEFORE UPDATE ON delegations
+WHEN NEW.delegation_id IS NOT OLD.delegation_id OR NEW.project_id IS NOT OLD.project_id
+OR NEW.session_id IS NOT OLD.session_id OR NEW.parent IS NOT OLD.parent
+OR NEW.run IS NOT OLD.run OR NEW.kind IS NOT OLD.kind OR NEW.brief IS NOT OLD.brief
+OR NEW.started_at IS NOT OLD.started_at OR (OLD.ended IS NOT NULL AND (
+NEW.ended IS NOT OLD.ended OR NEW.stopped IS NOT OLD.stopped
+OR NEW.report IS NOT OLD.report OR NEW.ended_at IS NOT OLD.ended_at
+OR NEW.refused IS NOT OLD.refused OR NEW.result IS NOT OLD.result
+OR NEW.errors IS NOT OLD.errors OR NEW.alias IS NOT OLD.alias
+OR NEW.models IS NOT OLD.models))
+OR (OLD.acknowledged IS NOT NULL AND NEW.acknowledged IS NOT OLD.acknowledged)
+OR (OLD.ended IS NULL AND NEW.ended IS NULL AND (NEW.result IS NOT NULL
+OR NEW.errors IS NOT NULL OR NEW.alias IS NOT NULL OR NEW.models IS NOT NULL))
+BEGIN SELECT RAISE(ABORT, 'a delegation''s outcome is written once'); END""",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -1992,6 +2027,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _frontier_categories,
     _frontier_changes,
     _delegations,
+    _delegation_results,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

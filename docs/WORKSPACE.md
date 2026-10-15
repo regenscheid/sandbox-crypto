@@ -296,7 +296,7 @@ With `--state-dir`, the harness keeps every run that reaches the tool loop, incl
 | `final_text` | The answer, or null for a failed run |
 | `delivered` | For each notice source (`requests`, `jobs`, `reviews`, `math`, `delegations`), the IDs a successful model call saw; acknowledged after the run is saved. Older records' `job_notice_ids`, `work_request_ids`, `review_notice_ids` and `math_notice_ids` read as these |
 | `usage` | One entry per answered model call, in order: the model the gateway names and its input and output tokens, null where the gateway did not report them. Older records have none |
-| `summaries` | What a source reported at the run's end: the consistency review (`reviews`), the document math checks (`math`), and the delegations the run started and the outcomes its waits returned (`delegations`). The record also shows them as `review_summary` and `math_summary` |
+| `summaries` | What a source reported at the run's end: the consistency review (`reviews`), the document math checks (`math`), the delegations the run started and the outcomes its tool calls returned (`delegations`), a delegated run's plan fence refusal (`fence`), and its result and errors (`outcome`). The record also shows them as `review_summary` and `math_summary` |
 | `messages` | The conversation in the OpenAI chat format the harness uses, system prompt first |
 | `tools` | One record per tool call, in order: its name, its arguments as the model wrote them, and its outcome (the worker's execution record, or an artifact, an error kind, …) |
 

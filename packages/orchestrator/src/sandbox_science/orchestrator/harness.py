@@ -51,6 +51,7 @@ from .consistency.store import ReviewStore
 from .delegation import prompt as delegated_prompt
 from .delegation.fence import ChildFence
 from .delegation.hook import Child, ChildEnd, Delegations
+from .delegation.outcome import Outcome
 from .delegation.records import DelegationRecords
 from .documents import DocumentError, DocumentStore, DocumentTool
 from .file_settings import ProjectFiles
@@ -508,7 +509,8 @@ class Harness:
                 admitted.context,
                 run_id=admitted.run_id,
             )
-            return (*limit, SessionHeld(chat), fence, EventLog(chat))
+            # Its result is read from its closing answer once every other hook has had its say.
+            return (*limit, SessionHeld(chat), fence, Outcome(), EventLog(chat))
         share = self.settings.run_share
         kept = () if share is None else (ModelBudget(chat, share),)
         return (*kept, UserMessages(chat), EventLog(chat))
@@ -575,11 +577,17 @@ class Harness:
         )
         transcript = finished.transcript
         fence = next((hook for hook in finished.hooks if isinstance(hook, ChildFence)), None)
+        found = next((hook for hook in finished.hooks if isinstance(hook, Outcome)), None)
+        result = found.result if found is not None else None
         return ChildEnd(
             transcript.stopped,
             transcript.failure is not None,
             transcript.final_text,
             fence.refused if fence is not None else None,
+            result.model_dump(mode="json") if result is not None else None,
+            tuple(found.errors) if found is not None else (),
+            self.main.alias,
+            tuple(dict.fromkeys(u.model for u in transcript.usage if u.model is not None))[:10],
         )
 
     async def memory(self, admitted: Admitted) -> Snapshot | None:
