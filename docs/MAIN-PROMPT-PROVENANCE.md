@@ -24,7 +24,10 @@ The system message is its sections' texts joined by a blank line, in order
    memory has entries: the framing `sandbox-memory-run-1` and the accepted entries
    ([project memory](MEMORY.md)). Its text is not from the catalog, so the section pin
    has no version; the `memory` pin below names the framing's.
-4. `planning`, version `sandbox-main-plan-1`, when the plan tools are offered. Plan
+4. `skills`, with no version, when the project pins skills: the framing
+   `sandbox-skills-index-1`, the index of the run's skills and the skills loaded at its
+   start ([skills](SKILLS.md)); the `skills` pin below names the framing's version.
+5. `planning`, version `sandbox-main-plan-1`, when the plan tools are offered. Plan
    tools offered without their hook, or the hook without the tools, refuse before any
    model call.
 
@@ -43,10 +46,15 @@ builds `PromptPins` (format `sandbox-prompt-pins-1`) once, before the first mode
   memory's version, the entries given (`mem-N@R`, in order), how many the bound left
   out, and the section's byte count and SHA-256 (0 bytes when no entries were given).
   A record older than the memory has none.
+- `skills`, for a run whose project pins skills: the index framing's version, each
+  source as `source@revision`, how many skills the index lists and how it was shortened
+  (`none`, `descriptions`, `names`, `counts`), the skills loaded at the start as
+  `source/name@body-sha256`, and the section's byte count and SHA-256. A run without
+  skills, or older than them, has none.
 
 A version names exact text. `test_prompts.py` maps every installed version (the MAIN
 base, the planning guidance, the research templates, the notice framings, the memory
-framing, the watcher prompt and the reviewer rubric) to the SHA-256 of its text, so a
+framing, the skills index framing, the watcher prompt and the reviewer rubric) to the SHA-256 of its text, so a
 text cannot change without a new version.
 
 The pins are an observation, not a self-check (owner decision 3). They are not

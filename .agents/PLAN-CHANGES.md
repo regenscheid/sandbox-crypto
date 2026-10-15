@@ -17,6 +17,12 @@ Decisions of the owner on skills, after the first real-use lab. The owner's prio
 - **Packs carry no special files** (SK-26, SK-29 to SK-34). `sandbox-pack.toml` is dropped. At import the skills are embedded through the gateway (a lexical score alone when no model is configured), and one model pass derives entry skills, topics, short descriptions and environment bindings. Its output is checked data, never instructions, and the project's skill settings override it.
 - Also decided: a second source that defines a name already pinned is refused (SK-4), invalid front matter excludes the skill (SK-6), kernel helpers are not built (SK-17), and the relevance threshold is tuned per pack.
 
+Decisions of the coordinator on the skills spec's questions 12 to 14, drafted values the owner did not answer; the owner can reverse them:
+
+- **Notice size and wait** (SK-35, SK-36): a discovery notice shows at most five skills, plus the packs' entry skills, and scoring waits at most 5 s.
+- **What the import's model pass reads** (SK-30): the catalog's names and descriptions, plus the lines around each mention of an environment variable, not whole bodies.
+- **What is embedded** (SK-29): each skill's name, description and the first 1,500 characters of its body.
+
 Decision of the owner on lab models:
 
 - **Labs keep the weaker model on purpose.** Labs use the gateway alias `sandbox-orchestrator`, which a weaker model serves, because its errors (wrong labels, edits claimed but not made, stray tool calls) show how the platform handles model mistakes. The owner uses a stronger model in normal operation. A lab's model-quality failure is a finding about the platform's checks, not a reason to change the alias.

@@ -14,7 +14,8 @@ import hashlib
 import json
 import re
 import sqlite3
-from dataclasses import dataclass
+from collections.abc import Collection, Sequence
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, Final, cast
 
@@ -22,10 +23,16 @@ from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.control.errors import CONFLICT, INVALID_REQUEST, NOT_FOUND
 from sandbox_science.orchestrator.documents.models import Author
 
-from .packs import NAME, Snapshot
+from .packs import NAME, Snapshot, body, hidden, served
 
 REPORT_ITEMS: Final = 200
 """Items a report lists of each kind; it counts the rest."""
+MAX_LOADED: Final = 100_000
+"""Characters of skill text one run is given, those loaded at its start included (SK-39)."""
+MAX_ALWAYS: Final = 20
+MAX_EXCLUDED: Final = 500
+SETTINGS_BYTES: Final = {"always": 16384, "excluded": 65536}
+"""The settings' lists as JSON, at most as the control store keeps them (version 41)."""
 _IMPORT: Final = (
     "SELECT import_id,source,snapshot,kind,origin,ref,commit_id,archive_sha256,root,report,"
     "created FROM skill_imports"
@@ -56,6 +63,44 @@ class Pin:
     skills: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class Entry:
+    """One skill of a run's set."""
+
+    source: str
+    name: str
+    description: str
+    body_sha256: str
+    snapshot: str
+    revision: str
+    """The import's commit or archive digest."""
+
+    @property
+    def qualified(self) -> str:
+        return f"{self.source}/{self.name}"
+
+
+@dataclass(frozen=True)
+class SkillSet:
+    """The skills a run is given (SK-5): the project's pinned skills it does not exclude,
+    the sources' revisions, and the skills it loads in full at every run's start."""
+
+    entries: tuple[Entry, ...]
+    sources: tuple[str, ...]
+    """Each source as ``<source>@<revision>``."""
+    always: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SkillSettings:
+    """A project's skill settings at a revision (0: never changed)."""
+
+    project: str
+    revision: int
+    always: tuple[str, ...] = ()
+    excluded: tuple[str, ...] = ()
+
+
 class SkillStore:
     """The imported packs and the projects' pins in one control store."""
 
@@ -83,6 +128,9 @@ class SkillStore:
             }
             if got.default_branch is not None:
                 report["default_branch"] = got.default_branch
+            if marked := hidden(got.files):
+                # Shown as code points wherever a run is given them (SK-14).
+                report["hidden_characters"] = _capped(marked)
             warnings = list(got.warnings)
             if latest is not None and latest.origin != got.origin:
                 warnings.append(f"{source} was imported before from {latest.origin}")
@@ -152,12 +200,139 @@ class SkillStore:
             )
             return _pins(db, project, source)[0]
 
+    def effective(self, project: str, *, excluded: Collection[str] | None = None) -> SkillSet:
+        """The skills a run of ``project`` is given now, or, with ``excluded``, would be
+        given with those excluded instead of the settings'. Each description is served as
+        the bodies are (``served``)."""
+        if self.control.missing:
+            return SkillSet((), (), ())
+        with self.control.read() as tx:
+            db = tx.sql
+            settings = _settings(db, project)
+            if excluded is not None:
+                settings = replace(settings, excluded=tuple(excluded))
+            entries: list[Entry] = []
+            sources: list[str] = []
+            for pin in _pins(db, project):
+                found = pin.pinned
+                revision = found.commit or found.archive_sha256 or found.snapshot
+                sources.append(f"{pin.source}@{revision}")
+                for name, description, body in db.execute(
+                    "SELECT name,description,body_sha256 FROM skill_skills WHERE snapshot=? "
+                    "ORDER BY name",
+                    (found.snapshot,),
+                ):
+                    entry = Entry(
+                        pin.source, name, served(description), body, found.snapshot, revision
+                    )
+                    if entry.qualified not in settings.excluded:
+                        entries.append(entry)
+        given = {entry.qualified for entry in entries}
+        always = tuple(skill for skill in settings.always if skill in given)
+        return SkillSet(tuple(entries), tuple(sources), always)
+
+    def file(self, snapshot: str, path: str) -> bytes | None:
+        """A snapshot's file, by its path in the snapshot; ``None`` if it has none."""
+        with self.control.read() as tx:
+            row = tx.sql.execute(
+                "SELECT b.content FROM skill_files f JOIN skill_blobs b ON b.sha256=f.blob "
+                "WHERE f.snapshot=? AND f.path=?",
+                (snapshot, path),
+            ).fetchone()
+        return None if row is None else bytes(row[0])
+
+    def served_body(self, entry: Entry) -> str:
+        """A skill's body as a run is given it (``served``)."""
+        content = self.file(entry.snapshot, f"{entry.name}/SKILL.md") or b""
+        return served(body(content.decode(errors="replace")))
+
+    def settings(self, project: str) -> SkillSettings:
+        if self.control.missing:
+            return SkillSettings(project, 0)
+        with self.control.read() as tx:
+            return _settings(tx.sql, project)
+
+    def set_settings(
+        self,
+        project: str,
+        author: Author,
+        expected: int,
+        *,
+        always: tuple[str, ...],
+        excluded: tuple[str, ...],
+    ) -> SkillSettings:
+        """The user's change of ``project``'s skill settings, read at ``expected``."""
+        if author.kind != "user":
+            raise ControlError(INVALID_REQUEST, "only the user changes skill settings")
+        for skill in (*always, *excluded):
+            source, _, name = skill.partition("/")
+            if not (NAME.fullmatch(source) and NAME.fullmatch(name)):
+                raise ControlError(INVALID_REQUEST, f"{skill[:80]!r} is not a source/name ID")
+        if len(always) > MAX_ALWAYS or len(excluded) > MAX_EXCLUDED:
+            raise ControlError(
+                INVALID_REQUEST, f"at most {MAX_ALWAYS} always loaded and {MAX_EXCLUDED} excluded"
+            )
+        lists = {"always": list(dict.fromkeys(always)), "excluded": sorted(set(excluded))}
+        for key, items in lists.items():
+            if len(json.dumps(items).encode()) > SETTINGS_BYTES[key]:
+                raise ControlError(
+                    INVALID_REQUEST, f"the {key} list passes {SETTINGS_BYTES[key]:,} bytes"
+                )
+        # As the new lists would make the set: a skill the change includes again counts.
+        given = {
+            entry.qualified: entry
+            for entry in self.effective(project, excluded=lists["excluded"]).entries
+        }
+        chars = sum(
+            len(self.served_body(entry))
+            for skill in lists["always"]
+            if skill not in lists["excluded"] and (entry := given.get(skill)) is not None
+        )
+        if chars > MAX_LOADED:
+            raise ControlError(
+                INVALID_REQUEST,
+                f"the skills loaded at every run's start come to {chars:,} characters, past "
+                f"the run's {MAX_LOADED:,}",
+            )
+        with self.control.write() as tx:
+            db = tx.sql
+            if not db.execute("SELECT 1 FROM projects WHERE project_id=?", (project,)).fetchone():
+                raise ControlError(NOT_FOUND, f"there is no project {project!r}")
+            current = _settings(db, project)
+            if current.revision != expected:
+                raise ControlError(
+                    CONFLICT, f"the skill settings are at revision {current.revision}"
+                )
+            db.execute(
+                "INSERT INTO project_skill_settings VALUES(?,?,?,?,?,?) ON CONFLICT(project) DO "
+                "UPDATE SET revision=excluded.revision,always=excluded.always,"
+                "omitted=excluded.omitted,author=excluded.author,changed=excluded.changed",
+                (
+                    project,
+                    expected + 1,
+                    json.dumps(lists["always"]),
+                    json.dumps(lists["excluded"]),
+                    author.model_dump_json(),
+                    _now(),
+                ),
+            )
+            return _settings(db, project)
+
     def pins(self, project: str) -> list[Pin]:
         """The project's pins, by source."""
         if self.control.missing:
             return []
         with self.control.read() as tx:
             return _pins(tx.sql, project)
+
+
+def _settings(db: sqlite3.Connection, project: str) -> SkillSettings:
+    row = db.execute(
+        "SELECT revision,always,omitted FROM project_skill_settings WHERE project=?", (project,)
+    ).fetchone()
+    if row is None:
+        return SkillSettings(project, 0)
+    return SkillSettings(project, row[0], tuple(json.loads(row[1])), tuple(json.loads(row[2])))
 
 
 def _source(source: str) -> None:
@@ -171,7 +346,7 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _capped(items: tuple[dict[str, str], ...]) -> list[dict[str, str]]:
+def _capped(items: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     listed = [
         {**item, "path": item["path"][:200] + ("…" if len(item["path"]) > 200 else "")}
         for item in items[:REPORT_ITEMS]

@@ -2403,6 +2403,25 @@ def _role_costs(schema: Schema) -> None:
         schema.execute(statement)
 
 
+def _skill_settings(schema: Schema) -> None:
+    """Version 41: each project's skill settings (docs/specs/skills.md, SK-33, SK-38): the
+    skills loaded in full at every run's start and the skills left out of its set, by
+    qualified ID, changed only by the user, with a revision that counts the changes. A
+    project without a row has neither."""
+    schema.execute(
+        """CREATE TABLE project_skill_settings (
+    project TEXT PRIMARY KEY REFERENCES projects(project_id),
+    revision INTEGER NOT NULL CHECK (revision BETWEEN 1 AND 999999999),
+    always TEXT NOT NULL CHECK (json_valid(always) AND json_type(always) = 'array'
+        AND length(CAST(always AS BLOB)) <= 16384),
+    omitted TEXT NOT NULL CHECK (json_valid(omitted) AND json_type(omitted) = 'array'
+        AND length(CAST(omitted AS BLOB)) <= 65536),
+    author TEXT NOT NULL CHECK (json_valid(author) AND length(CAST(author AS BLOB)) <= 4096),
+    changed TEXT NOT NULL CHECK (length(changed) BETWEEN 1 AND 64)
+) STRICT"""
+    )
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -2443,6 +2462,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _delegation_files,
     _delegation_tasks,
     _role_costs,
+    _skill_settings,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""
