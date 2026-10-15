@@ -258,7 +258,7 @@ def test_an_earlier_version_is_given_again_in_its_order(memory: ProjectMemory) -
         user(memory, f"u{index}", action="add", text=text)
     user(memory, "m1", action="move", entry="mem-3", expected=1, direction="up")
     user(memory, "r1", action="remove", entry="mem-1", expected=1)
-    user(memory, "e1", action="edit", entry="mem-3", expected=2, text="C2.")
+    user(memory, "e1", action="edit", entry="mem-3", expected=1, text="C2.")
     version, entries = memory.snapshot("p")
     assert version == 6
     assert entries == memory.memory("p").entries

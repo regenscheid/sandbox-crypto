@@ -342,9 +342,9 @@ class ProjectMemory:
             # Each entry at its last version up to then; a removal leaves it out.
             rows = db.execute(
                 "SELECT v.entry_id,v.revision,v.text,v.created FROM memory_versions v "
-                "JOIN (SELECT entry_id,max(revision) AS revision FROM memory_versions "
+                "JOIN (SELECT entry_id,max(version) AS version FROM memory_versions "
                 "WHERE project=? AND version<=? GROUP BY entry_id) m "
-                "ON m.entry_id=v.entry_id AND m.revision=v.revision "
+                "ON m.entry_id=v.entry_id AND m.version=v.version "
                 "WHERE v.project=? AND v.text IS NOT NULL ORDER BY v.position,v.entry_id",
                 (project, version, project),
             ).fetchall()

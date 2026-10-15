@@ -164,7 +164,10 @@ class RunRequest:
     """A delegated run's delegation. Nothing starts delegated runs yet."""
     memory_version: int | None = None
     """The project memory's version a run of a tree is given: the one its root run was
-    given (PM-8). Without it, a run is given the memory as it is when it starts."""
+    given (PM-8). Delegation must set it from the root run's own pin (its record's
+    ``prompt_provenance.memory.version``, as the harness read it), never from an agent's
+    arguments: the version decides what every run of the tree is told. Without it, a run
+    is given the memory as it is when it starts."""
 
     def __post_init__(self) -> None:
         if (self.parent is None) != (self.delegation is None):
