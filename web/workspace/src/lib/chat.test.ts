@@ -416,7 +416,16 @@ describe('the transcript of a run', () => {
     expect(stoppedText({ stopped: 'error', failure: 'model' })).toBe(
       'The run failed. Failure: model.',
     );
-    expect(stoppedText({ stopped: 'constructor' })).toBe('The run stopped (constructor).');
+    // A reason the view has no words for, such as one a newer release records (lab 41's
+    // B2: a run whose answer the plan fence discarded), is shown as the run recorded it.
+    expect(stoppedText({ stopped: 'constructor' })).toBe('The run stopped: constructor.');
+    expect(stoppedText({ stopped: 'answer_discarded' })).toBe('The run stopped: answer discarded.');
+    expect(stoppedText({ stopped: 'fence\u202Eveto' })).toBe('The run stopped: fence⟦U+202E⟧veto.');
+    expect(stoppedText({ stopped: '' })).toBe('The run stopped: no reason recorded.');
+    // A run that stops for something newer of the user's does not say it waited for a message.
+    expect(stoppedText({ stopped: 'user_message' })).toBe(
+      'The run stopped without an answer: something newer of yours, a message or a plan change, comes first, and the next run takes it up.',
+    );
     expect(stoppedText({ stopped: 'budget' })).toBe(
       'The run stopped: the project reached its daily cost limit. What waits for the session waits until the limit allows another run.',
     );

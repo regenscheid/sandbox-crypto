@@ -129,3 +129,21 @@ describe("a correction of a comment's body", () => {
     );
   });
 });
+
+describe('the comment form (lab 41, B8)', () => {
+  it('says a comment to an open session starts a run, as a chat message does', () => {
+    const views = import.meta.glob('../views/DocumentComments.svelte', {
+      query: '?raw',
+      import: 'default',
+      eager: true,
+    });
+    const source = String(Object.values(views)[0]).replace(/\s+/g, ' ');
+    expect(source).toContain(
+      'an open session with no run starts one for it, as a chat message does',
+    );
+    expect(source).toContain(
+      'A closed session keeps it for its next run: a request does not reopen it.',
+    );
+    expect(source).not.toMatch(/manually|idle session keeps/);
+  });
+});
