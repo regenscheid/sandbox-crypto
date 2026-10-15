@@ -51,6 +51,37 @@ def wait_for(condition: Callable[[], bool], what: str, timeout: float = 15) -> N
         time.sleep(0.1)
 
 
+def test_up_imports_and_pins_the_skill_packs_before_the_run_service(
+    site: dict[str, Any],
+) -> None:
+    """SK-28: the packs a project names are imported and pinned once the projects are
+    made; the embedding model reaches the import, with the key by its path, and the run
+    service."""
+    launcher = site["launch"](
+        projects=[{"id": "crypto", "profile": "minimal", "skills": ["ss"]}],
+        skills={
+            "embedding_model": "embed",
+            "packs": {"ss": {"git": "https://git.example/ss.git"}},
+        },
+    )
+    launcher.expect("Sandbox Science is running.")
+    steps = journal(site["journal"])
+    opened = steps.index("sandbox-science-harness session open crypto main")
+    assert steps[opened + 1 : opened + 7] == [
+        "sandbox-science-harness skills list crypto",
+        "sandbox-science-harness skills list ss",
+        "sandbox-science-harness skills import ss",
+        "sandbox-science-harness skills embed with embed",
+        "sandbox-science-harness skills pin crypto ss",
+        "sandbox-science-harness embeds with embed",
+    ]
+    assert steps[opened + 7] == "sandbox-science-harness start"
+    assert f"skills: ss imported at {'c' * 12}, 1 skill" in launcher.output
+    assert f"skills: crypto pins ss at {'c' * 12}" in launcher.output
+    launcher.process.send_signal(signal.SIGINT)
+    assert launcher.finish() == 0
+
+
 STOPPED = [
     "sandbox-science-workspace stop",
     "sandbox-science-harness stop",

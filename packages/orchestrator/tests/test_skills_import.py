@@ -180,6 +180,22 @@ def test_a_tag_or_a_full_hash_pins_its_commit_and_an_update_says_what_changed(
     assert isinstance(listed, list)
     assert [item["commit"] for item in listed] == [first, first, latest["commit"]]
     assert listed[0]["report"]["skills"] == ["alpha", "beta"]
+    # A pin that moves says what changed since the import it left (SK-28).
+    scope = ("--state-dir", str(state), "--project", "p1", "--source", "ss")
+    _, pinned, _ = _run(capsys, "skills", "pin", *scope, "--revision", latest["commit"][:12])
+    assert isinstance(pinned, dict)
+    assert pinned["changes"] is None
+    _, moved, _ = _run(capsys, "skills", "pin", *scope, "--revision", first[:12])
+    assert isinstance(moved, dict)
+    assert moved["changes"] == {
+        "since": latest["commit"],
+        "added": [],
+        "removed": [],
+        "changed": ["alpha"],
+    }
+    _, kept, _ = _run(capsys, "skills", "pin", *scope, "--revision", first)
+    assert isinstance(kept, dict)
+    assert (kept["revision"], kept["changes"]) == (moved["revision"], None)
 
 
 def test_a_pin_is_refused_when_another_pinned_source_has_a_skill_of_its_name(

@@ -91,6 +91,17 @@ def test_a_command_name_is_left_to_the_path(make_config: Any) -> None:
         ({"projects": []}, "projects"),
         ({"worker": {"token_file": "mine.token"}}, "worker.token_file"),
         ({"model": None}, "model"),
+        (
+            {"projects": [{"id": "a", "profile": "minimal", "skills": ["ss"]}]},
+            "names 'ss', which skills.packs does not",
+        ),
+        ({"skills": {"packs": {"ss": {"git": "g", "archive": "a.tar"}}}}, "git or archive"),
+        ({"skills": {"packs": {"ss": {}}}}, "git or archive"),
+        ({"skills": {"packs": {"ss": {"archive": "a.tar", "ref": "v1"}}}}, "ref goes with git"),
+        ({"skills": {"packs": {"builtin": {"git": "g"}}}}, "platform's own skills"),
+        ({"skills": {"packs": {"Crypto": {"git": "g"}}}}, "skills.packs.Crypto"),
+        ({"skills": {"embedding_model": ""}}, "skills.embedding_model"),
+        ({"skills": {"embedding_model": "a" * 201}}, "an alias of at most 200 bytes"),
     ],
 )
 def test_a_config_that_cannot_work_is_refused_by_what_is_wrong(
@@ -185,6 +196,55 @@ def test_the_examples_mcp_proxy_works_uncommented(home: Path, tmp_path: Path) ->
     assert proxy.index == tuple(f"crypto-research-mcp/{n}" for n in (*listed, "web-fetch-mcp"))
     assert proxy.about["crypto-research-mcp/e-print-mcp"].startswith("the IACR Cryptology ePrint")
     assert len(proxy.about) == 7
+
+
+def test_skill_packs_name_urls_as_they_are_and_paths_against_the_file(
+    make_config: Any, home: Path
+) -> None:
+    packs = {
+        "web": {"git": "https://git.example/pack.git", "ref": "v1"},
+        "ssh": {"git": "git@git.example:owner/pack.git"},
+        "local": {"git": "../packs/local"},
+        "mine": {"git": "~/packs/mine"},
+        "tarred": {"archive": "pack.tar.gz", "path": "skills"},
+    }
+    path = make_config(
+        {
+            "projects": [{"id": "crypto", "profile": "minimal", "skills": ["web", "tarred"]}],
+            "skills": {"packs": packs, "embedding_model": "embed"},
+        }
+    )
+    config = load_config(path)
+    found = config.skills.packs
+    assert (found["web"].git, found["web"].ref) == ("https://git.example/pack.git", "v1")
+    assert found["ssh"].git == "git@git.example:owner/pack.git"
+    assert found["local"].git == str(path.parent / "../packs/local")
+    assert found["mine"].git == str(home / "packs/mine")
+    assert (found["tarred"].archive, found["tarred"].path) == (
+        path.parent / "pack.tar.gz",
+        "skills",
+    )
+    assert config.projects[0].skills == ("web", "tarred")
+    # Without [skills], projects pin only the built-in skills.
+    assert load_config(make_config()).skills.packs == {}
+
+
+def test_the_examples_skills_work_uncommented(home: Path, tmp_path: Path) -> None:
+    example = Path(__file__).parents[3] / "examples" / "sandbox-science.toml"
+    lines = example.read_text().splitlines()
+    start = lines.index("# [skills]")
+    end = lines.index("", start)
+    uncommented = [line.removeprefix("# ").removeprefix("#") for line in lines[start:end]]
+    lines = [*lines[:start], *uncommented, *lines[end:]]
+    lines[lines.index('# skills = ["crypto"]')] = 'skills = ["crypto"]'
+    path = tmp_path / "sandbox-science.toml"
+    path.write_text("\n".join(lines) + "\n")
+    config = load_config(path)
+    assert config.projects[0].skills == ("crypto",)
+    assert config.skills.packs["crypto"].git == (
+        "https://github.com/regenscheid/crypto-analysis-skills"
+    )
+    assert config.skills.embedding_model == "sandbox-embedding"
 
 
 MCP = {"image": "sandbox-science/mcp-proxy:abc1234", "providers": ["p"], "servers": ["s"]}

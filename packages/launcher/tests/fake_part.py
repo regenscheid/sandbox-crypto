@@ -15,6 +15,9 @@ Every step goes in the file ``FAKE_JOURNAL`` names, one line each, and ``FAKE_PA
 - ``suspend-slow``: the worker takes 20 s to answer a suspension.
 - ``old-protocol``: the worker speaks protocol 4.
 
+The harness's ``skills`` commands answer as for a control store with no import and no
+pin: ``import`` and ``pin`` answer an import at the commit ``c`` * 40 with one skill.
+
 The worker answers ``GET /v1/environments`` and ``POST /v1/environments/{id}/suspend``
 for its clients' projects, from the environments in the OpenShell stand-in's file
 (``FAKE_OPENSHELL``); a suspension stops the sandbox there too. As the worker does, it
@@ -214,10 +217,25 @@ match (name, args[:2]):
             made = Path(os.environ["FAKE_JOURNAL"] + ".projects")
             known = json.loads(made.read_text()) if made.exists() else {}
             made.write_text(json.dumps({**known, option("--project"): option("--profile")}))
+    case ("sandbox-science-harness", ["skills", action]):
+        named = [option(flag) for flag in ("--project", "--source", "--name") if flag in args]
+        note(f"skills {action} {' '.join(named)}")
+        imported = {"kind": "git", "ref": None, "commit": "c" * 40, "report": {"skills": ["a"]}}
+        if action == "list":
+            print("[]")
+        elif action == "import":
+            if "--embedding-model" in args:
+                note(f"skills embed with {option('--embedding-model')}")
+            print("warning: a path differs from another only by case", flush=True)
+            print(json.dumps({**imported, "unchanged": False}, indent=2))
+        else:
+            print(json.dumps({"source": option("--source"), "pinned": imported, "changes": None}))
     case ("sandbox-science-harness", ["serve", *_]):
         for seen in ("LEAK_CHECK", "PASSED_ON"):
             if seen in os.environ:
                 note(f"saw {seen}")
+        if "--skills-embedding-model" in args:
+            note(f"embeds with {option('--skills-embedding-model')}")
         if "--mcp-proxy" in args:
             servers = [args[i + 1] for i, arg in enumerate(args) if arg == "--mcp-server"]
             note(f"has MCP {option('--mcp-proxy')} for {option('--mcp-project')}: {servers}")

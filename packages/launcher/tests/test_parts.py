@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from sandbox_science.launcher import parts
+from sandbox_science.launcher import parts, skills
 from sandbox_science.launcher.config import LauncherError, load_config
 from sandbox_science.launcher.state import Layout, ensure_token, write_private
 
@@ -94,6 +94,36 @@ def test_command_lines_name_files_never_secrets(make_config: Any, commands: Path
     assert [argv[1:3] for argv in again] == [["project", "revise"], ["session", "open"]]
     with pytest.raises(LauncherError, match="keeps the profile it was made with"):
         parts.project_argvs(config, layout, "sha256:" + "b" * 64, {"crypto": "crypto-base"})
+
+
+def test_the_skills_embedding_model_reaches_imports_and_runs_by_the_key_path(
+    make_config: Any, commands: Path
+) -> None:
+    pack = {"git": "https://git.example/pack.git", "ref": "v1", "path": "skills"}
+    config = load_config(
+        make_config(
+            {
+                "bin_dir": str(commands),
+                "skills": {"embedding_model": "embed", "packs": {"ss": pack}},
+            }
+        )
+    )
+    argv = skills.import_argv(config, "ss", config.skills.packs["ss"])
+    assert argv == [
+        "import", "--name", "ss", "--git", "https://git.example/pack.git", "--ref", "v1",
+        "--path", "skills", "--embedding-model", "embed",
+        "--model-url", "https://gateway.example/v1",
+        "--api-key-file", str(config.model.api_key_file),
+    ]  # fmt: skip
+    assert "not read by the launcher" not in " ".join(argv)
+    harness = parts.harness_argv(config, Layout(config.state_dir))
+    assert harness[harness.index("--skills-embedding-model") + 1] == "embed"
+    plain = load_config(make_config({"bin_dir": str(commands)}))
+    assert "--skills-embedding-model" not in parts.harness_argv(plain, Layout(plain.state_dir))
+    archived = load_config(make_config({"skills": {"packs": {"ss": {"archive": "p.zip"}}}}))
+    assert skills.import_argv(archived, "ss", archived.skills.packs["ss"]) == [
+        "import", "--name", "ss", "--archive", str(archived.skills.packs["ss"].archive),
+    ]  # fmt: skip
 
 
 def test_a_daily_cost_limit_is_set_for_each_project(make_config: Any, commands: Path) -> None:

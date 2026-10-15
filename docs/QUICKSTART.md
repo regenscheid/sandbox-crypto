@@ -30,12 +30,15 @@ Everything listens on loopback, so only your own computer can reach it. The step
 | `[workspace]` | Its `listen` address, its `preview_listen` address for the PDF viewer (by default the next port), and `static`, the web app's build |
 | `[openshell]` | The worker's own `[openshell]` table ([worker settings](WORKER.md)): the OpenShell CLI and the `env` it needs to reach the gateway, the sandboxes' Python, the isolation tier, the package cache, and `[openshell.environments]` with the profiles' image tags |
 | `[mcp_proxy]` | Optional: the [MCP proxy](#the-mcp-proxy) |
+| `[skills]` | Optional: the [skill packs](#skill-packs), `[skills.packs.NAME]` with `git` (and `ref`) or `archive`, and `path`, which each project names in its `skills`; `embedding_model`, the gateway's embedding alias; and `pass_env`, for the skills commands' git |
 
 `start_timeout` (300 s) and `stop_timeout` (30 s) bound how long each part may take to start and to stop. `bin_dir` says where the parts' commands are, by default beside the launcher's Python.
 
 The parts get only a few of your environment's variables: `PATH`, `HOME`, `USER`, `LOGNAME`, the locale (`LANG`, `LANGUAGE`, `LC_*`), `TZ`, `TMPDIR`, `XDG_RUNTIME_DIR`, the proxies and the CA settings (`SSL_CERT_FILE`, `SSL_CERT_DIR`). An API key you exported in your shell reaches no part.
 
-Each part's table can name more with `pass_env`: `[worker]`, `[run_service]` (a table of its own, with only this) and `[workspace]`. The part gets those variables from your environment, and the other parts do not. The launcher's own OpenShell commands, and the MCP proxy's forward, get the worker's, with `[openshell] env`. **Never pass a secret this way.** The run service and the workspace run in the control zone, which must hold no engine or cluster credentials ([threat model](THREAT-MODEL.md)). The model's key reaches the run service only as its file, `api_key_file`.
+Each part's table can name more with `pass_env`: `[worker]`, `[run_service]` (a table of its own, with only this) and `[workspace]`. The part gets those variables from your environment, and the other parts do not. The launcher's own OpenShell commands, and the MCP proxy's forward, get the worker's, with `[openshell] env`. The skills commands `up` runs (`sandbox-science-harness skills`) get `[run_service]`'s and `[skills] pass_env`'s. **Never pass a secret this way.** The run service and the workspace run in the control zone, which must hold no engine or cluster credentials ([threat model](THREAT-MODEL.md)). The model's key reaches the run service only as its file, `api_key_file`.
+
+`[skills] pass_env` is for git, which fetches the packs on this computer as you, with your `HOME`, `~/.gitconfig` and credential helpers. An agent such as `SSH_AUTH_SOCK` is the usual one. The config names variables and never holds their values, and git can already run what your own git configuration says. So these names are not restricted beyond being variable names, and git's own options can run commands, as `GIT_SSH_COMMAND` does. Name only what your own git needs. These variables reach the skills commands alone, never the run service. The harness lets git use only the file, git, http, https and ssh transports, whatever they say.
 
 The state directory must be yours and mode 700. If one is there already and open to other users, the launcher refuses it, rather than change it.
 
@@ -83,7 +86,7 @@ Open the GUI at the address the launcher printed. With `127.0.0.1`, the PDF view
 
 The message starts a run of the main agent. The first run of a project has the worker create its environment, an OpenShell sandbox from the project's profile, which takes a minute or two; the panel says "Starting the environment…" meanwhile. It then shows the agent's turns and tool calls as they come, then its answer. [Chat](WORKSPACE.md#chat) has the details: budgets, cancelling and resuming.
 
-## Delegation, a cost limit and skills
+## Delegation and a cost limit
 
 Each is a project setting, made with the harness against the launcher's control store, the `control/` directory of the state directory ([the state directory](#the-state-directory)):
 
@@ -91,13 +94,35 @@ Each is a project setting, made with the harness against the launcher's control 
 D=~/.local/state/sandbox-science/control
 sandbox-science-harness project delegation --state-dir "$D" --project crypto --depth 1
 sandbox-science-harness project budget --state-dir "$D" --project crypto --daily-cost-limit 5
-sandbox-science-harness skills import --state-dir "$D" --name crypto --git https://github.com/OWNER/REPO
-sandbox-science-harness skills pin --state-dir "$D" --project crypto --source crypto
 ```
 
 - **Delegation** is off by default. `--depth 1` lets the main agent delegate checks and tasks, and `--depth 2` lets a task delegate once more. The same command sets the cap on runs at once and the children's limits ([projects and sessions](PROJECTS-AND-SESSIONS.md)). `[model] delegated` names the model they call.
 - **The cost limit** is off by default: a project has no limit of its own, and the gateway's budget is the cap. `--daily-cost-limit` sets what the project's runs may cost over 24 hours, as the gateway reports it, and `--no-cost-limit` removes it. `[model] daily_cost_limit` sets it for every project from the config.
-- **Skills** are imported from git or an archive and pinned to a project. Each run gets an index of the project's skills in its system message, and the `skills` tool to search, load and read them ([skills](SKILLS.md)).
+
+## Skill packs
+
+Every project has the platform's built-in skills. Other packs are named in the config, and in each project that uses them ([skills](SKILLS.md)):
+
+```toml
+[[projects]]
+id = "crypto"
+profile = "minimal"
+skills = ["crypto"]
+
+[skills]
+embedding_model = "sandbox-embedding"   # optional: the gateway's embedding alias
+
+[skills.packs.crypto]
+git = "https://github.com/regenscheid/crypto-analysis-skills"   # or archive = "pack.tar.gz"
+ref = "main"                                                     # optional: the default branch
+# path = "skills"                                                # optional: the skills' directory
+```
+
+- **`up`** imports a pack the control store has none of, on this computer with your git, and pins it in each project that names it, after the project's built-in skills. After that it fetches nothing and keeps the pins, so the skills change only when you ask. It says at which revision each project pins each pack, and notes a config that now names another place, ref or directory than the pack's import. A local repository's path is against the config file.
+- **What fails is reported, and `up` goes on without it.** A pack that cannot be imported, as when its repository cannot be reached, is left as it was. A pack that a project cannot pin, as when one of its skills has the name of a built-in skill or of another pack's skill the project pins, is not pinned in that project, and the line names the project. The other projects still pin it. For a built-in skill the line gives the `skills settings --exclude` to run first.
+- **`up --update-skills`**, or **`sandbox-science skills update [--pack NAME]`** with or without an instance running, fetches the packs again from their refs and moves the projects' pins. It prints, for each project, the skills added, removed and changed since the pin it left, and exits 1 when a pack or a pin failed. With `embedding_model`, it first checks the model key file, and imports nothing without one. Runs that started before keep the skills they have.
+- **`embedding_model`** has the import embed the skills, and the run service compare them with what the agent searches for and the user asks by meaning as well as words. The launcher gives the import and the run service the model key file's path, and never opens it. When embedding fails at import, `up` says so and goes on: the run service makes the vectors in the background, and runs compare by words until they exist.
+- Taking a pack out of a project's `skills` does not unpin it: exclude its skills with `sandbox-science-harness skills settings --project P --expected N --exclude SOURCE/NAME`, against `control/` as above, where `N` is the revision `skills settings --project P` shows.
 
 ## The MCP proxy
 

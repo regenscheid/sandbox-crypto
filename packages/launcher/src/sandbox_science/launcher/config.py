@@ -8,6 +8,7 @@ state_dir = "~/.local/state/sandbox-science"
 id = "crypto"
 profile = "minimal"
 sessions = ["main"]
+skills = ["crypto"]
 
 [model]
 url = "https://litellm-api.npages.org/v1"
@@ -19,6 +20,13 @@ policy = "examples/policy.yaml"
 
 [workspace]
 static = "web/workspace/dist"
+
+[skills]
+embedding_model = "embed"   # optional: the gateway's embedding alias
+
+[skills.packs.crypto]
+git = "https://github.com/OWNER/REPO"   # or archive = "pack.tar.gz"
+ref = "main"                            # optional: the default branch otherwise
 
 [openshell]
 cli = "~/.local/opt/openshell-0.1.3/bin/openshell"
@@ -192,6 +200,68 @@ def _sessions(value: object) -> object:
     return value
 
 
+SourceName = Annotated[str, StringConstraints(pattern=r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")]
+"""A skill pack's source name, as its skills' IDs start (``crypto/...``)."""
+
+
+def _origin(value: str, info: ValidationInfo) -> str:
+    """A URL (``scheme://...``, or ``host:path`` as ssh takes it) stays as it is; anything
+    else is a repository's path, against the config file."""
+    if "://" in value or ":" in value.partition("/")[0]:
+        return value
+    return str(_path(Path(value), info))
+
+
+def _alias(value: str) -> str:
+    """An alias the control store can keep, as the harness's flags check it."""
+    if len(value.encode()) > 200:
+        raise ValueError("an alias of at most 200 bytes")
+    return value
+
+
+class SkillPackConfig(_Strict):
+    """A skill pack the projects use (docs/SKILLS.md): from git or an archive."""
+
+    git: Annotated[str, StringConstraints(min_length=1), AfterValidator(_origin)] | None = None
+    """A git URL, or a repository's path."""
+    ref: str | None = Field(default=None, min_length=1)
+    """A branch, a tag or a full commit hash; the default branch when unset."""
+    archive: ConfigPath | None = None
+    """A ``.tar``, ``.tar.gz`` or ``.zip`` file."""
+    path: str | None = Field(default=None, min_length=1)
+    """The skills' directory in the pack; ``skills/`` if there, else the top."""
+
+    @model_validator(mode="after")
+    def _one(self) -> Self:
+        if (self.git is None) == (self.archive is None):
+            raise ValueError("a pack names git or archive, not both")
+        if self.ref is not None and self.git is None:
+            raise ValueError("ref goes with git")
+        return self
+
+
+class SkillsConfig(_Strict):
+    packs: dict[SourceName, SkillPackConfig] = Field(default_factory=dict[str, SkillPackConfig])
+    """By source name. ``up`` imports each once and pins it in the projects that name it;
+    ``up --update-skills`` and ``sandbox-science skills update`` fetch them again."""
+    embedding_model: Annotated[str, AfterValidator(_alias)] | None = Field(
+        default=None, min_length=1
+    )
+    """The gateway's embedding alias, of at most 200 bytes: imports embed the skills, and
+    runs compare them with what they search for by meaning as well as words. None by
+    default: words only."""
+    pass_env: tuple[Variable, ...] = ()
+    """Environment variables the import's git gets besides the usual few and the run
+    service's ``pass_env``, such as ``SSH_AUTH_SOCK`` for an ssh URL."""
+
+    @field_validator("packs")
+    @classmethod
+    def _reserved(cls, value: dict[str, SkillPackConfig]) -> dict[str, SkillPackConfig]:
+        if "builtin" in value:
+            raise ValueError("builtin names the platform's own skills, which every project has")
+        return value
+
+
 class ProjectConfig(_Strict):
     id: Identifier
     profile: Identifier
@@ -201,6 +271,8 @@ class ProjectConfig(_Strict):
         SessionConfig(id="main"),
     )
     """Sessions opened for chat: a name, or ``{ id = "...", dedicated = true }``."""
+    skills: tuple[SourceName, ...] = ()
+    """The packs of ``[skills.packs]`` the project pins, besides the built-in skills."""
 
 
 class WorkerConfig(_Strict):
@@ -380,6 +452,7 @@ class LauncherConfig(_Strict):
     workspace: WorkspaceConfig
     openshell: OpenShellConfig
     mcp_proxy: McpProxyConfig | None = None
+    skills: SkillsConfig = Field(default_factory=SkillsConfig)
 
     @model_validator(mode="after")
     def _consistent(self) -> Self:
@@ -401,6 +474,11 @@ class LauncherConfig(_Strict):
             sessions = [session.id for session in project.sessions]
             if len(set(sessions)) != len(sessions):
                 raise ValueError(f"project {project.id} lists a session twice")
+            for pack in project.skills:
+                if pack not in self.skills.packs:
+                    raise ValueError(
+                        f"project {project.id}'s skills names {pack!r}, which skills.packs does not"
+                    )
         self._distinct(self.addresses())
         return self
 

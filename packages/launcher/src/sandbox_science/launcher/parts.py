@@ -57,9 +57,7 @@ def check(config: LauncherConfig) -> None:
         )
         if not path.is_file()
     ]
-    key = config.model.api_key_file
-    if key.is_file() and key.stat().st_mode & 0o077:  # looked at, never read
-        problems.append(f"the model key file {key} is open to other users: chmod 600 {key}")
+    problems += [p for p in key_problems(config) if not p.startswith("no model key file")]
     if not environments.policy_store.is_dir():
         problems.append(f"no policy store at {environments.policy_store}")
     if not (config.workspace.static / "index.html").is_file():
@@ -85,6 +83,16 @@ def check(config: LauncherConfig) -> None:
     problems.extend(_math_problems(config))
     if problems:
         raise LauncherError("cannot start:\n" + "\n".join(f"  {problem}" for problem in problems))
+
+
+def key_problems(config: LauncherConfig) -> list[str]:
+    """What is wrong with the model key file, looked at and never read."""
+    key = config.model.api_key_file
+    if not key.is_file():
+        return [f"no model key file at {key}"]
+    if key.stat().st_mode & 0o077:
+        return [f"the model key file {key} is open to other users: chmod 600 {key}"]
+    return []
 
 
 MATH_FILES = ("check-math.mjs", "mathcheck.mjs")
@@ -239,6 +247,8 @@ def harness_argv(config: LauncherConfig, layout: Layout) -> list[str]:
         watcher += ["--watcher-interval", f"{model.watcher_interval:g}"]
     delegated = ["--delegated-model", model.delegated] if model.delegated else []
     shared = [] if service.run_share is None else ["--run-share", str(service.run_share)]
+    if (embedding := config.skills.embedding_model) is not None:
+        shared += ["--skills-embedding-model", embedding]  # the skills' imports used it too
     math: list[str] = []
     if service.math_checks is not None:
         found = node(config)
