@@ -35,7 +35,7 @@ import logging
 import secrets
 from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Final, cast
 
@@ -46,10 +46,9 @@ from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ExecutionContext, wai
 from .aio import threaded
 from .control import ControlError
 from .control.errors import CONFLICT
-from .delegation.budget import TreeBudget
 from .hooks import Closing, Effect, Notice, Point, Refusal, RunView, TurnHook
 from .projects import ModelUsage, RunRecord
-from .runstate import MAX_EVENT_BYTES, PAGE, WINDOW, ChatMessage, EventKind, RunState, cost
+from .runstate import MAX_EVENT_BYTES, PAGE, ChatMessage, EventKind, RunState, cost
 from .tools import bound
 
 _log = logging.getLogger(__name__)
@@ -159,91 +158,30 @@ class RunChat:
 
 
 class ModelBudget(TurnHook):
-    """The project's MAIN budget, kept at the run's safe points (RS-6a, RS-6c, PD-38)."""
+    """The project's MAIN budget, kept at the run's safe points (RS-6a, RS-6c), and a
+    delegated run's own token limit (PD-38)."""
 
     name = "budget"
 
-    def __init__(
-        self,
-        chat: RunChat,
-        share: float | None = None,
-        *,
-        tokens: int | None = None,
-        tree: TreeBudget | None = None,
-        member: str | None = None,
-    ) -> None:
+    def __init__(self, chat: RunChat, share: float | None = None, *, tokens: int | None = None):
         """``share`` is the part of the project's budget one run may use, above 0 and at
-        most 1; ``tokens``, a delegated run's limit, takes its place. With ``tree``, the
-        root's share bounds its whole tree, and a delegated run is its ``member``."""
+        most 1; ``tokens``, a delegated run's limit, takes its place."""
         if (share is None) == (tokens is None):
             raise ValueError("a run's budget is a share or a token limit")
         self.chat, self.share, self.tokens = chat, share, tokens
-        self.tree, self.member = tree, member
-
-    def lease(self) -> AbstractAsyncContextManager[None]:
-        return self._calls()
-
-    @asynccontextmanager
-    async def _calls(self) -> AsyncGenerator[None]:
-        try:
-            yield
-        finally:
-            if self.tree is not None:
-                self.tree.called(self.member)  # a call that failed is in flight no more
-
-    async def notices(self, point: Point, run: RunView) -> Sequence[Notice]:
-        if point == "turn" and run.turns == 0 and self.tree is not None:
-            # No check comes before a run's first call: it counts from here.
-            self.tree.calling(self.member, estimate(run))
-        return ()
-
-    async def model_returned(self, run: RunView) -> None:
-        # The call stays in flight until its assistant event, which the event log writes
-        # after this hook, holds its usage: the next tool or closing clears it.
-        if self.tree is not None and run.usage:
-            own = sum(cost(usage) for usage in run.usage)
-            self.tree.used(self.member, own, last=cost(run.usage[-1]))
-
-    async def observe_tool(self, run: RunView, record: dict[str, Any]) -> None:
-        if self.tree is not None:
-            self.tree.called(self.member)
-
-    async def closing(self, run: RunView, answer: str | None) -> Closing:
-        if self.tree is not None:
-            self.tree.called(self.member)
-        return Closing()
 
     async def halt(self, run: RunView) -> str | None:
-        state, project, tree = self.chat.state, self.chat.context.project_id, self.tree
-        own = sum(cost(usage) for usage in run.usage)
-        if tree is not None:
-            tree.used(self.member, own)
+        state, project = self.chat.state, self.chat.context.project_id
         # Its own calls are among the project's: their events are written as they return.
-        spent = await threaded(state.spent, project, self.chat.clock.now() - WINDOW)
-        budget = await threaded(state.budget, project)
-        allowance = None
-        if tree is not None and self.tokens is None:
-            allowance = await tree.allowance()
-        # From here on nothing awaits: the check and the call's registration are one step,
-        # so the tree's runs checking at once see each other's calls (PD-38).
-        flying, coming = 0, estimate(run)
-        if tree is not None:
-            # Its own call counts with the others in flight: together they stay within
-            # the project's budget.
-            tree.called(self.member)
-            flying = tree.in_flight(besides=self.member, root=self.member is None) + coming
-        if spent + flying >= budget:
+        if await threaded(state.over_budget, project, self.chat.clock.now()):
             return "budget"
+        own = sum(cost(usage) for usage in run.usage)
         if self.tokens is not None:
-            used, limit = own + coming, float(self.tokens)
-        elif tree is not None and allowance is not None:
-            used, limit = tree.committed() + coming, float(allowance)
-        else:
-            used, limit = own, cast(float, self.share) * budget
-        if used >= limit:
+            # A delegated run stops before a call that would take it past its limit.
+            if own + estimate(run) >= self.tokens:
+                return "run_budget"
+        elif own >= cast(float, self.share) * await threaded(state.budget, project):
             return "run_budget"
-        if tree is not None:
-            tree.calling(self.member, coming)
         return None
 
 
