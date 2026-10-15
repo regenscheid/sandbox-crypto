@@ -53,7 +53,7 @@
   }
 </script>
 
-<div class="frontier-drop">
+<div class="frontier-action">
   {#if read.loading}<p class="muted">Reading {link.handle} as it is now…</p>{/if}
   {#if read.error}<ErrorMessage error={read.error} />{/if}
   {#if entry !== null && held === null}
