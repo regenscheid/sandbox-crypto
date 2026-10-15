@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import math
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
@@ -33,8 +34,11 @@ from .hooks import Closing, Effect, Notice, Point, RunView, TurnHook
 from .jobstate import JobState
 from .model import ChatModel, ToolSpec
 from .notices import JOBS, JOBS_ATTACHED
+from .recording import FileRecorder, Written
 from .watcher_prompt import assemble_watcher
 from .worker_client import WorkerAPIError, WorkerClient, dump
+
+_log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .projects import RunRecord
@@ -234,6 +238,8 @@ class JobTools:
         )
         self.heartbeat_seconds, self.watcher_timeout = heartbeat_seconds, watcher_timeout
         self.wake, self.on_wait = wake, on_wait
+        self.recorder: FileRecorder | None = None
+        """Records an ended job's files, when the run first sees it end (RA-27)."""
         """``wake`` returns once a user message waits for the run: it ends a wait.
         ``on_wait`` hears of each wait, as ``job_waits`` keeps it, and of its end."""
         self.clock = clock
@@ -421,6 +427,9 @@ class JobTools:
                     "stderr_tail": str(value["stderr"])[-bound:],
                     "error": value["error"],
                 }
+                recorded = await self._record(job)
+                if recorded is not None:
+                    notice["recorded_files"] = recorded
                 if len(dump([*values, notice])) > max_chars:
                     self.seen.update(str(value["job_id"]) for value in values)
                     return values
@@ -431,6 +440,21 @@ class JobTools:
             if listing.next_after is None or listing.next_after == after:
                 raise WorkerAPIError(ErrorKind.INTERNAL, "worker job page has no usable cursor")
             after = listing.next_after
+
+    async def _record(self, job: str) -> dict[str, Any] | None:
+        """Record an ended job's files, attributed to the operation that started it. A
+        notice made again records them again, which keeps the first revisions."""
+        if self.recorder is None:
+            return None
+        try:
+            execution = await self.client.get(job, project_id=self.context.project_id)
+            recorded = await self.recorder.record(
+                Written.of(execution), tool_call=execution.operation_id, model=None
+            )
+        except Exception:  # recording never costs the notice
+            _log.exception("recording the files of job %s failed", job)
+            return None
+        return recorded.summary()
 
     async def wait(self, args: dict[str, Any], operation: str) -> tuple[str, dict[str, Any]]:
         request = WaitRequest.model_validate(args)
