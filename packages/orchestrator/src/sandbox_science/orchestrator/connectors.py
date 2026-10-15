@@ -17,9 +17,11 @@ connectors are offered only to runs of that project.
   so is a server's tool past the per-server cap;
 - offered as an index (lab 39, B5): every tool's name and one-line purpose, grouped by
   the server behind it, with the operator's word on what each server is for, in the
-  description of the harness's ``mcp_tools`` tool, which loads named tools, or a
-  query's matches, into the run's tools for the rest of the run. Every schema at every
-  call cost about 17,000 tokens for crypto-research-mcp's 72 tools;
+  description of the harness's ``mcp_tools`` tool, which loads named tools into the
+  run's tools for the rest of the run. Every schema at every call cost about 17,000
+  tokens for crypto-research-mcp's 72 tools. A query lists the tools that match it well,
+  with their purposes, and loads none: loading a query's best matches loaded ten
+  unrelated schemas for a search that had no match (lab 40, B4);
 - each with the effect class ``effect``, since the policy marks no connector tool
   read-only, so the plan fence applies;
 - what a server says about a tool is untrusted. Its description loses control and
@@ -73,8 +75,12 @@ PURPOSE_CHARS: Final = 60
 """Characters of a tool's one-line purpose in the index."""
 MAX_LOAD: Final = 16
 """Tools one ``mcp_tools`` call loads by name."""
-MAX_MATCHES: Final = 5
-"""Tools one ``mcp_tools`` query loads."""
+MAX_MATCHES: Final = 8
+"""Tools one ``mcp_tools`` query lists."""
+_COMMON: Final = frozenset(
+    {"a", "an", "and", "by", "for", "in", "mcp", "of", "on", "or", "the", "to", "tool", "tools"}
+)
+"""Words a query says without saying what it wants."""
 MAX_ABOUT: Final = 200
 """Characters of the operator's word on what a server is for."""
 MAX_INDEX_CHARS: Final = 16_000
@@ -539,16 +545,28 @@ class Connectors:
         return "\n".join(lines)
 
     def search(self, query: str) -> list[str]:
-        """The tools that best match ``query``'s words, in their names, purposes or
-        servers, at most ``MAX_MATCHES``."""
-        words = [word for word in re.split(r"[^a-z0-9]+", query.lower()) if word]
+        """The tools that match ``query`` well, best first, at most ``MAX_MATCHES``: those
+        whose name, purpose or server holds each of a short query's words, or two thirds
+        of a longer one's, one of them in the name or purpose. A query that shares a word
+        with a tool by chance, such as one for a harness tool, finds nothing (lab 40,
+        B4)."""
+        words = list(
+            dict.fromkeys(
+                word
+                for word in re.split(r"[^a-z0-9]+", query.lower())
+                if len(word) > 1 and word not in _COMMON
+            )
+        )
+        needed = len(words) if len(words) <= 2 else -(-2 * len(words) // 3)
         scored: list[tuple[int, str]] = []
         for name, tool in self.tools.items():
-            key = tool.group
-            haystack = f"{name} {tool.purpose} {key} {self.about.get(key, '')}".lower()
-            score = sum(3 if word in name.lower() else 1 for word in words if word in haystack)
-            if score:
-                scored.append((-score, name))
+            own = f"{name} {tool.purpose}".lower()
+            server = f"{tool.group} {self.about.get(tool.group, '')}".lower()
+            found = [word for word in words if word in own or word in server]
+            if not words or len(found) < needed or not any(word in own for word in found):
+                continue
+            score = sum(3 if word in name.lower() else 2 if word in own else 1 for word in found)
+            scored.append((-score, name))
         return [name for _, name in sorted(scored)[:MAX_MATCHES]]
 
     def take(self, names: Iterable[str]) -> tuple[list[str], list[str], list[str], list[str]]:

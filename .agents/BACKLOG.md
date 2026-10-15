@@ -106,6 +106,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
   - [x] The proxy's listing leaves out the tools the policy denies
   - [x] An index in `mcp_tools`, tools loaded on demand, `--mcp-about` and `--mcp-index`, and the loaded tools in the run's record
   - [x] The launcher's config passes what each server is for and the servers listed by default; the example config says it for crypto-research-mcp's servers
+  - [x] A query lists the tools that match it well and loads none; the harness's own tool names are answered as such, and the description says a connector tool needs no shell or admit_hosts (lab 40, B4)
 - [x] `sandbox-science-mcp-proxy compile-policy` (D-08, decision 5 in part): the proxy sandbox's OpenShell policy from the project policy, the pool ceiling and the targets file, with an opt-in `--admit-escalated` that admits the tools the policy escalates by name, so that approvals take effect; the lab script is gone
 - [x] The rest of the proxy's sandbox as a product command: `sandbox-science up` with `[mcp_proxy]` creates the sandbox, uploads its files, binds the project and forwards the port (#272)
 - [ ] Approved tools compiled into the proxy sandbox's fence one by one instead of `--admit-escalated`
