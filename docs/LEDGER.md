@@ -20,21 +20,22 @@ A new entry starts in its type's first status: `proposed` for a project claim or
 
 **Statements.** A statement is Markdown with LaTeX, saved in the dollar form (LD-42). Its revisions are `text_revisions` of kind `statement` under the entry's ID, with their block map and block owners, as comment bodies and explanations keep theirs; an entry revision names the statement's text revision, and a revision that leaves the statement unchanged names the same one.
 
-**Links (LG-5).** A revision's links replace the revision before's when a change gives them, and are kept otherwise. Each kind has the types that may hold it and the targets it may name:
+**Links (LG-5).** A revision's links replace the revision before's when a change gives them, and are kept otherwise; a change that gives the links the entry already holds changes nothing. Each kind has the types that may hold it and the targets it may name:
 
 | Kind | Held by | Points to |
 | --- | --- | --- |
 | `answers` | claim, result | issue |
-| `assumes` | claim, result, decision | assumption, pinned to a revision (its current one when none is named) |
-| `builds_on`, `restates`, `supersedes` | claim, result | claim, result |
-| `compares_to` | result | result, with the stated difference |
+| `assumes` | claim, result, decision | assumption, pinned to a revision (when none is named, its revision as the change leaves it) |
+| `builds_on` | claim, result, issue | claim, result |
+| `restates`, `supersedes` | claim, result | claim, result |
+| `compares_to` | claim, result | claim, result, with the stated difference |
 | `split_into` | issue | issue |
 | `affects` | decision | any entry |
 | `concerns` | issue | any entry, a review finding of the project, or a document block at a revision |
 
-An entry's current revision also shows the links other entries' current revisions hold to it.
+An entry the same change revises is linked as the change leaves it, so an assumption revised and pinned in one change is pinned at its new revision (LG-F5). A block link keeps the document's ID even when the change names the document, since a name can later name another document. An entry's current revision also shows the links other entries' current revisions hold to it, 200 at a time in the order those entries were made, with their count.
 
-**Mutations (LG-30, LG-31).** A change names an operation ID, a reason, and up to 32 entry changes, each creating an entry (its type, title, statement, fields and links) or revising one (its ID or handle and the revision it expects). Entries the same change creates are named `new:<key>`. All of it commits, with its events and its receipt, or none of it does. A stale expected revision is a conflict that names the current one; nothing is rebased. The same operation ID with the same change returns the first result (`replayed`), and with another change is refused; a change is compared by a digest of its JSON without the fields it leaves unset, so a field a later version adds does not turn a retry into a conflict. A supersedes link and its target becoming `superseded` commit together, each needing the other; a split issue names the issues it was split into in the same change.
+**Mutations (LG-30, LG-31).** A change names an operation ID, a reason, and up to 32 entry changes, each creating an entry (its type, title, statement, fields and links) or revising one (its ID or handle and the revision it expects). Entries the same change creates are named `new:<key>`. All of it commits, with its events and its receipt, or none of it does. A stale expected revision is a conflict that names the current one; nothing is rebased. The same operation ID with the same change returns the first result (`replayed`), and with another change is refused; a change is compared by a digest of its JSON without the fields it leaves unset, so a field a later version adds does not turn a retry into a conflict. An entry is `superseded` exactly while a current revision supersedes it, so a supersedes link and its target becoming `superseded` commit together, and so do the link's removal and the target's leaving `superseded`; an entry that is `superseded` supersedes nothing new, though one that supersedes another may later be superseded. An issue is `split` exactly while it holds `split_into` links, so it names the issues it was split into in the same change. Neither `supersedes` nor `split_into` links ever lead back to their holder.
 
 **Events (LG-33).** Each new revision records `ledger.entry_created` or `ledger.entry_revised` (with the status before and the parts changed) in the control store's event log, under the entry.
 

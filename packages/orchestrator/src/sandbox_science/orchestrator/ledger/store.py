@@ -79,6 +79,18 @@ _REVISION: Final = (
     "SELECT r.revision,r.title,r.status,r.statement,r.fields,r.author,r.reason,r.created "
     "FROM ledger_revisions r WHERE r.entry_id=? AND r.revision=?"
 )
+_CURRENT: Final = (
+    "FROM ledger_links l JOIN ledger_entries e ON e.entry_id=l.entry_id AND l.revision=e.head "
+)
+"""The links entries' current revisions hold."""
+_HOLDERS: Final = (
+    f"SELECT l.entry_id {_CURRENT}WHERE l.target='entry' AND l.target_id=? AND l.kind=?"
+)
+_TARGETS: Final = (
+    f"SELECT l.target_id {_CURRENT}WHERE l.entry_id=? AND l.kind=? AND l.target='entry'"
+)
+INCOMING: Final = 200
+"""A read shows as many links to an entry as this."""
 
 
 def _now() -> datetime:
@@ -138,9 +150,19 @@ class Ledger:
 
     # Reads.
 
-    def entry(self, project: str, reference: str, revision: int | None = None) -> EntryView:
-        """An entry at ``revision`` (its current one by default)."""
+    def entry(
+        self,
+        project: str,
+        reference: str,
+        revision: int | None = None,
+        *,
+        incoming_after: int = 0,
+    ) -> EntryView:
+        """An entry at ``revision`` (its current one by default); at its current revision,
+        the links other entries hold to it, from the ``incoming_after``-th on."""
         self._project(project)
+        if incoming_after < 0:
+            raise DocumentError(INVALID_REQUEST, "incoming_after is a count of links")
         with self.control.read() as tx:
             db = tx.sql
             row = self._find(db, project, reference)
@@ -150,12 +172,18 @@ class Ledger:
                 raise DocumentError(NOT_FOUND, f"{row.handle} has no revision {number}")
             text = TEXTS.read(db, row.entry_id, found[3], full=False)
             assert text is not None  # noqa: S101 - written with its revision
+            incoming, total = (
+                self._incoming(db, project, row.entry_id, incoming_after)
+                if number == row.head
+                else ([], 0)
+            )
             return EntryView(
                 **self._summary(row, found),
                 statement=text["body"],
                 fields=json.loads(found[4]),
                 links=self._links(db, row.entry_id, number),
-                incoming=self._incoming(db, project, row.entry_id) if number == row.head else [],
+                incoming=incoming,
+                incoming_total=total,
                 head=row.head,
                 author=json.loads(found[5]),
                 reason=found[6],
@@ -295,12 +323,20 @@ class Ledger:
         ids = [p.row.entry_id for p in planned]
         if len(set(ids)) != len(ids):
             raise DocumentError(INVALID_REQUEST, "a mutation changes an entry once")
+        # An entry the mutation also revises is linked as the mutation leaves it.
+        heads = {p.row.entry_id: p.row.head + 1 for p in planned}
         for p in planned:
             if p.change.links is not None:
                 p.links = [
-                    self._link(db, project, p, link, keys, pinned) for link in p.change.links
+                    self._link(db, project, p, link, keys, pinned, heads) for link in p.change.links
                 ]
-        _check_together(planned)
+                if not p.created and p.links != p.previous:
+                    p.changed = [*p.changed, "links"]
+            if not p.created and not p.changed:
+                raise DocumentError(
+                    INVALID_REQUEST, f"the change to {p.row.handle} changes nothing"
+                )
+        self._check_links(db, planned)
         now = self.clock()
         changed: list[ChangedEntry] = []
         for p in planned:
@@ -375,9 +411,6 @@ class Ledger:
             planned.changed = [*planned.changed, "status"]
         if change.links is not None:
             planned.previous = self._links(db, row.entry_id, row.head)
-            planned.changed = [*planned.changed, "links"]
-        if not planned.changed:
-            raise DocumentError(INVALID_REQUEST, f"the change to {row.handle} changes nothing")
         return planned
 
     def _plan_create(
@@ -429,6 +462,7 @@ class Ledger:
         link: LinkInput,
         keys: dict[str, _Row],
         pinned: dict[tuple[str, int, str], str],
+        heads: dict[str, int],
     ) -> Link:
         holders, targets = LINKS[link.kind]
         if planned.row.type not in holders:
@@ -457,11 +491,11 @@ class Ledger:
                 raise DocumentError(
                     INVALID_REQUEST, f"a {link.kind} link names no document block, or no revision"
                 )
-            assert (link.document, link.revision, link.block) in pinned  # noqa: S101 - checked before
+            # Stored by the document's ID, which a name given here may later not name.
             return Link(
                 kind=link.kind,
                 target="block",
-                target_id=link.document,
+                target_id=pinned[(link.document, link.revision, link.block)],
                 revision=link.revision,
                 block=link.block,
                 note=link.note,
@@ -473,10 +507,9 @@ class Ledger:
             target = keys.get(link.entry.removeprefix("new:"))
             if target is None:
                 raise DocumentError(INVALID_REQUEST, f"no new entry is keyed {link.entry}")
-            head = 1
         else:
             target = self._find(db, project, link.entry)
-            head = target.head
+        head = heads.get(target.entry_id, target.head)
         if target.entry_id == planned.row.entry_id:
             raise DocumentError(INVALID_REQUEST, "an entry does not link to itself")
         if target.type not in targets:
@@ -588,6 +621,108 @@ class Ledger:
 
     # Checks.
 
+    def _check_links(self, db: sqlite3.Connection, planned: list[_Planned]) -> None:
+        """What holds once the change commits (LG-5, LG-30). ``supersedes`` and
+        ``split_into`` links never lead back to their holder. An entry is superseded
+        exactly while a current revision supersedes it, so a supersedes link and its
+        target becoming superseded commit together, and so do the link's removal and the
+        target leaving superseded; an entry that is superseded supersedes nothing new. An
+        issue is split exactly while it holds split_into links."""
+        by_id = {p.row.entry_id: p for p in planned}
+        final = {
+            p.row.entry_id: p.links
+            if p.links is not None
+            else self._links(db, p.row.entry_id, p.row.head)
+            for p in planned
+        }
+
+        def targets(entry: str, kind: str) -> list[str]:
+            if entry in final:
+                return [
+                    link.target_id
+                    for link in final[entry]
+                    if link.kind == kind and link.target == "entry"
+                ]
+            return [row[0] for row in db.execute(_TARGETS, (entry, kind))]
+
+        def holders(entry: str, kind: str) -> list[str]:
+            stored = [row[0] for row in db.execute(_HOLDERS, (entry, kind))]
+            return [holder for holder in stored if holder not in final] + [
+                holder for holder in final if entry in targets(holder, kind)
+            ]
+
+        def status(entry: str) -> str:
+            if entry in by_id:
+                return by_id[entry].status
+            return db.execute(
+                "SELECT r.status FROM ledger_entries e JOIN ledger_revisions r ON "
+                "r.entry_id=e.entry_id AND r.revision=e.head WHERE e.entry_id=?",
+                (entry,),
+            ).fetchone()[0]
+
+        def handle(entry: str) -> str:
+            if entry in by_id:
+                return by_id[entry].row.handle
+            kind, number = db.execute(
+                "SELECT type,number FROM ledger_entries WHERE entry_id=?", (entry,)
+            ).fetchone()
+            return f"{PREFIXES[kind]}-{number}"
+
+        superseding: list[str] = []
+        for p in planned:
+            for link in [*_added(p, "supersedes"), *_added(p, "split_into")]:
+                seen: set[str] = set()
+                reached = [link.target_id]
+                while reached:
+                    entry = reached.pop()
+                    if entry == p.row.entry_id:
+                        raise DocumentError(
+                            INVALID_REQUEST,
+                            f"{p.row.handle} {link.kind} {link.handle}, "
+                            f"which already leads back to {p.row.handle}",
+                        )
+                    if entry not in seen:
+                        seen.add(entry)
+                        reached.extend(targets(entry, link.kind))
+            for link in _added(p, "supersedes"):
+                if p.status == "superseded":
+                    raise DocumentError(
+                        INVALID_REQUEST, f"{p.row.handle} is superseded and supersedes nothing new"
+                    )
+                if status(link.target_id) != "superseded":
+                    raise DocumentError(
+                        INVALID_REQUEST,
+                        f"{link.handle} becomes superseded in the change that supersedes it",
+                    )
+            superseding += [link.target_id for link in _dropped(p, "supersedes")]
+        moved = [p.row.entry_id for p in planned if "status" in p.changed]
+        for entry in dict.fromkeys([*moved, *superseding]):
+            if by_id.get(entry) is not None and by_id[entry].row.type not in ("claim", "result"):
+                continue
+            held = holders(entry, "supersedes")
+            if status(entry) == "superseded" and not held:
+                raise DocumentError(
+                    INVALID_REQUEST,
+                    f"{handle(entry)} is superseded only while an entry supersedes it",
+                )
+            if status(entry) != "superseded" and held:
+                raise DocumentError(
+                    INVALID_REQUEST,
+                    f"{handle(entry)} stays superseded while {handle(held[0])} supersedes it",
+                )
+        for p in planned:
+            if p.row.type != "issue" or ("status" not in p.changed and p.change.links is None):
+                continue
+            split = bool(targets(p.row.entry_id, "split_into"))
+            if p.status == "split" and not split:
+                raise DocumentError(
+                    INVALID_REQUEST, f"{p.row.handle} names the issues it is split into"
+                )
+            if p.status != "split" and split:
+                raise DocumentError(
+                    INVALID_REQUEST, f"{p.row.handle} holds split_into links only while split"
+                )
+
     def _authority(self, project: str, author: Author) -> str:
         """The role LG-13 gives ``author``: ``user``, ``main`` or ``delegated``. Code in
         the sandbox, imports, the platform and other agent roles change nothing."""
@@ -610,8 +745,9 @@ class Ledger:
             raise DocumentError(INVALID_REQUEST, "invalid ledger project")
 
     def _blocks(self, project: str, links: list[LinkInput]) -> dict[tuple[str, int, str], str]:
-        """The document blocks links pin, each checked to exist at its revision; read
-        before the change, since document revisions do not change."""
+        """The documents of the blocks links pin, by ID, each block checked to exist at
+        its revision: a link names its document by ID or name, and a name can later name
+        another document. Read before the change, since document revisions do not change."""
         found: dict[tuple[str, int, str], str] = {}
         for link in links:
             if link.document is None or link.revision is None or link.block is None:
@@ -619,12 +755,14 @@ class Ledger:
             key = (link.document, link.revision, link.block)
             if key in found:
                 continue
-            mapped = self.documents.mapped(project, link.document, link.revision)
+            with self.control.read() as tx:
+                document = self.documents.find(tx.sql, project, link.document).document_id
+            mapped = self.documents.mapped(project, document, link.revision)
             if link.block not in mapped.block_ids:
                 raise DocumentError(
                     NOT_FOUND, f"{link.document} has no block {link.block} at r{link.revision}"
                 )
-            found[key] = link.block
+            found[key] = document
         return found
 
     @staticmethod
@@ -674,9 +812,14 @@ class Ledger:
         ]
 
     @staticmethod
-    def _incoming(db: sqlite3.Connection, project: str, entry: str) -> list[Link]:
-        """The links other entries' current revisions hold to ``entry``."""
-        return [
+    def _incoming(
+        db: sqlite3.Connection, project: str, entry: str, after: int
+    ) -> tuple[list[Link], int]:
+        """The links other entries' current revisions hold to ``entry``, from the
+        ``after``-th on, and how many there are."""
+        where = "WHERE l.target='entry' AND l.target_id=? AND e.project=? "
+        total = db.execute(f"SELECT count(*) {_CURRENT}{where}", (entry, project)).fetchone()[0]
+        links = [
             Link(
                 kind=kind,
                 target="entry",
@@ -686,13 +829,12 @@ class Ledger:
                 handle=f"{PREFIXES[source_type]}-{number}",
             )
             for kind, source, revision, note, source_type, number in db.execute(
-                "SELECT l.kind,l.entry_id,l.target_revision,l.note,e.type,e.number "
-                "FROM ledger_links l JOIN ledger_entries e ON e.entry_id=l.entry_id "
-                "AND l.revision=e.head WHERE l.target='entry' AND l.target_id=? "
-                "AND e.project=? ORDER BY e.position,l.ordinal LIMIT 200",
-                (entry, project),
+                f"SELECT l.kind,l.entry_id,l.target_revision,l.note,e.type,e.number {_CURRENT}"
+                f"{where}ORDER BY e.position,l.ordinal LIMIT ? OFFSET ?",
+                (entry, project, INCOMING, after),
             ).fetchall()
         ]
+        return links, total
 
 
 def _stored(db: sqlite3.Connection, row: tuple[Any, ...]) -> Link:
@@ -800,31 +942,16 @@ def _added(p: _Planned, kind: str) -> list[Link]:
     ]
 
 
-def _check_together(planned: list[_Planned]) -> None:
-    """What commits together (LG-30): a new supersedes link and its target becoming
-    superseded, each needing the other; a split issue and the issues it split into."""
-    by_id = {p.row.entry_id: p for p in planned}
-    superseded: set[str] = set()
-    for p in planned:
-        for link in _added(p, "supersedes"):
-            target = by_id.get(link.target_id)
-            if target is None or target.status != "superseded" or "status" not in target.changed:
-                raise DocumentError(
-                    INVALID_REQUEST,
-                    f"{link.handle} becomes superseded in the change that supersedes it",
-                )
-            superseded.add(link.target_id)
-    for p in planned:
-        if "status" not in p.changed:
-            continue
-        if p.status == "superseded" and p.row.entry_id not in superseded:
-            raise DocumentError(
-                INVALID_REQUEST, f"{p.row.handle} is superseded by an entry that supersedes it"
-            )
-        if p.status == "split" and not _added(p, "split_into"):
-            raise DocumentError(
-                INVALID_REQUEST, f"{p.row.handle} names the issues it is split into"
-            )
+def _dropped(p: _Planned, kind: str) -> list[Link]:
+    """The links of ``kind`` the revision before held that the change's new one does not."""
+    if p.links is None:
+        return []
+    after = {(link.target, link.target_id) for link in p.links if link.kind == kind}
+    return [
+        link
+        for link in p.previous
+        if link.kind == kind and (link.target, link.target_id) not in after
+    ]
 
 
 def _first_error(error: ValidationError) -> str:

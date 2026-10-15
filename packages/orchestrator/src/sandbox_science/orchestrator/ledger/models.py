@@ -64,9 +64,9 @@ LINKS: Final[dict[str, tuple[tuple[str, ...], tuple[str, ...]]]] = {
     # "block" are a review finding and a document block)
     "answers": (("claim", "result"), ("issue",)),
     "assumes": (("claim", "result", "decision"), ("assumption",)),
-    "builds_on": (("claim", "result"), ("claim", "result")),
+    "builds_on": (("claim", "result", "issue"), ("claim", "result")),
     "restates": (("claim", "result"), ("claim", "result")),
-    "compares_to": (("result",), ("result",)),
+    "compares_to": (("claim", "result"), ("claim", "result")),
     "supersedes": (("claim", "result"), ("claim", "result")),
     "dominates": (("result",), ("result",)),
     "split_into": (("issue",), ("issue",)),
@@ -218,6 +218,10 @@ class EntryView(EntrySummary):
     fields: dict[str, Any]
     links: list[Link]
     incoming: list[Link]
+    """Links other entries' current revisions hold to it, in the order those entries were
+    made: as many as 200 from the one a read starts at."""
+    incoming_total: int
+    """How many there are in all."""
     head: int
     author: dict[str, Any]
     reason: str
