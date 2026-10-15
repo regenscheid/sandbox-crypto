@@ -14,6 +14,7 @@ import type {
   FrontierCategory,
   FrontierHistoryAnswer,
   FrontierPastAnswer,
+  LedgerCitations,
   LedgerEntry,
   LedgerGate,
   LedgerHistory,
@@ -540,6 +541,11 @@ export const api = {
   /** The gate for an entry as it reads now, each clause with why, and the decisions that affect it. */
   ledgerGate: (project: string, entry: string) =>
     get<LedgerGate>(`/projects/${part(project)}/ledger/${part(entry)}/gate`),
+  /** The consistency reviewer's checks of each quote an entry's revision holds, newest first. */
+  ledgerCitations: (project: string, entry: string, revision: number) =>
+    get<LedgerCitations>(
+      `/projects/${part(project)}/ledger/${part(entry)}/citations?revision=${revision}`,
+    ),
   /** The user's record that they checked an entry at the revision they read; a newer one is a conflict. */
   checkLedgerEntry: (
     project: string,

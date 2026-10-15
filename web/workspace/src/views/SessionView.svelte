@@ -14,7 +14,16 @@
   import RunSection from './RunSection.svelte';
   const reviewComponent = import('./ReviewsPanel.svelte');
 
-  let { projectId, sessionId }: { projectId: string; sessionId: string } = $props();
+  let {
+    projectId,
+    sessionId,
+    reviewId = null,
+  }: {
+    projectId: string;
+    sessionId: string;
+    /** A review to choose in the review panel, as a link names it. */
+    reviewId?: string | null;
+  } = $props();
   // Polled, so that a run that ends and a session that closes show up.
   let view = $state<PollState<SessionDetail>>(initialPoll());
   $effect(() => {
@@ -67,7 +76,7 @@
   <JobsPanel {projectId} {sessionId} />
   {#await reviewComponent then component}
     {@const Reviews = component.default}
-    <Reviews {projectId} {sessionId} />
+    <Reviews {projectId} {sessionId} {reviewId} />
   {/await}
 
   <h2>Runs</h2>

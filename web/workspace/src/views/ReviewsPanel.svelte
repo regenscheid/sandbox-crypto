@@ -5,13 +5,18 @@
   failures beside its controls.
 -->
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { emptyReviewPanel, panelBusy, ReviewBrowser } from '../lib/reviewBrowser';
   import ErrorMessage from './ErrorMessage.svelte';
   import FindingList from './FindingList.svelte';
   import MathChecks from './MathChecks.svelte';
   import ReviewDetail from './ReviewDetail.svelte';
   import ReviewList from './ReviewList.svelte';
-  let { projectId, sessionId }: { projectId: string; sessionId: string } = $props();
+  let {
+    projectId,
+    sessionId,
+    reviewId = null,
+  }: { projectId: string; sessionId: string; reviewId?: string | null } = $props();
   const panel = $state(emptyReviewPanel());
   const browser = new ReviewBrowser(panel, () => ({ project: projectId, session: sessionId }));
   const busy = $derived(panelBusy(panel));
@@ -23,9 +28,16 @@
   $effect(() => {
     void browser.refresh();
   });
+  let section = $state<HTMLElement | null>(null);
+  // A link names one review: choose it once, and bring the panel into view. The session
+  // view is keyed by the review the link names, so it never changes here.
+  const linked = untrack(() => reviewId);
+  if (linked !== null) {
+    void browser.open(linked).then(() => section?.scrollIntoView?.());
+  }
 </script>
 
-<section aria-label="Consistency reviews">
+<section aria-label="Consistency reviews" bind:this={section}>
   <h2>Consistency reviews</h2>
   <p class="muted">
     A pass covers the recorded checks and is not a proof. Missing evidence, capped reviews and
