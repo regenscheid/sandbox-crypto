@@ -141,6 +141,11 @@ def test_the_examples_mcp_proxy_works_uncommented(home: Path, tmp_path: Path) ->
     # Only named: loading the config opens nothing there.
     assert proxy.provider_env_file == Path("/path/to/the/owners/cloudflare.env")
     assert proxy.provider_profile == tmp_path / "openshell/profiles/cloudflare-access.yaml"
+    # The tool index (lab 39, B5): what each server behind the portal is for.
+    listed = ("attack-catalog-mcp", "e-print-mcp", "nist-csrc-mcp", "paper-search-mcp")
+    assert proxy.index == tuple(f"crypto-research-mcp/{n}" for n in (*listed, "web-fetch-mcp"))
+    assert proxy.about["crypto-research-mcp/e-print-mcp"].startswith("the IACR Cryptology ePrint")
+    assert len(proxy.about) == 7
 
 
 MCP = {"image": "sandbox-science/mcp-proxy:abc1234", "providers": ["p"], "servers": ["s"]}

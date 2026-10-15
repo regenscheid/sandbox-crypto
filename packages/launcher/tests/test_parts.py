@@ -167,6 +167,8 @@ def test_the_mcp_proxy_gets_its_files_and_the_run_service_its_flags(
         "image": "sandbox-science/mcp-proxy:abc1234",
         "providers": ["p"],
         "servers": ["s", "t"],
+        "about": {"s/e-print-mcp": "IACR ePrint papers", "s": "the policy's server s"},
+        "index": ["s/e-print-mcp"],
     }
     config = load_config(make_config({"bin_dir": str(commands), "mcp_proxy": proxy}))
     parts.check(config)
@@ -182,7 +184,20 @@ def test_the_mcp_proxy_gets_its_files_and_the_run_service_its_flags(
         "--mcp-proxy", "http://127.0.0.1:18080",
         "--mcp-token-file", str(layout.token("mcp-orchestrator")),
         "--mcp-project", "crypto", "--mcp-server", "s", "--mcp-server", "t",
+        "--mcp-about", "s/e-print-mcp=IACR ePrint papers", "--mcp-about", "s=the policy's server s",
+        "--mcp-index", "s/e-print-mcp",
     ]  # fmt: skip
+    for wrong in (
+        {"about": {"Not_A_Server": "x"}},
+        {"about": {"e-print-mcp": "IACR ePrint"}},  # not behind a configured server
+        {"about": {"s/e-print-mcp": ""}},
+        {"about": {"s/e-print-mcp": "   "}},
+        {"about": {"s/e-print-mcp": "x" * 201}},
+        {"index": []},
+        {"index": ["other/e-print-mcp"]},
+    ):
+        with pytest.raises(LauncherError):
+            load_config(make_config({"mcp_proxy": {**proxy, **wrong}}))
     (commands / "sandbox-science-mcp-proxy").unlink()
     with pytest.raises(LauncherError, match="no sandbox-science-mcp-proxy in"):
         parts.check(config)

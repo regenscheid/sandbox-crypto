@@ -64,6 +64,18 @@ from pydantic import (
 from .access_provider import PROVIDER
 
 Identifier = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")]
+_SERVER = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+IndexKey = Annotated[str, StringConstraints(pattern=rf"^{_SERVER}(?:/{_SERVER})?$")]
+"""A server in the agent's tool index: one of ``servers``, or ``SERVER/BEHIND`` for one
+behind it, the server a tool's name starts with (``crypto-research-mcp/e-print-mcp``)."""
+
+
+def _said(text: str) -> str:
+    if not text.strip():
+        raise ValueError("says nothing")
+    return text
+
+
 Variable = Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
 
 
@@ -290,6 +302,15 @@ class McpProxyConfig(_Strict):
     credential a server's headers name (docs/MCP-CONNECTORS.md)."""
     servers: tuple[Identifier, ...] = Field(min_length=1)
     """The policy's MCP servers whose tools the main agent gets."""
+    about: dict[
+        IndexKey, Annotated[str, StringConstraints(max_length=200), AfterValidator(_said)]
+    ] = Field(default_factory=dict[str, str])
+    """What each server is for, which the agent's tool index says, marked as the
+    operator's, so the agent picks the right one (lab 39, B5):
+    ``"crypto-research-mcp/e-print-mcp" = "IACR ePrint papers: ..."``."""
+    index: tuple[IndexKey, ...] | None = Field(default=None, min_length=1)
+    """The servers whose tools the index lists one by one, named as in ``about``; the
+    others are found with a query. By default it lists every server's."""
     project: Identifier | None = None
     """The project whose runs get them; by default the only project."""
     policy: ConfigPath | None = None
@@ -316,6 +337,12 @@ class McpProxyConfig(_Strict):
 
     @model_validator(mode="after")
     def _registered(self) -> Self:
+        for key in (*self.about, *(self.index or ())):
+            if key.partition("/")[0] not in self.servers:
+                raise ValueError(
+                    f"mcp_proxy.about and index name one of mcp_proxy.servers, or "
+                    f"SERVER/BEHIND for one behind it: {key!r}"
+                )
         if self.provider_env_file is not None:
             if self.provider_profile is None:
                 raise ValueError(
