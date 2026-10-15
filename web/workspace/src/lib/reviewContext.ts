@@ -11,7 +11,15 @@ import type { Delegation } from './api-types';
 import type { LinkTarget } from './ledger';
 import type { Json } from './api';
 import type { Evidence } from './reviews';
-import { documentHref, ENTRY_NAME, ledgerEntryHref } from './router';
+import { actionsText } from './reviewActions';
+import {
+  documentHref,
+  ENTRY_NAME,
+  findingHref,
+  ledgerEntryHref,
+  runHref,
+  treeHref,
+} from './router';
 import { visible } from './text';
 
 const record = (value: unknown): Record<string, unknown> =>
@@ -101,6 +109,87 @@ export function contextLinks(
     });
   }
   return links;
+}
+
+/** How the review list describes an item it labels: its mark, what it is, and its links. */
+export interface ItemView {
+  /** Where the item comes from, and whether it is reviewed material. */
+  mark: string;
+  text: string;
+  links: LinkTarget[];
+}
+
+/** An artifact item's path, or else its artifact and revision. */
+function artifactText(locator: Evidence['locator']): string {
+  const path = named(locator['path']);
+  if (path !== null) return visible(`file ${path}`);
+  const pin = record(locator['artifact']);
+  const revision = count(pin.revision);
+  return visible(
+    `artifact ${String(pin.artifact_id ?? '?')}${revision === null ? '' : ` r${revision}`}`,
+  );
+}
+
+/**
+ * How the review list describes an item whose provenance it knows (CR-2, CR-14 as amended
+ * for labs 40 and 41): context an entry's evidence pins; a window's actions; a file a
+ * claimed fix cites; a delegation's result file; a delegation's outcome brought in with
+ * its run's work; null for any other item, which the list names by its locator.
+ */
+export function describeItem(
+  project: string,
+  session: string,
+  item: Pick<Evidence, 'kind' | 'locator'>,
+): ItemView | null {
+  const locator = item.locator;
+  const context = contextText(item);
+  if (context) {
+    const target = contextTarget(item) || (item.kind === 'artifact' ? artifactText(locator) : '');
+    return { mark: context, text: target, links: contextLinks(project, item) };
+  }
+  if (item.kind === 'actions') {
+    return {
+      mark: "Derived from the window's tool records:",
+      text: actionsText(item),
+      links: [],
+    };
+  }
+  const cited = record(locator['cited_by']);
+  if (item.kind === 'artifact' && Object.keys(cited).length) {
+    const finding = named(cited.finding);
+    return {
+      mark: 'Cited by the fix:',
+      text: artifactText(locator),
+      links:
+        finding !== null && session
+          ? [{ text: 'the finding', href: findingHref(project, session, finding) }]
+          : [],
+    };
+  }
+  const delegated = record(locator['delegated']);
+  const delegation = named(delegated.delegation);
+  if (item.kind === 'artifact' && delegation !== null) {
+    return {
+      mark: `Result file of delegation ${visible(delegation)}:`,
+      text: artifactText(locator),
+      links: session ? [{ text: 'the run tree', href: treeHref(project, session) }] : [],
+    };
+  }
+  const outcome = named(locator['delegation']);
+  if (item.kind === 'delegation' && outcome !== null) {
+    const name = named(locator['name']);
+    const links: LinkTarget[] = [];
+    if (session && name !== null) {
+      links.push({ text: 'its run’s events', href: runHref(project, session, name) });
+    }
+    if (session) links.push({ text: 'the run tree', href: treeHref(project, session) });
+    return {
+      mark: 'Delegated work, as context, not reviewed material:',
+      text: visible(`the outcome of delegation ${outcome}`),
+      links,
+    };
+  }
+  return null;
 }
 
 /**

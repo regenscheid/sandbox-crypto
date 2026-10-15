@@ -2,8 +2,8 @@
 /**
  * A review window's actions (docs/specs/consistency-review.md, CR-2 as amended for lab
  * 40): the item the snapshot derives from the runs' tool records, each run's calls that
- * change something, in order, with their target, outcome and what they made, and the
- * blocks each document revision in the window changed. The view lists them by run, marks
+ * change something, in order, with their target, outcome and what they made, a delegated
+ * run's naming its delegation, and the blocks each document revision in the window changed. The view lists them by run, marks
  * a refused or failed call, and leads to what was made where the workspace has a page.
  * Targets and paths are the agent's arguments, shown with each character a person may not
  * see as its code point.
@@ -43,9 +43,19 @@ export interface DocumentChange {
   removedTotal: number;
 }
 
+/** One run's actions; a delegated run's name the delegation it ran for. */
+export interface RunActions {
+  run: string;
+  delegation: string | null;
+  actions: Action[];
+}
+
 export interface WindowActions {
-  /** The runs in the order their first action comes, each with its actions in order. */
-  runs: { run: string; actions: Action[] }[];
+  /**
+   * The runs in the order their first action comes, each with its actions in order; a
+   * delegated run's apart from its parent's, under its delegation.
+   */
+  runs: RunActions[];
   shown: number;
   total: number;
   documents: DocumentChange[];
@@ -73,13 +83,14 @@ export function actionsOf(text: string): WindowActions | null {
   }
   const payload = record(parsed);
   if (!Array.isArray(payload.actions)) return null;
-  const runs: { run: string; actions: Action[] }[] = [];
+  const runs: RunActions[] = [];
   for (const raw of payload.actions) {
     const action = record(raw);
     const run = typeof action.run === 'string' ? action.run : '';
-    let group = runs.find((found) => found.run === run);
+    const delegation = typeof action.delegation === 'string' ? action.delegation : null;
+    let group = runs.find((found) => found.run === run && found.delegation === delegation);
     if (group === undefined) {
-      group = { run, actions: [] };
+      group = { run, delegation, actions: [] };
       runs.push(group);
     }
     group.actions.push({

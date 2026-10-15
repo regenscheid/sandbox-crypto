@@ -1,6 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- A review window's actions (docs/specs/consistency-review.md, CR-2 as amended for lab
-     40): a compact table for each run, its calls that change something in order, each
+     40, 41): a compact table for each run, a delegated run's under its delegation, its
+     calls that change something in order, each
      with its tool, target, outcome, a refused or failed one marked, and what it made,
      leading there where the workspace has a page; then the blocks each document revision
      changed. Agents' arguments are shown as text, each character a person may not see as
@@ -33,7 +34,14 @@
     <p class="muted">The first {actions.shown} of the window's {actions.total} calls are listed.</p>
   {/if}
   {#each actions.runs as group, index (index)}
-    <p>Run {@render link(runLink(projectId, sessionId, group.run))}</p>
+    {#if group.delegation !== null}
+      <p>
+        Delegated run {@render link(runLink(projectId, sessionId, group.run))}, of delegation
+        <code>{visible(group.delegation)}</code>
+      </p>
+    {:else}
+      <p>Run {@render link(runLink(projectId, sessionId, group.run))}</p>
+    {/if}
     <table>
       <thead><tr><th>#</th><th>Tool</th><th>Target</th><th>Outcome</th><th>Made</th></tr></thead>
       <tbody>
