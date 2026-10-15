@@ -4,6 +4,7 @@ accepted entries and propose; nothing they do changes an entry (PM-F1)."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Iterator
 from pathlib import Path
@@ -180,6 +181,30 @@ async def test_a_run_that_lost_its_session_does_not_propose(tmp_path: Path) -> N
         documents.close()
     (record,) = finished.transcript.tool_records
     assert record["error"] == "conflict"
+
+
+async def test_proposals_called_at_once_each_get_their_own(documents: DocumentStore) -> None:
+    """Twelve memory_propose calls of one run at once: ten wait, each with its own number,
+    two are refused at the run's limit, and a call made again returns its first answer."""
+    tools = toolbox(documents)
+    calls = [
+        ToolCall(
+            f"c{n}",
+            "memory_propose",
+            json.dumps({"action": "add", "text": f"Note {n}.", "reason": "r"}),
+        )
+        for n in range(12)
+    ]
+    outs = await asyncio.gather(*(tools.call(call, call.id) for call in calls))
+    answers = [json.loads(out.text) for out in outs]
+    made = [answer["proposal_id"] for answer in answers if "proposal_id" in answer]
+    assert sorted(made) == sorted(f"prop-{n}" for n in range(1, 11))
+    refused = [answer["error"]["message"] for answer in answers if "error" in answer]
+    assert len(refused) == 2
+    assert all("has made 10 proposals" in message for message in refused)
+    first = next(n for n, answer in enumerate(answers) if "proposal_id" in answer)
+    again = json.loads((await tools.call(calls[first], calls[first].id)).text)
+    assert again == {**answers[first], "replayed": True}
 
 
 @pytest.mark.parametrize(
