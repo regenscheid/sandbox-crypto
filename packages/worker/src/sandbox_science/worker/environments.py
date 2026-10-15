@@ -301,6 +301,21 @@ class EnvironmentRecords:
             if info.project_id in wanted and info.state is not EnvironmentState.DELETED
         ]
 
+    def listed(self, projects: Iterable[str] | None) -> list[EnvironmentInfo]:
+        """The environments that are not deleted, of ``projects`` or of every project."""
+        wanted = None if projects is None else set(projects)
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT document FROM environments ORDER BY environment_id"
+            ).fetchall()
+        infos = [EnvironmentInfo.model_validate_json(row[0]) for row in rows]
+        return [
+            info
+            for info in infos
+            if (wanted is None or info.project_id in wanted)
+            and info.state is not EnvironmentState.DELETED
+        ]
+
     def sandbox_taken(self, sandbox: str) -> bool:
         with self._lock:
             row = self._db.execute(

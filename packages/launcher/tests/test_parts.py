@@ -26,10 +26,10 @@ def test_prepare_makes_private_tokens_once_and_the_workers_settings(make_config:
     layout = parts.prepare(config)
     for directory in (layout.root, layout.tokens, layout.worker, layout.control, layout.logs):
         assert mode(directory) == 0o700
-    names = ("worker", "harness-worker", "workspace-worker")
+    names = ("worker", "harness-worker", "workspace-worker", "launcher-worker")
     tokens = {name: layout.token(name).read_text() for name in names}
     assert all(mode(layout.token(name)) == 0o600 for name in names)
-    assert len(set(tokens.values())) == 3
+    assert len(set(tokens.values())) == 4
     assert mode(layout.worker_settings) == 0o600
     settings = tomllib.loads(layout.worker_settings.read_text())
     assert settings["token_file"] == str(layout.token("worker"))
@@ -38,7 +38,7 @@ def test_prepare_makes_private_tokens_once_and_the_workers_settings(make_config:
     digests = {client["name"]: client["token_sha256"] for client in settings["clients"]}
     assert digests == {
         name: hashlib.sha256(tokens[f"{name}-worker"].strip().encode()).hexdigest()
-        for name in ("harness", "workspace")
+        for name in ("harness", "workspace", "launcher")
     }
     assert all(client["projects"] == ["crypto"] for client in settings["clients"])
     openshell = settings["openshell"]

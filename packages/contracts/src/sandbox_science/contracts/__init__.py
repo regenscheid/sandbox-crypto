@@ -34,11 +34,13 @@ from .environments import (
     AdmissionRequest,
     AdmissionResult,
     EnvironmentInfo,
+    EnvironmentList,
     EnvironmentRequest,
     EnvironmentState,
     HostPort,
     PolicyRevision,
     PolicyRevisionRequest,
+    SuspendResult,
 )
 from .events import Event, OutputEvent, ResultEvent, StateEvent, StreamEvent
 from .kernel_lineage import (
@@ -138,6 +140,7 @@ __all__ = [
     "CondaPackage",
     "Contract",
     "EnvironmentInfo",
+    "EnvironmentList",
     "EnvironmentRequest",
     "EnvironmentRevision",
     "EnvironmentState",
@@ -203,6 +206,7 @@ __all__ = [
     "StateEvent",
     "StreamEvent",
     "StreamOutput",
+    "SuspendResult",
     "SystemClock",
     "WorkerErrorResponse",
     "WriteFileRequest",

@@ -1653,6 +1653,45 @@ async def test_a_client_acts_for_its_own_projects_only(api: Api) -> None:
     assert (status, read["size"]) == (200, 3)
 
 
+async def test_a_client_lists_and_suspends_only_its_projects_environments(api: Api) -> None:
+    assert (await api.call("POST", "/v1/environments", A_TOKEN, api.environment("env-a")))[0] == 201
+    env_b = api.environment("env-b", "p2")
+    assert (await api.call("POST", "/v1/environments", B_TOKEN, env_b))[0] == 201
+    status, listed = await api.call("GET", "/v1/environments", A_TOKEN)
+    assert status == 200
+    assert [item["environment_id"] for item in listed["environments"]] == ["env-a"]
+    _, everything = await api.call("GET", "/v1/environments", TOKEN)
+    assert [item["environment_id"] for item in everything["environments"]] == ["env-a", "env-b"]
+    # Another project's environment is not there for this client, and keeps running.
+    refused = await api.refused("POST", "/v1/environments/env-b/suspend", A_TOKEN)
+    assert refused == (404, "not_found")
+    status, result = await api.call("POST", "/v1/environments/env-a/suspend", A_TOKEN)
+    assert (status, result["suspended"]) == (200, True)
+    assert result["environment"]["state"] == "stopped"
+    sandbox = result["environment"]["sandbox"]
+    assert api.setup.fake.calls("sandbox", "stop") == [["sandbox", "stop", sandbox]]
+    # Already stopped: it says so, and stops nothing again.
+    _, again = await api.call("POST", "/v1/environments/env-a/suspend", A_TOKEN)
+    assert again["suspended"] is True
+    assert len(api.setup.fake.calls("sandbox", "stop")) == 1
+    _, after = await api.call("GET", "/v1/environments", TOKEN)
+    states = {item["environment_id"]: item["state"] for item in after["environments"]}
+    assert states == {"env-a": "stopped", "env-b": "ready"}
+
+
+async def test_an_environment_in_use_is_not_suspended_on_request(api: Api) -> None:
+    assert (await api.call("POST", "/v1/environments", A_TOKEN, api.environment("env-a")))[0] == 201
+
+    async def busy(environment_id: str, idle_since: float) -> bool:
+        return False
+
+    api.setup.environments.release_idle = busy
+    status, result = await api.call("POST", "/v1/environments/env-a/suspend", A_TOKEN)
+    assert (status, result["suspended"]) == (200, False)
+    assert result["environment"]["state"] == "ready"
+    assert api.setup.fake.calls("sandbox", "stop") == []
+
+
 async def test_an_environment_id_stays_with_its_project(api: Api) -> None:
     # Deleted or not, an ID belongs to the project that first created it, so nothing a
     # check let through for one project can later reach another's sandbox (review of D78).

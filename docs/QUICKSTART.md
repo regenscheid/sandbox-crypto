@@ -113,13 +113,18 @@ credentials = { "crypto-research-mcp.CF_ACCESS_CLIENT_ID" = "CF_ACCESS_CLIENT_ID
 
 ## Stopping
 
-Press Ctrl-C where `up` runs, or run `sandbox-science down --config …` from another terminal. Closing the terminal or the SSH session that runs `up` (SIGHUP) stops it the same way, as do SIGTERM and SIGQUIT. The launcher stops the parts in reverse order: the workspace, the run service, the MCP proxy's forward and sandbox if there are any, then the worker.
+Press Ctrl-C where `up` runs, or run `sandbox-science down --config …` from another terminal. Closing the terminal or the SSH session that runs `up` (SIGHUP) stops it the same way, as do SIGTERM and SIGQUIT. The launcher stops the parts in reverse order: the workspace, the run service, the MCP proxy's forward and sandbox if there are any, then the research sandboxes, then the worker.
 - It gives each part `stop_timeout` to stop after SIGTERM, then kills what is left of the part's session. A second Ctrl-C stops them at once.
 - A part that stops by itself stops the others too, and `up` exits 1 with the end of that part's log.
 
-**What stays running:** the worker leaves its sandboxes running when it stops, by design. Their kernels and files are still there for the next `up`, which reattaches to them ([sandbox daemon and recovery](WORKER.md#sandbox-daemon-and-recovery)).
-- With `suspend_after` in `[openshell.environments]`, as in the example, the worker stops a sandbox nobody has used for that long, and starts it again on its next use.
-- To remove the sandboxes, use the OpenShell CLI (`openshell sandbox list`, `openshell sandbox delete`).
+**The research sandboxes:** these are the sandboxes the worker made for the config's projects. A stop you ask for (Ctrl-C, `down`, SIGTERM, SIGHUP or SIGQUIT) suspends them before the worker stops, through the worker's own suspension, the one `suspend_after` uses ([idle suspension](WORKER.md#idle-suspension)).
+- **What a suspension keeps.** A suspended sandbox keeps its files and installed packages; its kernels end. The next use, after the next `up`, starts it again.
+- **What it never touches.** Another project's sandbox, or one the worker did not make, is never suspended. The launcher asks the worker with a token limited to the config's projects.
+- **A sandbox in use keeps running.** One running a background job, for example, is not suspended. `down` names each sandbox that may still be running and exits 1, and the services are stopped all the same. So does a suspension that fails or takes more than three minutes.
+- **Keeping them running.** `down --keep-sandboxes` stops the services and leaves the sandboxes running, as they were. Their kernels are still there for the next `up`, which reattaches to them ([sandbox daemon and recovery](WORKER.md#sandbox-daemon-and-recovery)).
+- **After a part died.** When a part stopped by itself and took the rest down, the sandboxes are not suspended. The launcher says which ones still run, and `sandbox-science down` suspends them. With the services stopped, `down` starts the worker alone for that, and stops it again.
+- With `suspend_after` in `[openshell.environments]`, as in the example, the worker also suspends a sandbox nobody has used for that long, while Sandbox Science runs.
+- To delete the sandboxes, use the OpenShell CLI (`openshell sandbox list`, `openshell sandbox delete`).
 
 ## Status
 
@@ -127,7 +132,14 @@ Press Ctrl-C where `up` runs, or run `sandbox-science down --config …` from an
 uv run sandbox-science status --config examples/sandbox-science.toml
 ```
 
-It shows each part's process, and whether its address answers. It exits 0 while Sandbox Science runs as it should, 3 when it does not run, and 4 when something is wrong: a part stopped or silent, or one left running by a launcher that was killed.
+It shows each part's process, whether its address answers, and each research sandbox, running or suspended:
+- While the services run, the worker lists the sandboxes.
+- When they are stopped, the launcher asks OpenShell about the ones the worker last listed. It keeps that list, refreshed every half minute while Sandbox Science runs. If OpenShell cannot answer, `status` says the sandboxes could not be checked, and names them.
+
+`status` exits 0 while Sandbox Science runs as it should, 3 when it does not run, and 4 when something is wrong:
+- a part stopped or silent;
+- one left running by a launcher that was killed;
+- research sandboxes running, or not checked, with the services stopped.
 
 The parts die with the launcher, even when it is killed outright. One that ignores the SIGTERM it gets then keeps running: `status` lists it, and `down`, or the next `up`, stops it. The launcher knows a part from the record it keeps in the state directory, by its process ID, its start time and the boot it started in, so after a reboot, or with another state directory's parts, it stops nothing of anyone else's. An `up` on the same state directory while one runs is refused.
 
@@ -142,6 +154,7 @@ Everything in it is only for your user: the directories are mode 700 and the fil
 | `tokens/` | The worker's own token and the run service's and the workspace's tokens for it, limited to the config's projects. They are made once and kept. Delete the directory, with Sandbox Science stopped, to have new ones made |
 | `worker/worker.toml`, `worker/state/` | The worker's settings, written at each `up`, and its state directory. Do not delete the state directory while its sandboxes exist: it holds their endpoints |
 | `control/` | The control store, with the projects, sessions, runs and documents, that the run service and the workspace share |
+| `sandboxes.json`, `stopped.json` | The research sandboxes as last listed, and what the last stop did to them, for `down` to say |
 | `logs/` | Each part's output (`worker.log`, `run-service.log`, `workspace.log`, `mcp-forward.log`), and `launcher.log` with the output of the commands `up` runs once |
 | `mcp-proxy/` | With `[mcp_proxy]`: the proxy's compiled policy, the files uploaded to its sandbox, and the record of the sandbox the launcher made |
 

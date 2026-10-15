@@ -11,6 +11,11 @@ Every step goes in the file ``FAKE_JOURNAL`` names, one line each, and ``FAKE_PA
 - ``grant-fails``: the worker's ``policy add`` fails.
 - ``child-in-own-group``: it starts a child in a process group of its own.
 - ``child-stays``: it starts a child in its own session, which outlives it.
+- ``suspend-busy``: the worker suspends nothing, as for sandboxes in use.
+
+The worker answers ``GET /v1/environments`` and ``POST /v1/environments/{id}/suspend``
+for its clients' projects, from the environments in the OpenShell stand-in's file
+(``FAKE_OPENSHELL``); a suspension stops the sandbox there too.
 
 The run service and the workspace note ``LEAK_CHECK`` and ``PASSED_ON`` when they see
 them.
@@ -18,16 +23,20 @@ them.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import tomllib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import TextIO
+from typing import Any, TextIO
 
 LOGIN_TOKEN = "fake-login-token-0123456789abcdef"
 
@@ -49,14 +58,97 @@ def stopped(*_: object) -> None:
     sys.exit(0)
 
 
-def serve(address: str | None, lines: list[str], *, stream: TextIO = sys.stdout) -> None:
+def openshell_state() -> dict[str, Any]:
+    path = Path(os.environ.get("FAKE_OPENSHELL", "/nonexistent"))
+    if not path.exists():
+        return {"providers": [], "sandboxes": {}, "environments": []}
+    return json.loads(path.read_text())
+
+
+def worker_api(settings: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
+    clients = {client["token_sha256"]: client for client in settings.get("clients", [])}
+    lock = threading.Lock()
+
+    class Api(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: Any) -> None:
+            pass
+
+        def client(self) -> dict[str, Any] | None:
+            token = self.headers.get("Authorization", "").removeprefix("Bearer ")
+            return clients.get(hashlib.sha256(token.encode()).hexdigest())
+
+        def answer(self, status: int, body: object) -> None:
+            data = json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def refuse(self, status: int, kind: str) -> None:
+            self.answer(status, {"error": {"kind": kind, "message": kind}})
+
+        def do_GET(self) -> None:
+            client = self.client()
+            if client is None:
+                return self.refuse(401, "unauthorized")
+            if self.path != "/v1/environments":
+                return self.refuse(404, "not_found")
+            with lock:
+                found = openshell_state().get("environments", [])
+            mine = [item for item in found if item["project_id"] in client["projects"]]
+            return self.answer(200, {"environments": mine})
+
+        def do_POST(self) -> None:
+            client = self.client()
+            if client is None:
+                return self.refuse(401, "unauthorized")
+            match = re.fullmatch(r"/v1/environments/([^/]+)/suspend", self.path)
+            if match is None:
+                return self.refuse(404, "not_found")
+            with lock:
+                state = openshell_state()
+                environment = next(
+                    (
+                        item
+                        for item in state.get("environments", [])
+                        if item["environment_id"] == match[1]
+                        and item["project_id"] in client["projects"]
+                    ),
+                    None,
+                )
+                if environment is None:
+                    return self.refuse(404, "not_found")
+                suspended = environment["state"] == "stopped"
+                if not suspended and behaviour != "suspend-busy":
+                    environment["state"] = "stopped"
+                    state["sandboxes"][environment["sandbox"]]["phase"] = "Stopped"
+                    Path(os.environ["FAKE_OPENSHELL"]).write_text(json.dumps(state))
+                    note(f"suspend {environment['environment_id']}")
+                    suspended = True
+            return self.answer(200, {"environment": environment, "suspended": suspended})
+
+    return Api
+
+
+def serve(
+    address: str | None,
+    lines: list[str],
+    *,
+    stream: TextIO = sys.stdout,
+    api: type[BaseHTTPRequestHandler] | None = None,
+) -> None:
     if behaviour == "exit-at-start":
         print(f"{name}: cannot start, as asked", flush=True)
         note("exits")
         sys.exit(4)
     signal.signal(signal.SIGTERM, signal.SIG_IGN if behaviour == "ignore-term" else stopped)
     listener = None
-    if address is not None:
+    if address is not None and api is not None:
+        host, port = address.rsplit(":", 1)
+        server = ThreadingHTTPServer((host, int(port)), api)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+    elif address is not None:
         host, port = address.rsplit(":", 1)
         listener = socket.socket()
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -95,7 +187,7 @@ match (name, args[:2]):
         print(f"stored {args[-1]} as sha256:{'ab' * 32}", flush=True)
     case ("sandbox-science-worker", ["serve", *_]):
         settings = tomllib.loads(Path(option("--settings")).read_text())
-        serve(settings["listen"], ["worker API on " + settings["listen"]])
+        serve(settings["listen"], ["worker API on " + settings["listen"]], api=worker_api(settings))
     case ("sandbox-science-harness", ["project" | "session" as what, action]):
         session = f" {option('--session')}" if what == "session" else ""
         note(f"{what} {action} {option('--project')}{session}")

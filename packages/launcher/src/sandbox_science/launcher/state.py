@@ -6,6 +6,8 @@
     launcher.lock             held while ``up`` runs
     launcher.json             the instance running: its process and its parts'
     workspace-login           the workspace's login address, mode 600
+    sandboxes.json            the research sandboxes the worker last listed
+    stopped.json              what the last stop did to them, for ``down`` to say
     tokens/<name>.token       each token, mode 600: made once, kept, never printed
     worker/worker.toml        the worker's settings, written at each ``up``
     worker/state/             the worker's state directory, with its lock
@@ -47,6 +49,8 @@ class Layout:
         self.control = root / "control"
         self.logs = root / "logs"
         self.mcp = root / "mcp-proxy"
+        self.sandboxes = root / "sandboxes.json"
+        self.stopped = root / "stopped.json"
 
     def token(self, name: str) -> Path:
         return self.tokens / f"{name}.token"
