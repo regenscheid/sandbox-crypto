@@ -7,7 +7,7 @@ with a fresh context does (LG-17).
 
 from __future__ import annotations
 
-from typing import Final, Literal
+from typing import Annotated, Final, Literal
 
 from pydantic import Field
 
@@ -18,6 +18,7 @@ from sandbox_science.orchestrator.model import ToolSpec
 
 MAX_TEXT: Final = 8000
 MAX_INPUTS: Final = 20
+MAX_INPUT: Final = 512
 MAX_WAITED: Final = 10
 
 
@@ -32,7 +33,9 @@ class CheckBrief(Contract):
 
     task: str = Field(min_length=1, max_length=MAX_TEXT)
     context: str = Field(default="", max_length=MAX_TEXT)
-    inputs: tuple[str, ...] = Field(default=(), max_length=MAX_INPUTS)
+    inputs: tuple[Annotated[str, Field(min_length=1, max_length=MAX_INPUT)], ...] = Field(
+        default=(), max_length=MAX_INPUTS
+    )
     check: CheckTarget
 
 
@@ -59,7 +62,7 @@ SPECS: Final = (
                 "context": {**_TEXT, "description": "What the checker needs to know"},
                 "inputs": {
                     "type": "array",
-                    "items": {"type": "string", "maxLength": 512},
+                    "items": {"type": "string", "minLength": 1, "maxLength": MAX_INPUT},
                     "maxItems": MAX_INPUTS,
                     "description": "Paths in the session workspace or shared/, documents "
                     "and ledger entries it should read",
@@ -82,7 +85,9 @@ SPECS: Final = (
         "wait_delegations",
         "Keep this turn open without calling your model until all the delegated runs "
         "named (or the first with mode=first) end, or a user message arrives. Returns the "
-        "outcomes of those that ended.",
+        "outcomes of those that ended, with their whole reports, as many as fit; call it "
+        "again for the rest. Any ended delegation of this session can be named, such as "
+        "one a notice summarized.",
         {
             "type": "object",
             "properties": {

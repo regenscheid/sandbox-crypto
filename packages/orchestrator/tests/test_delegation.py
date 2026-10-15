@@ -24,7 +24,11 @@ from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator.chat import RunChat, SessionHeld
 from sandbox_science.orchestrator.control import ControlError, migrations
 from sandbox_science.orchestrator.delegation import hook
-from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
+from sandbox_science.orchestrator.delegation.records import (
+    Delegation,
+    DelegationRecords,
+    Ending,
+)
 from sandbox_science.orchestrator.documents import USER
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.memory import ProjectMemory
@@ -309,13 +313,20 @@ async def test_a_check_is_refused_the_tools_its_role_withholds(delegating: Harne
         "root",
         [Reply(calls=[CHECK]), wait(), Reply("Done.")],
         delegated=[
-            Reply(calls=[call("review_findings"), call("plan_read"), CHECK]),
+            Reply(
+                calls=[
+                    call("review_findings"),
+                    call("plan_read"),
+                    CHECK,
+                    call("e-print-mcp_search_eprint", query="Ed448"),  # a connector's
+                ]
+            ),
             Reply("Verdict: inconclusive"),
         ],
     )
     (child,) = children(delegating, root)
     refused = results(child)
-    assert len(refused) == 3
+    assert len(refused) == 4
     for result in refused:
         error = json.loads(result)["error"]
         assert error["kind"] == "policy_denied"
@@ -388,12 +399,14 @@ def test_a_delegations_outcome_is_written_once(tmp_path: Path) -> None:
         records.start(PROJECT, SESSION, made)
         assert records.handbacks(PROJECT, SESSION) == []
         long = "x" * 40_000
-        first = records.end(PROJECT, SESSION, made.delegation_id, "returned", "answered", long)
+        first = records.end(
+            PROJECT, SESSION, made.delegation_id, Ending("returned", "answered", long)
+        )
         assert first.report is not None
         assert len(first.report) < 17_000
         assert first.report.startswith("x" * 100)
         assert "left out" in first.report
-        again = records.end(PROJECT, SESSION, made.delegation_id, "failed", "error", None)
+        again = records.end(PROJECT, SESSION, made.delegation_id, Ending("failed", "error"))
         assert again == first
         with (
             pytest.raises(sqlite3.IntegrityError, match="written once"),

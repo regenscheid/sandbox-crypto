@@ -115,6 +115,8 @@ class Transcript:
     """False once a model call was refused for the conversation's length."""
     response_rounds: int = 0
     stopped: str = "answered"
+    halted: str | None = None
+    """Why a hook stopped the run before a model call, such as a spent budget."""
     failure: FailurePhase | None = None
     phase: FailurePhase = field(default="harness", repr=False)
     offered: dict[str, set[str]] = field(default_factory=dict[str, set[str]], repr=False)
@@ -318,7 +320,7 @@ async def _halted(hooks: Sequence[TurnHook], transcript: Transcript) -> bool:
     for hook in hooks:
         if (reason := await hook.halt(transcript)) is None:
             continue
-        transcript.room = False
+        transcript.room, transcript.halted = False, reason
         if transcript.pending is not None:
             await _closing(hooks, transcript, transcript.pending)
         if transcript.stopped == "answered":

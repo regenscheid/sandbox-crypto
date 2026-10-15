@@ -1,22 +1,27 @@
 # SPDX-License-Identifier: MIT
-"""A parent run's delegations: its delegate tools, its children and their handbacks
-(plans-and-delegation spec, PD-33 to PD-39).
+"""A main run's delegations: its delegate tools, its children and their handbacks
+(plans-and-delegation spec, PD-33 to PD-40).
 
 ``delegate`` writes the delegation and starts its child at once, as a task beside the
 parent, and returns; the harness runs the child in role ``delegated`` and saves its
 record, and the delegation's outcome is written when it ends. ``wait_delegations`` waits
 on some children, all or the first to end, and ends early when the user writes to the
-session. As a turn hook, ``Delegations``:
+session; it returns whole outcomes, as many as fit, of any of the session's ended
+delegations. The tools are offered only when the project lets its runs delegate. As a
+turn hook, ``Delegations``, which every main run with the stores has:
 
-- offers, at each safe point, the outcomes of the session's delegations that no run has
-  acknowledged, its own children's and those an earlier run left (PD-35), unless a wait
-  already returned them;
+- ends ``interrupted``, as the run starts, the session's delegations still running,
+  whose process ended (PD-40);
+- offers, at each safe point, the session's outcomes that no run has acknowledged,
+  its own children's and those an earlier run left (PD-35), each as a short summary,
+  together at most ``max_chars``; the rest wait for a later safe point;
 - refuses a closing answer while its children run (PD-36): the run takes another turn
   with a notice naming them, or, with no turn or room left, stops without an answer.
   Outcomes the answer has not seen continue the run, as other notices do;
 - cancels its running children when it ends, whatever ends it, and waits for their
-  records and outcomes (PD-39), since its lease holds their tasks. A parent's record is
-  therefore saved after its children's;
+  records and outcomes (PD-39), since its lease holds their tasks. A child that has not
+  ended in ``STOP_SECONDS`` is recorded ``interrupted``, so a parent's record follows its
+  children's outcomes;
 - acknowledges the outcomes its saved record names: those a model call saw as notices,
   and those a wait returned before a model call (``summary``).
 """
@@ -36,8 +41,10 @@ from pydantic import JsonValue
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ErrorKind, ExecutionContext, new_id
 from sandbox_science.orchestrator.aio import threaded
+from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.hooks import Closing, Notice, Point, RunView, TurnHook
 from sandbox_science.orchestrator.ledger import Ledger
+from sandbox_science.orchestrator.model import ToolSpec
 from sandbox_science.orchestrator.notices import (
     DELEGATIONS,
     DELEGATIONS_ATTACHED,
@@ -47,7 +54,7 @@ from sandbox_science.orchestrator.projects import RunRecord, run_name
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, dump
 
 from .prompt import brief_text
-from .records import Delegation, DelegationRecords, Ended
+from .records import Delegation, DelegationRecords, Ended, Ending
 from .specs import SPECS, CheckBrief, WaitRequest
 
 _log = logging.getLogger(__name__)
@@ -59,7 +66,12 @@ CHECK_TOKENS: Final = 150_000
 MAX_RUNNING: Final = 10
 """Delegated runs a session's tree runs at once (PD-38)."""
 STOP_SECONDS: Final = 60.0
-"""How long a parent's end waits for its cancelled children to save their records."""
+"""How long a parent's end, or a cancel, waits for a cancelled child's record."""
+SUMMARY_CHARS: Final = 300
+"""The head of a report a notice shows; ``wait_delegations`` returns the whole."""
+WRITES: Final = 3
+"""Tries at writing an outcome; one never written ends ``interrupted`` at the session's
+next main run."""
 
 
 @dataclass(frozen=True)
@@ -78,11 +90,13 @@ class Child:
 
 @dataclass(frozen=True)
 class ChildEnd:
-    """How a delegated run ended, from its transcript."""
+    """How a delegated run ended, from its transcript and its hooks."""
 
     stopped: str
     failed: bool
     final_text: str | None
+    refused: str | None = None
+    """Why its plan fence refused its calls, if it did."""
 
 
 class ChildRunner(Protocol):
@@ -110,15 +124,15 @@ def observed(end: ChildEnd) -> Ended:
 @dataclass
 class _Running:
     delegation: Delegation
+    run_id: str
     task: asyncio.Task[None]
     stop: asyncio.Event
 
 
 class Delegations(TurnHook):
-    """One run's delegations; the run is ``parent``, the name its record will have."""
+    """One main run's delegations; the run is ``parent``, the name its record will have."""
 
     name = "delegations"
-    specs = SPECS
 
     def __init__(
         self,
@@ -129,19 +143,32 @@ class Delegations(TurnHook):
         parent: str,
         runner: ChildRunner,
         max_turns: int,
+        offer: bool,
         wake: Callable[[], Awaitable[None]] | None = None,
+        over_budget: Callable[[], Awaitable[bool]] | None = None,
+        max_chars: int = 5000,
+        output_chars: int = 20000,
         clock: Clock = SYSTEM_CLOCK,
     ) -> None:
-        """``max_turns`` bounds a child's turns; ``wake`` returns once the user writes to
-        the session, which ends a wait."""
+        """``offer`` says whether the run gets the tools; ``max_turns`` bounds a child's
+        turns; ``wake`` returns once the user writes to the session, which ends a wait;
+        ``over_budget`` says whether the project spent its model budget. Notices together
+        take at most ``max_chars``, and a wait's result at most ``output_chars``."""
         self.records, self.ledger, self.context = records, ledger, context
         self.parent, self.runner, self.max_turns = parent, runner, max_turns
-        self.wake, self.clock = wake, clock
+        self.specs: tuple[ToolSpec, ...] = SPECS if offer else ()
+        self.wake, self.over_budget, self.clock = wake, over_budget, clock
+        self.max_chars, self.output_chars = max_chars, output_chars
         self.children: dict[str, _Running] = {}
         self.returned: set[str] = set()
         """Outcomes a wait returned that no model call has seen yet."""
         self.received: set[str] = set()
         """Outcomes a wait returned that a model call saw."""
+
+    def live(self) -> set[str]:
+        """The run IDs of the running children, whose kernels the parent's kernel check
+        leaves alone (PD-37)."""
+        return {child.run_id for child in self._running()}
 
     # --- The tools ------------------------------------------------------------------
 
@@ -156,6 +183,10 @@ class Delegations(TurnHook):
                 ErrorKind.UNAVAILABLE,
                 f"limit_reached: {MAX_RUNNING} delegated runs are running in this session; "
                 "wait for one to end",
+            )
+        if self.over_budget is not None and await self.over_budget():
+            raise WorkerAPIError(
+                ErrorKind.UNAVAILABLE, "limit_reached: the project has spent its model budget"
             )
         project, session = self.context.project_id, self.context.session_id
         entry = await threaded(self.ledger.entry, project, brief.check.entry, brief.check.revision)
@@ -190,7 +221,7 @@ class Delegations(TurnHook):
         )
         stop = asyncio.Event()
         task = asyncio.create_task(self._run(child, stop), name=f"delegation {delegation_id}")
-        self.children[delegation_id] = _Running(delegation, task, stop)
+        self.children[delegation_id] = _Running(delegation, run_id, task, stop)
         started_with = {
             "delegation_id": delegation_id,
             "run": delegation.run,
@@ -202,40 +233,44 @@ class Delegations(TurnHook):
 
     async def _run(self, child: Child, stop: asyncio.Event) -> None:
         """Run a child to its end, then write its outcome, however it ended."""
-        ended: Ended = "failed"
-        stopped, report = "error", None
+        ending = Ending("failed", "error")
         try:
             end = await self.runner(child, stop)
-            ended, stopped, report = observed(end), end.stopped, end.final_text
+            ending = Ending(observed(end), end.stopped, end.final_text, end.refused)
         except asyncio.CancelledError:
             # Cancelled outside its loop, before it started or while it was saved.
             if (current := asyncio.current_task()) is not None:
                 current.uncancel()
-            ended, stopped = "cancelled", "cancelled"
+            ending = Ending("cancelled", "cancelled")
         except Exception:
             _log.exception("delegated run %s failed", child.run_id)
+        await self._end(child.delegation_id, ending)
+
+    async def _end(self, delegation_id: str, ending: Ending) -> None:
+        """Write an outcome, trying again on failure; one never written is ended at the
+        session's next main run (``DelegationRecords.abandon``)."""
         context = self.context
-        try:
-            await threaded(
-                self.records.end,
-                context.project_id,
-                context.session_id,
-                child.delegation_id,
-                ended,
-                stopped,
-                report,
-            )
-        except Exception:
-            _log.exception("the outcome of delegation %s could not be kept", child.delegation_id)
+        for attempt in range(WRITES):
+            try:
+                await threaded(
+                    self.records.end, context.project_id, context.session_id, delegation_id, ending
+                )
+                return
+            except Exception:
+                _log.exception("the outcome of delegation %s could not be kept", delegation_id)
+                if attempt + 1 < WRITES:
+                    await self.clock.sleep(0.5 * 2**attempt)
 
     async def _wait(self, request: WaitRequest) -> tuple[str, dict[str, Any]]:
         ids = list(dict.fromkeys(request.delegation_ids))
-        unknown = [delegation for delegation in ids if delegation not in self.children]
-        if unknown:
+        found = {i: await self._read(i) for i in ids}
+        running = [i for i, d in found.items() if d.ended is None]
+        stranger = [i for i in running if i not in self.children]
+        if stranger:
             raise WorkerAPIError(
-                ErrorKind.NOT_FOUND, f"this run started no delegation {unknown[0]!r}"
+                ErrorKind.NOT_FOUND, f"delegation {stranger[0]!r} is not one of this run's"
             )
-        pending = {self.children[i].task for i in ids if not self.children[i].task.done()}
+        pending = {self.children[i].task for i in running if not self.children[i].task.done()}
         reason = "ended"
         if pending:
             when = asyncio.FIRST_COMPLETED if request.mode == "first" else asyncio.ALL_COMPLETED
@@ -253,20 +288,30 @@ class Delegations(TurnHook):
                 for future in waiting:
                     with contextlib.suppress(asyncio.CancelledError, Exception):
                         await future
-        context = self.context
-        found = [
-            await threaded(self.records.get, context.project_id, context.session_id, i) for i in ids
-        ]
-        self.returned.update(d.delegation_id for d in found if d.ended is not None)
-        result = {
-            "reason": reason,
-            "delegations": [
-                outcome(d) if d.ended is not None else {**_named(d), "state": "running"}
-                for d in found
-            ],
-        }
-        ended = [d.delegation_id for d in found if d.ended is not None]
+            found = {i: await self._read(i) for i in ids}
+        shown: list[dict[str, object]] = []
+        for delegation in found.values():
+            if delegation.ended is None:
+                shown.append({**_named(delegation), "state": "running"})
+                continue
+            whole = outcome(delegation)
+            if len(dump({"reason": reason, "delegations": [*shown, whole]})) > self.output_chars:
+                shown.append({**summarized(delegation), "more": "wait on it again for all of it"})
+                continue
+            shown.append(whole)
+            self.returned.add(delegation.delegation_id)
+        result = {"reason": reason, "delegations": shown}
+        ended = [i for i, d in found.items() if d.ended is not None]
         return dump(result), {"wait": {"reason": reason, "ended": ended}}
+
+    async def _read(self, delegation_id: str) -> Delegation:
+        context = self.context
+        try:
+            return await threaded(
+                self.records.get, context.project_id, context.session_id, delegation_id
+            )
+        except ControlError as error:
+            raise WorkerAPIError(ErrorKind.NOT_FOUND, error.message) from None
 
     # --- The turn hook --------------------------------------------------------------
 
@@ -275,22 +320,31 @@ class Delegations(TurnHook):
 
     @asynccontextmanager
     async def _held(self) -> AsyncGenerator[None]:
+        context = self.context
+        abandoned = await threaded(self.records.abandon, context.project_id, context.session_id)
+        if abandoned:
+            _log.warning("delegations %s lost their process: interrupted", ", ".join(abandoned))
         try:
             yield
         finally:
-            await self._cancel()
+            await self._stopped(self._running())
 
-    async def _cancel(self) -> None:
-        """Cancel the running children, children first, and wait for their outcomes."""
-        running = self._running()
+    async def _stopped(self, running: Sequence[_Running]) -> None:
+        """Cancel children and wait for their records and outcomes; one that has not ended
+        in ``STOP_SECONDS`` is recorded ``interrupted``."""
         for child in running:
             child.stop.set()
             child.task.cancel()
         if not running:
             return
         _, left = await asyncio.wait([child.task for child in running], timeout=STOP_SECONDS)
-        for task in left:
-            _log.error("%s did not end in %.0f s after its cancel", task.get_name(), STOP_SECONDS)
+        for child in running:
+            delegation_id = child.delegation.delegation_id
+            if child.task in left:
+                _log.error("delegated run %s did not end after its cancel", child.run_id)
+                await self._end(delegation_id, Ending("interrupted", "cancelled"))
+            elif child.task.cancelled():  # cancelled before it started: it wrote nothing
+                await self._end(delegation_id, Ending("cancelled", "cancelled"))
 
     async def notices(self, point: Point, run: RunView) -> Sequence[Notice]:
         found = await self._fresh(run)
@@ -309,9 +363,10 @@ class Delegations(TurnHook):
         if running:
             waiting = [{**_named(child.delegation), "state": "running"} for child in running]
             notices.append(Notice(self.name, (), DELEGATIONS_RUNNING.text, waiting))
-            # With no turn or room left, the run stops: its end cancels them.
-            stopped = "turn_limit" if run.turns_left <= 0 else "context_limit"
-            return Closing("retry", tuple(notices), stopped=stopped)
+            # With no turn or room left, the run stops for its own reason; its end
+            # cancels them.
+            limit = "turn_limit" if run.turns_left <= 0 else "context_limit"
+            return Closing("retry", tuple(notices), stopped=run.halted or limit)
         return Closing("continue", tuple(notices)) if notices else Closing()
 
     def summary(self) -> object | None:
@@ -342,15 +397,23 @@ class Delegations(TurnHook):
         return [child for child in self.children.values() if not child.task.done()]
 
     async def _fresh(self, run: RunView) -> list[Delegation]:
-        """The session's unacknowledged outcomes this run's conversation does not hold."""
+        """The session's unacknowledged outcomes this run's conversation does not hold,
+        as many as fit in ``max_chars`` as summaries."""
         context = self.context
         found = await threaded(self.records.handbacks, context.project_id, context.session_id)
         held = set(run.offered.get(self.name, ())) | self.returned | self.received
-        return [d for d in found if d.delegation_id not in held]
+        fresh: list[Delegation] = []
+        for delegation in found:
+            if delegation.delegation_id in held:
+                continue
+            if fresh and len(dump([summarized(d) for d in [*fresh, delegation]])) > self.max_chars:
+                break
+            fresh.append(delegation)
+        return fresh
 
     def _handback(self, found: Sequence[Delegation], key: str | None = None) -> Notice:
         ids = tuple(d.delegation_id for d in found)
-        return Notice(self.name, ids, key or DELEGATIONS.text, [outcome(d) for d in found])
+        return Notice(self.name, ids, key or DELEGATIONS.text, [summarized(d) for d in found])
 
 
 async def _ended(tasks: set[asyncio.Task[None]], when: str) -> None:
@@ -366,11 +429,20 @@ def _named(delegation: Delegation) -> dict[str, object]:
     }
 
 
+def _ending(delegation: Delegation) -> dict[str, object]:
+    found = {**_named(delegation), "ended": delegation.ended, "stopped": delegation.stopped}
+    if delegation.refused is not None:
+        found["refused"] = delegation.refused
+    return found
+
+
 def outcome(delegation: Delegation) -> dict[str, object]:
-    """A delegation's outcome as its parent receives it (PD-20)."""
-    return {
-        **_named(delegation),
-        "ended": delegation.ended,
-        "stopped": delegation.stopped,
-        "report": delegation.report,
-    }
+    """A delegation's whole outcome as its parent receives it (PD-20)."""
+    return {**_ending(delegation), "report": delegation.report}
+
+
+def summarized(delegation: Delegation) -> dict[str, object]:
+    """A delegation's outcome as a notice gives it: the head of its report."""
+    report = delegation.report or ""
+    head = report if len(report) <= SUMMARY_CHARS else report[:SUMMARY_CHARS] + "…"
+    return {**_ending(delegation), "report_head": head, "report_chars": len(report)}

@@ -1913,8 +1913,9 @@ BEGIN SELECT RAISE(ABORT, 'frontier changes are kept as written'); END""",
 
 def _delegations(schema: Schema) -> None:
     """Version 28: delegations (plans-and-delegation spec, PD-11, PD-17, PD-35): each
-    one's parent run, its child run, its brief and, once the child ends, its outcome,
-    written once; and the run of the session that received it. Each project's setting
+    one's parent run, its child run, its brief and, once the child ends, its outcome
+    (how it ended, its answer, and the plan fence's refusal if there was one), written
+    once; and the run of the session that received it. Each project's setting
     says how deep its runs may delegate; a project without a row does not delegate."""
     for statement in (
         """CREATE TABLE delegations (
@@ -1934,10 +1935,11 @@ def _delegations(schema: Schema) -> None:
     stopped TEXT CHECK (stopped IS NULL OR length(stopped) BETWEEN 1 AND 64),
     report TEXT CHECK (report IS NULL OR length(CAST(report AS BLOB)) <= 65536),
     ended_at TEXT CHECK (ended_at IS NULL OR length(ended_at) BETWEEN 1 AND 64),
+    refused TEXT CHECK (refused IS NULL OR length(CAST(refused AS BLOB)) BETWEEN 1 AND 2048),
     acknowledged TEXT
         CHECK (acknowledged IS NULL OR length(CAST(acknowledged AS BLOB)) BETWEEN 1 AND 256),
     CHECK ((ended IS NULL) = (ended_at IS NULL) AND (ended IS NULL) = (stopped IS NULL)),
-    CHECK (ended IS NOT NULL OR (report IS NULL AND acknowledged IS NULL)),
+    CHECK (ended IS NOT NULL OR (report IS NULL AND refused IS NULL AND acknowledged IS NULL)),
     FOREIGN KEY (project_id, session_id) REFERENCES sessions (project_id, session_id)
 ) STRICT""",
         "CREATE INDEX delegations_waiting ON delegations (project_id, session_id, acknowledged)",
@@ -1947,7 +1949,8 @@ OR NEW.session_id IS NOT OLD.session_id OR NEW.parent IS NOT OLD.parent
 OR NEW.run IS NOT OLD.run OR NEW.kind IS NOT OLD.kind OR NEW.brief IS NOT OLD.brief
 OR NEW.started_at IS NOT OLD.started_at OR (OLD.ended IS NOT NULL AND (
 NEW.ended IS NOT OLD.ended OR NEW.stopped IS NOT OLD.stopped
-OR NEW.report IS NOT OLD.report OR NEW.ended_at IS NOT OLD.ended_at))
+OR NEW.report IS NOT OLD.report OR NEW.ended_at IS NOT OLD.ended_at
+OR NEW.refused IS NOT OLD.refused))
 OR (OLD.acknowledged IS NOT NULL AND NEW.acknowledged IS NOT OLD.acknowledged)
 BEGIN SELECT RAISE(ABORT, 'a delegation''s outcome is written once'); END""",
         """CREATE TRIGGER delegations_no_delete BEFORE DELETE ON delegations

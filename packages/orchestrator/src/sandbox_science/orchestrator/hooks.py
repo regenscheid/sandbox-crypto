@@ -137,6 +137,12 @@ class RunView(Protocol):
         """Whether a turn and a response round remain."""
         ...
 
+    @property
+    def halted(self) -> str | None:
+        """Why a hook stopped the run before its next model call, if one did: the run's
+        last closing then has no turn to take."""
+        ...
+
     def delivered_ids(self, source: str) -> frozenset[str]: ...
 
 

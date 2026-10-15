@@ -181,6 +181,8 @@ class Lineage:
     """
 
     current: int | None = None
+    fail: bool = False
+    """Whether an observation fails, as with an executor that is not connected yet."""
 
     def observation(self, context: ExecutionContext) -> KernelObservation:
         assert self.current is not None
@@ -226,6 +228,10 @@ async def worker(tmp_path: Path) -> AsyncIterator[Worker]:
     async def synthetic_kernels(
         request: web.Request, handler: Callable[[web.Request], Awaitable[web.StreamResponse]]
     ) -> web.StreamResponse:
+        if request.path == "/v1/kernels/observe" and lineage.fail:
+            return web.json_response(
+                {"error": {"kind": "unavailable", "message": "synthetic failure"}}, status=503
+            )
         if request.path == "/v1/kernels/observe" and lineage.current is not None:
             context = ExecutionContext.model_validate((await request.json())["context"])
             return web.Response(

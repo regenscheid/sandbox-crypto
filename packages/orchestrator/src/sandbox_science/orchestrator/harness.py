@@ -45,11 +45,11 @@ from .artifact_publisher import ArtifactPublisher
 from .artifacts import ArtifactInventory
 from .chat import EventLog, ModelBudget, RunChat, SessionHeld, UserMessages
 from .connectors import Connectors, ProxyClient
-from .consistency.controller import AUTHOR_SPECS, ReviewController
+from .consistency.controller import ReviewController
 from .consistency.models import ReviewConfig
 from .consistency.store import ReviewStore
 from .delegation import prompt as delegated_prompt
-from .delegation import specs as delegation_specs
+from .delegation.fence import ChildFence
 from .delegation.hook import Child, ChildEnd, Delegations
 from .delegation.records import DelegationRecords
 from .documents import DocumentError, DocumentStore, DocumentTool
@@ -73,7 +73,6 @@ from .memory import MemoryEntry, ProjectMemory
 from .memory_prompt import for_reviewer, for_run, for_watcher
 from .memory_tools import MemoryTool
 from .model import ChatModel, Message
-from .plan_tools import NAMES as PLAN_NAMES
 from .plan_tools import PlanTools
 from .projects import (
     ProjectError,
@@ -95,12 +94,9 @@ Snapshot = tuple[int, tuple[MemoryEntry, ...]]
 
 _log = logging.getLogger(__name__)
 
-WITHHELD: Final = frozenset(
-    {spec.name for spec in AUTHOR_SPECS} | PLAN_NAMES | delegation_specs.NAMES
-)
-"""What a delegated run's role does not get (PD-16): the review tools, with which it would
-claim fixes, the plan tools, with which it would approve or change the plan, and the
-delegate tools (PD-15: one level for now)."""
+KERNEL_CLOSE_SECONDS: Final = 20.0
+"""How long a delegated run's end waits for the worker to stop its kernels; the next
+main run's kernel check closes those it could not (PD-40)."""
 
 
 def tier_in_effect(location: Location) -> int | None:
@@ -460,7 +456,7 @@ class Harness:
                     hooks = toolbox.turn_hooks()
                     request = admitted.request
                     if chat is not None:
-                        hooks = (*hooks, *self._chat_hooks(request, chat))
+                        hooks = (*hooks, *await self._chat_hooks(admitted, chat))
                     transcript = await run_task(
                         self.main.model,
                         toolbox,
@@ -497,13 +493,22 @@ class Harness:
             delegation=admitted.request.delegation,
         )
 
-    def _chat_hooks(self, request: RunRequest, chat: RunChat) -> tuple[TurnHook, ...]:
+    async def _chat_hooks(self, admitted: Admitted, chat: RunChat) -> tuple[TurnHook, ...]:
         """A run's budget, the user's messages, which reach the model last, and its
         events, which come last. A delegated run keeps its token limit, and its calls that
-        may change something wait on its root's lease; the user writes to the root."""
-        if request.parent is not None:
+        may change something need its root's lease and the plan's leave (PD-34); the user
+        writes to the root."""
+        request = admitted.request
+        if request.parent is not None and self.stores is not None:
             limit = () if request.tokens is None else (ModelBudget(chat, tokens=request.tokens),)
-            return (*limit, SessionHeld(chat), EventLog(chat))
+            fence = await threaded(
+                ChildFence,
+                SessionPlans(self.stores.documents),
+                self.stores.projects,
+                admitted.context,
+                run_id=admitted.run_id,
+            )
+            return (*limit, SessionHeld(chat), fence, EventLog(chat))
         share = self.settings.run_share
         kept = () if share is None else (ModelBudget(chat, share),)
         return (*kept, UserMessages(chat), EventLog(chat))
@@ -511,13 +516,17 @@ class Harness:
     async def _delegations(
         self, admitted: Admitted, chat: RunChat | None, memory: Snapshot | None
     ) -> Delegations | None:
-        """A main run's delegations, when its project lets its runs delegate (PD-33)."""
-        stores, context = self.stores, admitted.context
+        """A main run's delegations: their handbacks always, and the delegate tools when
+        its project lets its runs delegate (PD-33, PD-35)."""
+        stores, context, clock = self.stores, admitted.context, self.clock
         if stores is None or admitted.request.parent is not None:
             return None
-        records = DelegationRecords(stores.documents, clock=self.clock)
-        if await threaded(records.depth, context.project_id) < 1:
-            return None
+        records = DelegationRecords(stores.documents, clock=clock)
+        depth = await threaded(records.depth, context.project_id)
+
+        async def over_budget() -> bool:
+            return await threaded(stores.runs.over_budget, context.project_id, clock.now())
+
         # Every run of the tree is given the memory its root was (PM-8).
         version = memory[0] if memory is not None else None
         return Delegations(
@@ -527,8 +536,10 @@ class Harness:
             parent=run_name(admitted.started_at, admitted.run_id),
             runner=functools.partial(self.run_child, admitted, version),
             max_turns=self.settings.max_turns,
+            offer=depth >= 1,
             wake=chat.arrived if chat is not None else None,
-            clock=self.clock,
+            over_budget=over_budget,
+            clock=clock,
         )
 
     async def run_child(
@@ -563,7 +574,13 @@ class Harness:
             error=sink.error,
         )
         transcript = finished.transcript
-        return ChildEnd(transcript.stopped, transcript.failure is not None, transcript.final_text)
+        fence = next((hook for hook in finished.hooks if isinstance(hook, ChildFence)), None)
+        return ChildEnd(
+            transcript.stopped,
+            transcript.failure is not None,
+            transcript.final_text,
+            fence.refused if fence is not None else None,
+        )
 
     async def memory(self, admitted: Admitted) -> Snapshot | None:
         """The project memory the run and its reviewer are given, read once as the run
@@ -722,10 +739,11 @@ class Harness:
 
             async def stop_kernels() -> None:
                 try:
-                    await client.close_session(context, run=kernel_run)
-                except WorkerAPIError as exc:
+                    async with asyncio.timeout(KERNEL_CLOSE_SECONDS):
+                        await client.close_session(context, run=kernel_run)
+                except (WorkerAPIError, TimeoutError) as exc:
                     # The next main run of the session closes them.
-                    _log.warning("could not stop run %s's kernels: %s", kernel_run, exc)
+                    _log.warning("could not stop run %s's kernels: %r", kernel_run, exc)
 
             on_close(stop_kernels)
         return Toolbox(
@@ -747,7 +765,7 @@ class Harness:
             kernel_run=kernel_run,
             recorder=recorder,
             delegations=delegations,
-            withheld=WITHHELD if delegated else frozenset(),
+            delegated=delegated,
         )
 
 
@@ -798,7 +816,9 @@ async def save(
     reported; the others still acknowledge theirs.
     """
     try:
-        record: RunRecord | None = RunRecord.model_validate(fields)
+        # A large record takes long to check and to write: off the event loop, which
+        # the session's other runs share.
+        record: RunRecord | None = await threaded(RunRecord.model_validate, fields)
         invalid = ""
     except (ValidationError, RecursionError) as exc:
         record, invalid = None, str(exc)[:300]
@@ -814,7 +834,7 @@ async def save(
     try:
         if record is None:
             raise ProjectError(ErrorKind.INVALID_REQUEST, f"the record is invalid: {invalid}")
-        projects.save_run(record)
+        await threaded(projects.save_run, record)
     except (ProjectError, DocumentError, OSError, ValueError, RecursionError, sqlite3.Error) as exc:
         error(f"the run's record could not be kept: {exc}")
         return 1

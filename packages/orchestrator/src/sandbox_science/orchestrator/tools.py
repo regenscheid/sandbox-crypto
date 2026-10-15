@@ -429,10 +429,11 @@ class Toolbox:
         recorder: FileRecorder | None = None,
         kernel_run: str | None = None,
         delegations: Delegations | None = None,
-        withheld: frozenset[str] = frozenset(),
+        delegated: bool = False,
     ) -> None:
-        """``withheld`` names the tools a delegated run's role does not get: a call to
-        one is refused with ``not_permitted_for_role`` (PD-16)."""
+        """For a ``delegated`` run, a call to a tool it is not offered, such as a review,
+        plan, delegate or connector tool, is refused with ``not_permitted_for_role``
+        (PD-16)."""
         self.client = client
         self.context = context
         self.output_chars = output_chars
@@ -454,7 +455,7 @@ class Toolbox:
         """A delegated run's own kernels: cells name it (PD-37); ``None`` uses the
         session's, which main runs share."""
         self.delegations = delegations
-        self.withheld = withheld
+        self.delegated = delegated
         self.provisioning = ProvisionTools(client, context, output_chars=output_chars)
         worker: dict[str, tuple[Effect, Handler]] = {
             "shell": ("effect", _plain(self._shell)),
@@ -609,10 +610,10 @@ class Toolbox:
         documents the run has seen (LD-15).
         """
         entry = self.entries.get(call.name)
-        if entry is None and call.name in self.withheld:
+        if entry is None and self.delegated:
             return _failure(
                 ErrorKind.POLICY_DENIED,
-                f"not_permitted_for_role: a delegated run has no {call.name} tool",
+                f"not_permitted_for_role: a delegated run is not offered {call.name!r}",
             )
         if entry is None:
             return _failure(ErrorKind.INVALID_REQUEST, f"there is no tool named {call.name!r}")
@@ -673,9 +674,15 @@ class Toolbox:
         if self.math_checks is not None:
             hooks.append(MathChecks(self.math_checks))
         if self.check_kernels:
+            # The sweep leaves the kernels of the run's own running children (PD-37).
+            keep = self.delegations.live if self.delegations is not None else set
             hooks.append(
                 KernelCheck(
-                    self.client, self.context, run=self.kernel_run, sweep=self.sweep_left_kernels
+                    self.client,
+                    self.context,
+                    run=self.kernel_run,
+                    sweep=self.sweep_left_kernels,
+                    keep=keep,
                 )
             )
         if self.recorder is not None:

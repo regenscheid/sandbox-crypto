@@ -2,10 +2,12 @@
 """Delegations and each project's delegation setting, in the control store.
 
 A delegation is written when its parent starts it, with its brief, and once more when
-its child ends, with its outcome: how the child ended, as the harness observed it, and
-the child's final answer as it returned it, its report (PD-17, PD-20). Neither changes
-afterwards. The run that received the outcome is written once that run's record is
-saved (PD-35); until then, the outcome waits for the session's next main run.
+its child ends, with its outcome: how the child ended, as the harness observed it, the
+child's final answer as it returned it, its report, and why the plan fence refused its
+calls, if it did (PD-17, PD-20, PD-34). Neither changes afterwards. The run that
+received the outcome is written once that run's record is saved (PD-35); until then,
+the outcome waits for the session's next main run. A delegation still running when its
+session's next main run starts has lost its process: it ends ``interrupted`` (PD-40).
 
 Each project's setting is how deep its runs may delegate: 0, the default, offers no
 delegation; 1 lets main runs delegate. Each method is one transaction and may run in a
@@ -17,6 +19,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Final, Literal, cast
 
@@ -39,7 +42,7 @@ PAGE: Final = 50
 
 _COLUMNS: Final = (
     "delegation_id, parent, run, kind, brief, started_at, ended, stopped, report, "
-    "ended_at, acknowledged"
+    "ended_at, refused, acknowledged"
 )
 
 
@@ -60,8 +63,20 @@ class Delegation(Contract):
     report: str | None = None
     """The delegated run's final answer as it returned it, its head and tail when long."""
     ended_at: datetime | None = None
+    refused: str | None = None
+    """Why the plan fence refused the child's calls, as the platform observed it."""
     acknowledged: str | None = None
     """The run whose saved record says a model call of it saw the outcome."""
+
+
+@dataclass(frozen=True)
+class Ending:
+    """A delegation's outcome, as the harness writes it."""
+
+    ended: Ended
+    stopped: str
+    report: str | None = None
+    refused: str | None = None
 
 
 class DelegationRecords:
@@ -117,23 +132,37 @@ class DelegationRecords:
             except sqlite3.IntegrityError as error:
                 raise ControlError(INVALID_REQUEST, f"the delegation is refused: {error}") from None
 
-    def end(
-        self,
-        project: str,
-        session: str,
-        delegation_id: str,
-        ended: Ended,
-        stopped: str,
-        report: str | None,
-    ) -> Delegation:
+    def end(self, project: str, session: str, delegation_id: str, ending: Ending) -> Delegation:
         """Write a delegation's outcome; one written already stands, and is returned."""
         with self.control.write() as tx:
             tx.sql.execute(
-                "UPDATE delegations SET ended = ?, stopped = ?, report = ?, ended_at = ? "
-                "WHERE project_id = ? AND session_id = ? AND delegation_id = ? AND ended IS NULL",
-                (ended, stopped, _kept(report), self._now(), project, session, delegation_id),
+                "UPDATE delegations SET ended = ?, stopped = ?, report = ?, ended_at = ?, "
+                "refused = ? WHERE project_id = ? AND session_id = ? AND delegation_id = ? "
+                "AND ended IS NULL",
+                (
+                    ending.ended,
+                    ending.stopped,
+                    _kept(ending.report),
+                    self._now(),
+                    ending.refused[:2000] if ending.refused else None,
+                    project,
+                    session,
+                    delegation_id,
+                ),
             )
             return _one(tx.sql, project, session, delegation_id)
+
+    def abandon(self, project: str, session: str) -> list[str]:
+        """End ``interrupted`` the session's delegations that are still running: called
+        as a main run starts, when none of the session's can be (PD-40). Their IDs."""
+        with self.control.write() as tx:
+            rows = tx.sql.execute(
+                "UPDATE delegations SET ended = 'interrupted', stopped = 'interrupted', "
+                "ended_at = ? WHERE project_id = ? AND session_id = ? AND ended IS NULL "
+                "RETURNING delegation_id",
+                (self._now(), project, session),
+            ).fetchall()
+        return sorted(delegation_id for (delegation_id,) in rows)
 
     def get(self, project: str, session: str, delegation_id: str) -> Delegation:
         with self.control.read() as tx:
