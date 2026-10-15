@@ -161,7 +161,8 @@ def pinned_artifact(
     project-wide, CR-2 as amended): its locator and projection. None when there is no
     inventory, the revision is not the project's, or its text cannot be copied whole: an
     item that is not complete would leave the review's coverage incomplete, and the
-    entry's evidence names the pin anyway."""
+    entry's evidence names the pin anyway. The locator names the artifact's path, for
+    the reader."""
     inventory = store.artifacts
     if inventory is None or sha256 is None:
         return None
@@ -179,7 +180,7 @@ def pinned_artifact(
         locator, payload, ready = project_artifact(store, project, found.reference)
     except (DocumentError, ValidationError):
         return None
-    return (locator, payload) if ready else None
+    return ({**locator, "path": found.path}, payload) if ready else None
 
 
 @dataclass(frozen=True, slots=True)

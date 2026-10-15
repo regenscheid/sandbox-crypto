@@ -959,6 +959,7 @@ def test_an_entry_brings_the_artifacts_its_evidence_pins_into_its_review(state) 
     review = dispatch(reviews)
     (item,) = pinned(reviews, review)
     assert (item["complete"], item["locator"]["pinned_by"]["handle"]) == (True, "C-1")
+    assert item["locator"]["path"] == "sessions/other/r.json"
     read = reviews.read_evidence("p", "s", review, item["evidence"], owner="owner")
     assert (read["text"], read["source_sha256"]) == ('{"q_twist": 4519}\n', results.sha256)
     with reviews.documents.control.read() as tx:
