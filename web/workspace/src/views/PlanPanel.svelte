@@ -10,6 +10,7 @@
     type PlanObservation,
   } from '../lib/plans';
   import { initialPoll, Poller, type PollState } from '../lib/poller';
+  import { visible } from '../lib/text';
   import PlanEditor from './PlanEditor.svelte';
   let {
     projectId,
@@ -88,11 +89,11 @@
           >Version {plan.head.ref.version} · <code>{plan.head.ref.plan_id}</code></span
         >
       </div>
-      <p class="goal">{plan.version.body.goal}</p>
+      <p class="goal">{visible(plan.version.body.goal)}</p>
       <p class="muted">
         Plan by {authorLabel(plan.version.author)} · {formatTime(plan.version.recorded_at)}
       </p>
-      <p class="muted prose">Reason for this version: {plan.version.reason}</p>
+      <p class="muted prose">Reason for this version: {visible(plan.version.reason)}</p>
       <p class="progress-summary">
         {counts.completed} of {plan.steps.length} steps completed · {counts.in_progress} in progress ·
         {counts.blocked} blocked · {counts.skipped} skipped
@@ -101,17 +102,17 @@
       ></progress>
       <details>
         <summary>Feasibility and expected outputs</summary>
-        <p class="prose">{plan.version.body.feasibility}</p>
+        <p class="prose">{visible(plan.version.body.feasibility)}</p>
         <ul>
           {#each plan.version.body.outputs as output}<li>
-              <strong>{output.title}</strong>
-              <p class="prose">{output.description}</p>
-              <p class="muted prose">Evidence: {output.evidence_standard}</p>
+              <strong>{visible(output.title)}</strong>
+              <p class="prose">{visible(output.description)}</p>
+              <p class="muted prose">Evidence: {visible(output.evidence_standard)}</p>
             </li>{/each}
         </ul>
       </details>
       {#each plan.version.body.phases as phase (phase.phase_id)}
-        <h3>{phase.title}</h3>
+        <h3>{visible(phase.title)}</h3>
         <ol class="steps">
           {#each phase.steps as step (step.step_id)}
             {@const view = plan.steps.find((value) => value.step_id === step.step_id)!}
@@ -121,20 +122,21 @@
               class:step-blocked={status === 'blocked'}
             >
               <div class="step-heading">
-                <strong>{step.title}</strong><span class="step-status"
+                <strong>{visible(step.title)}</strong><span class="step-status"
                   >{status.replaceAll('_', ' ')}</span
                 >
               </div>
               <p class="muted">
                 <code>{step.step_id}</code>{#if step.track_id}
-                  · Track {plan.version.body.tracks.find(
-                    (track) => track.track_id === step.track_id,
-                  )?.title ?? step.track_id}{/if}
+                  · Track {visible(
+                    plan.version.body.tracks.find((track) => track.track_id === step.track_id)
+                      ?.title ?? step.track_id,
+                  )}{/if}
               </p>
-              <p class="prose">{step.description}</p>
+              <p class="prose">{visible(step.description)}</p>
               <details>
                 <summary>Evidence standard</summary>
-                <p class="prose">{step.evidence_standard}</p>
+                <p class="prose">{visible(step.evidence_standard)}</p>
               </details>
               {#if view.latest}
                 {#if !view.matches_current_step}<p class="previous-step">
@@ -155,7 +157,7 @@
       {#if plan.head.outcome}
         <div class="outcome">
           <h3>Reported goal outcome: {plan.head.outcome.status.replaceAll('_', ' ')}</h3>
-          <p class="prose">{plan.head.outcome.summary}</p>
+          <p class="prose">{visible(plan.head.outcome.summary)}</p>
           {#if plan.head.outcome.remaining_work.length}<p>Remaining work:</p>
             <ul>
               {#each plan.head.outcome.remaining_work as item}<li class="prose">{item}</li>{/each}

@@ -561,6 +561,32 @@ describe('plain structured projection', () => {
     expect(html).toContain('<fieldset disabled');
     expect(fetch).not.toHaveBeenCalled();
   });
+  it("marks hidden characters in a field and reviews an agent's version before saving", () => {
+    const v = observed();
+    v.plan!.version.body.goal = `Study${String.fromCodePoint(0x202e)} evidence`;
+    vi.stubGlobal('fetch', vi.fn());
+    const editor = () =>
+      render(PlanEditor, {
+        props: {
+          projectId: 'p',
+          sessionId: 's',
+          observation: v,
+          observed: true,
+          refresh: () => {},
+        },
+      }).body;
+    let html = editor();
+    expect(html).toContain('⟦U+202E⟧</span> at line 1');
+    expect(html).toContain('Review and save plan text…');
+    // The user's own version, with nothing hidden, saves without the review.
+    v.plan!.version.author.role = 'user';
+    html = editor();
+    expect(html).toContain('Review and save plan text…');
+    v.plan!.version.body.goal = 'Study evidence';
+    html = editor();
+    expect(html).not.toContain('hidden-banner');
+    expect(html).toContain('>Save plan text</button>');
+  });
   it('mounts in the real plan panel, shows escaped version reason, and keeps closed/no-plan read-only', () => {
     const v = observed();
     v.session_closed_at = at;
