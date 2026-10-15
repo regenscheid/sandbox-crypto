@@ -73,7 +73,9 @@ crypto-base = "sandbox-science/crypto-base:02f85b3"
 # babbage's default for now (the owner, 2026-10-15). The path below is a placeholder: no
 # file in the repository names the real one, which only a config outside it does, as the
 # lab's (.agents/labs/README.md). Without provider_env_file, create the provider by hand
-# (docs/MCP-CONNECTORS.md).
+# (docs/MCP-CONNECTORS.md). index and [mcp_proxy.about] shape the index of the servers'
+# tools the main agent gets (lab 39, B5): the servers behind the portal it lists tool by
+# tool, the others by their count, found with a query; and what each server is for.
 # [mcp_proxy]
 # image = "sandbox-science/mcp-proxy:d27e41a"
 # providers = ["crypto-research-mcp"]
@@ -81,6 +83,17 @@ crypto-base = "sandbox-science/crypto-base:02f85b3"
 # provider_env_file = "/path/to/the/owners/cloudflare.env"
 # provider_profile = "openshell/profiles/cloudflare-access.yaml"
 #
+# index = ["attack-catalog-mcp", "e-print-mcp", "nist-csrc-mcp", "paper-search-mcp", "web-fetch-mcp"]
+#
 # [mcp_proxy.credentials]
 # "crypto-research-mcp.CF_ACCESS_CLIENT_ID" = "CF_ACCESS_CLIENT_ID"
 # "crypto-research-mcp.CF_ACCESS_CLIENT_SECRET" = "CF_ACCESS_CLIENT_SECRET"
+#
+# [mcp_proxy.about]
+# attack-catalog-mcp = "a catalog of cryptanalytic attacks: which apply to a scheme, and their sources"
+# e-print-mcp = "the IACR Cryptology ePrint Archive: search its papers, records, full text and PDFs"
+# firecrawl-mcp = "the open web: search, scrape and crawl pages; for papers, use a paper archive first"
+# nist-csrc-mcp = "NIST CSRC publications (FIPS, SP 800, IR): search, read and their PDFs"
+# paper-search-mcp = "papers across arXiv, DBLP, Crossref, OpenAlex and Semantic Scholar, with citations"
+# patent-search-mcp = "patents: search"
+# web-fetch-mcp = "fetch a web page, or its links, as text"

@@ -158,11 +158,14 @@ def harness_options(config: LauncherConfig, layout: Layout) -> list[str]:
     """How the run service reaches the proxy, for the project whose runs use it."""
     if config.mcp_proxy is None:
         return []
-    servers = [option for server in config.mcp_proxy.servers for option in ("--mcp-server", server)]
+    proxy = config.mcp_proxy
+    servers = [option for server in proxy.servers for option in ("--mcp-server", server)]
+    about = [o for name, text in proxy.about.items() for o in ("--mcp-about", f"{name}={text}")]
+    index = [option for name in proxy.index or () for option in ("--mcp-index", name)]
     return [
-        "--mcp-proxy", f"http://{config.mcp_proxy.listen}",
+        "--mcp-proxy", f"http://{proxy.listen}",
         "--mcp-token-file", str(layout.token(PROXY_CALLER)),
-        "--mcp-project", config.mcp_project(), *servers,
+        "--mcp-project", config.mcp_project(), *servers, *about, *index,
     ]  # fmt: skip
 
 

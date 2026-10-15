@@ -64,6 +64,9 @@ from pydantic import (
 from .access_provider import PROVIDER
 
 Identifier = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")]
+ServerName = Annotated[str, StringConstraints(pattern=r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")]
+"""An MCP server's name in the agent's tool index: one the policy names, or, behind a
+portal, the server a tool's name starts with (``e-print-mcp``)."""
 Variable = Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
 
 
@@ -290,6 +293,14 @@ class McpProxyConfig(_Strict):
     credential a server's headers name (docs/MCP-CONNECTORS.md)."""
     servers: tuple[Identifier, ...] = Field(min_length=1)
     """The policy's MCP servers whose tools the main agent gets."""
+    about: dict[ServerName, Annotated[str, StringConstraints(min_length=1, max_length=200)]] = (
+        Field(default_factory=dict[str, str])
+    )
+    """What each server is for, which the agent's tool index says, so it picks the right
+    one (lab 39, B5): ``e-print-mcp = "IACR ePrint papers: ..."``."""
+    index: tuple[ServerName, ...] | None = None
+    """The servers whose tools the index lists one by one; the others are found with a
+    query. By default it lists every server's."""
     project: Identifier | None = None
     """The project whose runs get them; by default the only project."""
     policy: ConfigPath | None = None
