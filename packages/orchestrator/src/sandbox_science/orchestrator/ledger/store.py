@@ -414,15 +414,18 @@ class Ledger:
             )
         return found
 
-    def frontier(self, project: str, name: str) -> FrontierView:
-        """A category's frontier as its results read now (LG-20, LG-21, LG-23)."""
+    def frontier(
+        self, project: str, name: str, *, candidates_before: int | None = None
+    ) -> FrontierView:
+        """A category's frontier as its results read now (LG-20, LG-21, LG-23), its
+        candidates newest first, made before result ``candidates_before``."""
         self._project(project)
         with self.control.read() as tx:
             db = tx.sql
             found = frontier.read(db, project, name)
             if found is None:
                 raise DocumentError(NOT_FOUND, f"no frontier category {name}")
-            return frontier.view(db, project, found)
+            return frontier.view(db, project, found, candidates_before=candidates_before)
 
     # Changes.
 

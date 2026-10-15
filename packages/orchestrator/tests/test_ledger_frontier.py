@@ -382,7 +382,17 @@ def test_every_eligible_result_is_read_and_candidates_are_capped_apart(
     view = ledger.frontier("p", "key-recovery")
     group = best(view, CLASSICAL)
     assert [r.handle for r in group.best] == ["R-5"]
-    assert ([r.handle for r in group.candidates], view.truncated) == (["R-1", "R-2"], True)
+    # The newest come first, and the rest a read further on (the verification).
+    assert ([r.handle for r in group.candidates], view.truncated, view.next_candidates_before) == (
+        ["R-2", "R-3"],
+        True,
+        2,
+    )
+    older = ledger.frontier("p", "key-recovery", candidates_before=2)
+    assert ([r.handle for r in best(older, CLASSICAL).candidates], older.truncated) == (
+        ["R-1"],
+        False,
+    )
 
 
 def test_a_published_result_an_agent_records_is_unverified_until_the_user_confirms_it(
@@ -416,6 +426,52 @@ def test_a_published_result_an_agent_records_is_unverified_until_the_user_confir
     group = best(ledger.frontier("p", "key-recovery"), CLASSICAL)
     assert [r.handle for r in group.best] == ["R-2"]
     assert [(r.handle, r.unverified) for r in group.candidates] == [("R-1", True)]
+
+
+def test_only_the_users_recording_writing_or_check_confirms_an_agents_result(
+    ledger: Ledger,
+) -> None:
+    """The verification's defects 1 and 2: the user checked R-1 at 100 and corrected it to
+    125, the agent put back 100, and R-1 was verified again; and the user's edit of an
+    agent's result's title verified it."""
+    from .test_ledger import NEW
+
+    ledger.define_category("p", KEY_RECOVERY, MAIN)
+    change(ledger, NEW["reference"], op="ref")
+    change(ledger, published("P1", CLASSICAL, time=100, memory=60), op="p1")  # the agent's
+
+    def shown() -> tuple[list[tuple[str, Any]], list[tuple[str, Any]]]:
+        group = best(ledger.frontier("p", "key-recovery"), CLASSICAL)
+        return (
+            [(r.handle, r.measures["time"]) for r in group.best],
+            [(r.handle, r.measures["time"]) for r in group.candidates],
+        )
+
+    def measures(time: int) -> dict[str, Any]:
+        return published("P1", CLASSICAL, time=time, memory=60)["fields"]
+
+    change(ledger, {"entry": "R-1", "expected": 1, "title": "P1."}, op="title", author=USER)
+    assert shown() == ([], [("R-1", 100)])
+    ledger.check("p", "R-1", 2, USER, operation_id="checked")
+    assert shown() == ([("R-1", 100)], [])
+    change(ledger, {"entry": "R-1", "expected": 3, "fields": measures(125)}, op="fix", author=USER)
+    assert shown() == ([("R-1", 125)], [])
+    change(ledger, {"entry": "R-1", "expected": 4, "fields": measures(100)}, op="back")
+    assert shown() == ([], [("R-1", 100)])
+
+
+def test_the_frontier_warns_of_groups_that_only_look_different(ledger: Ledger) -> None:
+    """M4's residue: the user's spellings stay apart, and the frontier says which look
+    alike: a Cyrillic a, and a division slash."""
+    from .test_ledger import NEW
+
+    ledger.define_category("p", KEY_RECOVERY, MAIN)
+    change(ledger, NEW["reference"], op="ref")
+    change(ledger, published("P1", CLASSICAL, time=120, memory=60), op="p1", author=USER)
+    alike = {"model": "cl\u0430ssical", "success": "at least 1\u22152"}
+    change(ledger, published("P2", alike, time=130, memory=70), op="p2", author=USER)
+    view = ledger.frontier("p", "key-recovery")
+    assert (len(view.groups), view.lookalike) == (2, [[CLASSICAL, alike]])
 
 
 def test_condition_values_group_as_they_read(ledger: Ledger) -> None:

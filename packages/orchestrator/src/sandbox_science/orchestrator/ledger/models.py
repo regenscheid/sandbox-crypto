@@ -628,7 +628,13 @@ class FrontierView(Contract):
     keys, which it gained after they were recorded."""
     truncated: bool
     """Whether the category has more proposed results than the frontier reads as
-    candidates; it reads every eligible one."""
+    candidates, newest first; it reads every eligible one."""
+    next_candidates_before: int | None = None
+    """When it has, the number of the oldest candidate read: the next read begins there."""
+    lookalike: list[list[dict[str, str]]] = Field(default_factory=list[list[dict[str, str]]])
+    """Sets of groups whose conditions differ only in characters that look alike (a
+    partial table: Unicode dashes and slashes, Cyrillic and Greek letters that look Latin,
+    other scripts' digits): the user's spellings, kept apart, and shown as a warning."""
     agent_revised: CategoryRevised | None = None
     """The main agent's revision of the category, when the user has not revised it since."""
     unplaced_more: int = 0

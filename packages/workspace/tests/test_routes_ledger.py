@@ -359,6 +359,6 @@ async def test_a_frontier_through_the_workspace(
         [{"model": "quantum"}],
         None,
     )
-    for bad in ({"x": "1"}, {"groups_after": "-1"}, {"limit": "0"}):
+    for bad in ({"x": "1"}, {"groups_after": "-1"}, {"limit": "0"}, {"candidates_before": "0"}):
         await error_of(await client.get(url, params=bad), 400, "invalid_request")
     await error_of(await client.get("/api/v0/projects/p1/frontier/bounds"), 404, "not_found")

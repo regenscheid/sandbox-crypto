@@ -390,6 +390,8 @@ export interface FrontierView {
   groups: FrontierGroup[];
   unplaced: FrontierResult[];
   truncated: boolean;
+  next_candidates_before: number | null;
+  lookalike: Record<string, string>[][];
   agent_revised: CategoryRevised | null;
   unplaced_more: number;
 }

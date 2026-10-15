@@ -97,12 +97,15 @@ async def frontier(request: web.Request) -> web.Response:
     project = identifier(request, "project")
     name = matched(_NAME, request.match_info["category"], "frontier category")
     assert name is not None  # noqa: S101 - a path part is always there
-    query = query_of(request, {"groups_after", "limit"})
+    query = query_of(request, {"groups_after", "limit", "candidates_before"})
     start = int(matched(_COUNT, query.get("groups_after"), "groups_after") or 0)
+    older = matched(_NUMBER, query.get("candidates_before"), "candidates_before")
     limit = int(matched(_LIMIT, query.get("limit", "20"), "limit") or 20)
 
     def read(ledger: Ledger) -> str:
-        view = ledger.frontier(project, name)
+        view = ledger.frontier(
+            project, name, candidates_before=None if older is None else int(older)
+        )
         end = start + limit
         return FrontierAnswer(
             project_id=project,

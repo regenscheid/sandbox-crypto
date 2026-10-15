@@ -39,7 +39,7 @@ from sandbox_science.orchestrator.documents.errors import (
     DocumentError,
 )
 
-from . import gate
+from . import evidence, gate
 from .models import (
     PREFIXES,
     Category,
@@ -66,8 +66,9 @@ def normal(text: str) -> str:
 
 
 MAX_CANDIDATES: Final = 500
-"""The most proposed results of a category the frontier reads as candidates; it says
-when there are more. It reads every result that is, or was, eligible."""
+"""The most proposed results of a category the frontier reads as candidates, newest
+first; it says where the next ones begin. It reads every result that is, or was,
+eligible."""
 
 _ELIGIBLE: Final = {"published": "recorded", "project": "established"}
 """The status that makes a result of each origin eligible (LG-20)."""
@@ -239,9 +240,16 @@ def _category(row: tuple[Any, ...]) -> Category:
     )
 
 
-def view(db: sqlite3.Connection, project: str, category: Category) -> FrontierView:
+def view(
+    db: sqlite3.Connection,
+    project: str,
+    category: Category,
+    *,
+    candidates_before: int | None = None,
+) -> FrontierView:
     """``category``'s frontier as its results read now: every result that is or was
-    eligible, and as many as ``MAX_CANDIDATES`` proposed ones."""
+    eligible, and as many as ``MAX_CANDIDATES`` proposed ones, newest first, made before
+    the result numbered ``candidates_before``."""
     held = db.execute(
         _SHOWN + "AND (r.status='disputed' OR (json_extract(r.fields,'$.category')=? "
         "AND r.status IN ('recorded','established'))) ORDER BY e.position",
@@ -249,8 +257,9 @@ def view(db: sqlite3.Connection, project: str, category: Category) -> FrontierVi
     ).fetchall()
     proposed = db.execute(
         _SHOWN + "AND e.origin='project' AND r.status='proposed' "
-        "AND json_extract(r.fields,'$.category')=? ORDER BY e.position LIMIT ?",
-        (project, category.category, MAX_CANDIDATES + 1),
+        "AND json_extract(r.fields,'$.category')=? AND e.number<? "
+        "ORDER BY e.number DESC LIMIT ?",
+        (project, category.category, candidates_before or 2**62, MAX_CANDIDATES + 1),
     ).fetchall()
     keys = category.conditions
     groups: dict[tuple[str, ...], tuple[dict[str, str], list[_Member]]] = {}
@@ -270,13 +279,58 @@ def view(db: sqlite3.Connection, project: str, category: Category) -> FrontierVi
         written = dict(zip(keys, (str(v) for v in values), strict=True))
         found = groups.setdefault(tuple(normal(v) for v in written.values()), (written, []))
         found[1].append(member)
+    more = len(proposed) > MAX_CANDIDATES
     return FrontierView(
         category=category,
         groups=[_group(category, written, members) for written, members in groups.values()],
         unplaced=unplaced,
-        truncated=len(proposed) > MAX_CANDIDATES,
+        truncated=more,
+        next_candidates_before=proposed[MAX_CANDIDATES - 1][2] if more else None,
         agent_revised=revised(db, project, category),
+        lookalike=_lookalike([written for written, _ in groups.values()]),
     )
+
+
+_LOOKALIKE: Final = str.maketrans(
+    {
+        **dict.fromkeys("\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe63\uff0d", "-"),
+        **dict.fromkeys("\u2044\u2215\u29f8\uff0f", "/"),
+        **dict(
+            zip(
+                "\u0430\u0435\u043e\u0440\u0441\u0443\u0445\u0456\u0458\u0455\u04bb\u0501",
+                "aeopcyxijshd",
+                strict=True,
+            )
+        ),
+        **dict(
+            zip(
+                "\u03b1\u03bf\u03c1\u03bd\u03ba\u03b9\u03c4\u03c5\u03c7\u03b5",
+                "aopvkituxe",
+                strict=True,
+            )
+        ),
+    }
+)
+"""A partial table of characters that look like ASCII ones: Unicode dashes and slashes,
+and Cyrillic and Greek letters that look Latin, after case folding."""
+
+
+def _skeleton(text: str) -> str:
+    """``text`` as it looks, near enough: as ``normal`` reads it, with the lookalikes of
+    ``_LOOKALIKE`` and every other script's digits made ASCII."""
+    folded = normal(text).translate(_LOOKALIKE)
+    return "".join(
+        str(digit) if (digit := unicodedata.decimal(c, None)) is not None else c for c in folded
+    )
+
+
+def _lookalike(groups: list[dict[str, str]]) -> list[list[dict[str, str]]]:
+    """The sets of groups whose conditions differ only in characters that look alike:
+    the user's spellings, which the frontier keeps apart, so it warns."""
+    found: dict[tuple[str, ...], list[dict[str, str]]] = {}
+    for conditions in groups:
+        found.setdefault(tuple(_skeleton(v) for v in conditions.values()), []).append(conditions)
+    return [same for same in found.values() if len(same) > 1]
 
 
 _Member = tuple[FrontierResult, bool, bool]
@@ -304,7 +358,7 @@ def _member(db: sqlite3.Connection, row: tuple[Any, ...], name: str) -> _Member 
     if fields.get("category") != name:
         return None
     eligible = disputed or status == _ELIGIBLE[origin]
-    unverified = eligible and origin == "published" and not _confirmed(db, entry, row[4], row[9])
+    unverified = eligible and origin == "published" and not _confirmed(db, entry, row[4])
     eligible = eligible and not unverified
     candidate = not eligible and (
         unverified or (origin == "project" and status in ("proposed", "disputed"))
@@ -315,23 +369,51 @@ def _member(db: sqlite3.Connection, row: tuple[Any, ...], name: str) -> _Member 
     return shown, eligible, candidate
 
 
-def _confirmed(db: sqlite3.Connection, entry: str, revision: int, author: str) -> bool:
-    """Whether the user confirmed published result ``entry`` as ``revision`` reads: the
-    user wrote it, or a revision since, or one before, with the same statement, fields,
-    assumptions and evidence, by recording, revising or checking it (``ledger check``,
-    or the workspace's). The consistency reviewer's citation check (CR-4) is not built
+def _confirmed(db: sqlite3.Connection, entry: str, revision: int) -> bool:
+    """Whether the user confirmed published result ``entry`` as ``revision`` reads (LG-16
+    as amended). The user's latest revision of it must hold the same statement, fields,
+    assumptions and evidence, and the user must have written that material, by recording
+    the entry or by a revision that brought it in, or checked it (``ledger check``, or the
+    workspace's). A user's other edits, such as a title or a dropped link, confirm
+    nothing, and material an agent writes after the user's latest revision is not what
+    the user confirmed. The consistency reviewer's citation check (CR-4) is not built
     yet."""
-    if json.loads(author).get("kind") == "user":
+    latest = db.execute(
+        "SELECT max(revision) FROM ledger_revisions WHERE entry_id=? "
+        "AND json_extract(author,'$.kind')='user'",
+        (entry,),
+    ).fetchone()[0]
+    if latest is None:
+        return False
+    found = gate.examined(db, entry, {revision, latest})
+    now = found.get(revision)
+    if now is None or found.get(latest) != now:
+        return False
+    # The revision that brought the material in: did the user write it?
+    at = latest
+    while (
+        at > max(1, latest - gate.KEPT_REVISIONS)
+        and gate.examined(db, entry, {at - 1}).get(at - 1) == now
+    ):
+        at -= 1
+    if (
+        db.execute(
+            "SELECT 1 FROM ledger_revisions WHERE entry_id=? AND revision=? "
+            "AND json_extract(author,'$.kind')='user'",
+            (entry, at),
+        ).fetchone()
+        is not None
+    ):
         return True
-    examined = gate.examined(db, entry, {revision})
-    now = examined.get(revision)
-    rows = db.execute(
-        "SELECT revision FROM ledger_revisions WHERE entry_id=? AND revision!=? "
-        "AND json_extract(author,'$.kind')='user' ORDER BY revision DESC LIMIT ?",
-        (entry, revision, gate.KEPT_REVISIONS),
-    ).fetchall()
-    found = gate.examined(db, entry, {r[0] for r in rows})
-    return now is not None and now in found.values()
+    checked = {
+        link.checked
+        for link in evidence.stored(db, entry, latest)
+        if link.role == "independent_check"
+        and link.checked is not None
+        and link.added == link.checked + 1
+        and gate.added_by_user(db, entry, link, latest)
+    }
+    return now in gate.examined(db, entry, checked).values()
 
 
 def revised(db: sqlite3.Connection, project: str, category: Category) -> CategoryRevised | None:

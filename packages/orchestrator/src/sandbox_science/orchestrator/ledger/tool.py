@@ -339,7 +339,8 @@ SPECS: Final = (
         "every measure and better on one), the dominated ones, those not compared (a "
         "measure missing or not a number), and candidates with the best known they would "
         "dominate: project results not established, and published ones an agent recorded "
-        "that the user has not confirmed (unverified). agent_revised says what the main "
+        "that the user has not confirmed (unverified), newest first (candidates_before "
+        "reads older ones). agent_revised says what the main "
         "agent changed in the category that the user has not revised since. "
         "With revision: the category's definition at that revision. A result in a "
         "category gives a value for each condition key and only its measures.",
@@ -350,6 +351,7 @@ SPECS: Final = (
                 "revision": {"type": "integer", "minimum": 1},
                 "after": {"type": "string", "description": "Where the last page ended"},
                 "groups_after": {"type": "integer", "minimum": 0},
+                "candidates_before": {"type": "integer", "minimum": 1},
             },
             "additionalProperties": False,
         },
@@ -431,6 +433,7 @@ class _Frontier(_Args):
     revision: _NUMBER | None = None
     after: _TEXT | None = None
     groups_after: _COUNT = 0
+    candidates_before: _NUMBER | None = None
 
 
 class _Import(_Args):
@@ -560,7 +563,10 @@ class LedgerTool:
             if args.revision is not None:
                 found = self.ledger.category(project, args.category, args.revision)
                 return found.model_dump_json()
-            return self._frontier(self.ledger.frontier(project, args.category), args.groups_after)
+            found = self.ledger.frontier(
+                project, args.category, candidates_before=args.candidates_before
+            )
+            return self._frontier(found, args.groups_after)
         if isinstance(args, _List):
             page = self.ledger.entries(
                 project, kind=args.type, status=args.status, after=args.after, limit=args.limit
@@ -589,6 +595,12 @@ class LedgerTool:
             "groups": [],
             "unplaced": [r.handle for r in view.unplaced][:100],
             "truncated": view.truncated,
+            **(
+                {"candidates_before": view.next_candidates_before}
+                if view.next_candidates_before
+                else {}
+            ),
+            **({"lookalike": view.lookalike[:10]} if view.lookalike else {}),
         }
         for number, group in enumerate(view.groups[start:], start):
             # A group goes on the next page rather than shortened, unless it is the first.
