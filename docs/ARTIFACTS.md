@@ -345,6 +345,21 @@ results first and every other recorded file under **All files**, the most recent
 changed first, with who made each latest revision; it filters by session, run and a
 path's text ([workspace](WORKSPACE.md); RA-37).
 
+## Finding artifacts from a later run
+
+Only `publish`'s result names an artifact's ID and revision, and a later run gets
+earlier tasks and answers without tool results, so an agent could not cite a file
+an earlier run published (lab 38, B6). `find_artifacts`, a read tool offered with
+the inventory, lists the project's artifacts at their latest revision, ten at a
+time, the most recently changed first, from the same query as the GUI's list. Each
+gives its path, artifact ID, revision, SHA-256, size, media type, when it was
+recorded, how (published, recorded from a call or declared), whether it is a result,
+and whether it was deleted or kept only its hash. It finds one by its path as the
+session's tools name it (`results/x.json`, or `shared/…`), by text in the path,
+by a media type or its start (`image/`), or results only, and pages with
+`before`. The answer fits the tool's output budget. The ledger's evidence
+description names it where it explains an artifact pin.
+
 ## Tests and evidence reads
 
 Tests compose the actual authenticated worker HTTP API with control retention,

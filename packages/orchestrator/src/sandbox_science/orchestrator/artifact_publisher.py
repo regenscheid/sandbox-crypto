@@ -15,12 +15,13 @@ from sandbox_science.contracts import ArtifactRef, ExecutionContext, PublishRequ
 from sandbox_science.contracts.artifact_inventory import (
     ArtifactPublicationSource,
     ArtifactReceipt,
+    ArtifactRevision,
     ArtifactRevisionRef,
     ArtifactSnapshot,
 )
 
 from .aio import OwnedExecutor
-from .artifacts import ArtifactInventory, Room
+from .artifacts import ArtifactInventory, Room, scoped_path
 from .documents.errors import DocumentError
 from .worker_client import WorkerAPIError, WorkerClient
 
@@ -79,6 +80,35 @@ class ArtifactPublisher:
     async def room(self, size: int) -> Room:
         """What the project's budget leaves for a revision of ``size`` bytes."""
         return await self._sql(lambda: self.inventory.room(self.context.project_id, size))
+
+    async def find(
+        self,
+        *,
+        path: str | None = None,
+        contains: str | None = None,
+        media_type: str | None = None,
+        results_only: bool = False,
+        before: int | None = None,
+    ) -> tuple[tuple[ArtifactRevision, ...], int | None, set[str]]:
+        """The project's artifacts at their latest revision, ten at a time, the most
+        recently changed first, the next page's cursor, and which are results (RA-37).
+        ``path`` is one as this session's tools name it."""
+        project = self.context.project_id
+        scoped = None if path is None else scoped_path(path, self.context.session_id)
+
+        def read() -> tuple[tuple[ArtifactRevision, ...], int | None, set[str]]:
+            found, after = self.inventory.recent(
+                project,
+                before=before,
+                group="results" if results_only else None,
+                contains=contains,
+                at_path=scoped,
+                media_type=media_type,
+            )
+            results = self.inventory.results(project, [e.reference.artifact_id for e in found])
+            return found, after, results
+
+        return await self._sql(read)
 
     async def record_metadata(
         self,
