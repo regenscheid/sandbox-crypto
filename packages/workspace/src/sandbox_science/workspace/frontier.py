@@ -1,0 +1,96 @@
+# SPDX-License-Identifier: MIT
+"""The project's frontier for the GUI (docs/specs/ledger.md, LG-18 to LG-24, LG-34).
+
+``GET /api/v0/projects/{project}/frontier`` answers a page of the project's frontier
+categories, in the order they were defined (``after``, ``limit``); ``GET
+…/frontier/{category}/definition`` one category, at its current revision or
+``revision``. ``POST …/frontier`` is the user's definition of a category, or its
+revision at the revision read (same-origin, the user's only).
+"""
+
+from __future__ import annotations
+
+import re
+from datetime import UTC, datetime
+from typing import Final
+
+from aiohttp import web
+from pydantic import AwareDatetime
+
+from sandbox_science.contracts import Contract, Identifier
+from sandbox_science.orchestrator.documents import USER, DocumentStore
+from sandbox_science.orchestrator.ledger import Ledger
+from sandbox_science.orchestrator.ledger.models import Category, CategoryPage
+
+from . import documents
+from .context import identifier, json_body
+from .ledger import matched, query_of, read_answer
+
+PATH: Final = "/api/v0/projects/{project}/frontier"
+_NAME: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+_NUMBER: Final = re.compile(r"[1-9][0-9]{0,8}")
+_LIMIT: Final = re.compile(r"[1-9][0-9]?|100")
+
+
+class FrontierCategories(Contract):
+    """A page of a project's frontier categories."""
+
+    project_id: Identifier
+    observed_at: AwareDatetime
+    page: CategoryPage
+
+
+class FrontierCategory(Contract):
+    """One frontier category at one revision."""
+
+    project_id: Identifier
+    observed_at: AwareDatetime
+    category: Category
+
+
+def add_routes(app: web.Application) -> None:
+    app.router.add_get(PATH, categories)
+    app.router.add_post(PATH, define)
+    app.router.add_get(PATH + "/{category}/definition", category)
+
+
+async def categories(request: web.Request) -> web.Response:
+    project = identifier(request, "project")
+    query = query_of(request, {"after", "limit"})
+    after = matched(_NAME, query.get("after"), "cursor")
+    limit = int(matched(_LIMIT, query.get("limit", "50"), "limit") or 50)
+
+    def read(ledger: Ledger) -> str:
+        page = ledger.categories(project, after=after, limit=limit)
+        return FrontierCategories(
+            project_id=project, observed_at=datetime.now(UTC), page=page
+        ).model_dump_json()
+
+    return await read_answer(request, project, read)
+
+
+async def category(request: web.Request) -> web.Response:
+    project = identifier(request, "project")
+    name = matched(_NAME, request.match_info["category"], "frontier category")
+    assert name is not None  # noqa: S101 - a path part is always there
+    raw = matched(_NUMBER, query_of(request, {"revision"}).get("revision"), "revision")
+
+    def read(ledger: Ledger) -> str:
+        found = ledger.category(project, name, None if raw is None else int(raw))
+        return FrontierCategory(
+            project_id=project, observed_at=datetime.now(UTC), category=found
+        ).model_dump_json()
+
+    return await read_answer(request, project, read)
+
+
+async def define(request: web.Request) -> web.Response:
+    """POST …/frontier: the user defines a category, or revises the one at
+    ``expected``. Same-origin, the user's only."""
+    project = identifier(request, "project")
+    raw: object = await json_body(request, "frontier category JSON")
+
+    def defined(store: DocumentStore) -> dict[str, object]:
+        return Ledger(store).define_category(project, raw, USER).model_dump(mode="json")
+
+    return await documents.answer(request, defined, writer=True)

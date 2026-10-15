@@ -482,3 +482,67 @@ class GateView(Contract):
     """Every clause, in the order the gate reads them; none when it does not apply."""
     decisions: list[GateDecision]
     """The decisions that affect the entry, newest first, as many as 50."""
+
+
+# The frontier (LG-18 to LG-24).
+
+
+class CategoryMeasure(Contract):
+    """A measure results in a category are compared on: its unit, and whether lower or
+    higher is better."""
+
+    name: Identifier
+    unit: Text
+    direction: Literal["lower", "higher"]
+
+
+Operation = Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")]
+
+
+class CategoryDefinition(Contract):
+    """A frontier category as the user or the main agent defines it (LG-18): new, or a
+    revision of the one at ``expected``."""
+
+    category: Identifier
+    expected: Annotated[int, Field(ge=1, le=999999999, strict=True)] | None = None
+    """The revision read, to revise it; none to define a new category."""
+    target: Note
+    """What the results are about, such as a scheme and parameter set."""
+    kind: Note
+    """The kind of result, such as key recovery cost or a bound."""
+    measures: list[CategoryMeasure] = Field(min_length=1, max_length=16)
+    conditions: list[Identifier] = Field(default_factory=list[str], max_length=16)
+    """The condition keys results are compared under, such as attack or cost model."""
+    reason: Note
+    operation_id: Operation
+
+    @model_validator(mode="after")
+    def _distinct(self) -> Self:
+        names = [measure.name for measure in self.measures]
+        if len(set(names)) != len(names) or len(set(self.conditions)) != len(self.conditions):
+            raise ValueError("a category names each measure and condition key once")
+        return self
+
+
+class Category(Contract):
+    """A frontier category at one revision."""
+
+    category: str
+    revision: int
+    head: int
+    target: str
+    kind: str
+    measures: list[CategoryMeasure]
+    conditions: list[str]
+    author: dict[str, Any]
+    reason: str
+    operation_id: str
+    created: str
+    replayed: bool = False
+
+
+class CategoryPage(Contract):
+    """A project's frontier categories, in the order they were defined."""
+
+    categories: list[Category]
+    next_after: str | None

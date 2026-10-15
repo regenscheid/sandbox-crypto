@@ -55,7 +55,14 @@ class EventLog:
     """The events about one kind of subject (``subject_type``), as ``producer`` writes
     them."""
 
-    SUBJECTS: Final = ("document", "review", "finding", "ledger_entry", "memory")
+    SUBJECTS: Final = (
+        "document",
+        "review",
+        "finding",
+        "ledger_entry",
+        "memory",
+        "frontier_category",
+    )
 
     def __init__(self, control: ControlStore, subject_type: str, producer: str) -> None:
         if subject_type not in self.SUBJECTS:

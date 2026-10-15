@@ -54,6 +54,7 @@ from . import (
     chat,
     documents,
     errors,
+    frontier,
     jobs,
     kernels,
     ledger,
@@ -336,6 +337,7 @@ def create_app(
         plan_edits,
         chat,
         ledger,
+        frontier,
         memory,
     ):
         feature.add_routes(app)

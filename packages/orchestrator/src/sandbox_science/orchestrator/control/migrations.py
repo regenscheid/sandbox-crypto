@@ -1822,6 +1822,63 @@ BEGIN SELECT RAISE(ABORT, 'ledger flags are kept'); END""",
         schema.execute(statement)
 
 
+_NAME: Final = (
+    "length({column}) BETWEEN 1 AND 128 AND {column} GLOB '[A-Za-z0-9]*' "
+    "AND {column} NOT GLOB '*[^A-Za-z0-9._-]*'"
+)
+"""A check that ``column`` is an identifier: printable, path-safe, short."""
+
+
+def _frontier_categories(schema: Schema) -> None:
+    """Version 26: the project's frontier categories (docs/specs/ledger.md, LG-18):
+    each named in its project, in the order they were defined, at its current revision;
+    and every revision, written once: the target and kind of result it compares, its
+    measures, each with a unit and a direction, its condition keys, who wrote it, why,
+    and under which operation."""
+    name = _NAME.format(column="category")
+    for statement in (
+        f"""CREATE TABLE frontier_categories (
+    project TEXT NOT NULL CHECK (length(CAST(project AS BLOB)) BETWEEN 1 AND 128),
+    category TEXT NOT NULL CHECK ({name}),
+    head INTEGER NOT NULL CHECK (head BETWEEN 1 AND 999999999),
+    position INTEGER NOT NULL CHECK (position BETWEEN 1 AND 999999999),
+    PRIMARY KEY (project, category)
+) STRICT""",
+        "CREATE UNIQUE INDEX frontier_categories_order ON frontier_categories(project,position)",
+        """CREATE TRIGGER frontier_categories_forward BEFORE UPDATE ON frontier_categories
+WHEN NEW.project IS NOT OLD.project OR NEW.category IS NOT OLD.category
+    OR NEW.position IS NOT OLD.position OR NEW.head != OLD.head + 1
+BEGIN SELECT RAISE(ABORT, 'a frontier category moves on one revision at a time'); END""",
+        """CREATE TRIGGER frontier_categories_no_delete BEFORE DELETE ON frontier_categories
+BEGIN SELECT RAISE(ABORT, 'frontier categories are kept'); END""",
+        """CREATE TABLE frontier_category_revisions (
+    project TEXT NOT NULL,
+    category TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK (revision BETWEEN 1 AND 999999999),
+    target TEXT NOT NULL CHECK (length(CAST(target AS BLOB)) BETWEEN 1 AND 2048),
+    kind TEXT NOT NULL CHECK (length(CAST(kind AS BLOB)) BETWEEN 1 AND 2048),
+    measures TEXT NOT NULL CHECK (json_valid(measures) AND json_type(measures) = 'array'
+        AND json_array_length(measures) BETWEEN 1 AND 16
+        AND length(CAST(measures AS BLOB)) <= 16384),
+    conditions TEXT NOT NULL CHECK (json_valid(conditions) AND json_type(conditions) = 'array'
+        AND json_array_length(conditions) <= 16 AND length(CAST(conditions AS BLOB)) <= 4096),
+    author TEXT NOT NULL CHECK (json_valid(author) AND length(CAST(author AS BLOB)) <= 8192),
+    reason TEXT NOT NULL CHECK (length(CAST(reason AS BLOB)) BETWEEN 1 AND 16384),
+    operation_id TEXT NOT NULL CHECK (length(CAST(operation_id AS BLOB)) BETWEEN 1 AND 128),
+    created TEXT NOT NULL CHECK (length(created) BETWEEN 1 AND 64),
+    PRIMARY KEY (project, category, revision),
+    FOREIGN KEY (project, category) REFERENCES frontier_categories(project, category)
+) STRICT""",
+        """CREATE TRIGGER frontier_category_revisions_no_update
+BEFORE UPDATE ON frontier_category_revisions
+BEGIN SELECT RAISE(ABORT, 'frontier category revisions are immutable'); END""",
+        """CREATE TRIGGER frontier_category_revisions_no_delete
+BEFORE DELETE ON frontier_category_revisions
+BEGIN SELECT RAISE(ABORT, 'frontier category revisions are immutable'); END""",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -1847,6 +1904,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _ledger_review_index,
     _memory,
     _ledger_flags,
+    _frontier_categories,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

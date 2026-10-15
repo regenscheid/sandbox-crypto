@@ -37,6 +37,7 @@ from .models import (
     MAX_CLEARED,
     PREFIXES,
     STATUSES,
+    CategoryPage,
     ClaimKind,
     EntryHistory,
     EntryPage,
@@ -58,6 +59,7 @@ LEDGER_EFFECTS: Final[dict[str, Effect]] = {
     "ledger_list": "read",
     "ledger_read": "read",
     "ledger_history": "read",
+    "ledger_frontier": "read",
 }
 """The ledger tools that only read; the others are effects, which the plan fence gates."""
 
@@ -324,6 +326,59 @@ SPECS: Final = (
             "additionalProperties": False,
         },
     ),
+    ToolSpec(
+        "ledger_frontier",
+        "Read the project's frontier categories: without category, a page of them; with "
+        "it, that category (its target and kind of result, its measures with their units "
+        "and directions, its condition keys) at its current revision or the one given. A "
+        "result in a category gives a value for each condition key and only its measures.",
+        {
+            "type": "object",
+            "properties": {
+                "category": {"type": "string"},
+                "revision": {"type": "integer", "minimum": 1},
+                "after": {"type": "string", "description": "Where the last page ended"},
+            },
+            "additionalProperties": False,
+        },
+    ),
+    ToolSpec(
+        "ledger_category",
+        "Define a frontier category (LG-18), or revise one: give expected, the revision you "
+        "read. Name its target and the kind of result it compares, its measures (each with "
+        "a unit and whether lower or higher is better) and the condition keys results are "
+        "compared under, such as attack model or cost model. Only results with equal "
+        "conditions are compared. An operation_id names one change in the project.",
+        {
+            "type": "object",
+            "properties": {
+                "category": {"type": "string", "description": "A short name, such as key-recovery"},
+                "expected": {"type": "integer", "minimum": 1},
+                "target": {"type": "string"},
+                "kind": {"type": "string"},
+                "measures": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "unit": {"type": "string", "description": "Such as log2 operations"},
+                            "direction": {"type": "string", "enum": ["lower", "higher"]},
+                        },
+                        "required": ["name", "unit", "direction"],
+                        "additionalProperties": False,
+                    },
+                    "minItems": 1,
+                    "maxItems": 16,
+                },
+                "conditions": {"type": "array", "items": {"type": "string"}, "maxItems": 16},
+                "reason": {"type": "string", "description": "Why, in a sentence"},
+                "operation_id": {"type": "string"},
+            },
+            "required": ["category", "target", "kind", "measures", "reason"],
+            "additionalProperties": False,
+        },
+    ),
 )
 
 Reader = Callable[[ReadFileRequest], Awaitable[FileContent]]
@@ -359,6 +414,12 @@ class _History(_Args):
     before: _NUMBER | None = None
 
 
+class _Frontier(_Args):
+    category: _TEXT | None = None
+    revision: _NUMBER | None = None
+    after: _TEXT | None = None
+
+
 class _Import(_Args):
     path: Annotated[str, Field(strict=True, min_length=1, max_length=4096)]
     sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -369,6 +430,7 @@ _ARGS: Final[dict[str, type[_Args]]] = {
     "ledger_read": _Read,
     "ledger_history": _History,
     "ledger_import": _Import,
+    "ledger_frontier": _Frontier,
 }
 
 
@@ -439,6 +501,8 @@ class LedgerTool:
             if name == "ledger_change":
                 # Unknown arguments are refused, so that none can stand for an author.
                 text = await asyncio.to_thread(self._change, args, operation, author)
+            elif name == "ledger_category":
+                text = await asyncio.to_thread(self._category, args, operation, author)
             else:
                 try:
                     parsed = _ARGS[name].model_validate(args)
@@ -451,7 +515,7 @@ class LedgerTool:
         except DocumentError as error:
             return _failure(error.kind, _clip(error.message, 1000), **error.details)
         record: Json = {"ledger": name}
-        if name in ("ledger_change", "ledger_import"):
+        if name in ("ledger_change", "ledger_import", "ledger_category"):
             record["result"] = json.loads(text)
         return text, record
 
@@ -465,8 +529,22 @@ class LedgerTool:
         )
         return result.model_dump_json()
 
+    def _category(self, args: dict[str, Any], operation: str, author: Author) -> str:
+        category = self.ledger.define_category(
+            self.context.project_id, {"operation_id": operation, **args}, author
+        )
+        return category.model_dump_json()
+
     def _read_only(self, args: _Args) -> str:
         project = self.context.project_id
+        if isinstance(args, _Frontier):
+            if args.category is None:
+                if args.revision is not None:
+                    raise DocumentError(INVALID_REQUEST, "a revision is of one category")
+                return self._categories(self.ledger.categories(project, after=args.after))
+            if args.after is not None:
+                raise DocumentError(INVALID_REQUEST, "after pages the list of categories")
+            return self.ledger.category(project, args.category, args.revision).model_dump_json()
         if isinstance(args, _List):
             page = self.ledger.entries(
                 project, kind=args.type, status=args.status, after=args.after, limit=args.limit
@@ -474,11 +552,23 @@ class LedgerTool:
             return self._listing(page)
         if isinstance(args, _History):
             return self._history(self.ledger.history(project, args.entry, before=args.before))
-        assert isinstance(args, _Read)  # noqa: S101 - the four kinds are above
+        assert isinstance(args, _Read)  # noqa: S101 - the other kinds are above
         view = self.ledger.entry(
             project, args.entry, args.revision, incoming_after=args.incoming_after
         )
         return self._entry(view, args)
+
+    def _categories(self, page: CategoryPage) -> str:
+        """As many categories as the budget holds, their texts shortened."""
+        shown: list[Json] = []
+        for category in page.categories:
+            value = category.model_dump(mode="json", exclude={"replayed"})
+            for long in ("target", "kind", "reason"):
+                value[long] = _clip(value[long], 500)
+            if len(_dump({"categories": [*shown, value], "next_after": "x" * 128})) > self.budget:
+                return _dump({"categories": shown, "next_after": shown[-1]["category"]})
+            shown.append(value)
+        return _dump({"categories": shown, "next_after": page.next_after})
 
     def _listing(self, page: EntryPage) -> str:
         entries: list[Json] = []

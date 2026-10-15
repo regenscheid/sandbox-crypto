@@ -79,7 +79,7 @@ def add_routes(app: web.Application) -> None:
     app.router.add_post(PATH + "/{entry}/flags/reopened", reopen)
 
 
-def _query(request: web.Request, allowed: set[str]) -> dict[str, str]:
+def query_of(request: web.Request, allowed: set[str]) -> dict[str, str]:
     query = dict(request.query)
     if set(query) - allowed or len(query) != len(request.query) or request.can_read_body:
         raise ProjectError(
@@ -88,19 +88,19 @@ def _query(request: web.Request, allowed: set[str]) -> dict[str, str]:
     return query
 
 
-def _match(pattern: re.Pattern[str], value: str | None, what: str) -> str | None:
+def matched(pattern: re.Pattern[str], value: str | None, what: str) -> str | None:
     if value is not None and pattern.fullmatch(value) is None:
         raise ProjectError(ErrorKind.INVALID_REQUEST, f"invalid {what}")
     return value
 
 
 def _entry(request: web.Request) -> str:
-    value = _match(_ENTRY, request.match_info["entry"], "ledger entry")
+    value = matched(_ENTRY, request.match_info["entry"], "ledger entry")
     assert value is not None  # noqa: S101 - a path part is always there
     return value
 
 
-async def _answer(
+async def read_answer(
     request: web.Request, project: str, read: Callable[[Ledger], str]
 ) -> web.Response:
     context = request.app[CONTEXT]
@@ -115,11 +115,11 @@ async def _answer(
 
 async def listing(request: web.Request) -> web.Response:
     project = identifier(request, "project")
-    query = _query(request, {"type", "status", "after", "limit"})
-    kind = _match(_WORD, query.get("type"), "entry type")
-    status = _match(_WORD, query.get("status"), "status")
-    after = _match(_ENTRY, query.get("after"), "cursor")
-    limit = int(_match(_NUMBER, query.get("limit", "50"), "limit") or 50)
+    query = query_of(request, {"type", "status", "after", "limit"})
+    kind = matched(_WORD, query.get("type"), "entry type")
+    status = matched(_WORD, query.get("status"), "status")
+    after = matched(_ENTRY, query.get("after"), "cursor")
+    limit = int(matched(_NUMBER, query.get("limit", "50"), "limit") or 50)
 
     def read(ledger: Ledger) -> str:
         page = ledger.entries(project, kind=kind, status=status, after=after, limit=limit)
@@ -127,14 +127,14 @@ async def listing(request: web.Request) -> web.Response:
             project_id=project, observed_at=datetime.now(UTC), page=page
         ).model_dump_json()
 
-    return await _answer(request, project, read)
+    return await read_answer(request, project, read)
 
 
 async def entry(request: web.Request) -> web.Response:
     project, reference = identifier(request, "project"), _entry(request)
-    query = _query(request, {"revision", "incoming_after"})
-    raw = _match(_NUMBER, query.get("revision"), "revision")
-    after = int(_match(_COUNT, query.get("incoming_after", "0"), "incoming_after") or 0)
+    query = query_of(request, {"revision", "incoming_after"})
+    raw = matched(_NUMBER, query.get("revision"), "revision")
+    after = int(matched(_COUNT, query.get("incoming_after", "0"), "incoming_after") or 0)
 
     def read(ledger: Ledger) -> str:
         found = ledger.entry(
@@ -144,12 +144,12 @@ async def entry(request: web.Request) -> web.Response:
             project_id=project, observed_at=datetime.now(UTC), entry=found
         ).model_dump_json()
 
-    return await _answer(request, project, read)
+    return await read_answer(request, project, read)
 
 
 async def history(request: web.Request) -> web.Response:
     project, reference = identifier(request, "project"), _entry(request)
-    raw = _match(_NUMBER, _query(request, {"before"}).get("before"), "revision")
+    raw = matched(_NUMBER, query_of(request, {"before"}).get("before"), "revision")
 
     def read(ledger: Ledger) -> str:
         found = ledger.history(project, reference, before=None if raw is None else int(raw))
@@ -157,21 +157,21 @@ async def history(request: web.Request) -> web.Response:
             project_id=project, observed_at=datetime.now(UTC), history=found
         ).model_dump_json()
 
-    return await _answer(request, project, read)
+    return await read_answer(request, project, read)
 
 
 async def gate_read(request: web.Request) -> web.Response:
     """GET …/ledger/{entry}/gate: each clause of the gate for the entry as it reads now,
     and the decisions that affect it; a read, which changes nothing."""
     project, reference = identifier(request, "project"), _entry(request)
-    _query(request, set())
+    query_of(request, set())
 
     def read(ledger: Ledger) -> str:
         return LedgerGate(
             project_id=project, observed_at=datetime.now(UTC), gate=ledger.gate(project, reference)
         ).model_dump_json()
 
-    return await _answer(request, project, read)
+    return await read_answer(request, project, read)
 
 
 class CheckRequest(Contract):

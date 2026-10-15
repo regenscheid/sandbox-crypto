@@ -44,7 +44,7 @@ from sandbox_science.orchestrator.documents.normalize import normalize
 from sandbox_science.orchestrator.documents.project_macros import head as macro_head
 from sandbox_science.orchestrator.projects import ProjectError, recorded
 
-from . import evidence, flags, gate
+from . import evidence, flags, frontier, gate
 from .models import (
     DECIDED,
     FIELDS,
@@ -53,6 +53,9 @@ from .models import (
     PREFIXES,
     SHOWN_FLAGGED,
     STATUSES,
+    Category,
+    CategoryDefinition,
+    CategoryPage,
     ChangedEntry,
     ClearedFlag,
     EntryChange,
@@ -169,6 +172,7 @@ class Ledger:
     def __init__(self, documents: DocumentStore, *, clock: Callable[[], datetime] = _now) -> None:
         self.documents, self.control, self.clock = documents, documents.control, clock
         self.events = EventLog(documents.control, "ledger_entry", documents.producer)
+        self.category_events = EventLog(documents.control, "frontier_category", documents.producer)
 
     # Reads.
 
@@ -384,7 +388,93 @@ class Ledger:
             decisions=decisions,
         )
 
+    def categories(
+        self, project: str, *, after: str | None = None, limit: int = 50
+    ) -> CategoryPage:
+        """The project's frontier categories, in the order they were defined (LG-18)."""
+        self._project(project)
+        if not 1 <= limit <= 100:
+            raise DocumentError(INVALID_REQUEST, "a page holds 1 to 100 categories")
+        if self.control.missing:
+            return CategoryPage(categories=[], next_after=None)
+        with self.control.read() as tx:
+            return frontier.listing(tx.sql, project, after, limit)
+
+    def category(self, project: str, name: str, revision: int | None = None) -> Category:
+        """A frontier category at ``revision``, its current one by default."""
+        self._project(project)
+        with self.control.read() as tx:
+            found = frontier.read(tx.sql, project, name, revision)
+        if found is None:
+            raise DocumentError(
+                NOT_FOUND,
+                f"no frontier category {name}"
+                + ("" if revision is None else f" at revision {revision}"),
+            )
+        return found
+
     # Changes.
+
+    def define_category(self, project: str, raw: object, author: Author) -> Category:
+        """Define a frontier category, or revise one at the revision read (LG-18): the
+        user's or the main agent's, under an operation ID that replays its first result."""
+        try:
+            value = CategoryDefinition.model_validate(raw)
+        except ValidationError as error:
+            raise DocumentError(INVALID_REQUEST, _first_error(error)) from None
+        if self._authority(project, author) == "delegated":
+            raise _refused("a delegated agent defines no frontier category")
+        if author.kind != "user":
+            # Agents read categories again and the user decides on them: an agent's text
+            # holds no character the user may not see (threat model A3), and is kept with
+            # its line ends made line feeds; the user's is kept as written.
+            value = value.model_copy(
+                update={
+                    "target": agent_text(value.target, "the category's target"),
+                    "kind": agent_text(value.kind, "the category's kind"),
+                    "reason": agent_text(value.reason, "the reason"),
+                    "measures": [
+                        m.model_copy(
+                            update={"unit": agent_text(m.unit, f"measure {m.name}'s unit")}
+                        )
+                        for m in value.measures
+                    ],
+                }
+            )
+        canonical = json.dumps(
+            value.model_dump(mode="json", exclude_none=True),
+            sort_keys=True,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        digest = hashlib.sha256(canonical.encode()).hexdigest()
+        with self.control.write() as tx:
+            db = tx.sql
+            replay = RECEIPTS.find(db, project, _PROJECT, value.operation_id, digest)
+            if replay is not None:
+                return Category.model_validate({**replay, "replayed": True})
+            now = self.clock()
+            category = frontier.define(
+                db, project, value, author.model_dump(mode="json", exclude_none=True),
+                now.isoformat(),
+            )  # fmt: skip
+            self.category_events.append(
+                db,
+                "ledger.category_defined",
+                project,
+                author.session_id,
+                value.category,
+                {
+                    "category": value.category,
+                    "revision": category.revision,
+                    "operation_id": value.operation_id,
+                },
+                now,
+            )
+            RECEIPTS.record(
+                db, project, _PROJECT, value.operation_id, digest, category.model_dump(mode="json")
+            )
+            return category
 
     def check(
         self,
@@ -680,6 +770,7 @@ class Ledger:
         if change.fields is not None:
             fields = _fields(row.type, change.fields)
             _check_pdf(db, project, fields)
+            frontier.check_result(db, project, fields)
             if fields != planned.fields:
                 planned.fields, planned.changed = fields, [*planned.changed, "fields"]
         if change.status is not None and change.status != current[2]:
@@ -731,7 +822,9 @@ class Ledger:
             title=change.title,
             statement=_normalized(change.statement),
             status=status,
-            fields=_check_pdf(db, project, _fields(kind, change.fields or {})),
+            fields=_result(
+                db, project, _check_pdf(db, project, _fields(kind, change.fields or {}))
+            ),
             links=[] if change.links is None else None,
         )
 
@@ -1606,6 +1699,12 @@ def _fields(kind: str, raw: Json) -> Json:
     fields = value.model_dump(mode="json", exclude_defaults=True)
     if len(_encoded(fields).encode()) > MAX_FIELDS:
         raise DocumentError(INVALID_REQUEST, f"{kind} fields exceed {MAX_FIELDS} bytes")
+    return fields
+
+
+def _result(db: sqlite3.Connection, project: str, fields: Json) -> Json:
+    """``fields``, once a result's category reads them (LG-19)."""
+    frontier.check_result(db, project, fields)
     return fields
 
 

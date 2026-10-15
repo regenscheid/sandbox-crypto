@@ -256,3 +256,39 @@ async def test_the_gate_through_the_workspace(
     assert answer.gate.clauses[0].holds is False
     await error_of(await client.get(BASE + "/C-1/gate", params={"x": "1"}), 400, "invalid_request")
     await error_of(await client.get(BASE + "/C-9/gate"), 404, "not_found")
+
+
+async def test_the_frontier_categories_through_the_workspace(
+    aiohttp_client: ClientFactory, seeded: Path, static_dir: Path
+) -> None:
+    """LG-18: the user defines a category (same-origin), and the GUI reads them."""
+    from sandbox_science.workspace.frontier import FrontierCategories, FrontierCategory
+
+    client = await workspace(aiohttp_client, seeded, static_dir)
+    url = "/api/v0/projects/p1/frontier"
+    body = {
+        "category": "key-recovery",
+        "target": "The test scheme",
+        "kind": "Key recovery cost",
+        "measures": [{"name": "time", "unit": "log2 operations", "direction": "lower"}],
+        "conditions": ["model"],
+        "reason": "What the project compares.",
+        "operation_id": "category-1",
+    }
+    assert (await client.post(url, json=body)).status == 403
+    response = await client.post(url, json=body, headers=origin(client))
+    assert response.status == 200, await response.text()
+    assert (await response.json())["author"]["kind"] == "user"
+    await error_of(
+        await client.post(url, json={**body, "operation_id": "again"}, headers=origin(client)),
+        409,
+        "conflict",
+    )
+    listed = FrontierCategories.model_validate(await (await client.get(url)).json())
+    assert [c.category for c in listed.page.categories] == ["key-recovery"]
+    one = FrontierCategory.model_validate(
+        await (await client.get(url + "/key-recovery/definition")).json()
+    )
+    assert one.category.measures[0].direction == "lower"
+    await error_of(await client.get(url + "/bounds/definition"), 404, "not_found")
+    await error_of(await client.get(url, params={"limit": "0"}), 400, "invalid_request")

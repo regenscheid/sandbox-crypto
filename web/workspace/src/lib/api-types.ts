@@ -69,6 +69,35 @@ export interface CatalogRef {
   sha256: string;
 }
 
+/** A frontier category at one revision. */
+export interface Category {
+  category: string;
+  revision: number;
+  head: number;
+  target: string;
+  kind: string;
+  measures: CategoryMeasure[];
+  conditions: string[];
+  author: Record<string, unknown>;
+  reason: string;
+  operation_id: string;
+  created: string;
+  replayed: boolean;
+}
+
+/** A measure results in a category are compared on: its unit, and whether lower or higher is better. */
+export interface CategoryMeasure {
+  name: string;
+  unit: string;
+  direction: "lower" | "higher";
+}
+
+/** A project's frontier categories, in the order they were defined. */
+export interface CategoryPage {
+  categories: Category[];
+  next_after: string | null;
+}
+
 /** A message the user wrote to a session (RS-4). */
 export interface ChatMessage {
   message_id: string;
@@ -288,6 +317,20 @@ export interface ExecutionContext {
   environment_id: string;
   policy_revision: string | null;
   actor: string;
+}
+
+/** A page of a project's frontier categories. */
+export interface FrontierCategories {
+  project_id: string;
+  observed_at: string;
+  page: CategoryPage;
+}
+
+/** One frontier category at one revision. */
+export interface FrontierCategory {
+  project_id: string;
+  observed_at: string;
+  category: Category;
 }
 
 /** One clause of the gate (LG-17): whether it holds for the entry as it reads, and why. */

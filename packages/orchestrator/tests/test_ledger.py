@@ -44,7 +44,7 @@ NEW: dict[str, dict[str, Any]] = {
         "origin": "project",
         "title": "Key recovery",
         "statement": "Time $2^{105}$.",
-        "fields": {"category": "key-recovery", "measures": {"time": 105, "memory": 80}},
+        "fields": {"measures": {"time": 105, "memory": 80}},
     },
     "assumption": {"type": "assumption", "title": "p = 17", "statement": "$p = 17$."},
     "decision": {"type": "decision", "title": "Use Sage", "statement": "Sage for the field."},
