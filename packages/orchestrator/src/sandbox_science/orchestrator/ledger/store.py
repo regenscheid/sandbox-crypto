@@ -490,16 +490,18 @@ class Ledger:
         if link.finding is not None:
             if "finding" not in targets or link.revision is not None or link.block is not None:
                 raise DocumentError(INVALID_REQUEST, f"a {link.kind} link names no finding")
-            if (
-                db.execute(
-                    "SELECT 1 FROM review_findings WHERE finding_id=? AND project=?",
-                    (link.finding, project),
-                ).fetchone()
-                is None
-            ):
+            found = db.execute(
+                "SELECT session FROM review_findings WHERE finding_id=? AND project=?",
+                (link.finding, project),
+            ).fetchone()
+            if found is None:
                 raise DocumentError(NOT_FOUND, f"no finding {link.finding} in this project")
             return EntryLink(
-                kind=link.kind, target="finding", target_id=link.finding, note=link.note
+                kind=link.kind,
+                target="finding",
+                target_id=link.finding,
+                note=link.note,
+                session=found[0],
             )
         if link.document is not None:
             if "block" not in targets or link.block is None or link.revision is None:
@@ -854,12 +856,17 @@ class Ledger:
 
 def _stored(db: sqlite3.Connection, row: tuple[Any, ...]) -> EntryLink:
     kind, target, target_id, revision, block, note = row
-    handle = None
+    handle = session = None
     if target == "entry":
         found = db.execute(
             "SELECT type,number FROM ledger_entries WHERE entry_id=?", (target_id,)
         ).fetchone()
         handle = f"{PREFIXES[found[0]]}-{found[1]}"
+    elif target == "finding":
+        # Read from the finding, whose session the workspace opens it in.
+        (session,) = db.execute(
+            "SELECT session FROM review_findings WHERE finding_id=?", (target_id,)
+        ).fetchone()
     return EntryLink(
         kind=kind,
         target=target,
@@ -868,6 +875,7 @@ def _stored(db: sqlite3.Connection, row: tuple[Any, ...]) -> EntryLink:
         block=block,
         note=note,
         handle=handle,
+        session=session,
     )
 
 
@@ -903,18 +911,30 @@ def _encoded(fields: Json) -> str:
 
 
 def _check_pdf(db: sqlite3.Connection, project: str, fields: Json) -> Json:
-    """A reference's PDF is a revision of an artifact of the project (LG-15, RA-19)."""
+    """A reference's PDF is a revision of an artifact of the project (LG-15, RA-19),
+    pinned by its SHA-256: a hash the change gives must be the revision's, and the
+    revision's is recorded when it gives none."""
     pdf = fields.get("pdf")
-    if pdf is not None and (
-        db.execute(
-            "SELECT 1 FROM artifact_revisions WHERE artifact=? AND number=? AND project=?",
-            (pdf["artifact_id"], pdf["revision"], project),
-        ).fetchone()
-        is None
-    ):
+    if pdf is None:
+        return fields
+    found = db.execute(
+        "SELECT json_extract(record,'$.reference.sha256') FROM artifact_revisions "
+        "WHERE artifact=? AND number=? AND project=?",
+        (pdf["artifact_id"], pdf["revision"], project),
+    ).fetchone()
+    if found is None:
         raise DocumentError(
             NOT_FOUND, f"no artifact {pdf['artifact_id']} r{pdf['revision']} in this project"
         )
+    if pdf.get("sha256", found[0]) != found[0]:
+        raise DocumentError(
+            CONFLICT,
+            f"artifact {pdf['artifact_id']} r{pdf['revision']} has another SHA-256",
+            {"sha256": found[0]},
+        )
+    pdf["sha256"] = found[0]
+    if len(_encoded(fields).encode()) > MAX_FIELDS:
+        raise DocumentError(INVALID_REQUEST, f"reference fields exceed {MAX_FIELDS} bytes")
     return fields
 
 

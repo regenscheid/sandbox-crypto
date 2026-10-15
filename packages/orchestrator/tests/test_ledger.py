@@ -483,6 +483,20 @@ def test_a_references_pdf_is_an_artifact_revision_of_the_project(
     assert change(ledger, made, op="op-2")["entries"][0]["handle"] == "REF-1"
     with pytest.raises(DocumentError, match="no artifact"):
         change(ledger, pdf(receipt.revision.artifact_id, 2), op="op-3")
+    # The link pins the revision's SHA-256, which the read returns.
+    digest = hashlib.sha256(data).hexdigest()
+    assert ledger.entry("p", "REF-1").fields["pdf"] == {
+        "artifact_id": receipt.revision.artifact_id,
+        "revision": 1,
+        "sha256": digest,
+    }
+    pinned = pdf(receipt.revision.artifact_id, 1)
+    pinned["fields"]["pdf"]["sha256"] = digest
+    assert change(ledger, pinned, op="op-4")["entries"][0]["handle"] == "REF-2"
+    pinned["fields"]["pdf"]["sha256"] = "0" * 64
+    with pytest.raises(DocumentError, match="has another SHA-256") as refused:
+        change(ledger, pinned, op="op-5")
+    assert (refused.value.kind, refused.value.details) == ("conflict", {"sha256": digest})
 
 
 def test_a_mutation_reads_the_clock_once(ledger: Ledger) -> None:
@@ -780,3 +794,23 @@ def test_incoming_links_page_with_their_count(ledger: Ledger) -> None:
     assert handles == [f"C-{n}" for n in range(1, 241)]
     with pytest.raises(DocumentError, match="count of links"):
         ledger.entry("p", "I-1", incoming_after=-1)
+
+
+def test_a_finding_link_names_the_session_the_finding_is_in(ledger: Ledger) -> None:
+    from sandbox_science.orchestrator.consistency.store import ReviewStore
+
+    from .test_consistency import claim, dispatch, raise_finding
+
+    reviews = ReviewStore(ledger.documents, clock=lambda: 1000.0)
+    claim(reviews)
+    found = raise_finding(reviews, dispatch(reviews))["finding_id"]
+    concerns = {"kind": "concerns", "finding": found}
+    change(ledger, {**NEW["issue"], "links": [concerns]})
+    (link,) = ledger.entry("p", "I-1").links
+    assert (link.target, link.target_id, link.session) == ("finding", found, "s")
+    # The session is read from the finding, which the math checks can move to another.
+    with ledger.control.write() as tx:
+        tx.sql.execute("UPDATE review_findings SET session='s2' WHERE finding_id=?", (found,))
+    assert ledger.entry("p", "I-1").links[0].session == "s2"
+    with pytest.raises(DocumentError, match="changes nothing"):
+        change(ledger, {"entry": "I-1", "expected": 1, "links": [concerns]}, op="op-2")

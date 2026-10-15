@@ -8,7 +8,7 @@ from typing import Annotated, Any, Final, Literal
 
 from pydantic import Field, JsonValue
 
-from sandbox_science.contracts.model import Contract, Identifier
+from sandbox_science.contracts.model import Contract, Identifier, Sha256
 
 EntryType = Literal["issue", "claim", "result", "assumption", "decision", "task", "reference"]
 Origin = Literal["published", "project"]
@@ -119,8 +119,12 @@ class ResultFields(ClaimFields):
 
 
 class PdfLink(Contract):
+    """A reference's PDF: an artifact revision of the project, pinned by its SHA-256.
+    A change may leave the hash out; the ledger records the revision's own."""
+
     artifact_id: Identifier
     revision: Annotated[int, Field(ge=1, le=999999999, strict=True)]
+    sha256: Sha256 | None = None
 
 
 Scheme = Literal["doi", "eprint", "arxiv", "nist", "isbn", "url"]
@@ -195,6 +199,9 @@ class EntryLink(Contract):
     note: str | None = None
     handle: str | None = None
     """An entry target's handle, as it reads now."""
+    session: str | None = None
+    """A finding target's session, as it is now: the workspace reads a finding in its
+    session, and a math finding can move to another."""
 
 
 class EntrySummary(Contract):

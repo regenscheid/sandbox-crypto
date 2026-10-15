@@ -92,7 +92,8 @@ _CHANGE = {
         "changes). fields are the type's own: a claim's kind; a result's kind, "
         "category, conditions and measures; a reference's identifiers (doi, eprint, "
         "arxiv, nist, isbn, url), authors, published, version or retrieved, and pdf "
-        "(artifact_id, revision). links replaces the entry's outgoing links"
+        "(artifact_id, revision, and optionally its sha256). links replaces the "
+        "entry's outgoing links"
     ),
     "properties": {
         "entry": _ENTRY,
@@ -401,9 +402,8 @@ class LedgerTool:
                 value = link.model_dump(mode="json")
                 if value["note"] is not None:
                     value["note"] = _clip(value["note"], 1000)
-                if len(_dump({**shown, part: [*items, value], "more": {**more, "x": 0}})) > (
-                    self.budget
-                ):
+                # Measured with the longest ``more`` the answer can end with.
+                if len(_dump({**shown, part: [*items, value], "more": _MORE})) > self.budget:
                     break
                 items.append(value)
             shown[part] = items
@@ -483,6 +483,9 @@ class LedgerTool:
             }
         )
 
+
+_MORE: Final = dict.fromkeys(("statement_from", "links_after", "incoming_after"), 999999999)
+"""The longest ``more`` a read can carry."""
 
 SHOWN_LINES: Final = 20
 """The lines of an import its answer lists; it counts the rest."""

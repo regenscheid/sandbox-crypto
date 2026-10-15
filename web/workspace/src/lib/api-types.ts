@@ -121,6 +121,7 @@ export interface EntryLink {
   block: string | null;
   note: string | null;
   handle: string | null;
+  session: string | null;
 }
 
 export interface EntryPage {
