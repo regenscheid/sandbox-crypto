@@ -52,14 +52,17 @@ from .models import (
     MAX_CLEARED,
     PREFIXES,
     SET_ASIDE,
+    SHOWN_CHECKS,
     SHOWN_FLAGGED,
     STATUSES,
     Category,
     CategoryDefinition,
     CategoryPage,
     ChangedEntry,
+    CitationCheckView,
     ClearedFlag,
     EntryChange,
+    EntryCitations,
     EntryFinding,
     EntryFlag,
     EntryHistory,
@@ -79,6 +82,7 @@ from .models import (
     LinkInput,
     Mutation,
     MutationResult,
+    QuoteChecks,
     ReferenceFields,
 )
 
@@ -337,6 +341,55 @@ class Ledger:
             revisions=revisions,
             next_before=revisions[-1].revision if len(rows) > limit else None,
             flags_cleared=[] if before is not None else cleared,
+        )
+
+    def citations(
+        self, project: str, reference: str, revision: int | None = None
+    ) -> EntryCitations:
+        """The consistency reviewer's checks of each quote revision ``revision`` (the
+        current one by default) of ``reference`` holds (CR-4): newest first, as many as
+        ``SHOWN_CHECKS`` with their count, each saying whether it checked that revision's
+        material. A read: it changes nothing."""
+        self._project(project)
+        with self.control.read() as tx:
+            db = tx.sql
+            row = self._find(db, project, reference)
+            shown = row.head if revision is None else revision
+            if not 1 <= shown <= row.head:
+                raise DocumentError(NOT_FOUND, f"{row.handle} has no revision {shown}")
+            material = gate.examined(db, row.entry_id, {shown}).get(shown)
+            digest = None if material is None else gate.fingerprint(material)
+            quotes: list[QuoteChecks] = []
+            for link in evidence.stored(db, row.entry_id, shown):
+                if link.target != "quote":
+                    continue
+                (total,) = db.execute(
+                    "SELECT count(*) FROM citation_checks WHERE entry_id=? AND evidence_id=?",
+                    (row.entry_id, link.evidence_id),
+                ).fetchone()
+                checks = [
+                    CitationCheckView(
+                        check_id=found[0],
+                        review_id=found[1],
+                        session=found[2],
+                        entry_revision=found[3],
+                        verdict=found[4],
+                        explanation=found[5],
+                        created=datetime.fromtimestamp(found[6], UTC),
+                        source=found[7],
+                        matches=found[8] == digest,
+                    )
+                    for found in db.execute(
+                        "SELECT c.check_id,c.review_id,r.session,c.entry_revision,c.verdict,"
+                        "c.explanation,c.created,c.source,c.material FROM citation_checks c "
+                        "JOIN review_runs r ON r.review_id=c.review_id WHERE c.entry_id=? "
+                        "AND c.evidence_id=? ORDER BY c.created DESC, c.rowid DESC LIMIT ?",
+                        (row.entry_id, link.evidence_id, SHOWN_CHECKS),
+                    )
+                ]
+                quotes.append(QuoteChecks(evidence_id=link.evidence_id, checks=checks, total=total))
+        return EntryCitations(
+            entry_id=row.entry_id, handle=row.handle, revision=shown, quotes=quotes
         )
 
     def gate(self, project: str, reference: str) -> GateView:

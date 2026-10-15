@@ -311,3 +311,33 @@ def test_a_users_check_of_another_target_is_not_the_users_check(store: Any) -> N
         USER,
     )  # fmt: skip
     assert shown(ledger) == UNVERIFIED
+
+
+def test_the_entry_reads_each_quotes_checks(store: Any) -> None:
+    """The read lane G's entry view uses: each quote of the revision shown, with its
+    checks newest first, as many as 20 with their count, each saying whether it checked
+    the material of the revision shown, with its review's session."""
+    reviews, _, _ = store
+    ledger = setup(reviews)
+    result(ledger, TIME, MEMORY)
+    found, sources = review(reviews)
+    time, memory = [link.evidence_id for link in ledger.entry("p", "R-1").evidence]
+    for verdict in ["unsupported"] + ["supported"] * 21:
+        check(reviews, found, sources[time], verdict)
+    read = ledger.citations("p", "R-1")
+    assert [(q.evidence_id, q.total, len(q.checks)) for q in read.quotes] == [
+        (time, 22, 20), (memory, 0, 0)
+    ]  # fmt: skip
+    newest = read.quotes[0].checks[0]
+    assert (newest.verdict, newest.entry_revision, newest.matches, newest.session) == (
+        "supported", 1, True, "s"
+    )  # fmt: skip
+    assert newest.review_id == found
+    assert newest.source == sources[time]
+    revise(ledger, 1, 100)
+    later = ledger.citations("p", "R-1")
+    assert later.revision == 2
+    assert not any(c.matches for c in later.quotes[0].checks)
+    assert all(c.matches for c in ledger.citations("p", "R-1", 1).quotes[0].checks)
+    with pytest.raises(DocumentError, match="has no revision 3"):
+        ledger.citations("p", "R-1", 3)

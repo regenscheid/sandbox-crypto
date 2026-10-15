@@ -121,6 +121,19 @@ export interface ChatMessage {
   offered: string | null;
 }
 
+/** A consistency reviewer's check of a quote (CR-4), as the entry view shows it. */
+export interface CitationCheckView {
+  check_id: string;
+  review_id: string;
+  session: string;
+  entry_revision: number;
+  verdict: "supported" | "unsupported" | "inconclusive";
+  explanation: string;
+  created: string;
+  source: string;
+  matches: boolean;
+}
+
 /** A flag that was cleared (LG-29): who cleared it, when, and why. */
 export interface ClearedFlag {
   flag_id: string;
@@ -195,6 +208,14 @@ export interface EditReceipt {
   project_id: string;
   session_id: string;
   receipt: PlanReceipt;
+}
+
+/** The citation checks of each quote a revision of an entry holds (CR-4). */
+export interface EntryCitations {
+  entry_id: string;
+  handle: string;
+  revision: number;
+  quotes: QuoteChecks[];
 }
 
 /** A review finding anchored to the entry, with its own status (LG-25): the field and revision it is anchored to (a math finding's revision is its statement's text revision, and it names no entry revision). */
@@ -514,6 +535,13 @@ export interface KernelInfo {
   start_revision: number | null;
   current_revision: number | null;
   revision_status: "current" | "predates" | "unknown";
+}
+
+/** The consistency reviewer's checks of the quotes a ledger entry's revision holds. */
+export interface LedgerCitations {
+  project_id: string;
+  observed_at: string;
+  citations: EntryCitations;
 }
 
 /** One ledger entry at one revision. */
@@ -943,6 +971,13 @@ export interface ProvisionSummary {
   probes_total: number;
   executions_total: number;
   notes_total: number;
+}
+
+/** A quote of the revision shown, by its evidence ID, with its checks. */
+export interface QuoteChecks {
+  evidence_id: string;
+  checks: CitationCheckView[];
+  total: number;
 }
 
 /** A resume or a cancel, written for the run service. */

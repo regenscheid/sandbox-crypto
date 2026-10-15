@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Final, Literal, Self
 
-from pydantic import Field, JsonValue, model_validator
+from pydantic import AwareDatetime, Field, JsonValue, model_validator
 
 from sandbox_science.contracts.model import Contract, Identifier, Sha256
 
@@ -497,6 +497,46 @@ class MutationResult(Contract):
     """How many flags it cleared in all."""
     flags_reopened: list[str] = Field(default_factory=list[str])
     """The flags the user's change opened again, each a new flag."""
+
+
+SHOWN_CHECKS: Final = 20
+"""The most citation checks a quote shows, newest first."""
+
+
+class CitationCheckView(Contract):
+    """A consistency reviewer's check of a quote (CR-4), as the entry view shows it."""
+
+    check_id: str
+    review_id: str
+    session: str
+    """The session of the review that checked it."""
+    entry_revision: int
+    verdict: Literal["supported", "unsupported", "inconclusive"]
+    explanation: str
+    created: AwareDatetime
+    source: str
+    """The review's evidence item the reviewer read: the quote's source."""
+    matches: bool
+    """Whether it checked the material of the revision shown: its statement, fields,
+    assumptions and evidence."""
+
+
+class QuoteChecks(Contract):
+    """A quote of the revision shown, by its evidence ID, with its checks."""
+
+    evidence_id: str
+    checks: list[CitationCheckView]
+    """Newest first, as many as ``SHOWN_CHECKS``."""
+    total: int
+
+
+class EntryCitations(Contract):
+    """The citation checks of each quote a revision of an entry holds (CR-4)."""
+
+    entry_id: str
+    handle: str
+    revision: int
+    quotes: list[QuoteChecks]
 
 
 SHOWN_FLAGGED: Final = 50
