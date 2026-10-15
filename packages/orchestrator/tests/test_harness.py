@@ -911,6 +911,9 @@ async def test_the_pdf_tools_read_cite_and_render_in_the_sandbox(client: WorkerC
     pages = await tool("pdf_pages", "op-pdf-pages", path="note.pdf", pages="1")
     assert "--- page 1 (printed 1) ---" in pages
     assert "[p1:1] A Note on GF(17)" in pages
+    # Each line's box when asked, in the form pdf_render takes a region.
+    boxed = await tool("pdf_pages", "op-pdf-boxes", path="note.pdf", pages="1", boxes=True)
+    assert re.search(r"^\[p1:1\] \[[0-9.]+, [0-9.]+, [0-9.]+, [0-9.]+\] A Note", boxed, re.M)
     hits = await tool("pdf_search", "op-pdf-search", path="note.pdf", query="gf(17)")
     assert hits.startswith("2 hits for 'gf(17)'")
     assert "[p1:1] (printed 1) A Note on GF(17)" in hits

@@ -12,7 +12,7 @@ The PDF tools parse a file inside the project sandbox and name it by its SHA-256
 1. Start with `pdf_info`. It lists every page by its physical number, from 1, with the label the document prints (such as iv or 12). It also names the pages with no extractable text, gives the outline, and prints the file's SHA-256.
 2. Pick sections from the outline and read them with `pdf_pages`, at most 20 pages a call, such as "3-5,9". Each line comes back numbered as p<page>:<line>.
 3. Find a term with `pdf_search`. It is case-insensitive, and each hit gives the physical page, the printed label, the line number and the line.
-4. Make a PNG of a page, or of a region of it, with `pdf_render` when an equation, matrix, table or figure matters. Publish the PNG to keep it as evidence.
+4. Make a PNG of a page, or of a region of it, with `pdf_render` when an equation, matrix, table or figure matters. For a region, read the page with `pdf_pages` and boxes set to true: each line then shows its box, [x0, y0, x1, y1] in points from the page's bottom left, and a box that covers the lines you want, with a margin, is the region to render. Publish the PNG to keep it as evidence.
 
 For a long paper, read bounded page ranges, and say which pages you did not read. A summary of a paper is only as good as the pages behind it.
 

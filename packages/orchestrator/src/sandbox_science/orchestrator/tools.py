@@ -168,6 +168,10 @@ PDF_SPECS: Final = (
                     "type": "boolean",
                     "description": "Keep running headers, footers and page numbers",
                 },
+                "boxes": {
+                    "type": "boolean",
+                    "description": "Show each line's box [x0, y0, x1, y1], to render a region",
+                },
             },
             "required": ["path", "pages"],
             "additionalProperties": False,
@@ -190,8 +194,9 @@ PDF_SPECS: Final = (
         "pdf_render",
         "Render a PDF page, or a region of it, to a PNG in the workspace, to check equations, "
         "matrices and figures against the extracted text. A region is [x0, y0, x1, y1] in PDF "
-        "points from the page's bottom left, as pdf_pages reports them. Publish the PNG to "
-        "keep it as evidence.",
+        "points from the page's bottom left: read the page with pdf_pages and boxes true to see "
+        "each line's box, and cover the lines you want, with a margin for what is drawn "
+        "between them; pdf_info gives the page's size. Publish the PNG to keep it as evidence.",
         {
             "type": "object",
             "properties": {
@@ -1052,7 +1057,8 @@ class Toolbox:
             outcome.written = written
             return outcome
         record["pdf"] = parsed
-        return ToolOutcome(self._bound(format_pdf(kind, parsed)), record, written=written)
+        text = format_pdf(kind, parsed, boxes=args.get("boxes") is True)
+        return ToolOutcome(self._bound(text), record, written=written)
 
     async def _python(self, args: dict[str, Any], operation: str) -> ToolOutcome:
         return await self._cell("python", args, operation)
@@ -1467,8 +1473,10 @@ def _items(value: object) -> list[dict[str, Any]]:
     return [cast(dict[str, Any], item) for item in items if isinstance(item, dict)]
 
 
-def format_pdf(kind: str, result: dict[str, Any]) -> str:
-    """A PDF helper result as text for the model, with lines citable as ``p<page>:<line>``."""
+def format_pdf(kind: str, result: dict[str, Any], *, boxes: bool = False) -> str:
+    """A PDF helper result as text for the model, with lines citable as ``p<page>:<line>``;
+    with ``boxes``, each page line after its citation shows its box, as ``pdf_render``
+    takes a region."""
     source = _mapping(result.get("source"))
     # The full SHA-256: the platform matches a quote to the PDF it was read from (CR-4).
     # The path escaped: a name with a line break plants no line of its own (CR-4 review).
@@ -1493,7 +1501,8 @@ def format_pdf(kind: str, result: dict[str, Any]) -> str:
             index = page.get("index")
             lines.append(f"--- page {index} (printed {page.get('label')}) ---")
             for line in _items(page.get("lines")):
-                lines.append(f"[p{index}:{line.get('n')}] {_marked(line)}{line.get('text')}")
+                box = f"{_box(line.get('bbox'))} " if boxes else ""
+                lines.append(f"[p{index}:{line.get('n')}] {box}{_marked(line)}{line.get('text')}")
             left = page.get("artifacts_left_out")
             if isinstance(left, list) and left:
                 numbers = ", ".join(str(n) for n in cast(list[object], left))
@@ -1526,6 +1535,14 @@ def format_pdf(kind: str, result: dict[str, Any]) -> str:
             f"sha256 {image.get('sha256')}. Publish it to keep it as evidence."
         )
     return "\n".join(lines)
+
+
+def _box(value: object) -> str:
+    """A line's box as ``pdf_render`` takes a region: ``[x0, y0, x1, y1]`` in points."""
+    numbers = cast(list[object], value) if isinstance(value, list) else []
+    if len(numbers) != 4 or not all(isinstance(n, int | float) for n in numbers):
+        return "[no box]"
+    return "[" + ", ".join(f"{cast(float, n):g}" for n in numbers) + "]"
 
 
 def _marked(line: Mapping[str, object]) -> str:
