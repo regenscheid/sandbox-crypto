@@ -47,13 +47,24 @@ _EMPTY: Final = hashlib.sha256(b"").hexdigest()
 _GiB: Final = 1024**3
 
 
+_RESULT_KINDS: Final = "('agent_publication','declared_result')"
+
+
 def _result(objects: str) -> str:
-    """SQL for an artifact with a published or declared revision: a result (RA-37). The
-    scan is bounded by the revision cap (BACKLOG: a stored flag if it is raised)."""
+    """SQL for an artifact that is a result (RA-37), with one parameter, the project: one
+    with a published or declared revision, or one a publication found unchanged, which
+    pins the head and adds no revision (RA-9), so only its receipt says so. The scans are
+    bounded by the revision and operation caps (BACKLOG: a stored flag if they are raised);
+    the second runs once per query."""
+    published = "json_extract(p.receipt,'$.revision.artifact_id')"
     return (
-        "EXISTS(SELECT 1 FROM artifact_revisions k "  # noqa: S608 - a fixed alias
-        f"WHERE k.artifact={objects}.id AND json_extract(k.record,'$.publication.kind') "
-        "IN ('agent_publication','declared_result'))"
+        "(EXISTS(SELECT 1 FROM artifact_revisions k "  # noqa: S608 - a fixed alias
+        f"WHERE k.artifact={objects}.id "
+        f"AND json_extract(k.record,'$.publication.kind') IN {_RESULT_KINDS}) "
+        f"OR {objects}.id IN (SELECT {published} FROM artifact_operations p "
+        f"WHERE p.project=? AND p.state='done' AND {published} IS NOT NULL "
+        "AND json_extract(p.receipt,'$.reproduced') "
+        f"AND json_extract(p.request,'$.source.kind') IN {_RESULT_KINDS}))"
     )
 
 
@@ -668,6 +679,7 @@ class ArtifactInventory:
             values.append(before)
         if group is not None:
             conditions.append(("" if group == "results" else "NOT ") + _result("o"))
+            values.append(project)
         for path, value in (
             ("$.publication.context.session_id", session),
             ("$.publication.run_id", run),
@@ -700,7 +712,8 @@ class ArtifactInventory:
             return entries, (rows[9][2] if len(rows) > 10 else None)
 
     def results(self, project: str, artifacts: Sequence[str]) -> set[str]:
-        """Which of ``artifacts`` have a published or declared revision (RA-37)."""
+        """Which of ``artifacts`` are results: published or declared (RA-37), with new
+        bytes or the head's (RA-9)."""
         self._scope(project)
         if not artifacts or self.documents.control.missing:
             return set()
@@ -709,7 +722,7 @@ class ArtifactInventory:
             rows = tx.sql.execute(
                 f"SELECT id FROM artifact_objects WHERE project=? AND id IN ({marks}) AND "  # noqa: S608
                 + _result("artifact_objects"),
-                (project, *artifacts),
+                (project, *artifacts, project),
             ).fetchall()
         return {row[0] for row in rows}
 
