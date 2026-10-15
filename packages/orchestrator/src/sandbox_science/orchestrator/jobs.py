@@ -73,6 +73,16 @@ class WaitRequest(Contract):
     mode: Literal["all", "first"] = "all"
 
 
+STOP_AT_FAILURE: Final = (
+    " A script's exit code is its last command's, so a step that fails can hide behind a "
+    "later one that succeeds: begin a script of several steps with set -euo pipefail, or "
+    "check each step. Under pipefail, a pipe into head may end with status 141, which only "
+    "means head stopped reading. Before saying a script made its files, check that they exist."
+)
+"""Said by the tools that run a bash script, ``shell`` and ``start_job`` (lane K's triage,
+P5). The harness runs a script as written: prepending the options would change what a
+single command does, such as a pipe into ``head`` or a test with ``grep``."""
+
 _JOB_ID = {"type": "string"}
 JOB_SPECS = (
     ToolSpec(
@@ -81,7 +91,7 @@ JOB_SPECS = (
         "Give its purpose and what progress to expect. Jobs can outlive this turn. Recovery "
         "after worker or bridge restart requires the original executor daemon and its "
         "sandbox to remain available. Confirmed daemon or VM loss reports unknown outcomes "
-        "as lost; the command is never automatically resubmitted.",
+        "as lost; the command is never automatically resubmitted." + STOP_AT_FAILURE,
         {
             "type": "object",
             "properties": {

@@ -25,7 +25,7 @@ These belong to other specs: Conda provisioning ([conda-provisioning](conda-prov
 
 ## Shell
 
-1. A call takes either a `script`, run by `/bin/bash -c` without a login shell, or an `argv` list, run without a shell.
+1. A call takes either a `script`, run by `/bin/bash -c` without a login shell, or an `argv` list, run without a shell. The script runs as written. The harness adds no shell options: `set -euo pipefail` would change what a single command does, such as a pipe into `head`, which ends with status 141, or a `grep` that finds nothing. Instead, the tool's description asks the agent to begin a script of several steps with those options, or to check each step, and to check that the files a script should make exist before saying it made them (2026-10-15, lane K's triage of the prompt research, P5).
 2. **No state between calls.** Each call starts in the session workspace, unless it names another working directory under the session workspace or the shared project area. A `cd` or `export` lasts only for that call. Kernels are the stateful tool.
 3. **Environment.** The session environment's variables: the environment's tools first on `PATH`, `HOME`, `SESSION_WORKSPACE`, `PROJECT_SHARED` and `PROJECT_DOCUMENTS`, the living documents' files ([living documents](living-documents.md), LD-3). There are no secrets; credentials appear only as provider placeholders (D57).
 

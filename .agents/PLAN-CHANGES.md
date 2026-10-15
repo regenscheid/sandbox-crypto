@@ -6,6 +6,7 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 Decisions of the coordinator on lane K's triage of the prompt research, which the owner can reverse:
 
+- **A script stops at its first failure when asked to** ([tools spec](../docs/specs/tools.md), Shell 1). The descriptions of `shell` and `start_job` ask a script of several steps to begin with `set -euo pipefail`, or to check each step, and to check that its files exist before saying it made them. The harness does not prepend the options: they would change single commands, such as a pipe into `head` (status 141) or a `grep` that finds nothing.
 - **A check changes nothing** ([plans and delegation](../docs/specs/plans-and-delegation.md), PD-34; [ledger spec](../docs/specs/ledger.md), LG-13). A delegated run that checks a ledger entry is offered the ledger's, the documents' and the memory's reads only, with its compute and file tools: no `ledger_change`, `ledger_import` or `ledger_category`, no document edits or comments, no `memory_propose`. Its prompt told it so; now the platform holds it. General delegations will keep LG-13's authority.
 - **A check names its coverage, and a refutation its evidence** (PD-18). The result (`sandbox-check-result-2`) gains `coverage`, what was examined and what was not, and `refutation`, the step, value or counterexample that contradicts the entry. A check that left anything unexamined cannot confirm, and only a refuted one has a refutation.
 
