@@ -56,6 +56,7 @@ from .models import (
     CategoryPage,
     CategoryRevised,
     DominatesLink,
+    EvidenceLink,
     FrontierChange,
     FrontierGroup,
     FrontierHistory,
@@ -399,15 +400,17 @@ def _member(
 
 def _confirmed(db: sqlite3.Connection, entry: str, revision: int) -> str | None:
     """Who confirmed published result ``entry`` as ``revision`` reads (LG-16 as amended):
-    ``citation check`` when the consistency reviewer's checks confirm each of its quotes
-    (CR-4, ``_cited``); ``user`` when the user's latest revision holds that
-    material and the user wrote it, by recording the entry or by a revision that brought
-    it in, or checked it (``ledger check``, or the workspace's); None when neither did. A
-    user's other edits, such as a title or a dropped link, confirm nothing, and material
-    an agent writes after the user's latest revision is not what the user confirmed."""
-    if _cited(db, entry, revision):
-        return "citation check"
-    return "user" if _by_user(db, entry, revision) else None
+    ``user`` when the user's latest revision holds that material and the user wrote it,
+    by recording the entry or by a revision that brought it in, or checked it (``ledger
+    check``, or the workspace's: a check of the entry itself, never another target such
+    as a delegation's outcome); else ``citation check`` when the consistency reviewer's
+    checks confirm each of its quotes (CR-4, ``_cited``); None when neither did. The
+    user's word comes first, so a result both confirm says ``user``. A user's other
+    edits, such as a title or a dropped link, confirm nothing, and material an agent
+    writes after the user's latest revision is not what the user confirmed."""
+    if _by_user(db, entry, revision):
+        return "user"
+    return "citation check" if _cited(db, entry, revision) else None
 
 
 def _cited(db: sqlite3.Connection, entry: str, revision: int) -> bool:
@@ -462,9 +465,8 @@ def _vouched(db: sqlite3.Connection, reference: str) -> set[str]:
     checked = {
         link.checked
         for link in evidence.stored(db, reference, head[0])
-        if link.role == "independent_check"
-        and link.checked is not None
-        and link.added == link.checked + 1
+        if link.checked is not None
+        and _own_check(link, reference)
         and gate.added_by_user(db, reference, link, head[0])
     }
     found: set[str] = set()
@@ -477,6 +479,20 @@ def _vouched(db: sqlite3.Connection, reference: str) -> set[str]:
         if row is not None and row[0] is not None:
             found.add(row[0])
     return found
+
+
+def _own_check(link: EvidenceLink, entry: str) -> bool:
+    """Whether ``link`` is a check of ``entry`` itself, as ``ledger check`` records one:
+    an ``independent_check`` whose target is the entry, added by the revision after the
+    one it checked. Another target, such as a delegation's outcome, is not the user's
+    check, whoever added it."""
+    return (
+        link.role == "independent_check"
+        and link.target == "entry"
+        and link.target_id == entry
+        and link.checked is not None
+        and link.added == link.checked + 1
+    )
 
 
 def _by_user(db: sqlite3.Connection, entry: str, revision: int) -> bool:
@@ -511,9 +527,8 @@ def _by_user(db: sqlite3.Connection, entry: str, revision: int) -> bool:
     checked = {
         link.checked
         for link in evidence.stored(db, entry, latest)
-        if link.role == "independent_check"
-        and link.checked is not None
-        and link.added == link.checked + 1
+        if link.checked is not None
+        and _own_check(link, entry)
         and gate.added_by_user(db, entry, link, latest)
     }
     return now in gate.examined(db, entry, checked).values()

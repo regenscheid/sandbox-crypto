@@ -280,3 +280,34 @@ def test_a_reference_holds_no_evidence_but_checks_of_itself(store: Any) -> None:
     ):  # fmt: skip
         with pytest.raises(DocumentError, match="a reference holds no evidence but checks"):
             reference_change(ledger, USER, "bad", {"expected": 1, "evidence": [item]})
+
+
+def test_the_users_check_of_a_cited_result_says_user(store: Any) -> None:
+    """The verification: when the user also checks a result the citation check
+    confirmed, the frontier says ``user``."""
+    reviews, _, _ = store
+    ledger = setup(reviews)
+    result(ledger, TIME)
+    found, sources = review(reviews)
+    check(reviews, found, only(sources), "supported")
+    assert shown(ledger) == CONFIRMED
+    ledger.check("p", "R-1", 1, USER, operation_id="checked")
+    assert shown(ledger) == ([("R-1", "user")], [])
+
+
+def test_a_users_check_of_another_target_is_not_the_users_check(store: Any) -> None:
+    """The verification: only a check of the entry itself, as ``ledger check`` records
+    it, is the user's; an ``independent_check`` with another target, such as a
+    delegation's outcome (lane D), is not, whoever added it."""
+    reviews, _, _ = store
+    ledger = setup(reviews)
+    result(ledger)
+    other = {"role": "independent_check", "type": "proof", "entry": "REF-1", "revision": 1,
+             "checked": 1}  # fmt: skip
+    ledger.change(
+        "p",
+        {"operation_id": "o", "reason": "r",
+         "changes": [{"entry": "R-1", "expected": 1, "evidence": [other]}]},
+        USER,
+    )  # fmt: skip
+    assert shown(ledger) == UNVERIFIED
