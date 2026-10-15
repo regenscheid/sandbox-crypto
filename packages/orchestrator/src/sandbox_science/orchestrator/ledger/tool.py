@@ -192,6 +192,7 @@ SPECS: Final = (
                 "statement_from": {"type": "integer", "minimum": 0},
                 "links_after": {"type": "integer", "minimum": 0},
                 "evidence_after": {"type": "integer", "minimum": 0},
+                "findings_after": {"type": "integer", "minimum": 0},
                 "incoming_after": {"type": "integer", "minimum": 0},
             },
             "required": ["entry"],
@@ -277,6 +278,7 @@ class _Read(_Args):
     statement_from: _COUNT = 0
     links_after: _COUNT = 0
     evidence_after: _COUNT = 0
+    findings_after: _COUNT = 0
     incoming_after: _COUNT = 0
 
 
@@ -429,10 +431,18 @@ class LedgerTool:
         half the budget holds, then as many links and incoming links as the rest holds;
         ``more`` says where each part goes on. The ledger reads incoming links from
         ``incoming_after`` on, a page at a time."""
-        shown = view.model_dump(mode="json", exclude={"links", "evidence", "incoming", "statement"})
+        shown = view.model_dump(
+            mode="json", exclude={"links", "evidence", "incoming", "findings", "statement"}
+        )
         shown["reason"] = _clip(shown["reason"], 1000)
-        if len(_dump(shown["fields"])) > self.budget // 4:
-            shown["fields"] = {"clipped": _clip(_dump(shown["fields"]), self.budget // 4)}
+        room = self.budget // 4
+        if len(_dump(shown["fields"])) > room:
+            # Measured as the answer carries it: dumping the clipped text escapes it again.
+            text = _dump(shown["fields"])
+            keep = len(text)
+            while keep and len(_dump({"clipped": _clip(text, keep)})) > room:
+                keep = keep * 3 // 4
+            shown["fields"] = {"clipped": _clip(text, keep)}
         more: Json = {}
         statement = view.statement[args.statement_from :]
         room = self.budget // 2 - len(_dump(shown))
@@ -450,6 +460,11 @@ class LedgerTool:
                 len(view.evidence),
             ),
             "incoming": (view.incoming, args.incoming_after, view.incoming_total),
+            "findings": (
+                view.findings[args.findings_after :],
+                args.findings_after,
+                len(view.findings),
+            ),
         }
         for part, (links, start, total) in parts.items():
             items: list[Json] = []
@@ -471,6 +486,7 @@ class LedgerTool:
             more.setdefault("links_after", len(view.links))
             more.setdefault("evidence_after", len(view.evidence))
             more.setdefault("incoming_after", view.incoming_total)
+            more.setdefault("findings_after", len(view.findings))
         shown["more"] = more
         return _dump(shown)
 
@@ -542,7 +558,8 @@ class LedgerTool:
 
 
 _MORE: Final = dict.fromkeys(
-    ("statement_from", "links_after", "evidence_after", "incoming_after"), 999999999
+    ("statement_from", "links_after", "evidence_after", "incoming_after", "findings_after"),
+    999999999,
 )
 """The longest ``more`` a read can carry."""
 
