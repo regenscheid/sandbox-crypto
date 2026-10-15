@@ -13,6 +13,7 @@
   import { EvidenceText } from '../lib/evidenceText';
   import { visible } from '../lib/text';
   import ApprovalText from './ApprovalText.svelte';
+  import CopiedNumbers from './CopiedNumbers.svelte';
   import ErrorMessage from './ErrorMessage.svelte';
   import FindingTransition from './FindingTransition.svelte';
   import HiddenBanner from './HiddenBanner.svelte';
@@ -20,6 +21,7 @@
   import PinnedEvidencePreview from './PinnedEvidencePreview.svelte';
   import Markdown from '../lib/Markdown.svelte';
   import { macroSet } from '../lib/macros';
+  import { copiedValues } from '../lib/copiedNumbers';
   let {
     projectId,
     sessionId,
@@ -49,6 +51,8 @@
   let persisted = $state(true);
   const allowed = $derived(decisions(finding.status));
   const anchors = $derived(finding.anchors.map((anchor) => anchorView(projectId, anchor)));
+  /** A copied-number finding's two numbers, which the card lines up digit by digit. */
+  const copied = $derived(copiedValues(finding));
   // A kept draft's decision is never rewritten from the status: one the status no longer
   // allows stays shown, marked, and cannot be saved until the user chooses again.
   const allowedNow = $derived(allowed.some((item) => item.action === draft.action));
@@ -136,6 +140,7 @@
       </p>{/each}
     <Markdown source={finding.statement} {macros} />
     <HiddenBanner text={finding.statement} links />
+    {#if copied}<CopiedNumbers stated={copied.stated} held={copied.held} />{/if}
     {#if finding.remedy}<p>Suggested remedy:</p>
       <Markdown source={finding.remedy} {macros} />
       <HiddenBanner text={finding.remedy} links />{/if}
