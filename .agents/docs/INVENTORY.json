@@ -1,8 +1,14 @@
 {
   "format_version": 1,
   "captured_date": "2026-10-14",
-  "status": "planning and source inspection, isolated delegation-record and original run/kernel-binding validation, bounded scripted planning-evaluator calibration, forty OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, project macro native browser and actual KaTeX acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-15). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed. Raw lab evidence (JSON records, screenshots) is kept outside git since 2026-10-14; reports name each archived file by its SHA-256.",
+  "status": "planning and source inspection, isolated delegation-record and original run/kernel-binding validation, bounded scripted planning-evaluator calibration, forty-one OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, project macro native browser and actual KaTeX acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-15). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed. Raw lab evidence (JSON records, screenshots) is kept outside git since 2026-10-14; reports name each archived file by its SHA-256.",
   "files": [
+    {
+      "path": "agent-reports/babbage-openshell-lab-41-2026-10-15.md",
+      "category": "runtime-validation",
+      "bytes": 15844,
+      "sha256": "7f102b7955502273b9fed9991de10bebe19dc72f892af8a72d7df186beb63500"
+    },
     {
       "path": "agent-reports/babbage-openshell-lab-40-2026-10-15.md",
       "category": "runtime-validation",
@@ -84,8 +90,8 @@
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 36404,
-      "sha256": "54c33b8728c8c3027a6ec31d8492a1c88cf7e1aba3fe9f364f19ae2fae12c607"
+      "bytes": 37614,
+      "sha256": "d61734e2223cc14ab1d322a18d3571070f4f0b2e0cc33d422d7127c2d99afa19"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
