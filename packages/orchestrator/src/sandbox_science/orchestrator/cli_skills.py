@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: MIT
 """The user's ``skills`` commands of ``sandbox-science-harness``: ``import`` a pack from
-git or an archive, ``pin`` a source's import in a project, and ``list`` the imports or a
-project's pins (docs/SKILLS.md). Each prints JSON and is attributed to the user.
+git or an archive, ``pin`` a source's import in a project, ``settings`` shows or changes
+the skills a project loads at every run's start or excludes, and ``list`` the imports or
+a project's pins (docs/SKILLS.md). Each prints JSON and is attributed to the user.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from typing import Any
 from .control import ControlError
 from .documents import USER
 from .projects import ProjectStore
-from .skills import SkillStore, from_archive, from_git, snapshot
+from .skills import SkillSettings, SkillStore, from_archive, from_git, snapshot
 
 
 def skills(args: argparse.Namespace) -> int:
@@ -38,6 +39,8 @@ def skills(args: argparse.Namespace) -> int:
                     shown["unchanged"] = same
                 case "pin":
                     shown = asdict(store.pin(args.project, args.source, USER, args.revision))
+                case "settings":
+                    shown = asdict(_settings(store, args))
                 case _:
                     shown = (
                         [asdict(pin) for pin in store.pins(args.project)]
@@ -49,6 +52,18 @@ def skills(args: argparse.Namespace) -> int:
             return 1
     print(json.dumps(shown, indent=2))
     return 0
+
+
+def _settings(store: SkillStore, args: argparse.Namespace) -> SkillSettings:
+    """The project's skill settings, changed when ``--expected`` names the revision read:
+    ``--always`` and ``--exclude`` replace their lists, ``--no-always`` and
+    ``--no-exclude`` empty them, and a list not named stays as it is."""
+    current = store.settings(args.project)
+    if args.expected is None:
+        return current
+    always = () if args.no_always else tuple(args.always or current.always)
+    excluded = () if args.no_exclude else tuple(args.exclude or current.excluded)
+    return store.set_settings(args.project, USER, args.expected, always=always, excluded=excluded)
 
 
 def add_parser(commands: Any) -> None:
@@ -77,6 +92,17 @@ def add_parser(commands: Any) -> None:
     pinned.add_argument(
         "--revision", help="the import's commit, archive or snapshot, by its first 12+ digits"
     )
+    settings = actions.add_parser(
+        "settings",
+        parents=[common],
+        help="show or change a project's skills loaded at every run's start, and excluded",
+    )
+    settings.add_argument("--project", required=True)
+    settings.add_argument("--expected", type=int, help="the settings' revision, to change them")
+    settings.add_argument("--always", action="append", metavar="SOURCE/NAME")
+    settings.add_argument("--exclude", action="append", metavar="SOURCE/NAME")
+    settings.add_argument("--no-always", action="store_true", help="load none at the start")
+    settings.add_argument("--no-exclude", action="store_true", help="exclude none")
     listed = actions.add_parser(
         "list", parents=[common], help="the imports, a source's, or a project's pins"
     )

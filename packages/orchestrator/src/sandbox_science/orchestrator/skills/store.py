@@ -56,6 +56,44 @@ class Pin:
     skills: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class Entry:
+    """One skill of a run's set."""
+
+    source: str
+    name: str
+    description: str
+    body_sha256: str
+    snapshot: str
+    revision: str
+    """The import's commit or archive digest."""
+
+    @property
+    def qualified(self) -> str:
+        return f"{self.source}/{self.name}"
+
+
+@dataclass(frozen=True)
+class SkillSet:
+    """The skills a run is given (SK-5): the project's pinned skills it does not exclude,
+    the sources' revisions, and the skills it loads in full at every run's start."""
+
+    entries: tuple[Entry, ...]
+    sources: tuple[str, ...]
+    """Each source as ``<source>@<revision>``."""
+    always: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SkillSettings:
+    """A project's skill settings at a revision (0: never changed)."""
+
+    project: str
+    revision: int
+    always: tuple[str, ...] = ()
+    excluded: tuple[str, ...] = ()
+
+
 class SkillStore:
     """The imported packs and the projects' pins in one control store."""
 
@@ -152,12 +190,104 @@ class SkillStore:
             )
             return _pins(db, project, source)[0]
 
+    def effective(self, project: str) -> SkillSet:
+        """The skills a run of ``project`` is given now."""
+        if self.control.missing:
+            return SkillSet((), (), ())
+        with self.control.read() as tx:
+            db = tx.sql
+            settings = _settings(db, project)
+            entries: list[Entry] = []
+            sources: list[str] = []
+            for pin in _pins(db, project):
+                found = pin.pinned
+                revision = found.commit or found.archive_sha256 or found.snapshot
+                sources.append(f"{pin.source}@{revision}")
+                for name, description, body in db.execute(
+                    "SELECT name,description,body_sha256 FROM skill_skills WHERE snapshot=? "
+                    "ORDER BY name",
+                    (found.snapshot,),
+                ):
+                    entry = Entry(pin.source, name, description, body, found.snapshot, revision)
+                    if entry.qualified not in settings.excluded:
+                        entries.append(entry)
+        given = {entry.qualified for entry in entries}
+        always = tuple(skill for skill in settings.always if skill in given)
+        return SkillSet(tuple(entries), tuple(sources), always)
+
+    def file(self, snapshot: str, path: str) -> bytes | None:
+        """A snapshot's file, by its path in the snapshot; ``None`` if it has none."""
+        with self.control.read() as tx:
+            row = tx.sql.execute(
+                "SELECT b.content FROM skill_files f JOIN skill_blobs b ON b.sha256=f.blob "
+                "WHERE f.snapshot=? AND f.path=?",
+                (snapshot, path),
+            ).fetchone()
+        return None if row is None else bytes(row[0])
+
+    def settings(self, project: str) -> SkillSettings:
+        if self.control.missing:
+            return SkillSettings(project, 0)
+        with self.control.read() as tx:
+            return _settings(tx.sql, project)
+
+    def set_settings(
+        self,
+        project: str,
+        author: Author,
+        expected: int,
+        *,
+        always: tuple[str, ...],
+        excluded: tuple[str, ...],
+    ) -> SkillSettings:
+        """The user's change of ``project``'s skill settings, read at ``expected``."""
+        if author.kind != "user":
+            raise ControlError(INVALID_REQUEST, "only the user changes skill settings")
+        for skill in (*always, *excluded):
+            source, _, name = skill.partition("/")
+            if not (NAME.fullmatch(source) and NAME.fullmatch(name)):
+                raise ControlError(INVALID_REQUEST, f"{skill[:80]!r} is not a source/name ID")
+        if len(always) > 20 or len(excluded) > 500:
+            raise ControlError(INVALID_REQUEST, "at most 20 always loaded and 500 excluded")
+        with self.control.write() as tx:
+            db = tx.sql
+            if not db.execute("SELECT 1 FROM projects WHERE project_id=?", (project,)).fetchone():
+                raise ControlError(NOT_FOUND, f"there is no project {project!r}")
+            current = _settings(db, project)
+            if current.revision != expected:
+                raise ControlError(
+                    CONFLICT, f"the skill settings are at revision {current.revision}"
+                )
+            db.execute(
+                "INSERT INTO project_skill_settings VALUES(?,?,?,?,?,?) ON CONFLICT(project) DO "
+                "UPDATE SET revision=excluded.revision,always=excluded.always,"
+                "omitted=excluded.omitted,author=excluded.author,changed=excluded.changed",
+                (
+                    project,
+                    expected + 1,
+                    json.dumps(list(dict.fromkeys(always))),
+                    json.dumps(sorted(set(excluded))),
+                    author.model_dump_json(),
+                    _now(),
+                ),
+            )
+            return _settings(db, project)
+
     def pins(self, project: str) -> list[Pin]:
         """The project's pins, by source."""
         if self.control.missing:
             return []
         with self.control.read() as tx:
             return _pins(tx.sql, project)
+
+
+def _settings(db: sqlite3.Connection, project: str) -> SkillSettings:
+    row = db.execute(
+        "SELECT revision,always,omitted FROM project_skill_settings WHERE project=?", (project,)
+    ).fetchone()
+    if row is None:
+        return SkillSettings(project, 0)
+    return SkillSettings(project, row[0], tuple(json.loads(row[1])), tuple(json.loads(row[2])))
 
 
 def _source(source: str) -> None:

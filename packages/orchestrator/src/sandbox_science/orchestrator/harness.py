@@ -90,6 +90,7 @@ from .questions import Questions
 from .recording import FileRecorder, RecordedFiles
 from .runstate import RunState
 from .session_plans import PlanRef, SessionPlans
+from .skills import SkillStore, SkillTool
 from .tools import HARNESS_TOOL_NAMES, Toolbox, ToolOutcome
 from .worker_client import WorkerAPIError, WorkerClient
 
@@ -816,6 +817,8 @@ class Harness:
             role=role,
             alias=alias,
         )
+        # The project's skills as the run starts: its set stays the same to the end (SK-5).
+        skills = await threaded(_skills, stores, context.project_id, role, alias)
         inventory = ArtifactInventory(stores.documents)
         review_store = ReviewStore(
             stores.documents, artifacts=inventory, defaults=self.settings.reviews()
@@ -923,7 +926,15 @@ class Harness:
             # A check reads and recomputes; it changes no entry, document or memory.
             check=admitted.request.target is not None,
             tracks=tracks,
+            skills=skills,
         )
+
+
+def _skills(stores: Stores, project: str, role: str, alias: str | None) -> SkillTool | None:
+    """The run's skills, or ``None`` when the project pins none."""
+    store = SkillStore(stores.projects.control)
+    found = store.effective(project)
+    return SkillTool(store, found, role=role, alias=alias) if found.entries else None
 
 
 async def _track_grant(plans: SessionPlans, context: ExecutionContext, track: str) -> PlanRef:

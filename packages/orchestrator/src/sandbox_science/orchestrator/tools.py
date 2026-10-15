@@ -66,6 +66,8 @@ from .question_tool import EFFECTS as QUESTION_EFFECTS
 from .question_tool import SPECS as QUESTION_SPECS
 from .question_tool import QuestionTool
 from .recording import FileRecorder, RecordedFiles, Written, with_recorded
+from .skills.tool import SPEC as SKILL_SPEC
+from .skills.tool import SkillTool
 from .worker_client import WorkerAPIError, WorkerClient, dump
 
 if TYPE_CHECKING:
@@ -452,6 +454,7 @@ def _harness_tool_names() -> frozenset[str]:
         *MEMORY_SPECS,
         *delegation_specs.SPECS,
         *QUESTION_SPECS,
+        SKILL_SPEC,
     )
     return frozenset(spec.name for spec in specs) | {RESTART_KERNEL, MCP_TOOLS}
 
@@ -490,6 +493,7 @@ class Toolbox:
         delegated: bool = False,
         check: bool = False,
         tracks: TrackTools | None = None,
+        skills: SkillTool | None = None,
     ) -> None:
         """For a ``delegated`` run, a call to a tool it is not offered, such as a review,
         plan, delegate, question or connector tool, is refused with
@@ -649,6 +653,14 @@ class Toolbox:
                 delegations.specs,
                 lambda name, call: delegations.call(name, call.args),
                 delegation_specs.EFFECTS,
+            )
+        self.skills = skills
+        """The run's skills: their system-message section and the ``skills`` tool."""
+        if skills is not None:
+            entries += _group(
+                skills.specs,
+                lambda _, call: skills.call(call.args, call_id=call.call.id, model=call.model),
+                {SKILL_SPEC.name: "read"},
             )
         if questions is not None:
             entries += _group(

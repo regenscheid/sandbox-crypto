@@ -48,6 +48,8 @@ from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
 from sandbox_science.orchestrator.prompts import PromptPins, Section, assemble, pin_tools
 from sandbox_science.orchestrator.provision import PROVISION
 from sandbox_science.orchestrator.session_plans import SessionPlans
+from sandbox_science.orchestrator.skills.index import FRAMING as SKILLS_FRAMING
+from sandbox_science.orchestrator.skills.index import FRAMING_VERSION as SKILLS_VERSION
 from sandbox_science.orchestrator.stock_prompts import TEMPLATE_IDS, select_template
 from sandbox_science.orchestrator.tools import ADMIT_HOSTS, PDF_SPECS, Toolbox, mcp_tools_spec
 from sandbox_science.orchestrator.watcher_prompt import PROMPT_VERSION
@@ -109,6 +111,7 @@ GOLDEN = {
     "sandbox-memory-watcher-1": (
         "7d0f75c8dfcd72a66c74e0a9d7bd76cb71df5286de234f82573034f717d53790"
     ),
+    "sandbox-skills-index-1": ("f9bb4d209839c5fee8d0fb5f0a96470814714d9a457e86961644b1e814c93453"),
 }
 
 
@@ -123,6 +126,7 @@ def installed() -> dict[str, str]:
         WATCHER_VERSION: WATCHER_FRAMING,
         CHECK_VERSION: CHECK_PROMPT,
         TASK_VERSION: TASK_PROMPT,
+        SKILLS_VERSION: SKILLS_FRAMING,
     }
     texts |= {select_template(t).version: select_template(t).text for t in TEMPLATE_IDS}
     texts |= {framing.version: framing.text for framing in FRAMINGS}

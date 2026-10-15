@@ -155,6 +155,12 @@ def _clean(value: object, where: str) -> object:
     return _clean(str(value), where)
 
 
+def body(text: str) -> str:
+    """A ``SKILL.md``'s body, as its SHA-256 was taken: the text after its front matter."""
+    found = _FRONT.match(text)
+    return found[2] if found is not None else text
+
+
 def snapshot_sha256(files: tuple[PackFile, ...]) -> str:
     listing = [_FORMAT]
     for file in sorted(files, key=lambda f: f.path):

@@ -66,6 +66,21 @@ class MemoryPin(Contract):
     sha256: Digest
 
 
+class SkillsPin(Contract):
+    """The skills an agent was given (docs/specs/skills.md, SK-7, SK-21, SK-38): the
+    framing's version, each source's revision, how many skills the index lists and how it
+    was shortened, the skills loaded in full at the start with their bodies' SHA-256, and
+    the section's UTF-8 byte count and SHA-256."""
+
+    framing: Identifier
+    sources: tuple[Annotated[str, Field(max_length=200)], ...] = Field(max_length=100)
+    skills: Size
+    shortening: Literal["none", "descriptions", "names", "counts"]
+    always: tuple[Annotated[str, Field(max_length=200)], ...] = Field(max_length=20)
+    bytes: Size
+    sha256: Digest
+
+
 class PromptPins(Contract):
     format: Literal["sandbox-prompt-pins-1"] = FORMAT
     role: Identifier
@@ -76,6 +91,8 @@ class PromptPins(Contract):
     memory: MemoryPin | None = None
     """The project memory the run was given; ``None`` for a run without the project's
     stores, or older than the memory."""
+    skills: SkillsPin | None = None
+    """The skills the run was given; ``None`` for a run without pinned skills."""
 
 
 @dataclass(frozen=True)
@@ -122,6 +139,7 @@ def assemble(
     specs: Sequence[ToolSpec],
     *,
     memory: MemoryPin | None = None,
+    skills: SkillsPin | None = None,
 ) -> tuple[str, PromptPins]:
     """The system message and the pins a run record keeps for it."""
     if not sections:
@@ -134,5 +152,6 @@ def assemble(
             pin(Section(framing.id, framing.version, framing.text)) for framing in FRAMINGS
         ),
         memory=memory,
+        skills=skills,
     )
     return SEPARATOR.join(section.text for section in sections), pins

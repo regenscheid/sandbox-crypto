@@ -439,9 +439,9 @@ def _sections(
     system: str | Section, toolbox: Toolbox, template: str | None, memory: MemoryGiven | None
 ) -> list[Section]:
     """The system message's sections: the base, a research framing if one was selected,
-    the project memory if it has entries (PM-6), and the planning guidance when plan
-    tools are offered. A base given as a section, such as a delegated run's, is pinned
-    as it is."""
+    the project memory if it has entries (PM-6), the run's skills if it has any (SK-7),
+    and the planning guidance when plan tools are offered. A base given as a section, such
+    as a delegated run's, is pinned as it is."""
     builtin = system == SYSTEM_PROMPT
     if isinstance(system, Section):
         base = system
@@ -455,6 +455,8 @@ def _sections(
         sections.append(Section("stock", stock.version, stock.text))
     if memory is not None and memory.section is not None:
         sections.append(memory.section)
+    if toolbox.skills is not None and toolbox.skills.given.section is not None:
+        sections.append(toolbox.skills.given.section)
     if toolbox.plans is not None:
         sections.append(Section("planning", GUIDANCE_VERSION, GUIDANCE))
     return sections
@@ -522,6 +524,7 @@ async def run_task(
                     _sections(system, toolbox, research_template, memory),
                     toolbox.specs,
                     memory=memory.pin if memory is not None else None,
+                    skills=toolbox.skills.given.pin if toolbox.skills is not None else None,
                 )
                 transcript = Transcript(
                     max_turns=max_turns,
