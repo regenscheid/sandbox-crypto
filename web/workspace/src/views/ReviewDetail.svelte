@@ -1,5 +1,8 @@
 <!-- SPDX-License-Identifier: MIT -->
-<!-- The chosen review: what it concluded and covered, its pinned evidence and audit records. -->
+<!-- The chosen review: what it concluded and covered, its pinned evidence and audit records.
+     Context a ledger entry's evidence pins (CR-14 as amended for lab 40's B3) is marked as
+     such, not reviewed material, and leads to its target where the workspace has a page; a
+     delegation's outcome read whole shows as the run tree shows a delegation. -->
 <script lang="ts">
   import type { ReviewBrowser, ReviewPanel } from '../lib/reviewBrowser';
   import { visible } from '../lib/text';
@@ -14,6 +17,8 @@
     reviewLine,
     usageText,
   } from '../lib/reviewText';
+  import { contextLinks, contextTarget, contextText, outcomeOf } from '../lib/reviewContext';
+  import DelegationCard from './DelegationCard.svelte';
   import ErrorMessage from './ErrorMessage.svelte';
   import PinnedEvidencePreview from './PinnedEvidencePreview.svelte';
   let {
@@ -21,7 +26,29 @@
     browser,
     review,
     busy,
-  }: { panel: ReviewPanel; browser: ReviewBrowser; review: Review; busy: boolean } = $props();
+    projectId = '',
+    sessionId = '',
+  }: {
+    panel: ReviewPanel;
+    browser: ReviewBrowser;
+    review: Review;
+    busy: boolean;
+    /** The project and session, to lead to a context item's target. */
+    projectId?: string;
+    sessionId?: string;
+  } = $props();
+  /** The item whose text is shown, once its first slice is: the read replaces the text then. */
+  const shownItem = $derived.by(() => {
+    void panel.text.items;
+    const id = browser.text.shown();
+    return panel.evidence.items.find((item) => item.evidence === id) ?? null;
+  });
+  /** A delegation's outcome read whole, shown as the run tree shows a delegation. */
+  const outcome = $derived(
+    shownItem?.kind === 'delegation' && panel.text.next === null
+      ? outcomeOf(browser.text.text())
+      : null,
+  );
 </script>
 
 <section class="detail" aria-label="Review detail">
@@ -50,10 +77,17 @@
   <ul>
     {#each panel.evidence.items as item (item.evidence)}<li>
         <button onclick={() => browser.read(review.review_id, item.evidence)}>Read</button>
-        {evidenceText(item)}
+        {#if contextText(item)}
+          <span class="context">{contextText(item)}</span>
+          {contextTarget(item) ||
+            visible(evidenceText(item))}{#each contextLinks(projectId, item) as link, index (index)}
+            · <a href={link.href}>{link.text}</a>{/each}
+        {:else}
+          {visible(evidenceText(item))}
+        {/if}
         <details>
           <summary>Locator as recorded</summary>
-          <pre>{JSON.stringify(item.locator, null, 2)}</pre>
+          <pre>{visible(JSON.stringify(item.locator, null, 2))}</pre>
         </details>
       </li>{/each}
   </ul>
@@ -62,9 +96,15 @@
     >{/if}
   {#if panel.evidence.error}<ErrorMessage error={panel.evidence.error} />{/if}
   <!-- The evidence text read from this review's list, here beside it. -->
-  {#if panel.text.items.length}<PinnedEvidencePreview
-      text={browser.text.text()}
-    />{#if panel.text.next !== null}<button onclick={() => browser.text.list.more()}
+  {#if panel.text.items.length}{#if shownItem && contextText(shownItem)}<p class="context">
+        {contextText(shownItem)}
+      </p>{/if}{#if outcome}<DelegationCard
+        {projectId}
+        {sessionId}
+        delegation={outcome}
+      />{:else}<PinnedEvidencePreview
+        text={browser.text.text()}
+      />{/if}{#if panel.text.next !== null}<button onclick={() => browser.text.list.more()}
         >Read next evidence slice</button
       >{/if}{/if}
   {#if panel.text.error}<ErrorMessage error={panel.text.error} />{/if}
@@ -84,6 +124,9 @@
 </section>
 
 <style>
+  .context {
+    font-style: italic;
+  }
   .detail {
     border-left: 3px solid var(--border, #9996);
     padding-left: 0.8rem;
