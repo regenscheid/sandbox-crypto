@@ -109,7 +109,7 @@ Main agents may claim fixes or rebut; only a confirmation reviewer or explicit u
 decision can confirm a fix. User writes
 use strict expected revisions and replay-safe operation IDs. A block's supersession
 links old and replacement revisions and never claims that it fixed the finding.
-A finding's anchor may name a field of a ledger entry revision the snapshot holds (`title`, `statement`, `status`, `fields`, `links` or `evidence`); supersession counts such an anchor as replaced only when a later revision of the entry changed that field ([ledger](LEDGER.md)).
+A finding's anchor may name a field of a ledger entry revision the snapshot holds (`title`, `statement`, `status`, `fields`, `links` or `evidence`); supersession counts an anchor on a ledger entry as replaced only when a later revision changed what a decision rests on, and the anchored field when it names one ([ledger](LEDGER.md)). `review_finding_entries` keeps the entries each finding is anchored to, written by triggers, and an index finds the review evidence that holds an entry.
 Confirmation decisions compare the pinned finding revision and current head before
 writing. Reviewer confirm/reject also requires audited read ranges covering the finding metadata,
 original/response anchored blocks (or whole items) and exact changed revisions. Empty slices of a nonempty source,
@@ -226,6 +226,7 @@ These are the reviewer's tables in the control store's schema
 | `review_calls` | Each reviewer model call's usage and prompt provenance |
 | `review_records` | A review's checked items, findings and deferred reflags, append-only |
 | `review_findings` | Findings with their current severity, category, statement, anchors, remedy, status, revision and origin (`review` or `math`) |
+| `review_finding_entries` | The ledger entries each finding is anchored to, kept by triggers as findings are written and their anchors change ([ledger](LEDGER.md)) |
 | `review_transitions` | Every finding revision with its status, actor and reason, append-only |
 | `review_notices` | Findings due for delivery to the author, with their claim and delivery |
 | `review_response_pins`, `review_response_discovery` | The explanation body revision each confirmation review pinned, and older responses held from checking because their author is unknown ([finding prose math](FINDING-PROSE-MATH.md)); the explanation bodies and their revisions are `text_revisions` of kind `response` ([living documents](LIVING-DOCUMENTS.md)) |

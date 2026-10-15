@@ -1628,6 +1628,44 @@ BEGIN SELECT RAISE(ABORT, 'ledger revisions are immutable'); END""",
         schema.execute(statement)
 
 
+_ANCHORED_ENTRIES: Final = (
+    "SELECT {finding},json_extract(a.value,'$.locator.entry') FROM json_each("
+    "CASE WHEN json_valid({anchors}) THEN {anchors} ELSE '[]' END) a "
+    "WHERE json_type(a.value,'$.locator.entry')='text'"
+)
+"""The ledger entries a finding's anchors name."""
+
+
+def _ledger_review_index(schema: Schema) -> None:
+    """Version 23: what the ledger reads of the reviews, findable without scanning them
+    all (docs/specs/ledger.md, LG-17, LG-25): ``review_finding_entries`` keeps the ledger
+    entries each finding is anchored to, written by triggers as findings are written and
+    their anchors change, and filled from the findings there are; and the review
+    evidence that holds a ledger entry is indexed by the entry."""
+    new = _ANCHORED_ENTRIES.format(finding="NEW.finding_id", anchors="NEW.anchors")
+    existing = _ANCHORED_ENTRIES.format(finding="f.finding_id", anchors="f.anchors").replace(
+        "FROM json_each(", "FROM review_findings f, json_each("
+    )
+    fill = "INSERT OR IGNORE INTO review_finding_entries(finding_id,entry_id) "
+    for statement in (
+        """CREATE TABLE review_finding_entries (
+    finding_id TEXT NOT NULL REFERENCES review_findings(finding_id),
+    entry_id TEXT NOT NULL CHECK (length(CAST(entry_id AS BLOB)) BETWEEN 1 AND 128),
+    PRIMARY KEY (entry_id, finding_id)
+) STRICT, WITHOUT ROWID""",
+        "CREATE INDEX review_finding_entries_findings ON review_finding_entries(finding_id)",
+        "CREATE TRIGGER review_finding_entries_insert AFTER INSERT ON review_findings "
+        f"BEGIN {fill}{new}; END",
+        "CREATE TRIGGER review_finding_entries_update AFTER UPDATE OF anchors "  # noqa: S608
+        "ON review_findings BEGIN DELETE FROM review_finding_entries "
+        f"WHERE finding_id=NEW.finding_id; {fill}{new}; END",
+        fill + existing,
+        "CREATE INDEX review_evidence_ledger "
+        "ON review_evidence(json_extract(locator,'$.entry')) WHERE kind='ledger'",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -1650,6 +1688,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _artifact_usage,
     _file_settings,
     _ledger_evidence,
+    _ledger_review_index,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

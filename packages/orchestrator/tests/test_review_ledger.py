@@ -214,10 +214,48 @@ def test_a_field_anchor_is_replaced_only_when_that_field_changes(store) -> None:
     ]
 
 
-def test_an_anchor_on_the_whole_entry_is_replaced_by_any_later_revision(store) -> None:
+def test_an_anchor_is_replaced_only_by_a_revision_that_changes_the_material(store) -> None:
+    """Probe p2 of the review of #280: a whole-entry fail finding was superseded by a
+    title-only revision. Only the statement, fields, assumptions and evidence that can
+    count are what a finding, a check or a review is about (LG-17)."""
     reviews, _, _ = store
     change(reviews, CLAIM, op="op-1")
     _, finding = finding_on(reviews, None)
     assert not superseded(reviews, finding)
     change(reviews, {"entry": "C-1", "expected": 1, "status": "disputed"}, op="op-2")
+    change(reviews, {"entry": "C-1", "expected": 2, "title": "Renamed"}, op="op-3")
+    assert not superseded(reviews, finding)
+    change(reviews, {"entry": "C-1", "expected": 3, "statement": "$a^{16} = 1$ in GF(17)."}, op="s")
     assert superseded(reviews, finding)
+
+
+def test_a_field_anchor_off_the_material_is_not_replaced(store) -> None:
+    reviews, _, _ = store
+    change(reviews, CLAIM, op="op-1")
+    _, finding = finding_on(reviews, "title")
+    change(reviews, {"entry": "C-1", "expected": 1, "title": "Renamed"}, op="op-2")
+    assert not superseded(reviews, finding)
+
+
+def test_a_version_22_stores_findings_are_found_by_their_entries(store, tmp_path) -> None:
+    """Version 23 keeps the entries each finding is anchored to; it fills them from the
+    findings an older store holds."""
+    from sandbox_science.orchestrator.control import migrations
+    from sandbox_science.orchestrator.documents import DocumentStore, store_path
+
+    from .control_versions import older_store
+
+    reviews, documents, _ = store
+    change(reviews, CLAIM, op="op-1")
+    _, finding = finding_on(reviews, "statement")
+    documents.close()
+    old = tmp_path / "old"
+    old.mkdir()
+    older_store(store_path(tmp_path), store_path(old), migrations.BASELINE + 20)
+    migrated = DocumentStore(store_path(old))
+    migrated.initialize()
+    try:
+        view = Ledger(migrated).entry("p", "C-1")
+        assert [(f.finding_id, f.field) for f in view.findings] == [(finding, "statement")]
+    finally:
+        migrated.close()

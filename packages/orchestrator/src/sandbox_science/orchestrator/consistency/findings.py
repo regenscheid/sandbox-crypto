@@ -965,9 +965,11 @@ class Findings:
 
     def _ledger_replacement(self, project: str, anchor: Json) -> Json | None:
         """The entry's current revision, when it replaces the anchored one: it is newer,
-        and changed the anchored field, or anything when the anchor names no field (CR-28
-        as amended); None otherwise."""
-        from sandbox_science.orchestrator.ledger import Ledger
+        it changed what a decision rests on (its statement, fields, ``assumes`` links or
+        evidence that can count, LG-17), and it changed the anchored field when the
+        anchor names one (CR-28 as amended); None otherwise. A new title, status or other
+        links replace nothing."""
+        from sandbox_science.orchestrator.ledger import Ledger, gate
 
         ledger = Ledger(self.store.documents)
         location, field = anchor["locator"], anchor.get("field")
@@ -975,6 +977,10 @@ class Findings:
         if old.head <= old.revision:
             return None
         new = ledger.entry(project, location["entry"])
+        with self.store.documents.control.read() as tx:
+            held = gate.examined(tx.sql, new.entry_id, {old.revision, new.revision})
+        if held[old.revision] == held[new.revision]:
+            return None
         if field is not None and getattr(old, field) == getattr(new, field):
             return None
         return {

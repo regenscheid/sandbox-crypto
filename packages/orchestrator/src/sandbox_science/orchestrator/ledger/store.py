@@ -1104,9 +1104,10 @@ class Ledger:
             "SELECT f.finding_id,f.session,f.status,f.severity,f.category,f.origin,"
             "coalesce(json_extract(a.value,'$.field'),json_extract(a.value,'$.locator.field')),"
             "json_extract(a.value,'$.locator.revision') "
-            "FROM review_findings f, json_each(f.anchors) a WHERE f.project=? "
+            "FROM review_finding_entries x JOIN review_findings f USING(finding_id), "
+            "json_each(f.anchors) a WHERE x.entry_id=? AND f.project=? "
             "AND json_extract(a.value,'$.locator.entry')=? ORDER BY f.created DESC,f.rowid DESC",
-            (project, entry),
+            (entry, project, entry),
         ):
             if row[0] not in found and len(found) < 50:
                 found[row[0]] = EntryFinding(
