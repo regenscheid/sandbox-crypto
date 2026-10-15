@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
+import logging
 import re
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from functools import partial
-from typing import TYPE_CHECKING, Final, Literal, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 from sandbox_science.contracts import ExecutionContext, new_id
 from sandbox_science.contracts.artifact_inventory import ArtifactRevisionRef
@@ -35,9 +37,10 @@ from .findings import Findings
 from .ledger import ingest_ledger
 from .models import EvidenceAnchor, ReviewType
 from .notices import FindingNotices
+from .quotes import EPRINT_TOOL, PDF_TOOLS, eprint_record, pdf_record
 from .rubric import CLASSIFIER_VERSION
 from .runner import ReviewerRunner, schema
-from .store import Json, ReviewStore, clipped, dump
+from .store import MAX_ITEM_BYTES, Json, ReviewStore, clipped, dump
 
 if TYPE_CHECKING:
     from sandbox_science.orchestrator.projects import RunRecord
@@ -226,6 +229,49 @@ def execution_projection(record: Json) -> tuple[Json, bool]:
     return payload, complete
 
 
+_log = logging.getLogger(__name__)
+
+
+def source_of(messages: Sequence[Message], tool: Json) -> tuple[Json, Json] | None:
+    """The source record of the tool call ``messages`` ends with, when it read a source a
+    quote can cite (CR-4): ``pdf_pages`` or ``pdf_search``, from the helper's structured
+    result, or the e-print server's full text, through a connector without an error. Its
+    locator names the call; the call and its result are the same run's."""
+    if not messages or messages[-1].get("role") != "tool":
+        return None
+    call_id = str(messages[-1].get("tool_call_id", ""))
+    called: Json | None = None
+    for message in reversed(messages[:-1]):
+        for made in cast(list[Any], message.get("tool_calls") or []):
+            if cast(Json, made).get("id") == call_id:
+                called = cast(Json, cast(Json, made).get("function") or {})
+                break
+        if called is not None:
+            break
+    if called is None:
+        return None
+    name = str(called.get("name", ""))
+    try:
+        arguments: object = json.loads(str(called.get("arguments") or "{}"))
+    except ValueError:
+        return None
+    if not isinstance(arguments, dict):
+        return None
+    given = cast(Json, arguments)
+    record: Json | None = None
+    if name in PDF_TOOLS and isinstance(tool.get("pdf"), dict):
+        record = pdf_record(name, given, cast(Json, tool["pdf"]))
+    elif name.endswith(EPRINT_TOOL) and "connector" in tool and "error" not in tool:
+        record = eprint_record(name, given, str(messages[-1].get("content", "")))
+    if record is None:
+        return None
+    # Bounded as an item is: lines past the bound are left out, and say so.
+    while len(dump(record).encode()) > MAX_ITEM_BYTES // 2 and record.get("lines"):
+        record["lines"] = record["lines"][: len(record["lines"]) // 2]
+        record["lines_truncated"] = True
+    return {"call": call_id[:128], "tool": name[:128]}, record
+
+
 class ReviewController:
     """Detached checkpoints and bounded terminal/confirmation reviews in one live run.
 
@@ -288,6 +334,24 @@ class ReviewController:
     def specs(self) -> tuple[ToolSpec, ...]:
         return AUTHOR_SPECS
 
+    async def _source(self, messages: Sequence[Message], tool: Json) -> None:
+        """Record what a tool call read that a quote can cite, as a ``source``
+        observation that makes no review due (CR-4)."""
+        found = source_of(messages, tool)
+        if found is None:
+            return
+        locator, record = found
+        index = len(messages) - 1
+        await asyncio.to_thread(
+            self.store.observe,
+            *self.scope,
+            f"{self.instance}:source:{index}",
+            "source",
+            {"run": self.run_id, "invocation": self.instance, "message": index, **locator},
+            record,
+            complete=not record.get("lines_truncated"),
+        )
+
     async def observe(self, messages: Sequence[Message], *, tool: Json | None = None) -> None:
         for index in range(self.position, len(messages)):
             message = messages[index]
@@ -310,6 +374,7 @@ class ReviewController:
             )
         self.position = len(messages)
         if tool is not None:
+            await self._source(messages, tool)
             raw_execution = tool.get("execution")
             if isinstance(raw_execution, dict):
                 execution = cast(Json, raw_execution)
@@ -352,11 +417,21 @@ class ReviewController:
                 )
         ingestion = await asyncio.to_thread(self.store.ingest_documents, *self.scope)
         self.documents_complete = ingestion["complete"]
-        ledger = await asyncio.to_thread(ingest_ledger, self.store, *self.scope)
-        self.ledger_complete = ledger["complete"]
+        self.ledger_complete = await self._ledger()
         if self.artifact_consumer is not None:
             artifact_ingestion = await self.artifact_consumer.ingest()
             self.artifacts_complete = artifact_ingestion["complete"]
+
+    async def _ledger(self, *, drain: bool = False) -> bool:
+        """Read the ledger's events into the review feed; whether it read them all. A page
+        the feed refuses leaves the window's coverage incomplete and the run going, rather
+        than failing every safe point after it (the review of CR-4)."""
+        try:
+            read = await asyncio.to_thread(ingest_ledger, self.store, *self.scope, drain=drain)
+        except DocumentError as error:
+            _log.warning("the ledger's events were not read for review: %s", error.message)
+            return False
+        return bool(read["complete"])
 
     async def _dispatch(self, kind: ReviewType, classifier: Json | None = None) -> str | None:
         if self.role != "main":
@@ -426,8 +501,7 @@ class ReviewController:
         await self.observe(messages)
         ingestion = await asyncio.to_thread(self.store.ingest_documents, *self.scope, drain=True)
         self.documents_complete = ingestion["complete"]
-        ledger = await asyncio.to_thread(ingest_ledger, self.store, *self.scope, drain=True)
-        self.ledger_complete = ledger["complete"]
+        self.ledger_complete = await self._ledger(drain=True)
         artifact_ingestion = (
             await self.artifact_consumer.ingest(drain=True)
             if self.artifact_consumer is not None

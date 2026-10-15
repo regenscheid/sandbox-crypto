@@ -307,7 +307,7 @@ class ReviewStore:
         project: str,
         session: str,
         key: str,
-        kind: Literal["transcript", "execution", "document", "artifact", "ledger"],
+        kind: Literal["transcript", "execution", "document", "artifact", "ledger", "source"],
         locator: Json,
         payload: Json,
         *,
@@ -899,12 +899,10 @@ class ReviewStore:
                         # And so do the recorded sources of its quotes (CR-4).
                         with self.documents.control.read() as tx:
                             quoted = quoted_items(tx.sql, project, each)
-                        for locator, message in quoted:
-                            encoded = dump(message)
+                        for locator, record in quoted:
+                            encoded = dump(record)
                             items.append(
-                                EvidenceItem(
-                                    "transcript", dump(locator), encoded, digest(encoded), 1
-                                )
+                                EvidenceItem("source", dump(locator), encoded, digest(encoded), 1)
                             )
             for raw in claimed.get("artifact_revisions", []) + claimed.get(
                 "artifact_replacements", []

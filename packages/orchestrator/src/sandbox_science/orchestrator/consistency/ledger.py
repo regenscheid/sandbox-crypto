@@ -20,10 +20,13 @@ cursor and writes the observations in one change.
 
 from __future__ import annotations
 
+import logging
+import sqlite3
 from typing import Any, Final
 
 from sandbox_science.orchestrator.control import EventLog
 from sandbox_science.orchestrator.control.feeds import FeedCursor
+from sandbox_science.orchestrator.documents.errors import DocumentError
 from sandbox_science.orchestrator.ledger import EntryView, Ledger
 
 from .artifacts import pinned_artifact
@@ -31,6 +34,8 @@ from .quotes import quoted_items
 from .store import MAX_ITEM_BYTES, ReviewStore, dump
 
 Json = dict[str, Any]
+
+_log = logging.getLogger(__name__)
 
 LEDGER_FEED: Final = FeedCursor("ledger")
 _KINDS: Final = ("ledger.entry_created", "ledger.entry_revised")
@@ -70,6 +75,9 @@ def ingest_ledger(store: ReviewStore, project: str, session: str, *, drain: bool
             if (found := _observation(ledger, project, event.subject, event.payload)) is not None
         ]
         pinned = [item for _, view in seen for item in pinned_items(store, project, view)]
+        # The quotes' sources are found before the write, which only records them.
+        with store.documents.control.read() as tx:
+            quoted = [item for _, view in seen for item in quoted_items(tx.sql, project, view)]
         observations = [observation for observation, _ in seen] + [
             _flag(event.kind, event.payload)
             for event in events
@@ -101,30 +109,40 @@ def ingest_ledger(store: ReviewStore, project: str, session: str, *, drain: bool
             ).fetchone()[0]
             for locator, payload in pinned:
                 pin = locator["artifact"]
-                store.record_observation(
-                    db,
-                    project,
-                    session,
-                    f"pinned:{watermark}:{pin['artifact_id']}:{pin['revision']}",
-                    "artifact",
-                    locator,
-                    payload,
-                )
-            for _, view in seen:
-                for locator, payload in quoted_items(db, project, view):
-                    store.record_observation(
-                        db,
-                        project,
-                        session,
-                        f"quoted:{watermark}:{locator['quoted_by']['evidence']}",
-                        "transcript",
-                        locator,
-                        payload,
-                    )
+                key = f"pinned:{watermark}:{pin['artifact_id']}:{pin['revision']}"
+                _once(store, db, project, session, key, "artifact", locator, payload)
+            for locator, payload in quoted:
+                by = locator["quoted_by"]
+                key = f"quoted:{watermark}:{by['entry']}:{by['revision']}:{by['evidence']}"
+                _once(store, db, project, session, key, "source", locator, payload)
         after, pages = end, pages - 1
         if after >= target:
             break
     return {"cursor": after, "target": target, "complete": after >= target}
+
+
+def _once(
+    store: ReviewStore,
+    db: sqlite3.Connection,
+    project: str,
+    session: str,
+    key: str,
+    kind: str,
+    locator: Json,
+    payload: Json,
+) -> None:
+    """Record what an observed entry revision brings with it, once under ``key``: a
+    record already there is kept, and one the feed refuses is left out, so the ledger's
+    cursor still moves on (the review of CR-4)."""
+    if db.execute(
+        "SELECT 1 FROM review_feed WHERE project=? AND session=? AND source_key=?",
+        (project, session, key),
+    ).fetchone():
+        return
+    try:
+        store.record_observation(db, project, session, key, kind, locator, payload)
+    except DocumentError:
+        _log.warning("left out %s for %s/%s: the review feed refused it", key, project, session)
 
 
 def _fitted(payload: Json) -> tuple[Json, bool]:
