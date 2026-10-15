@@ -60,14 +60,27 @@ async def test_an_alias_the_gateway_does_not_list_falls_back_or_is_refused() -> 
     assert fell.recorded() == {"alias": "main", "asked": "delegated", "fallback": True}
     assert (await choice.choose("checker-b")).alias == "main"
     assert listed.calls == 1  # the list is read once for the parent's run
-    alone = ModelChoice("delegated", DelegationSettings(), Listing("main"))
-    with pytest.raises(WorkerAPIError, match="names no fallback") as refused:
-        await alone.choose(None)
+    alone = ModelChoice("delegated", ALLOWED, Listing("delegated"))
+    with pytest.raises(WorkerAPIError, match="lists no model 'checker-b'") as refused:
+        await alone.choose("checker-b")
     assert refused.value.kind == "unavailable"
     assert str(refused.value).startswith("model_unavailable: ")
-    gone = DelegationSettings(fallback="old")
+    gone = DelegationSettings(models=("checker-b",), fallback="old")
     with pytest.raises(WorkerAPIError, match="nor the project's fallback 'old'"):
-        await ModelChoice("delegated", gone, Listing("main")).choose(None)
+        await ModelChoice("delegated", gone, Listing("main")).choose("checker-b")
+
+
+async def test_the_roles_own_alias_is_called_when_the_gateway_does_not_list_it() -> None:
+    """Lab 40: the owner's LiteLLM served MAIN's alias, which its list of models left out,
+    so every delegation was refused. The role's own alias is the deployment's, as MAIN's
+    is, and the run's first call tells whether the gateway serves it."""
+    for settings in (DelegationSettings(), DelegationSettings(fallback="old")):
+        choice = ModelChoice("delegated", settings, Listing("main"))
+        assert await choice.choose(None) == Choice("delegated", "delegated")
+        assert await choice.choose("delegated") == Choice("delegated", "delegated")
+    # A fallback the gateway lists still replaces it, and the delegation records that.
+    replaced = await ModelChoice("delegated", ALLOWED, Listing("main")).choose(None)
+    assert replaced == Choice("main", "delegated")
 
 
 async def test_a_gateway_that_cannot_list_is_taken_at_its_word() -> None:
@@ -169,9 +182,10 @@ async def test_a_run_offered_no_choice_has_no_model_to_choose(delegating: Harnes
 
 
 async def test_an_unlisted_alias_is_refused_without_a_fallback(delegating: Harness) -> None:
-    """PD-F11: the delegated alias is missing from the gateway's list."""
-    delegating.gateway.listed = ["main"]
-    check = call("delegate", check={"entry": "C-1", "revision": 1})
+    """PD-F11: the alias a brief chose is missing from the gateway's list."""
+    delegating.gateway.listed = ["main", "delegated"]
+    configure(delegating, models=("checker-b",))
+    check = call("delegate", check={"entry": "C-1", "revision": 1}, model="checker-b")
     root = await delegating.run(
         "root",
         [Reply(calls=[check]), Reply("No check.")],
@@ -181,6 +195,21 @@ async def test_an_unlisted_alias_is_refused_without_a_fallback(delegating: Harne
     assert refused["kind"] == "unavailable"
     assert refused["message"].startswith("model_unavailable: the model gateway lists no model")
     assert "delegations" not in root.summaries
+
+
+async def test_the_roles_unlisted_alias_runs_the_check(delegating: Harness) -> None:
+    """Lab 40: a gateway that serves the delegated role's alias without listing it."""
+    delegating.gateway.listed = ["main"]
+    check = call("delegate", check={"entry": "C-1", "revision": 1})
+    root = await delegating.run(
+        "root",
+        [Reply(calls=[check]), wait(), Reply("Done.")],
+        delegated=[Reply(REPORT)],
+        options=["--delegated-model", "delegated"],
+    )
+    assert answer(root, 0)["model"] == {"alias": "delegated"}
+    (child,) = children(delegating, root)
+    assert child.alias == "delegated"
 
 
 async def test_a_fallback_replaces_an_unlisted_alias_and_is_recorded(

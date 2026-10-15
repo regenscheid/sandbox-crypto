@@ -6,9 +6,11 @@ choose; otherwise the run calls the delegated role's alias, which is MAIN's unle
 deployment names another. The choice is made as ``delegate`` is called, before anything
 is written or reserved: an alias the gateway does not list is replaced by the project's
 fallback when it names one the gateway lists, and the delegation records that it was;
-otherwise ``delegate`` is refused with ``model_unavailable``. A gateway that cannot be
-asked for its list is taken at its word, and the run's first call tells. Whether an
-alias can call tools is not checked yet.
+otherwise a brief's choice is refused with ``model_unavailable``, and the delegated
+role's own alias is called all the same, since a gateway may serve an alias it does not
+list, as the owner's LiteLLM did MAIN's (lab 40). A gateway that cannot be asked for its
+list is taken at its word. Either way, the run's first call tells. Whether an alias can
+call tools is not checked yet.
 """
 
 from __future__ import annotations
@@ -67,7 +69,7 @@ class ModelChoice:
     async def choose(self, asked: str | None) -> Choice:
         """The alias for a brief that asked for ``asked``, or ``WorkerAPIError``:
         ``policy_denied`` for an alias the project does not allow, ``unavailable`` for
-        one the gateway does not list when no fallback it lists replaces it."""
+        a chosen one the gateway does not list when no fallback it lists replaces it."""
         alias = self.default if asked is None else asked
         if alias != self.default and alias not in self.settings.models:
             allowed = ", ".join(self.settings.models) or "none"
@@ -88,6 +90,11 @@ class ModelChoice:
         fallback = self.settings.fallback
         if fallback is not None and fallback in listed:
             return Choice(fallback, alias)
+        if alias == self.default:
+            # The deployment's own alias, like MAIN's, which no list checks: a gateway may
+            # serve an alias it does not list, as the owner's LiteLLM did MAIN's (lab 40), so
+            # the run's first call tells.
+            return Choice(alias, alias)
         named = (
             f"nor the project's fallback {fallback!r}"
             if fallback is not None
