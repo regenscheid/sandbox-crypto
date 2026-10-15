@@ -579,17 +579,18 @@ export const api = {
       `/projects/${part(project)}/frontier` + (after === null ? '' : `?after=${part(after)}`),
     ),
   /**
-   * A category's frontier: a page of its groups from the `groupsAfter`-th on, with the
-   * proposed candidates made before result number `candidatesBefore`, or the newest.
+   * A category's frontier: a page of its groups, in the order of their keys, after the
+   * group keyed `groupsAfterKey`, with the proposed candidates made before result number
+   * `candidatesBefore`, or the newest.
    */
   frontier: (
     project: string,
     category: string,
-    groupsAfter: number | null = null,
+    groupsAfterKey: string | null = null,
     candidatesBefore: number | null = null,
   ) => {
     const query = new URLSearchParams({
-      ...(groupsAfter === null ? {} : { groups_after: String(groupsAfter) }),
+      ...(groupsAfterKey === null ? {} : { groups_after_key: groupsAfterKey }),
       ...(candidatesBefore === null ? {} : { candidates_before: String(candidatesBefore) }),
     }).toString();
     return get<FrontierAnswer>(

@@ -90,37 +90,27 @@ export function indicatorsText(result: FrontierResult): string[] {
   ];
 }
 
-/** How many of a kind of result a group leaves out of the answer, in words; empty for none. */
+/**
+ * How many of a kind of result a group leaves out of the answer, in words; empty for none.
+ * The answer lists a group's newest candidates, so those it leaves out are older.
+ */
 export function moreText(group: Pick<FrontierGroup, 'more'>, kind: string): string {
   const count = group.more[kind] ?? 0;
-  return count > 0 ? `And ${count} more, not listed.` : '';
+  if (count === 0) return '';
+  return kind === 'candidates'
+    ? `And ${count} older, not listed.`
+    : `And ${count} more, not listed.`;
 }
 
 /**
- * Which of a group's candidates are listed, in words. The answer lists the first 100 in
- * the order they were made, so a group with more lists the oldest of the window.
+ * Each group once, the first time it was read, by its key (the conditions as the frontier
+ * folds them): a page read again after a change can repeat one.
  */
-export function candidatesText(group: Pick<FrontierGroup, 'candidates' | 'more'>): string {
-  const more = group.more.candidates ?? 0;
-  if (more === 0) return 'Newest first.';
-  return (
-    `Only the oldest ${group.candidates.length} of this window are listed, newest of them ` +
-    `first; ${more} newer ${more === 1 ? 'one is' : 'ones are'} not listed.`
-  );
-}
-
-/** A group's key: its conditions as spelled. */
-export function groupKey(conditions: Record<string, string>): string {
-  return JSON.stringify(Object.entries(conditions));
-}
-
-/** Each group once, the first time it was read: pages read at different times can repeat one. */
 export function uniqueGroups(groups: readonly FrontierGroup[]): FrontierGroup[] {
   const seen = new Set<string>();
   return groups.filter((group) => {
-    const key = groupKey(group.conditions);
-    if (seen.has(key)) return false;
-    seen.add(key);
+    if (seen.has(group.key)) return false;
+    seen.add(group.key);
     return true;
   });
 }

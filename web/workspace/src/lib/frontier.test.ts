@@ -13,7 +13,6 @@ import type {
   FrontierResult,
 } from './api-types';
 import {
-  candidatesText,
   conditionsText,
   indicatorsText,
   lookalikeText,
@@ -167,16 +166,12 @@ describe('the frontier in words', () => {
     expect(revisedSince({ ...revised, since: null })).toBe('You have written no revision of it.');
   });
 
-  it('says which candidates are listed: past 100, the oldest of the window', () => {
-    expect(candidatesText(group({ candidates: [result()] }))).toBe('Newest first.');
+  it('lists the candidates as the answer gives them, newest first, and how many older are not', () => {
+    // The route lists a group's newest 100 candidates, newest first.
     const many = Array.from({ length: 100 }, (_, n) =>
-      result({ entry_id: `entry-${n}`, handle: `R-${n + 1}` }),
+      result({ entry_id: `entry-${n}`, handle: `R-${130 - n}` }),
     );
     const listed = group({ best: [], candidates: many, more: { candidates: 30 } });
-    expect(candidatesText(listed)).toBe(
-      'Only the oldest 100 of this window are listed, newest of them first; 30 newer ones are ' +
-        'not listed.',
-    );
     const html = render(FrontierGroup, {
       props: {
         projectId: 'p1',
@@ -185,17 +180,18 @@ describe('the frontier in words', () => {
         done: async () => {},
       },
     }).body;
-    expect(html).toContain('Only the oldest 100 of this window are listed');
-    expect(html).not.toContain('And 30 more');
-    // Of those listed, the newest comes first.
-    expect(html.indexOf('>R-100<')).toBeLessThan(html.indexOf('>R-1<'));
+    expect(html).toContain('And 30 older, not listed.');
+    expect(html).not.toContain('oldest 100');
+    expect(html.indexOf('>R-130<')).toBeLessThan(html.indexOf('>R-31<'));
   });
 
-  it('keeps each group once, the first time it was read', () => {
+  it('keeps each group once, by its key, the first time it was read', () => {
     const first = group({ best: [] });
-    const found = uniqueGroups([first, group(), group({ conditions: { attack: 'dual' } })]);
-    expect(found).toHaveLength(2);
-    expect(found[0]).toBe(first);
+    // The same folded key, spelled by another result.
+    const respelled = group({ conditions: { Attack: 'Primal' } });
+    const dual = group({ conditions: { attack: 'dual' }, key: '{"attack":"dual"}' });
+    const found = uniqueGroups([first, respelled, dual]);
+    expect(found).toEqual([first, dual]);
   });
 
   it("leads a result's category field to its frontier, and only a name the server takes", () => {
@@ -274,7 +270,7 @@ describe('the frontier views', () => {
           conditions: { [HOSTILE]: HOSTILE },
           key: JSON.stringify({ [HOSTILE]: HOSTILE }),
           best: [],
-          candidates: [hostile, result({ handle: 'R-9', entry_id: 'entry-9' })],
+          candidates: [result({ handle: 'R-9', entry_id: 'entry-9' }), hostile],
           more: { candidates: 4 },
         }),
         measures: category().measures,
@@ -291,9 +287,8 @@ describe('the frontier views', () => {
     ]);
     expect(html).toContain('Unverified: published by');
     expect(html).toContain('Disputed: shown as r2');
-    expect(html).toContain('4 newer ones are not listed.');
-    expect(html).not.toContain('And 4 more');
-    // Newest first: the result made last is listed first.
+    expect(html).toContain('And 4 older, not listed.');
+    // As the answer lists them, newest first.
     expect(html.indexOf('R-9')).toBeLessThan(html.indexOf('javascript:alert(1)'));
   });
 });

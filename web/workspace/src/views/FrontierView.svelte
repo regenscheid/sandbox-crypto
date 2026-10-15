@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- A frontier category's frontier (docs/specs/ledger.md, LG-18 to LG-23): the category,
-     then its results grouped by their conditions, a page of groups at a time, each group
-     once even when pages overlap; the proposed candidates read in windows of the newest,
+     then its results grouped by their conditions, a page of groups at a time in the order
+     of their keys, read on from the last key shown, so a change between reads moves none; the proposed candidates read in windows of the newest,
      older ones on request; the eligible results no group places; and the dominates links
      that count for nothing; then the history and the best known at a time the user picks.
      After the user's change on the page, the frontier is read again from its first group,
@@ -9,7 +9,7 @@
 <script lang="ts">
   import { api } from '../lib/api';
   import type { FrontierGroup, FrontierView } from '../lib/api-types';
-  import { groupKey, moreText, uniqueGroups, windowText } from '../lib/frontier';
+  import { moreText, uniqueGroups, windowText } from '../lib/frontier';
   import { emptyList, PagedList } from '../lib/pagedList';
   import { frontierHref, ledgerHref, projectHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
@@ -21,24 +21,21 @@
   import Result from './FrontierResult.svelte';
 
   let { projectId, category }: { projectId: string; category: string } = $props();
-  const groups = $state(emptyList<FrontierGroup, number>());
+  const groups = $state(emptyList<FrontierGroup, string>());
   /** The frontier as its first page of groups read it: all but its groups. */
   let read = $state<FrontierView | null>(null);
   /** The candidates read: the proposed results made before this result number, or the newest. */
   let before = $state<number | null>(null);
   /** The windows of candidates read before this one, the latest first, to go back to. */
   let newer = $state<(number | null)[]>([]);
-  /** How many pages of groups are shown: past one, a page may have shifted under the next. */
-  let pages = $state(0);
   // The route keys this view by the project and category: they never change here.
   const list = new PagedList(groups, async (after) => {
     const found = await api.frontier(projectId, category, after, before);
     return {
       items: found.frontier.groups,
-      next: found.next_groups_after,
+      next: found.next_groups_key,
       shown: () => {
         if (after === null) read = found.frontier;
-        pages = after === null ? 1 : pages + 1;
       },
     };
   });
@@ -106,7 +103,7 @@
   </p>
 {/if}
 
-{#each shown as group (groupKey(group.conditions))}
+{#each shown as group (group.key)}
   <Group {projectId} {group} {measures} {done} />
 {:else}
   {#if read}<p class="muted">No result of this category is eligible or a candidate yet.</p>{/if}
@@ -115,12 +112,6 @@
 {#if groups.error}
   <ErrorMessage error={groups.error} />
   <p><button type="button" disabled={groups.loading} onclick={retry}>Try again</button></p>
-{/if}
-{#if pages > 1}
-  <p class="muted">
-    Groups are read by their place in the list, so a change between pages can shift them and one may
-    be missed. Reload the page to read them all again.
-  </p>
 {/if}
 {#if groups.next !== null && !groups.error}
   <p>
