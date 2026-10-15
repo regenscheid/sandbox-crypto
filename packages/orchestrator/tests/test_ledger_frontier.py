@@ -194,6 +194,12 @@ def test_condition_keys_are_compared_folded_and_values_hold_no_hidden_text(
     hidden = {"model": "classical\u200b", "success": "at least 1/2"}
     with pytest.raises(DocumentError, match=r"fields\.conditions\.model holds U\+200B"):
         change(ledger, result(conditions=hidden), op="hidden")
+    # The verification's confusables: an agent writes condition values in printable ASCII,
+    # so a Cyrillic a, a Unicode dash or Arabic-Indic digits make no group of their own.
+    for n, value in enumerate(("cl\u0430ssical", "classical\u2010quantum", "\u0661/2")):
+        with pytest.raises(DocumentError, match="outside printable ASCII"):
+            change(ledger, result(conditions={**CLASSICAL, "success": value}), op=f"c{n}")
+    change(ledger, result(conditions={**CLASSICAL, "model": "cl\u0430ssical"}), op="u", author=USER)
 
 
 def test_a_version_25_store_takes_categories_after_the_migration(

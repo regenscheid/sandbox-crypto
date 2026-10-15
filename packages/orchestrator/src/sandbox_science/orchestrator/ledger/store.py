@@ -1804,6 +1804,7 @@ def _agent_text(mutation: Mutation) -> Mutation:
             update["statement"] = agent_text(change.statement, f"{where} statement")
         if change.fields is not None:
             update["fields"] = agent_values(change.fields, f"{where} fields")
+            _ascii_conditions(change.fields, where)
         if change.links is not None:
             update["links"] = [
                 link
@@ -1825,6 +1826,23 @@ def _agent_text(mutation: Mutation) -> Mutation:
         changes.append(change.model_copy(update=update))
     reason = agent_text(mutation.reason, "the reason")
     return mutation.model_copy(update={"reason": reason, "changes": changes})
+
+
+def _ascii_conditions(fields: Json, where: str) -> None:
+    """An agent writes a result's condition values in printable ASCII (the frontier
+    review's M4): a letter of another script that looks Latin, a Unicode dash or slash, or
+    other digits would put the result under conditions of its own. The user's are free."""
+    conditions = fields.get("conditions")
+    if not isinstance(conditions, dict):
+        return
+    for key, value in cast(Json, conditions).items():
+        if isinstance(value, str) and not all(" " <= c <= "~" for c in value):
+            raise DocumentError(
+                INVALID_REQUEST,
+                f"{where} fields.conditions.{key} holds a character outside printable ASCII: "
+                "an agent writes condition values in printable ASCII, so that results compare "
+                "under one spelling",
+            )
 
 
 def _labelled(error: DocumentError, provenance: Json | None) -> DocumentError:
