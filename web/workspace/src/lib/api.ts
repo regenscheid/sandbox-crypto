@@ -9,6 +9,7 @@
 import type {
   ArtifactListing,
   LedgerEntry,
+  LedgerHistory,
   LedgerListing,
   ProjectAnswer,
   ProjectListing,
@@ -485,6 +486,12 @@ export const api = {
         (incomingAfter === 0
           ? ''
           : `${revision === null ? '?' : '&'}incoming_after=${incomingAfter}`),
+    ),
+  /** A page of an entry's revisions, newest first, before `before`. */
+  ledgerHistory: (project: string, entry: string, before: number | null = null) =>
+    get<LedgerHistory>(
+      `/projects/${part(project)}/ledger/${part(entry)}/history` +
+        (before === null ? '' : `?before=${before}`),
     ),
   history: (project: string, document: string) =>
     get<DocumentHistory>(`/projects/${part(project)}/documents/${part(document)}/history`),

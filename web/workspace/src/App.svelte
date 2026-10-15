@@ -5,8 +5,10 @@
   import DocumentView from './views/DocumentView.svelte';
   import HistoryView from './views/HistoryView.svelte';
   import PdfView from './views/PdfView.svelte';
+  import FindingView from './views/FindingView.svelte';
   import LedgerBoard from './views/LedgerBoard.svelte';
   import LedgerEntryView from './views/LedgerEntryView.svelte';
+  import IssueList from './views/IssueList.svelte';
   import ProjectList from './views/ProjectList.svelte';
   import ProjectView from './views/ProjectView.svelte';
   import SessionView from './views/SessionView.svelte';
@@ -51,6 +53,14 @@
       {#key `${route.project}/${route.session}`}
         <SessionView projectId={route.project} sessionId={route.session} />
       {/key}
+    {:else if route.view === 'finding'}
+      {#key `${route.project}/${route.session}/${route.finding}`}
+        <FindingView
+          projectId={route.project}
+          sessionId={route.session}
+          findingId={route.finding}
+        />
+      {/key}
     {:else if route.view === 'document'}
       {#key `${route.project}/${route.document}/${route.revision}`}
         <DocumentView
@@ -63,6 +73,10 @@
     {:else if route.view === 'ledger'}
       {#key route.project}
         <LedgerBoard projectId={route.project} />
+      {/key}
+    {:else if route.view === 'issues'}
+      {#key route.project}
+        <IssueList projectId={route.project} />
       {/key}
     {:else if route.view === 'entry'}
       {#key `${route.project}/${route.entry}/${route.revision}`}

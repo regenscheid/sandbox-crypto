@@ -4,6 +4,7 @@
 // entry route composes its query.
 import { render } from 'svelte/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import IssueRow from '../views/IssueRow.svelte';
 import LedgerEntryBody from '../views/LedgerEntryBody.svelte';
 import LedgerLinks from '../views/LedgerLinks.svelte';
 import { api } from './api';
@@ -33,6 +34,8 @@ const hostileLinks = [
   link({ handle: 'C-1/../../x', target_id: 'C-2' }),
   link({ handle: 'I-1', note: HOSTILE }),
   link({ target: 'finding', target_id: HOSTILE }),
+  link({ target: 'finding', target_id: HOSTILE, session: HOSTILE }),
+  link({ target: 'finding', target_id: 'finding-1', session: 'javascript:alert(1)' }),
   link({ kind: 'assumes', handle: 'A-1', revision: 3 }),
 ];
 
@@ -69,10 +72,13 @@ describe('the ledger views', () => {
     const names = Object.keys(views).map((path) => path.replace('../views/', ''));
     expect(names).toEqual(
       expect.arrayContaining([
+        'IssueList.svelte',
+        'IssueRow.svelte',
         'LedgerBoard.svelte',
         'LedgerColumn.svelte',
         'LedgerEntryBody.svelte',
         'LedgerEntryView.svelte',
+        'LedgerHistory.svelte',
         'LedgerIncoming.svelte',
         'LedgerLinks.svelte',
       ]),
@@ -113,7 +119,12 @@ describe('the ledger views', () => {
         '<javascript:alert(1)>',
         '$\\href{javascript:alert(1)}{x}$',
       ].join('\n\n'),
-      fields: { [HOSTILE]: HOSTILE, kind: HOSTILE, conditions: { [HOSTILE]: HOSTILE } },
+      fields: {
+        [HOSTILE]: HOSTILE,
+        kind: HOSTILE,
+        conditions: { [HOSTILE]: HOSTILE },
+        pdf: { artifact_id: HOSTILE, revision: 1, sha256: 'ab'.repeat(32) },
+      },
       links: hostileLinks,
       incoming: [link({ handle: 'I-9', note: HOSTILE }), link({ handle: HOSTILE })],
       incoming_total: 450,
@@ -127,6 +138,32 @@ describe('the ledger views', () => {
     expect(html).toContain('Links to it');
     expect(html).toContain('(450)');
     expect(html).toContain('More links to it');
+    // The PDF and the findings in their sessions lead somewhere, each encoded.
+    expect(found.hrefs.some((href) => href.includes('/artifacts/'))).toBe(true);
+    expect(found.hrefs.some((href) => href.includes('/findings/'))).toBe(true);
+  });
+});
+
+describe('the issue list', () => {
+  it('shows a hostile issue as text, its handle leading into the workspace', () => {
+    const html = render(IssueRow, {
+      props: {
+        projectId: 'p1',
+        issue: {
+          entry_id: 'entry-0123456789abcdef01234567',
+          handle: 'I-1',
+          type: 'issue',
+          origin: null,
+          revision: 1,
+          title: HOSTILE,
+          status: 'open',
+          updated: HOSTILE,
+        },
+      },
+    }).body;
+    const found = inspect(html);
+    expect(found.hostile).toBe(false);
+    expect(found.hrefs).toEqual(['#/projects/p1/ledger/I-1']);
   });
 });
 

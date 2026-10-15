@@ -4,14 +4,16 @@
  *
  * - `#/` the projects;
  * - `#/projects/<project>` one project;
- * - `#/projects/<project>/sessions/<session>` one session and its runs;
+ * - `#/projects/<project>/sessions/<session>` one session and its runs, and
+ *   `…/findings/<finding>` one of its review findings, as a ledger entry links to it;
  * - `#/projects/<project>/documents/<document>` a living document's current revision,
  *   `…/revisions/<number>` one of its revisions, and `…/revisions/<number>/blocks/<block>`
  *   that revision with one block in focus (a finding's anchor, say);
  * - `#/projects/<project>/documents/<document>/history` who changed what in it;
  * - `#/projects/<project>/artifacts/<artifact>/revisions/<number>/<sha256>` a published
  *   PDF in the viewer;
- * - `#/projects/<project>/ledger` the project's ledger as a board, and
+ * - `#/projects/<project>/ledger` the project's ledger as a board,
+ *   `#/projects/<project>/ledger/issues` its issues and what they concern, and
  *   `#/projects/<project>/ledger/<entry>` one entry by its handle or ID, with
  *   `…/revisions/<number>` for an earlier revision.
  */
@@ -20,6 +22,7 @@ export type Route =
   | { view: 'projects' }
   | { view: 'project'; project: string }
   | { view: 'session'; project: string; session: string }
+  | { view: 'finding'; project: string; session: string; finding: string }
   | {
       view: 'document';
       project: string;
@@ -30,6 +33,7 @@ export type Route =
   | { view: 'history'; project: string; document: string }
   | { view: 'pdf'; project: string; artifact: string; revision: number; sha256: string }
   | { view: 'ledger'; project: string }
+  | { view: 'issues'; project: string }
   | { view: 'entry'; project: string; entry: string; revision: number | null }
   | { view: 'missing' };
 
@@ -63,6 +67,10 @@ export function parseRoute(hash: string): Route {
   if (parts[2] === 'sessions' && parts.length === 4) {
     return { view: 'session', project, session: name };
   }
+  if (parts[2] === 'sessions' && parts.length === 6 && parts[4] === 'findings') {
+    const finding = decoded(parts[5]!);
+    if (finding !== null) return { view: 'finding', project, session: name, finding };
+  }
   if (parts[2] === 'documents') {
     if (parts.length === 4)
       return { view: 'document', project, document: name, revision: null, block: null };
@@ -93,6 +101,7 @@ export function parseRoute(hash: string): Route {
 /** The board, or one entry: `<entry>` or `<entry>/revisions/<number>` after `ledger/`. */
 function ledgerRoute(project: string, rest: string[]): Route {
   if (rest.length === 0) return { view: 'ledger', project };
+  if (rest.length === 1 && rest[0] === 'issues') return { view: 'issues', project };
   const entry = rest[0]!;
   if (!ENTRY_NAME.test(entry)) return { view: 'missing' };
   if (rest.length === 1) return { view: 'entry', project, entry, revision: null };
@@ -108,6 +117,10 @@ export function projectHref(project: string): string {
 
 export function sessionHref(project: string, session: string): string {
   return `${projectHref(project)}/sessions/${encodeURIComponent(session)}`;
+}
+
+export function findingHref(project: string, session: string, finding: string): string {
+  return `${sessionHref(project, session)}/findings/${encodeURIComponent(finding)}`;
 }
 
 export function documentHref(
@@ -132,6 +145,10 @@ export function pdfHref(project: string, artifact: string, revision: number, sha
 
 export function ledgerHref(project: string): string {
   return `${projectHref(project)}/ledger`;
+}
+
+export function issuesHref(project: string): string {
+  return `${ledgerHref(project)}/issues`;
 }
 
 /** An entry by its handle or ID; at `revision`, that revision. */

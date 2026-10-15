@@ -50,6 +50,16 @@ export class PagedList<T, C> {
     return next === null || loading ? Promise.resolve() : this.#load(next);
   }
 
+  /**
+   * The first page of another list, such as one a filter now names: the list shown goes at
+   * once, so it is never taken for the new one, and its cursor with it, even when the read
+   * fails.
+   */
+  restart(): Promise<void> {
+    this.clear();
+    return this.reload();
+  }
+
   /** An empty list; pages still on their way are dropped. */
   clear(): void {
     this.#generation++;

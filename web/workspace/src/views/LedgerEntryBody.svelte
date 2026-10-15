@@ -13,7 +13,7 @@
   import LedgerLinks from './LedgerLinks.svelte';
 
   let { projectId, entry }: { projectId: string; entry: EntryView } = $props();
-  const fields = $derived(fieldRows(entry.fields));
+  const fields = $derived(fieldRows(entry.fields, projectId));
 </script>
 
 <h1>{entry.handle}: {entry.title}</h1>
@@ -51,7 +51,9 @@
   <dl class="facts">
     {#each fields as row (row.key)}
       <dt>{row.name}</dt>
-      <dd>{row.value}</dd>
+      <dd>
+        {#if row.href}<a href={row.href}>{row.value}</a>{:else}{row.value}{/if}
+      </dd>
     {/each}
   </dl>
 {/if}

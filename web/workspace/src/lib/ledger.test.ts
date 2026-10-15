@@ -13,6 +13,7 @@ import {
   linksByKind,
   linkTarget,
   matches,
+  provenanceText,
   STATUSES,
   statusText,
 } from './ledger';
@@ -100,9 +101,13 @@ describe('a link', () => {
     });
   });
 
-  test('to a review finding names it', () => {
+  test('to a review finding leads to it in its session, or names it without one', () => {
     const finding = link({ kind: 'concerns', target: 'finding', target_id: 'finding-9' });
     expect(linkTarget('p1', finding)).toEqual({ text: 'review finding finding-9', href: null });
+    expect(linkTarget('p 1', { ...finding, session: 's/1' })).toEqual({
+      text: 'review finding finding-9, session s/1',
+      href: '#/projects/p%201/sessions/s%2F1/findings/finding-9',
+    });
   });
 
   test('groups follow the order of the kinds, each in stored order', () => {
@@ -121,42 +126,53 @@ describe('a link', () => {
 describe('fields', () => {
   test("show a result's kind, category, conditions and measures as text", () => {
     expect(
-      fieldRows({
-        measures: { time: 120, memory: '2^{0.29n}' },
-        kind: 'negative_result',
-        conditions: { model: 'classical', success_at: '1/2' },
-        category: 'key-recovery',
-      }),
+      fieldRows(
+        {
+          measures: { time: 120, memory: '2^{0.29n}' },
+          kind: 'negative_result',
+          conditions: { model: 'classical', success_at: '1/2' },
+          category: 'key-recovery',
+        },
+        'p1',
+      ),
     ).toEqual([
-      { key: 'kind', name: 'Kind', value: 'negative result' },
-      { key: 'category', name: 'Frontier category', value: 'key-recovery' },
-      { key: 'conditions', name: 'Conditions', value: 'model: classical; success_at: 1/2' },
-      { key: 'measures', name: 'Measures', value: 'time: 120; memory: 2^{0.29n}' },
+      { key: 'kind', name: 'Kind', value: 'negative result', href: null },
+      { key: 'category', name: 'Frontier category', value: 'key-recovery', href: null },
+      {
+        key: 'conditions',
+        name: 'Conditions',
+        value: 'model: classical; success_at: 1/2',
+        href: null,
+      },
+      { key: 'measures', name: 'Measures', value: 'time: 120; memory: 2^{0.29n}', href: null },
     ]);
   });
 
   test("show a reference's citation, and its PDF by artifact and revision", () => {
     expect(
-      fieldRows({
-        pdf: { artifact_id: 'artifact-1', revision: 2 },
-        authors: ['A. Author', 'B. Author'],
-        identifiers: { eprint: '2024/123' },
-        retrieved: '2026-10-14',
-      }),
+      fieldRows(
+        {
+          pdf: { artifact_id: 'artifact-1', revision: 2 },
+          authors: ['A. Author', 'B. Author'],
+          identifiers: { eprint: '2024/123' },
+          retrieved: '2026-10-14',
+        },
+        'p1',
+      ),
     ).toEqual([
-      { key: 'identifiers', name: 'Identifiers', value: 'eprint: 2024/123' },
-      { key: 'authors', name: 'Authors', value: 'A. Author; B. Author' },
-      { key: 'retrieved', name: 'Retrieved', value: '2026-10-14' },
-      { key: 'pdf', name: 'PDF', value: 'artifact artifact-1 r2' },
+      { key: 'identifiers', name: 'Identifiers', value: 'eprint: 2024/123', href: null },
+      { key: 'authors', name: 'Authors', value: 'A. Author; B. Author', href: null },
+      { key: 'retrieved', name: 'Retrieved', value: '2026-10-14', href: null },
+      { key: 'pdf', name: 'PDF', value: 'artifact artifact-1 r2', href: null },
     ]);
   });
 
   test('a field the view does not know yet still shows, under its own name', () => {
-    expect(fieldRows({ new_field: 'x', kind: 'lemma' })).toEqual([
-      { key: 'kind', name: 'Kind', value: 'lemma' },
-      { key: 'new_field', name: 'new field', value: 'x' },
+    expect(fieldRows({ new_field: 'x', kind: 'lemma' }, 'p1')).toEqual([
+      { key: 'kind', name: 'Kind', value: 'lemma', href: null },
+      { key: 'new_field', name: 'new field', value: 'x', href: null },
     ]);
-    expect(fieldRows({})).toEqual([]);
+    expect(fieldRows({}, 'p1')).toEqual([]);
   });
 });
 
@@ -191,7 +207,7 @@ describe('the links to an entry, a page at a time', () => {
 
 test("a field's row is keyed by its name as stored, not its name in words", () => {
   // Two stored names that read the same in words stay two rows.
-  const rows = fieldRows({ foo_bar: 1, 'foo bar': 2 });
+  const rows = fieldRows({ foo_bar: 1, 'foo bar': 2 }, 'p1');
   expect(rows.map((row) => row.name)).toEqual(['foo bar', 'foo bar']);
   expect(new Set(rows.map((row) => row.key)).size).toBe(2);
 });
@@ -215,5 +231,47 @@ describe("the views' tables agree with the ledger's models (ledger.fixtures.json
 
   test('the names of the fields the types give', () => {
     expect(Object.keys(FIELD_NAMES).sort()).toEqual(fixture.fields);
+  });
+});
+
+test('an imported revision names its results file and line', () => {
+  expect(provenanceText(null)).toBe('');
+  expect(
+    provenanceText({ file: 'shared/results/ff.jsonl', sha256: 'ab'.repeat(32), line: 3 }),
+  ).toBe('imported from results file shared/results/ff.jsonl, line 3 (sha256 abababababab…)');
+  expect(provenanceText({ file: 'x.jsonl', line: 1 })).toBe(
+    'imported from results file x.jsonl, line 1',
+  );
+  expect(provenanceText({ source: 'pack' })).toBe('imported: {"source":"pack"}');
+});
+
+describe("a reference's PDF", () => {
+  const sha = 'ab'.repeat(32);
+
+  test('opens in the viewer by the hash its field pins', () => {
+    const [row] = fieldRows(
+      { pdf: { artifact_id: 'artifact-1', revision: 2, sha256: sha } },
+      'p 1',
+    );
+    expect(row).toEqual({
+      key: 'pdf',
+      name: 'PDF',
+      value: 'artifact artifact-1 r2',
+      href: `#/projects/p%201/artifacts/artifact-1/revisions/2/${sha}`,
+    });
+  });
+
+  test('is only named when its field pins no valid hash or revision', () => {
+    for (const pdf of [
+      { artifact_id: 'artifact-1', revision: 2 },
+      { artifact_id: 'artifact-1', revision: 2, sha256: 'AB'.repeat(32) },
+      { artifact_id: 'artifact-1', revision: 2, sha256: `${sha}/../x` },
+      { artifact_id: 'artifact-1', revision: 0, sha256: sha },
+      { artifact_id: '', revision: 2, sha256: sha },
+      { artifact_id: 3, revision: 2, sha256: sha },
+    ]) {
+      expect(fieldRows({ pdf }, 'p1')[0]!.href, JSON.stringify(pdf)).toBeNull();
+    }
+    expect(fieldRows({ authors: ['x'] }, 'p1')[0]!.href).toBeNull();
   });
 });
