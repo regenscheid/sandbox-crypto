@@ -225,6 +225,8 @@ async def test_the_tool_table_offers_reads_as_reads_and_gates_changes(ledger: Le
         "ledger_history": "read",
         "ledger_change": "effect",
         "ledger_import": "effect",
+        "ledger_frontier": "read",
+        "ledger_category": "effect",
     }
     change = json.dumps({"reason": "Planned.", "changes": [TASK]})
     refused = await toolbox.call(ToolCall("c1", "ledger_change", change), "op", gates=(Fence(),))
@@ -725,3 +727,26 @@ async def test_a_change_clears_flags_and_a_read_pages_them(ledger: Ledger) -> No
     )
     assert (cleared["entries"], cleared["flags_cleared"]) == ([], flags)
     assert (await use(tool(ledger), "ledger_read", entry="R-1"))["flags"] == []
+
+
+@pytest.mark.asyncio
+async def test_the_agent_defines_and_reads_frontier_categories(ledger: Ledger) -> None:
+    """LG-18: the main agent defines a category under the call's operation ID, and reads
+    the categories a page at a time; a delegated agent defines none."""
+    from .test_ledger_frontier import KEY_RECOVERY
+
+    definition = {k: v for k, v in KEY_RECOVERY.items() if k != "operation_id"}
+    defined = await use(tool(ledger), "ledger_category", "define", **definition)
+    assert (defined["category"], defined["revision"], defined["operation_id"]) == (
+        "key-recovery",
+        1,
+        "define",
+    )
+    refused = await use(tool(ledger, role="delegated"), "ledger_category", "d", **definition)
+    assert refused["error"]["kind"] == "policy_denied"
+    listed = await use(tool(ledger), "ledger_frontier")
+    assert [c["category"] for c in listed["categories"]] == ["key-recovery"]
+    read = await use(tool(ledger), "ledger_frontier", category="key-recovery", revision=1)
+    assert read["conditions"] == ["model", "success"]
+    wrong = await use(tool(ledger), "ledger_frontier", after="key-recovery", category="x")
+    assert wrong["error"]["kind"] == "invalid_request"

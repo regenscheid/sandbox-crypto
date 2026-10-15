@@ -94,6 +94,9 @@ All routes need the session and answer JSON. Every route that is a GET also answ
 | POST | `/api/v0/projects/{project}/ledger/{entry}/flags` | The user's clearing of open flags on the entry (`flags`, or else every open flag, or those of a `cause`; `reason`, `operation_id`); a flag on another entry is not found ([ledger](LEDGER.md)) |
 | POST | `/api/v0/projects/{project}/ledger/{entry}/flags/reopened` | The user's reopening of cleared flags on the entry (`flags`, `reason`, `operation_id`), each as a new flag |
 | GET | `/api/v0/projects/{project}/ledger/{entry}/gate` | The gate for the entry as it reads now: each clause, whether it holds and why, and the decisions that affect it ([ledger](LEDGER.md)) |
+| GET | `/api/v0/projects/{project}/frontier` | The project's frontier categories, in the order they were defined (`?after=` a category, `?limit=` 1 to 100) |
+| POST | `/api/v0/projects/{project}/frontier` | The user's definition of a frontier category, or its revision at `expected` ([ledger](LEDGER.md)) |
+| GET | `/api/v0/projects/{project}/frontier/{category}/definition` | A category at its current revision or `?revision=` |
 | GET | `/api/v0/projects/{project}/ledger/{entry}/history` | An entry's revisions, newest first (`?before=` a revision) |
 | GET | `/api/v0/projects/{project}/memory` | The project memory's accepted entries in order, its version, their characters, how many an agent receives within the 16,000-character `bound`, and how many proposals wait ([project memory](MEMORY.md)) |
 | GET | `/api/v0/projects/{project}/memory/proposals` | The proposals waiting for the user, oldest first, each with who proposed it and why, and the entry it would change as it is now |
