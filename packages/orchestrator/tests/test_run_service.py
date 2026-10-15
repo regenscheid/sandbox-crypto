@@ -45,6 +45,17 @@ from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
 
+INTERRUPTIBLE = (
+    sys.executable,
+    "-c",
+    "import os, signal, sys; signal.signal(signal.SIGINT, signal.SIG_DFL); "
+    "os.execv(sys.argv[1], sys.argv[1:])",
+)
+"""Runs a command with SIGINT as a terminal's foreground process has it. A shell that
+starts the tests as a background job, as a script's ``&`` or an agent's background
+command does, starts them with SIGINT ignored. A child keeps an ignored signal, and
+Python then never turns SIGINT into KeyboardInterrupt, so ``serve`` would not stop."""
+
 
 @contextlib.asynccontextmanager
 async def serving(
@@ -54,6 +65,7 @@ async def serving(
     retry: float = 0.2,
     clock: Clock = SYSTEM_CLOCK,
     run_share: float = service_module.RUN_SHARE / 100,
+    serve: bool = True,
 ) -> AsyncIterator[RunService]:
     """The run service on the harness's state directory, worker and gateway, keeping the
     model budget during its runs as ``serve`` does."""
@@ -77,13 +89,15 @@ async def serving(
                 clock=clock,
             )
             service = RunService(core, poll=0.02, retry=retry, clock=clock)
-            task = asyncio.create_task(service.serve())
+            # Without ``serve``, the test takes the service's looks itself, with ``tick``.
+            task = asyncio.create_task(service.serve()) if serve else None
             try:
                 yield service
             finally:
-                task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
+                if task is not None:
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
     finally:
         await model.close()
         documents.close()
@@ -319,7 +333,7 @@ async def test_serve_runs_the_sessions_until_stopped(harness: Harness) -> None:
     harness.gateway.script = [Reply("Served.")]
     post(harness, "m-1", "Are you serving?")
     process = await asyncio.create_subprocess_exec(
-        str(Path(sys.executable).parent / "sandbox-science-harness"),
+        *INTERRUPTIBLE, str(Path(sys.executable).parent / "sandbox-science-harness"),
         "serve", "--worker", harness.worker.url, "--token-file", str(token),
         "--state-dir", str(harness.state), "--allow-unisolated",
         "--model-url", harness.gateway.url, "--api-key-file", str(key), "--poll", "0.05",
@@ -385,6 +399,38 @@ async def test_the_service_never_ends_its_own_live_run(
     assert record.final_text == "Thought."
     assert stops == ["answered"]
     assert states(harness) == {"m-1": "delivered"}
+
+
+async def test_a_lease_that_expires_between_two_looks_is_ended_not_taken_over(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RS-12. A tick looks for dead leases, then for sessions to run. A lease that expires
+    between the two looks used to be taken over by the session's next run, so the dead
+    run never ended and its message went to the new run instead of being held."""
+    past = FakeClock(datetime.now(UTC) - timedelta(minutes=5))
+    dead_state = RunState(ProjectStore(harness.state).control, clock=past)
+    run = "20261014T000000000000Z-crashed"
+    post(harness, "m-1", "Are you there?")
+    dead_state.acquire(PROJECT, SESSION, run, "a-dead-process")
+    dead_state.offer(PROJECT, SESSION, ["m-1"], run)
+    looks: list[None] = []
+    dead = RunState.dead
+
+    def later(self: RunState) -> list[DeadLease]:
+        looks.append(None)
+        return [] if len(looks) == 1 else dead(self)  # the first look, just before it expired
+
+    monkeypatch.setattr(RunState, "dead", later)
+    async with serving(harness, Reply("Not this run."), serve=False) as service:
+        await service.tick()  # no dead lease yet; by the look for sessions, it has expired
+        assert service.active == {}  # so no run takes the session over
+        await service.tick()  # the next look ends the dead run first
+        assert runs(harness).ended(PROJECT, SESSION, run)
+        assert states(harness) == {"m-1": "held"}
+    assert names(harness) == []
+    assert harness.gateway.main == []
+    stopped = runs(harness).events(PROJECT, SESSION, run)[-1]
+    assert stopped.data["stopped"] == "interrupted"
 
 
 def test_a_lease_renewed_since_it_was_seen_dead_is_not_reaped(tmp_path: Path) -> None:

@@ -178,7 +178,9 @@ class RunService:
         for key in sorted(waiting):
             if key in self.active or self.waiting_until.get(key, now) > now:
                 continue
-            if await threaded(self.runs.lease, *key) is None:
+            # Not while a lease is left, even an expired one: it may have expired since
+            # the look for dead leases above, and the next look ends its run first.
+            if not await threaded(self.runs.leased, *key):
                 active = self.active[key] = _Active()
                 active.task = asyncio.create_task(self._run(*key, active))
 

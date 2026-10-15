@@ -325,6 +325,17 @@ class RunState:
             renewed_at=datetime.fromtimestamp(found[2], UTC),
         )
 
+    def leased(self, project: str, session: str) -> bool:
+        """Whether the session has a lease, live or expired. An expired one is ended
+        before the session runs again (RS-12): ``acquire`` would take it over, and its run
+        would never end."""
+        with self.control.read() as tx:
+            found = tx.sql.execute(
+                "SELECT 1 FROM run_leases WHERE project_id = ? AND session_id = ?",
+                (project, session),
+            ).fetchone()
+        return found is not None
+
     def reap(self, dead: DeadLease) -> bool:
         """Remove a dead lease, if it is still dead; whether it was."""
         with self.control.write() as tx:
