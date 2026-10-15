@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- The project's frontier categories, in the order they were defined, a page at a time
      (docs/specs/ledger.md, LG-18): each leading to its frontier, with its target, kind and
-     revision. Read-only. -->
+     revision; and the user's definition of a new one, after which the list is read again. -->
 <script lang="ts">
   import { api } from '../lib/api';
   import type { Category } from '../lib/api-types';
@@ -9,6 +9,7 @@
   import { emptyList, PagedList } from '../lib/pagedList';
   import { CATEGORY_NAME, categoryHref, ledgerHref, projectHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
+  import CategoryForm from './FrontierCategoryForm.svelte';
 
   let { projectId }: { projectId: string } = $props();
   const categories = $state(emptyList<Category, string>());
@@ -18,6 +19,15 @@
     return { items: found.page.categories, next: found.page.next_after };
   });
   void list.reload();
+  let defining = $state(false);
+  /** The category the user defined last, to lead to it. */
+  let defined = $state<Category | null>(null);
+
+  async function saved(category: Category): Promise<void> {
+    defining = false;
+    defined = category;
+    await list.reload();
+  }
 </script>
 
 <nav class="trail">
@@ -29,6 +39,22 @@
   The best known results of each category: its results grouped by their conditions, and compared on
   its measures. You or the main agent define the categories.
 </p>
+
+{#if defined}
+  <p role="status">
+    You defined
+    {#if CATEGORY_NAME.test(defined.category)}<a href={categoryHref(projectId, defined.category)}
+        >{defined.category}</a
+      >{:else}{defined.category}{/if}, r{defined.revision}{defined.replayed
+      ? ' (already saved: the server replayed its answer)'
+      : ''}.
+  </p>
+{/if}
+{#if defining}
+  <CategoryForm {projectId} done={saved} oncancel={() => (defining = false)} />
+{:else}
+  <p><button type="button" onclick={() => (defining = true)}>Define a category…</button></p>
+{/if}
 
 <ul>
   {#each categories.items as item (item.category)}
