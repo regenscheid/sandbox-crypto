@@ -32,15 +32,13 @@ from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
 from sandbox_science.orchestrator.prompts import PromptPins
 from sandbox_science.orchestrator.skills import SkillStore, builtin, from_git, snapshot
 
-from .control_versions import older_store
+from .control_versions import BUILTIN_SKILLS, older_store
 from .loop_harness import PROJECT, Harness, Reply
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
 
 PDF = "---\nname: pdf-reading\ndescription: Read a long PDF with the PDF tools.\n---\n"
-BEFORE_BUILTIN = migrations.BASELINE + migrations.MIGRATIONS.index(migrations._builtin_skills) - 1
-"""The version before the built-in kind (42)."""
 
 
 @pytest.fixture
@@ -184,9 +182,11 @@ def test_a_run_gets_the_built_in_skills_of_its_role(shipped: Path, tmp_path: Pat
             role: [e.name for e in store.effective(PROJECT, role).entries]
             for role in ("main", "delegated")
         }
+        checking = [e.name for e in store.effective(PROJECT, "delegated", delegates=False).entries]
     finally:
         projects.close()
     assert names == {"main": ["delegating-work", "pdf-reading"], "delegated": ["delegating-work"]}
+    assert checking == []  # a check, or a task at the last level, has no delegate tools
 
 
 def test_a_harness_without_its_pack_says_so(
@@ -266,7 +266,7 @@ def test_a_store_before_the_built_in_kind_keeps_its_imports(tmp_path: Path, ship
     older_store(
         tmp_path / "current/control.sqlite3",
         tmp_path / "old/control.sqlite3",
-        BEFORE_BUILTIN,
+        BUILTIN_SKILLS - 1,
     )
     migrated = ProjectStore(tmp_path / "old")
     try:
@@ -297,7 +297,7 @@ def test_a_pack_the_user_named_builtin_is_renamed_by_the_migration(
     current.close()
     (tmp_path / "old").mkdir()
     old = tmp_path / "old/control.sqlite3"
-    older_store(tmp_path / "current/control.sqlite3", old, BEFORE_BUILTIN)
+    older_store(tmp_path / "current/control.sqlite3", old, BUILTIN_SKILLS - 1)
     with sqlite3.connect(old) as db:  # as a K1-era import under the name would have it
         guards = db.execute(
             "SELECT name,sql FROM sqlite_master WHERE name IN "
