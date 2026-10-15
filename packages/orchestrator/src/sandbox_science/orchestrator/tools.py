@@ -496,6 +496,7 @@ class Toolbox:
         """A delegated run's own kernels: cells name it (PD-37); ``None`` uses the
         session's, which main runs share."""
         self.delegations = delegations
+        self.questions = questions
         self.delegated = delegated
         if delegated and connectors is not None:
             # PD-16: a delegated run is offered no connector tool, and no index of them.
@@ -812,6 +813,8 @@ class Toolbox:
             hooks.append(JobNotices(self.jobs, max_chars=self.output_chars // 4))
         if self.delegations is not None:
             hooks.append(self.delegations)
+        if self.questions is not None:
+            hooks.append(self.questions)
         if self.plans is not None:
             hooks.append(Plans(self.plans))
         if self.reviews is not None:

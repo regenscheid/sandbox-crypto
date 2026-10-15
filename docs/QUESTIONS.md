@@ -12,6 +12,8 @@ A main run is offered `ask_user`. Its arguments:
 
 The question, its labels and its details are the agent's text: line ends become line feeds, and a text holding a character the user may not see is refused (`check_agent_text`, threat model A3).
 
+A run asks one question per reply, and at most 10 in all: a second question in the same reply is refused (`invalid_request`), and an eleventh with `policy_denied` (`limit_reached`). A replayed call is the question it asked, and counts once.
+
 The call waits inside itself. The run keeps its session and makes no model call until the question closes, however long that takes: there is no default and no timeout (open question 6). Only that run waits: its jobs and delegated runs go on, and so do the project's other sessions (PD-26). The call polls the control store once a second.
 
 The answer is the call's result, so it reaches the run and the call that asked, and two waiting calls never get each other's answers (PD-24). The result is JSON with the `question_id` and one of:

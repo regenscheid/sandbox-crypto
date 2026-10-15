@@ -123,6 +123,43 @@ def test_a_question_has_text_and_two_to_four_distinct_options(
     assert questions.open("p", "s") == []
 
 
+@pytest.mark.parametrize(
+    ("text", "label", "detail", "fits"),
+    [
+        ("x" * 4000, "l" * 120, "d" * 400, True),
+        ("x" * 4001, "l", None, False),
+        ("Which?", "l" * 121, None, False),
+        ("Which?", "l", "d" * 401, False),
+    ],
+)
+def test_the_size_boundaries_of_a_question(
+    questions: Questions, text: str, label: str, detail: str | None, fits: bool
+) -> None:
+    first: dict[str, str] = {"label": label} | ({"detail": detail} if detail else {})
+    options = [first, {"label": "other"}]
+    if fits:
+        asked = ask(questions, text=text, options=options)
+        assert (len(asked.text), len(asked.options[0].label)) == (len(text), len(label))
+    else:
+        with pytest.raises(ControlError) as error:
+            ask(questions, text=text, options=options)
+        refused(error)
+
+
+@pytest.mark.parametrize(("size", "fits"), [(16_000, True), (16_001, False)])
+def test_an_answer_in_words_is_at_most_16000_characters(
+    questions: Questions, size: int, fits: bool
+) -> None:
+    asked = ask(questions, options=[])
+    words = Answer(kind="free", text="é" * size)  # characters, not bytes
+    if fits:
+        assert questions.answer("p", "s", asked.question_id, words).state == "answered"
+    else:
+        with pytest.raises(ControlError) as error:
+            questions.answer("p", "s", asked.question_id, words)
+        assert "1 to 16000 characters" in refused(error)
+
+
 @pytest.mark.parametrize("hidden", [0x200B, 0x202E, 0xE0041])
 @pytest.mark.parametrize("where", ["text", "label", "detail"])
 def test_the_agent_asks_nothing_the_user_may_not_see(
@@ -290,18 +327,21 @@ def answer_of(text: str) -> dict[str, Any]:
 async def test_the_tool_returns_the_answer_to_the_call_that_asked(
     questions: Questions, tool: QuestionTool
 ) -> None:
-    """PD-24: two calls wait at once; each gets its own question's answer."""
+    """PD-24: two calls wait at once, as two runs' calls may; each gets its own
+    question's answer."""
     first = asyncio.create_task(
         tool.call({"question": "Which curve?", "options": CURVES}, operation="op-1", call_id="c1")
     )
     asked = await until_open(questions)
+    another = QuestionTool(questions, CONTEXT, run="run-2", poll_seconds=0.01)
     second = asyncio.create_task(
-        tool.call({"question": "How many runs?"}, operation="op-2", call_id="c2")
+        another.call({"question": "How many runs?"}, operation="op-2", call_id="c2")
     )
     while len(await asyncio.to_thread(questions.open, "p", "s")) < 2:
         await asyncio.sleep(0.01)
     other = (await asyncio.to_thread(questions.open, "p", "s"))[1]
-    assert (asked.run, asked.tool_call, other.tool_call) == ("run-1", "c1", "c2")
+    assert (asked.run, asked.tool_call) == ("run-1", "c1")
+    assert (other.run, other.tool_call) == ("run-2", "c2")
     questions.answer("p", "s", other.question_id, Answer(kind="free", text="Three."))
     text, record = await second
     assert answer_of(text) == {
@@ -372,6 +412,37 @@ async def test_a_run_that_ends_while_it_waits_closes_its_question(
         "state": state,
         "note": f"The question closed without an answer: {reason}.",
     }
+
+
+async def decided(questions: Questions, tool: QuestionTool, operation: str) -> dict[str, Any]:
+    """Ask under ``operation``, and let the agent decide once it is open."""
+    waiting = asyncio.create_task(
+        tool.call({"question": f"{operation}?"}, operation=operation, call_id=operation)
+    )
+    while not waiting.done():
+        for found in await asyncio.to_thread(questions.open, "p", "s"):
+            questions.answer("p", "s", found.question_id, Answer(kind="decide"))
+        await asyncio.sleep(0.01)
+    return answer_of((await waiting)[0])
+
+
+async def test_a_run_asks_one_question_per_reply_and_ten_in_all(
+    questions: Questions, tool: QuestionTool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run: Any = None  # the hook reads nothing of the run
+    assert (await decided(questions, tool, "op-1"))["answer"] == "decide"
+    with pytest.raises(ControlError) as error:
+        await tool.call({"question": "And?"}, operation="op-2", call_id="op-2")
+    assert refused(error).startswith("ask one question per reply")
+    assert (await decided(questions, tool, "op-1"))["answer"] == "decide"  # a replay
+    await tool.model_returned(run)
+    assert (await decided(questions, tool, "op-2"))["answer"] == "decide"
+    monkeypatch.setattr(question_tool, "MAX_ASKED", 2)
+    await tool.model_returned(run)
+    with pytest.raises(ControlError) as error:
+        await tool.call({"question": "More?"}, operation="op-3", call_id="op-3")
+    assert refused(error, "policy_denied").startswith("limit_reached")
+    assert tool.asked == {"op-1", "op-2"}
 
 
 class _NoWorker:

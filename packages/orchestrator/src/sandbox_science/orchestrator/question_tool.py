@@ -11,6 +11,9 @@ model calls, so none ends the wait. A run that ends while it waits closes its qu
 as no one is left to read the answer: ``cancelled`` when the user cancelled the run,
 ``interrupted`` when it stopped otherwise, as when the run service stops.
 
+A run asks one question per reply, and at most ``MAX_ASKED`` in all, so it cannot bury
+the user in questions; a replayed call is the question it asked, and counts once.
+
 A delegated run is not offered the tool: one that needs the user ends ``blocked`` with
 its question in its outcome (PD-41).
 """
@@ -28,12 +31,16 @@ from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ExecutionContext
 from sandbox_science.contracts.model import Contract
 
 from .aio import threaded
-from .hooks import Effect
+from .control import ControlError
+from .control.errors import INVALID_REQUEST, POLICY_DENIED
+from .hooks import Effect, RunView, TurnHook
 from .model import ToolSpec
 from .questions import MAX_DETAIL, MAX_LABEL, MAX_QUESTION, Question, QuestionOption, Questions
 
 ASK_USER: Final = "ask_user"
 POLL_SECONDS: Final = 1.0
+MAX_ASKED: Final = 10
+"""The most questions one run asks the user."""
 CANCELLED: Final = "the run was cancelled"
 STOPPED: Final = "the run stopped before it was answered"
 
@@ -48,8 +55,9 @@ SPEC: Final = ToolSpec(
     ASK_USER,
     "Ask the user a question and wait for the answer: a preference or a research "
     "decision only they can make, such as which of two approaches to take or how wide "
-    "the work should be. Ask when the answer changes what you do next, one question at "
-    "a time. Give two to four options when the choices are clear, with multiple true if "
+    "the work should be. Ask when the answer changes what you do next: one question per "
+    f"reply, and at most {MAX_ASKED} in a run. Give two to four options when the choices "
+    "are clear, with multiple true if "
     "several may be chosen; the user may still answer in their own words, leave the "
     "decision to you, or cancel. This call waits until the user answers, however long "
     "that takes, and returns the answer. It is not a permission request: the policy "
@@ -97,10 +105,12 @@ EFFECTS: Final[dict[str, Effect]] = {ASK_USER: "read"}
 """Asking changes nothing a plan governs: a run may ask with its plan in draft."""
 
 
-class QuestionTool:
-    """A main run's ``ask_user``, whose questions name the run as its record is kept."""
+class QuestionTool(TurnHook):
+    """A main run's ``ask_user``, whose questions name the run as its record is kept. As
+    a turn hook, it learns where each of the model's replies begins."""
 
     specs = SPECS
+    name = "questions"
 
     def __init__(
         self,
@@ -117,6 +127,13 @@ class QuestionTool:
         self.stop = stop
         self.poll = POLL_SECONDS if poll_seconds is None else poll_seconds
         self.clock = clock
+        self.asked: set[str] = set()
+        """The operations of the questions this run asked."""
+        self.in_reply = False
+        """The model's current reply asked a question already."""
+
+    async def model_returned(self, run: RunView) -> None:
+        self.in_reply = False
 
     async def call(
         self, args: dict[str, Any], *, operation: str, call_id: str
@@ -124,6 +141,17 @@ class QuestionTool:
         """Ask, or find the question this operation asked already, and wait for it to
         close."""
         request = AskRequest.model_validate(args)
+        if operation not in self.asked:
+            if self.in_reply:
+                raise ControlError(
+                    INVALID_REQUEST,
+                    "ask one question per reply: read this answer before the next question",
+                )
+            if len(self.asked) >= MAX_ASKED:
+                raise ControlError(
+                    POLICY_DENIED,
+                    f"limit_reached: a run asks the user at most {MAX_ASKED} questions",
+                )
         context = self.context
         project, session = context.project_id, context.session_id
         question = await threaded(
@@ -136,6 +164,8 @@ class QuestionTool:
             request.options,
             multiple=request.multiple,
         )
+        self.asked.add(operation)
+        self.in_reply = True
         try:
             while question.state == "open":
                 await self.clock.sleep(self.poll)
