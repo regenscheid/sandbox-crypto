@@ -18,8 +18,8 @@
     reviewLine,
     usageText,
   } from '../lib/reviewText';
-  import { actionsOf, actionsText } from '../lib/reviewActions';
-  import { contextLinks, contextTarget, contextText, outcomeOf } from '../lib/reviewContext';
+  import { actionsOf } from '../lib/reviewActions';
+  import { describeItem, outcomeOf } from '../lib/reviewContext';
   import DelegationCard from './DelegationCard.svelte';
   import ErrorMessage from './ErrorMessage.svelte';
   import ReviewActions from './ReviewActions.svelte';
@@ -46,6 +46,10 @@
     const id = browser.text.shown();
     return panel.evidence.items.find((item) => item.evidence === id) ?? null;
   });
+  /** Where the item whose text is shown comes from, as the list marks it. */
+  const shownMark = $derived(
+    shownItem === null ? '' : (describeItem(projectId, sessionId, shownItem)?.mark ?? ''),
+  );
   /** A delegation's outcome read whole, shown as the run tree shows a delegation. */
   const outcome = $derived(
     shownItem?.kind === 'delegation' && panel.text.next === null
@@ -84,16 +88,20 @@
       No evidence pinned.
     </p>{/if}
   <ul>
-    {#each panel.evidence.items as item (item.evidence)}<li>
+    {#each panel.evidence.items as item (item.evidence)}{@const described = describeItem(
+        projectId,
+        sessionId,
+        item,
+      )}
+      <li>
         <button onclick={() => browser.read(review.review_id, item.evidence)}>Read</button>
-        {#if contextText(item)}
-          <span class="context">{contextText(item)}</span>
-          {contextTarget(item) ||
-            visible(evidenceText(item))}{#each contextLinks(projectId, item) as link, index (index)}
-            · <a href={link.href}>{link.text}</a>{/each}
-        {:else if actionsText(item)}
-          <span class="context">Derived from the window's tool records:</span>
-          {actionsText(item)}
+        {#if described}
+          <span class="context">{described.mark}</span>
+          {described.text ||
+            visible(
+              evidenceText(item),
+            )}{#each described.links as link, index (index)}{#if link.href}
+              · <a href={link.href}>{link.text}</a>{/if}{/each}
         {:else}
           {visible(evidenceText(item))}
         {/if}
@@ -108,8 +116,8 @@
     >{/if}
   {#if panel.evidence.error}<ErrorMessage error={panel.evidence.error} />{/if}
   <!-- The evidence text read from this review's list, here beside it. -->
-  {#if panel.text.items.length}{#if shownItem && contextText(shownItem)}<p class="context">
-        {contextText(shownItem)}
+  {#if panel.text.items.length}{#if shownMark}<p class="context">
+        {shownMark}
       </p>{/if}{#if outcome}<DelegationCard
         {projectId}
         {sessionId}
