@@ -823,7 +823,9 @@ def test_example_mcp_proxy_policy() -> None:
     names = tool_rules[0].allow.tool
     assert isinstance(names, AnyOf)
     assert len(names.any) == 67
-    assert all(name.startswith("crypto_research_mcp-") for name in names.any)
+    # The server lists bare names, and the fence admits them as listed (lab 39).
+    assert "e-print-mcp_search_eprint" in names.any
+    assert not any(name.startswith("crypto_research_mcp-") for name in names.any)
     assert [binary.path for binary in entry.binaries] == ["/opt/sandbox-science/bin/python*"]
     # Inside OpenShell the proxy sees only synthetic addresses, so the fence applies the
     # floor and the ceiling to where a name leads (lab 13).
@@ -863,10 +865,10 @@ def test_the_example_fence_matches_the_library_for_every_known_tool() -> None:
     compiled = compile_mcp(EXAMPLE)
     tools = [entry["name"] for entry in json.loads(FIXTURE.read_text())["tools"]]
     made_up = [
-        "crypto_research_mcp-github-mcp_delete_repository",
-        "crypto_research_mcp-portal_toggle_servers",
-        "crypto_research_mcp-e-print-mcp_get_or_create_note",
-        "firecrawl-mcp_firecrawl_search",
+        "github-mcp_delete_repository",
+        "e-print-mcp_get_or_create_note",
+        # A portal's prefixed name, which the server does not list (lab 39).
+        "crypto_research_mcp-firecrawl-mcp_firecrawl_search",
     ]
     for tool in tools + made_up:
         assert openshell_admits(compiled.policy, "crypto-research-mcp", tool) == library_allows(

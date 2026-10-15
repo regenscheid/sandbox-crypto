@@ -95,7 +95,7 @@ def test_compile_policy_writes_the_proxy_sandboxs_policy(
     # portal_list_servers matches, so they stay held at the fence, and the compiler says so.
     assert "firecrawl-mcp_firecrawl_interact" not in held.read_text()
     assert "firecrawl-mcp_firecrawl_interact" in admitting.read_text()
-    assert "would deny crypto_research_mcp-portal_list_servers" in printed
+    assert "would deny portal_list_servers" in printed
     assert "feedback" not in admitting.read_text()
     assert (
         held.read_text()

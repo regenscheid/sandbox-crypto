@@ -32,9 +32,15 @@ from sandbox_science.policy import (
 )
 from sandbox_science.policy.hosts import floor_reason, is_public
 
+EXAMPLE_TEXT = (Path(__file__).resolve().parents[3] / "examples" / "policy.yaml").read_text()
 EXAMPLE = load_policy(Path(__file__).resolve().parents[3] / "examples" / "policy.yaml")
 OPEN = PoolCeiling.unrestricted()
+# crypto-research-mcp lists bare tool names; a portal with a prefix is tested on a copy.
 PREFIX = "crypto_research_mcp-"
+PREFIXED_TEXT = EXAMPLE_TEXT.replace(
+    "      tools:\n", f"      tool_prefix: {PREFIX}\n      tools:\n", 1
+)
+PREFIXED = parse_policy(PREFIXED_TEXT)
 UPLOAD_PACK = "application/x-git-upload-pack-request"
 
 HEADER = dedent(
@@ -143,9 +149,9 @@ def test_git_rules_have_url_limits() -> None:
 @pytest.mark.parametrize(
     "name",
     [
-        PREFIX + "github-mcp_delete_repository",
-        PREFIX + "admin_reset_all",
-        PREFIX + "paper-search-mcp_delete_everything",
+        "github-mcp_delete_repository",
+        "admin_reset_all",
+        "paper-search-mcp_delete_everything",
     ],
 )
 def test_unknown_tools_ask_first(name: str) -> None:
@@ -155,28 +161,35 @@ def test_unknown_tools_ask_first(name: str) -> None:
 @pytest.mark.parametrize(
     "name",
     [
-        PREFIX + "portal_enable_server",
-        PREFIX + "portal_TOGGLE_servers",
-        PREFIX + "portal_toggle_servers",
+        "portal_enable_server",
+        "portal_TOGGLE_servers",
+        "portal_toggle_servers",
     ],
 )
 def test_portal_tools_other_than_listing_are_denied(name: str) -> None:
     assert tool(name) is Action.DENY
-    assert tool(PREFIX + "portal_list_servers") is Action.ALLOW
+    assert tool("portal_list_servers") is Action.ALLOW
 
 
 @pytest.mark.parametrize(
     "name", ["firecrawl-mcp_firecrawl_search", "other_prefix-portal_list_servers"]
 )
-def test_tools_outside_the_declared_prefix_are_denied(name: str) -> None:
-    assert tool(name) is Action.DENY
+def test_tools_outside_a_declared_prefix_are_denied(name: str) -> None:
+    assert tool(name, PREFIXED) is Action.DENY
+    assert tool(PREFIX + "firecrawl-mcp_firecrawl_search", PREFIXED) is Action.ALLOW
+    # Without a prefix, as crypto-research-mcp lists its tools, the bare name is the tool.
+    assert tool("firecrawl-mcp_firecrawl_search") is Action.ALLOW
 
 
 def test_worker_tools_narrow_after_the_prefix_is_removed() -> None:
-    text = (Path(__file__).resolve().parents[3] / "examples" / "policy.yaml").read_text()
-    narrowed = parse_policy(text.replace("worker_tools: inherit", 'worker_tools: ["*_search"]'))
-    assert tool(PREFIX + "paper-search-mcp_arxiv_search", narrowed, origin="worker") is Action.ALLOW
-    assert tool(PREFIX + "firecrawl-mcp_firecrawl_map", narrowed, origin="worker") is Action.DENY
+    for text, prefix in ((EXAMPLE_TEXT, ""), (PREFIXED_TEXT, PREFIX)):
+        narrowed = parse_policy(text.replace("worker_tools: inherit", 'worker_tools: ["*_search"]'))
+        search, crawl = (
+            prefix + "paper-search-mcp_arxiv_search",
+            prefix + "firecrawl-mcp_firecrawl_map",
+        )
+        assert tool(search, narrowed, origin="worker") is Action.ALLOW
+        assert tool(crawl, narrowed, origin="worker") is Action.DENY
 
 
 # Finding 4: what a reviewer reads must be what is enforced.
@@ -697,7 +710,7 @@ def test_keys_without_values_are_rejected_everywhere(body: str) -> None:
     ],
 )
 def test_unknown_compound_tool_names_ask_first(name: str) -> None:
-    assert tool(PREFIX + name) is Action.ESCALATE
+    assert tool(name) is Action.ESCALATE
 
 
 def test_the_example_allows_tools_only_by_exact_name() -> None:
