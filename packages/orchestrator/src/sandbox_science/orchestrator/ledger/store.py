@@ -746,8 +746,30 @@ class Ledger:
         ]
         for p in planned:
             decided = p.status in DECIDED or (p.row.type == "decision" and p.status == "reversed")
-            if not decided or "status" not in p.changed:
+            # An entry stays as decided: while it is established, refuted or obstructed,
+            # what a decision rested on changes only with its status or a new decision.
+            rewritten = (
+                not p.created
+                and p.status_before in DECIDED
+                and p.status == p.status_before
+                and self._rewrites(db, p)
+            )
+            if not (decided and "status" in p.changed) and not rewritten:
                 continue
+            if rewritten and not any(
+                d is not p
+                and any(
+                    link.kind == "affects" and link.target_id == p.row.entry_id
+                    for link in self._final_links(db, d)
+                )
+                for d in deciding
+            ):
+                raise DocumentError(
+                    INVALID_REQUEST,
+                    f"{p.row.handle} is {p.status}: its statement, fields, assumptions and "
+                    "evidence change only with its status, or in a change that puts in "
+                    "effect a decision that affects it",
+                )
             if not any(
                 d is not p
                 and any(
@@ -781,6 +803,7 @@ class Ledger:
                     held,
                     now,
                     gate.examined(db, p.row.entry_id, checked),
+                    p.row.head,
                 )
             elif p.status == "obstructed":
                 raise gate.refused(
@@ -790,6 +813,19 @@ class Ledger:
                     "claimed obstruction; work records are not built yet, so only the user's "
                     "decision makes an issue obstructed",
                 )
+
+    def _rewrites(self, db: sqlite3.Connection, p: _Planned) -> bool:
+        """Whether the change alters what a decision on ``p``'s entry rested on: its
+        statement, fields, ``assumes`` links or evidence."""
+        if {"statement", "fields", "evidence"} & set(p.changed):
+            return True
+        if "links" not in p.changed:
+            return False
+
+        def assumed(links: list[EntryLink]) -> set[tuple[str, int | None]]:
+            return {(link.target_id, link.revision) for link in links if link.kind == "assumes"}
+
+        return assumed(p.previous) != assumed(self._final_links(db, p))
 
     def _final_links(self, db: sqlite3.Connection, p: _Planned) -> list[EntryLink]:
         """The links the change leaves ``p``'s entry."""

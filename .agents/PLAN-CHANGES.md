@@ -2,6 +2,13 @@
 
 Dated list of changes to the plan, decisions and conventions ([conventions](CONVENTIONS.md)), newest first, one or two lines each. Progress and lab results are in PR descriptions, [lab reports](docs/agent-reports/) and the git log. The earlier long-form log is in git: `git show 0e6a662:.agents/PLAN-CHANGES.md`.
 
+## 2026-10-15
+
+Decisions of the coordinator on the review of the ledger's gate (#276–#281), which the owner can reverse:
+
+- **What a check or review covered** ([ledger spec](../docs/specs/ledger.md), LG-17). A check or review counts for a later revision only if it keeps the statement, fields, `assumes` links and every evidence link that can count, `supports` as well as `derivation`; LG-17 named the `derivation` targets alone, which let evidence added after a review pass as reviewed. Reviews and `refuted`, `withdrawn` or `superseded` entries are not evidence that counts, and any `proof` that counts needs the independent check.
+- **A check the user produced** (LG-17). A target the user produced counts as an independent check only when the user added the link, or when the target names the entry and the revision it checks; before, anything the user wrote counted, whoever linked it.
+
 ## 2026-10-14, later (PRs #165–#258)
 
 Decisions of the owner since the last sync (PRs #165–#258):

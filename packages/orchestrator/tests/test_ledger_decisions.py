@@ -151,12 +151,15 @@ def test_the_gate_names_the_clause_the_main_agents_decision_does_not_meet(
     }
     change(ledger, {"entry": "C-1", "expected": 3, "evidence": [check]}, op="e-3")
     assert gate(ledger, "own-check", 4).details["clause"] == "independent_check"
-    # The user's check counts; the review clause cannot hold yet.
+    # A block the user wrote counts only when the user adds the check.
     documents.create("p", name="check", title="Check", text="# C\n\nChecked.\n", author=USER)
     user_block = documents.mapped("p", "check", 1).block_ids[1]
     checked = {**check, "document": "check", "block": user_block, "checked": 4}
     change(ledger, {"entry": "C-1", "expected": 4, "evidence": [checked]}, op="e-4")
-    refused = gate(ledger, "unreviewed", 5)
+    assert gate(ledger, "agent-added", 5).details["clause"] == "independent_check"
+    checked = {**checked, "checked": 5}
+    change(ledger, {"entry": "C-1", "expected": 5, "evidence": [checked]}, op="e-5", author=USER)
+    refused = gate(ledger, "unreviewed", 6)
     assert refused.details["clause"] == "review"
     assert "the reviewer does not read ledger entries yet" in refused.message
     # A check of a revision whose statement the change replaces no longer counts.
@@ -164,12 +167,12 @@ def test_the_gate_names_the_clause_the_main_agents_decision_does_not_meet(
         change(
             ledger,
             decide("C-1"),
-            {"entry": "C-1", "expected": 5, "status": "established", "statement": "Changed."},
+            {"entry": "C-1", "expected": 6, "status": "established", "statement": "Changed."},
             op="stale",
         )
     assert stale.value.details["clause"] == "independent_check"
     # The user's decision needs no gate.
-    change(ledger, decide("C-1"), status("C-1", 5, "established"), op="user", author=USER)
+    change(ledger, decide("C-1"), status("C-1", 6, "established"), op="user", author=USER)
     assert ledger.entry("p", "C-1").status == "established"
 
 
@@ -189,3 +192,98 @@ def test_an_obstruction_needs_an_assessment_the_main_agent_cannot_give_yet(
     assert refused.value.details["clause"] == "assessment"
     change(ledger, decide("I-1"), status("I-1", 1, "obstructed"), op="op-3", author=USER)
     assert ledger.entry("p", "I-1").status == "obstructed"
+
+
+# The review of #277.
+
+
+def test_an_established_entry_keeps_what_it_was_established_on(ledger: Ledger) -> None:
+    """Probe p3: the user establishes C-1; the main agent then rewrites its statement,
+    fields or evidence, and C-1 stayed established."""
+    change(ledger, NEW["claim"], NEW["assumption"])
+    change(ledger, decide("C-1"), status("C-1", 1, "established"), op="user", author=USER)
+    proof = {"role": "supports", "type": "proof", "entry": "A-1"}
+    for n, rewrite in enumerate(
+        (
+            {"statement": "P = NP."},
+            {"fields": {"kind": "theorem"}},
+            {"evidence": [proof]},
+            {"links": [{"kind": "assumes", "entry": "A-1"}]},
+        )
+    ):
+        with pytest.raises(DocumentError, match="C-1 is established: its statement"):
+            change(ledger, {"entry": "C-1", "expected": 2, **rewrite}, op=f"rewrite-{n}")
+    # Its title, and links other than assumptions, are not what it was established on.
+    change(ledger, {"entry": "C-1", "expected": 2, "title": "Fermat, established"}, op="title")
+    # A change that also leaves the status may rewrite it.
+    change(
+        ledger,
+        {"entry": "C-1", "expected": 3, "status": "disputed", "statement": "P = NP?"},
+        op="dispute",
+    )
+    # A new decision of the user's re-decides it as it rewrites it; the main agent's
+    # goes through the gate.
+    change(ledger, decide("C-1"), status("C-1", 4, "established"), op="again", author=USER)
+    with pytest.raises(DocumentError, match="gate_not_met"):
+        change(ledger, decide("C-1"), {"entry": "C-1", "expected": 5, "evidence": [proof]}, op="m")
+    change(
+        ledger,
+        decide("C-1"),
+        {"entry": "C-1", "expected": 5, "evidence": [proof]},
+        op="user-rewrite",
+        author=USER,
+    )
+    view = ledger.entry("p", "C-1")
+    assert (view.status, view.revision, len(view.evidence)) == ("established", 6, 1)
+
+
+def test_any_proof_that_counts_needs_an_independent_check(ledger: Ledger) -> None:
+    """Probe p1 in part: supports/proof needs a check as derivation/proof does."""
+    change(ledger, NEW["claim"], NEW["assumption"])
+    proof = {"role": "supports", "type": "proof", "entry": "A-1"}
+    change(ledger, {"entry": "C-1", "expected": 1, "evidence": [proof]}, op="e-1")
+    assert gate(ledger, "unchecked", 2).details["clause"] == "independent_check"
+
+
+def test_a_review_or_a_set_aside_entry_is_not_evidence_that_counts(ledger: Ledger) -> None:
+    from .test_ledger_evidence import review
+
+    reviewed = review(ledger)
+    change(ledger, NEW["claim"], NEW["claim"])
+    by_review = {"role": "supports", "type": "finite_test", "review": reviewed}
+    change(ledger, {"entry": "C-1", "expected": 1, "evidence": [by_review]}, op="e-1")
+    assert gate(ledger, "review", 2).details["clause"] == "evidence"
+    by_claim = {"role": "supports", "type": "source_claim", "entry": "C-2"}
+    with pytest.raises(DocumentError, match="with a reference"):
+        change(ledger, {"entry": "C-1", "expected": 2, "evidence": [by_claim]}, op="bad")
+    claim = {"role": "supports", "type": "proof", "entry": "C-2"}
+    change(ledger, {"entry": "C-1", "expected": 2, "evidence": [claim]}, op="e-2")
+    assert gate(ledger, "claim", 3).details["clause"] == "independent_check"
+    change(ledger, {"entry": "C-2", "expected": 1, "status": "withdrawn"}, op="withdrawn")
+    assert gate(ledger, "set-aside", 3).details["clause"] == "evidence"
+
+
+def test_a_user_target_is_a_check_only_when_the_user_added_it_or_it_names_the_revision(
+    ledger: Ledger,
+) -> None:
+    """Probe p4: the user's task "Buy milk." counted as an independent check."""
+    change(ledger, NEW["claim"], NEW["assumption"])
+    proof = {"role": "derivation", "type": "proof", "entry": "A-1"}
+    change(ledger, {"entry": "C-1", "expected": 1, "evidence": [proof]}, op="derive")
+    change(
+        ledger,
+        {"type": "task", "title": "Lunch", "statement": "Buy milk."},
+        op="user-task",
+        author=USER,
+    )
+    milk = {"role": "independent_check", "type": "proof", "entry": "T-1", "checked": 2}
+    change(ledger, {"entry": "C-1", "expected": 2, "evidence": [milk]}, op="milk")
+    assert gate(ledger, "milk-gate", 3).details["clause"] == "independent_check"
+    # A user's entry that pins C-1 at the revision it checked counts, whoever links it.
+    pinned = {"role": "supports", "type": "proof", "entry": "C-1", "revision": 2}
+    decision = {"type": "decision", "title": "Checked", "statement": "C-1 r2 checks out.",
+                "evidence": [pinned]}  # fmt: skip
+    change(ledger, decision, op="user-check", author=USER)
+    named = {"role": "independent_check", "type": "proof", "entry": "D-1", "checked": 2}
+    change(ledger, {"entry": "C-1", "expected": 3, "evidence": [named]}, op="named")
+    assert gate(ledger, "named-gate", 4).details["clause"] == "review"
