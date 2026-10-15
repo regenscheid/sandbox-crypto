@@ -615,6 +615,7 @@ class Harness:
                 self.delegated.alias,
                 limits,
                 self.gateway.aliases if self.gateway is not None else None,
+                self.gateway.tool_calling if self.gateway is not None else None,
             ),
             track_grant=functools.partial(_track_grant, SessionPlans(stores.documents), context),
             clock=clock,

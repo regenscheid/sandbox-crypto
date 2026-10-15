@@ -233,3 +233,106 @@ async def test_a_fallback_replaces_an_unlisted_alias_and_is_recorded(
     outcome = delegation(delegating, delegation_id)
     assert outcome.alias == "main"
     assert outcome.brief["model"] == recorded
+
+
+# --- An alias that cannot call tools (PD-30) -------------------------------------------------
+
+
+class Capable:
+    """A gateway's description of its aliases, and how often it was read."""
+
+    def __init__(self, **calls: bool) -> None:
+        self.calls, self.read = dict(calls), 0
+
+    async def __call__(self) -> dict[str, bool] | None:
+        self.read += 1
+        return self.calls
+
+
+async def test_an_alias_that_cannot_call_tools_falls_back_or_is_refused() -> None:
+    capable = Capable(delegated=False, main=True)
+    listed = Listing("delegated", "main", "checker-b")
+    choice = ModelChoice("delegated", ALLOWED, listed, capable)
+    fell = await choice.choose(None)
+    assert fell.recorded() == {"alias": "main", "asked": "delegated", "fallback": True}
+    assert await choice.choose("checker-b") == Choice("checker-b", "checker-b")  # not described
+    assert capable.read == 1  # read once for the parent's run
+    alone = ModelChoice(
+        "delegated", DelegationSettings(), Listing("delegated"), Capable(delegated=False)
+    )
+    with pytest.raises(WorkerAPIError, match="says 'delegated' cannot call tools") as refused:
+        await alone.choose(None)
+    assert refused.value.kind == "unavailable"
+    assert str(refused.value).startswith("model_unavailable: ")
+    worse = ModelChoice("delegated", ALLOWED, None, Capable(delegated=False, main=False))
+    with pytest.raises(WorkerAPIError, match="fallback 'main' is no better"):
+        await worse.choose(None)
+
+
+async def test_the_gateway_says_which_aliases_call_tools(gateway: Gateway) -> None:
+    found = ModelGateway(gateway.url, API_KEY)
+    try:
+        assert await found.tool_calling() is None  # 404: it cannot say
+        gateway.capable = {"main": True, "plain": False}
+        assert await found.tool_calling() == {"main": True, "plain": False}
+    finally:
+        await found.close()
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ('{"data": "x"}', None),
+        ("not json", None),
+        (
+            json.dumps(
+                {
+                    "data": [
+                        {"model_name": "a", "model_info": {"supports_function_calling": False}},
+                        {"model_name": "a", "model_info": {"supports_function_calling": True}},
+                        {"model_name": "b", "model_info": {"supports_function_calling": None}},
+                        {"model_name": "c"},
+                        "x",
+                    ]
+                }
+            ),
+            {"a": True},
+        ),
+    ],
+)
+async def test_a_description_that_says_nothing_leaves_the_alias_out(
+    body: str, expected: dict[str, bool] | None
+) -> None:
+    async def answer(request: web.Request) -> web.Response:
+        return web.Response(text=body, content_type="application/json")
+
+    app = web.Application()
+    app.router.add_get("/model/info", answer)
+    async with TestServer(app) as server:
+        found = ModelGateway(str(server.make_url("")), API_KEY)
+        try:
+            assert await found.tool_calling() == expected
+        finally:
+            await found.close()
+
+
+async def test_a_delegated_alias_that_cannot_call_tools_is_refused(delegating: Harness) -> None:
+    delegating.gateway.capable = {"delegated": False}
+    check = call("delegate", check={"entry": "C-1", "revision": 1})
+    root = await delegating.run(
+        "root",
+        [Reply(calls=[check]), Reply("No check.")],
+        options=["--delegated-model", "delegated"],
+    )
+    refused = answer(root, 0)["error"]
+    assert refused["kind"] == "unavailable"
+    assert "cannot call tools" in refused["message"]
+    configure(delegating, fallback="main")
+    delegating.gateway.capable = {"delegated": False, "main": True}
+    root = await delegating.run(
+        "again",
+        [Reply(calls=[check]), wait(), Reply("Done.")],
+        delegated=[Reply(REPORT)],
+        options=["--delegated-model", "delegated"],
+    )
+    assert answer(root, 0)["model"] == {"alias": "main", "asked": "delegated", "fallback": True}

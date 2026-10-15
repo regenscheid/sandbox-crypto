@@ -9,8 +9,10 @@ fallback when it names one the gateway lists, and the delegation records that it
 otherwise a brief's choice is refused with ``model_unavailable``, and the delegated
 role's own alias is called all the same, since a gateway may serve an alias it does not
 list, as the owner's LiteLLM did MAIN's (lab 40). A gateway that cannot be asked for its
-list is taken at its word. Either way, the run's first call tells. Whether an alias can
-call tools is not checked yet.
+list is taken at its word. Either way, the run's first call tells. An alias the gateway
+says cannot call tools, as a delegated run must, is replaced by the fallback when the
+gateway says that one can, and otherwise refused (PD-30); one it does not describe is
+taken at its word.
 """
 
 from __future__ import annotations
@@ -27,6 +29,9 @@ from .records import DelegationSettings
 
 Listed = Callable[[], Awaitable[frozenset[str] | None]]
 """The aliases the gateway lists, or ``None`` when it cannot say."""
+Capable = Callable[[], Awaitable[dict[str, bool] | None]]
+"""Whether each alias the gateway describes can call tools, or ``None`` when it cannot
+say."""
 
 
 @dataclass(frozen=True)
@@ -55,18 +60,60 @@ class ModelChoice:
     read once for the parent's run, and without it only ``default`` can be called."""
 
     def __init__(
-        self, default: str, settings: DelegationSettings, listed: Listed | None = None
+        self,
+        default: str,
+        settings: DelegationSettings,
+        listed: Listed | None = None,
+        capable: Capable | None = None,
     ) -> None:
         self.default, self.settings, self.listed = default, settings, listed
+        self.capable = capable
         self._aliases: frozenset[str] | None = None
         self._asked = False
+        self._capable: dict[str, bool] | None = None
+        self._described = False
 
     async def aliases(self) -> frozenset[str] | None:
         if self.listed is not None and not self._asked:
             self._aliases, self._asked = await self.listed(), True
         return self._aliases
 
+    async def calls_tools(self, alias: str) -> bool | None:
+        """Whether the gateway says ``alias`` can call tools; ``None`` when it does not
+        say, read once for the parent's run."""
+        if self.capable is not None and not self._described:
+            self._capable, self._described = await self.capable(), True
+        return None if self._capable is None else self._capable.get(alias)
+
     async def choose(self, asked: str | None) -> Choice:
+        """The alias for a brief that asked for ``asked`` (``_choose``), and one the
+        gateway says can call tools, as a delegated run must (PD-30): one it says cannot
+        is replaced by the project's fallback when the gateway says that one can, and
+        otherwise refused with ``model_unavailable``."""
+        chosen = await self._choose(asked)
+        if await self.calls_tools(chosen.alias) is not False:
+            return chosen
+        fallback = self.settings.fallback
+        listed = await self.aliases()
+        if (
+            fallback is not None
+            and fallback != chosen.alias
+            and (listed is None or fallback in listed)
+            and await self.calls_tools(fallback) is not False
+        ):
+            return Choice(fallback, chosen.asked)
+        raise WorkerAPIError(
+            ErrorKind.UNAVAILABLE,
+            f"model_unavailable: the model gateway says {chosen.alias!r} cannot call tools, "
+            "which a delegated run needs"
+            + (
+                ""
+                if fallback is None
+                else f", and the project's fallback {fallback!r} is no better"
+            ),
+        )
+
+    async def _choose(self, asked: str | None) -> Choice:
         """The alias for a brief that asked for ``asked``, or ``WorkerAPIError``:
         ``policy_denied`` for an alias the project does not allow, ``unavailable`` for
         a chosen one the gateway does not list when no fallback it lists replaces it."""
