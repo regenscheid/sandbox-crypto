@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -22,13 +23,14 @@ from sandbox_science.orchestrator.harness import (
     Stores,
     admit,
 )
-from sandbox_science.orchestrator.hooks import Effect, Refusal, TurnHook
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.memory import ProjectMemory
 from sandbox_science.orchestrator.memory_tools import MemoryTool
 from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolCall
+from sandbox_science.orchestrator.plan_tools import PlanTools
 from sandbox_science.orchestrator.projects import ProjectStore, run_name
 from sandbox_science.orchestrator.runstate import RunState
+from sandbox_science.orchestrator.session_plans import SessionPlans
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
@@ -56,8 +58,8 @@ def toolbox(documents: DocumentStore, *, output_chars: int = 20000) -> Toolbox:
     return Toolbox(cast(WorkerClient, object()), CONTEXT, memory=tool)
 
 
-async def call(tools: Toolbox, name: str, gates: tuple[TurnHook, ...] = (), **args: Any) -> Any:
-    out = await tools.call(ToolCall("tc-1", name, json.dumps(args)), f"op-{name}", gates=gates)
+async def call(tools: Toolbox, name: str, **args: Any) -> Any:
+    out = await tools.call(ToolCall("tc-1", name, json.dumps(args)), f"op-{name}")
     return json.loads(out.text)
 
 
@@ -104,21 +106,80 @@ async def test_agents_propose_and_a_retry_returns_the_first(documents: DocumentS
     }
 
 
-async def test_proposing_is_an_effect_and_listing_a_read(documents: DocumentStore) -> None:
-    class Fence(TurnHook):
-        async def gate(self, effect: Effect) -> Refusal | None:
-            return Refusal("policy_denied", "no plan") if effect == "effect" else None
+PLAN = {
+    "goal": "Check",
+    "feasibility": "Inspect",
+    "outputs": [{"title": "R", "description": "D", "evidence_standard": "E"}],
+    "tracks": [],
+    "phases": [
+        {
+            "phase_id": "a",
+            "title": "A",
+            "steps": [
+                {"step_id": "s0", "title": "S", "description": "D", "evidence_standard": "E"}
+            ],
+        }
+    ],
+}
 
-    tools = toolbox(documents)
-    effects = {name: entry.effect for name, entry in tools.entries.items()}
-    assert {n: e for n, e in effects.items() if n.startswith("memory_")} == {
-        "memory_list": "read",
-        "memory_propose": "effect",
-    }
-    refused = await call(tools, "memory_propose", (Fence(),), action="add", text="x", reason="y")
-    assert "no plan" in json.dumps(refused)
-    assert (await call(tools, "memory_list", (Fence(),)))["entries"] == []
-    assert ProjectMemory(documents).proposals("p") == ()
+
+async def test_a_proposal_passes_the_plan_fence(tmp_path: Path) -> None:
+    """A proposal changes nothing until the user accepts it, so a draft plan, which fences
+    the run's effects, lets it pass, unlike a write (the coordinator, 2026-10-15)."""
+    projects = ProjectStore(tmp_path)
+    projects.create("p", "minimal", "sha256:" + "a" * 64)
+    record = projects.open_session("p", "s", dedicated=False)
+    context = ExecutionContext(
+        project_id="p",
+        session_id="s",
+        environment_id=record.environment_id,
+        policy_revision="sha256:" + "a" * 64,
+    )
+    documents = DocumentStore(store_path(tmp_path))
+    try:
+        plans = PlanTools(SessionPlans(documents), projects, context, run_id="r1", alias="main")
+        create = {"operation_id": "create", "body": PLAN, "reason": "Initial"}
+        await plans.call("plan_create", json.dumps(create), call_id="c", model="m")
+        memory = MemoryTool(ProjectMemory(documents), context, run_id="r1", role="main")
+        tools = Toolbox(cast(WorkerClient, SimpleNamespace()), context, plans=plans, memory=memory)
+        effects = {name: entry.effect for name, entry in tools.entries.items()}
+        assert (effects["memory_list"], effects["memory_propose"]) == ("read", "proposal")
+        proposal = {"action": "add", "text": "Use provision.", "reason": "Lost on restart."}
+        proposed = await tools.call(ToolCall("c1", "memory_propose", json.dumps(proposal)), "o1")
+        assert json.loads(proposed.text)["state"] == "waiting"
+        write = {"path": "notes.md", "content": "x"}
+        written = await tools.call(ToolCall("c2", "write_file", json.dumps(write)), "o2")
+        assert "not active" in written.text
+        assert [p.proposal_id for p in ProjectMemory(documents).proposals("p")] == ["prop-1"]
+    finally:
+        projects.close()
+        documents.close()
+
+
+async def test_a_run_that_lost_its_session_does_not_propose(tmp_path: Path) -> None:
+    """The session's lease still gates a proposal: a run that does not hold it is refused,
+    and nothing waits for the user."""
+    projects = ProjectStore(tmp_path)
+    projects.create("p", "minimal", "sha256:" + "a" * 64)
+    documents = DocumentStore(store_path(tmp_path), producer="harness")
+    proposal = {"action": "add", "text": "Use provision.", "reason": "Lost on restart."}
+    turns = [
+        ModelTurn(None, (ToolCall("t1", "memory_propose", json.dumps(proposal)),)),
+        ModelTurn("Proposed."),
+    ]
+    harness = Harness(
+        cast(WorkerClient, Worker()),
+        Role(ScriptedModel(turns), "scripted"),
+        stores=Stores(projects, documents, JobState(tmp_path), RunState(projects.control)),
+        settings=Settings(min_isolation_tier=None),
+    )
+    try:
+        finished = await harness.run(RunRequest("p", "s", "Go", run_id="run-1"), Sink())
+        assert ProjectMemory(documents).proposals("p") == ()
+    finally:
+        documents.close()
+    (record,) = finished.transcript.tool_records
+    assert record["error"] == "conflict"
 
 
 @pytest.mark.parametrize(

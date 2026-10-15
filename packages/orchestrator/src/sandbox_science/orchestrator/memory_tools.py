@@ -4,8 +4,9 @@
 ``memory_list`` reads the accepted entries; ``memory_propose`` proposes adding, changing
 or removing one, which waits for the user. No tool changes an entry. A proposal is the
 run's: its session, role, model alias, the model that answered and the tool call; the
-arguments cannot name another author. Proposing is an effect, which the plan fence
-gates; listing is a read.
+arguments cannot name another author. Listing is a read. A proposal changes nothing until
+the user accepts it, so the plan fence lets it pass; a run that no longer holds its
+session may not propose.
 """
 
 from __future__ import annotations
@@ -24,8 +25,12 @@ from .memory import MAX_REASON, MAX_TEXT, ProjectMemory
 
 Json = dict[str, Any]
 
-MEMORY_EFFECTS: Final[dict[str, Effect]] = {"memory_list": "read"}
-"""The memory tool that only reads; proposing is an effect, which the plan fence gates."""
+MEMORY_EFFECTS: Final[dict[str, Effect]] = {
+    "memory_list": "read",
+    "memory_propose": "proposal",
+}
+"""Listing reads; a proposal changes nothing until the user accepts it, so the plan
+fence lets it pass (the coordinator, 2026-10-15), unlike ``ledger_change``."""
 
 SPECS: Final = (
     ToolSpec(

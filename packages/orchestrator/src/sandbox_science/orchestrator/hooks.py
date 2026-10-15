@@ -40,9 +40,12 @@ Point = Literal["start", "turn", "tool"]
 """``start``: once, before the first turn. ``turn``: before each model call.
 ``tool``: after each tool call, on its result."""
 
-Effect = Literal["read", "cancel", "effect", "plan"]
+Effect = Literal["read", "cancel", "effect", "plan", "proposal"]
 """What a tool call may change: ``read`` and ``cancel`` tools nothing a plan governs,
-``effect`` tools anything, and ``plan`` tools the plan, which they check themselves."""
+``effect`` tools anything, ``plan`` tools the plan, which they check themselves, and
+``proposal`` tools nothing until the user accepts what they propose (a project memory
+proposal): the plan fence lets them pass, but a run that no longer holds its session
+may not make one."""
 
 RESPONSE_ROUNDS: Final = 2
 """Closing answers a run may take back to respond to findings, whatever their source."""
