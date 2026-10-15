@@ -77,6 +77,7 @@ def add_routes(app: web.Application) -> None:
     app.router.add_post(PATH + "/{entry}/checks", check)
     app.router.add_post(PATH + "/{entry}/flags", clear)
     app.router.add_post(PATH + "/{entry}/flags/reopened", reopen)
+    app.router.add_post(PATH + "/{entry}/dominates/dropped", drop)
 
 
 def query_of(request: web.Request, allowed: set[str]) -> dict[str, str]:
@@ -206,6 +207,44 @@ async def check(request: web.Request) -> web.Response:
         return result.model_dump(mode="json")
 
     return await documents.answer(request, checked, writer=True)
+
+
+class DropRequest(Contract):
+    """The user's dropping of a ``dominates`` link the entry holds, at the revision read,
+    with the reason (LG-22)."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    target: Annotated[str, Field(min_length=1, max_length=128)]
+    revision: Annotated[int, Field(ge=1, le=999999999)]
+    reason: Annotated[str, Field(min_length=1, max_length=4096)]
+    operation_id: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")]
+
+
+async def drop(request: web.Request) -> web.Response:
+    """POST …/ledger/{entry}/dominates/dropped: the user drops the entry's ``dominates``
+    link to ``target``, with the reason, at ``revision``, the one the page read; a later
+    revision is a conflict. Same-origin, the user's only."""
+    project, reference = identifier(request, "project"), _entry(request)
+    raw = await json_body(request, "dominates link JSON")
+    try:
+        value = DropRequest.model_validate(raw)
+    except ValidationError:
+        raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid dropping of a link") from None
+
+    def dropped(store: DocumentStore) -> dict[str, object]:
+        result = Ledger(store).drop_dominates(
+            project,
+            reference,
+            value.target,
+            value.revision,
+            USER,
+            reason=value.reason,
+            operation_id=value.operation_id,
+        )
+        return result.model_dump(mode="json")
+
+    return await documents.answer(request, dropped, writer=True)
 
 
 class ClearRequest(Contract):

@@ -204,6 +204,33 @@ def test_the_user_records_a_ledger_check(state: Path, capsys: pytest.CaptureFixt
     assert (status, "conflict" in err) == (1, True)
 
 
+def test_the_user_drops_a_dominates_link(state: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """``ledger drop``: the user drops a dominates link an entry holds, with the reason."""
+    from sandbox_science.orchestrator.documents import USER
+    from sandbox_science.orchestrator.ledger import Ledger
+
+    from .test_ledger_frontier import CLASSICAL, KEY_RECOVERY, published
+
+    documents = DocumentStore(store_path(state))
+    ledger = Ledger(documents)
+    ledger.define_category("p1", KEY_RECOVERY, AGENT)
+    from .test_ledger import NEW
+
+    reference = NEW["reference"]
+    p4 = published("P4", CLASSICAL, time="$2^{0.29n}$", memory=70)
+    p1 = {**published("P1", CLASSICAL, time=120, memory=60),
+          "links": [{"kind": "dominates", "entry": "R-1", "note": "Faster."}]}  # fmt: skip
+    for op, change in (("ref", reference), ("p4", p4), ("p1", p1)):
+        ledger.change("p1", {"operation_id": op, "reason": "r", "changes": [change]}, USER)
+    documents.close()
+    where = ("--state-dir", str(state), "--project", "p1")
+    drop = ("ledger", "drop", *where, "R-2", "--dominates", "R-1", "--revision", "1")
+    status, out, _ = _run(capsys, *drop, "--reason", "Not for small n.")
+    assert (status, json.loads(out)["entries"][0]["revision"]) == (0, 2)
+    status, _, err = _run(capsys, *drop, "--reason", "Again.")
+    assert (status, "conflict" in err) == (1, True)
+
+
 def test_the_user_clears_ledger_flags(state: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """``ledger clear``: the user clears open flags on an entry with the reason."""
     from sandbox_science.orchestrator.ledger import Ledger

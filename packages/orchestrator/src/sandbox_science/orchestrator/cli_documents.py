@@ -298,7 +298,8 @@ def document(args: argparse.Namespace) -> int:
 def ledger(args: argparse.Namespace) -> int:
     """The user's ledger commands: ``check`` records that the user checked an entry at a
     revision, which the gate's independent check counts (LG-17); ``clear`` clears open
-    flags on an entry with a reason, and ``reopen`` opens cleared ones again (LG-29)."""
+    flags on an entry with a reason, and ``reopen`` opens cleared ones again (LG-29);
+    ``drop`` drops a ``dominates`` link an entry holds, with a reason (LG-22)."""
     with contextlib.closing(ProjectStore(args.state_dir, readonly=True)) as projects:
         projects.get(args.project)
     store = DocumentStore(store_path(args.state_dir), producer="harness-cli")
@@ -323,6 +324,16 @@ def ledger(args: argparse.Namespace) -> int:
                 cause=args.cause,
             )
             if args.action == "clear"
+            else Ledger(store).drop_dominates(
+                args.project,
+                args.entry,
+                args.dominates,
+                args.revision,
+                USER,
+                reason=args.reason,
+                operation_id=args.operation_id or new_id("drop"),
+            )
+            if args.action == "drop"
             else Ledger(store).reopen_flags(
                 args.project,
                 args.entry,
@@ -465,3 +476,11 @@ def add_parsers(commands: Any) -> None:
     )
     reopen.add_argument("--reason", required=True, help="why it needs reconsidering")
     reopen.add_argument("--operation-id", help="retry with the same ID (default: a new one)")
+    drop = ledger_actions.add_parser(
+        "drop", parents=[common], help="drop a dominates link an entry holds (LG-22)"
+    )
+    drop.add_argument("entry", help="the result that holds the link (such as R-1)")
+    drop.add_argument("--dominates", required=True, help="the result it names (such as R-3)")
+    drop.add_argument("--revision", type=int, required=True, help="the revision you read")
+    drop.add_argument("--reason", required=True, help="why the link does not hold")
+    drop.add_argument("--operation-id", help="retry with the same ID (default: a new one)")

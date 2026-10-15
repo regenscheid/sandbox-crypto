@@ -550,6 +550,18 @@ class CategoryPage(Contract):
     next_after: str | None
 
 
+class DominatesLink(Contract):
+    """A ``dominates`` link that takes a result from the best known or from those not
+    compared (LG-22): the result that holds it, its reason, and who recorded it in which
+    revision of the holder."""
+
+    entry_id: str
+    handle: str
+    reason: str
+    author: dict[str, Any]
+    revision: int
+
+
 class FrontierResult(Contract):
     """A result as the frontier shows it (LG-23): what it states, under which conditions,
     its measures, origin, status, who wrote it, the types of its evidence, the references
@@ -582,6 +594,9 @@ class FrontierResult(Contract):
     open_flags: int
     dominated_by: list[str] = Field(default_factory=list[str])
     """For a dominated result, the results that dominate it."""
+    linked_by: list[DominatesLink] = Field(default_factory=list[DominatesLink])
+    """Of those, the ones that hold a ``dominates`` link to it, with the link's reason
+    and author: the user can drop one."""
     would_dominate: list[str] = Field(default_factory=list[str])
     """For a candidate, the best known results it would dominate if established."""
 

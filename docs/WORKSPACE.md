@@ -93,6 +93,7 @@ All routes need the session and answer JSON. Every route that is a GET also answ
 | POST | `/api/v0/projects/{project}/ledger/{entry}/checks` | The user's record that they checked the entry at the revision they read (`revision`, an optional `note`, `operation_id`): an `independent_check` of the user's; a later revision is a conflict ([ledger](LEDGER.md)) |
 | POST | `/api/v0/projects/{project}/ledger/{entry}/flags` | The user's clearing of open flags on the entry (`flags`, or else every open flag, or those of a `cause`; `reason`, `operation_id`); a flag on another entry is not found ([ledger](LEDGER.md)) |
 | POST | `/api/v0/projects/{project}/ledger/{entry}/flags/reopened` | The user's reopening of cleared flags on the entry (`flags`, `reason`, `operation_id`), each as a new flag |
+| POST | `/api/v0/projects/{project}/ledger/{entry}/dominates/dropped` | The user's dropping of the entry's `dominates` link to `target`, at `revision`, the one read, with `reason` and `operation_id`; a later revision is a conflict ([ledger](LEDGER.md)) |
 | GET | `/api/v0/projects/{project}/ledger/{entry}/gate` | The gate for the entry as it reads now: each clause, whether it holds and why, and the decisions that affect it ([ledger](LEDGER.md)) |
 | GET | `/api/v0/projects/{project}/frontier` | The project's frontier categories, in the order they were defined (`?after=` a category, `?limit=` 1 to 100) |
 | POST | `/api/v0/projects/{project}/frontier` | The user's definition of a frontier category, or its revision at `expected` ([ledger](LEDGER.md)) |
