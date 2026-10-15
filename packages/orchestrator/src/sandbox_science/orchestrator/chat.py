@@ -230,10 +230,10 @@ class UserMessages(TurnHook):
     def __init__(
         self,
         chat: RunChat,
-        discover: Callable[[Sequence[str]], Awaitable[Notice | None]] | None = None,
+        discover: Callable[[Sequence[str], Sequence[str]], Awaitable[Notice | None]] | None = None,
     ) -> None:
-        """``discover`` gives the skills notice for the messages taken, which goes just
-        before them (docs/specs/skills.md, SK-35)."""
+        """``discover`` gives the skills notice for the messages taken, by their texts and
+        IDs, which goes just before them (docs/specs/skills.md, SK-35)."""
         self.chat, self.discover = chat, discover
         self.lost = False
         """Whether a call found the session held by another run."""
@@ -247,7 +247,9 @@ class UserMessages(TurnHook):
             for message in found
         )
         if messages and self.discover is not None:
-            skills = await self.discover([message.text for message in found])
+            skills = await self.discover(
+                [message.text for message in found], [message.message_id for message in found]
+            )
             if skills is not None:
                 return (skills, *messages)
         return messages

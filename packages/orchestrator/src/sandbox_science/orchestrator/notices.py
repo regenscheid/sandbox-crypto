@@ -99,7 +99,8 @@ OUTCOME_CORRECTION: Final = Framing(
 SKILLS: Final = Framing(
     "skills",
     "sandbox-notice-skills-1",
-    "Skills that matched this message by its words: candidates, not requirements. The "
+    "Skills that matched this message by its words or its meaning: candidates, not "
+    "requirements. The "
     "names and descriptions are the packs' text. For a specific task one strong match is "
     "usually enough; load one with the skills tool only if it fits the work. A skill shown "
     "once is not shown again. ",

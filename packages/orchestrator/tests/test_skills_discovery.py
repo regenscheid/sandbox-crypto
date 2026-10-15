@@ -10,23 +10,26 @@ repository.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
-import time
+import threading
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
+from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator.documents import USER
 from sandbox_science.orchestrator.notices import SKILLS
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.skills import SkillSet, SkillStore, from_git, snapshot
 from sandbox_science.orchestrator.skills import discovery as discovery_module
-from sandbox_science.orchestrator.skills.discovery import matches
+from sandbox_science.orchestrator.skills.discovery import SkillDiscovery, matches
 from sandbox_science.orchestrator.skills.store import Entry
 from sandbox_science.orchestrator.skills.tool import SkillTool
+from sandbox_science.testing.clock import FakeClock
 
 from .loop_harness import PROJECT, SESSION, Harness, Reply, call
 from .loop_harness import gateway as gateway
@@ -102,6 +105,23 @@ async def test_matching_skills_are_shown_for_the_task_and_each_message(pinned: H
         ("message", ["ss/alpha"]),
     ]
     assert {d["scoring"] for d in found} == {"lexical"}
+    # Each record names its notice, which the run's record says a model call saw, and
+    # the message it answered (SK-21).
+    assert [d["notice"] for d in found] == ["shown-1", "shown-2"]
+    assert sorted(record.delivered["skills"]) == ["shown-1", "shown-2"]
+    assert "messages" not in found[0]
+    assert found[1]["messages"] == ["m-1"]
+
+
+async def test_the_summary_keeps_the_start_loads_beside_the_discoveries(
+    pinned: Harness,
+) -> None:
+    argv = ["skills", "settings", "--state-dir", str(pinned.state), "--project", PROJECT]
+    assert cli.main([*argv, "--expected", "0", "--always", "ss/alpha"]) == 0
+    record = await pinned.run("run-1", [Reply("Done.")], task="Count the lines of the notes.")
+    summary = cast(dict[str, Any], record.summaries["skills"])
+    assert [load["id"] for load in summary["loads"]] == ["ss/alpha"]
+    assert [d["answered"] for d in summary["discoveries"]] == ["task"]
 
 
 async def test_a_short_or_unrelated_message_gets_no_notice(pinned: Harness) -> None:
@@ -110,22 +130,59 @@ async def test_a_short_or_unrelated_message_gets_no_notice(pinned: Harness) -> N
     assert _discoveries(record) == [{"answered": "task", "scoring": "lexical", "skills": []}]
 
 
-async def test_scoring_that_takes_too_long_sends_the_call_without_a_notice(
-    pinned: Harness, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """SK-F16: the call waits at most the bound, then goes out without a notice."""
+class _Run:
+    """What discovery reads of a run: the notice IDs a model call saw."""
 
-    def slow(tool: SkillTool, text: str, skip: set[str]) -> list[Entry]:
-        time.sleep(1.0)
+    def __init__(self, *seen: str) -> None:
+        self.seen = frozenset(seen)
+
+    def delivered_ids(self, source: str) -> frozenset[str]:
+        return self.seen
+
+
+async def test_scoring_that_does_not_finish_sends_the_call_on_the_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SK-F16: scoring that never finishes holds the call for the wait, on the run's
+    clock, and then it goes out without a notice."""
+    held = threading.Event()
+
+    def never(tool: SkillTool, text: str, skip: set[str]) -> list[Entry]:
+        held.wait(30)  # a peer that never answers, let go when the test ends
         return []
 
-    monkeypatch.setattr(discovery_module, "WAIT_SECONDS", 0.05)
-    monkeypatch.setattr(discovery_module, "matches", slow)
-    started = time.monotonic()
-    record = await pinned.run("run-1", [Reply("Done.")], task="Count the lines of the notes.")
-    assert _notices(pinned.gateway.main[0]) == []
-    assert _discoveries(record) == [{"answered": "task", "scoring": "timed_out", "skills": []}]
-    assert time.monotonic() - started < 30
+    monkeypatch.setattr(discovery_module, "matches", never)
+    clock = FakeClock()
+    found = SkillDiscovery(_tool(*_ENTRIES), "Count the lines of the notes.", clock=clock)
+    waiting = asyncio.ensure_future(found.notices("start", cast(Any, _Run())))
+    try:
+        while clock.sleepers == 0:
+            await asyncio.sleep(0.01)
+        clock.advance(4.9)
+        await asyncio.sleep(0.05)
+        assert not waiting.done()
+        clock.advance(0.1)
+        assert await asyncio.wait_for(waiting, 5) == ()
+    finally:
+        held.set()
+    assert found.records == [{"answered": "task", "scoring": "timed_out", "skills": []}]
+
+
+async def test_a_notice_no_call_saw_does_not_count_as_shown() -> None:
+    """A notice the run dropped, as at a closing with no room for it, leaves its skills
+    to be shown again; one a model call saw does not."""
+    found = SkillDiscovery(_tool(*_ENTRIES), None)
+    text = ["count the lines of the notes"]
+    first = await found.about(text, ["m-1"])
+    assert first is not None
+    assert first.ids == ("shown-1",)
+    await found.model_returned(cast(Any, _Run()))
+    again = await found.about(text, ["m-2"])
+    assert again is not None
+    assert again.ids == ("shown-2",)
+    await found.model_returned(cast(Any, _Run("shown-2")))
+    assert await found.about(text, ["m-3"]) is None
+    assert [record.get("notice") for record in found.records] == ["shown-1", "shown-2", None]
 
 
 def _tool(*entries: Entry) -> SkillTool:
@@ -138,15 +195,15 @@ def _tool(*entries: Entry) -> SkillTool:
     )
 
 
+_ENTRIES = (
+    Entry("p", "notes", "Counts the lines of the notes.", "0" * 64, "s", "r"),
+    Entry("p", "lines", "Draws lines.", "0" * 64, "s", "r"),
+    Entry("p", "files", "Opens files in the notes folder and counts things.", "0" * 64, "s", "r"),
+)
+
+
 def test_a_skill_needs_two_shared_words_and_half_the_best_score() -> None:
-    entries = (
-        Entry("p", "notes", "Counts the lines of the notes.", "0" * 64, "s", "r"),
-        Entry("p", "lines", "Draws lines.", "0" * 64, "s", "r"),
-        Entry(
-            "p", "files", "Opens files in the notes folder and counts things.", "0" * 64, "s", "r"
-        ),
-    )
-    tool = _tool(*entries)
+    tool = _tool(*_ENTRIES)
     found = [e.name for e in matches(tool, "count the lines of the notes", set())]
     assert found[0] == "notes"
     assert "lines" not in found  # one shared word

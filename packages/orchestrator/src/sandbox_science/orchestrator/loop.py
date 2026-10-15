@@ -13,7 +13,7 @@ from contextlib import (
     contextmanager,
 )
 from dataclasses import dataclass, field
-from typing import Any, Final, Literal, TypeVar
+from typing import Any, Final, Literal, TypeVar, cast
 
 from .hooks import RESPONSE_ROUNDS, Notice, Point, TurnHook
 from .memory_prompt import MemoryGiven
@@ -563,7 +563,9 @@ async def run_task(
                 if toolbox.skills is not None:
                     first = transcript.usage[0].model if transcript.usage else None
                     if (started := toolbox.skills.summary(first)) is not None:
-                        transcript.summaries["skills"] = started
+                        # Beside the discoveries the hook of that name keeps there.
+                        found = cast(dict[str, Any], transcript.summaries.get("skills") or {})
+                        transcript.summaries["skills"] = {**found, **started}
     except BaseException as error:
         if transcript is not None and user_cancelled(error, stop):
             return transcript  # it came as the run closed: the run's own outcome stands

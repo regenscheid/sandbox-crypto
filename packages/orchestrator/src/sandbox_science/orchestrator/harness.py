@@ -513,7 +513,7 @@ class Harness:
                     discovery = None
                     if toolbox.skills is not None:
                         task = None if request.queued else request.task
-                        discovery = SkillDiscovery(toolbox.skills, task)
+                        discovery = SkillDiscovery(toolbox.skills, task, clock=self.clock)
                         hooks = (*hooks, discovery)
                     if chat is not None:
                         hooks = (*hooks, *await self._chat_hooks(admitted, chat, discovery))
