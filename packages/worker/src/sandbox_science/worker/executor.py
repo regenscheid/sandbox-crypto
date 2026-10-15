@@ -852,10 +852,19 @@ class Executor:
     async def written(
         self, session: str, before: tuple[dict[str, tuple[int, int, int]], bool]
     ) -> Message:
-        """The files created or changed since ``before``, for the attempt's result."""
+        """The files created, changed or deleted since ``before``, for the attempt's
+        result. Deletions are known only when both walks covered both areas whole."""
         after = await asyncio.to_thread(self.snapshot, session)
         changed = sorted(path for path, stamp in after[0].items() if before[0].get(path) != stamp)
         names = [sandbox_files.printable_path(path) for path in changed[:MAX_WRITTEN]]
+        whole = not (
+            before[1]
+            or after[1]
+            or getattr(before[0], "error", False)
+            or getattr(after[0], "error", False)
+        )
+        deleted = sorted(path for path in before[0] if path not in after[0]) if whole else []
+        gone = [sandbox_files.printable_path(path) for path in deleted[:MAX_WRITTEN]]
         try:
             observations = sandbox_files.observation_report(before[0], after[0])
         except Exception:
@@ -863,6 +872,8 @@ class Executor:
         return {
             "written_files": [name for name in names if len(name.encode()) <= MAX_PATH_BYTES],
             "written_files_truncated": before[1] or after[1] or len(changed) > MAX_WRITTEN,
+            "deleted_files": [name for name in gone if len(name.encode()) <= MAX_PATH_BYTES],
+            "deleted_files_truncated": not whole or len(deleted) > MAX_WRITTEN,
             "output_observations": observations,
         }
 
@@ -2478,6 +2489,7 @@ def shrink_result(result: Message) -> bool:
         "outputs": result.get("outputs"),
         "traceback": _item(result.get("error"), "traceback"),
         "written_files": result.get("written_files"),
+        "deleted_files": result.get("deleted_files"),
     }
     for name, part in parts.items():
         if part:
@@ -2504,8 +2516,8 @@ def shrink_result(result: Message) -> bool:
         result["error"] = {**result["error"], "traceback": shorter}
     else:
         files = cast(list[str], parts[largest])
-        result["written_files"] = files[: len(files) // 2]
-        result["written_files_truncated"] = True
+        result[largest] = files[: len(files) // 2]
+        result[f"{largest}_truncated"] = True
     return True
 
 
