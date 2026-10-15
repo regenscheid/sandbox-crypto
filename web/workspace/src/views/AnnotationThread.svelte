@@ -14,6 +14,8 @@
   import { documentHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
   import CommentBodyEditor from './CommentBodyEditor.svelte';
+  import { visible } from '../lib/text';
+  import ApprovalText from './ApprovalText.svelte';
   import HiddenBanner from './HiddenBanner.svelte';
   let {
     projectId,
@@ -111,11 +113,11 @@
     <summary
       >Original quoted context{thread.anchor.quote_truncated ? ' (bounded excerpt)' : ''}</summary
     >
-    {#if thread.anchor.before}<pre>{thread.anchor.before}</pre>{/if}
-    <blockquote><pre>{thread.anchor.quote}</pre></blockquote>
-    {#if thread.anchor.after}<pre>{thread.anchor.after}</pre>{/if}
+    {#if thread.anchor.before}<pre>{visible(thread.anchor.before)}</pre>{/if}
+    <blockquote><pre>{visible(thread.anchor.quote)}</pre></blockquote>
+    {#if thread.anchor.after}<pre>{visible(thread.anchor.after)}</pre>{/if}
     {#if thread.attachment.status === 'stale'}<h4>Current text (bounded excerpt)</h4>
-      <pre>{thread.attachment.current}</pre>{/if}
+      <pre>{visible(thread.attachment.current ?? '')}</pre>{/if}
   </details>
   {#if earlier.available(thread.entries_before !== null)}<button
       disabled={busy}
@@ -133,7 +135,11 @@
       {#if entry.body}<Markdown source={entry.body} {macros} /><HiddenBanner
           text={entry.body}
           links
-        />{/if}
+        />
+        <details>
+          <summary>The comment, exactly as written</summary>
+          <ApprovalText text={entry.body} label="The comment, exactly" />
+        </details>{/if}
       {#if entry.body_source}
         {#if entry.body_source.held}<p role="status">
             Body math checks held: {entry.body_source.held}

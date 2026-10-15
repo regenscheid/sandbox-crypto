@@ -7,7 +7,7 @@
  */
 import type { Token } from 'markdown-it';
 import { parser } from './markdown';
-import { codePoint, hiddenCharacters } from './text';
+import { codePoint, hiddenCharacters, visible } from './text';
 
 export interface Change {
   kind: 'same' | 'removed' | 'added';
@@ -134,3 +134,55 @@ export function hiddenReferences(text: string): [number, string, string][] {
 }
 
 export { codePoint };
+
+/** Something a rendering of a text hides though the text holds it, and its line. */
+export interface Concealed {
+  what: string;
+  line: number;
+}
+
+/** `\phantom`, `\hphantom` and `\vphantom`, which take room and draw nothing. */
+const PHANTOM = /\\[hv]?phantom(?![a-zA-Z])/;
+/** A transparent colour, which draws what it colours as nothing. */
+const TRANSPARENT = /\\(?:color|textcolor|colorbox|fcolorbox)\s*\{\s*transparent\s*\}/i;
+/** A `%` that is not escaped: TeX drops the rest of its line. */
+const COMMENT = /(?<!\\)(?:\\\\)*%/;
+
+/**
+ * What a rendering of the text hides though the text holds it (threat model, A3): math
+ * that draws nothing (`\phantom`, a transparent colour, a `%` comment), a character
+ * reference a rendering shows as a hidden character, and the words after a code fence's
+ * language, which show nowhere. Each with the line it is on, from 1.
+ */
+export function renderingHides(text: string): Concealed[] {
+  const found: Concealed[] = [];
+  const walk = (tokens: Token[], line: number) => {
+    for (const token of tokens) {
+      const at = token.map ? token.map[0] + 1 : line;
+      if (token.type.startsWith('math_')) {
+        if (PHANTOM.test(token.content)) {
+          found.push({ what: 'math with \\phantom, which draws nothing', line: at });
+        }
+        if (TRANSPARENT.test(token.content)) {
+          found.push({ what: 'math in a transparent colour, which draws nothing', line: at });
+        }
+        if (COMMENT.test(token.content)) {
+          found.push({ what: 'math with a % comment, which hides the rest of its line', line: at });
+        }
+      } else if (token.type === 'fence' && token.info.trim().split(/\s+/).length > 1) {
+        found.push({
+          what: `a code fence's words after its language, ${visible(token.info.trim())}, which show nowhere`,
+          line: at,
+        });
+      }
+      if (token.children) walk(token.children, at);
+    }
+  };
+  walk(parser.parse(text, {}), 1);
+  const characters = [...text];
+  for (const [position, code, reference] of hiddenReferences(text)) {
+    const line = characters.slice(0, position).join('').split('\n').length;
+    found.push({ what: `${reference}, which a rendering shows as ${code}`, line });
+  }
+  return found;
+}

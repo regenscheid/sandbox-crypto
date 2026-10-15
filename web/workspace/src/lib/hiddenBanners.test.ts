@@ -9,15 +9,16 @@ import AnnotationThread from '../views/AnnotationThread.svelte';
 import ChatRun from '../views/ChatRun.svelte';
 import DocumentEditor from '../views/DocumentEditor.svelte';
 import type { CommentThread, DocumentRevision } from './api';
-import { linksIn } from './approval';
-import { HIDDEN_CONTENT, hostileMarkup } from './approvalTesting';
+import { linksIn, renderingHides } from './approval';
+import { exactViews, HIDDEN_CONTENT, hostileMarkup } from './approvalTesting';
 import type { RunEvent } from './chat';
 import { documentDrafts } from './drafts';
 import { NO_MACROS } from './macros';
-import { hiddenCharacters, hiddenPlaces } from './text';
+import { hiddenCharacters, hiddenPlaces, visible } from './text';
 
 /** Whether a banner shows beside a rendering of the text. */
-const banner = (text: string) => hiddenPlaces(text).length > 0 || linksIn(text).length > 0;
+const banner = (text: string) =>
+  hiddenPlaces(text).length > 0 || linksIn(text).length > 0 || renderingHides(text).length > 0;
 const banners = (html: string) => (html.match(/class="hidden-banner/g) ?? []).length;
 
 function thread(body: string): CommentThread {
@@ -58,6 +59,44 @@ function thread(body: string): CommentThread {
 }
 
 describe('a comment thread', () => {
+  it.each(HIDDEN_CONTENT)('has a banner and an exact view of a comment with %s', (_, text) => {
+    const html = render(AnnotationThread, {
+      props: {
+        projectId: 'p',
+        documentId: 'doc',
+        thread: thread(text),
+        sessions: [],
+        macros: NO_MACROS,
+        changed: async () => {},
+      },
+    }).body;
+    expect(banners(html)).toBe(1); // every kind hides something from a rendering
+    expect(exactViews(html)).toEqual([visible(text)]);
+  });
+
+  it("shows the anchor's quote and context with hidden characters as code points", () => {
+    const value = thread('Plain.');
+    const override = String.fromCodePoint(0x202e);
+    value.anchor = {
+      ...value.anchor,
+      before: `b${override}`,
+      quote: `q${override}`,
+      after: `a${override}`,
+    };
+    const html = render(AnnotationThread, {
+      props: {
+        projectId: 'p',
+        documentId: 'doc',
+        thread: value,
+        sessions: [],
+        macros: NO_MACROS,
+        changed: async () => {},
+      },
+    }).body;
+    expect(hiddenCharacters(html)).toEqual([]);
+    for (const part of ['b', 'q', 'a']) expect(html).toContain(`${part}⟦U+202E⟧`);
+  });
+
   it.each(HIDDEN_CONTENT)('keeps the rendering and adds a banner, with %s', (_, text) => {
     const html = render(AnnotationThread, {
       props: {
@@ -147,6 +186,13 @@ describe("the editor's text boxes", () => {
   });
 });
 
+it('puts the banner beside the run view and the ledger entry renderings', async () => {
+  const run = (await import('../views/RunView.svelte?raw')).default;
+  expect(run.match(/<HiddenBanner text=\{step.text\} links \/>/g)).toHaveLength(3);
+  const entry = (await import('../views/LedgerEntryBody.svelte?raw')).default;
+  expect(entry).toContain('<HiddenBanner text={entry.statement} links />');
+});
+
 it('renders no text as HTML', () => {
   const views = import.meta.glob(
     [
@@ -157,9 +203,11 @@ it('renders no text as HTML', () => {
       '../views/DocumentComments.svelte',
       '../views/DocumentEditor.svelte',
       '../views/HiddenBanner.svelte',
+      '../views/LedgerEntryBody.svelte',
+      '../views/RunView.svelte',
     ],
     { query: '?raw', import: 'default', eager: true },
   );
-  expect(Object.keys(views)).toHaveLength(7);
+  expect(Object.keys(views)).toHaveLength(9);
   for (const source of Object.values(views)) expect(String(source)).not.toContain('{@html');
 });

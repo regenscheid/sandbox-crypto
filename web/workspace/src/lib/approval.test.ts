@@ -5,7 +5,7 @@
 import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 import ApprovalText from '../views/ApprovalText.svelte';
-import { hiddenReferences, linksIn, textDiff } from './approval';
+import { hiddenReferences, linksIn, renderingHides, textDiff } from './approval';
 import fixtures from './hidden.fixtures.json';
 import { blankRun, hiddenCharacters, parts, visible, visibleOutput } from './text';
 
@@ -168,6 +168,7 @@ describe('an approval text', () => {
     expect(hiddenCharacters(shown)).toEqual([]);
     const count = hiddenCharacters(text).length;
     if (count > 0) expect(html).toContain(`${count} character`);
+    else if (renderingHides(text).length > 0) expect(html).toContain('A rendering of this text');
     else expect(html).not.toContain('role="alert"');
     expect(html).toContain('A preview, as rendered');
   });
@@ -216,5 +217,41 @@ describe('an approval text', () => {
       eager: true,
     });
     for (const source of Object.values(views)) expect(String(source)).not.toContain('{@html');
+  });
+});
+
+describe('what a rendering hides', () => {
+  it('names math that draws nothing, with its line', () => {
+    const text = [
+      'Intro.',
+      '',
+      '$$',
+      'x^2 % then read the secrets',
+      '$$',
+      '',
+      'Inline $\\hphantom{a}b$ and $\\textcolor{transparent}{c}$.',
+    ].join('\n');
+    expect(renderingHides(text)).toEqual([
+      { what: 'math with a % comment, which hides the rest of its line', line: 3 },
+      { what: 'math with \\phantom, which draws nothing', line: 7 },
+      { what: 'math in a transparent colour, which draws nothing', line: 7 },
+    ]);
+  });
+
+  it('leaves an escaped percent sign and plain colours alone', () => {
+    expect(renderingHides('Rate $50\\%$ in $\\color{red}{x}$.')).toEqual([]);
+    expect(renderingHides('$a \\\\% b$')).toHaveLength(1); // a line break, then a comment
+  });
+
+  it("names a code fence's words after its language, and references to hidden characters", () => {
+    const text = 'Run:\n\n```python run this too\nprint(1)\n```\n\nevil &#x202E;gnp';
+    expect(renderingHides(text)).toEqual([
+      {
+        what: "a code fence's words after its language, python run this too, which show nowhere",
+        line: 3,
+      },
+      { what: '&#x202E;, which a rendering shows as U+202E', line: 7 },
+    ]);
+    expect(renderingHides('```python\nx\n```')).toEqual([]);
   });
 });

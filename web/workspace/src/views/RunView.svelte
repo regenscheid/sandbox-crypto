@@ -4,6 +4,7 @@
   import type { RunRecord } from '../lib/api';
   import { duration, formatTime } from '../lib/format';
   import Markdown from '../lib/Markdown.svelte';
+  import HiddenBanner from './HiddenBanner.svelte';
   import { entries, usageLine } from '../lib/transcript';
   import ToolCall from './ToolCall.svelte';
 
@@ -49,18 +50,18 @@
   {#if step.kind === 'system'}
     <details class="message system">
       <summary>System prompt</summary>
-      <Markdown source={step.text} />
+      <Markdown source={step.text} /><HiddenBanner text={step.text} links />
     </details>
   {:else if step.kind === 'user'}
     <section class="message user">
       <h3>Task</h3>
-      <Markdown source={step.text} />
+      <Markdown source={step.text} /><HiddenBanner text={step.text} links />
     </section>
   {:else}
     <section class="message assistant" class:final={step.final}>
       <h3>{step.final ? 'Answer' : 'Agent'}</h3>
       {#if step.text}
-        <Markdown source={step.text} />
+        <Markdown source={step.text} /><HiddenBanner text={step.text} links />
       {/if}
       {#each step.tools as tool, number (number)}
         <ToolCall step={tool} />

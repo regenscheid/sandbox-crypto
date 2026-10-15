@@ -12,7 +12,7 @@ import ResponseBody from '../views/ResponseBody.svelte';
 import { exactViews, HIDDEN_CONTENT, hostileMarkup } from './approvalTesting';
 import type { Finding, ResponseBody as Body, Transition } from './reviews';
 import { hiddenCharacters, hiddenPlaces, visible } from './text';
-import { linksIn } from './approval';
+import { linksIn, renderingHides } from './approval';
 
 function finding(statement: string, remedy: string | null): Finding {
   return {
@@ -65,7 +65,8 @@ function transition(reason: string): Transition {
 }
 
 /** Whether the server-rendered banner beside a rendering shows for this text. */
-const banner = (text: string) => hiddenPlaces(text).length > 0 || linksIn(text).length > 0;
+const banner = (text: string) =>
+  hiddenPlaces(text).length > 0 || linksIn(text).length > 0 || renderingHides(text).length > 0;
 
 describe('a finding the user decides on', () => {
   it.each(HIDDEN_CONTENT)('shows the statement and remedy exactly, with %s', (_, text) => {
