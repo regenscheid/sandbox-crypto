@@ -8,8 +8,10 @@ conditions, with those dominated, not compared and the candidates (LG-20 to LG-2
 many as ``limit`` groups from ``groups_after`` on, and the first ``SHOWN_RESULTS`` of
 each kind of result in a group, with how many more;
 ``GET …/frontier/{category}/definition`` one category, at its current revision or
-``revision``. ``POST …/frontier`` is the user's definition of a category, or its
-revision at the revision read (same-origin, the user's only).
+``revision``; ``GET …/frontier/{category}/history`` its changes to the best known, newest
+first (``before``, ``limit``), and ``GET …/frontier/{category}/past?at=`` its best known
+results as they were at a time (LG-24). ``POST …/frontier`` is the user's definition
+of a category, or its revision at the revision read (same-origin, the user's only).
 """
 
 from __future__ import annotations
@@ -21,15 +23,19 @@ from typing import Final
 from aiohttp import web
 from pydantic import AwareDatetime
 
-from sandbox_science.contracts import Contract, Identifier
+from sandbox_science.contracts import Contract, ErrorKind, Identifier
 from sandbox_science.orchestrator.documents import USER, DocumentStore
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.ledger.models import (
     Category,
     CategoryPage,
+    FrontierChange,
     FrontierGroup,
+    FrontierHistory,
+    FrontierPast,
     FrontierView,
 )
+from sandbox_science.orchestrator.projects import ProjectError
 
 from . import documents
 from .context import identifier, json_body
@@ -63,6 +69,22 @@ class FrontierAnswer(Contract):
     """Where the next page of groups begins; none on the last."""
 
 
+class FrontierHistoryAnswer(Contract):
+    """A category's frontier changes, newest first."""
+
+    project_id: Identifier
+    observed_at: AwareDatetime
+    history: FrontierHistory
+
+
+class FrontierPastAnswer(Contract):
+    """A category's best known results as they were at a past time."""
+
+    project_id: Identifier
+    observed_at: AwareDatetime
+    past: FrontierPast
+
+
 class FrontierCategory(Contract):
     """One frontier category at one revision."""
 
@@ -76,6 +98,8 @@ def add_routes(app: web.Application) -> None:
     app.router.add_post(PATH, define)
     app.router.add_get(PATH + "/{category}", frontier)
     app.router.add_get(PATH + "/{category}/definition", category)
+    app.router.add_get(PATH + "/{category}/history", changes)
+    app.router.add_get(PATH + "/{category}/past", then)
 
 
 async def categories(request: web.Request) -> web.Response:
@@ -123,6 +147,37 @@ async def frontier(request: web.Request) -> web.Response:
     return await read_answer(request, project, read)
 
 
+def _past(found: FrontierPast) -> FrontierPast:
+    """``found`` with the first ``SHOWN_RESULTS`` best known of each group, and how many
+    more."""
+    groups = [
+        group.model_copy(
+            update={
+                "best": group.best[:SHOWN_RESULTS],
+                "more": max(0, len(group.best) - SHOWN_RESULTS),
+            }
+        )
+        for group in found.groups
+    ]
+    return found.model_copy(update={"groups": groups})
+
+
+def _listed(change: FrontierChange) -> FrontierChange:
+    """``change`` with the first ``SHOWN_RESULTS`` of its best known, added and removed,
+    and how many more of each (the review's L3)."""
+    parts = ("best", "added", "removed")
+    return change.model_copy(
+        update={
+            **{part: getattr(change, part)[:SHOWN_RESULTS] for part in parts},
+            "more": {
+                part: len(getattr(change, part)) - SHOWN_RESULTS
+                for part in parts
+                if len(getattr(change, part)) > SHOWN_RESULTS
+            },
+        }
+    )
+
+
 def _shown(group: FrontierGroup) -> FrontierGroup:
     """``group`` with the first ``SHOWN_RESULTS`` of each kind of result, and how many
     more of each."""
@@ -137,6 +192,49 @@ def _shown(group: FrontierGroup) -> FrontierGroup:
             },
         }
     )
+
+
+async def changes(request: web.Request) -> web.Response:
+    project = identifier(request, "project")
+    name = matched(_NAME, request.match_info["category"], "frontier category")
+    assert name is not None  # noqa: S101 - a path part is always there
+    query = query_of(request, {"before", "limit"})
+    before = matched(_NUMBER, query.get("before"), "cursor")
+    limit = int(matched(_LIMIT, query.get("limit", "50"), "limit") or 50)
+
+    def read(ledger: Ledger) -> str:
+        found = ledger.frontier_history(
+            project, name, before=None if before is None else int(before), limit=limit
+        )
+        changes = [_listed(change) for change in found.changes]
+        return FrontierHistoryAnswer(
+            project_id=project,
+            observed_at=datetime.now(UTC),
+            history=found.model_copy(update={"changes": changes}),
+        ).model_dump_json()
+
+    return await read_answer(request, project, read)
+
+
+async def then(request: web.Request) -> web.Response:
+    project = identifier(request, "project")
+    name = matched(_NAME, request.match_info["category"], "frontier category")
+    assert name is not None  # noqa: S101 - a path part is always there
+    raw = query_of(request, {"at"}).get("at")
+    try:
+        at = datetime.fromisoformat(raw or "")
+    except ValueError:
+        raise ProjectError(ErrorKind.INVALID_REQUEST, "at is a time with its zone") from None
+    if at.tzinfo is None:
+        raise ProjectError(ErrorKind.INVALID_REQUEST, "at is a time with its zone")
+
+    def read(ledger: Ledger) -> str:
+        return FrontierPastAnswer(
+            project_id=project, observed_at=datetime.now(UTC), past=_past(
+                ledger.frontier_past(project, name, at))
+        ).model_dump_json()  # fmt: skip
+
+    return await read_answer(request, project, read)
 
 
 async def category(request: web.Request) -> web.Response:

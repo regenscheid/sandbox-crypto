@@ -362,6 +362,18 @@ export interface FrontierCategory {
   category: Category;
 }
 
+/** A change to a category's best known results under one set of conditions (LG-24): the set it left, what it added and removed, and what caused it. */
+export interface FrontierChange {
+  seq: number;
+  conditions: Record<string, string>;
+  best: FrontierMember[];
+  added: string[];
+  removed: string[];
+  cause: Record<string, unknown>;
+  created: string;
+  more: Record<string, number>;
+}
+
 /** The results of a category under one set of conditions (LG-21). */
 export interface FrontierGroup {
   conditions: Record<string, string>;
@@ -370,6 +382,47 @@ export interface FrontierGroup {
   not_compared: FrontierResult[];
   candidates: FrontierResult[];
   more: Record<string, number>;
+}
+
+/** A category's frontier changes, newest first. */
+export interface FrontierHistory {
+  category: string;
+  changes: FrontierChange[];
+  next_before: number | null;
+}
+
+/** A category's frontier changes, newest first. */
+export interface FrontierHistoryAnswer {
+  project_id: string;
+  observed_at: string;
+  history: FrontierHistory;
+}
+
+/** A best known result as a frontier change recorded it. */
+export interface FrontierMember {
+  entry_id: string;
+  handle: string;
+  revision: number;
+}
+
+/** A category's best known results as they were at ``at`` (LG-24). */
+export interface FrontierPast {
+  category: string;
+  at: string;
+  groups: FrontierPastGroup[];
+}
+
+/** A category's best known results as they were at a past time. */
+export interface FrontierPastAnswer {
+  project_id: string;
+  observed_at: string;
+  past: FrontierPast;
+}
+
+export interface FrontierPastGroup {
+  conditions: Record<string, string>;
+  best: FrontierMember[];
+  more: number;
 }
 
 /** A result as the frontier shows it (LG-23): what it states, under which conditions, its measures, origin, status, who wrote it, the types of its evidence, the references it cites and the artifacts it is pinned to, and its open findings and flags. */

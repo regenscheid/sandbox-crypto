@@ -42,6 +42,8 @@ from sandbox_science.workspace.frontier import (
     FrontierAnswer,
     FrontierCategories,
     FrontierCategory,
+    FrontierHistoryAnswer,
+    FrontierPastAnswer,
 )
 from sandbox_science.workspace.kernels import WorkspaceObservation
 from sandbox_science.workspace.ledger import (
@@ -84,6 +86,8 @@ MODELS: tuple[type[BaseModel], ...] = (
     FrontierCategories,
     FrontierCategory,
     FrontierAnswer,
+    FrontierHistoryAnswer,
+    FrontierPastAnswer,
     MemoryAnswer,
     MemoryProposals,
     MemoryHistory,

@@ -69,6 +69,8 @@ from .models import (
     EntrySummary,
     EntryView,
     EvidenceLink,
+    FrontierHistory,
+    FrontierPast,
     FrontierView,
     GateClause,
     GateDecision,
@@ -415,6 +417,24 @@ class Ledger:
             )
         return found
 
+    def frontier_history(
+        self, project: str, name: str, *, before: int | None = None, limit: int = 50
+    ) -> FrontierHistory:
+        """A category's frontier changes, newest first (LG-24)."""
+        self.category(project, name)
+        if not 1 <= limit <= 100:
+            raise DocumentError(INVALID_REQUEST, "a page holds 1 to 100 changes")
+        with self.control.read() as tx:
+            return frontier.history(tx.sql, project, name, before, limit)
+
+    def frontier_past(self, project: str, name: str, at: datetime) -> FrontierPast:
+        """A category's best known results as they were at ``at`` (LG-24)."""
+        self.category(project, name)
+        if at.tzinfo is None:
+            raise DocumentError(INVALID_REQUEST, "a time names its zone")
+        with self.control.read() as tx:
+            return frontier.past(tx.sql, project, name, at.astimezone(UTC).isoformat())
+
     def frontier(
         self, project: str, name: str, *, candidates_before: int | None = None
     ) -> FrontierView:
@@ -469,6 +489,8 @@ class Ledger:
             if replay is not None:
                 return Category.model_validate({**replay, "replayed": True})
             now = self.clock()
+            if value.expected is not None:
+                self._baseline(db, project, {value.category}, now)
             category = frontier.define(
                 db, project, value, author.model_dump(mode="json", exclude_none=True),
                 now.isoformat(),
@@ -486,10 +508,122 @@ class Ledger:
                 },
                 now,
             )
+            self._frontier(
+                db,
+                project,
+                {value.category},
+                {
+                    "operation_id": value.operation_id,
+                    "author": author.actor,
+                    "category_revision": category.revision,
+                },
+                author,
+                now,
+            )
             RECEIPTS.record(
                 db, project, _PROJECT, value.operation_id, digest, category.model_dump(mode="json")
             )
             return category
+
+    @staticmethod
+    def _categories(
+        db: sqlite3.Connection, planned: list[_Planned], *, written: bool = True
+    ) -> set[str]:
+        """The frontier categories whose results a change made or revised, as they were
+        and as it leaves them; ``written`` once it wrote its revisions."""
+        found: set[str] = set()
+        for p in planned:
+            if p.row.type != "result":
+                continue
+            if p.fields.get("category"):
+                found.add(p.fields["category"])
+            if not p.created:
+                before = db.execute(
+                    "SELECT json_extract(fields,'$.category') FROM ledger_revisions "
+                    "WHERE entry_id=? AND revision=?",
+                    (p.row.entry_id, p.row.head - 1 if written else p.row.head),
+                ).fetchone()
+                if before is not None and before[0]:
+                    found.add(before[0])
+        return found
+
+    @staticmethod
+    def _baseline(
+        db: sqlite3.Connection, project: str, categories: set[str], now: datetime
+    ) -> None:
+        """Before a change, the best known results of each of ``categories`` whose history
+        holds nothing yet, as it began: a category defined before the history was built
+        (version 27) had them already (the review's L2)."""
+        for name in categories:
+            if (
+                db.execute(
+                    "SELECT 1 FROM frontier_changes WHERE project=? AND category=? LIMIT 1",
+                    (project, name),
+                ).fetchone()
+                is None
+            ):
+                frontier.record(
+                    db, project, {name}, {"baseline": "frontier history begins"}, now.isoformat()
+                )
+
+    def _dominance_changes(self, db: sqlite3.Connection, planned: list[_Planned]) -> list[str]:
+        """The ``dominates`` links a change adds or drops, in words, the reason of each it
+        adds cut short, as many as 8 (the review's M3)."""
+        found: list[str] = []
+        handles = {p.row.entry_id: p.row.handle for p in planned}
+
+        def handle(entry: str) -> str:
+            if entry not in handles:
+                row = db.execute(
+                    "SELECT type,number FROM ledger_entries WHERE entry_id=?", (entry,)
+                ).fetchone()
+                handles[entry] = entry if row is None else f"{PREFIXES[row[0]]}-{row[1]}"
+            return handles[entry]
+
+        for p in planned:
+            if p.row.type != "result" or p.links is None:
+                continue
+            final = {link.target_id for link in p.links if link.kind == "dominates"}
+            for link in _added(p, "dominates"):
+                found.append(
+                    f"{p.row.handle} dominates {handle(link.target_id)}: "
+                    + _clip(link.note or "", 100)
+                )
+            found += [
+                f"{p.row.handle} no longer dominates {handle(link.target_id)}"
+                for link in p.previous
+                if link.kind == "dominates" and link.target_id not in final
+            ]
+        return found[:8]
+
+    def _frontier(
+        self,
+        db: sqlite3.Connection,
+        project: str,
+        categories: set[str],
+        cause: Json,
+        author: Author,
+        now: datetime,
+    ) -> None:
+        """Record what the change did to the best known results of ``categories``
+        (LG-24), each category's changes under one ``ledger.frontier_changed`` event."""
+        for name, changes in frontier.record(db, project, categories, cause, now.isoformat()):
+            self.category_events.append(
+                db,
+                "ledger.frontier_changed",
+                project,
+                author.session_id,
+                name,
+                {
+                    "category": name,
+                    "operation_id": cause["operation_id"],
+                    "changes": [
+                        {"conditions": c.conditions, "added": c.added, "removed": c.removed}
+                        for c in changes
+                    ],
+                },
+                now,
+            )
 
     def check(
         self,
@@ -723,6 +857,7 @@ class Ledger:
         now = self.clock()
         cleared = self._clear(db, project, mutation, author, role, now)
         reopened = self._reopen(db, project, mutation, author, role, now)
+        self._baseline(db, project, self._categories(db, planned, written=False), now)
         changed: list[ChangedEntry] = []
         for p in planned:
             self._write(db, project, p, mutation, author, provenance, now)
@@ -756,6 +891,24 @@ class Ledger:
             "ledger.flags_raised",
             mutation,
             [(f.flag_id, f.entry_id, f.handle, f.cause, f.source["handle"]) for f in raised],
+            now,
+        )
+        self._frontier(
+            db,
+            project,
+            self._categories(db, planned),
+            {
+                "operation_id": mutation.operation_id,
+                "author": author.actor,
+                "reason": _clip(mutation.reason, 500),
+                "entries": [p.row.handle for p in planned if p.row.type == "result"],
+                **(
+                    {"dominates": linked}
+                    if (linked := self._dominance_changes(db, planned))
+                    else {}
+                ),
+            },
+            author,
             now,
         )
         flagged = list(dict.fromkeys(flag.handle for flag in raised))
@@ -1937,6 +2090,10 @@ def _entry_id(db: sqlite3.Connection, project: str, handle: str) -> str:
         (project, number),
     ).fetchone()
     return "" if row is None else row[0]
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 def _given(link: EntryLink) -> Json:

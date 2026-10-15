@@ -410,3 +410,79 @@ async def test_a_frontier_through_the_workspace(
     for bad in ({"x": "1"}, {"groups_after": "-1"}, {"limit": "0"}, {"candidates_before": "0"}):
         await error_of(await client.get(url, params=bad), 400, "invalid_request")
     await error_of(await client.get("/api/v0/projects/p1/frontier/bounds"), 404, "not_found")
+
+
+async def test_a_frontiers_history_through_the_workspace(
+    aiohttp_client: ClientFactory, seeded: Path, static_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """LG-24: the GUI reads a category's changes, and its best known at a past time, each
+    change with the first results of each list and how many more (the review's L3)."""
+    from datetime import UTC, datetime
+
+    from sandbox_science.orchestrator.documents import USER
+    from sandbox_science.workspace import frontier
+    from sandbox_science.workspace.frontier import FrontierHistoryAnswer, FrontierPastAnswer
+
+    client = await workspace(aiohttp_client, seeded, static_dir)
+    url = "/api/v0/projects/p1/frontier"
+    body = {
+        "category": "key-recovery",
+        "target": "The test scheme",
+        "kind": "Key recovery cost",
+        "measures": [{"name": "time", "unit": "log2 operations", "direction": "lower"}],
+        "conditions": [],
+        "reason": "What the project compares.",
+        "operation_id": "category-1",
+    }
+    assert (await client.post(url, json=body, headers=origin(client))).status == 200
+    history = FrontierHistoryAnswer.model_validate(
+        await (await client.get(url + "/key-recovery/history")).json()
+    )
+    assert history.history.changes == []
+    now = datetime.now(UTC).isoformat()
+    past = FrontierPastAnswer.model_validate(
+        await (await client.get(url + "/key-recovery/past", params={"at": now})).json()
+    )
+    assert past.past.groups == []
+    await error_of(
+        await client.get(url + "/key-recovery/past", params={"at": "yesterday"}),
+        400,
+        "invalid_request",
+    )
+    await error_of(
+        await client.get(url + "/key-recovery/past", params={"at": "2026-10-15T00:00:00"}),
+        400,
+        "invalid_request",
+    )
+    documents = DocumentStore(store_path(seeded))
+    try:
+        reference = {"type": "reference", "title": "A paper", "statement": "A paper.",
+                     "fields": {"identifiers": {"eprint": "2024/123"},
+                                "published": "2024-02-01"}}  # fmt: skip
+        cite = [{"role": "supports", "type": "source_claim", "entry": "new:paper"}]
+        both = [
+            {"type": "result", "origin": "published", "title": "P", "statement": "s",
+             "fields": {"category": "key-recovery", "measures": {"time": 1}}, "evidence": cite}
+            for _ in range(2)
+        ]  # fmt: skip
+        changes = [{**reference, "key": "paper"}, *both]
+        Ledger(documents).change(
+            "p1", {"operation_id": "p", "reason": "r", "changes": changes}, USER
+        )
+    finally:
+        documents.close()
+    monkeypatch.setattr(frontier, "SHOWN_RESULTS", 1)
+    history = FrontierHistoryAnswer.model_validate(
+        await (await client.get(url + "/key-recovery/history")).json()
+    )
+    (change,) = history.history.changes
+    assert ([m.handle for m in change.best], change.added, change.more) == (
+        ["R-1"],
+        ["R-1"],
+        {"best": 1, "added": 1},
+    )
+    later = datetime.now(UTC).isoformat()
+    past = FrontierPastAnswer.model_validate(
+        await (await client.get(url + "/key-recovery/past", params={"at": later})).json()
+    )
+    assert [(len(g.best), g.more) for g in past.past.groups] == [(1, 1)]
