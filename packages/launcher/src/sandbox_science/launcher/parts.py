@@ -52,6 +52,9 @@ def check(config: LauncherConfig) -> None:
         )
         if not path.is_file()
     ]
+    key = config.model.api_key_file
+    if key.is_file() and key.stat().st_mode & 0o077:  # looked at, never read
+        problems.append(f"the model key file {key} is open to other users: chmod 600 {key}")
     if not environments.policy_store.is_dir():
         problems.append(f"no policy store at {environments.policy_store}")
     if not (config.workspace.static / "index.html").is_file():

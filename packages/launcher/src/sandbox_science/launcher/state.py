@@ -59,12 +59,31 @@ class Layout:
 
 
 def private_dir(path: Path) -> Path:
-    """``path`` as a directory only its owner can open."""
-    path.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if not path.is_dir() or path.is_symlink():
+    """``path`` as a directory of this user's that only they can open.
+
+    One the launcher makes is mode 700. One that is there already must be this user's
+    and mode 700: the launcher refuses any other rather than change it, so that a
+    ``state_dir`` of ``~`` never changes the home directory.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.mkdir(mode=0o700)
+    except FileExistsError:
+        made = False
+    else:
+        made = True
+    found = path.lstat()
+    if not stat.S_ISDIR(found.st_mode):
         raise LauncherError(f"{path} is not a directory")
-    if stat.S_IMODE(path.stat().st_mode) != 0o700:
-        path.chmod(0o700)
+    if found.st_uid != os.getuid():
+        raise LauncherError(f"{path} is not yours: choose another state_dir")
+    if made:
+        path.chmod(0o700)  # whatever the umask took away or left
+    elif stat.S_IMODE(found.st_mode) != 0o700:
+        raise LauncherError(
+            f"{path} is open to other users (mode {stat.S_IMODE(found.st_mode):o}): make it "
+            f"mode 700 (chmod 700 {path}), or choose another state_dir"
+        )
     return path
 
 

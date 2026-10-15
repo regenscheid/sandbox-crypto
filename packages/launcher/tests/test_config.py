@@ -29,6 +29,28 @@ def test_paths_are_against_the_file_and_home(make_config: Any, home: Path) -> No
     assert config.workspace.preview() == "127.0.0.1:18201"
 
 
+def test_ports_are_plain_numbers_and_loopback_gateways_are_ip_addresses(
+    make_config: Any,
+) -> None:
+    config = load_config(
+        make_config(
+            {
+                "worker": {"listen": "127.0.0.1:08100"},
+                "model": {"url": "http://[::1]:4000/v1"},
+                "openshell": {"env": {"XDG_STATE_HOME": "lab/state", "TELEMETRY": "false"}},
+            }
+        )
+    )
+    assert config.worker.listen == "127.0.0.1:8100"
+    assert config.model.url == "http://[::1]:4000/v1"
+    # A value with a / is a path, against the file, so every part reaches one gateway.
+    site = config.worker.policy.parent
+    assert config.openshell.env["XDG_STATE_HOME"] == str(site / "lab/state")
+    assert config.openshell.env["TELEMETRY"] == "false"
+    loopback = load_config(make_config({"model": {"url": "http://127.0.0.1:4000/v1"}}))
+    assert loopback.model.url == "http://127.0.0.1:4000/v1"
+
+
 def test_a_command_name_is_left_to_the_path(make_config: Any) -> None:
     config = load_config(make_config({"openshell": {"cli": "openshell"}}))
     assert config.openshell.cli == "openshell"
@@ -42,7 +64,13 @@ def test_a_command_name_is_left_to_the_path(make_config: Any) -> None:
         ({"workspace": {"preview_listen": "192.168.1.2:8201"}}, "is not on loopback"),
         ({"worker": {"listen": "127.0.0.1"}}, "is not host:port"),
         ({"workspace": {"listen": "127.0.0.1:18099"}}, "the worker and the workspace preview"),
-        ({"model": {"url": "http://gateway.example/v1"}}, "https, or http on loopback"),
+        ({"model": {"url": "http://gateway.example/v1"}}, "http on a loopback IP address"),
+        ({"model": {"url": "http://127.evil.example/v1"}}, "http on a loopback IP address"),
+        ({"model": {"url": "http://127.0.0.1.nip.io/v1"}}, "http on a loopback IP address"),
+        ({"model": {"url": "http://localhost:4000/v1"}}, "http on a loopback IP address"),
+        ({"worker": {"listen": "127.0.0.1:\uff18\uff11\uff10\uff10"}}, "a port from 1 to 65535"),
+        ({"workspace": {"listen": "127.0.0.1:65535"}}, "set preview_listen"),
+        ({"workspace": {"preview_listen": "127.0.0.1:65536"}}, "a port from 1 to 65535"),
         ({"projects": [{"id": "crypto", "profile": "crypto-base"}]}, "is not one of"),
         (
             {"projects": [{"id": "a", "profile": "minimal"}, {"id": "a", "profile": "minimal"}]},

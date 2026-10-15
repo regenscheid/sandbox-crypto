@@ -42,7 +42,6 @@ launcher never reads it, and gives its path to the run service.
 from __future__ import annotations
 
 import ipaddress
-import os
 import tomllib
 from pathlib import Path
 from typing import Annotated, Literal, Self, cast
@@ -76,10 +75,17 @@ def _path(value: Path, info: ValidationInfo) -> Path:
 ConfigPath = Annotated[Path, AfterValidator(_path)]
 
 
+def split(address: str) -> tuple[str, int]:
+    """An address's host and port, as ``_loopback`` checked them."""
+    host, _, port = address.rpartition(":")
+    return host, int(port)
+
+
 def _loopback(value: str) -> str:
+    """``value`` as ``host:port`` with the port as a plain number, on a loopback address."""
     host, colon, port = value.rpartition(":")
-    if not colon or not port.isdigit() or not 0 < int(port) < 65536:
-        raise ValueError(f"{value!r} is not host:port")
+    if not colon or not (port.isascii() and port.isdigit()) or not 0 < int(port) < 65536:
+        raise ValueError(f"{value!r} is not host:port, with a port from 1 to 65535")
     try:
         loopback = ipaddress.IPv4Address(host).is_loopback
     except ValueError:
@@ -89,7 +95,7 @@ def _loopback(value: str) -> str:
             f"{value!r} is not on loopback: everything the launcher starts listens on this "
             "computer only, at an address such as 127.0.0.1:8200"
         )
-    return value
+    return f"{host}:{int(port)}"
 
 
 Listen = Annotated[str, AfterValidator(_loopback)]
@@ -113,10 +119,16 @@ class ModelConfig(_Strict):
     def _gateway(cls, value: str) -> str:
         parts = urlsplit(value)
         host = parts.hostname or ""
-        local = host == "localhost" or host.startswith("127.")
+        try:
+            local = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            local = False  # a name, which could resolve anywhere: https only
         if (parts.scheme == "https" and host) or (parts.scheme == "http" and local):
             return value
-        raise ValueError("the model gateway's URL is https, or http on loopback")
+        raise ValueError(
+            "the model gateway's URL is https, or http on a loopback IP address such as "
+            "127.0.0.1: the key would go to it in the clear"
+        )
 
 
 class ProjectConfig(_Strict):
@@ -146,8 +158,14 @@ class WorkspaceConfig(_Strict):
     def preview(self) -> str:
         if self.preview_listen is not None:
             return self.preview_listen
-        host, _, port = self.listen.rpartition(":")
-        return f"{host}:{int(port) + 1}"
+        host, port = split(self.listen)
+        return f"{host}:{port + 1}"
+
+    @model_validator(mode="after")
+    def _preview(self) -> Self:
+        if self.preview_listen is None and split(self.listen)[1] == 65535:
+            raise ValueError("listen's next port is not a port: set preview_listen")
+        return self
 
 
 class EnvironmentsConfig(BaseModel):
@@ -179,8 +197,13 @@ class OpenShellConfig(BaseModel):
 
     @field_validator("env")
     @classmethod
-    def _home(cls, value: dict[str, str]) -> dict[str, str]:
-        return {key: os.path.expanduser(item) for key, item in value.items()}
+    def _paths(cls, value: dict[str, str], info: ValidationInfo) -> dict[str, str]:
+        """A value with a ``/`` in it, or that starts with ``~``, is a path: absolute, so
+        that every part reaches the same gateway, whatever its working directory."""
+        return {
+            key: str(_path(Path(item), info)) if "/" in item or item.startswith("~") else item
+            for key, item in value.items()
+        }
 
 
 class LauncherConfig(_Strict):

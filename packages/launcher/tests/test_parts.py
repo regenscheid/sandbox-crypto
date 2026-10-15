@@ -106,3 +106,25 @@ def test_check_names_everything_missing_and_never_reads_the_key(
     assert f"no {parts.HARNESS} in {commands}" in message
     assert f"no project policy at {config.worker.policy}" in message
     config.model.api_key_file.chmod(0o600)
+
+
+def test_a_state_directory_open_to_others_is_refused_not_changed(
+    make_config: Any, tmp_path: Path
+) -> None:
+    shared = tmp_path / "shared"
+    shared.mkdir(mode=0o755)
+    shared.chmod(0o755)
+    config = load_config(make_config({"state_dir": str(shared)}))
+    with pytest.raises(LauncherError, match=r"is open to other users .mode 755"):
+        parts.prepare(config)
+    assert mode(shared) == 0o755
+    assert list(shared.iterdir()) == []
+
+
+def test_a_model_key_file_open_to_others_is_refused_without_reading_it(
+    make_config: Any, commands: Path
+) -> None:
+    config = load_config(make_config({"bin_dir": str(commands)}))
+    config.model.api_key_file.chmod(0o644)
+    with pytest.raises(LauncherError, match=r"the model key file .* is open to other users"):
+        parts.check(config)
