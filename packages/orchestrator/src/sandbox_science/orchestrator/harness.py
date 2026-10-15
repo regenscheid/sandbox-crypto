@@ -574,7 +574,6 @@ class Harness:
             wake=chat.arrived if chat is not None else None,
             over_budget=over_budget,
             tree=tree,
-            state=stores.runs,
             clock=clock,
         )
 

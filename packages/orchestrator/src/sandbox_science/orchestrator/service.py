@@ -59,7 +59,7 @@ from .harness import Harness, RunRequest, admit, save
 from .hooks import TurnHook
 from .model import Message
 from .projects import ProjectError, ProjectStore, run_name
-from .runstate import RunState
+from .runstate import RunState, head_and_tail
 from .tools import ToolOutcome
 
 _log = logging.getLogger(__name__)
@@ -189,7 +189,17 @@ class RunService:
     async def _ended(self, project: str, session: str, run: str, *, hold: bool = True) -> None:
         """End a run whose holder is gone (RS-12): from its record if it was saved,
         otherwise as ``interrupted``, with the messages it was offered held, or, for a
-        run that stopped itself (``hold`` false), left queued for the next run (RS-9)."""
+        run that stopped itself (``hold`` false), left queued for the next run (RS-9).
+        Its tree ends with it, whatever fails before (PD-40)."""
+        try:
+            await self._root_ended(project, session, run, hold=hold)
+        finally:
+            for delegation_id, _ in await threaded(
+                self.delegations.abandon, project, session, parent=run
+            ):
+                _log.warning("delegation %s of run %s was interrupted", delegation_id, run)
+
+    async def _root_ended(self, project: str, session: str, run: str, *, hold: bool) -> None:
         runs = self.runs
         try:
             record = await threaded(self.stores.projects.run, project, session, run)
@@ -202,7 +212,7 @@ class RunService:
             stopped = {
                 "stopped": record.stopped,
                 "failure": record.failure,
-                "final_text": record.final_text,
+                "final_text": head_and_tail(record.final_text),
                 "record": run,
             }
         else:
@@ -221,13 +231,6 @@ class RunService:
                 self._hold(project, session, claimed)
         if not await threaded(runs.ended, project, session, run):
             await threaded(runs.append, project, session, run, "stopped", stopped)
-        # Its delegations end with it, and so do their runs' events (PD-40).
-        for delegation_id, _ in await threaded(
-            self.delegations.abandon, project, session, parent=run
-        ):
-            _log.warning("delegation %s of run %s was interrupted", delegation_id, run)
-        for child in await threaded(self.delegations.children, project, session, run):
-            await threaded(runs.close, project, session, child)
 
     async def _run(self, project: str, session: str, active: _Active) -> None:
         key = project, session

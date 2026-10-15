@@ -14,7 +14,9 @@ otherwise its answer as returned with the errors (PD-17, PD-18, PD-20). As a tur
 ``Delegations``, which every main run with the stores has:
 
 - ends ``interrupted``, as the run starts, the session's delegations still running,
-  whose process ended, and their runs' events (PD-40);
+  whose process ended, and writes the ``stopped`` event of any of the session's
+  delegated runs that lacks it, such as one whose command-line root lost its lease
+  (PD-40);
 - offers, at each safe point, the session's outcomes that no run has acknowledged,
   its own children's and those an earlier run left (PD-35), each as a short summary,
   together at most ``max_chars``; the rest wait for a later safe point;
@@ -54,7 +56,6 @@ from sandbox_science.orchestrator.notices import (
     DELEGATIONS_RUNNING,
 )
 from sandbox_science.orchestrator.projects import RunRecord, run_name
-from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, dump
 
 from .budget import FLOOR, MIN_CHILD, TreeBudget
@@ -168,7 +169,6 @@ class Delegations(TurnHook):
         wake: Callable[[], Awaitable[None]] | None = None,
         over_budget: Callable[[], Awaitable[bool]] | None = None,
         tree: TreeBudget | None = None,
-        state: RunState | None = None,
         max_chars: int = 5000,
         output_chars: int = 20000,
         clock: Clock = SYSTEM_CLOCK,
@@ -185,8 +185,6 @@ class Delegations(TurnHook):
         self.tree = tree
         self.turns_left = max_turns
         """The run's turns left at its last safe point: a child gets no more (PD-38)."""
-        self.state = state
-        """The session's run events, which an abandoned delegation's run ends in."""
         self.max_chars, self.output_chars = max_chars, output_chars
         self.children: dict[str, _Running] = {}
         self.returned: set[str] = set()
@@ -432,10 +430,8 @@ class Delegations(TurnHook):
     async def _held(self) -> AsyncGenerator[None]:
         context = self.context
         abandoned = await threaded(self.records.abandon, context.project_id, context.session_id)
-        for delegation_id, run in abandoned:
+        for delegation_id, _ in abandoned:
             _log.warning("delegation %s lost its process: interrupted", delegation_id)
-            if self.state is not None:  # its run's events end, as a dead root's do
-                await threaded(self.state.close, context.project_id, context.session_id, run)
         try:
             yield
         finally:
