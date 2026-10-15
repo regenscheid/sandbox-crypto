@@ -145,5 +145,7 @@ test('only PDFs open in the viewer, and only when the server has it on', () => {
 test('sizes read in bytes, KiB and MiB', () => {
   expect(sizeText(512)).toBe('512 B');
   expect(sizeText(1536)).toBe('1.5 KiB');
+  expect(sizeText(3 * 1024 ** 2)).toBe('3.0 MiB');
+  expect(sizeText(2 * 1024 ** 3)).toBe('2.0 GiB');
   expect(sizeText(3 * 1024 * 1024)).toBe('3.0 MiB');
 });

@@ -21,9 +21,9 @@ import sqlite3
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import TYPE_CHECKING, Annotated, Final, Literal
+from typing import TYPE_CHECKING, Annotated, Final, Literal, cast
 
-from pydantic import Field, StringConstraints, ValidationError
+from pydantic import Field, StringConstraints, TypeAdapter, ValidationError
 
 from sandbox_science.contracts.model import Contract
 from sandbox_science.orchestrator.control import Receipts
@@ -67,6 +67,7 @@ Pattern = Annotated[
     ),
 ]
 _RECEIPTS = Receipts("files", "operation ID already names another file settings change")
+_PATTERN: Final = TypeAdapter[str](Pattern)
 
 
 class FileSettings(Contract):
@@ -104,12 +105,20 @@ class ProjectFiles:
         _scope(project)
         if author.kind != "user":
             raise DocumentError(POLICY_DENIED, "only the user changes a project's file settings")
+        patterns = cast(dict[str, object], value).get("ignore") if isinstance(value, dict) else None
+        if isinstance(patterns, list):
+            for line, pattern in enumerate(cast(list[object], patterns), 1):
+                try:
+                    _PATTERN.validate_python(pattern)
+                    compile_pattern(cast(str, pattern))
+                except (ValidationError, DocumentError):
+                    raise DocumentError(
+                        INVALID_REQUEST, f"line {line}: invalid ignore pattern {pattern!r}"[:300]
+                    ) from None
         try:
             change = FileSettingsChange.model_validate(value)
         except ValidationError:
             raise DocumentError(INVALID_REQUEST, "invalid file settings change") from None
-        for pattern in change.ignore:
-            compile_pattern(pattern)
         if len(json.dumps(change.ignore).encode()) > 65536:
             raise DocumentError(INVALID_REQUEST, "the ignore patterns exceed 64 KiB")
         fingerprint = hashlib.sha256(

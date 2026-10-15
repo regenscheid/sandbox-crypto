@@ -20,7 +20,7 @@ import type {
   ViewerLink,
 } from './api-types';
 import type { ArtifactFilter, ArtifactGroup, FileSettings } from './artifactFiles';
-import { artifactQuery } from './artifactFiles';
+import { artifactQuery, NO_FILTER } from './artifactFiles';
 import type { ServerBlock } from './attach';
 import { ApiError, get, post } from './http';
 import { signOut } from './session';
@@ -406,6 +406,12 @@ export interface CommentChange {
   replayed?: boolean;
 }
 
+/**
+ * The most a page of the artifact list can be: ten entries, each path up to 4,096 bytes
+ * of characters sent as escapes. A workspace test keeps this at or above that bound.
+ */
+export const ARTIFACT_LISTING_MAX_BYTES = 256 * 1024;
+
 const part = encodeURIComponent;
 
 export const api = {
@@ -455,15 +461,17 @@ export const api = {
     get<PatchPreview>(
       `/projects/${part(project)}/documents/${part(document)}/patches/${part(patch)}/preview`,
     ),
-  /** The project's artifacts of one group, a page at a time, and whether the viewer is on. */
+  /** The project's artifacts of one group, the most recently changed first, a page at a
+   * time, and whether the viewer is on. */
   artifacts: (
     project: string,
-    after: string | null,
+    before: number | null,
     group: ArtifactGroup,
-    filter: ArtifactFilter = { session: '', run: '' },
+    filter: ArtifactFilter = NO_FILTER,
   ) =>
     get<ArtifactListing>(
-      `/projects/${part(project)}/artifacts?${artifactQuery(group, filter, after)}`,
+      `/projects/${part(project)}/artifacts?${artifactQuery(group, filter, before)}`,
+      { maxBytes: ARTIFACT_LISTING_MAX_BYTES },
     ),
   /** The project's settings for the files its executions write, with the defaults. */
   fileSettings: (project: string) => get<FileSettings>(`/projects/${part(project)}/files/settings`),

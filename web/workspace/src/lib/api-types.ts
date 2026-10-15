@@ -32,7 +32,7 @@ export interface ArtifactEntry {
 
 export interface ArtifactListing {
   artifacts: ArtifactEntry[];
-  next_after: string | null;
+  next_before: number | null;
   viewer: boolean;
 }
 

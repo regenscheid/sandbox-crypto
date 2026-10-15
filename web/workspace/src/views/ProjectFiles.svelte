@@ -3,47 +3,41 @@
      RA-29, RA-39): record every file or results only, and the ignore patterns. -->
 <script lang="ts">
   import { api } from '../lib/api';
-  import { patternsText, settingsChange } from '../lib/artifactFiles';
-  import { guardedWrite } from '../lib/mutation';
-  import { idle, submit } from '../lib/submit';
+  import {
+    patternProblem,
+    patternsText,
+    saveSettings,
+    type SettingsForm,
+  } from '../lib/artifactFiles';
+  import { idle } from '../lib/submit';
   import ErrorMessage from './ErrorMessage.svelte';
 
   let { projectId }: { projectId: string } = $props();
-  let expected = $state(0),
-    head = $state(0),
-    recording = $state<'all' | 'results'>('all'),
-    text = $state(''),
-    defaults = $state<string[]>([]),
-    status = $state('');
+  const form = $state<SettingsForm>({
+    expected: 0,
+    head: 0,
+    recording: 'all',
+    text: '',
+    status: '',
+  });
+  let defaults = $state<string[]>([]);
   const saving = $state(idle());
-  async function refresh(adopt: boolean) {
+  const problem = $derived(patternProblem(form.text));
+  async function load() {
     const current = await api.fileSettings(projectId);
-    head = current.revision;
+    form.expected = form.head = current.revision;
+    form.recording = current.recording;
+    form.text = patternsText(current.ignore);
     defaults = current.defaults ?? [];
-    if (adopt) {
-      expected = current.revision;
-      recording = current.recording;
-      text = patternsText(current.ignore);
-    }
   }
-  const loading = refresh(true);
-  async function save() {
-    status = '';
-    await submit(
+  const loading = load();
+  function save() {
+    return saveSettings(
+      form,
       saving,
-      async () => {
-        const result = await guardedWrite(
-          'files',
-          projectId,
-          settingsChange(expected, recording, text),
-          (sent) => api.changeFileSettings(projectId, sent),
-        );
-        expected = head = result.revision;
-        recording = result.recording;
-        text = patternsText(result.ignore);
-        status = `Saved revision ${head}. Calls that end from now on follow it.`;
-      },
-      () => refresh(false), // the current revision, beside the edited settings
+      projectId,
+      (sent) => api.changeFileSettings(projectId, sent),
+      () => api.fileSettings(projectId),
     );
   }
 </script>
@@ -54,28 +48,33 @@
     <fieldset>
       <legend>Record</legend>
       <label
-        ><input type="radio" bind:group={recording} value="all" /> every file a call writes, except the
-        patterns below</label
+        ><input type="radio" bind:group={form.recording} value="all" /> every file a call writes, except
+        the patterns below</label
       >
       <label
-        ><input type="radio" bind:group={recording} value="results" /> results only: published files and
-        delegated runs' declared results</label
+        ><input type="radio" bind:group={form.recording} value="results" /> results only: published files
+        and delegated runs' declared results</label
       >
     </fieldset>
     <label
       >Ignore patterns, one a line, as in <code>.gitignore</code><textarea
         aria-label="Ignore patterns"
         rows="8"
-        bind:value={text}></textarea></label
+        bind:value={form.text}></textarea></label
     >
-    <button type="button" onclick={() => (text = patternsText(defaults))}>Use the defaults</button>
-    <p>Based on revision {expected}. Current revision {head}.</p>
-    {#if expected !== head}<button type="button" onclick={() => (expected = head)}
-        >Use the current revision</button
+    {#if problem}<p role="alert">{problem}</p>{/if}
+    <button type="button" onclick={() => (form.text = patternsText(defaults))}
+      >Use the defaults</button
+    >
+    <p>Based on revision {form.expected}. Current revision {form.head}.</p>
+    {#if form.expected !== form.head}<button
+        type="button"
+        onclick={() => (form.expected = form.head)}>Use the current revision</button
       >
       <p>Your settings are kept; review them before saving.</p>{/if}
-    <button disabled={saving.busy} onclick={save}>Save the file settings</button>
-    {#if status}<p role="status">{status}</p>{/if}
+    <button disabled={saving.busy || problem !== null} onclick={save}>Save the file settings</button
+    >
+    {#if form.status}<p role="status">{form.status}</p>{/if}
   {:catch caught}<ErrorMessage error={caught} />{/await}
   {#if saving.error}<ErrorMessage error={saving.error} />{/if}
 </details>

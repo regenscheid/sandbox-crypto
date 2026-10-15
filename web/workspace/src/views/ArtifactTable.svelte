@@ -1,14 +1,12 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- One group of the project's artifacts (research artifacts, RA-37): results, or every
-     other recorded file, at their latest revision, each PDF with a link to the viewer. -->
+     other recorded file, the most recently changed first, a page at a time. -->
 <script lang="ts">
   import { api } from '../lib/api';
   import type { ArtifactEntry } from '../lib/api-types';
-  import { type ArtifactFilter, type ArtifactGroup, keptText, whoText } from '../lib/artifactFiles';
-  import { formatTime } from '../lib/format';
+  import { type ArtifactFilter, type ArtifactGroup } from '../lib/artifactFiles';
   import { emptyList, PagedList } from '../lib/pagedList';
-  import { sizeText, viewable } from '../lib/pdfAnchors';
-  import { pdfHref } from '../lib/router';
+  import ArtifactRow from './ArtifactRow.svelte';
   import ErrorMessage from './ErrorMessage.svelte';
 
   let {
@@ -18,21 +16,21 @@
     empty,
   }: { projectId: string; group: ArtifactGroup; filter: ArtifactFilter; empty: string } = $props();
   let viewer = $state(false);
-  const artifacts = $state(emptyList<ArtifactEntry, string>());
-  const list = new PagedList(artifacts, async (after) => {
-    const page = await api.artifacts(projectId, after, group, filter);
+  const artifacts = $state(emptyList<ArtifactEntry, number>());
+  const list = new PagedList(artifacts, async (before) => {
+    const page = await api.artifacts(projectId, before, group, filter);
     return {
       items: page.artifacts,
-      next: page.next_after,
+      next: page.next_before,
       shown: () => {
         viewer = page.viewer;
       },
     };
   });
   $effect(() => {
-    // A new filter reads the list again.
-    void [filter.session, filter.run];
-    void list.reload();
+    // A new filter names another list: the one shown goes at once.
+    void [filter.session, filter.run, filter.contains];
+    void list.restart();
   });
 </script>
 
@@ -52,35 +50,20 @@
     </thead>
     <tbody>
       {#each artifacts.items as entry (entry.artifact_id)}
-        <tr class:deleted={entry.deleted}>
-          <td>
-            {#if !entry.deleted && entry.content_retained && viewable(entry, viewer)}
-              <a href={pdfHref(projectId, entry.artifact_id, entry.revision, entry.sha256)}
-                >{entry.path}</a
-              >
-            {:else}
-              {entry.path}
-            {/if}
-            {#if keptText(entry)}<br /><small class="muted">{keptText(entry)}</small>{/if}
-          </td>
-          <td><code>{entry.media_type}</code></td>
-          <td>{entry.revision}</td>
-          <td>{entry.deleted ? '' : sizeText(entry.size)}</td>
-          <td>{whoText(entry)}</td>
-          <td>{formatTime(entry.created_at)}</td>
-        </tr>
+        <ArtifactRow {projectId} {entry} {viewer} />
       {/each}
     </tbody>
   </table>
 {/if}
 {#if artifacts.loading}<p class="muted">Loading…</p>{/if}
 {#if artifacts.error}<ErrorMessage error={artifacts.error} />{/if}
-{#if artifacts.next}
+{#if artifacts.next !== null}
   <button type="button" disabled={artifacts.loading} onclick={() => list.more()}>More</button>
 {/if}
 
 <style>
-  .deleted td {
-    text-decoration: line-through;
+  table {
+    table-layout: fixed;
+    width: 100%;
   }
 </style>

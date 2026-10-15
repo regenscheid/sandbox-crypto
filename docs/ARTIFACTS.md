@@ -341,8 +341,9 @@ lists out) and records them as for a call, attributed to the operation that star
 the job and its execution; the notice carries the counts. A notice made again, after
 a run that failed, records them again, which keeps the first revisions. Delegated
 runs' declared results (RA-38) come with delegation. The GUI's artifact list shows
-results first and every other recorded file under **All files**, with who made each
-latest revision ([workspace](WORKSPACE.md); RA-37).
+results first and every other recorded file under **All files**, the most recently
+changed first, with who made each latest revision; it filters by session, run and a
+path's text ([workspace](WORKSPACE.md); RA-37).
 
 ## Tests and evidence reads
 
@@ -412,6 +413,8 @@ with synthetic state and no live model, worker or OpenShell VM.
 
 - Recording delegated runs' declared results and a delegated run's list of its files
   (RA-36, RA-38), with delegation.
+- An artifact's history of revisions and tombstones in the GUI, and a run's page that
+  lists its results, its recorded files and the gaps (RA-37).
 - Complete telemetry and snapshotting, link semantics, authenticated feed binding and
   control ingestion of the worker's observations.
 - Imports and MCP binary results, retention drop workflows, observed inputs and kernel
