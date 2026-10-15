@@ -54,7 +54,7 @@ HOSTILE = "Authorization: Bearer test-secret-prompt-not-a-credential"
 # Each installed version and the SHA-256 of its UTF-8 text. Changing a text means a new
 # version: add it here, and keep the old version's entry for its records.
 GOLDEN = {
-    "sandbox-main-4": "66241bb4690f00c8e52e169fcdaa9856782f8859adb2b6e0d4900f2bff135158",
+    "sandbox-main-4": "8feb3111f03a0c1b5e048b2c1cda54b3920fc9493e552866375fe1cb3e9053fe",
     "sandbox-main-plan-1": "efb031b0fab2b9855dc3c9adcb869108dd835b725f878b977eec9ba118feb866",
     "sandbox-stock-intake-1": "e846770bc153995c6da1c87cca1913400d0008f3983361246d04d9b9a94f45ab",
     "sandbox-stock-literature-2": (
@@ -135,6 +135,8 @@ def test_a_refusal_is_a_decision_and_a_miss_is_not_absence() -> None:
     assert "No hit means only" in pdf_search.description
     assert "not that nothing exists" in mcp_tools.description
     assert "never conclude from a miss" in SYSTEM_PROMPT
+    # Lane W's saved output (#388): what a truncated result shows is a sample.
+    assert "from the saved file it names, never from the sample" in SYSTEM_PROMPT
     assert "no evidence that the work or attack does not exist" in (
         select_template("literature").text
     )

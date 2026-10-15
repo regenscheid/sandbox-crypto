@@ -187,7 +187,9 @@ authority or proof of provider behavior:
   and `sandbox-main-2` records keep their text and pins; `sandbox-main-3` adds ledger
   entries and results files to the untrusted data the prompt names; `sandbox-main-4` adds
   that a refusal with a reason is the policy's decision, never resubmitted unchanged or
-  routed around, and that a search with no hits bounds only that search. Task and tool messages are not pinned; the
+  routed around, that a search with no hits bounds only that search, and that a result
+  marked as a sample is part of its output: counts, IDs, rows and all-or-none claims come
+  from the saved file. Task and tool messages are not pinned; the
   notice framings are.
 - **Research framing** ([research framing](STOCK-RESEARCH-PROMPTS.md)). A selected
   template is the section between the base and the planning guidance, pinned
