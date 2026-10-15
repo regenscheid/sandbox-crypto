@@ -155,15 +155,18 @@ export class ChatFeed {
     if (++this.#polls % HELD_EVERY === 0) this.#recheck = true;
     let after = this.#messageCursor();
     this.#recheck = false;
+    // The server answers the environment for the page that holds a queued message.
+    let environment: EnvironmentState | null = null;
     for (let page = 0; page < PAGES_PER_READ; page++) {
       const listing = await this.reads.messages(after, signal);
       this.#lease = listing.run;
       this.#service = listing.service;
-      this.#environment = listing.environment;
+      environment ??= listing.environment;
       for (const message of listing.messages) this.#messages.set(message.message_id, message);
       if (listing.messages.length < PAGE) break;
       after = listing.messages.at(-1)!.number;
     }
+    this.#environment = environment;
     this.#follow();
     for (const run of this.#runs.values()) {
       if (this.#finished.has(run.run)) continue;

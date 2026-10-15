@@ -114,6 +114,24 @@ describe("a session's chat, polled", () => {
     expect((await feed.read()).environment).toBeNull();
   });
 
+  it('keeps the environment the first page gave, when a later page has none', async () => {
+    const pages = [
+      {
+        messages: Array.from({ length: PAGE }, (_, i) => message(i + 1, 'queued')),
+        env: 'creating',
+      },
+      { messages: [message(PAGE + 1, 'queued')], env: null },
+    ] as const;
+    const feed = new ChatFeed({
+      messages: async (after) => {
+        const page = after === 0 ? pages[0] : pages[1];
+        return { messages: [...page.messages], run: null, service: true, environment: page.env };
+      },
+      events: async () => ({ state: 'active', events: [] }),
+    });
+    expect((await feed.read()).environment).toBe('creating');
+  });
+
   it('reads past a full page of messages', async () => {
     const { state, feed } = server();
     state.messages = Array.from({ length: PAGE + 3 }, (_, index) => message(index + 1, 'refused'));
