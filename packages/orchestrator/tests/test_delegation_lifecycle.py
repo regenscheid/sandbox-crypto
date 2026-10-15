@@ -224,13 +224,27 @@ async def test_a_run_that_fails_after_a_wait_leaves_the_outcome_to_the_next(
     delegating: Harness,
 ) -> None:
     """A wait's result that no model call saw is not received: the outcome is not
-    acknowledged, and the session's next main run gets it as a notice."""
+    acknowledged, and the session's next main run gets it as a notice.
+
+    The child ends only once the root asks for its wait, after that call's notices: a
+    child that ended before would reach the root as a notice of a call that succeeded."""
+    free, answer = blocking()
+
+    async def release() -> None:
+        free.set()
+
     root = await delegating.run(
         "root",
-        [Reply(calls=[CHECK]), wait(), Reply(status=500)],
-        delegated=[Reply(REPORT)],
+        [
+            Reply(calls=[CHECK]),
+            Reply(calls_from=wait().calls_from, before=release),
+            Reply(status=500),
+        ],
+        delegated=[answer],
         status=1,
     )
+    waited = json.loads(results(root)[-1])
+    assert waited["reason"] == "ended"
     assert root.failure == "model"
     (delegation_id,) = started(root)
     assert delegation(delegating, delegation_id).acknowledged is None
