@@ -528,6 +528,12 @@ export const api = {
           : `${revision === null ? '?' : '&'}incoming_after=${incomingAfter}`),
     ),
   /** A page of an entry's revisions, newest first, before `before`. */
+  /** The user's record that they checked an entry at the revision they read; a newer one is a conflict. */
+  checkLedgerEntry: (
+    project: string,
+    entry: string,
+    check: { revision: number; note?: string; operation_id: string },
+  ) => post<LedgerChangeAnswer>(`/projects/${part(project)}/ledger/${part(entry)}/checks`, check),
   /** The user's clearing of open flags on an entry: those named, or else all, with the reason. */
   clearLedgerFlags: (
     project: string,

@@ -116,6 +116,8 @@ describe('the ledger views', () => {
         'IssueList.svelte',
         'IssueRow.svelte',
         'LedgerBoard.svelte',
+        'LedgerCheck.svelte',
+        'LedgerCheckText.svelte',
         'LedgerColumn.svelte',
         'LedgerEntryBody.svelte',
         'LedgerEntryView.svelte',
