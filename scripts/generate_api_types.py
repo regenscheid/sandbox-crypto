@@ -38,6 +38,7 @@ from sandbox_science.workspace.api import ProjectAnswer, ProjectListing, Session
 from sandbox_science.workspace.artifacts import ArtifactListing, ViewerLink
 from sandbox_science.workspace.chat import EventPage, MessageAnswer, MessageListing, Requested
 from sandbox_science.workspace.kernels import WorkspaceObservation
+from sandbox_science.workspace.ledger import LedgerEntry, LedgerHistory, LedgerListing
 from sandbox_science.workspace.plan_edits import BodyChange, EditReceipt
 from sandbox_science.workspace.plans import WorkspacePlan
 
@@ -64,6 +65,9 @@ MODELS: tuple[type[BaseModel], ...] = (
     Requested,
     ArtifactListing,
     ViewerLink,
+    LedgerListing,
+    LedgerEntry,
+    LedgerHistory,
 )
 HEADER = (
     "// SPDX-License-Identifier: MIT\n"
@@ -146,6 +150,10 @@ def generate() -> str:
         by_alias=False,
         ref_template="#/$defs/{model}",
     )
+    # Two models of one name get module-qualified names, which no one means to import.
+    clashes = sorted(name for name in top["$defs"] if "__" in name)
+    if clashes:
+        raise SystemExit(f"two response models share a name; rename one: {', '.join(clashes)}")
     parts = [HEADER]
     for name, schema in sorted(top["$defs"].items()):
         parts.append("\n" + _comment(schema))

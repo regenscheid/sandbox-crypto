@@ -51,15 +51,15 @@ from .models import (
     ChangedEntry,
     EntryChange,
     EntryHistory,
+    EntryLink,
     EntryPage,
+    EntryRevision,
     EntrySummary,
     EntryView,
-    Link,
     LinkInput,
     Mutation,
     MutationResult,
     ReferenceFields,
-    RevisionSummary,
 )
 
 Json = dict[str, Any]
@@ -138,9 +138,9 @@ class _Planned:
     status: str = ""
     status_before: str | None = None
     fields: Json = field(default_factory=dict[str, Any])
-    links: list[Link] | None = None
+    links: list[EntryLink] | None = None
     """The new revision's links; None keeps the revision before's."""
-    previous: list[Link] = field(default_factory=list[Link])
+    previous: list[EntryLink] = field(default_factory=list[EntryLink])
     """The links of the revision before."""
     changed: list[str] = field(default_factory=list[str])
 
@@ -252,7 +252,7 @@ class Ledger:
                 (row.entry_id, before or row.head + 1, limit + 1),
             ).fetchall()
         revisions = [
-            RevisionSummary(
+            EntryRevision(
                 revision=r[0],
                 title=r[1],
                 status=r[2],
@@ -476,7 +476,7 @@ class Ledger:
         keys: dict[str, _Row],
         pinned: dict[tuple[str, int, str], str],
         heads: dict[str, int],
-    ) -> Link:
+    ) -> EntryLink:
         holders, targets = LINKS[link.kind]
         if planned.row.type not in holders:
             raise DocumentError(INVALID_REQUEST, f"a {planned.row.type} holds no {link.kind} link")
@@ -498,14 +498,16 @@ class Ledger:
                 is None
             ):
                 raise DocumentError(NOT_FOUND, f"no finding {link.finding} in this project")
-            return Link(kind=link.kind, target="finding", target_id=link.finding, note=link.note)
+            return EntryLink(
+                kind=link.kind, target="finding", target_id=link.finding, note=link.note
+            )
         if link.document is not None:
             if "block" not in targets or link.block is None or link.revision is None:
                 raise DocumentError(
                     INVALID_REQUEST, f"a {link.kind} link names no document block, or no revision"
                 )
             # Stored by the document's ID, which a name given here may later not name.
-            return Link(
+            return EntryLink(
                 kind=link.kind,
                 target="block",
                 target_id=pinned[(link.document, link.revision, link.block)],
@@ -532,7 +534,7 @@ class Ledger:
             raise DocumentError(NOT_FOUND, f"{target.handle} has no revision {revision}")
         if link.kind == "assumes" and revision is None:
             revision = head  # pinned to the assumption as it reads now (LG-27)
-        return Link(
+        return EntryLink(
             kind=link.kind,
             target="entry",
             target_id=target.entry_id,
@@ -814,7 +816,7 @@ class Ledger:
         }
 
     @staticmethod
-    def _links(db: sqlite3.Connection, entry: str, revision: int) -> list[Link]:
+    def _links(db: sqlite3.Connection, entry: str, revision: int) -> list[EntryLink]:
         return [
             _stored(db, row)
             for row in db.execute(
@@ -827,13 +829,13 @@ class Ledger:
     @staticmethod
     def _incoming(
         db: sqlite3.Connection, project: str, entry: str, after: int
-    ) -> tuple[list[Link], int]:
+    ) -> tuple[list[EntryLink], int]:
         """The links other entries' current revisions hold to ``entry``, from the
         ``after``-th on, and how many there are."""
         where = "WHERE l.target='entry' AND l.target_id=? AND e.project=? "
         total = db.execute(f"SELECT count(*) {_CURRENT}{where}", (entry, project)).fetchone()[0]
         links = [
-            Link(
+            EntryLink(
                 kind=kind,
                 target="entry",
                 target_id=source,
@@ -850,7 +852,7 @@ class Ledger:
         return links, total
 
 
-def _stored(db: sqlite3.Connection, row: tuple[Any, ...]) -> Link:
+def _stored(db: sqlite3.Connection, row: tuple[Any, ...]) -> EntryLink:
     kind, target, target_id, revision, block, note = row
     handle = None
     if target == "entry":
@@ -858,7 +860,7 @@ def _stored(db: sqlite3.Connection, row: tuple[Any, ...]) -> Link:
             "SELECT type,number FROM ledger_entries WHERE entry_id=?", (target_id,)
         ).fetchone()
         handle = f"{PREFIXES[found[0]]}-{found[1]}"
-    return Link(
+    return EntryLink(
         kind=kind,
         target=target,
         target_id=target_id,
@@ -945,7 +947,7 @@ def _status(row: _Row, status: str) -> str:
     return status
 
 
-def _added(p: _Planned, kind: str) -> list[Link]:
+def _added(p: _Planned, kind: str) -> list[EntryLink]:
     """The links of ``kind`` the change's new revision holds that the one before did not."""
     before = {(link.target, link.target_id) for link in p.previous if link.kind == kind}
     return [
@@ -955,7 +957,7 @@ def _added(p: _Planned, kind: str) -> list[Link]:
     ]
 
 
-def _dropped(p: _Planned, kind: str) -> list[Link]:
+def _dropped(p: _Planned, kind: str) -> list[EntryLink]:
     """The links of ``kind`` the revision before held that the change's new one does not."""
     if p.links is None:
         return []
