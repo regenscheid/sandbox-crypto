@@ -726,7 +726,8 @@ class Harness:
         ``memory`` is the project memory the run was given, which its reviewer is too.
 
         A delegated run gets its parent's tools without the review tools, the plan tools,
-        the delegate tools and connectors; it is not reviewed, and the user's messages do
+        the delegate tools and connectors, and a check only the reads of the ledger, the
+        documents and the memory; it is not reviewed, and the user's messages do
         not end its job waits (PD-34)."""
         stores, settings = self.stores, self.settings
         alias = self.role(admitted.request).alias
@@ -874,6 +875,8 @@ class Harness:
             recorder=recorder,
             delegations=delegations,
             delegated=delegated,
+            # A check reads and recomputes; it changes no entry, document or memory.
+            check=admitted.request.target is not None,
         )
 
 

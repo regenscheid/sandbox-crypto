@@ -4,6 +4,11 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 ## 2026-10-15
 
+Decisions of the coordinator on lane K's triage of the prompt research, which the owner can reverse:
+
+- **A check changes nothing** ([plans and delegation](../docs/specs/plans-and-delegation.md), PD-34; [ledger spec](../docs/specs/ledger.md), LG-13). A delegated run that checks a ledger entry is offered the ledger's, the documents' and the memory's reads only, with its compute and file tools: no `ledger_change`, `ledger_import` or `ledger_category`, no document edits or comments, no `memory_propose`. Its prompt told it so; now the platform holds it. General delegations will keep LG-13's authority.
+- **A check names its coverage, and a refutation its evidence** (PD-18). The result (`sandbox-check-result-2`) gains `coverage`, what was examined and what was not, and `refutation`, the step, value or counterexample that contradicts the entry. A check that left anything unexamined cannot confirm, and only a refuted one has a refutation.
+
 Decision of the owner:
 
 - **Old pack projects are not imported** ([ledger spec](../docs/specs/ledger.md), LG-37, LG-38, LG-F10). The deliberate import of a pack project's knowledge files and session ledgers is not planned, and the coordinator's decisions on its plan (work records first, evidence pinned to the snapshot, recognised identifiers only) lapse with it. LG-35, the pack's bindings writing results files when its skills run here, stays, with the skills. Work records (LG-6) go ahead on their own: delegation outcomes on issues (LG-F8) need them.

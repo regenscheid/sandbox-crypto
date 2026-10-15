@@ -35,7 +35,7 @@ from sandbox_science.orchestrator.ledger.gate import supporting
 from sandbox_science.orchestrator.ledger.models import EvidenceLink
 from sandbox_science.orchestrator.notices import OUTCOME_CORRECTION
 
-FORMAT: Final = "sandbox-check-result-1"
+FORMAT: Final = "sandbox-check-result-2"
 MAX_ERRORS: Final = 5
 MAX_BYTES: Final = 16384
 """The longest result, as UTF-8 JSON: whole, it fits a tool result."""
@@ -69,8 +69,14 @@ SHAPE: Final[dict[str, JsonValue]] = {
     "entry": "the entry you checked, as the brief names it",
     "revision": "the revision you checked, as the brief names it",
     "status": "complete | partial | blocked",
-    "verdict": "confirmed (only with complete) | refuted | inconclusive",
+    "verdict": "confirmed (only with complete coverage) | refuted | inconclusive",
     "summary": "what you checked, how, and what you found (at most 8000 characters)",
+    "coverage": {
+        "examined": ["each part of what the entry rests on that you examined (1 to 20)"],
+        "not_examined": ["each part you did not examine; empty only when you examined all"],
+    },
+    "refutation": "only and always when refuted: the step, value or counterexample that "
+    "contradicts the entry",
     "obstacle": "only and always when blocked: what prevents the check",
     "deviations": ["where you departed from the brief, and why (at most 10)"],
     "open_questions": ["what you could not settle, such as a question for the user"],
@@ -78,15 +84,27 @@ SHAPE: Final[dict[str, JsonValue]] = {
 """The result's fields, as the correction notice describes them."""
 
 
+class Coverage(StrictContract):
+    """What a check examined of what the entry rests on, and what it did not: its
+    statement, fields and assumptions, each proof and the steps and values it checked."""
+
+    examined: tuple[Item, ...] = Field(min_length=1, max_length=20)
+    not_examined: tuple[Item, ...] = Field(default=(), max_length=20)
+
+
 class CheckResult(StrictContract):
-    """What a check returns (``sandbox-check-result-1``). Its fields are the delegated
-    run's claims; the outcome's ``ended`` is the platform's observation."""
+    """What a check returns (``sandbox-check-result-2``). Its fields are the delegated
+    run's claims; the outcome's ``ended`` is the platform's observation. A refutation
+    cites what contradicts the entry, and a confirmation examined everything the entry
+    rests on (PD-18, as the coordinator amended it on 2026-10-15)."""
 
     entry: str = Field(min_length=1, max_length=128)
     revision: int = Field(ge=1, le=999_999_999)
     status: Literal["complete", "partial", "blocked"]
     verdict: Literal["confirmed", "refuted", "inconclusive"]
     summary: Annotated[str, _texts(8000)]
+    coverage: Coverage
+    refutation: Annotated[str, _texts(2000)] | None = None
     obstacle: Annotated[str, _texts(1000)] | None = None
     deviations: tuple[Item, ...] = _ITEMS
     open_questions: tuple[Item, ...] = _ITEMS
@@ -97,6 +115,15 @@ class CheckResult(StrictContract):
             raise ValueError("a blocked check names its obstacle, and only a blocked one does")
         if self.verdict == "confirmed" and self.status != "complete":
             raise ValueError("only a complete check confirms")
+        if self.verdict == "confirmed" and self.coverage.not_examined:
+            raise ValueError(
+                "a check that did not examine everything the entry rests on does not confirm it"
+            )
+        if (self.verdict == "refuted") != (self.refutation is not None):
+            raise ValueError(
+                "a refuted check cites, in refutation, the step, value or counterexample "
+                "that contradicts the entry, and only a refuted one does"
+            )
         return self
 
 

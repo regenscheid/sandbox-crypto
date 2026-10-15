@@ -62,6 +62,10 @@ RESULT: dict[str, Any] = {
     "status": "complete",
     "verdict": "confirmed",
     "summary": "I computed a^16 mod 17 for a = 1..16: each is 1.",
+    "coverage": {
+        "examined": ["the statement", "a^16 mod 17 for each nonzero a"],
+        "not_examined": [],
+    },
     "deviations": [],
     "open_questions": [],
 }
@@ -251,7 +255,7 @@ async def test_a_check_starts_fresh_and_its_outcome_reaches_its_parent(
 
     outcome = delegation(delegating, delegation_id)
     assert (outcome.ended, outcome.stopped, outcome.report) == ("returned", "answered", REPORT)
-    assert outcome.result == {**RESULT, "obstacle": None}
+    assert outcome.result == {**RESULT, "obstacle": None, "refutation": None}
     assert (outcome.errors, outcome.alias, outcome.models) == ((), "main", ("scripted-main",))
     check = cast(dict[str, Any], outcome.brief["check"])
     assert (check["handle"], check["revision"]) == ("C-1", 1)
@@ -548,11 +552,41 @@ def test_a_version_27_store_migrates_with_no_delegations(tmp_path: Path) -> None
             json.dumps({**RESULT, "summary": "x" * 8000, "deviations": ["d" * 1000] * 10}),
             "longer than 16384 bytes",
         ),
+        # P3: coverage, and a refutation that cites what contradicts the entry.
+        (
+            json.dumps({k: v for k, v in RESULT.items() if k != "coverage"}),
+            "coverage: Field required",
+        ),
+        (
+            json.dumps({**RESULT, "coverage": {"examined": [], "not_examined": []}}),
+            "coverage.examined: Tuple should have at least 1 item",
+        ),
+        (
+            json.dumps({**RESULT, "coverage": {"examined": ["a"], "not_examined": ["the proof"]}}),
+            "did not examine everything the entry rests on does not confirm it",
+        ),
+        (json.dumps({**RESULT, "verdict": "refuted"}), "a refuted check cites, in refutation"),
+        (
+            json.dumps({**RESULT, "verdict": "inconclusive", "refutation": "a = 3 fails."}),
+            "and only a refuted one does",
+        ),
     ],
 )
 def test_a_result_is_checked_against_its_schema(answer: str, error: str) -> None:
     with pytest.raises(ValueError, match=re.escape(error)):
         parse(answer)
+
+
+def test_a_refutation_and_a_partial_coverage_are_kept() -> None:
+    """P3: a refuted check names its counterexample; one that left parts unexamined is
+    inconclusive at best."""
+    refuted = parse(
+        json.dumps({**RESULT, "verdict": "refuted", "refutation": "For a = 3, a^16 = 2 mod 17."})
+    )
+    assert refuted.refutation == "For a = 3, a^16 = 2 mod 17."
+    coverage = {"examined": ["the statement"], "not_examined": ["the lemma's proof"]}
+    partial = parse(json.dumps({**RESULT, "verdict": "inconclusive", "coverage": coverage}))
+    assert partial.coverage.not_examined == ("the lemma's proof",)
 
 
 def test_a_result_may_come_in_one_fenced_block() -> None:
@@ -620,7 +654,7 @@ async def test_a_blocked_check_names_its_obstacle_and_its_question(delegating: H
     (delegation_id,) = started(root)
     outcome = delegation(delegating, delegation_id)
     assert outcome.ended == "returned"
-    assert outcome.result == blocked
+    assert outcome.result == {**blocked, "refutation": None}
 
 
 async def test_a_parent_reads_and_cancels_its_check(delegating: Harness) -> None:
