@@ -49,6 +49,7 @@ from .consistency.controller import ReviewController
 from .consistency.models import ReviewConfig
 from .consistency.store import ReviewStore
 from .delegation import prompt as delegated_prompt
+from .delegation.budget import TreeBudget
 from .delegation.fence import ChildFence
 from .delegation.hook import Child, ChildEnd, Delegations
 from .delegation.outcome import Outcome, Target, result_of
@@ -84,7 +85,7 @@ from .projects import (
     run_name,
 )
 from .recording import FileRecorder
-from .runstate import RunState
+from .runstate import RunState, cost
 from .session_plans import SessionPlans
 from .tools import HARNESS_TOOL_NAMES, Toolbox, ToolOutcome
 from .worker_client import WorkerAPIError, WorkerClient
@@ -218,6 +219,9 @@ class RunRequest:
     """A delegated run's token limit (``run_budget`` when its calls reach it)."""
     target: Target | None = None
     """For a check, the entry and revision its result must name."""
+    tree: TreeBudget | None = None
+    """For a delegated run of the run service, its root's share of the model budget,
+    which its calls spend (PD-38)."""
 
     @property
     def queued(self) -> bool:
@@ -448,7 +452,8 @@ class Harness:
                 with interruption.protect():
                     memory = await self.memory(admitted)
                     chat = self.chat(admitted)
-                    delegations = await self._delegations(admitted, chat, memory)
+                    tree = self._tree(admitted)
+                    delegations = await self._delegations(admitted, chat, memory, tree)
                     toolbox = await self._toolbox(
                         admitted,
                         chat,
@@ -459,7 +464,7 @@ class Harness:
                     hooks = toolbox.turn_hooks()
                     request = admitted.request
                     if chat is not None:
-                        hooks = (*hooks, *await self._chat_hooks(admitted, chat))
+                        hooks = (*hooks, *await self._chat_hooks(admitted, chat, tree))
                     transcript = await run_task(
                         self.main.model,
                         toolbox,
@@ -496,14 +501,34 @@ class Harness:
             delegation=admitted.request.delegation,
         )
 
-    async def _chat_hooks(self, admitted: Admitted, chat: RunChat) -> tuple[TurnHook, ...]:
+    def _tree(self, admitted: Admitted) -> TreeBudget | None:
+        """A main run's share of the project's model budget, which bounds its whole tree
+        (PD-38); ``None`` without the run service's share, as for ``run``."""
+        stores, share = self.stores, self.settings.run_share
+        if stores is None or share is None or admitted.request.parent is not None:
+            return None
+        project = admitted.context.project_id
+
+        async def allowance() -> int:
+            return int(share * await threaded(stores.runs.budget, project))
+
+        return TreeBudget(allowance)
+
+    async def _chat_hooks(
+        self, admitted: Admitted, chat: RunChat, tree: TreeBudget | None = None
+    ) -> tuple[TurnHook, ...]:
         """A run's budget, the user's messages, which reach the model last, and its
         events, which come last. A delegated run keeps its token limit, and its calls that
         may change something need its root's lease and the plan's leave (PD-34); the user
-        writes to the root."""
+        writes to the root. A root's budget is its tree's, and so are its children's calls."""
         request = admitted.request
         if request.parent is not None and self.stores is not None:
-            limit = () if request.tokens is None else (ModelBudget(chat, tokens=request.tokens),)
+            limit = ()
+            if request.tokens is not None:
+                member = request.delegation
+                limit = (
+                    ModelBudget(chat, tokens=request.tokens, tree=request.tree, member=member),
+                )
             fence = await threaded(
                 ChildFence,
                 SessionPlans(self.stores.documents),
@@ -515,11 +540,15 @@ class Harness:
             outcome = Outcome(request.target)
             return (*limit, SessionHeld(chat), fence, outcome, EventLog(chat))
         share = self.settings.run_share
-        kept = () if share is None else (ModelBudget(chat, share),)
+        kept = () if share is None else (ModelBudget(chat, share, tree=tree),)
         return (*kept, UserMessages(chat), EventLog(chat))
 
     async def _delegations(
-        self, admitted: Admitted, chat: RunChat | None, memory: Snapshot | None
+        self,
+        admitted: Admitted,
+        chat: RunChat | None,
+        memory: Snapshot | None,
+        tree: TreeBudget | None = None,
     ) -> Delegations | None:
         """A main run's delegations: their handbacks always, and the delegate tools when
         its project lets its runs delegate (PD-33, PD-35)."""
@@ -544,6 +573,7 @@ class Harness:
             offer=depth >= 1,
             wake=chat.arrived if chat is not None else None,
             over_budget=over_budget,
+            tree=tree,
             clock=clock,
         )
 
@@ -566,6 +596,7 @@ class Harness:
             max_turns=child.max_turns,
             tokens=child.tokens,
             target=child.target,
+            tree=child.tree,
         )
         admitted = dataclasses.replace(
             parent, request=request, run_id=child.run_id, started_at=child.started_at
@@ -595,6 +626,7 @@ class Harness:
             self.main.alias,
             tuple(dict.fromkeys(u.model for u in transcript.usage if u.model is not None))[:10],
             found.read if found is not None else None,
+            sum(cost(usage) for usage in transcript.usage),
         )
 
     async def memory(self, admitted: Admitted) -> Snapshot | None:

@@ -56,6 +56,7 @@ from sandbox_science.orchestrator.notices import (
 from sandbox_science.orchestrator.projects import RunRecord, run_name
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, dump
 
+from .budget import FLOOR, MIN_CHILD, TreeBudget
 from .outcome import Target
 from .prompt import brief_text
 from .records import Delegation, DelegationRecords, Ended, Ending
@@ -92,6 +93,8 @@ class Child:
     """The tokens its calls may use."""
     target: Target
     """The entry and revision it checks, which its result must name."""
+    tree: TreeBudget | None = None
+    """The root's share of the model budget, which the child's calls spend (PD-38)."""
 
 
 @dataclass(frozen=True)
@@ -110,6 +113,8 @@ class ChildEnd:
     models: tuple[str, ...] = ()
     read_entry: bool | None = None
     """Whether it read the entry it checks at that revision."""
+    used: int = 0
+    """The tokens its calls used, as the budget counts them."""
 
 
 class ChildRunner(Protocol):
@@ -161,18 +166,23 @@ class Delegations(TurnHook):
         offer: bool,
         wake: Callable[[], Awaitable[None]] | None = None,
         over_budget: Callable[[], Awaitable[bool]] | None = None,
+        tree: TreeBudget | None = None,
         max_chars: int = 5000,
         output_chars: int = 20000,
         clock: Clock = SYSTEM_CLOCK,
     ) -> None:
         """``offer`` says whether the run gets the tools; ``max_turns`` bounds a child's
         turns; ``wake`` returns once the user writes to the session, which ends a wait;
-        ``over_budget`` says whether the project spent its model budget. Notices together
+        ``over_budget`` says whether the project spent its model budget, and ``tree`` is the
+        run's share of it, from which each child's tokens are reserved. Notices together
         take at most ``max_chars``, and a wait's result at most ``output_chars``."""
         self.records, self.ledger, self.context = records, ledger, context
         self.parent, self.runner, self.max_turns = parent, runner, max_turns
         self.specs: tuple[ToolSpec, ...] = SPECS if offer else ()
         self.wake, self.over_budget, self.clock = wake, over_budget, clock
+        self.tree = tree
+        self.turns_left = max_turns
+        """The run's turns left at its last safe point: a child gets no more (PD-38)."""
         self.max_chars, self.output_chars = max_chars, output_chars
         self.children: dict[str, _Running] = {}
         self.returned: set[str] = set()
@@ -212,6 +222,17 @@ class Delegations(TurnHook):
         project, session = self.context.project_id, self.context.session_id
         entry = await threaded(self.ledger.entry, project, brief.check.entry, brief.check.revision)
         delegation_id, run_id = new_id("dlg"), new_id("run")
+        tokens = CHECK_TOKENS
+        if self.tree is not None:
+            reserved = await self.tree.reserve(delegation_id, CHECK_TOKENS)
+            if reserved is None:
+                raise WorkerAPIError(
+                    ErrorKind.UNAVAILABLE,
+                    f"limit_reached: this run's share of the model budget leaves less than "
+                    f"{MIN_CHILD} tokens for a check after the {FLOOR} it keeps for itself; "
+                    "wait for a running check to end, or do the work yourself",
+                )
+            tokens = reserved
         started = self.clock.now().astimezone(UTC)
         check: dict[str, JsonValue] = {
             "entry": entry.entry_id,
@@ -231,15 +252,21 @@ class Delegations(TurnHook):
             },
             started_at=started,
         )
-        await threaded(self.records.start, project, session, delegation)
+        try:
+            await threaded(self.records.start, project, session, delegation)
+        except BaseException:
+            if self.tree is not None:
+                self.tree.ended(delegation_id, 0)
+            raise
         child = Child(
             delegation_id,
             run_id,
             started,
             brief_text(brief, entry.handle),
-            max_turns=min(CHECK_TURNS, self.max_turns),
-            tokens=CHECK_TOKENS,
+            max_turns=max(1, min(CHECK_TURNS, self.max_turns, self.turns_left)),
+            tokens=tokens,
             target=Target(entry.entry_id, entry.handle, brief.check.revision),
+            tree=self.tree,
         )
         stop = asyncio.Event()
         task = asyncio.create_task(self._run(child, stop), name=f"delegation {delegation_id}")
@@ -258,8 +285,10 @@ class Delegations(TurnHook):
     async def _run(self, child: Child, stop: asyncio.Event) -> None:
         """Run a child to its end, then write its outcome, however it ended."""
         ending = Ending("failed", "error")
+        used: int | None = None
         try:
             end = await self.runner(child, stop)
+            used = end.used
             ending = Ending(
                 observed(end),
                 end.stopped,
@@ -278,6 +307,9 @@ class Delegations(TurnHook):
             ending = Ending("cancelled", "cancelled")
         except Exception:
             _log.exception("delegated run %s failed", child.run_id)
+        if self.tree is not None:
+            # What it did not use returns to the root.
+            self.tree.ended(child.delegation_id, used)
         await self._end(child.delegation_id, ending)
 
     async def _end(self, delegation_id: str, ending: Ending) -> None:
@@ -413,6 +445,8 @@ class Delegations(TurnHook):
                 _log.error("delegated run %s did not end after its cancel", child.run_id)
                 await self._end(delegation_id, Ending("interrupted", "cancelled"))
             elif child.task.cancelled():  # cancelled before it started: it wrote nothing
+                if self.tree is not None:
+                    self.tree.ended(delegation_id, 0)
                 await self._end(delegation_id, Ending("cancelled", "cancelled"))
 
     async def notices(self, point: Point, run: RunView) -> Sequence[Notice]:
@@ -424,6 +458,7 @@ class Delegations(TurnHook):
     async def model_returned(self, run: RunView) -> None:
         self.received |= self.returned
         self.returned.clear()
+        self.turns_left = run.turns_left
 
     async def closing(self, run: RunView, answer: str | None) -> Closing:
         found = await self._fresh(run)
