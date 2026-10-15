@@ -43,6 +43,11 @@ What each input does:
   review as system text. `start_job` says that recovery after a worker or bridge
   restart needs the original executor daemon and sandbox, and that confirmed daemon
   or VM loss reports unknown outcomes as `lost` without resubmitting the command.
+  `shell` and `start_job` ask a script of several steps to begin with
+  `set -euo pipefail`, or to check each step, so that a failed step does not hide
+  behind a later one's success, and to check that the files it should make exist
+  before saying it made them; the harness runs a script as written
+  ([tools spec](specs/tools.md), Shell 1).
 - **Platform notices.** Fixed framings in `notices.py`, each with an ID and a version,
   followed by bounded JSON data. The run record pins them, and the saved transcript
   keeps the text actually sent. Delivered notice IDs are tracked separately from fetched ones and

@@ -49,7 +49,7 @@ from .documents.errors import DocumentError
 from .documents.tool import DOCUMENT_EFFECTS, DocumentTool, WorkRequests, with_notices
 from .documents.tool import SPECS as DOCUMENT_SPECS
 from .hooks import Effect, TurnHook
-from .jobs import BACKGROUND, JOB_EFFECTS, JOB_SPECS, JobNotices, JobTools
+from .jobs import BACKGROUND, JOB_EFFECTS, JOB_SPECS, STOP_AT_FAILURE, JobNotices, JobTools
 from .kernel_check import KernelCheck
 from .ledger.tool import LEDGER_EFFECTS, LedgerTool
 from .ledger.tool import SPECS as LEDGER_SPECS
@@ -231,7 +231,7 @@ SPECS: Final = (
         "shell",
         "Run a bash script in the session's workspace inside the project sandbox. Each call "
         "starts afresh in the workspace (no state carries over except files); stdin is empty. "
-        "Returns the exit code and the output." + SHARED_IN_CODE,
+        "Returns the exit code and the output." + STOP_AT_FAILURE + SHARED_IN_CODE,
         {
             "type": "object",
             "properties": {
