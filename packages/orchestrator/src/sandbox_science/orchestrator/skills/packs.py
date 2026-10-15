@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass, field
-from typing import Final, cast
+from typing import Any, Final, cast
 
 import yaml
 
+from sandbox_science.orchestrator.documents.agent_text import hidden_characters
 from sandbox_science.orchestrator.documents.frontmatter import NoAliases
 
 from .sources import Fetched, PackFile, Skipped
@@ -69,8 +71,31 @@ def snapshot(fetched: Fetched) -> Snapshot:
     return Snapshot(fetched, tuple(skills), tuple(excluded), snapshot_sha256(fetched.files))
 
 
+class _RefusedError(Exception):
+    """Why a skill's front matter is refused."""
+
+
+class _Strict(NoAliases):
+    """The safe loader without aliases, refusing merge keys and repeated keys."""
+
+    def construct_mapping(self, node: Any, deep: bool = False) -> Any:
+        keys: set[object] = set()
+        for key_node, _ in node.value:
+            if key_node.tag == "tag:yaml.org,2002:merge":
+                raise _RefusedError("the front matter merges a mapping with <<")
+            key: object = cast(Any, self).construct_object(key_node, deep=True)
+            if not isinstance(key, str):
+                raise _RefusedError("the front matter has a key that is not text")
+            if key in keys:
+                raise _RefusedError(f"the front matter repeats the key {key[:40]!r}")
+            keys.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
 def read_skill(directory: str, content: bytes) -> Skill | str:
-    """The skill in a ``SKILL.md``, or why it is excluded."""
+    """The skill in a ``SKILL.md``, or why it is excluded. Text in the front matter
+    holding a character a reader may not see is refused; its runs of white space become
+    single spaces."""
     try:
         text = content.decode()
     except UnicodeDecodeError:
@@ -84,28 +109,50 @@ def read_skill(directory: str, content: bytes) -> Skill | str:
     if len(body.encode()) > MAX_BODY_BYTES:
         return "the body is longer than 64 KiB"
     try:
-        data: object = yaml.load(front, Loader=NoAliases)  # noqa: S506 - a safe loader
-    except (yaml.YAMLError, RecursionError, ValueError):
+        data: object = yaml.load(front, Loader=_Strict)  # noqa: S506 - a safe loader
+        if not isinstance(data, dict):
+            return "the front matter is not a mapping"
+        fields = cast(dict[str, object], _clean(cast(object, data), "the front matter"))
+    except _RefusedError as refused:
+        return str(refused)
+    except (yaml.YAMLError, RecursionError, ValueError, TypeError):
         return "the front matter is not valid YAML without aliases"
-    if not isinstance(data, dict) or not all(
-        isinstance(k, str) for k in cast(dict[object, object], data)
-    ):
-        return "the front matter is not a mapping"
-    fields = cast(dict[str, object], data)
     name, description = fields.pop("name", None), fields.pop("description", None)
     if not isinstance(name, str) or not NAME.fullmatch(name):
         return "name is missing, or not lowercase letters, digits and hyphens (at most 64)"
     if name != directory:
         return f"name {name!r} is not its directory's name"
-    if not isinstance(description, str) or not description.strip():
+    if not isinstance(description, str) or not description:
         return "description is missing"
     if len(description) > MAX_DESCRIPTION:
         return "description is longer than 1,024 characters"
-    metadata = json.loads(json.dumps(fields, default=str))
-    if len(json.dumps(metadata).encode()) > MAX_METADATA_BYTES:
+    if len(json.dumps(fields, allow_nan=False).encode()) > MAX_METADATA_BYTES:
         return "the other front matter fields are longer than 16 KiB"
     digest = hashlib.sha256(body.encode()).hexdigest()
-    return Skill(name, description.strip(), digest, metadata)
+    return Skill(name, description, digest, fields)
+
+
+def _clean(value: object, where: str) -> object:
+    """``value`` as JSON can keep it, its text checked and its white space collapsed."""
+    if isinstance(value, str):
+        hidden = hidden_characters(value)
+        if hidden:
+            raise _RefusedError(f"{where} holds {hidden[0][1]}, a character a reader may not see")
+        return " ".join(value.split())
+    if isinstance(value, float) and not math.isfinite(value):
+        raise _RefusedError(f"{where} holds a number that is not finite")
+    if value is None or isinstance(value, bool | int | float):
+        return value
+    if isinstance(value, list):
+        return [_clean(item, where) for item in cast(list[object], value)]
+    if isinstance(value, dict):
+        cleaned: dict[str, object] = {}
+        for key, item in cast(dict[object, object], value).items():
+            if not isinstance(key, str):
+                raise _RefusedError(f"{where} has a key that is not text")
+            cleaned[cast(str, _clean(key, where))] = _clean(item, key[:40])
+        return cleaned
+    return _clean(str(value), where)
 
 
 def snapshot_sha256(files: tuple[PackFile, ...]) -> str:

@@ -83,6 +83,11 @@ class SkillStore:
             }
             if got.default_branch is not None:
                 report["default_branch"] = got.default_branch
+            warnings = list(got.warnings)
+            if latest is not None and latest.origin != got.origin:
+                warnings.append(f"{source} was imported before from {latest.origin}")
+            if warnings:
+                report["warnings"] = warnings[:REPORT_ITEMS]
             if latest is not None:
                 report["changes"] = {"since": latest.import_id, **_changes(db, latest, snapshot)}
             row = (*here[:3], got.ref, got.commit, got.archive_sha256, got.root)
@@ -102,28 +107,31 @@ class SkillStore:
 
     def pin(self, project: str, source: str, author: Author, revision: str | None = None) -> Pin:
         """Pin ``source``'s latest import in ``project``, or its import whose commit,
-        archive or snapshot starts with ``revision`` (at least 7 hexadecimal digits)."""
+        archive or snapshot starts with ``revision`` (at least 12 hexadecimal digits); a
+        prefix that names imports of different snapshots is refused."""
         _source(source)
-        if revision is not None and not re.fullmatch(r"[0-9a-f]{7,64}", revision):
-            raise ControlError(INVALID_REQUEST, "name a revision by at least 7 hex digits")
+        if revision is not None and not re.fullmatch(r"[0-9a-f]{12,64}", revision):
+            raise ControlError(INVALID_REQUEST, "name a revision by at least 12 hex digits")
         with self.control.write() as tx:
             db = tx.sql
             if not db.execute("SELECT 1 FROM projects WHERE project_id=?", (project,)).fetchone():
                 raise ControlError(NOT_FOUND, f"there is no project {project!r}")
-            chosen = next(
-                (
-                    found
-                    for found in _imports(db, source)
-                    if revision is None
-                    or any(
-                        name and name.startswith(revision)
-                        for name in (found.commit, found.archive_sha256, found.snapshot)
-                    )
-                ),
-                None,
-            )
-            if chosen is None:
+            matches = [
+                found
+                for found in _imports(db, source)
+                if revision is None
+                or any(
+                    name and name.startswith(revision)
+                    for name in (found.commit, found.archive_sha256, found.snapshot)
+                )
+            ]
+            if not matches:
                 raise ControlError(NOT_FOUND, f"no import of {source} at {revision or 'all'}")
+            if revision is not None and len({found.snapshot for found in matches}) > 1:
+                raise ControlError(
+                    CONFLICT, f"{revision} names more than one import of {source}: give more digits"
+                )
+            chosen = matches[0]
             names = set(_names(db, chosen.snapshot))
             for other, snapshot in db.execute(
                 "SELECT p.source,i.snapshot FROM project_skill_pins p JOIN skill_imports i "
@@ -164,7 +172,10 @@ def _now() -> str:
 
 
 def _capped(items: tuple[dict[str, str], ...]) -> list[dict[str, str]]:
-    listed = list(items[:REPORT_ITEMS])
+    listed = [
+        {**item, "path": item["path"][:200] + ("…" if len(item["path"]) > 200 else "")}
+        for item in items[:REPORT_ITEMS]
+    ]
     if len(items) > REPORT_ITEMS:
         listed.append({"path": "", "reason": f"{len(items) - REPORT_ITEMS} more"})
     return listed

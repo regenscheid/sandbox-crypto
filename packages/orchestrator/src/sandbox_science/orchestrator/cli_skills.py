@@ -32,6 +32,8 @@ def skills(args: argparse.Namespace) -> int:
                         else from_archive(args.archive, args.path)
                     )
                     found, same = store.add(args.name, snapshot(fetched), USER)
+                    for warning in found.report.get("warnings", []):
+                        print(f"warning: {warning}", file=sys.stderr)
                     shown = asdict(found)
                     shown["unchanged"] = same
                 case "pin":
@@ -73,7 +75,7 @@ def add_parser(commands: Any) -> None:
     pinned.add_argument("--project", required=True)
     pinned.add_argument("--source", required=True)
     pinned.add_argument(
-        "--revision", help="the import's commit, archive or snapshot, by its first 7+ digits"
+        "--revision", help="the import's commit, archive or snapshot, by its first 12+ digits"
     )
     listed = actions.add_parser(
         "list", parents=[common], help="the imports, a source's, or a project's pins"

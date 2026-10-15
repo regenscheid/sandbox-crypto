@@ -213,7 +213,7 @@ def test_a_pin_is_refused_when_another_pinned_source_has_a_skill_of_its_name(
     assert "conflict: alpha already defined by ss" in error
     status, moved, _ = _run(
         capsys,
-        "skills", "pin", *where, "--project", "p1", "--source", "ss", "--revision", second[:7],
+        "skills", "pin", *where, "--project", "p1", "--source", "ss", "--revision", second[:12],
     )  # fmt: skip
     assert isinstance(moved, dict)
     assert (moved["revision"], moved["pinned"]["commit"]) == (2, second)
