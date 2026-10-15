@@ -300,3 +300,16 @@ def test_the_users_ledger_text_is_kept_as_written(ledger: Ledger) -> None:
     mutation = {"operation_id": "op-1", "reason": "Mine.", "changes": [{**CLAIM, "title": title}]}
     ledger.change("p", mutation, USER)
     assert ledger.entry("p", "C-2").title == title
+
+
+def test_an_agents_ledger_line_ends_become_line_feeds(ledger: Ledger) -> None:
+    entry = {
+        **CLAIM,
+        "statement": "First line\r\nsecond line.",
+        "links": [{"kind": "compares_to", "entry": "C-1", "note": "Smaller\rthan C-1."}],
+    }
+    mutation = {"operation_id": "op-1", "reason": "Why\r\n", "changes": [entry]}
+    ledger.change("p", mutation, AGENT)
+    made = ledger.entry("p", "C-2")
+    assert made.statement == "First line\nsecond line."
+    assert [link.note for link in made.links] == ["Smaller\nthan C-1."]

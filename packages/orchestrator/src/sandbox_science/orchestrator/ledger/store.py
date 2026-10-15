@@ -18,7 +18,7 @@ import hashlib
 import json
 import re
 import sqlite3
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Final, cast
@@ -29,7 +29,7 @@ from sandbox_science.contracts import new_id
 from sandbox_science.orchestrator.control import EventLog, Receipts
 from sandbox_science.orchestrator.control.texts import TextRevisions
 from sandbox_science.orchestrator.documents import DocumentStore
-from sandbox_science.orchestrator.documents.agent_text import check_agent_text
+from sandbox_science.orchestrator.documents.agent_text import agent_text, agent_values
 from sandbox_science.orchestrator.documents.blocks import parse
 from sandbox_science.orchestrator.documents.comment_bodies import prepare
 from sandbox_science.orchestrator.documents.errors import (
@@ -505,11 +505,13 @@ class Ledger:
         as the line of a results file (LG-41)."""
         role = self._authority(project, author)
         if role != "user":
+            kept: list[tuple[Mutation, Json | None]] = []
             for mutation, provenance in mutations:
                 try:
-                    _agent_text(mutation)
+                    kept.append((_agent_text(mutation), provenance))
                 except DocumentError as error:
                     raise _labelled(error, provenance) from None
+            mutations = kept
         pinned: dict[evidence.Block, str] = {}
         for mutation, provenance in mutations:
             blocks: list[evidence.Block] = []
@@ -1688,40 +1690,42 @@ def _dropped(p: _Planned, kind: str) -> list[EntryLink]:
     ]
 
 
-def _agent_text(mutation: Mutation) -> None:
-    """An agent's ledger text holds no character the user may not see, as it is or as a
-    character reference (``check_agent_text``, threat model A3): the user reads and
-    decides on entries, and agents read them again. Checked when written, so stored text
-    still reads; the user's own text is kept as written."""
-    check_agent_text(mutation.reason, "the reason")
+def _agent_text(mutation: Mutation) -> Mutation:
+    """An agent's ledger text as it is kept: its line ends line feeds, and no character the
+    user may not see, as it is or as a character reference (``check_agent_text``, threat
+    model A3): the user reads and decides on entries, and agents read them again. Checked
+    when written, so stored text still reads; the user's own text is kept as written."""
+    changes: list[EntryChange] = []
     for number, change in enumerate(mutation.changes, 1):
         where = f"change {number}'s"
+        update: dict[str, object] = {}
         if change.title is not None:
-            check_agent_text(change.title, f"{where} title")
+            update["title"] = agent_text(change.title, f"{where} title")
         if change.statement is not None:
-            check_agent_text(change.statement, f"{where} statement")
-        for name, value in _texts(change.fields or {}, f"{where} fields"):
-            check_agent_text(value, name)
-        for index, link in enumerate(change.links or (), 1):
-            if link.note is not None:
-                check_agent_text(link.note, f"{where} link {index}'s note")
-        for index, item in enumerate(change.evidence or (), 1):
-            if item.scope is not None:
-                check_agent_text(item.scope, f"{where} evidence {index}'s scope")
-
-
-def _texts(value: object, where: str) -> Iterator[tuple[str, str]]:
-    """Each text in a JSON value, keys included, with where it is. A key is checked
-    before it names a place, so a message never repeats a hidden character."""
-    if isinstance(value, str):
-        yield where, value
-    elif isinstance(value, dict):
-        for key, item in cast(dict[str, object], value).items():
-            yield f"a key of {where}", key
-            yield from _texts(item, f"{where}.{key}")
-    elif isinstance(value, list):
-        for index, item in enumerate(cast(list[object], value)):
-            yield from _texts(item, f"{where}[{index}]")
+            update["statement"] = agent_text(change.statement, f"{where} statement")
+        if change.fields is not None:
+            update["fields"] = agent_values(change.fields, f"{where} fields")
+        if change.links is not None:
+            update["links"] = [
+                link
+                if link.note is None
+                else link.model_copy(
+                    update={"note": agent_text(link.note, f"{where} link {index}'s note")}
+                )
+                for index, link in enumerate(change.links, 1)
+            ]
+        if change.evidence is not None:
+            update["evidence"] = [
+                item
+                if item.scope is None
+                else item.model_copy(
+                    update={"scope": agent_text(item.scope, f"{where} evidence {index}'s scope")}
+                )
+                for index, item in enumerate(change.evidence, 1)
+            ]
+        changes.append(change.model_copy(update=update))
+    reason = agent_text(mutation.reason, "the reason")
+    return mutation.model_copy(update={"reason": reason, "changes": changes})
 
 
 def _labelled(error: DocumentError, provenance: Json | None) -> DocumentError:
