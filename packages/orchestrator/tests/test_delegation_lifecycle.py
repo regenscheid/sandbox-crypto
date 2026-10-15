@@ -55,6 +55,8 @@ from .test_run_service import serving
 
 Message = dict[str, Any]
 FENCED = {
+    "entry": "C-1",
+    "revision": 1,
     "status": "blocked",
     "verdict": "inconclusive",
     "summary": "I could not compute: the platform refused my calls.",

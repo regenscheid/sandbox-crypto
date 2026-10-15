@@ -56,6 +56,7 @@ from sandbox_science.orchestrator.notices import (
 from sandbox_science.orchestrator.projects import RunRecord, run_name
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, dump
 
+from .outcome import Target
 from .prompt import brief_text
 from .records import Delegation, DelegationRecords, Ended, Ending
 from .specs import SPECS, CheckBrief, Named, WaitRequest
@@ -89,6 +90,8 @@ class Child:
     max_turns: int
     tokens: int
     """The tokens its calls may use."""
+    target: Target
+    """The entry and revision it checks, which its result must name."""
 
 
 @dataclass(frozen=True)
@@ -105,6 +108,8 @@ class ChildEnd:
     errors: tuple[str, ...] = ()
     alias: str | None = None
     models: tuple[str, ...] = ()
+    read_entry: bool | None = None
+    """Whether it read the entry it checks at that revision."""
 
 
 class ChildRunner(Protocol):
@@ -234,6 +239,7 @@ class Delegations(TurnHook):
             brief_text(brief, entry.handle),
             max_turns=min(CHECK_TURNS, self.max_turns),
             tokens=CHECK_TOKENS,
+            target=Target(entry.entry_id, entry.handle, brief.check.revision),
         )
         stop = asyncio.Event()
         task = asyncio.create_task(self._run(child, stop), name=f"delegation {delegation_id}")
@@ -263,6 +269,7 @@ class Delegations(TurnHook):
                 end.errors,
                 end.alias,
                 end.models,
+                end.read_entry,
             )
         except asyncio.CancelledError:
             # Cancelled outside its loop, before it started or while it was saved.
@@ -353,8 +360,16 @@ class Delegations(TurnHook):
             limits = {"limits": child.limits} if child is not None else {}
             return {**_named(delegation), "state": "running", **limits}
         whole = outcome(delegation)
-        if used + len(dump(whole)) > self.output_chars:
-            return {**summarized(delegation), "more": "too long here: read it alone"}
+        if used and used + len(dump(whole)) > self.output_chars:
+            return {**summarized(delegation), "more": "read it with delegation_status"}
+        # Alone, a result always fits; a long answer is cut to its head and tail.
+        answer = whole.get("answer")
+        while (
+            isinstance(answer, str) and len(answer) > 100 and len(dump(whole)) > self.output_chars
+        ):
+            keep = len(answer) * 3 // 8
+            answer = f"{answer[:keep]}\n[…]\n{answer[-keep:]}"
+            whole = {**whole, "answer": answer, "answer_cut": True}
         self.returned.add(delegation.delegation_id)
         return whole
 
@@ -490,6 +505,7 @@ def _ending(delegation: Delegation) -> dict[str, object]:
         "stopped": delegation.stopped,
         "alias": delegation.alias,
         "models": list(delegation.models),
+        "read_entry": delegation.read_entry,
     }
     if delegation.refused is not None:
         found["refused"] = delegation.refused
@@ -497,9 +513,9 @@ def _ending(delegation: Delegation) -> dict[str, object]:
 
 
 def outcome(delegation: Delegation) -> dict[str, object]:
-    """A delegation's whole outcome as its parent receives it (PD-20): how it ended, and
-    its result, or, when that is missing, its answer as returned and why it did not
-    validate."""
+    """A delegation's whole outcome as its parent receives it (PD-20): how it ended,
+    whether it read the entry it checked, and its result, or, when that is missing, its
+    answer as returned and why it did not validate."""
     if delegation.result is not None:
         return {**_ending(delegation), "result": delegation.result}
     return {

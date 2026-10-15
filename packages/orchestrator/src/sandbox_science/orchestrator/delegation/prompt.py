@@ -32,12 +32,12 @@ CHECK_PROMPT: Final = (
     "refuses your calls because of the session's plan, stop with status blocked and the "
     "refusal as the obstacle. Report only what the tools actually returned. Your final "
     "answer is your result, which your parent receives as you write it: only a JSON "
-    "object with status (complete, partial or blocked), verdict (confirmed, refuted or "
-    "inconclusive), summary (what you checked, how, and what you found), obstacle (only "
-    "when blocked: what prevents the check), deviations (where you departed from the "
-    "brief) and open_questions (what you could not settle), the last two lists of "
-    "strings. Say confirmed only when your own check supports the entry as it reads at "
-    "that revision."
+    "object with entry and revision (those of the brief), status (complete, partial or "
+    "blocked), verdict (confirmed, refuted or inconclusive), summary (what you checked, "
+    "how, and what you found), obstacle (only when blocked: what prevents the check), "
+    "deviations (where you departed from the brief) and open_questions (what you could "
+    "not settle), the last two lists of strings. Say confirmed only when your own "
+    "complete check supports the entry as it reads at that revision."
 )
 CHECK: Final = Section("delegated-check", CHECK_VERSION, CHECK_PROMPT)
 

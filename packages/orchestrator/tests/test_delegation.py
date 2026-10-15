@@ -60,6 +60,8 @@ CHECK = call(
     check={"entry": "C-1", "revision": 1},
 )
 RESULT: dict[str, Any] = {
+    "entry": "C-1",
+    "revision": 1,
     "status": "complete",
     "verdict": "confirmed",
     "summary": "I computed a^16 mod 17 for a = 1..16: each is 1.",
@@ -348,6 +350,8 @@ async def test_a_check_is_refused_the_tools_its_role_withholds(delegating: Harne
                     call("plan_read"),
                     CHECK,
                     call("e-print-mcp_search_eprint", query="Ed448"),  # a connector's
+                    call("delegation_status", delegation_id="dlg-" + "0" * 24),
+                    call("cancel_delegation", delegation_id="dlg-" + "0" * 24),
                 ]
             ),
             Reply("Verdict: inconclusive"),
@@ -355,7 +359,7 @@ async def test_a_check_is_refused_the_tools_its_role_withholds(delegating: Harne
     )
     (child,) = children(delegating, root)
     refused = results(child)
-    assert len(refused) == 4
+    assert len(refused) == 6
     for result in refused:
         error = json.loads(result)["error"]
         assert error["kind"] == "policy_denied"
@@ -519,7 +523,33 @@ def test_a_version_27_store_migrates_with_no_delegations(tmp_path: Path) -> None
         (json.dumps({**RESULT, "verdict": "true"}), "verdict: Input should be"),
         (json.dumps({**RESULT, "status": "blocked"}), "names its obstacle"),
         (json.dumps({**RESULT, "obstacle": "None."}), "names its obstacle"),
-        (json.dumps({**RESULT, "summary": "x" * 8001}), "summary: String should have at most"),
+        (
+            json.dumps({**RESULT, "summary": "x" * 8001}),
+            "summary: Value error, a text of 1 to 8000 characters, not 8001",
+        ),
+        (json.dumps({**RESULT, "status": "partial"}), "only a complete check confirms"),
+        (
+            json.dumps({**RESULT, "status": "blocked", "obstacle": "No Sage."}),
+            "only a complete check confirms",
+        ),
+        (
+            json.dumps({**RESULT, "summary": "   "}),
+            "summary: Value error, a text of 1 to 8000 characters, not 0",
+        ),
+        (json.dumps({**RESULT, "summary": "Fine\u200b."}), "a character the user may not see"),
+        (
+            json.dumps({**RESULT, "open_questions": ["Why\u202e?"]}),
+            "a character the user may not see",
+        ),
+        (json.dumps({**RESULT, "deviations": ["d"] * 11}), "deviations: Tuple should have at most"),
+        (
+            json.dumps({**RESULT, "deviations": ["d" * 1001]}),
+            "deviations.0: Value error, a text of 1 to 1000 characters",
+        ),
+        (
+            json.dumps({**RESULT, "summary": "x" * 8000, "deviations": ["d" * 1000] * 10}),
+            "longer than 16384 bytes",
+        ),
     ],
 )
 def test_a_result_is_checked_against_its_schema(answer: str, error: str) -> None:
@@ -667,7 +697,7 @@ def test_a_version_28_store_keeps_its_delegations_and_their_outcomes(tmp_path: P
         ):
             tx.sql.execute("UPDATE delegations SET alias = 'late' WHERE ended IS NOT NULL")
         with (
-            pytest.raises(sqlite3.IntegrityError, match="written once"),
+            pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed: delegations"),
             migrated.control.write() as tx,
         ):
             tx.sql.execute("UPDATE delegations SET result = '{}' WHERE ended IS NULL")
