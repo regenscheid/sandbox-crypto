@@ -46,6 +46,7 @@ from .connectors import Connectors, ProxyClient
 from .consistency.controller import ReviewController
 from .consistency.store import ReviewStore
 from .documents import DocumentError, DocumentStore, DocumentTool
+from .file_settings import ProjectFiles
 from .hooks import TurnHook
 from .jobs import JobTools
 from .jobstate import JobState
@@ -64,6 +65,7 @@ from .projects import (
     ensure_environment,
     run_name,
 )
+from .recording import FileRecorder
 from .runstate import RunState
 from .session_plans import SessionPlans
 from .tools import HARNESS_TOOL_NAMES, Toolbox, ToolOutcome
@@ -502,6 +504,13 @@ class Harness:
         on_close(reviews.close)
         artifacts = ArtifactPublisher(inventory, self.client, context, run_id=run_id, alias=alias)
         on_close(artifacts.aclose)
+        recorder = FileRecorder(
+            artifacts,
+            ProjectFiles(stores.documents),
+            role=admitted.request.role,
+            parent_run=admitted.request.parent,
+            delegation=admitted.request.delegation,
+        )
         math_checks = MathController(
             reviews.store, context.project_id, context.session_id, run_id, checker=self.checker
         )
@@ -546,6 +555,7 @@ class Harness:
             check_kernels=True,
             connectors=connectors,
             kernel_run=kernel_run,
+            recorder=recorder,
         )
 
 

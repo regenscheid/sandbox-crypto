@@ -85,7 +85,16 @@ async def test_a_run_with_stores_resolves_its_session_runs_and_is_saved(tmp_path
     assert finished.context.environment_id == worker.environment_id == session.environment_id
     assert (finished.status, finished.transcript.final_text) == (0, "Answered.")
     names = [hook.name for hook in finished.hooks]
-    assert names == ["requests", "plans", "reviews", "math", "kernels", "messages", "events"]
+    assert names == [
+        "requests",
+        "plans",
+        "reviews",
+        "math",
+        "kernels",
+        "files",
+        "messages",
+        "events",
+    ]
     assert sink.notes[0].startswith("worker: pool p")
     assert (
         await save(
