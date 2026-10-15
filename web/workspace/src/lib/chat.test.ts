@@ -407,6 +407,9 @@ describe('the transcript of a run', () => {
   it('takes no field of the wrong type, and says how a run stopped', () => {
     const [assistant] = chatEntries([event(1, 'assistant', { text: 5, tool_calls: 'x' })]);
     expect(assistant).toEqual({ kind: 'assistant', seq: 1, text: '', calls: [], usage: null });
+    expect(tokensText({ model: 'm', input_tokens: 5, output_tokens: 1, cost: 0.003 })).toBe(
+      'm: 5 input and 1 output tokens, $0.0030',
+    );
     expect(tokensText({ model: null, input_tokens: 5, output_tokens: null })).toBe(
       '5 input and unreported output tokens',
     );

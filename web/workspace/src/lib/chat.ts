@@ -15,6 +15,7 @@ import type {
   RunEvent,
   RunLease,
 } from './api-types';
+import { formatCost } from './format';
 import { ApiError, get, post } from './http';
 import { forgetWrite, guardedWrite } from './mutation';
 
@@ -318,7 +319,8 @@ export function tokensText(value: unknown): string | null {
   const count = (key: string) =>
     typeof usage[key] === 'number' ? (usage[key] as number).toLocaleString('en-US') : 'unreported';
   const model = text(usage['model']);
-  return `${model ? `${model}: ` : ''}${count('input_tokens')} input and ${count('output_tokens')} output tokens`;
+  const cost = typeof usage['cost'] === 'number' ? `, ${formatCost(usage['cost'])}` : '';
+  return `${model ? `${model}: ` : ''}${count('input_tokens')} input and ${count('output_tokens')} output tokens${cost}`;
 }
 
 /**

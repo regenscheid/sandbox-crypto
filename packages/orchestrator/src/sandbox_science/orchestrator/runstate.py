@@ -32,7 +32,7 @@ from sandbox_science.contracts.model import Contract
 from .control import ControlError, ControlStore
 from .control.errors import BUSY, CONFLICT, INVALID_REQUEST, NOT_FOUND
 from .documents import DocumentStore
-from .projects import ModelUsage, run_name
+from .projects import ModelUsage, ProjectStore, run_name
 
 LEASE_SECONDS: Final = 60.0
 """How long a run's lease outlives its last renewal (RS-5)."""
@@ -107,7 +107,7 @@ class RunState:
 
     def __init__(
         self,
-        store: ControlStore | DocumentStore,
+        store: ControlStore | DocumentStore | ProjectStore,
         *,
         clock: Clock = SYSTEM_CLOCK,
         lease_seconds: float = LEASE_SECONDS,
@@ -430,23 +430,38 @@ class RunState:
             "THEN json_extract(u, '$.input_tokens') + json_extract(u, '$.output_tokens') "
             "ELSE coalesce(json_extract(u, '$.characters'), 0) / 4 END"
         )
-        first = run_name(since, "")
+        total, _ = self._usage(project, since, cost)
+        return int(total)
+
+    def model_cost(self, project: str, since: datetime | None = None) -> float | None:
+        """What MAIN's calls in the project's runs that started at ``since`` or later
+        cost, as the gateway reported it, counted as ``spent`` counts tokens; every run
+        without ``since``. ``None`` when the gateway reported no call's cost."""
+        total, priced = self._usage(project, since, "json_extract(u, '$.cost')")
+        return float(total) if priced else None
+
+    def _usage(self, project: str, since: datetime | None, value: str) -> tuple[float, int]:
+        """The sum of ``value`` over the usage of the project's calls since ``since``,
+        and how many calls had one: saved records' ``usage``, and the ``assistant``
+        events of runs without a record."""
+        first = "" if since is None else run_name(since, "")
+        totals = f"SELECT coalesce(sum({value}), 0), count({value})"
         with self.control.read() as tx:
-            (saved,) = tx.sql.execute(
-                f"SELECT coalesce(sum({cost}), 0) FROM (SELECT usage.value AS u "  # noqa: S608
+            saved = tx.sql.execute(
+                f"{totals} FROM (SELECT usage.value AS u "  # noqa: S608
                 "FROM runs, json_each(runs.record, '$.usage') AS usage "
                 "WHERE runs.project_id = ? AND runs.name >= ?)",
                 (project, first),
             ).fetchone()
-            (unsaved,) = tx.sql.execute(
-                f"SELECT coalesce(sum({cost}), 0) FROM (SELECT json_extract(e.data, '$.usage') "  # noqa: S608
+            unsaved = tx.sql.execute(
+                f"{totals} FROM (SELECT json_extract(e.data, '$.usage') "  # noqa: S608
                 "AS u FROM run_events AS e WHERE e.project_id = ? AND e.run >= ? "
                 "AND e.kind = 'assistant' AND NOT EXISTS (SELECT 1 FROM runs WHERE "
                 "runs.project_id = e.project_id AND runs.session_id = e.session_id "
                 "AND runs.name = e.run))",
                 (project, first),
             ).fetchone()
-        return int(saved) + int(unsaved)
+        return saved[0] + unsaved[0], saved[1] + unsaved[1]
 
     def offered_to(self, project: str, session: str, run: str) -> list[str]:
         """The queued messages ``run`` was offered last: what it saw and did not answer."""

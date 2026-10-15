@@ -160,6 +160,9 @@ class ModelUsage(Contract):
     characters: int | None = Field(default=None, ge=0)
     """What the call sent and received, in characters: the spend of a call without
     token counts is a quarter of it."""
+    cost: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    """What the call cost, as the gateway reported it, in its currency (LiteLLM's is
+    USD); null when it reported none. It is never estimated."""
 
 
 def _summary(value: JsonValue | None) -> dict[str, JsonValue]:

@@ -150,6 +150,19 @@ describe("a run's model usage", () => {
       '1 model call, 5 input and 0 output tokens, some counts not reported by the gateway',
     );
   });
+  it('adds what the gateway said the calls cost, and invents none', () => {
+    const call = { model: 'm', input_tokens: 10, output_tokens: 2 };
+    expect(
+      usageLine([
+        { ...call, cost: 0.0125 },
+        { ...call, cost: 0.5 },
+      ]),
+    ).toBe('2 model calls (m), 20 input and 4 output tokens, $0.51');
+    expect(usageLine([{ ...call, cost: 0.00042 }, { ...call, cost: null }, call])).toBe(
+      '3 model calls (m), 30 input and 6 output tokens, $0.00042 for the 1 calls the gateway gave a cost for',
+    );
+    expect(usageLine([call])).toBe('1 model call (m), 10 input and 2 output tokens');
+  });
   it('says nothing for a record with no usage, as older records have', () => {
     expect(usageLine(undefined)).toBeNull();
     expect(usageLine([])).toBeNull();

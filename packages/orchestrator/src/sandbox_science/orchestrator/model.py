@@ -50,6 +50,14 @@ class ModelTurn:
     """The model that answered, as the gateway names it: the resolved model."""
     input_tokens: int | None = None
     output_tokens: int | None = None
+    cost: float | None = None
+    """What the call cost, as the gateway reported it (``COST_HEADER``, or the answer's
+    ``usage.cost``), in its currency: LiteLLM's is USD. ``None`` when it reported none:
+    it is never estimated."""
+
+
+COST_HEADER: Final = "x-litellm-response-cost"
+"""The header in which LiteLLM's proxy reports a call's cost."""
 
 
 class ChatModel(Protocol):
@@ -155,7 +163,7 @@ class OpenAICompatibleModel:
         wait = self._backoff
         for attempt in range(self._retries + 1):
             try:
-                return _parse_completion(await self._post(body))
+                return _parse_completion(*await self._post(body))
             except _RetryableError as retry:
                 # A gateway that asks for a longer wait than the cap is not waited for.
                 if attempt == self._retries or (retry.after or 0) > MAX_RETRY_WAIT:
@@ -172,7 +180,8 @@ class OpenAICompatibleModel:
                 wait *= 2
         raise AssertionError("unreachable")  # pragma: no cover
 
-    async def _post(self, body: dict[str, Any]) -> str:
+    async def _post(self, body: dict[str, Any]) -> tuple[str, str | None]:
+        """The answer's text, and its cost header if it has one."""
         if self._session is None:
             self._session = aiohttp.ClientSession()
         try:
@@ -191,7 +200,7 @@ class OpenAICompatibleModel:
                 if self._api_key:  # An answer, or an error about it, can quote the key.
                     text = text.replace(self._api_key, "[the gateway key]")
                 if 200 <= response.status < 300:
-                    return text
+                    return text, response.headers.get(COST_HEADER)
                 status = response.status
                 error = ModelError(
                     f"the model gateway returned {status}: {text[:300]}", status=status
@@ -289,8 +298,21 @@ async def _read_limited(response: aiohttp.ClientResponse, limit: int) -> bytes:
     return b"".join(chunks)
 
 
-def _parse_completion(text: str) -> ModelTurn:
-    """A completion as a turn; anything not shaped like one is a ModelError."""
+def _cost(value: object) -> float | None:
+    """A reported cost: a finite number, not negative; anything else is none."""
+    if isinstance(value, bool):
+        return None
+    try:
+        found = float(cast(Any, value))
+    except (TypeError, ValueError):
+        return None
+    return found if 0 <= found < float("inf") else None
+
+
+def _parse_completion(text: str, priced: str | None = None) -> ModelTurn:
+    """A completion as a turn; anything not shaped like one is a ModelError. ``priced``
+    is the cost header, which the answer's ``usage.cost`` stands in for when it is
+    missing."""
     try:
         data: object = json.loads(text)
         choice = _object(_object(data)["choices"][0])
@@ -319,6 +341,7 @@ def _parse_completion(text: str) -> ModelTurn:
         model=resolved if isinstance(resolved, str) else None,
         input_tokens=_usage(data, "prompt_tokens"),
         output_tokens=_usage(data, "completion_tokens"),
+        cost=_cost(priced) if priced is not None else _cost(_usage_value(data, "cost")),
     )
 
 
@@ -369,8 +392,10 @@ class ScriptedModel:
 
 
 def _usage(data: object, key: str) -> int | None:
-    usage = _object(data).get("usage")
-    if not isinstance(usage, dict):
-        return None
-    value = cast(dict[str, object], usage).get(key)
+    value = _usage_value(data, key)
     return value if type(value) is int and value >= 0 else None
+
+
+def _usage_value(data: object, key: str) -> object:
+    usage = _object(data).get("usage")
+    return cast(dict[str, object], usage).get(key) if isinstance(usage, dict) else None

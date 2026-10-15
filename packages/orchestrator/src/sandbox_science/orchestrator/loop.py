@@ -317,6 +317,7 @@ async def _complete(model: ChatModel, toolbox: Toolbox, transcript: Transcript) 
             input_tokens=reply.input_tokens,
             output_tokens=reply.output_tokens,
             characters=size + answered,
+            cost=reply.cost,
         )
     )
     return reply

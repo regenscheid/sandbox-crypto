@@ -236,6 +236,22 @@ async def test_rate_limits_and_quoted_budgets_are_not_budget_refusals(fake: Gate
     assert not isinstance(failed.value, GatewayBudgetError)
 
 
+async def test_a_calls_cost_is_taken_as_the_gateway_reports_it(fake: Gateway) -> None:
+    """LiteLLM's header, or the answer's ``usage.cost`` without it; nothing else."""
+    in_body = {**ANSWER, "usage": {**ANSWER["usage"], "cost": 0.25}}
+    fake.answers = [
+        (200, ANSWER, {"x-litellm-response-cost": "0.00123"}),
+        (200, in_body, {}),
+        (200, in_body, {"x-litellm-response-cost": "0.5"}),  # the header wins
+        (200, ANSWER, {"x-litellm-response-cost": "free"}),
+        (200, ANSWER, {"x-litellm-response-cost": "-1"}),
+        (200, {**ANSWER, "usage": {**ANSWER["usage"], "cost": True}}, {}),
+        (200, ANSWER, {}),
+    ]
+    costs = [(await complete(fake, Waits())).cost for _ in range(7)]
+    assert costs == [0.00123, 0.25, 0.5, None, None, None, None]
+
+
 async def test_an_unparseable_answer_never_quotes_the_key(fake: Gateway) -> None:
     fake.answers = [(200, f'{{"echo": {{"authorization": "Bearer {KEY}"}}}}', {})]
     with pytest.raises(ModelError) as failed:
@@ -459,10 +475,18 @@ async def test_a_run_rides_out_a_rate_limit_and_records_its_usage(harness: Harne
     # One entry per answered call; the scripted gateway counts messages as input tokens.
     first, _, last = (len(messages) for messages in harness.gateway.main)
     assert [usage.model_dump(exclude={"characters"}) for usage in record.usage] == [
-        {"model": "scripted-main", "input_tokens": first, "output_tokens": 1},
-        {"model": "scripted-main", "input_tokens": last, "output_tokens": 1},
+        {"model": "scripted-main", "input_tokens": first, "output_tokens": 1, "cost": None},
+        {"model": "scripted-main", "input_tokens": last, "output_tokens": 1, "cost": None},
     ]
     assert all(usage.characters for usage in record.usage)  # what each call sent and got
+
+
+async def test_a_run_records_each_calls_cost_beside_its_tokens(harness: Harness) -> None:
+    record = await harness.run(
+        "run-1", [Reply(calls=[call("plan_read")], cost="0.0021"), Reply("The answer.")]
+    )
+    assert [usage.cost for usage in record.usage] == [0.0021, None]  # none is made up
+    assert record.usage[0].input_tokens is not None
 
 
 async def test_the_gateways_context_error_stops_the_run_without_an_answer(
