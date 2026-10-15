@@ -34,11 +34,13 @@ from sandbox_science.contracts.provision_observations import (
     RevisionSummaryPage,
 )
 from sandbox_science.contracts.revision_packages import RevisionPackagePage
+from sandbox_science.orchestrator.memory import MemoryChange
 from sandbox_science.workspace.api import ProjectAnswer, ProjectListing, SessionDetail
 from sandbox_science.workspace.artifacts import ArtifactListing, ViewerLink
 from sandbox_science.workspace.chat import EventPage, MessageAnswer, MessageListing, Requested
 from sandbox_science.workspace.kernels import WorkspaceObservation
 from sandbox_science.workspace.ledger import LedgerEntry, LedgerHistory, LedgerListing
+from sandbox_science.workspace.memory import MemoryAnswer, MemoryHistory, MemoryProposals
 from sandbox_science.workspace.plan_edits import BodyChange, EditReceipt
 from sandbox_science.workspace.plans import WorkspacePlan
 
@@ -68,6 +70,10 @@ MODELS: tuple[type[BaseModel], ...] = (
     LedgerListing,
     LedgerEntry,
     LedgerHistory,
+    MemoryAnswer,
+    MemoryProposals,
+    MemoryHistory,
+    MemoryChange,
 )
 HEADER = (
     "// SPDX-License-Identifier: MIT\n"
