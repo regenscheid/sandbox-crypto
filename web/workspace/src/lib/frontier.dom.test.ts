@@ -70,16 +70,21 @@ const group = (attack: string, fields: Partial<FrontierGroup> = {}): FrontierGro
   ...fields,
 });
 
+/** The query that reads on after the group keyed `key`, with more of the query after it. */
+const after = (key: string, more = '') =>
+  `?${new URLSearchParams({ groups_after_key: key }).toString()}${more}`;
+const PRIMAL = JSON.stringify({ attack: 'primal' });
+
 function answer(
   groups: FrontierGroup[],
-  next: number | null,
+  next: string | null,
   fields: Partial<View> = {},
 ): FrontierAnswer {
   return {
     project_id: 'p1',
     observed_at: 'now',
-    next_groups_after: next,
-    next_groups_key: null,
+    next_groups_after: null,
+    next_groups_key: next,
     frontier: {
       category: {
         category: 'key-recovery',
@@ -137,8 +142,8 @@ const button = (root: HTMLElement, text: string) =>
 describe('the frontier view', () => {
   it('reads its groups a page at a time, each group once', async () => {
     const queries = server({
-      '': answer([group('primal')], 1),
-      '?groups_after=1': answer([group('primal'), group('dual')], null),
+      '': answer([group('primal')], PRIMAL),
+      [after(PRIMAL)]: answer([group('primal'), group('dual')], null),
     });
     const root = show();
     await settle();
@@ -147,7 +152,7 @@ describe('the frontier view', () => {
     expect(headings(root)).toEqual(['attack: primal']);
     button(root, 'More groups')!.click();
     await settle();
-    expect(queries).toEqual(['', '?groups_after=1']);
+    expect(queries).toEqual(['', after(PRIMAL)]);
     expect(headings(root)).toEqual(['attack: primal', 'attack: dual']);
     expect(button(root, 'More groups')).toBeUndefined();
   });
@@ -218,34 +223,63 @@ describe('the frontier view', () => {
     expect(button(root, 'Try again')).toBeUndefined();
   });
 
-  it('pages groups within a window of older candidates, and notes that pages may shift', async () => {
+  it('pages groups by key within a window of older candidates', async () => {
     const answers: Record<string, FrontierAnswer | number> = {
-      '': answer([group('primal')], 1, { truncated: true, next_candidates_before: 40 }),
-      '?candidates_before=40': answer([group('primal')], 1),
-      '?groups_after=1&candidates_before=40': 503,
+      '': answer([group('primal')], PRIMAL, { truncated: true, next_candidates_before: 40 }),
+      '?candidates_before=40': answer([group('primal')], PRIMAL),
+      [after(PRIMAL, '&candidates_before=40')]: 503,
     };
     const queries = server(answers);
     const root = show();
     await settle();
     button(root, 'Older candidates')!.click();
     await settle();
-    expect(root.textContent).not.toContain('Groups are read by their place');
     button(root, 'More groups')!.click();
     await settle();
     // A failed page leaves the way back and a retry, not an empty page.
     expect(root.textContent).toContain('the frontier cannot be read now');
     expect(button(root, 'Newer candidates')).toBeDefined();
-    answers['?groups_after=1&candidates_before=40'] = answer([group('dual')], null);
+    answers[after(PRIMAL, '&candidates_before=40')] = answer([group('dual')], null);
     button(root, 'Try again')!.click();
     await settle();
     expect(queries).toEqual([
       '',
       '?candidates_before=40',
-      '?groups_after=1&candidates_before=40',
-      '?groups_after=1&candidates_before=40',
+      after(PRIMAL, '&candidates_before=40'),
+      after(PRIMAL, '&candidates_before=40'),
     ]);
     expect(headings(root)).toEqual(['attack: primal', 'attack: dual']);
-    expect(root.textContent).toContain('Groups are read by their place');
+  });
+
+  it('reads on from the last key shown, so a change between reads moves no group', async () => {
+    // Pages by key, two groups at a time, as the route does.
+    let groups = ['a1', 'b1', 'c1', 'd1'].map((name) => group(name));
+    const queries: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const query = new URL(url, 'http://localhost').searchParams;
+        queries.push(query.toString());
+        const from = query.get('groups_after_key');
+        const ordered = [...groups]
+          .sort((a, b) => (a.key < b.key ? -1 : 1))
+          .filter((g) => from === null || g.key > from);
+        const page = ordered.slice(0, 2);
+        const more = ordered.length > 2 ? page.at(-1)!.key : null;
+        return new Response(JSON.stringify(answer(page, more)));
+      }),
+    );
+    const root = show();
+    await settle();
+    expect(headings(root)).toEqual(['attack: a1', 'attack: b1']);
+    // Between reads, the groups read go (their results changed) and a new one comes first.
+    groups = [group('a0'), group('c1'), group('d1')];
+    button(root, 'More groups')!.click();
+    await settle();
+    expect(queries[1]).toBe(new URLSearchParams({ groups_after_key: group('b1').key }).toString());
+    // Read by position, the second page would have begun at place 2, past c1.
+    expect(headings(root)).toEqual(['attack: a1', 'attack: b1', 'attack: c1', 'attack: d1']);
+    expect(button(root, 'More groups')).toBeUndefined();
   });
 
   it('keeps the way back when a window of candidates fails to read', async () => {
