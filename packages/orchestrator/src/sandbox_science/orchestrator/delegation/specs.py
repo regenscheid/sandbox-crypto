@@ -30,10 +30,11 @@ class CheckTarget(Contract):
 
 
 def _note(value: object) -> object:
-    """A note as the brief keeps it: trimmed, and holding no character the user may not
-    see, since the checker, the evidence and the workspace show it."""
-    if not isinstance(value, str) or not (kept := value.strip()):
-        return value.strip() if isinstance(value, str) else value
+    """A note as the brief keeps it: one line, its white space collapsed, so that it
+    cannot imitate the brief's own parts, and holding no character the user may not see,
+    since the checker, the evidence and the workspace show it."""
+    if not isinstance(value, str) or not (kept := " ".join(value.split())):
+        return "" if isinstance(value, str) else value
     try:
         return agent_text(kept, "the note")
     except DocumentError as error:

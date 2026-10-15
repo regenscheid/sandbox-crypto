@@ -14,12 +14,13 @@ refusal names the first clause that does not (``gate_not_met``):
    by a delegation: one the user added themselves, at the revision they checked, or one
    whose target is the outcome of a delegation of the project that checked that
    revision and returned ``confirmed`` and ``complete``, with no plan fence refusal, a
-   ``ledger_read`` of the entry at that revision and a read of each proof's target at
-   the revision its link pins, run by a run that added none of the entry's proofs (a
-   fresh context, PD-13; the same model counts, coordinator 2026-10-15). A delegation's
-   check counts only while no delegation that checked a revision with the same
-   statement, fields, assumptions and supporting evidence returned ``refuted``, or
-   ``inconclusive`` from a complete check, linked or not; the user's check still counts;
+   whole read of the entry at that revision and of each proof's target at the revision
+   its link pins, run by a run that added none of the entry's proofs (a fresh context,
+   PD-13; the same model counts, coordinator 2026-10-15). A delegation's check counts
+   only while no delegation that checked a revision with the same statement text,
+   fields, assumptions and supporting evidence returned ``refuted``, or
+   ``inconclusive`` from a complete check, or is still running, linked or not; the
+   user's check still counts;
 3. ``computation``: computational evidence pinned to an artifact revision;
 4. ``review``: a completed checkpoint or terminal review (``passed`` or ``findings``)
    whose coverage was complete had in its snapshot, whole, a revision of the entry whose
@@ -86,13 +87,19 @@ class Material:
     fields: str
     assumes: frozenset[tuple[str, int | None]]
     evidence: frozenset[tuple[object, ...]]
+    text: str | None = None
+    """The SHA-256 of the statement's body, which a revision that restores an earlier
+    text shares with it, under a new text revision."""
 
     def claimed(self) -> Material:
-        """The material without its ``contradicts`` links: what the entry claims and rests
-        on. A check that disagreed with it holds while the entry keeps this, whatever
-        evidence against it was added or removed since (LG-17)."""
+        """What the entry claims and rests on: the material with its statement by its
+        body, not its text revision, and without its ``contradicts`` links. A check that
+        disagreed with it holds while the entry keeps this, whatever evidence against it
+        was added or removed since, and when its statement was changed and restored
+        (LG-17)."""
         kept = frozenset(pinned for pinned in self.evidence if pinned[0] != "contradicts")
-        return dataclasses.replace(self, evidence=kept)
+        statement = None if self.text is not None else self.statement
+        return dataclasses.replace(self, statement=statement, evidence=kept)
 
 
 def fingerprint(material: Material) -> str:
@@ -143,9 +150,16 @@ def _pinned(link: EvidenceLink) -> tuple[object, ...]:
 
 
 def material(
-    fields: Json, statement: int | None, links: list[EntryLink], held: list[EvidenceLink]
+    fields: Json,
+    statement: int | None,
+    links: list[EntryLink],
+    held: list[EvidenceLink],
+    text: str | None = None,
 ) -> Material:
+    """The material of a revision: ``statement`` is its statement's text revision, and
+    ``text`` the SHA-256 of its body."""
     return Material(
+        text=text,
         statement=statement,
         fields=json.dumps(fields, sort_keys=True),
         assumes=frozenset(
@@ -242,14 +256,22 @@ def clauses(
                 "the user checked a revision with the statement, fields, assumptions and "
                 "evidence it holds",
             )
+        elif found is not None and against is not None and against.running:
+            yield (
+                "independent_check",
+                False,
+                f"delegation {against.delegation} is still checking a revision with the "
+                "statement, fields, assumptions and supporting evidence it holds: wait for "
+                "it, or cancel it",
+            )
         elif found is not None and against is not None:
             yield (
                 "independent_check",
                 False,
-                f"delegation {against} checked a revision with the statement, fields, "
-                "assumptions and supporting evidence it holds and did not confirm it "
-                "(refuted, or a complete check that was inconclusive): while it keeps that "
-                "material, no delegation's check counts, and only the user's check does",
+                f"delegation {against.delegation} checked a revision with the statement, "
+                "fields, assumptions and supporting evidence it holds and did not confirm "
+                "it (refuted, or a complete check that was inconclusive): while it keeps "
+                "that material, no delegation's check counts, and only the user's check does",
             )
         elif found is not None:
             note = "" if not found.note else f"; the requester's note: {found.note}"
@@ -515,28 +537,42 @@ def delegated(
     return Checked(link.target_id, note if isinstance(note, str) else "")
 
 
-def disputed(db: sqlite3.Connection, project: str, entry: str, now: Material) -> str | None:
+@dataclass(frozen=True)
+class Disputed:
+    """A check of the same material that did not confirm it, or that is still running."""
+
+    delegation: str
+    running: bool
+
+
+def disputed(db: sqlite3.Connection, project: str, entry: str, now: Material) -> Disputed | None:
     """The first delegation of ``project`` that checked ``entry``, linked to it or not,
     at a revision that claims and rests on what ``now`` does (``Material.claimed``), and
     did not confirm it: it returned ``refuted``, or ``inconclusive`` from a complete
-    check. Retrying a check until one confirms gains nothing (LG-17)."""
+    check; or one that is still running, which may yet. Retrying a check until one
+    confirms gains nothing (LG-17)."""
     rows = [
-        (delegation, revision)
-        for delegation, revision in db.execute(
-            "SELECT delegation_id,json_extract(brief,'$.check.revision') FROM delegations "
+        (delegation, revision, ended is None)
+        for delegation, revision, ended in db.execute(
+            "SELECT delegation_id,json_extract(brief,'$.check.revision'),ended FROM delegations "
             "WHERE project_id=? AND kind='check' AND json_extract(brief,'$.check.entry')=? "
-            "AND result IS NOT NULL AND (json_extract(result,'$.verdict')='refuted' "
+            "AND (ended IS NULL OR (result IS NOT NULL "
+            "AND (json_extract(result,'$.verdict')='refuted' "
             "OR (json_extract(result,'$.verdict')='inconclusive' "
-            "AND json_extract(result,'$.status')='complete')) "
+            "AND json_extract(result,'$.status')='complete')))) "
             "ORDER BY started_at, delegation_id",
             (project, entry),
         )
         if isinstance(revision, int)
     ]
-    held = examined(db, entry, {revision for _, revision in rows})
+    held = examined(db, entry, {revision for _, revision, _ in rows})
     claimed = now.claimed()
     return next(
-        (d for d, revision in rows if revision in held and held[revision].claimed() == claimed),
+        (
+            Disputed(d, running)
+            for d, revision, running in rows
+            if revision in held and held[revision].claimed() == claimed
+        ),
         None,
     )
 
@@ -587,7 +623,10 @@ def examined(db: sqlite3.Connection, entry: str, revisions: set[int]) -> dict[in
     found: dict[int, Material] = {}
     for revision in revisions:
         row = db.execute(
-            "SELECT statement,fields FROM ledger_revisions WHERE entry_id=? AND revision=?",
+            "SELECT r.statement,r.fields,t.sha256 FROM ledger_revisions r "
+            "LEFT JOIN text_revisions t ON t.subject_type='statement' "
+            "AND t.subject_id=r.entry_id AND t.revision=r.statement "
+            "WHERE r.entry_id=? AND r.revision=?",
             (entry, revision),
         ).fetchone()
         if row is None:
@@ -601,6 +640,6 @@ def examined(db: sqlite3.Connection, entry: str, revisions: set[int]) -> dict[in
             )
         ]
         found[revision] = material(
-            json.loads(row[1]), row[0], links, evidence.stored(db, entry, revision)
+            json.loads(row[1]), row[0], links, evidence.stored(db, entry, revision), row[2]
         )
     return found

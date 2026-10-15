@@ -441,7 +441,12 @@ class DocumentTool:
                 break
             shown = max(1, shown * 3 // 4)
         self._saw(info, revision.info.number)
-        return text, {"read": {"document": info.document_id, "revision": revision.info.number}}
+        read = {
+            "document": info.document_id,
+            "revision": revision.info.number,
+            "blocks": [block["id"] for block in blocks[:shown]],
+        }
+        return text, {"read": read}
 
     def _create(
         self, args: dict[str, Any], operation: str, call_id: str | None, model: str | None

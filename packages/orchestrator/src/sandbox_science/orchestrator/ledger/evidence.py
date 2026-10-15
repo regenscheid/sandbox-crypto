@@ -321,8 +321,9 @@ def _checked_by(
     db: sqlite3.Connection, project: str, holder: Holder, item: EvidenceInput, linker: Linker
 ) -> dict[str, object]:
     """The outcome of the delegation ``item`` names, as its link records it: a check of
-    ``holder`` at the revision ``item`` says it examined, which has ended, linked by the
-    user or by a main run of the delegation's session. The locator names the brief by
+    ``holder`` at the revision ``item`` says it examined, which has ended while no other
+    check of ``holder`` runs, linked by the user or by a main run of the delegation's
+    session. The locator names the brief by
     its SHA-256 and shows the parent's note, if any (LG-17)."""
     if item.role != "independent_check":
         raise DocumentError(
@@ -360,6 +361,19 @@ def _checked_by(
         )
     if ended is None:
         raise DocumentError(CONFLICT, f"delegation {item.delegation} has not ended")
+    running = db.execute(
+        "SELECT delegation_id FROM delegations WHERE project_id=? AND kind='check' "
+        "AND json_extract(brief,'$.check.entry')=? AND ended IS NULL "
+        "ORDER BY started_at, delegation_id LIMIT 1",
+        (project, holder.entry_id),
+    ).fetchone()
+    if running is not None:
+        # A check still running could disagree: the parent waits for it, or cancels it.
+        raise DocumentError(
+            CONFLICT,
+            f"delegation {running[0]}, another check of {holder.handle}, is still running: "
+            "wait for it, or cancel it, before linking a check",
+        )
     outcome: dict[str, Any] = json.loads(result) if result is not None else {}
     note = written.get("note") or None
     return {

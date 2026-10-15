@@ -545,6 +545,7 @@ class LedgerTool:
         if name not in {spec.name for spec in SPECS}:
             return _failure(INVALID_REQUEST, f"there is no tool named {name!r}")
         author = self.author(call_id, model)
+        read: Json | None = None
         try:
             if name == "ledger_change":
                 # Unknown arguments are refused, so that none can stand for an author.
@@ -558,11 +559,15 @@ class LedgerTool:
                     raise _invalid(error) from None
                 if isinstance(parsed, _Import):
                     text = await self._import(parsed, author)
+                elif isinstance(parsed, _Read):
+                    text, read = await asyncio.to_thread(self._read_entry, parsed)
                 else:
                     text = await asyncio.to_thread(self._read_only, parsed)
         except DocumentError as error:
             return _failure(error.kind, _clip(error.message, 1000), **error.details)
         record: Json = {"ledger": name}
+        if read is not None:
+            record["read"] = read
         if name in ("ledger_change", "ledger_import", "ledger_category"):
             record["result"] = json.loads(text)
         return text, record
@@ -608,13 +613,26 @@ class LedgerTool:
                 project, kind=args.type, status=args.status, after=args.after, limit=args.limit
             )
             return self._listing(page)
-        if isinstance(args, _History):
-            return self._history(self.ledger.history(project, args.entry, before=args.before))
-        assert isinstance(args, _Read)  # noqa: S101 - the other kinds are above
+        assert isinstance(args, _History)  # noqa: S101 - the other kinds are above
+        return self._history(self.ledger.history(project, args.entry, before=args.before))
+
+    def _read_entry(self, args: _Read) -> tuple[str, Json]:
+        """``ledger_read``'s answer, and what it showed of the entry, as its record keeps
+        it: the entry and revision, whether it showed the whole statement from its start
+        (``complete``), and the IDs of the evidence links it showed."""
         view = self.ledger.entry(
-            project, args.entry, args.revision, incoming_after=args.incoming_after
+            self.context.project_id, args.entry, args.revision, incoming_after=args.incoming_after
         )
-        return self._entry(view, args)
+        text = self._entry(view, args)
+        shown = json.loads(text)
+        complete = args.statement_from == 0 and shown["statement"] == view.statement
+        read: Json = {
+            "entry": view.entry_id,
+            "revision": view.revision,
+            "complete": complete,
+            "evidence": [link["evidence_id"] for link in shown.get("evidence", [])],
+        }
+        return text, read
 
     def _frontier(self, view: FrontierView, start: int) -> str:
         """A category's frontier, its groups from ``start`` on, as many as the budget

@@ -31,7 +31,7 @@ from sandbox_science.orchestrator.control.texts import TextRevisions
 from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.documents.agent_text import agent_text, agent_values
 from sandbox_science.orchestrator.documents.blocks import parse
-from sandbox_science.orchestrator.documents.comment_bodies import prepare
+from sandbox_science.orchestrator.documents.comment_bodies import prepare, sha
 from sandbox_science.orchestrator.documents.errors import (
     CONFLICT,
     INVALID_REQUEST,
@@ -373,8 +373,13 @@ class Ledger:
             found_clauses: list[GateClause] = []
             if applies:
                 held = evidence.stored(db, row.entry_id, row.head)
+                written = TEXTS.read(db, row.entry_id, statement, full=False)
                 now = gate.material(
-                    json.loads(fields), statement, self._links(db, row.entry_id, row.head), held
+                    json.loads(fields),
+                    statement,
+                    self._links(db, row.entry_id, row.head),
+                    held,
+                    None if written is None else written["sha256"],
                 )
                 found_clauses = [
                     GateClause.model_validate({"clause": clause, "holds": holds, "reason": reason})
@@ -1363,6 +1368,7 @@ class Ledger:
                     None if p.statement is not None else latest[0],
                     self._final_links(db, p),
                     held,
+                    latest[1] if p.statement is None else sha(p.statement),
                 )
                 gate.establish(db, p.row.entry_id, p.row.handle, held, now, p.row.head)
                 gated.add(p.row.entry_id)
