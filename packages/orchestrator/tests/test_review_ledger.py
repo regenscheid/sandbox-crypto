@@ -1004,3 +1004,62 @@ def test_the_gate_applies_only_to_a_project_claim_or_result(store) -> None:
     supported(reviews)
     view = Ledger(reviews.documents).gate("p", "REF-1")
     assert (view.applies, view.holds, view.clauses) == (False, False, [])
+
+
+def test_a_later_review_sees_what_an_established_entry_rests_on(store) -> None:
+    """Lab 40's B3: C-1 rests on a proof in a document block and on a delegation's
+    check, and the main agent established it through the gate. The next review held C-1
+    but neither the proof nor the check, and raised a fail finding on it. Now the review
+    that holds an entry revision also holds, as context, the document revision its proof
+    is in (naming the block), the check's outcome, and the entry it derives from; none of
+    them is under review, and none counts as a review of its entry."""
+    from sandbox_science.orchestrator.ledger import gate
+
+    from .test_ledger_delegated_check import checked, link
+
+    reviews, documents, now = store
+    ledger = Ledger(reviews.documents)
+    proof = documents.create(
+        "p", name="proof", title="Proof of C-1",
+        text="# Proof\n\nEvery nonzero $a$ has order dividing 16, so $a^{16} = 1$.\n",
+        author=MAIN, session_id="s",
+    )  # fmt: skip
+    block = documents.mapped("p", proof.document_id, 1).block_ids[1]
+    lemma = {**CLAIM, "title": "Lagrange", "statement": "The group has order 16."}
+    change(reviews, CLAIM, lemma, op="made")
+    evidence = [
+        {"role": "derivation", "type": "proof", "document": proof.document_id, "revision": 1,
+         "block": block},
+        {"role": "supports", "type": "proof", "entry": "C-2", "revision": 1},
+    ]  # fmt: skip
+    change(reviews, {"entry": "C-1", "expected": 1, "evidence": evidence}, op="proved")
+    entry = ledger.entry("p", "C-1").entry_id
+    delegation = checked(ledger, entry)
+    change(reviews, {"entry": "C-1", "expected": 2, "evidence": [link(delegation)]}, op="check")
+    review_passes(reviews)
+    now[0] += 1000
+    establish(reviews, "established", 3)
+    assert ledger.entry("p", "C-1").status == "established"
+    ingest_ledger(reviews, "p", "s")
+    later = dispatch(reviews)
+    items = reviews.manifest("p", "s", later, limit=50)["evidence"]
+    pinned = {i["kind"]: i for i in items if "pinned_by" in i["locator"]}
+    assert set(pinned) == {"document", "delegation", "entry"}
+    for item in pinned.values():
+        assert item["locator"]["pinned_by"] == {"entry": entry, "handle": "C-1", "revision": 4}
+    held = pinned["document"]
+    assert held["locator"]["blocks"] == [block]
+    text = reviews.read_evidence("p", "s", later, held["evidence"], block=block)["text"]
+    assert "order dividing 16" in text
+    outcome = json.loads(
+        reviews.read_evidence("p", "s", later, pinned["delegation"]["evidence"])["text"]
+    )
+    assert (outcome["delegation"], outcome["result"]["verdict"]) == (delegation, "confirmed")
+    assert (outcome["read_entry"], outcome["read_proofs"]) == (True, True)
+    assert pinned["entry"]["locator"]["handle"] == "C-2"
+    lemma_id = ledger.entry("p", "C-2").entry_id
+    reviews.finish("p", "s", later, "owner", "passed", "Checked.")
+    with reviews.documents.control.read() as tx:
+        # The later review holds C-2 as context, not as a revision it reviewed.
+        assert gate.reviewed(tx.sql, lemma_id, after=now[0] - 1) == []
+        assert gate.reviewed(tx.sql, entry, after=now[0] - 1) == [4]

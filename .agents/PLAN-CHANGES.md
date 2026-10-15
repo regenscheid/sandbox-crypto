@@ -4,6 +4,10 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 ## 2026-10-15
 
+Decision of the coordinator on lab 40's B3, which the owner can reverse:
+
+- **A review sees what an entry rests on** ([consistency review spec](../docs/specs/consistency-review.md), CR-2, CR-14). A review that holds a ledger entry revision also holds, as context, the document revision a proof's block is in, a delegation's outcome and an entry its evidence pins, as it holds the artifacts (#338). Context makes no review due, and holding an entry as context is no review of it.
+
 Decision of the coordinator on a delegated task's result files (RA-38), which the owner can reverse:
 
 - **A result file is one the child's calls made** ([research artifacts](../docs/specs/research-artifacts.md), RA-38). The platform checks each declared file against the revisions the child's own calls recorded or published, pins the latest in the outcome, and refuses any other, with the one correction; it does not record a declared file itself. A project that records results only, or a file an ignore pattern leaves out, gets its result through `publish`.

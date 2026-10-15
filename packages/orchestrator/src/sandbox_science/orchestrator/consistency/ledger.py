@@ -20,6 +20,7 @@ cursor and writes the observations in one change.
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from typing import Any, Final
@@ -27,7 +28,7 @@ from typing import Any, Final
 from sandbox_science.orchestrator.control import EventLog
 from sandbox_science.orchestrator.control.feeds import FeedCursor
 from sandbox_science.orchestrator.documents.errors import DocumentError
-from sandbox_science.orchestrator.ledger import EntryView, Ledger
+from sandbox_science.orchestrator.ledger import EntryView, Ledger, gate
 
 from .artifacts import pinned_artifact
 from .quotes import quoted_items
@@ -49,6 +50,13 @@ complete, and whether it is an effect of the run."""
 
 MAX_PINNED: Final = 8
 """The most artifact revisions one entry revision brings into a review."""
+
+MAX_CONTEXT: Final = 8
+"""The most document revisions, delegation outcomes and entries one entry revision's
+evidence brings into a review, besides its artifacts."""
+
+MAX_TEXT: Final = 16384
+"""The most characters of a delegation's report or brief that come with its outcome."""
 
 
 def ingest_ledger(store: ReviewStore, project: str, session: str, *, drain: bool = False) -> Json:
@@ -75,6 +83,7 @@ def ingest_ledger(store: ReviewStore, project: str, session: str, *, drain: bool
             if (found := _observation(ledger, project, event.subject, event.payload)) is not None
         ]
         pinned = [item for _, view in seen for item in pinned_items(store, project, view)]
+        context = [item for _, view in seen for item in context_items(store, project, view)]
         # The quotes' sources are found before the write, which only records them.
         with store.documents.control.read() as tx:
             quoted = [
@@ -117,6 +126,9 @@ def ingest_ledger(store: ReviewStore, project: str, session: str, *, drain: bool
                 by = locator["quoted_by"]
                 key = f"quoted:{watermark}:{by['entry']}:{by['revision']}:{by['evidence']}"
                 _once(store, db, project, session, key, "source", locator, payload)
+            for kind, name, locator, payload in context:
+                key = f"pinned:{watermark}:{name}"
+                _once(store, db, project, session, key, kind, locator, payload)
         after, pages = end, pages - 1
         if after >= target:
             break
@@ -208,6 +220,104 @@ def pinned_items(store: ReviewStore, project: str, view: EntryView) -> list[tupl
             by = {"entry": view.entry_id, "handle": view.handle, "revision": view.revision}
             found.append(({**locator, "pinned_by": by}, payload))
     return found
+
+
+def context_items(
+    store: ReviewStore, project: str, view: EntryView
+) -> list[tuple[str, str, Json, Json]]:
+    """What the evidence that bears on ``view``, or checks it, pins besides artifacts,
+    brought into its review as context, as many as ``MAX_CONTEXT`` (CR-14 as amended for
+    lab 40's B3): the document revision a block is in, naming the blocks, which the
+    reviewer reads by block; a delegation's outcome, its texts bounded; and an entry at
+    the revision pinned. Each is its kind, its name for the window's key, its locator,
+    which names the entry revision that pins it (``pinned_by``), and its payload. They
+    make no review due, and they are not under review: a pinned entry is an ``entry``
+    item, never a ``ledger`` one, so no review covers it by holding it. One that cannot be
+    read, or does not fit one item, is left to the entry's evidence, which names it."""
+    by = {"entry": view.entry_id, "handle": view.handle, "revision": view.revision}
+    links = [
+        link for link in view.evidence if gate.bearing(link) or link.role == "independent_check"
+    ]
+    blocks: dict[tuple[str, int], list[str]] = {}
+    for link in links:
+        if link.target == "block" and link.revision is not None and link.block is not None:
+            named = blocks.setdefault((link.target_id, link.revision), [])
+            if link.block not in named:
+                named.append(link.block)
+    found: list[tuple[str, str, Json, Json]] = []
+    for (document, revision), named in blocks.items():
+        try:
+            info = store.documents.revision(project, document, revision).info
+        except DocumentError:
+            continue
+        common: Json = {"document": document, "revision": revision, "sha256": info.sha256}
+        found.append(
+            (
+                "document",
+                f"document:{document}:{revision}",
+                {**common, "blocks": named, "pinned_by": by},
+                {
+                    **common,
+                    "author": info.author.model_dump(mode="json"),
+                    "reason": info.reason,
+                    "tombstone": info.tombstone,
+                },
+            )
+        )
+    seen: set[str] = set()
+    for link in links:
+        if link.target == "delegation" and link.target_id not in seen:
+            seen.add(link.target_id)
+            outcome = _outcome(store, project, link.target_id)
+            if outcome is not None:
+                locator = {"delegation": link.target_id, "pinned_by": by}
+                found.append(("delegation", f"delegation:{link.target_id}", locator, outcome))
+        elif link.target == "entry" and link.revision is not None:
+            name = f"entry:{link.target_id}:{link.revision}"
+            if name in seen:
+                continue
+            seen.add(name)
+            try:
+                target = Ledger(store.documents).entry(project, link.target_id, link.revision)
+            except DocumentError:
+                continue
+            located, payload, complete = entry_item(target)
+            if complete:
+                located.pop("run", None)
+                found.append(("entry", name, {**located, "pinned_by": by}, payload))
+    return found[:MAX_CONTEXT]
+
+
+def _outcome(store: ReviewStore, project: str, delegation: str) -> Json | None:
+    """A delegation's outcome as review evidence: what it was asked, how it ended, the
+    result the child returned with its verdict and coverage, what the platform saw it
+    read, and its report, the long texts bounded; None when it has not ended."""
+    with store.documents.control.read() as tx:
+        row = tx.sql.execute(
+            "SELECT kind,brief,ended,stopped,result,report,refused,read_entry,read_proofs,"
+            "alias,models FROM delegations WHERE delegation_id=? AND project_id=?",
+            (delegation, project),
+        ).fetchone()
+    if row is None or row[2] is None:
+        return None
+    kind, brief, ended, stopped, result, report, refused, read, proofs, alias, models = row
+    brief_text = brief if len(brief) <= MAX_TEXT else brief[:MAX_TEXT] + "…"
+    outcome: Json = {
+        "delegation": delegation,
+        "kind": kind,
+        "brief": json.loads(brief) if len(brief) <= MAX_TEXT else {"clipped": brief_text},
+        "ended": ended,
+        "stopped": stopped,
+        "result": None if result is None else json.loads(result),
+        "read_entry": None if read is None else bool(read),
+        "read_proofs": None if proofs is None else bool(proofs),
+        "refused": refused,
+        "alias": alias,
+        "models": None if models is None else json.loads(models),
+        "report": None if report is None else report[:MAX_TEXT],
+        "report_clipped": report is not None and len(report) > MAX_TEXT,
+    }
+    return outcome if len(dump(outcome).encode()) <= MAX_ITEM_BYTES else None
 
 
 def _observation(
