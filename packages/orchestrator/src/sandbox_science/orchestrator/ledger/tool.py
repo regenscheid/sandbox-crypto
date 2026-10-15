@@ -216,8 +216,12 @@ SPECS: Final = (
         "Each revision names the revision you read; if the entry changed since, read it "
         "again. A new entry starts in its first status (open, proposed, active, todo). "
         "An operation_id names one change in the project: retrying with it returns the "
-        "first result. A delegated agent creates entries and adds evidence to "
-        "entries, and changes nothing else.",
+        "first result. An entry becomes established, obstructed or refuted, and a "
+        "decision reversed, only in a change that puts in effect a decision that affects "
+        "it (a new decision with status in_effect, or a proposed one moved to in_effect); "
+        "establishing a result needs the project's gate, and a refusal names the clause "
+        "that does not hold. A delegated agent creates entries, its decisions proposed, "
+        "and adds evidence to entries, and changes nothing else.",
         {
             "type": "object",
             "properties": {
