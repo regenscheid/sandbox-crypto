@@ -276,20 +276,30 @@ def test_corrupt_retained_metadata_refuses_before_large_python_allocation(store,
 @pytest.mark.parametrize("failure", ["model", "timeout", "cancel", "renew", "usage"])
 async def test_failed_attempt_keeps_exact_charge_pin_and_unknown_model(store, monkeypatch, failure):
     reviews, documents, review = store
-    if failure == "timeout":
-        with documents.control.write() as tx:
-            db = tx.sql
-            db.execute(
-                "UPDATE review_runs SET config=? WHERE review_id=?",
-                (ReviewConfig(time_seconds=0.02).model_dump_json(), review),
-            )
     entered = asyncio.Event()
+    budgets: list[asyncio.Timeout] = []
+    if failure == "timeout":
+        # The review's own time budget ends while its model call runs. A 20 ms budget
+        # could end first, under load, before the call was reserved, and then there was
+        # no call to read: so the model's call ends the real budget itself.
+        timeout = asyncio.timeout
+
+        def budget(delay: float | None) -> asyncio.Timeout:
+            found = timeout(delay)
+            if delay == ReviewConfig().time_seconds:
+                budgets.append(found)
+            return found
+
+        monkeypatch.setattr(asyncio, "timeout", budget)
 
     class Model:
         async def complete(self, messages, tools):
             entered.set()
             if failure == "model":
                 raise ModelError("test-secret-reviewer-not-a-credential")
+            if failure == "timeout":
+                (review_budget,) = budgets
+                review_budget.reschedule(asyncio.get_running_loop().time())
             if failure in {"timeout", "cancel"}:
                 await asyncio.Event().wait()
             return finish()
@@ -300,13 +310,14 @@ async def test_failed_attempt_keeps_exact_charge_pin_and_unknown_model(store, mo
     if failure in {"renew", "usage"}:
         monkeypatch.setattr(reviews, failure if failure == "renew" else "call_usage", refuse)
     task = asyncio.create_task(ReviewerRunner(reviews, "p", "s", review, "owner", Model()).run())
+    # Bounds against a hang only: the run's own steps take what the machine gives them.
     if failure == "cancel":
-        await asyncio.wait_for(entered.wait(), 1)
+        await asyncio.wait_for(entered.wait(), 30)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
     else:
-        await asyncio.wait_for(task, 1)
+        await asyncio.wait_for(task, 30)
     with documents.control.read() as tx:
         db = tx.sql
         call, answered = db.execute("SELECT seq,answered FROM review_calls").fetchone()
