@@ -6,7 +6,7 @@
  * change the ledger through their tools.
  */
 import type { Author } from './api';
-import type { EntryLink, EntrySummary } from './api-types';
+import type { EntryLink, EntrySummary, EntryView } from './api-types';
 import { describeAuthor } from './authors';
 import { documentHref, ENTRY_NAME, ledgerEntryHref } from './router';
 
@@ -145,6 +145,21 @@ export function linksByKind(links: readonly EntryLink[]): [LinkKind, EntryLink[]
   return kinds
     .map((kind): [LinkKind, EntryLink[]] => [kind, links.filter((link) => link.kind === kind)])
     .filter(([, found]) => found.length > 0);
+}
+
+/**
+ * A page of the links to an entry, read from the `after`-th on, as a paged list takes it:
+ * the next page starts after the links read so far, until the count is reached.
+ */
+export function incomingPage(
+  entry: Pick<EntryView, 'incoming' | 'incoming_total'>,
+  after: number,
+): { items: EntryLink[]; next: number | null } {
+  const read = after + entry.incoming.length;
+  return {
+    items: entry.incoming,
+    next: entry.incoming.length > 0 && read < entry.incoming_total ? read : null,
+  };
 }
 
 /** One of an entry's own fields, as a row: its name and its value in words. */

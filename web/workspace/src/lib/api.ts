@@ -469,11 +469,22 @@ export const api = {
       `/projects/${part(project)}/ledger?` +
         new URLSearchParams({ type, status, ...(after === null ? {} : { after }) }).toString(),
     ),
-  /** An entry by its handle or ID, at its current revision or at `revision`. */
-  ledgerEntry: (project: string, entry: string, revision: number | null = null) =>
+  /**
+   * An entry by its handle or ID, at its current revision or at `revision`; at its current
+   * revision, the links to it from the `incomingAfter`-th on, a page of them.
+   */
+  ledgerEntry: (
+    project: string,
+    entry: string,
+    revision: number | null = null,
+    incomingAfter = 0,
+  ) =>
     get<LedgerEntry>(
       `/projects/${part(project)}/ledger/${part(entry)}` +
-        (revision === null ? '' : `?revision=${revision}`),
+        (revision === null ? '' : `?revision=${revision}`) +
+        (incomingAfter === 0
+          ? ''
+          : `${revision === null ? '?' : '&'}incoming_after=${incomingAfter}`),
     ),
   history: (project: string, document: string) =>
     get<DocumentHistory>(`/projects/${part(project)}/documents/${part(document)}/history`),

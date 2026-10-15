@@ -5,6 +5,7 @@ import {
   authorText,
   ENTRY_TYPES,
   fieldRows,
+  incomingPage,
   linksByKind,
   linkTarget,
   matches,
@@ -163,4 +164,22 @@ test('who wrote a revision reads as the documents say it; anything else as store
   expect(authorText({ kind: 'user', user: { nested: true } })).toBe(
     '{"kind":"user","user":{"nested":true}}',
   );
+});
+
+describe('the links to an entry, a page at a time', () => {
+  const links = (count: number) =>
+    Array.from({ length: count }, (_, i) => link({ handle: `I-${i + 1}` }));
+
+  test('start with the page the entry came with, and continue after the links read', () => {
+    expect(incomingPage({ incoming: links(200), incoming_total: 450 }, 0).next).toBe(200);
+    expect(incomingPage({ incoming: links(200), incoming_total: 450 }, 200).next).toBe(400);
+    expect(incomingPage({ incoming: links(50), incoming_total: 450 }, 400).next).toBeNull();
+  });
+
+  test('end with no links, or when the count is reached', () => {
+    expect(incomingPage({ incoming: [], incoming_total: 0 }, 0)).toEqual({ items: [], next: null });
+    expect(incomingPage({ incoming: links(3), incoming_total: 3 }, 0).next).toBeNull();
+    // Links removed since the count: an empty page ends the list.
+    expect(incomingPage({ incoming: [], incoming_total: 450 }, 400).next).toBeNull();
+  });
 });

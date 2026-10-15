@@ -9,6 +9,7 @@
   import { authorText, fieldRows, linksByKind, statusText, TYPE_NAME } from '../lib/ledger';
   import { ledgerEntryHref, ledgerHref, projectHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
+  import LedgerIncoming from './LedgerIncoming.svelte';
   import LedgerLinks from './LedgerLinks.svelte';
 
   let {
@@ -76,12 +77,7 @@
     <p class="muted">This revision holds no links.</p>
   {/if}
   {#if entry.revision === entry.head}
-    {#if entry.incoming.length}
-      <h3>Links to it</h3>
-      <LedgerLinks {projectId} groups={linksByKind(entry.incoming)} direction="in" />
-    {:else}
-      <p class="muted">No entry links to it.</p>
-    {/if}
+    <LedgerIncoming {projectId} {entry} />
   {:else}
     <p class="muted">The links other entries hold to it are shown at its current revision.</p>
   {/if}
