@@ -662,3 +662,49 @@ class FrontierView(Contract):
     """The main agent's revision of the category, when the user has not revised it since."""
     unplaced_more: int = 0
     """For an answer that lists only the first unplaced results, how many it leaves out."""
+
+
+class FrontierMember(Contract):
+    """A best known result as a frontier change recorded it."""
+
+    entry_id: str
+    handle: str
+    revision: int
+
+
+class FrontierChange(Contract):
+    """A change to a category's best known results under one set of conditions (LG-24):
+    the set it left, what it added and removed, and what caused it."""
+
+    seq: int
+    conditions: dict[str, str]
+    best: list[FrontierMember]
+    added: list[str]
+    """The handles of the results it made best known."""
+    removed: list[str]
+    """The handles of the results it took from the best known: they stay in history."""
+    cause: dict[str, Any]
+    """The change that caused it: its operation ID, author and the entries it changed,
+    or the category's revision."""
+    created: str
+
+
+class FrontierHistory(Contract):
+    """A category's frontier changes, newest first."""
+
+    category: str
+    changes: list[FrontierChange]
+    next_before: int | None
+
+
+class FrontierPastGroup(Contract):
+    conditions: dict[str, str]
+    best: list[FrontierMember]
+
+
+class FrontierPast(Contract):
+    """A category's best known results as they were at ``at`` (LG-24)."""
+
+    category: str
+    at: str
+    groups: list[FrontierPastGroup]

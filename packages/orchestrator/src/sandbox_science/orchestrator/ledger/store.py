@@ -68,6 +68,8 @@ from .models import (
     EntrySummary,
     EntryView,
     EvidenceLink,
+    FrontierHistory,
+    FrontierPast,
     FrontierView,
     GateClause,
     GateDecision,
@@ -414,6 +416,24 @@ class Ledger:
             )
         return found
 
+    def frontier_history(
+        self, project: str, name: str, *, before: int | None = None, limit: int = 50
+    ) -> FrontierHistory:
+        """A category's frontier changes, newest first (LG-24)."""
+        self.category(project, name)
+        if not 1 <= limit <= 100:
+            raise DocumentError(INVALID_REQUEST, "a page holds 1 to 100 changes")
+        with self.control.read() as tx:
+            return frontier.history(tx.sql, project, name, before, limit)
+
+    def frontier_past(self, project: str, name: str, at: datetime) -> FrontierPast:
+        """A category's best known results as they were at ``at`` (LG-24)."""
+        self.category(project, name)
+        if at.tzinfo is None:
+            raise DocumentError(INVALID_REQUEST, "a time names its zone")
+        with self.control.read() as tx:
+            return frontier.past(tx.sql, project, name, at.astimezone(UTC).isoformat())
+
     def frontier(
         self, project: str, name: str, *, candidates_before: int | None = None
     ) -> FrontierView:
@@ -485,10 +505,71 @@ class Ledger:
                 },
                 now,
             )
+            self._frontier(
+                db,
+                project,
+                {value.category},
+                {
+                    "operation_id": value.operation_id,
+                    "author": author.actor,
+                    "category_revision": category.revision,
+                },
+                author,
+                now,
+            )
             RECEIPTS.record(
                 db, project, _PROJECT, value.operation_id, digest, category.model_dump(mode="json")
             )
             return category
+
+    @staticmethod
+    def _categories(db: sqlite3.Connection, planned: list[_Planned]) -> set[str]:
+        """The frontier categories whose results a change made or revised, as they were
+        and as it leaves them."""
+        found: set[str] = set()
+        for p in planned:
+            if p.row.type != "result":
+                continue
+            if p.fields.get("category"):
+                found.add(p.fields["category"])
+            if not p.created:
+                before = db.execute(
+                    "SELECT json_extract(fields,'$.category') FROM ledger_revisions "
+                    "WHERE entry_id=? AND revision=?",
+                    (p.row.entry_id, p.row.head - 1),
+                ).fetchone()
+                if before is not None and before[0]:
+                    found.add(before[0])
+        return found
+
+    def _frontier(
+        self,
+        db: sqlite3.Connection,
+        project: str,
+        categories: set[str],
+        cause: Json,
+        author: Author,
+        now: datetime,
+    ) -> None:
+        """Record what the change did to the best known results of ``categories``
+        (LG-24), each category's changes under one ``ledger.frontier_changed`` event."""
+        for name, changes in frontier.record(db, project, categories, cause, now.isoformat()):
+            self.category_events.append(
+                db,
+                "ledger.frontier_changed",
+                project,
+                author.session_id,
+                name,
+                {
+                    "category": name,
+                    "operation_id": cause["operation_id"],
+                    "changes": [
+                        {"conditions": c.conditions, "added": c.added, "removed": c.removed}
+                        for c in changes
+                    ],
+                },
+                now,
+            )
 
     def check(
         self,
@@ -755,6 +836,18 @@ class Ledger:
             "ledger.flags_raised",
             mutation,
             [(f.flag_id, f.entry_id, f.handle, f.cause, f.source["handle"]) for f in raised],
+            now,
+        )
+        self._frontier(
+            db,
+            project,
+            self._categories(db, planned),
+            {
+                "operation_id": mutation.operation_id,
+                "author": author.actor,
+                "entries": [p.row.handle for p in planned if p.row.type == "result"],
+            },
+            author,
             now,
         )
         flagged = list(dict.fromkeys(flag.handle for flag in raised))

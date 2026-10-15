@@ -404,7 +404,7 @@ def test_a_published_result_an_agent_records_is_unverified_until_the_user_confir
 
     ledger.define_category("p", KEY_RECOVERY, MAIN)
     change(ledger, NEW["reference"], op="ref")
-    change(ledger, published("P1", CLASSICAL, time=120, memory=60), op="p1")
+    change(ledger, published("P1", CLASSICAL, time=120, memory=60), op="p1")  # the agent's
     change(ledger, published("P2", CLASSICAL, time=125, memory=65), op="p2", author=USER)
     group = best(ledger.frontier("p", "key-recovery"), CLASSICAL)
     assert [(r.handle, r.author) for r in group.best] == [
@@ -762,3 +762,95 @@ def test_an_agents_dominates_reason_holds_no_hidden_text(ledger: Ledger) -> None
     linked(ledger)
     with pytest.raises(DocumentError, match=r"link 1's note holds U\+202E"):
         change(ledger, dominating("R-3", expected=1, reason="P1 \u202eis faster"), op="hidden")
+
+
+# The history (LG-24): LG-F2's "P2 stays recorded, and the history shows it best known
+# until R1's decision".
+
+
+def test_each_change_to_the_best_known_is_recorded_with_its_cause(ledger: Ledger) -> None:
+    from datetime import datetime
+
+    from .test_ledger import NEW
+    from .test_ledger_decisions import decide
+
+    ledger.define_category("p", KEY_RECOVERY, MAIN)
+    change(ledger, NEW["reference"], op="ref")
+    change(ledger, published("P1", CLASSICAL, time=120, memory=60), op="p1", author=USER)  # R-1
+    change(ledger, published("P2", CLASSICAL, time=110, memory=80), op="p2", author=USER)  # R-2
+    change(ledger, published("P3", CLASSICAL, time=125, memory=65), op="p3", author=USER)  # R-3
+    change(ledger, published("Q1", QUANTUM, time=90, memory=90), op="q1", author=USER)  # R-4
+    project = result(conditions=CLASSICAL, measures={"time": 105, "memory": 80})
+    change(ledger, {**project, "title": "R1"}, op="r1")  # R-5, proposed: nothing changes
+    history = ledger.frontier_history("p", "key-recovery")
+    assert [(c.cause["operation_id"], c.added, c.removed) for c in history.changes] == [
+        ("q1", ["R-4"], []),
+        ("p2", ["R-2"], []),
+        ("p1", ["R-1"], []),
+    ]
+    before = history.changes[1].created  # P1 and P2 best known
+    change(ledger, decide("R-5"), {"entry": "R-5", "expected": 1, "status": "established"},
+           op="est", author=USER)  # fmt: skip
+    (latest,) = ledger.frontier_history("p", "key-recovery", limit=1).changes
+    assert (latest.conditions, latest.added, latest.removed) == (CLASSICAL, ["R-5"], ["R-2"])
+    assert latest.cause == {"author": "user:user", "entries": ["R-5"], "operation_id": "est"}
+    assert [m.handle for m in latest.best] == ["R-1", "R-5"]
+    # P2 stays recorded, and the frontier as it was shows it best known.
+    assert ledger.entry("p", "R-2").status == "recorded"
+    then = ledger.frontier_past("p", "key-recovery", datetime.fromisoformat(before))
+    (classical,) = [g for g in then.groups if g.conditions == CLASSICAL]
+    assert [m.handle for m in classical.best] == ["R-1", "R-2"]
+    page = ledger.frontier_history("p", "key-recovery", limit=2)
+    assert page.next_before == page.changes[-1].seq
+    rest = ledger.frontier_history("p", "key-recovery", before=page.next_before)
+    assert len(page.changes) + len(rest.changes) == 4
+    # A category revised to a new condition key leaves no result placed: the history
+    # says each group's best known left, caused by the category's revision.
+    revised = {**KEY_RECOVERY, "expected": 1, "conditions": ["model", "success", "data"],
+               "operation_id": "rev"}  # fmt: skip
+    ledger.define_category("p", revised, MAIN)
+    left = [c for c in ledger.frontier_history("p", "key-recovery").changes
+            if c.cause.get("category_revision") == 2]  # fmt: skip
+    assert sorted(tuple(c.removed) for c in left) == [("R-1", "R-5"), ("R-4",)]
+    kinds = [kind for kind, _ in category_events(ledger)]
+    assert kinds.count("ledger.frontier_changed") == 5  # one for each change, not each group
+
+
+def test_a_version_26_store_takes_frontier_changes_after_the_migration(
+    ledger: Ledger, tmp_path: Path
+) -> None:
+    from sandbox_science.orchestrator.control import migrations
+    from sandbox_science.orchestrator.documents import DocumentStore, store_path
+
+    from .control_versions import older_store
+
+    ledger.define_category("p", KEY_RECOVERY, MAIN)
+    ledger.documents.close()
+    old = tmp_path / "old"
+    old.mkdir()
+    older_store(store_path(tmp_path), store_path(old), migrations.BASELINE + 24)
+    raw = sqlite3.connect(store_path(old))
+    try:
+        tables = {n for (n,) in raw.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        version = raw.execute("PRAGMA user_version").fetchone()[0]
+    finally:
+        raw.close()
+    assert (version, "frontier_categories" in tables, "frontier_changes" in tables) == (
+        26,
+        True,
+        False,
+    )
+    migrated = DocumentStore(store_path(old))
+    migrated.initialize()
+    try:
+        moved = Ledger(migrated)
+        assert moved.frontier_history("p", "key-recovery").changes == []
+        moved.change(
+            "p",
+            {"operation_id": "r", "reason": "r", "changes": [result(
+                conditions=CLASSICAL, measures={"time": 1, "memory": 1}) | {
+                "origin": "project"}]},
+            USER,
+        )  # fmt: skip
+    finally:
+        migrated.close()

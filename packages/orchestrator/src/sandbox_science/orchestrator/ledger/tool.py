@@ -46,6 +46,7 @@ from .models import (
     EntryView,
     FlagCause,
     FrontierGroup,
+    FrontierHistory,
     FrontierResult,
     FrontierView,
     Mutation,
@@ -344,8 +345,9 @@ SPECS: Final = (
         "that the user has not confirmed (unverified), newest first (candidates_before "
         "reads older ones). agent_revised says what the main "
         "agent changed in the category that the user has not revised since. "
-        "With revision: the category's definition at that revision. A result in a "
-        "category gives a value for each condition key and only its measures.",
+        "With revision: the category's definition at that revision. With history: its "
+        "changes to the best known, newest first. A result in a category gives a value "
+        "for each condition key and only its measures.",
         {
             "type": "object",
             "properties": {
@@ -354,6 +356,11 @@ SPECS: Final = (
                 "after": {"type": "string", "description": "Where the last page ended"},
                 "groups_after": {"type": "integer", "minimum": 0},
                 "candidates_before": {"type": "integer", "minimum": 1},
+                "history": {
+                    "type": "boolean",
+                    "description": "The category's changes to its best known, newest first",
+                },
+                "history_before": {"type": "integer", "minimum": 1},
             },
             "additionalProperties": False,
         },
@@ -436,6 +443,8 @@ class _Frontier(_Args):
     after: _TEXT | None = None
     groups_after: _COUNT = 0
     candidates_before: _NUMBER | None = None
+    history: bool = False
+    history_before: Annotated[int, Field(strict=True, ge=1, le=2**62)] | None = None
 
 
 class _Import(_Args):
@@ -565,6 +574,10 @@ class LedgerTool:
             if args.revision is not None:
                 found = self.ledger.category(project, args.category, args.revision)
                 return found.model_dump_json()
+            if args.history:
+                return self._frontier_history(
+                    self.ledger.frontier_history(project, args.category, before=args.history_before)
+                )
             found = self.ledger.frontier(
                 project, args.category, candidates_before=args.candidates_before
             )
@@ -628,6 +641,24 @@ class LedgerTool:
                     return _dump({**shown, "more": {"groups_after": number}})
             shown["groups"].append(value)
         return _dump({**shown, "more": {}})
+
+    def _frontier_history(self, found: FrontierHistory) -> str:
+        """As many of a category's frontier changes as the budget holds, newest first."""
+        shown: list[Json] = []
+        for change in found.changes:
+            value = {
+                "seq": change.seq,
+                "conditions": change.conditions,
+                "added": change.added,
+                "removed": change.removed,
+                "best": [m.handle for m in change.best],
+                "operation_id": change.cause.get("operation_id"),
+                "created": change.created,
+            }
+            if len(_dump({"changes": [*shown, value], "history_before": 2**62})) > self.budget:
+                return _dump({"changes": shown, "history_before": shown[-1]["seq"]})
+            shown.append(value)
+        return _dump({"changes": shown, "history_before": found.next_before})
 
     def _categories(self, page: CategoryPage) -> str:
         """As many categories as the budget holds, their texts shortened."""

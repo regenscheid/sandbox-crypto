@@ -99,6 +99,8 @@ All routes need the session and answer JSON. Every route that is a GET also answ
 | POST | `/api/v0/projects/{project}/frontier` | The user's definition of a frontier category, or its revision at `expected` ([ledger](LEDGER.md)) |
 | GET | `/api/v0/projects/{project}/frontier/{category}` | A category's frontier: for each set of conditions, the best known results, the dominated ones, those not compared and the candidates, each with its statement, measures, status, author and indicators; as many as `?limit=` groups (1 to 100, 20 by default) from `?groups_after=`, each with the first 100 results of a kind and how many more, and `next_groups_after`; `?candidates_before=` reads older proposed candidates ([ledger](LEDGER.md)) |
 | GET | `/api/v0/projects/{project}/frontier/{category}/definition` | A category at its current revision or `?revision=` |
+| GET | `/api/v0/projects/{project}/frontier/{category}/history` | A category's changes to its best known results, newest first (`?before=` a change, `?limit=` 1 to 100) ([ledger](LEDGER.md)) |
+| GET | `/api/v0/projects/{project}/frontier/{category}/past` | A category's best known results as they were at `?at=`, a time with its zone |
 | GET | `/api/v0/projects/{project}/ledger/{entry}/history` | An entry's revisions, newest first (`?before=` a revision) |
 | GET | `/api/v0/projects/{project}/memory` | The project memory's accepted entries in order, its version, their characters, how many an agent receives within the 16,000-character `bound`, and how many proposals wait ([project memory](MEMORY.md)) |
 | GET | `/api/v0/projects/{project}/memory/proposals` | The proposals waiting for the user, oldest first, each with who proposed it and why, and the entry it would change as it is now |

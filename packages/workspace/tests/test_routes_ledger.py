@@ -410,3 +410,44 @@ async def test_a_frontier_through_the_workspace(
     for bad in ({"x": "1"}, {"groups_after": "-1"}, {"limit": "0"}, {"candidates_before": "0"}):
         await error_of(await client.get(url, params=bad), 400, "invalid_request")
     await error_of(await client.get("/api/v0/projects/p1/frontier/bounds"), 404, "not_found")
+
+
+async def test_a_frontiers_history_through_the_workspace(
+    aiohttp_client: ClientFactory, seeded: Path, static_dir: Path
+) -> None:
+    """LG-24: the GUI reads a category's changes, and its best known at a past time."""
+    from datetime import UTC, datetime
+
+    from sandbox_science.workspace.frontier import FrontierHistoryAnswer, FrontierPastAnswer
+
+    client = await workspace(aiohttp_client, seeded, static_dir)
+    url = "/api/v0/projects/p1/frontier"
+    body = {
+        "category": "key-recovery",
+        "target": "The test scheme",
+        "kind": "Key recovery cost",
+        "measures": [{"name": "time", "unit": "log2 operations", "direction": "lower"}],
+        "conditions": [],
+        "reason": "What the project compares.",
+        "operation_id": "category-1",
+    }
+    assert (await client.post(url, json=body, headers=origin(client))).status == 200
+    history = FrontierHistoryAnswer.model_validate(
+        await (await client.get(url + "/key-recovery/history")).json()
+    )
+    assert history.history.changes == []
+    now = datetime.now(UTC).isoformat()
+    past = FrontierPastAnswer.model_validate(
+        await (await client.get(url + "/key-recovery/past", params={"at": now})).json()
+    )
+    assert past.past.groups == []
+    await error_of(
+        await client.get(url + "/key-recovery/past", params={"at": "yesterday"}),
+        400,
+        "invalid_request",
+    )
+    await error_of(
+        await client.get(url + "/key-recovery/past", params={"at": "2026-10-15T00:00:00"}),
+        400,
+        "invalid_request",
+    )

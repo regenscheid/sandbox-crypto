@@ -796,3 +796,29 @@ async def test_the_agent_reads_a_frontier_a_group_at_a_time(ledger: Ledger) -> N
     clipped = await use(tiny, "ledger_frontier", category="key-recovery")
     assert clipped["groups"][0]["candidates_total"] == 10
     assert len(json.dumps(clipped)) <= 1500
+
+
+@pytest.mark.asyncio
+async def test_the_agent_reads_a_frontiers_history(ledger: Ledger) -> None:
+    from sandbox_science.orchestrator.documents import USER
+
+    from .test_ledger import MAIN
+    from .test_ledger_frontier import KEY_RECOVERY, result
+
+    ledger.define_category("p", KEY_RECOVERY, MAIN)
+    made = result(conditions={"model": "m", "success": "1/2"}, measures={"time": 1, "memory": 1})
+    ledger.change("p", {"operation_id": "made", "reason": "r", "changes": [made]}, MAIN)
+    decision = {"type": "decision", "status": "in_effect", "title": "E", "statement": "s",
+                "links": [{"kind": "affects", "entry": "R-1"}]}  # fmt: skip
+    established = {"entry": "R-1", "expected": 1, "status": "established"}
+    ledger.change(
+        "p", {"operation_id": "est", "reason": "r", "changes": [decision, established]}, USER
+    )
+    read = await use(tool(ledger), "ledger_frontier", category="key-recovery", history=True)
+    (first,) = read["changes"]
+    assert (first["added"], first["removed"], first["operation_id"], read["history_before"]) == (
+        ["R-1"],
+        [],
+        "est",
+        None,
+    )

@@ -1881,6 +1881,36 @@ BEGIN SELECT RAISE(ABORT, 'frontier category revisions are immutable'); END""",
         schema.execute(statement)
 
 
+def _frontier_changes(schema: Schema) -> None:
+    """Version 27: the history of the frontier (docs/specs/ledger.md, LG-24): each change
+    to the best known results of a category under one set of conditions, with the set as
+    the change left it, what it added and removed, and its cause; written once, in the
+    order the changes committed."""
+    for statement in (
+        """CREATE TABLE frontier_changes (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    project TEXT NOT NULL,
+    category TEXT NOT NULL,
+    conditions TEXT NOT NULL CHECK (json_valid(conditions) AND json_type(conditions) = 'object'
+        AND length(CAST(conditions AS BLOB)) <= 8192),
+    best TEXT NOT NULL CHECK (json_valid(best) AND json_type(best) = 'array'),
+    added TEXT NOT NULL CHECK (json_valid(added) AND json_type(added) = 'array'),
+    removed TEXT NOT NULL CHECK (json_valid(removed) AND json_type(removed) = 'array'),
+    cause TEXT NOT NULL CHECK (json_valid(cause) AND json_type(cause) = 'object'
+        AND length(CAST(cause AS BLOB)) <= 16384),
+    created TEXT NOT NULL CHECK (length(created) BETWEEN 1 AND 64),
+    FOREIGN KEY (project, category) REFERENCES frontier_categories(project, category)
+) STRICT""",
+        "CREATE INDEX frontier_changes_groups ON frontier_changes(project,category,conditions,seq)",
+        "CREATE INDEX frontier_changes_order ON frontier_changes(project,category,seq)",
+        """CREATE TRIGGER frontier_changes_no_update BEFORE UPDATE ON frontier_changes
+BEGIN SELECT RAISE(ABORT, 'frontier changes are kept as written'); END""",
+        """CREATE TRIGGER frontier_changes_no_delete BEFORE DELETE ON frontier_changes
+BEGIN SELECT RAISE(ABORT, 'frontier changes are kept as written'); END""",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -1907,6 +1937,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _memory,
     _ledger_flags,
     _frontier_categories,
+    _frontier_changes,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

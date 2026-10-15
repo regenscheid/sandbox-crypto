@@ -55,7 +55,12 @@ from .models import (
     CategoryPage,
     CategoryRevised,
     DominatesLink,
+    FrontierChange,
     FrontierGroup,
+    FrontierHistory,
+    FrontierMember,
+    FrontierPast,
+    FrontierPastGroup,
     FrontierResult,
     FrontierView,
 )
@@ -254,10 +259,12 @@ def view(
     category: Category,
     *,
     candidates_before: int | None = None,
+    full: bool = True,
 ) -> FrontierView:
     """``category``'s frontier as its results read now: every result that is or was
     eligible, and as many as ``MAX_CANDIDATES`` proposed ones, newest first, made before
-    the result numbered ``candidates_before``."""
+    the result numbered ``candidates_before``; without ``full``, the results without what
+    only shows them (their statements, evidence, findings and flags), for the history."""
     held = db.execute(
         _SHOWN + "AND (r.status='disputed' OR (json_extract(r.fields,'$.category')=? "
         "AND r.status IN ('recorded','established'))) ORDER BY e.position",
@@ -274,7 +281,7 @@ def view(
     unplaced: list[FrontierResult] = []
     # Results in the order they were made: their numbers.
     for row in sorted([*held, *proposed[:MAX_CANDIDATES]], key=lambda r: r[2]):
-        member = _member(db, row, category.category)
+        member = _member(db, row, category.category, full=full)
         if member is None:
             continue
         shown, eligible = member[0], member[1]
@@ -352,7 +359,9 @@ _Member = tuple[FrontierResult, bool, bool]
 """A result as the frontier shows it, whether it is eligible, and whether a candidate."""
 
 
-def _member(db: sqlite3.Connection, row: tuple[Any, ...], name: str) -> _Member | None:
+def _member(
+    db: sqlite3.Connection, row: tuple[Any, ...], name: str, *, full: bool = True
+) -> _Member | None:
     """The result of ``row``, at its current revision, as the frontier holds it: shown,
     eligible or a candidate; None when it is neither, or no longer in category
     ``name``. A disputed result is eligible only when the revision before it became
@@ -380,7 +389,7 @@ def _member(db: sqlite3.Connection, row: tuple[Any, ...], name: str) -> _Member 
     )
     if not (eligible or candidate):
         return None
-    shown = _result(db, row, fields, disputed=disputed, unverified=unverified)
+    shown = _result(db, row, fields, disputed=disputed, unverified=unverified, full=full)
     return shown, eligible, candidate
 
 
@@ -706,10 +715,36 @@ def _number(measures: dict[str, Any], name: str) -> float:
 
 
 def _result(
-    db: sqlite3.Connection, row: tuple[Any, ...], fields: Json, *, disputed: bool, unverified: bool
+    db: sqlite3.Connection,
+    row: tuple[Any, ...],
+    fields: Json,
+    *,
+    disputed: bool,
+    unverified: bool,
+    full: bool = True,
 ) -> FrontierResult:
     """The entry of ``row`` as the frontier shows it, at the revision ``row`` names."""
     entry = row[0]
+    if not full:
+        return FrontierResult(
+            entry_id=entry,
+            handle=f"{_PREFIX[row[1]]}-{row[2]}",
+            revision=row[4],
+            title=row[5],
+            statement="",
+            status=row[6],
+            origin=row[3],
+            disputed=disputed,
+            unverified=unverified,
+            author=json.loads(row[9]),
+            conditions=fields.get("conditions", {}),
+            measures=fields.get("measures", {}),
+            evidence_types=[],
+            sources=[],
+            artifacts=[],
+            open_findings=0,
+            open_flags=0,
+        )
     text = _TEXTS.read(db, entry, row[7], full=False)
     held = db.execute(
         "SELECT v.type,v.target,v.target_id,v.target_revision,v.role,t.type,t.number "
@@ -749,3 +784,126 @@ def _result(
             "SELECT count(*) FROM ledger_flags WHERE entry_id=? AND cleared IS NULL", (entry,)
         ).fetchone()[0],
     )
+
+
+def record(
+    db: sqlite3.Connection, project: str, categories: set[str], cause: Json, now: str
+) -> list[tuple[str, list[FrontierChange]]]:
+    """Record each change the open change ``db`` made to the best known results of
+    ``categories`` (LG-24): for every set of conditions whose best known results are not
+    the ones last recorded, the set as it is now, what it added and removed, and
+    ``cause``. Returns the changes, by category."""
+    found: list[tuple[str, list[FrontierChange]]] = []
+    for name in sorted(categories):
+        category = read(db, project, name)
+        if category is None:
+            continue
+        now_best: dict[str, list[FrontierMember]] = {
+            _slot(group.conditions): [
+                FrontierMember(entry_id=r.entry_id, handle=r.handle, revision=r.revision)
+                for r in group.best
+            ]
+            for group in view(db, project, category, full=False).groups
+        }
+        before: dict[str, list[str]] = {}
+        handles: dict[str, str] = {}
+        for conditions, best in db.execute(
+            "SELECT c.conditions,c.best FROM frontier_changes c WHERE c.project=? "
+            "AND c.category=? AND c.seq=(SELECT max(d.seq) FROM frontier_changes d "
+            "WHERE d.project=c.project AND d.category=c.category "
+            "AND d.conditions=c.conditions)",
+            (project, name),
+        ):
+            members = json.loads(best)
+            before[conditions] = [m["entry_id"] for m in members]
+            handles |= {m["entry_id"]: m["handle"] for m in members}
+        changes: list[FrontierChange] = []
+        for key in sorted(set(now_best) | set(before)):
+            members = now_best.get(key, [])
+            ids = [m.entry_id for m in members]
+            if set(ids) == set(before.get(key, [])):
+                continue
+            handles |= {m.entry_id: m.handle for m in members}
+            added = [m.handle for m in members if m.entry_id not in before.get(key, [])]
+            removed = [handles[i] for i in before.get(key, []) if i not in ids]
+            seq = db.execute(
+                "INSERT INTO frontier_changes(project,category,conditions,best,added,removed,"
+                "cause,created) VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    project,
+                    name,
+                    key,
+                    json.dumps([m.model_dump(mode="json") for m in members]),
+                    json.dumps(added),
+                    json.dumps(removed),
+                    json.dumps(cause, sort_keys=True),
+                    now,
+                ),
+            ).lastrowid
+            assert seq is not None  # noqa: S101 - inserted above
+            changes.append(
+                FrontierChange(
+                    seq=seq,
+                    conditions=json.loads(key),
+                    best=members,
+                    added=added,
+                    removed=removed,
+                    cause=cause,
+                    created=now,
+                )
+            )
+        if changes:
+            found.append((name, changes))
+    return found
+
+
+def history(
+    db: sqlite3.Connection, project: str, category: str, before: int | None, limit: int
+) -> FrontierHistory:
+    """``category``'s frontier changes, newest first, before ``before``."""
+    rows = db.execute(
+        "SELECT seq,conditions,best,added,removed,cause,created FROM frontier_changes "
+        "WHERE project=? AND category=? AND seq<? ORDER BY seq DESC LIMIT ?",
+        (project, category, before or 2**62, limit + 1),
+    ).fetchall()
+    changes = [
+        FrontierChange(
+            seq=row[0],
+            conditions=json.loads(row[1]),
+            best=[FrontierMember.model_validate(m) for m in json.loads(row[2])],
+            added=json.loads(row[3]),
+            removed=json.loads(row[4]),
+            cause=json.loads(row[5]),
+            created=row[6],
+        )
+        for row in rows[:limit]
+    ]
+    return FrontierHistory(
+        category=category,
+        changes=changes,
+        next_before=changes[-1].seq if len(rows) > limit else None,
+    )
+
+
+def past(db: sqlite3.Connection, project: str, category: str, at: str) -> FrontierPast:
+    """``category``'s best known results as the last change recorded at or before ``at``
+    left them, under each set of conditions (LG-24)."""
+    groups = [
+        FrontierPastGroup(
+            conditions=json.loads(conditions),
+            best=[FrontierMember.model_validate(m) for m in json.loads(best)],
+        )
+        for conditions, best in db.execute(
+            "SELECT c.conditions,c.best FROM frontier_changes c WHERE c.project=? "
+            "AND c.category=? AND c.seq=(SELECT max(d.seq) FROM frontier_changes d "
+            "WHERE d.project=c.project AND d.category=c.category "
+            "AND d.conditions=c.conditions AND d.created<=?) ORDER BY c.seq",
+            (project, category, at),
+        )
+    ]
+    return FrontierPast(category=category, at=at, groups=[g for g in groups if g.best])
+
+
+def _slot(conditions: dict[str, str]) -> str:
+    """A set of conditions as the history keys it."""
+    return json.dumps(conditions, sort_keys=True, ensure_ascii=False)
