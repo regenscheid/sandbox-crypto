@@ -55,6 +55,8 @@ from .ledger.tool import LedgerTool
 from .loop import MAX_INPUT_CHARS, Interruption, Transcript, run_task, user_cancelled
 from .mathchecks.controller import MathController
 from .mathchecks.jobs import Checker
+from .memory import ProjectMemory
+from .memory_tools import MemoryTool
 from .model import ChatModel, Message
 from .plan_tools import PlanTools
 from .projects import (
@@ -492,6 +494,14 @@ class Harness:
             alias=alias,
             read=lambda request: self.client.read_file(request),
         )
+        # Main and delegated runs propose; only the user changes the memory (PM-3).
+        memory = MemoryTool(
+            ProjectMemory(stores.documents),
+            context,
+            run_id=run_id,
+            role=admitted.request.role,
+            alias=alias,
+        )
         inventory = ArtifactInventory(stores.documents)
         reviews = ReviewController(
             ReviewStore(stores.documents, artifacts=inventory),
@@ -552,6 +562,7 @@ class Harness:
             artifacts=artifacts,
             plans=plans,
             ledger=ledger,
+            memory=memory,
             check_kernels=True,
             sweep_left_kernels=kernel_run is None,
             connectors=connectors,

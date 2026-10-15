@@ -53,6 +53,8 @@ from .kernel_check import KernelCheck
 from .ledger.tool import LEDGER_EFFECTS, LedgerTool
 from .ledger.tool import SPECS as LEDGER_SPECS
 from .mathchecks.controller import MathChecks, MathController
+from .memory_tools import MEMORY_EFFECTS, MemoryTool
+from .memory_tools import SPECS as MEMORY_SPECS
 from .model import ToolCall, ToolSpec
 from .plan_tools import SPECS as PLAN_SPECS
 from .plan_tools import Plans, PlanTools
@@ -348,6 +350,7 @@ def _harness_tool_names() -> frozenset[str]:
         *AUTHOR_SPECS,
         *PLAN_SPECS,
         *LEDGER_SPECS,
+        *MEMORY_SPECS,
     )
     return frozenset(spec.name for spec in specs) | {RESTART_KERNEL}
 
@@ -375,6 +378,7 @@ class Toolbox:
         artifacts: ArtifactPublisher | None = None,
         plans: PlanTools | None = None,
         ledger: LedgerTool | None = None,
+        memory: MemoryTool | None = None,
         check_kernels: bool = False,
         sweep_left_kernels: bool = False,
         connectors: Connectors | None = None,
@@ -492,6 +496,18 @@ class Toolbox:
                     model=call.model,
                 ),
                 LEDGER_EFFECTS,
+            )
+        if memory is not None:
+            entries += _group(
+                memory.specs,
+                lambda name, call: memory.call(
+                    name,
+                    call.args,
+                    operation=call.operation,
+                    call_id=call.call.id,
+                    model=call.model,
+                ),
+                MEMORY_EFFECTS,
             )
         if connectors is not None:
             # A connector tool is never offered under a name the harness gives a tool of

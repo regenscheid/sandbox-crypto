@@ -292,7 +292,7 @@ class PlanTools:
 
         Only the classes known to change nothing the plan governs pass unchecked.
         """
-        if effect in ("read", "cancel", "plan"):
+        if effect in ("read", "cancel", "plan", "proposal"):
             return
         summary = await threaded(lambda: self._owned(self._refresh))
         if self.requires_read or self.held:
