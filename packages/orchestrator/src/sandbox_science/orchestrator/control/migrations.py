@@ -2391,6 +2391,18 @@ def _delegation_tasks(schema: Schema) -> None:
     rebuild(schema, "delegations", create.replace(old, "CHECK (kind IN ('check', 'task'))", 1))
 
 
+def _role_costs(schema: Schema) -> None:
+    """Version 40: what each reviewer and job watcher call cost, as the gateway reported
+    it, in its currency (run-service spec RS-6a; lab 40, B5): the project's cost and its
+    daily limit count every role's calls, as they count MAIN's and delegated runs'. A call
+    the gateway gave no cost for, or made before this version, has none."""
+    for statement in (
+        "ALTER TABLE review_calls ADD COLUMN cost REAL CHECK (cost IS NULL OR cost >= 0)",
+        "ALTER TABLE job_watcher_calls ADD COLUMN cost REAL CHECK (cost IS NULL OR cost >= 0)",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -2430,6 +2442,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _user_questions,
     _delegation_files,
     _delegation_tasks,
+    _role_costs,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

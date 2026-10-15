@@ -4,6 +4,10 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 ## 2026-10-15
 
+Lab 40's findings, built by lane W:
+
+- **Every role's calls count in the project's cost** ([run service](../docs/specs/run-service.md), RS-6a; B5). The reviewer's and the job watcher's calls keep the cost the gateway reported (control store version 40), and the project's cost and its daily limit count them with MAIN's and delegated runs' calls.
+
 Decision of the coordinator on lab 40's narrated edits, which the owner can reverse:
 
 - **The reviewer matches narrated actions against what each run did** ([consistency review spec](../docs/specs/consistency-review.md), CR-2; rubric `sandbox-consistency-4`). A review's snapshot holds one derived `actions` item for its window: each run's tool calls that change something, with their outcome and what each made, and the blocks each document revision changed. A narrated action with no record is a `fail` of category `missing_action`; no new category.

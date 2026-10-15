@@ -132,9 +132,10 @@ class ModelCost(Contract):
     nothing: nothing is estimated."""
 
     last_day: float | None
-    """Runs that started in the last 24 hours."""
+    """Runs that started in the last 24 hours, and the reviewer's and job watcher's calls
+    made in them."""
     total: float | None
-    """Every run the project keeps."""
+    """Every run the project keeps, and every reviewer and job watcher call."""
 
 
 class ProjectView(ProjectFacts):

@@ -13,7 +13,9 @@ The scripted gateway reports a call's cost in LiteLLM's header when its reply ha
 
 from __future__ import annotations
 
+from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator import service as service_module
+from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.testing import eventually
 
 from .loop_harness import PROJECT, SESSION, Harness, Reply, call
@@ -119,3 +121,21 @@ async def test_a_run_within_its_limit_goes_on(harness: Harness) -> None:
         (record,) = await ended(harness)
     assert (record.stopped, record.final_text) == ("answered", "Done.")
     assert [usage.cost for usage in record.usage] == [0.1, 0.1]
+
+
+async def test_a_limit_counts_what_the_watcher_and_reviewer_spent(harness: Harness) -> None:
+    """Lab 40, B5: their calls count in the project's cost, so a limit they reached
+    refuses the next message, as MAIN's calls would."""
+    runs(harness).set_cost_limit(PROJECT, 0.01)
+    jobs = JobState(harness.state)
+    try:
+        context = ExecutionContext(project_id=PROJECT, session_id=SESSION, environment_id="e")
+        call = jobs.reserve(context, "run-1", "exe-1", "watcher", {}, 60, 0)
+        assert call is not None
+        jobs.finish_call(call, "fine", "small", 10, 2, 0.02)
+    finally:
+        jobs.close()
+    post(harness, "m-1", "Are you there?")
+    async with serving(harness, Reply("Never sent.")):
+        await eventually(lambda: states(harness).get("m-1") == "refused", timeout=10)
+    assert harness.gateway.main == []

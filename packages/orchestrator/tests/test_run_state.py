@@ -224,3 +224,30 @@ def test_a_version_35_store_drops_its_token_budgets(tmp_path: Path) -> None:
         assert db.execute("PRAGMA user_version").fetchone() == (migrations.VERSION,)
     assert "project_budgets" not in tables
     assert "project_cost_limits" in tables
+
+
+def test_a_version_39_stores_reviewer_and_watcher_calls_get_no_cost(tmp_path: Path) -> None:
+    """Version 40 keeps each reviewer and watcher call's cost (lab 40, B5); the calls made
+    before it have none, and the project's cost counts nothing for them."""
+    path = store_path(tmp_path)
+    with at_version(39):
+        projects = ProjectStore(tmp_path)
+        projects.create("p", "minimal", "sha256:" + "a" * 64)
+        projects.close()
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "INSERT INTO review_calls(project,review_id,created,estimated_tokens) "
+            "VALUES ('p','rev-1',1000,100)"
+        )
+        db.execute("INSERT INTO job_watcher_calls(project,requested_at) VALUES ('p',1000)")
+    migrated = ProjectStore(tmp_path)
+    try:
+        assert RunState(migrated).model_cost("p") is None
+    finally:
+        migrated.close()
+    with sqlite3.connect(path) as db:
+        assert db.execute("PRAGMA user_version").fetchone() == (migrations.VERSION,)
+        assert db.execute("SELECT cost FROM review_calls").fetchall() == [(None,)]
+        assert db.execute("SELECT cost FROM job_watcher_calls").fetchall() == [(None,)]
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("UPDATE job_watcher_calls SET cost=-1")
