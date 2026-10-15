@@ -63,6 +63,7 @@ from .outcome import Target, proof_reads
 from .prompt import brief_text, check_task, evidence_line
 from .records import Delegation, DelegationRecords, DelegationSettings, Ended, Ending
 from .specs import CheckBrief, Named, WaitRequest, offered
+from .work import work_record
 
 _log = logging.getLogger(__name__)
 
@@ -333,19 +334,40 @@ class Delegations(TurnHook):
         await self._end(child.delegation_id, ending)
 
     async def _end(self, delegation_id: str, ending: Ending) -> None:
-        """Write an outcome, trying again on failure; one never written is ended at the
-        session's next main run (``DelegationRecords.abandon``)."""
+        """Write an outcome, trying again on failure, then record it as work on the entry
+        it checked (LG-F8); one never written is ended at the session's next main run
+        (``DelegationRecords.abandon``)."""
         context = self.context
         for attempt in range(WRITES):
             try:
-                await threaded(
+                kept = await threaded(
                     self.records.end, context.project_id, context.session_id, delegation_id, ending
                 )
-                return
             except Exception:
                 _log.exception("the outcome of delegation %s could not be kept", delegation_id)
                 if attempt + 1 < WRITES:
                     await self.clock.sleep(0.5 * 2**attempt)
+                continue
+            await self._worked(kept)
+            return
+
+    async def _worked(self, delegation: Delegation) -> None:
+        """Record an ended delegation's outcome as work on its entry; a record that
+        cannot be written leaves the outcome as it is."""
+        found = work_record(delegation, self.context.session_id)
+        if found is None:
+            return
+        mutation, author = found
+        provenance = {"delegation": delegation.delegation_id}
+        try:
+            await threaded(
+                self.ledger.change, self.context.project_id, mutation, author,
+                provenance=provenance,
+            )  # fmt: skip
+        except Exception:
+            _log.exception(
+                "the work of delegation %s could not be recorded", delegation.delegation_id
+            )
 
     async def _wait(self, request: WaitRequest) -> tuple[str, dict[str, Any]]:
         ids = list(dict.fromkeys(request.delegation_ids))
