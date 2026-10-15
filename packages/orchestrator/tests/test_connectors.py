@@ -61,6 +61,8 @@ from .loop_harness import PROJECT, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
+from .test_delegation import CHECK, children, results, wait
+from .test_delegation import delegating as delegating
 
 TOKEN = "test-secret-harness-mcp-caller"
 POLICY = """\
@@ -1069,3 +1071,43 @@ async def test_a_listing_page_that_is_all_denied_is_read_through(proxied: Proxie
         await client.close()
     assert list(connectors.tools) == ["search", "image", "crawl"]
     assert connectors.summary()["servers"] == {"papers": 3}
+
+
+async def test_a_delegated_run_gets_no_connector_tools_nor_their_index(
+    delegating: Harness, proxied: Proxied
+) -> None:
+    """PD-16: a check behind a root that has the connectors is offered neither them nor
+    mcp_tools, and a call to either is refused for its role; nothing reaches the server."""
+    token = delegating.tmp / "mcp.token"
+    token.write_text(TOKEN)
+    token.chmod(0o600)
+    options = [
+        "--mcp-proxy", proxied.url, "--mcp-token-file", str(token),
+        "--mcp-project", PROJECT, "--mcp-server", "papers",
+    ]  # fmt: skip
+    root = await delegating.run(
+        "root",
+        [Reply(calls=[CHECK]), wait(), Reply("Done.")],
+        options=options,
+        delegated=[
+            Reply(calls=[call("search", query="x"), call("mcp_tools", names=["search"])]),
+            Reply("Verdict: inconclusive"),
+        ],
+    )
+    names = {t["function"]["name"] for t in delegating.gateway.tools["main"][0]}
+    assert "mcp_tools" in names
+    for offered in delegating.gateway.tools["delegated"]:
+        assert not {"mcp_tools", "search"} & {t["function"]["name"] for t in offered}
+    (child,) = children(delegating, root)
+    for result in results(child)[:2]:
+        error = json.loads(result)["error"]
+        assert error["kind"] == "policy_denied"
+        assert error["message"].startswith("not_permitted_for_role")
+    assert proxied.fake.tool_calls() == []
+
+
+async def test_a_delegated_toolbox_refuses_connectors(proxied: Proxied) -> None:
+    connectors = await listed(proxied, [{"name": "search"}])
+    async with WorkerClient("http://127.0.0.1:9", "test-secret-worker") as client:
+        with pytest.raises(ValueError, match="a delegated run gets no connector tools"):
+            Toolbox(client, CONTEXT, connectors=connectors, delegated=True)

@@ -488,6 +488,9 @@ class Toolbox:
         session's, which main runs share."""
         self.delegations = delegations
         self.delegated = delegated
+        if delegated and connectors is not None:
+            # PD-16: a delegated run is offered no connector tool, and no index of them.
+            raise ValueError("a delegated run gets no connector tools")
         self.provisioning = ProvisionTools(client, context, output_chars=output_chars)
         worker: dict[str, tuple[Effect, Handler]] = {
             "shell": ("effect", _plain(self._shell)),
