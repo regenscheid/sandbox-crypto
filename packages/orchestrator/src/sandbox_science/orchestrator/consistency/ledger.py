@@ -77,7 +77,9 @@ def ingest_ledger(store: ReviewStore, project: str, session: str, *, drain: bool
         pinned = [item for _, view in seen for item in pinned_items(store, project, view)]
         # The quotes' sources are found before the write, which only records them.
         with store.documents.control.read() as tx:
-            quoted = [item for _, view in seen for item in quoted_items(tx.sql, project, view)]
+            quoted = [
+                item for _, view in seen for item in quoted_items(tx.sql, project, session, view)
+            ]
         observations = [observation for observation, _ in seen] + [
             _flag(event.kind, event.payload)
             for event in events
