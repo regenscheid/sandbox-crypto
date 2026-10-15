@@ -5,7 +5,13 @@
   import { api } from '../lib/api';
   import type { ViewerLink } from '../lib/api-types';
   import { formatTime } from '../lib/format';
-  import { anchorText, receivedAnchor, viewerOrigin, type PdfAnchor } from '../lib/pdfAnchors';
+  import {
+    anchorText,
+    atPage,
+    receivedAnchor,
+    viewerOrigin,
+    type PdfAnchor,
+  } from '../lib/pdfAnchors';
   import { projectHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
 
@@ -14,7 +20,15 @@
     artifactId,
     revision,
     sha256,
-  }: { projectId: string; artifactId: string; revision: number; sha256: string } = $props();
+    page = null,
+  }: {
+    projectId: string;
+    artifactId: string;
+    revision: number;
+    sha256: string;
+    /** The page to open the PDF at, such as a quote's; the first when none. */
+    page?: number | null;
+  } = $props();
   let link = $state<ViewerLink | null>(null);
   let error = $state<unknown>(null);
   let frame = $state<HTMLIFrameElement | null>(null);
@@ -69,7 +83,10 @@
   <a href="#/">Projects</a> / <a href={projectHref(projectId)}>{projectId}</a> /
 </nav>
 <h1>{link?.path ?? 'PDF'}</h1>
-<p class="muted">Revision {revision} · <code>{sha256}</code></p>
+<p class="muted">
+  Revision {revision} · <code>{sha256}</code>{#if page !== null}
+    · opened at page {page}{/if}
+</p>
 
 {#if error}
   <ErrorMessage {error} />
@@ -86,7 +103,7 @@
   <iframe
     bind:this={frame}
     class="pdf-frame"
-    src={link.url}
+    src={atPage(link.url, page)}
     sandbox="allow-scripts allow-same-origin"
     referrerpolicy="no-referrer"
     title={`PDF viewer: ${link.path}`}

@@ -187,7 +187,8 @@ async function open(): Promise<void> {
     else status.textContent = `No page is labelled ${labelInput.value}.`;
   });
   anchorButton.addEventListener('click', () => copyAnchor(sha256, params.workspace));
-  go(1);
+  // A page past the last opens the last (show).
+  go(params.page ?? 1);
 }
 
 // The workspace opens a PDF again with a fresh capability by changing only the fragment,

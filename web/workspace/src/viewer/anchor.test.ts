@@ -25,7 +25,19 @@ describe('the URL fragment the workspace mints', () => {
     expect(viewerParams(fragment(CAPABILITY, 'http://127.0.0.1:8200'))).toEqual({
       capability: CAPABILITY,
       workspace: 'http://127.0.0.1:8200',
+      page: null,
     });
+  });
+
+  test('names the page to open at, a number from 1, or none', () => {
+    const at = (p: string) =>
+      viewerParams(`${fragment(CAPABILITY, 'http://127.0.0.1:8200')}&p=${p}`)?.page;
+    expect(at('3')).toBe(3);
+    expect(at('0')).toBeNull();
+    expect(at('-2')).toBeNull();
+    expect(at('2.5')).toBeNull();
+    expect(at('1e3')).toBeNull();
+    expect(at('1234567')).toBeNull();
   });
 
   test.each([

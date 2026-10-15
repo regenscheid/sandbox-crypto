@@ -9,7 +9,8 @@
 import type { EntryFinding, EvidenceLink } from './api-types';
 import type { LinkTarget } from './ledger';
 import { statusText } from './ledger';
-import { documentHref, ENTRY_NAME, findingHref, ledgerEntryHref } from './router';
+import { documentHref, ENTRY_NAME, findingHref, ledgerEntryHref, pdfHref } from './router';
+import { visible } from './text';
 
 /** An evidence link's role, in words. */
 export const ROLE_WORDS: Record<EvidenceLink['role'], string> = {
@@ -89,6 +90,69 @@ export function quoteWhere(locator: Record<string, unknown> | null): string {
   }
   const named = (locator.named ?? {}) as Record<string, unknown>;
   return `, ePrint ${String(named.eprint ?? '?')} dated ${String(locator.dated)}`;
+}
+
+/** A quote evidence link as the entry view shows it (LG-8, CR-4). */
+export interface QuoteView {
+  /** The reference quoted, at the revision the quote pins, leading to it. */
+  reference: LinkTarget;
+  /**
+   * Where the quote is, each character a person may not see as its code point: a PDF's
+   * page, printed label and lines, with the start of its SHA-256, or an ePrint and the
+   * date stamp the e-print tools gave it.
+   */
+  where: string;
+  /** The PDF viewer at the quote's page, when the link names a PDF revision and its hash. */
+  pdf: string | null;
+  /** The page `pdf` opens at. */
+  page: number | null;
+  /** The quoted text exactly, each character a person may not see as its code point. */
+  text: string;
+}
+
+const count = (value: unknown): number | null =>
+  Number.isSafeInteger(value) && (value as number) >= 1 ? (value as number) : null;
+
+/** A quote evidence link's quote; null for another link. */
+export function quoteView(project: string, link: EvidenceLink): QuoteView | null {
+  if (link.target !== 'quote') return null;
+  const locator = link.locator ?? {};
+  const name = link.handle ?? link.target_id;
+  const pinned = link.revision === null ? '' : ` r${link.revision}`;
+  const reference: LinkTarget = {
+    text: `${visible(name)}${pinned}`,
+    href: ENTRY_NAME.test(name) ? ledgerEntryHref(project, name, link.revision ?? undefined) : null,
+  };
+  const text = visible(typeof locator.text === 'string' ? locator.text : '');
+  const named = (
+    typeof locator.named === 'object' && locator.named !== null ? locator.named : {}
+  ) as Record<string, unknown>;
+  if (locator.source === 'pdf') {
+    const page = count(locator.page);
+    const label = typeof locator.label === 'string' ? ` (printed ${visible(locator.label)})` : '';
+    const lines = `lines ${String(count(locator.first_line) ?? '?')}–${String(count(locator.last_line) ?? '?')}`;
+    const digest = link.sha256 === null ? '' : `, sha256 ${link.sha256.slice(0, 12)}…`;
+    const artifact = typeof named.artifact_id === 'string' ? named.artifact_id : '';
+    const revision = count(named.revision);
+    const pdf =
+      artifact !== '' &&
+      revision !== null &&
+      page !== null &&
+      link.sha256 !== null &&
+      /^[0-9a-f]{64}$/.test(link.sha256)
+        ? pdfHref(project, artifact, revision, link.sha256, page)
+        : null;
+    return {
+      reference,
+      where: `PDF page ${page ?? '?'}${label}, ${lines}${digest}`,
+      pdf,
+      page,
+      text,
+    };
+  }
+  const eprint = typeof named.eprint === 'string' ? visible(named.eprint) : '?';
+  const dated = typeof locator.dated === 'string' ? visible(locator.dated) : '?';
+  return { reference, where: `ePrint ${eprint}, dated ${dated}`, pdf: null, page: null, text };
 }
 
 /** What an evidence link is, in words: its role and type, and the revision a check examined. */
