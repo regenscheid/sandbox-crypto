@@ -393,6 +393,7 @@ class ReviewerRunner:
                 input_tokens=reply.input_tokens,
                 output_tokens=reply.output_tokens,
                 owner=self.owner,
+                cost=reply.cost,
             )
             content = reply.text or ""
             if (

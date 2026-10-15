@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import sqlite3
 import time
@@ -47,6 +48,15 @@ from .prompt_bundle import (
     encode_provenance,
 )
 from .rubric import RUBRIC_VERSION
+
+
+def _reported_cost(cost: object) -> bool:
+    """Whether ``cost`` is one the gateway could report: none, or a finite amount, not
+    negative."""
+    return cost is None or (
+        type(cost) in (int, float) and math.isfinite(cast(float, cost)) and cast(float, cost) >= 0
+    )
+
 
 # Heterogeneous evidence is JSON validated by its producing boundary and bounded here.
 Json = dict[str, Any]
@@ -1481,11 +1491,14 @@ class ReviewStore:
         input_tokens: int | None,
         output_tokens: int | None,
         owner: str,
+        cost: float | None = None,
     ) -> None:
+        """What the call used and, as the gateway reported it, cost: the project's cost
+        and its daily limit count it (run-service spec RS-6a)."""
         if any(
             value is not None and (type(value) is not int or not 0 <= value <= 1000000000)
             for value in (input_tokens, output_tokens)
-        ):
+        ) or not _reported_cost(cost):
             raise DocumentError(INVALID_REQUEST, "invalid provider usage")
         with self.documents.control.write() as tx:
             db = tx.sql
@@ -1493,13 +1506,14 @@ class ReviewStore:
             updated = db.execute(
                 (
                     "UPDATE review_calls SET "
-                    "input_tokens=?,output_tokens=?,resolved_model=?,answered=1 WHERE seq=? AND "
-                    "project=? AND review_id=? AND answered=0"
+                    "input_tokens=?,output_tokens=?,resolved_model=?,cost=?,answered=1 "
+                    "WHERE seq=? AND project=? AND review_id=? AND answered=0"
                 ),
                 (
                     input_tokens,
                     output_tokens,
                     clipped(model, 256) if model else None,
+                    cost,
                     call,
                     project,
                     review,

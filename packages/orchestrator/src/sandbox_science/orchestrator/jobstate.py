@@ -253,13 +253,16 @@ class JobState:
         model: str | None,
         input_tokens: int | None,
         output_tokens: int | None,
+        cost: float | None = None,
     ) -> None:
+        """The call's outcome, what it used and, as the gateway reported it, cost: the
+        project's cost and its daily limit count it (run-service spec RS-6a)."""
         with self.control.write() as tx:
             db = tx.sql
             db.execute(
-                """UPDATE job_watcher_calls SET outcome=?,model=?,input_tokens=?,output_tokens=?
-                WHERE id=?""",
-                (outcome, model, input_tokens, output_tokens, call),
+                """UPDATE job_watcher_calls SET outcome=?,model=?,input_tokens=?,output_tokens=?,
+                cost=? WHERE id=?""",
+                (outcome, model, input_tokens, output_tokens, cost, call),
             )
 
     def last_check(self, context: ExecutionContext, job: str) -> float | None:

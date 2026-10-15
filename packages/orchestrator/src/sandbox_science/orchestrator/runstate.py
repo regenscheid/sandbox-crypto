@@ -458,11 +458,22 @@ class RunState:
         return spent is not None and spent >= limit
 
     def model_cost(self, project: str, since: datetime | None = None) -> float | None:
-        """What MAIN's calls in the project's runs that started at ``since`` or later
-        cost, as the gateway reported it: saved records' ``usage``, and the ``assistant``
-        events of runs without a record; every run without ``since``. ``None`` when the
-        gateway reported no call's cost."""
+        """What the project's model calls cost, as the gateway reported it (RS-6a): the
+        calls of its runs that started at ``since`` or later, main and delegated, from
+        saved records' ``usage`` and the ``assistant`` events of runs without a record;
+        and the reviewer's and the job watcher's calls made at ``since`` or later (lab
+        40, B5). Every call without ``since``. ``None`` when the gateway reported no
+        call's cost."""
         total, priced = self._usage(project, since, "json_extract(u, '$.cost')")
+        after = 0.0 if since is None else since.timestamp()
+        with self.control.read() as tx:
+            for table, made in (("review_calls", "created"), ("job_watcher_calls", "requested_at")):
+                cost, count = tx.sql.execute(
+                    f"SELECT coalesce(sum(cost), 0), count(cost) FROM {table} "  # noqa: S608
+                    f"WHERE project = ? AND {made} >= ?",
+                    (project, after),
+                ).fetchone()
+                total, priced = total + cost, priced + count
         return float(total) if priced else None
 
     def _usage(self, project: str, since: datetime | None, value: str) -> tuple[float, int]:

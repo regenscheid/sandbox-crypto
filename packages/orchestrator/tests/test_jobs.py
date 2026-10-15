@@ -37,6 +37,7 @@ from sandbox_science.orchestrator.model import (
     ToolCall,
     ToolSpec,
 )
+from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.watcher_prompt import assemble_watcher
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
@@ -194,6 +195,7 @@ async def test_watcher_fine_then_attention_resumes_same_turn(tmp_path: Path) -> 
                 model="small",
                 input_tokens=12,
                 output_tokens=5,
+                cost=0.002,
             ),
             ModelTurn('{"state":"needs_attention","note":"Output stopped"}', model="small"),
         ]
@@ -227,9 +229,12 @@ async def test_watcher_fine_then_attention_resumes_same_turn(tmp_path: Path) -> 
     assert calls[0]["alias"] == "watcher"
     with sqlite3.connect(store_path(tmp_path)) as db:
         rows = db.execute(
-            "SELECT alias,model,input_tokens,output_tokens FROM job_watcher_calls"
+            "SELECT alias,model,input_tokens,output_tokens,cost FROM job_watcher_calls"
         ).fetchall()
-    assert rows[0] == ("watcher", "small", 12, 5)
+    assert rows == [("watcher", "small", 12, 5, 0.002), ("watcher", "small", None, None, None)]
+    # The project's cost counts the watcher's calls, as the gateway priced them (lab 40, B5).
+    assert RunState(state.control).model_cost("p") == 0.002
+    assert RunState(state.control).model_cost("p", clock.now() + timedelta(hours=1)) is None
     assert state.watcher_provenance(CONTEXT, 1).provenance == expected
     assert state.watcher_provenance(CONTEXT, 2).provenance == expected
 

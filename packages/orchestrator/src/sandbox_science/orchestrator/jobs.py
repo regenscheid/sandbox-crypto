@@ -591,11 +591,12 @@ class JobTools:
         resolved: str | None = None
         input_tokens: int | None = None
         output_tokens: int | None = None
+        cost: float | None = None
         try:
             async with asyncio.timeout(self.watcher_timeout):
                 reply = await self.watcher.complete(watcher_input.messages(), ())
             resolved = reply.model
-            input_tokens, output_tokens = reply.input_tokens, reply.output_tokens
+            input_tokens, output_tokens, cost = reply.input_tokens, reply.output_tokens, reply.cost
             if reply.tool_calls or reply.text is None or len(reply.text) > 1200:
                 raise ValueError("watcher returned tools, no text, or an oversized answer")
             answer = WatcherAnswer.model_validate_json(reply.text)
@@ -607,6 +608,7 @@ class JobTools:
                 resolved,
                 input_tokens,
                 output_tokens,
+                cost,
             )
             # Failure wakes the main agent; the watcher never takes action on its own.
             current = asyncio.current_task()
@@ -620,6 +622,7 @@ class JobTools:
             resolved,
             input_tokens,
             output_tokens,
+            cost,
         )
         value: dict[str, object] = {
             "job_id": execution.execution_id,

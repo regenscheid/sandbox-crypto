@@ -10,6 +10,7 @@ import sqlite3
 import threading
 import tracemalloc
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 
 import pytest
 
@@ -33,6 +34,7 @@ from sandbox_science.orchestrator.model import (
     ToolSpec,
 )
 from sandbox_science.orchestrator.projects import ProjectStore
+from sandbox_science.orchestrator.runstate import RunState
 
 
 @pytest.fixture
@@ -401,3 +403,36 @@ async def test_invalid_installed_capability_or_missing_model_never_reserves(
     ).run()
     assert model.requests == []
     assert reviews.run("p", "s", review)["calls"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_reviewer_calls_cost_counts_in_the_projects_cost(store):
+    """Lab 40, B5: the reviewer's calls were left out of the project's cost and its daily
+    limit. The gateway's price for each is kept with the call, and counted."""
+    reviews, documents, review = store
+
+    class Priced:
+        async def complete(self, messages, tools):
+            return ModelTurn(
+                '{"outcome":"passed","summary":"Checked.","cap_reached":false}',
+                model="actual",
+                input_tokens=900,
+                output_tokens=40,
+                cost=0.25,
+            )
+
+    await ReviewerRunner(reviews, "p", "s", review, "owner", Priced()).run()
+    with documents.control.read() as tx:
+        (cost,) = tx.sql.execute("SELECT cost FROM review_calls").fetchone()
+    assert cost == 0.25
+    runs = RunState(documents)
+    assert runs.model_cost("p") == 0.25
+    assert runs.model_cost("q") is None  # another project's
+    # The call was made at the store's clock, 1,000 s after the epoch.
+    assert runs.model_cost("p", datetime.fromtimestamp(1000, UTC)) == 0.25
+    assert runs.model_cost("p", datetime.fromtimestamp(1001, UTC)) is None
+    with pytest.raises(DocumentError, match="invalid provider usage"):
+        reviews.call_usage(
+            "p", "s", review, 1, model=None, input_tokens=1, output_tokens=1, owner="owner",
+            cost=float("nan"),
+        )  # fmt: skip
