@@ -31,7 +31,12 @@ from pydantic import Field, JsonValue, ValidationError, field_validator
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, Identifier
 from sandbox_science.contracts.model import Contract
 from sandbox_science.orchestrator.control import ControlError, ControlStore
-from sandbox_science.orchestrator.control.errors import INVALID_REQUEST, NOT_FOUND
+from sandbox_science.orchestrator.control.errors import (
+    CONFLICT,
+    INVALID_REQUEST,
+    NOT_FOUND,
+    UNAVAILABLE,
+)
 from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.runstate import close_events
 
@@ -57,6 +62,16 @@ _COLUMNS: Final = (
     "read_proofs, files"
 )
 _JSON: Final = ("brief", "result", "errors", "models", "files")
+_OFFERED: Final = (
+    "(d.parent = ? OR (? IS NULL AND NOT EXISTS (SELECT 1 FROM delegations AS p "
+    "WHERE p.project_id = d.project_id AND p.session_id = d.session_id AND p.run = d.parent)))"
+)
+"""The delegations whose outcomes go to a run (PD-35): ``parent``'s, or without it those
+a main run started, which the session's main runs take; one parameter, twice."""
+_ON_TRACK: Final = (
+    "SELECT delegation_id FROM delegations WHERE project_id = ? AND session_id = ? "
+    "AND ended IS NULL AND json_extract(brief, '$.track.track_id') = ?"
+)
 
 
 MAX_MODELS: Final = 10
@@ -194,13 +209,25 @@ class DelegationRecords:
             )
             return found
 
-    def start(self, project: str, session: str, delegation: Delegation) -> None:
-        """Write a delegation as its parent starts it."""
+    def start(
+        self, project: str, session: str, delegation: Delegation, *, cap: int | None = None
+    ) -> None:
+        """Write a delegation as its parent starts it. The bounds are checked in the same
+        statement that writes it, so that two parents starting at once cannot pass them
+        both: with ``cap``, it is refused (``limit_reached``) while ``cap`` of the
+        session's delegations run, at any level (PD-38); and a task on a track is refused
+        (``track_busy``) while another of the session's delegations runs on it (PD-9)."""
+        found = delegation.brief.get("track")
+        track = cast(dict[str, object], found).get("track_id") if isinstance(found, dict) else None
         with self.control.write() as tx:
+            db = tx.sql
             try:
-                tx.sql.execute(
-                    "INSERT INTO delegations (delegation_id, project_id, session_id, parent, "
-                    "run, kind, brief, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                written = db.execute(
+                    "INSERT INTO delegations (delegation_id, project_id, session_id, parent, "  # noqa: S608
+                    "run, kind, brief, started_at) SELECT ?, ?, ?, ?, ?, ?, ?, ? "
+                    "WHERE (? IS NULL OR (SELECT count(*) FROM delegations WHERE project_id = ? "
+                    "AND session_id = ? AND ended IS NULL) < ?) "
+                    f"AND (? IS NULL OR NOT EXISTS ({_ON_TRACK}))",
                     (
                         delegation.delegation_id,
                         project,
@@ -210,10 +237,31 @@ class DelegationRecords:
                         delegation.kind,
                         _json(delegation.brief),
                         delegation.started_at.astimezone(UTC).isoformat(),
+                        cap,
+                        project,
+                        session,
+                        cap,
+                        track,
+                        project,
+                        session,
+                        track,
                     ),
-                )
+                ).rowcount
             except sqlite3.IntegrityError as error:
                 raise ControlError(INVALID_REQUEST, f"the delegation is refused: {error}") from None
+            if written == 1:
+                return
+            busy = db.execute(_ON_TRACK, (project, session, track)).fetchone()
+        if busy is not None:
+            raise ControlError(
+                CONFLICT,
+                f"track_busy: delegation {busy[0]} works on track {track!r}; a track has one "
+                "running task at most",
+            )
+        raise ControlError(
+            UNAVAILABLE,
+            f"limit_reached: {cap} delegated runs are running in this session; wait for one to end",
+        )
 
     def end(self, project: str, session: str, delegation_id: str, ending: Ending) -> Delegation:
         """Write a delegation's outcome; one written already stands, and is returned.
@@ -322,9 +370,7 @@ class DelegationRecords:
         with self.control.read() as tx:
             rows = tx.sql.execute(
                 f"SELECT {_COLUMNS} FROM delegations AS d WHERE project_id = ? AND session_id = ? "  # noqa: S608
-                "AND acknowledged IS NULL AND ended IS NOT NULL AND (parent = ? OR (? IS NULL "
-                "AND NOT EXISTS (SELECT 1 FROM delegations AS p WHERE p.project_id = d.project_id "
-                "AND p.session_id = d.session_id AND p.run = d.parent))) "
+                f"AND acknowledged IS NULL AND ended IS NOT NULL AND {_OFFERED} "
                 "ORDER BY ended_at, delegation_id LIMIT ?",
                 (project, session, parent, parent, PAGE),
             ).fetchall()
@@ -341,13 +387,24 @@ class DelegationRecords:
             ).fetchall()
         return [run for (run,) in rows]
 
-    def acknowledge(self, project: str, session: str, ids: Sequence[str], run: str) -> None:
-        """Mark ended delegations' outcomes received by ``run``, once its record is saved."""
+    def acknowledge(
+        self,
+        project: str,
+        session: str,
+        ids: Sequence[str],
+        run: str,
+        *,
+        parent: str | None = None,
+    ) -> None:
+        """Mark ended delegations' outcomes received by ``run``, once its record is saved:
+        only those ``handbacks`` offers it, ``parent``'s or without it a main run's, so
+        that a run that read another's outcome does not take it from that run (PD-35)."""
         with self.control.write() as tx:
             tx.sql.executemany(
-                "UPDATE delegations SET acknowledged = ? WHERE project_id = ? AND session_id = ? "
-                "AND delegation_id = ? AND ended IS NOT NULL AND acknowledged IS NULL",
-                [(run, project, session, delegation_id) for delegation_id in ids],
+                "UPDATE delegations AS d SET acknowledged = ? WHERE d.project_id = ? "  # noqa: S608
+                "AND d.session_id = ? AND d.delegation_id = ? AND d.ended IS NOT NULL "
+                f"AND d.acknowledged IS NULL AND {_OFFERED}",
+                [(run, project, session, delegation_id, parent, parent) for delegation_id in ids],
             )
 
 

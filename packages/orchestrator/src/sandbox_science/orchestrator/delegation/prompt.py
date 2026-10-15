@@ -151,8 +151,10 @@ def task_text(
         )
     if delegate:
         parts.append(
-            "You may delegate tasks of your own with delegate, once more: your children "
-            "delegate no further, and you cannot give your final answer while they run."
+            "You may delegate tasks of your own with delegate, once more: tasks on no "
+            "track, each with at most the tokens you have left. Your children delegate no "
+            "further; you wait on and read only your own; and you cannot give your final "
+            "answer while they run."
         )
     if issue is not None:
         parts.append(

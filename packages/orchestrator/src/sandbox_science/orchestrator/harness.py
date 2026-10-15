@@ -50,7 +50,7 @@ from .consistency.models import ReviewConfig
 from .consistency.store import ReviewStore
 from .delegation import prompt as delegated_prompt
 from .delegation.fence import ChildFence
-from .delegation.hook import Child, ChildEnd, Delegations
+from .delegation.hook import Child, ChildEnd, Deadline, Delegations
 from .delegation.models import ModelChoice
 from .delegation.outcome import Outcome, Target, result_of
 from .delegation.records import DelegationRecords
@@ -235,6 +235,9 @@ class RunRequest:
     ``None`` for a child of the root, whose parent is it."""
     may_delegate: bool = False
     """For a delegated task, whether it may delegate tasks once more (PD-15)."""
+    stop_by: Deadline | None = None
+    """For a delegated run, when its end must have stopped its own children, which its
+    parent sets as it cancels it (PD-39)."""
 
     @property
     def queued(self) -> bool:
@@ -594,7 +597,8 @@ class Harness:
     ) -> Delegations | None:
         """A main run's delegations: their handbacks always, and the delegate tools when
         its project lets its runs delegate (PD-33, PD-35); and a delegated task's own, when
-        its main run let it delegate once more (PD-15)."""
+        its main run let it delegate once more (PD-15): tasks on no track, whose tokens are
+        carved from what it has left."""
         stores, context, clock = self.stores, admitted.context, self.clock
         request = admitted.request
         if stores is None or (request.parent is not None and not request.may_delegate):
@@ -626,8 +630,14 @@ class Harness:
                 self.gateway.aliases if self.gateway is not None else None,
                 self.gateway.tool_calling if self.gateway is not None else None,
             ),
-            track_grant=functools.partial(_track_grant, SessionPlans(stores.documents), context),
+            track_grant=(
+                functools.partial(_track_grant, SessionPlans(stores.documents), context)
+                if depth == 0
+                else None
+            ),
             depth=depth,
+            tokens=request.tokens if depth > 0 else None,
+            stop_by=request.stop_by,
             clock=clock,
         )
 
@@ -654,6 +664,7 @@ class Harness:
             track=child.track,
             root=parent.request.root or parent.request.parent,
             may_delegate=child.delegate,
+            stop_by=child.deadline,
         )
         admitted = dataclasses.replace(
             parent, request=request, run_id=child.run_id, started_at=child.started_at
