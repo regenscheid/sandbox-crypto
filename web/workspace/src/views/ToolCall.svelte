@@ -1,10 +1,11 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!--
   One tool call: its arguments, and the result the model read, all as plain text, with
-  bidirectional controls shown as code points (text.ts, `visible`).
+  hidden characters shown as code points (text.ts, `visible`); program output drops
+  terminal colour sequences and reads a carriage return as a line end (`visibleOutput`).
 -->
 <script lang="ts">
-  import { visible } from '../lib/text';
+  import { visible, visibleOutput } from '../lib/text';
   import { argumentFields, describeResult, type ToolStep } from '../lib/transcript';
 
   let { step }: { step: ToolStep } = $props();
@@ -25,7 +26,7 @@
   {#each fields as field (field.name)}
     {#if field.block}
       <p class="field-name">{visible(field.name)}</p>
-      <pre>{visible(field.text)}</pre>
+      <pre>{visibleOutput(field.text)}</pre>
     {:else}
       <p>
         <span class="field-name">{visible(field.name)}</span>
@@ -37,12 +38,12 @@
   {#if result.error}
     <p class="problem">{visible(`${result.error.kind}: ${result.error.message}`)}</p>
     {#if result.error.traceback}
-      <pre>{visible(result.error.traceback)}</pre>
+      <pre>{visibleOutput(result.error.traceback)}</pre>
     {/if}
   {/if}
   {#each result.streams as stream (stream.name)}
     <p class="field-name">{stream.name}</p>
-    <pre>{visible(stream.text)}</pre>
+    <pre>{visibleOutput(stream.text)}</pre>
   {/each}
   {#if result.notices.length > 0}
     <ul class="notices">
@@ -52,7 +53,7 @@
     </ul>
   {/if}
   {#if result.text !== null}
-    <pre>{visible(result.text)}</pre>
+    <pre>{visibleOutput(result.text)}</pre>
   {/if}
   {#if result.facts.length > 0}
     <p class="muted">{visible(result.facts.join(' · '))}</p>

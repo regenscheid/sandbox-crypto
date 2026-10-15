@@ -8,7 +8,7 @@
 <script lang="ts">
   import { linksIn, textDiff } from '../lib/approval';
   import Markdown from '../lib/Markdown.svelte';
-  import { codePoint, hiddenCharacters, parts, visible } from '../lib/text';
+  import { blankRun, chipped, codePoint, parts, visible } from '../lib/text';
 
   let {
     text,
@@ -16,11 +16,12 @@
     preview = false,
     label = 'The exact text',
   }: { text: string; before?: string | null; preview?: boolean; label?: string } = $props();
-  const count = $derived(hiddenCharacters(text).length);
+  const count = $derived(chipped(text));
   const banner = $derived(
-    `${count} ${count === 1 ? 'character' : 'characters'} you may not see, each shown as ` +
-      'its code point below.',
+    `${count} ${count === 1 ? 'character' : 'characters'} you may not see or tell apart ` +
+      'from others, each shown as its code point below.',
   );
+  const blanks = $derived(blankRun(text));
   const changes = $derived(before === null ? null : textDiff(before, text));
   const links = $derived(preview ? linksIn(text) : []);
 </script>
@@ -28,6 +29,11 @@
 <div class="approval">
   {#if count > 0}
     <p role="alert" class="banner">{banner}</p>
+  {/if}
+  {#if blanks !== null}
+    <p role="alert" class="banner">
+      More than two blank lines in a row from line {blanks}: read on to the end.
+    </p>
   {/if}
   <p class="label">{label}</p>
   <pre class="exact">{#each parts(text) as part, index (index)}{#if part.hidden}<span class="chip"
@@ -68,7 +74,10 @@
 </div>
 
 <style>
+  /* The whole text, however long, comes before what the user decides with. */
   .exact {
+    max-height: none;
+    overflow: visible;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     margin: 0.25em 0 0.75em;

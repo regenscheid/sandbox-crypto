@@ -9,8 +9,9 @@ describe('visible', () => {
     );
   });
 
-  it('leaves other text as it is', () => {
-    const text = 'x = 1 # שלום, 😀,  ';
+  it('leaves other text as it is, but spaces other than U+0020', () => {
+    const text = 'x = 1 # שלום, 😀, ';
     expect(visible(text)).toBe(text);
+    expect(visible('a\u00a0b')).toBe('a⟦U+00A0⟧b');
   });
 });

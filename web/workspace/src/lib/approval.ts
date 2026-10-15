@@ -7,6 +7,7 @@
  */
 import type { Token } from 'markdown-it';
 import { parser } from './markdown';
+import { codePoint, hiddenCharacters } from './text';
 
 export interface Change {
   kind: 'same' | 'removed' | 'added';
@@ -113,3 +114,23 @@ export function linksIn(text: string): FoundLink[] {
   }
   return found;
 }
+
+/** A character reference, of any number of digits, or named. */
+const REFERENCE = /&(?:#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]{1,31});/g;
+
+/**
+ * Each character reference a rendering shows as a hidden character, which the server
+ * refuses too: its position, in code points from 0, the first hidden character it gives
+ * (a named one can give two, such as a symbol and a variation selector), and the
+ * reference as written. Decoded as the renderer decodes a link's title.
+ */
+export function hiddenReferences(text: string): [number, string, string][] {
+  const found: [number, string, string][] = [];
+  for (const match of text.matchAll(REFERENCE)) {
+    const [first] = hiddenCharacters(parser.utils.unescapeAll(match[0]));
+    if (first) found.push([[...text.slice(0, match.index)].length, first[1], match[0]]);
+  }
+  return found;
+}
+
+export { codePoint };

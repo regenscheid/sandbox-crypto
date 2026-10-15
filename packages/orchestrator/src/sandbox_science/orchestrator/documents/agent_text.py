@@ -10,7 +10,8 @@ Default_Ignorable code point (variation selectors, the Hangul fillers and the co
 grapheme joiner among them). The zero-width joiner and non-joiner and the
 left-to-right and right-to-left marks are refused too, for now (the coordinator,
 2026-10-15; reversible). A character reference that a Markdown view would show as such a
-character (``&#x202E;``, ``&rlm;``) is refused as well. The browser marks the same set
+character (``&#x202E;``, ``&rlm;``) is refused as well, and so are more than two blank
+lines in a row, which could push what follows out of view. The browser marks the same set
 (``web/workspace/src/lib/text.ts``); ``hidden.fixtures.json`` beside it holds the set
 and the cases both sides must agree on.
 """
@@ -48,8 +49,11 @@ DEFAULT_IGNORABLE: Final = (
     (0xE0000, 0xE0FFF),
 )
 """Unicode's Default_Ignorable_Code_Point ranges, first and last, inclusive."""
-_REFERENCE: Final = re.compile(r"&(?:#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|[A-Za-z][A-Za-z0-9]{1,31});")
-"""A character reference as CommonMark reads one: decimal, hexadecimal or named."""
+_REFERENCE: Final = re.compile(r"&(?:#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]{1,31});")
+"""A character reference: decimal or hexadecimal, of any number of digits (a Markdown
+renderer decodes ``&#x0000202E;`` in a link's title), or named."""
+MAX_BLANK_LINES: Final = 2
+"""Blank lines in a row that text may hold: more could push what follows out of view."""
 
 
 def is_hidden(char: str) -> bool:
@@ -66,6 +70,29 @@ def hidden_characters(text: str) -> list[tuple[int, str]]:
     """Each hidden character's position, in characters from 0, and code point
     (``U+202E``)."""
     return [(index, _code(char)) for index, char in enumerate(text) if is_hidden(char)]
+
+
+def hidden_references(text: str) -> list[tuple[int, str, str]]:
+    """Each character reference that a rendering shows as a hidden character: its
+    position, the first hidden character it gives (a named one can give two, such as a
+    symbol and a variation selector) and the reference as written."""
+    found: list[tuple[int, str, str]] = []
+    for match in _REFERENCE.finditer(text):
+        hidden = [char for char in html.unescape(match.group()) if is_hidden(char)]
+        if hidden:
+            found.append((match.start(), _code(hidden[0]), match.group()))
+    return found
+
+
+def blank_run(text: str) -> int | None:
+    """The line, from 1, where more than ``MAX_BLANK_LINES`` blank lines in a row begin,
+    or None; a line of only spaces and tabs is blank."""
+    run = 0
+    for number, line in enumerate(text.split("\n"), 1):
+        run = run + 1 if line.strip(" \t") == "" else 0
+        if run > MAX_BLANK_LINES:
+            return number - run + 1
+    return None
 
 
 def _code(char: str) -> str:
@@ -91,12 +118,18 @@ def check_agent_text(text: str, what: str = "the text") -> None:
                 "without control, format, zero-width, bidirectional, tag, private-use, "
                 "separator or other invisible characters",
             )
-    for found in _REFERENCE.finditer(text):
-        decoded = html.unescape(found.group())
-        if len(decoded) == 1 and is_hidden(decoded):
-            raise DocumentError(
-                INVALID_REQUEST,
-                f"{what} holds {_code(decoded)} written as {found.group()} at "
-                f"{_where(text, found.start())}, a character the user may not see once "
-                "it is shown; write it without such characters",
-            )
+    for index, code, reference in hidden_references(text)[:1]:
+        raise DocumentError(
+            INVALID_REQUEST,
+            f"{what} holds {code} written as {reference} at {_where(text, index)}, a "
+            "character the user may not see once it is shown; write it without such "
+            "characters",
+        )
+    line = blank_run(text)
+    if line is not None:
+        raise DocumentError(
+            INVALID_REQUEST,
+            f"{what} has more than {MAX_BLANK_LINES} blank lines in a row from line {line}, "
+            "which can push what follows out of view; write at most "
+            f"{MAX_BLANK_LINES}",
+        )

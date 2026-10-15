@@ -15,8 +15,10 @@ from sandbox_science.orchestrator.documents.agent_text import (
     ALLOWED,
     CATEGORIES,
     DEFAULT_IGNORABLE,
+    blank_run,
     check_agent_text,
     hidden_characters,
+    hidden_references,
 )
 from sandbox_science.orchestrator.documents.errors import DocumentError
 
@@ -69,3 +71,26 @@ def test_a_reference_to_a_hidden_character_is_refused(text: str, code: str) -> N
 @pytest.mark.parametrize("text", ["a &amp; b", "&#x41;", "&lt;tag&gt;", "AT&T;", "&#x85;"])
 def test_other_references_are_text(text: str) -> None:
     check_agent_text(text)  # &#x85; is an ellipsis to HTML, as to CommonMark
+
+
+@pytest.mark.parametrize("case", FIXTURE["references"], ids=lambda case: case["name"])
+def test_the_shared_reference_cases(case: dict[str, Any]) -> None:
+    assert [list(found) for found in hidden_references(case["text"])] == case["hidden"]
+
+
+@pytest.mark.parametrize("case", FIXTURE["blank_lines"], ids=lambda case: case["name"])
+def test_the_shared_blank_line_cases(case: dict[str, Any]) -> None:
+    assert blank_run(case["text"]) == case["line"]
+    if case["line"] is None:
+        check_agent_text(case["text"])
+    else:
+        with pytest.raises(DocumentError) as refused:
+            check_agent_text(case["text"])
+        assert f"blank lines in a row from line {case['line']}" in refused.value.message
+
+
+def test_a_reference_with_leading_zeros_or_two_characters_is_refused() -> None:
+    for text, code in (("&#x0000202E;", "U+202E"), ("&#0008238;", "U+202E"), ("&caps;", "U+FE00")):
+        with pytest.raises(DocumentError) as refused:
+            check_agent_text(text)
+        assert f"holds {code} written as {text}" in refused.value.message

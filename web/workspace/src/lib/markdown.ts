@@ -53,7 +53,7 @@ import { Kept } from './kept';
 import { OutOfTime, recoveredHtml, recoverMath, repairKey, type MathRenderer } from './mathrepair';
 import type { ModelRepairs } from './modelRepairs';
 import { definesMacros } from './texDefinitions';
-import { visible } from './text';
+import { visible, visibleOutput } from './text';
 
 /** The dollar math rules; the server's mdit-py-plugins must use the same settings. */
 export const MATH_RULES: DollarMathOptions = {
@@ -314,10 +314,10 @@ function configured(documents: boolean): MarkdownIt {
   md.core.ruler.push('visible_controls', (state) => {
     for (const token of state.tokens) {
       if (token.type === 'fence' || token.type === 'code_block') {
-        token.content = visible(token.content);
+        token.content = visibleOutput(token.content);
       }
       for (const child of token.children ?? []) {
-        if (child.type === 'code_inline') child.content = visible(child.content);
+        if (child.type === 'code_inline') child.content = visibleOutput(child.content);
       }
     }
   });
