@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from sandbox_science.contracts import ArtifactRef
 from sandbox_science.contracts.artifact_inventory import MAX_ARTIFACT_BYTES
 from sandbox_science.orchestrator.artifacts import ArtifactInventory
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
@@ -79,6 +80,44 @@ async def test_a_session_or_a_run_keeps_its_own(origins, recorded) -> None:
     for bad in ("group=everything", "session=..%2Fx", "run=%20"):
         response = await workspace.get(f"/api/v0/projects/p1/artifacts?{bad}")
         assert response.status == 400, bad
+
+
+def written(inventory: ArtifactInventory, call: str, path: str, data: bytes) -> Any:
+    """A file a call wrote, recorded with its bytes (RA-27)."""
+    source = SOURCE.model_copy(update={"kind": "execution_record", "tool_call": call})
+    worker = ArtifactRef(
+        artifact_id=f"art-{call}", project_id="p1", sha256=hashlib.sha256(data).hexdigest(),
+        size=len(data), media_type="application/json", source_path=path,
+        produced_by="attempt-1", created_at=datetime.now(UTC),
+    )  # fmt: skip
+    inventory.begin(source, f"op-{call}", path, None)
+    inventory.pin(source, f"op-{call}", path, None, worker)
+    return inventory.finish(source, f"op-{call}", path, None, worker, data)
+
+
+async def test_publishing_a_file_unchanged_makes_it_a_result(origins, state_dir) -> None:
+    """Lab 38, B7: a call wrote the file, then the agent published the same bytes. The
+    publication adds no revision (RA-9), and the file is a result (RA-37). A call that
+    writes a file's bytes again does not make it one."""
+    documents = DocumentStore(store_path(state_dir))
+    inventory = ArtifactInventory(documents)
+    data = b'{"order": "8N"}'
+    first = written(inventory, "call1", "results/order.json", data)
+    receipt = publish(inventory, "op-publish", "results/order.json", data, "application/json")
+    assert receipt == first.revision  # the same revision, pinned
+    written(inventory, "call2", "notes.json", b"{}")
+    assert written(inventory, "call3", "notes.json", b"{}").reproduced
+    documents.close()
+    workspace = origins[0]
+    (result,) = await listing(workspace, "group=results")
+    assert (result["path"], result["revision"], result["result"], result["kind"]) == (
+        "sessions/a/results/order.json", 1, True, "execution_record",
+    )  # fmt: skip
+    (other,) = await listing(workspace, "group=files")
+    assert (other["path"], other["result"]) == ("sessions/a/notes.json", False)
+    assert {e["path"]: e["result"] for e in await listing(workspace, "")} == {
+        "sessions/a/results/order.json": True, "sessions/a/notes.json": False,
+    }  # fmt: skip
 
 
 @pytest.fixture

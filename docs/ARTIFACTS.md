@@ -30,6 +30,9 @@ segments. The control ID starts with `artifact-`, distinct from the worker's
 revision with a parent, SHA-256, exact size, media type and timestamp. Publishing
 the same hash/size as the current head retains that revision and appends an
 attributed `artifact.reproduced` event. Its original revision metadata stays intact.
+The publication still makes the artifact a result (RA-9, RA-37): its receipt pins that
+revision, so a file a call recorded and the agent then published unchanged is listed
+under results.
 
 `ArtifactLink(mode="latest")` resolves a head and its exact metadata in one read
 transaction. Evidence should use the returned `ArtifactRevisionRef`, whose pinned
