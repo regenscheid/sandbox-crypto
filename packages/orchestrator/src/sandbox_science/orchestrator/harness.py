@@ -230,6 +230,11 @@ class RunRequest:
     ``None`` for the delegated role's."""
     track: tuple[PlanRef, str] | None = None
     """For a task on a track, the plan version it works under and the track (PD-9)."""
+    root: str | None = None
+    """For a delegated run, its tree's root, which holds the session for it (PD-32);
+    ``None`` for a child of the root, whose parent is it."""
+    may_delegate: bool = False
+    """For a delegated task, whether it may delegate tasks once more (PD-15)."""
 
     @property
     def queued(self) -> bool:
@@ -588,12 +593,16 @@ class Harness:
         memory: Snapshot | None,
     ) -> Delegations | None:
         """A main run's delegations: their handbacks always, and the delegate tools when
-        its project lets its runs delegate (PD-33, PD-35)."""
+        its project lets its runs delegate (PD-33, PD-35); and a delegated task's own, when
+        its main run let it delegate once more (PD-15)."""
         stores, context, clock = self.stores, admitted.context, self.clock
-        if stores is None or admitted.request.parent is not None:
+        request = admitted.request
+        if stores is None or (request.parent is not None and not request.may_delegate):
             return None
         records = DelegationRecords(stores.documents, clock=clock)
         limits = await threaded(records.settings, context.project_id)
+        # A delegated task its main run allowed delegates once more (PD-15).
+        depth = 0 if request.parent is None else 1
 
         async def over_budget() -> bool:
             return await threaded(stores.runs.over_cost_limit, context.project_id, clock.now())
@@ -606,9 +615,9 @@ class Harness:
             context,
             parent=run_name(admitted.started_at, admitted.run_id),
             runner=functools.partial(self.run_child, admitted, version),
-            max_turns=self.settings.max_turns,
-            offer=limits.depth >= 1,
-            wake=chat.arrived if chat is not None else None,
+            max_turns=request.max_turns or self.settings.max_turns,
+            offer=limits.depth >= 1 + depth,
+            wake=chat.arrived if chat is not None and depth == 0 else None,
             over_budget=over_budget,
             limits=limits,
             models=ModelChoice(
@@ -618,6 +627,7 @@ class Harness:
                 self.gateway.tool_calling if self.gateway is not None else None,
             ),
             track_grant=functools.partial(_track_grant, SessionPlans(stores.documents), context),
+            depth=depth,
             clock=clock,
         )
 
@@ -642,6 +652,8 @@ class Harness:
             target=child.target,
             alias=child.alias,
             track=child.track,
+            root=parent.request.root or parent.request.parent,
+            may_delegate=child.delegate,
         )
         admitted = dataclasses.replace(
             parent, request=request, run_id=child.run_id, started_at=child.started_at
@@ -703,8 +715,8 @@ class Harness:
             prefix=1 + len(request.history) + (0 if request.queued else 1),
             parent=request.parent,
             delegation=request.delegation,
-            # A delegated run's root holds the session for it: one level, its parent.
-            holder=request.parent,
+            # A delegated run's root holds the session for it: its parent, or its parent's.
+            holder=request.root or request.parent,
             clock=self.clock,
         )
 

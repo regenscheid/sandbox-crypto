@@ -64,7 +64,7 @@ def test_a_setting_keeps_its_defaults_until_changed(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("changes", "message"),
     [
-        ({"depth": 2}, "depth"),  # depth 2 comes later (PD-43)
+        ({"depth": 3}, "depth"),  # two levels at most (PD-15)
         ({"cap": 0}, "cap"),
         ({"cap": 21}, "cap"),
         ({"check_tokens": 49_999}, "check_tokens"),
@@ -137,7 +137,7 @@ def test_the_cli_shows_and_changes_the_whole_setting(
     )
     assert cli.main([*argv, "--depth", "1", "--cap", "3", "--check-turns", "4"]) == 0
     assert capsys.readouterr().out == (
-        f"project {PROJECT}: delegation depth 1 (main runs delegate checks); at most 3 "
+        f"project {PROJECT}: delegation depth 1 (main runs delegate); at most 3 "
         "delegated runs at once; a check gets 150000 tokens and 4 turns, a task 200000 "
         "tokens and 20 turns; a brief may choose the models: none; fallback: none\n"
     )

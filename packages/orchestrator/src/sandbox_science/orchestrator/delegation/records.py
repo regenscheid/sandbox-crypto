@@ -37,9 +37,10 @@ from sandbox_science.orchestrator.runstate import close_events
 
 Ended = Literal["returned", "failed", "cancelled", "limit_reached", "interrupted"]
 """How a delegated run ended, as the harness observed it (PD-17)."""
-MAX_DEPTH: Final = 1
-"""The deepest delegation a project may allow: main runs delegate, delegated runs do not
-(PD-43: depth 2 comes once one level works)."""
+MAX_DEPTH: Final = 2
+"""The deepest delegation a project may allow: at 1 main runs delegate; at 2 a task a
+main run allows may delegate tasks once more, and its own children do not (PD-15,
+PD-43)."""
 REPORT_CHARS: Final = 16_000
 """The longest report a delegation keeps whole; the child's record keeps all of it."""
 RESULT_BYTES: Final = 32768
@@ -258,26 +259,33 @@ class DelegationRecords:
         self, project: str, session: str, *, parent: str | None = None
     ) -> list[tuple[str, str]]:
         """End a dead tree, in one transaction (PD-40): the session's delegations still
-        running, or only ``parent``'s, end ``interrupted``, and every run of the
-        session's delegations, or of ``parent``'s, that lacks its ``stopped`` event gets
+        running, or only those of ``parent``'s tree, its children's and theirs, end
+        ``interrupted``, and every run of those delegations that lacks its ``stopped`` event gets
         it (``close_events``). Called as a main run starts, when none of the session's
         delegations can be running, and when the run service ends a dead run. The IDs
         and runs of the delegations it ended."""
         now = self.clock.now().astimezone(UTC)
+        # ``parent``'s tree: its children, and theirs (PD-15), as their records name them.
+        tree = (
+            "WITH RECURSIVE tree(run) AS (SELECT ? UNION SELECT d.run FROM delegations AS d "
+            "JOIN tree AS t ON d.parent = t.run WHERE d.project_id = ? AND d.session_id = ?) "
+        )
+        values = (parent, project, session)
         with self.control.write() as tx:
             db = tx.sql
             rows = db.execute(
-                "UPDATE delegations SET ended = 'interrupted', stopped = 'interrupted', "
+                f"{tree}UPDATE delegations SET ended = 'interrupted', stopped = 'interrupted', "  # noqa: S608
                 "ended_at = ? WHERE project_id = ? AND session_id = ? AND ended IS NULL "
-                "AND (? IS NULL OR parent = ?) RETURNING delegation_id, run",
-                (now.isoformat(), project, session, parent, parent),
+                "AND (? IS NULL OR parent IN (SELECT run FROM tree)) RETURNING delegation_id, run",
+                (*values, now.isoformat(), project, session, parent),
             ).fetchall()
             unclosed = db.execute(
-                "SELECT d.run FROM delegations AS d WHERE d.project_id = ? AND d.session_id = ? "
-                "AND (? IS NULL OR d.parent = ?) AND NOT EXISTS (SELECT 1 FROM run_events AS e "
+                f"{tree}SELECT d.run FROM delegations AS d WHERE d.project_id = ? "  # noqa: S608
+                "AND d.session_id = ? AND (? IS NULL OR d.parent IN (SELECT run FROM tree)) "
+                "AND NOT EXISTS (SELECT 1 FROM run_events AS e "
                 "WHERE e.project_id = d.project_id AND e.session_id = d.session_id "
                 "AND e.run = d.run AND e.kind = 'stopped') ORDER BY d.run",
-                (project, session, parent, parent),
+                (*values, project, session, parent),
             ).fetchall()
             for (run,) in unclosed:
                 close_events(db, project, session, run, now)
@@ -305,16 +313,33 @@ class DelegationRecords:
             ).fetchall()
         return [_delegation(row) for row in reversed(rows)], int(total)
 
-    def handbacks(self, project: str, session: str) -> list[Delegation]:
-        """The session's ended delegations that no run has acknowledged, oldest first."""
+    def handbacks(
+        self, project: str, session: str, *, parent: str | None = None
+    ) -> list[Delegation]:
+        """The session's ended delegations that no run has acknowledged, oldest first:
+        ``parent``'s, or without it those a main run started, which the session's next
+        main run takes (PD-35); a delegated run's children hand back to it alone."""
         with self.control.read() as tx:
             rows = tx.sql.execute(
-                f"SELECT {_COLUMNS} FROM delegations WHERE project_id = ? AND session_id = ? "  # noqa: S608
-                "AND acknowledged IS NULL AND ended IS NOT NULL ORDER BY ended_at, delegation_id "
-                "LIMIT ?",
-                (project, session, PAGE),
+                f"SELECT {_COLUMNS} FROM delegations AS d WHERE project_id = ? AND session_id = ? "  # noqa: S608
+                "AND acknowledged IS NULL AND ended IS NOT NULL AND (parent = ? OR (? IS NULL "
+                "AND NOT EXISTS (SELECT 1 FROM delegations AS p WHERE p.project_id = d.project_id "
+                "AND p.session_id = d.session_id AND p.run = d.parent))) "
+                "ORDER BY ended_at, delegation_id LIMIT ?",
+                (project, session, parent, parent, PAGE),
             ).fetchall()
         return [_delegation(row) for row in rows]
+
+    def running(self, project: str, session: str) -> list[str]:
+        """The runs of the session's delegations still running, by their records' names:
+        one tree's, the session's lease's (PD-38)."""
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT run FROM delegations WHERE project_id = ? AND session_id = ? "
+                "AND ended IS NULL ORDER BY run",
+                (project, session),
+            ).fetchall()
+        return [run for (run,) in rows]
 
     def acknowledge(self, project: str, session: str, ids: Sequence[str], run: str) -> None:
         """Mark ended delegations' outcomes received by ``run``, once its record is saved."""

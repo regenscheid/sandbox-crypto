@@ -289,6 +289,9 @@ class Gateway:
     capable: dict[str, bool] | None = None
     """Whether each alias can call tools, as ``GET /model/info`` says; without it that
     answers 404."""
+    routed: dict[str, list[Reply]] = field(default_factory=dict[str, list[Reply]])
+    """Delegated runs' answers by a text their brief holds, for runs that call the model
+    at once, such as a child and its own child; others answer from ``delegated``."""
     listed: list[str] | None = None
     """The aliases ``GET /models`` lists; without them it answers 404, as a gateway that
     cannot list them."""
@@ -332,7 +335,11 @@ class Gateway:
         key = "delegated" if child else alias
         self.requests.setdefault(key, []).append(messages)
         self.tools.setdefault(key, []).append(cast(list[Json], body.get("tools") or []))
-        if child:
+        brief = str(messages[1].get("content", "")) if len(messages) > 1 else ""
+        routed = next((r for k, r in self.routed.items() if k in brief), None)
+        if child and routed is not None:
+            reply = routed.pop(0) if routed else Reply("(no routed script)")
+        elif child:
             reply = self.delegated.pop(0) if self.delegated else Reply("(no delegated script)")
         elif alias == "main":
             reply = self.script.pop(0) if self.script else Reply("(the script has ended)")
@@ -501,11 +508,13 @@ class Harness:
         options: Sequence[str] = (),
         delegated: Sequence[Reply] = (),
         task: str = TASK,
+        routed: dict[str, Sequence[Reply]] | None = None,
     ) -> RunRecord:
         """One ``run`` through the CLI; the record as the project keeps it. Its delegated
         runs answer from ``delegated``, in the order they call the model."""
         self.gateway.script = list(script)
         self.gateway.delegated = list(delegated)
+        self.gateway.routed = {key: list(replies) for key, replies in (routed or {}).items()}
         self.gateway.requests.clear()
         transcript = self.tmp / f"{run_id}.json"
         token, key = self.tmp / "worker.token", self.tmp / "gateway.key"
@@ -527,6 +536,7 @@ class Harness:
         assert await asyncio.to_thread(cli.main, [*argv, task]) == status
         assert not self.gateway.script, "the run ended before the script did"
         assert not self.gateway.delegated, "the delegated runs ended before their script did"
+        assert not any(self.gateway.routed.values()), "a routed script was not used up"
         record = RunRecord.model_validate_json(transcript.read_text())
         store = ProjectStore(self.state)
         kept = [store.run(PROJECT, SESSION, entry.name) for entry in store.runs(PROJECT, SESSION)]

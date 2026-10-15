@@ -55,7 +55,7 @@ from sandbox_science.orchestrator.notices import (
     DELEGATIONS_ATTACHED,
     DELEGATIONS_RUNNING,
 )
-from sandbox_science.orchestrator.projects import RunRecord, run_name
+from sandbox_science.orchestrator.projects import RunRecord, run_id_of, run_name
 from sandbox_science.orchestrator.session_plans import PlanRef
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, dump
 
@@ -96,6 +96,8 @@ class Child:
     """The model alias it calls (PD-28, PD-30); ``None`` for the delegated role's."""
     track: tuple[PlanRef, str] | None = None
     """For a task on a track, the plan version it works under and the track (PD-9)."""
+    delegate: bool = False
+    """Whether it may delegate tasks of its own, once more (PD-15)."""
 
 
 @dataclass(frozen=True)
@@ -114,6 +116,7 @@ class _Planned:
     shown: dict[str, JsonValue]
     """What ``delegate``'s answer says of it."""
     track: tuple[PlanRef, str] | None = None
+    delegate: bool = False
 
 
 @dataclass(frozen=True)
@@ -192,6 +195,7 @@ class Delegations(TurnHook):
         limits: DelegationSettings | None = None,
         models: ModelChoice | None = None,
         track_grant: Callable[[str], Awaitable[PlanRef]] | None = None,
+        depth: int = 0,
         max_chars: int = 5000,
         output_chars: int = 20000,
         clock: Clock = SYSTEM_CLOCK,
@@ -209,6 +213,9 @@ class Delegations(TurnHook):
         """The project's cap and a check's tokens and turns (PD-38)."""
         self.models = models
         """The model each child calls (PD-28, PD-30); without it, the harness's."""
+        self.depth = depth
+        """0 for a main run's delegations; 1 for a delegated task's own, which are tasks,
+        whose children delegate no further, and which hand back to it alone (PD-15)."""
         self.track_grant = track_grant
         """The plan version a task on a track works under (PD-9); without it, a task
         names no track."""
@@ -224,9 +231,16 @@ class Delegations(TurnHook):
         """Outcomes a wait returned that a model call saw."""
 
     def live(self) -> set[str]:
-        """The run IDs of the running children, whose kernels the parent's kernel check
-        leaves alone (PD-37)."""
-        return {child.run_id for child in self._running()}
+        """The run IDs of the running children, and for a main run of every delegated run
+        of its tree, grandchildren included, whose kernels its kernel check leaves alone
+        (PD-37)."""
+        found = {child.run_id for child in self._running()}
+        if self.depth == 0:
+            context = self.context
+            for run in self.records.running(context.project_id, context.session_id):
+                if (run_id := run_id_of(run)) is not None:
+                    found.add(run_id)
+        return found
 
     # --- The tools ------------------------------------------------------------------
 
@@ -242,8 +256,16 @@ class Delegations(TurnHook):
                 return await self._cancel_one(Named.model_validate(args).delegation_id)
 
     async def _delegate(self, brief: CheckBrief | TaskBrief) -> tuple[str, dict[str, Any]]:
+        if self.depth > 0 and isinstance(brief, CheckBrief):
+            raise WorkerAPIError(
+                ErrorKind.POLICY_DENIED,
+                "not_permitted_for_role: a delegated run delegates tasks, never checks",
+            )
         cap = self.limits.cap
-        if len(self._running()) >= cap:
+        context = self.context
+        running = await threaded(self.records.running, context.project_id, context.session_id)
+        # The cap is the session's tree's, counted over every level (PD-38).
+        if len({*running, *(r.delegation.run for r in self._running())}) >= cap:
             raise WorkerAPIError(
                 ErrorKind.UNAVAILABLE,
                 f"limit_reached: {cap} delegated runs are running in this session; "
@@ -286,6 +308,7 @@ class Delegations(TurnHook):
             target=planned.target,
             alias=None if choice is None else choice.alias,
             track=planned.track,
+            delegate=planned.delegate,
         )
         stop = asyncio.Event()
         task = asyncio.create_task(self._run(child, stop), name=f"delegation {delegation_id}")
@@ -356,6 +379,15 @@ class Delegations(TurnHook):
             track = (granted, brief.track)
             written["track"] = {"track_id": brief.track, "plan": granted.model_dump(mode="json")}
             shown["track"] = brief.track
+        if brief.delegate:
+            if self.depth > 0 or self.limits.depth < 2:
+                raise WorkerAPIError(
+                    ErrorKind.POLICY_DENIED,
+                    "not_permitted_for_role: only a main run's task may delegate, in a project "
+                    "whose delegation depth is 2",
+                )
+            written["delegate"] = True
+            shown["delegate"] = True
         issue = None
         if brief.issue is not None:
             found = await threaded(self.ledger.entry, self.context.project_id, brief.issue)
@@ -369,12 +401,20 @@ class Delegations(TurnHook):
         return _Planned(
             "task",
             written,
-            task_text(brief.task, brief.context, brief.inputs, track=brief.track, issue=issue),
+            task_text(
+                brief.task,
+                brief.context,
+                brief.inputs,
+                track=brief.track,
+                issue=issue,
+                delegate=brief.delegate,
+            ),
             min(self.limits.task_turns, self.max_turns, self.turns_left),
             self.limits.task_tokens,
             None,
             shown,
             track,
+            brief.delegate,
         )
 
     async def _model(self, asked: str | None) -> Choice | None:
@@ -562,9 +602,11 @@ class Delegations(TurnHook):
     @asynccontextmanager
     async def _held(self) -> AsyncGenerator[None]:
         context = self.context
-        abandoned = await threaded(self.records.abandon, context.project_id, context.session_id)
-        for delegation_id, _ in abandoned:
-            _log.warning("delegation %s lost its process: interrupted", delegation_id)
+        # A main run ends the session's dead trees; a delegated run's tree is its root's.
+        if self.depth == 0:
+            abandoned = await threaded(self.records.abandon, context.project_id, context.session_id)
+            for delegation_id, _ in abandoned:
+                _log.warning("delegation %s lost its process: interrupted", delegation_id)
         try:
             yield
         finally:
@@ -642,7 +684,12 @@ class Delegations(TurnHook):
         """The session's unacknowledged outcomes this run's conversation does not hold,
         as many as fit in ``max_chars`` as summaries."""
         context = self.context
-        found = await threaded(self.records.handbacks, context.project_id, context.session_id)
+        found = await threaded(
+            self.records.handbacks,
+            context.project_id,
+            context.session_id,
+            parent=self.parent if self.depth > 0 else None,
+        )
         held = set(run.offered.get(self.name, ())) | self.returned | self.received
         fresh: list[Delegation] = []
         for delegation in found:
