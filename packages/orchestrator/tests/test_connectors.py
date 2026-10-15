@@ -29,6 +29,7 @@ from sandbox_science.mcp_proxy.store import PolicyStore
 from sandbox_science.mcp_proxy.upstream import GuardedResolver, Upstream, client_session
 from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator.connectors import (
+    ConnectorError,
     Connectors,
     ConnectorTool,
     ProxyClient,
@@ -160,7 +161,8 @@ async def test_a_servers_tools_are_offered_under_their_own_names(
     connectors: Connectors, proxied: Proxied
 ) -> None:
     names = [spec.name for spec in connectors.specs]
-    assert names == list(proxied.fake.tools)  # the proxy lists them all; calls are checked
+    # The proxy lists every tool the policy does not deny (lab 39, B5); calls are checked.
+    assert names == [name for name in proxied.fake.tools if not name.startswith("admin_")]
     (search,) = [spec for spec in connectors.specs if spec.name == "search"]
     assert search.description.startswith("A tool of the MCP server papers, through the MCP proxy.")
     assert "(untrusted)" in search.description
@@ -181,10 +183,15 @@ async def test_an_allowed_call_answers_with_the_servers_text(
     assert "iVBORw0KGgo=" not in image  # binary content is withheld by the proxy
 
 
-async def test_a_denied_call_is_the_tools_error(connectors: Connectors, proxied: Proxied) -> None:
-    text, record = await connectors.call("admin_reset", {})
-    assert error_of(text)["kind"] == "policy_denied"
-    assert record == {"connector": "papers", "error": "policy_denied"}
+async def test_a_denied_tool_is_not_offered_and_a_call_is_refused(
+    connectors: Connectors, proxied: Proxied
+) -> None:
+    assert "admin_reset" not in connectors.tools
+    with pytest.raises(ConnectorError) as refused:
+        await connectors.client.request(
+            "papers", "tools/call", {"name": "admin_reset", "arguments": {}}, session="s-1"
+        )
+    assert refused.value.kind == "policy_denied"
     assert proxied.fake.tool_calls() == []
 
 
@@ -329,7 +336,7 @@ async def test_an_answer_longer_than_one_read_is_read_whole(proxied: Proxied) ->
         await client.close()
     assert record == {"connector": "papers"}
     assert len(text) == 2_000_000
-    assert len(connectors.specs) == len(proxied.fake.tools)
+    assert len(connectors.specs) == len(proxied.fake.tools) - 2  # not the admin_ tools
 
 
 async def test_a_call_whose_answer_is_lost_says_not_to_retry_blindly() -> None:

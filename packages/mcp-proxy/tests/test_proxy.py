@@ -418,6 +418,29 @@ async def test_a_denied_tool_never_reaches_the_server(harness: Harness) -> None:
     assert record["reason_code"] == "policy_denied"
 
 
+async def test_a_listing_leaves_out_the_tools_the_policy_denies(harness: Harness) -> None:
+    """Lab 39, B5: the agent is offered no tool it can never call. Escalated tools stay,
+    and so do those the default leaves to the operator; the proxy still knows them all."""
+    harness.fake.page_size = 4
+    session = await harness.initialize()
+    listed: list[str] = []
+    cursor = None
+    while True:
+        page = await harness.call(session, "tools/list", {"cursor": cursor} if cursor else None)
+        result = page.body["result"]
+        listed += [tool["name"] for tool in result["tools"]]
+        cursor = result.get("nextCursor")
+        if cursor is None:
+            break
+    assert listed == [name for name in harness.fake.tools if not name.startswith("admin_")]
+    assert {"crawl", "misc"} <= set(listed)  # escalated, and left to the default
+    lists = [r for r in harness.sink.kinds("mcp-call") if r["method"] == "tools/list"]
+    counts = [r.get("stream", {}).get("denied_tools") for r in lists]
+    assert sum(c for c in counts if c) == 2  # admin_search and admin_reset, on page 2
+    # A left-out tool is refused as before: the listing did not change the decision.
+    assert reason(await harness.tool(session, "admin_reset")) == "policy_denied"
+
+
 async def test_an_escalated_tool_is_held_and_recorded_as_pending(harness: Harness) -> None:
     session = await harness.initialize()
     answer = await harness.tool(session, "crawl", {"url": "https://example.org/secret-ish"})

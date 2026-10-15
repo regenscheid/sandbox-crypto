@@ -584,10 +584,41 @@ class McpProxy:
                 session.tools.page(cursor if isinstance(cursor, str) else None, names, next_cursor)
             except (MessageError, ValueError) as exc:
                 raise UpstreamError(UPSTREAM_ERROR, str(exc)) from exc
+            result = self._callable(call, loaded, result)
         result, withheld = withhold_binary(message.method, result)
         if withheld:
             call.stream["withheld_binary"] = withheld
         return _server_answer(jsonrpc.result(message.id, result))
+
+    def _callable(self, call: Call, loaded: LoadedPolicy, result: JsonObject) -> JsonObject:
+        """A ``tools/list`` page without the tools the caller's policy denies, judged as
+        a call by name alone, so an agent is not offered what it can never call (lab 39,
+        B5). Escalated tools stay: they ask the operator. The proxy's own record of the
+        server's tools keeps them all, and a call to a left-out tool is still refused."""
+        tools = result.get("tools")
+        if not isinstance(tools, list):
+            return result
+        kept: list[object] = []
+        denied = 0
+        for tool in cast("list[object]", tools):
+            name = _tool_name(tool)
+            if isinstance(name, str):
+                message = jsonrpc.request(0, "tools/call", {"name": name, "arguments": {}})
+                decision = evaluate_mcp_message(
+                    call.server,
+                    message,
+                    loaded,
+                    origin=call.caller.kind,
+                    ceiling=self._ceiling,
+                    floor=self._floor,
+                )
+                if decision.action is Action.DENY:
+                    denied += 1
+                    continue
+            kept.append(tool)
+        if denied:
+            call.stream["denied_tools"] = denied
+        return {**result, "tools": kept}
 
     async def _notify(
         self, call: Call, server: McpServer, session: Session, message: Notification
@@ -901,6 +932,11 @@ def _answer(
         content_type="application/json",
         headers=headers,
     )
+
+
+def _tool_name(tool: object) -> object:
+    """A listed tool's name, as the server gave it."""
+    return cast("JsonObject", tool).get("name") if isinstance(tool, dict) else None
 
 
 def _server_answer(payload: JsonObject, headers: Mapping[str, str] | None = None) -> web.Response:
