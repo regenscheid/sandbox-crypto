@@ -407,6 +407,8 @@ async def test_actual_cli_keeps_selected_input_and_safe_failed_record(
         reviewer_model=None,
         math_node=None,
         watcher_calls_per_hour=1,
+        review_token_budget=400000,
+        review_calls_per_hour=240,
         watcher_first_check=1,
         watcher_interval=1,
         task=INJECTION,

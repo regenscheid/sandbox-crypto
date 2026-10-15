@@ -44,6 +44,7 @@ from .artifacts import ArtifactInventory
 from .chat import EventLog, RunChat, UserMessages
 from .connectors import Connectors, ProxyClient
 from .consistency.controller import ReviewController
+from .consistency.models import ReviewConfig
 from .consistency.store import ReviewStore
 from .documents import DocumentError, DocumentStore, DocumentTool
 from .file_settings import ProjectFiles
@@ -140,6 +141,16 @@ class Settings:
     watcher_calls_per_hour: int = 60
     watcher_first_check: float = 300
     watcher_interval: float = 1800
+    review_token_budget: int = ReviewConfig().token_budget
+    """The tokens one consistency review may use, over all its calls."""
+    review_calls_per_hour: int = ReviewConfig().calls_per_hour
+    """The reviewer calls a project may make in an hour."""
+
+    def reviews(self) -> ReviewConfig:
+        """The review settings of a project that has none of its own."""
+        return ReviewConfig(
+            token_budget=self.review_token_budget, calls_per_hour=self.review_calls_per_hour
+        )
 
 
 @dataclass(frozen=True)
@@ -535,7 +546,7 @@ class Harness:
         )
         inventory = ArtifactInventory(stores.documents)
         reviews = ReviewController(
-            ReviewStore(stores.documents, artifacts=inventory),
+            ReviewStore(stores.documents, artifacts=inventory, defaults=self.settings.reviews()),
             context,
             run_id=run_id,
             model=reviewer.model if reviewer is not None else None,

@@ -7,7 +7,7 @@ import asyncio
 import contextlib
 import json
 import math
-from typing import Literal
+from typing import Final, Literal
 
 from pydantic import Field, ValidationError
 
@@ -21,7 +21,7 @@ from .findings import Findings
 from .models import ReviewConfig, ReviewerFinish
 from .prompt_bundle import assemble_reviewer
 from .rubric import RUBRIC, RUBRIC_VERSION
-from .store import Json, ReviewStore, clipped, dump, text
+from .store import MANIFEST_PAGE, Json, ReviewStore, clipped, dump, text
 
 
 class Read(Contract):
@@ -33,7 +33,13 @@ class Read(Contract):
 
 class Manifest(Contract):
     after: int = Field(default=0, ge=0, le=1000000, strict=True)
-    limit: int = Field(default=10, ge=1, le=20, strict=True)
+    limit: int = Field(default=MANIFEST_PAGE, ge=1, le=1000, strict=True)
+    """A larger page is the largest one; the answer says where the next begins."""
+
+
+TURN_CALLS: Final = 16
+"""The tool calls of one turn the reviewer's are answered; the rest are not run, and it is
+told so (lab 38: a turn of more failed the review)."""
 
 
 class Checked(Contract):
@@ -57,13 +63,14 @@ def schema(name: str, description: str, properties: Json, required: list[str]) -
 SPECS = (
     schema(
         "review_manifest",
-        "List the immutable snapshot evidence, in pages.",
+        f"List the immutable snapshot evidence, in pages of up to {MANIFEST_PAGE}.",
         {"after": {"type": "integer"}, "limit": {"type": "integer"}},
         [],
     ),
     schema(
         "review_read",
-        "Read a bounded slice of one pinned item; documents may name a block.",
+        "Read a bounded slice of one pinned item; documents may name a block. Read up to "
+        f"{TURN_CALLS} items in one turn.",
         {
             "evidence": {"type": "string"},
             "start": {"type": "integer"},
@@ -167,7 +174,7 @@ class ReviewerRunner:
                         self.session,
                         self.review,
                         after=value.after,
-                        limit=value.limit,
+                        limit=min(value.limit, MANIFEST_PAGE),
                     )
                 elif call.name == "review_read":
                     read = Read.model_validate(raw)
@@ -267,7 +274,10 @@ class ReviewerRunner:
                 await self._loop()
         except TimeoutError:
             await self._finish(
-                "capped", "The review time budget ended; recorded findings are retained.", cap=True
+                "capped",
+                f"The review's time budget ended: {self.config.time_seconds:g} seconds"
+                f"{await self._calls()}. Recorded findings are retained.",
+                cap=True,
             )
         except asyncio.CancelledError:
             await self._finish("dropped", "The live reviewer task ended before a durable outcome.")
@@ -310,7 +320,9 @@ class ReviewerRunner:
             if len(encoded) > self.config.max_input_chars:
                 await self._finish(
                     "capped",
-                    "The review context budget ended; recorded findings are retained.",
+                    f"The review's context reached {len(encoded):,} characters, over its "
+                    f"{self.config.max_input_chars:,}-character bound{await self._calls()}. "
+                    "Recorded findings are retained.",
                     cap=True,
                 )
                 return
@@ -327,11 +339,10 @@ class ReviewerRunner:
                 prompt_provenance=bundle.provenance,
             )
             if reservation is None:
-                await self._finish(
-                    "capped",
-                    "The reviewer call/token budget ended; recorded findings are retained.",
-                    cap=True,
+                why = await threaded(
+                    self.store.refusal, self.project, self.session, self.review, estimate
                 )
+                await self._finish("capped", why + " Recorded findings are retained.", cap=True)
                 return
             await threaded(self.store.renew, self.project, self.session, self.review, self.owner)
             reply = await self.model.complete(messages, SPECS)
@@ -349,10 +360,16 @@ class ReviewerRunner:
             content = reply.text or ""
             if (
                 len(content) > self.config.max_output_chars
-                or len(reply.tool_calls) > 16
                 or sum(len(c.arguments) for c in reply.tool_calls) > 128000
             ):
-                await self._finish("failed", "The reviewer response exceeded its bound.")
+                await self._finish(
+                    "failed",
+                    "The reviewer's answer exceeded its bound: "
+                    f"{len(content):,} characters of text, at most "
+                    f"{self.config.max_output_chars:,}, and "
+                    f"{sum(len(c.arguments) for c in reply.tool_calls):,} of tool arguments, "
+                    "at most 128,000.",
+                )
                 return
             assistant: Message = {"role": "assistant", "content": content}
             if reply.tool_calls:
@@ -379,9 +396,23 @@ class ReviewerRunner:
                 owner=self.owner,
             )
             if reply.tool_calls:
-                for call in reply.tool_calls:
+                for call in reply.tool_calls[:TURN_CALLS]:
                     messages.append(
                         {"role": "tool", "tool_call_id": call.id, "content": await self.tool(call)}
+                    )
+                for call in reply.tool_calls[TURN_CALLS:]:
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call.id,
+                            "content": dump(
+                                {
+                                    "error": "not_run",
+                                    "message": f"Only the first {TURN_CALLS} tool calls of a "
+                                    "turn run; make this one again in your next turn.",
+                                }
+                            ),
+                        }
                     )
                 continue
             try:
@@ -433,8 +464,16 @@ class ReviewerRunner:
             await self._finish(outcome, finish.summary, cap=finish.cap_reached)
             return
         await self._finish(
-            "capped", "The reviewer turn budget ended; recorded findings are retained.", cap=True
+            "capped",
+            f"The review's call limit was reached: {self.config.max_turns} calls without an "
+            "outcome. Recorded findings are retained.",
+            cap=True,
         )
+
+    async def _calls(self) -> str:
+        """``, after N calls`` for a summary."""
+        calls = (await threaded(self.store.run, self.project, self.session, self.review))["calls"]
+        return f", after {calls} {'call' if calls == 1 else 'calls'}"
 
     async def _finish(
         self,

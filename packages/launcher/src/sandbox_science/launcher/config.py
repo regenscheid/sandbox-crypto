@@ -114,6 +114,11 @@ class ModelConfig(_Strict):
     api_key_file: ConfigPath
     reviewer: str | None = Field(default=None, min_length=1)
     """The reviewer's alias, for reviews and the workspace's math repairs; none by default."""
+    review_token_budget: int | None = Field(default=None, ge=1024, le=4000000)
+    """The tokens one consistency review may use; the run service's default when unset."""
+    review_calls_per_hour: int | None = Field(default=None, ge=1, le=10000)
+    """The reviewer calls a project may make in an hour; the run service's default when
+    unset."""
 
     @field_validator("url")
     @classmethod

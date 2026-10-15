@@ -55,15 +55,19 @@ describe('what the reviews panel says', () => {
   });
   it('says what a review covered, and what it used', () => {
     expect(coverageText(review())).toBe(
-      'Covered feed entries 4 to 9; coverage complete within the available evidence; the finding cap was not reached.',
+      'Covered feed entries 4 to 9; coverage complete within the available evidence; no limit was reached.',
     );
     expect(
       coverageText(review({ kind: 'confirmation', cap_reached: 1, coverage_complete: 0 })),
-    ).toBe(
-      'Covered the pinned finding and its fix; coverage incomplete; the finding cap was reached.',
-    );
+    ).toBe('Covered the pinned finding and its fix; coverage incomplete; a limit was reached.');
     expect(usageText(review())).toBe(
-      'Reviewed by model-r (alias reviewer) with rubric r2: 1 model call, 1200 input and 80 output tokens (4000 reserved).',
+      'Reviewed by model-r (alias reviewer) with rubric r2: 1 model call, 1200 input and 80 output tokens (4000 counted against its budget).',
+    );
+    const limits = { token_budget: 400000, calls_per_hour: 240, max_turns: 24, time_seconds: 300 };
+    expect(usageText(review({ calls: 7, config: limits, estimated_tokens: 39988 }))).toBe(
+      'Reviewed by model-r (alias reviewer) with rubric r2: 7 model calls of at most 24, ' +
+        '1200 input and 80 output tokens; 39988 of its 400000-token budget counted, in at ' +
+        "most 300 s. The project's reviewer makes at most 240 calls an hour.",
     );
   });
   it('says where evidence points, for each kind of locator', () => {
@@ -118,8 +122,8 @@ describe('what the reviews panel says', () => {
 });
 
 describe('what the reviews panel says, after review', () => {
-  it('says a capped review may have hit the finding cap, and whether a failed window is retried', () => {
-    expect(outcomeText('capped')).toMatch(/budget or its finding cap/);
+  it('says a capped review ended at a limit its summary names, and whether a failed window is retried', () => {
+    expect(outcomeText('capped')).toMatch(/a limit ended it, which its summary names/);
     expect(outcomeText('failed')).toBe(
       'failed: reviewer error; its window is due to be reviewed again',
     );

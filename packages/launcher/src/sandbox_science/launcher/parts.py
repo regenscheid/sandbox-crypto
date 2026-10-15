@@ -160,6 +160,10 @@ def harness_argv(config: LauncherConfig, layout: Layout) -> list[str]:
     """The run service: it starts the runs the workspace's chat asks for."""
     model = config.model
     reviewer = ["--reviewer-model", model.reviewer] if model.reviewer else []
+    if model.review_token_budget is not None:
+        reviewer += ["--review-token-budget", str(model.review_token_budget)]
+    if model.review_calls_per_hour is not None:
+        reviewer += ["--review-calls-per-hour", str(model.review_calls_per_hour)]
     return [
         str(commands(config) / HARNESS), "serve",
         "--state-dir", str(layout.control),
