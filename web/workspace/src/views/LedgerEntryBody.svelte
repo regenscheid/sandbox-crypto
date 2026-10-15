@@ -1,7 +1,8 @@
 <!-- SPDX-License-Identifier: MIT -->
-<!-- One ledger entry at a revision, as read (docs/specs/ledger.md, LG-1, LG-5): its
-     statement, with its math, its own fields, the links it holds and those other entries
-     hold to it, each leading where it points. All of it is shown as text, the statement
+<!-- One ledger entry at a revision, as read (docs/specs/ledger.md, LG-1, LG-5, LG-8,
+     LG-25): its statement, with its math, its own fields, its evidence, the review
+     findings anchored to it, the links it holds and those other entries hold to it, each
+     leading where it points. All of it is shown as text, the statement
      through the Markdown component. -->
 <script lang="ts">
   import type { EntryView } from '../lib/api-types';
@@ -9,6 +10,8 @@
   import { formatTime } from '../lib/format';
   import { authorText, fieldRows, linksByKind, statusText, TYPE_NAME } from '../lib/ledger';
   import { ledgerEntryHref } from '../lib/router';
+  import LedgerEvidence from './LedgerEvidence.svelte';
+  import LedgerFindings from './LedgerFindings.svelte';
   import LedgerIncoming from './LedgerIncoming.svelte';
   import LedgerLinks from './LedgerLinks.svelte';
 
@@ -57,6 +60,9 @@
     {/each}
   </dl>
 {/if}
+
+<LedgerEvidence {projectId} {entry} />
+<LedgerFindings {projectId} findings={entry.findings} />
 
 <h2>Links</h2>
 {#if entry.links.length}

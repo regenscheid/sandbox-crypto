@@ -8,7 +8,7 @@ import IssueRow from '../views/IssueRow.svelte';
 import LedgerEntryBody from '../views/LedgerEntryBody.svelte';
 import LedgerLinks from '../views/LedgerLinks.svelte';
 import { api } from './api';
-import type { EntryLink, EntryView } from './api-types';
+import type { EntryFinding, EntryLink, EntryView, EvidenceLink } from './api-types';
 import { incomingLinks, incomingState, linksByKind, uniqueLinks } from './ledger';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -55,6 +55,47 @@ function inspect(html: string): { hrefs: string[]; hostile: boolean } {
   return { hrefs, hostile };
 }
 
+/** An entry whose every field an agent could write is hostile. */
+function hostileEntry(fields: Partial<EntryView> = {}): EntryView {
+  return {
+    entry_id: 'entry-0123456789abcdef01234567',
+    handle: 'C-1',
+    type: 'claim',
+    origin: 'project',
+    revision: 2,
+    head: 2,
+    title: HOSTILE,
+    status: HOSTILE,
+    updated: HOSTILE,
+    statement: [
+      HOSTILE,
+      '[a](javascript:alert(1))',
+      '[a](JaVaScRiPt:alert(1))',
+      '[a](&#106;avascript:alert(1))',
+      '[a](data:text/html;base64,PHNjcmlwdD4=)',
+      '<javascript:alert(1)>',
+      '$\\href{javascript:alert(1)}{x}$',
+    ].join('\n\n'),
+    fields: {
+      [HOSTILE]: HOSTILE,
+      kind: HOSTILE,
+      conditions: { [HOSTILE]: HOSTILE },
+      pdf: { artifact_id: HOSTILE, revision: 1, sha256: 'ab'.repeat(32) },
+    },
+    asserted_only: false,
+    open_flags: 0,
+    links: hostileLinks,
+    evidence: [],
+    incoming: [link({ handle: 'I-9', note: HOSTILE }), link({ handle: HOSTILE })],
+    incoming_total: 450,
+    findings: [],
+    flags: [],
+    author: { kind: 'agent', session_id: HOSTILE, run_id: HOSTILE, role: HOSTILE },
+    reason: HOSTILE,
+    ...fields,
+  };
+}
+
 describe('the ledger views', () => {
   it('are inspected by a check that sees markup, not escaped text', () => {
     expect(inspect('<p>&lt;img src=x onerror=alert(1)&gt; javascript:x</p>').hostile).toBe(false);
@@ -78,6 +119,8 @@ describe('the ledger views', () => {
         'LedgerColumn.svelte',
         'LedgerEntryBody.svelte',
         'LedgerEntryView.svelte',
+        'LedgerEvidence.svelte',
+        'LedgerFindings.svelte',
         'LedgerHistory.svelte',
         'LedgerIncoming.svelte',
         'LedgerLinks.svelte',
@@ -100,42 +143,7 @@ describe('the ledger views', () => {
   });
 
   it('show a hostile entry as text, its statement through Markdown', () => {
-    const entry: EntryView = {
-      entry_id: 'entry-0123456789abcdef01234567',
-      handle: 'C-1',
-      type: 'claim',
-      origin: 'project',
-      revision: 2,
-      head: 2,
-      title: HOSTILE,
-      status: HOSTILE,
-      updated: HOSTILE,
-      statement: [
-        HOSTILE,
-        '[a](javascript:alert(1))',
-        '[a](JaVaScRiPt:alert(1))',
-        '[a](&#106;avascript:alert(1))',
-        '[a](data:text/html;base64,PHNjcmlwdD4=)',
-        '<javascript:alert(1)>',
-        '$\\href{javascript:alert(1)}{x}$',
-      ].join('\n\n'),
-      fields: {
-        [HOSTILE]: HOSTILE,
-        kind: HOSTILE,
-        conditions: { [HOSTILE]: HOSTILE },
-        pdf: { artifact_id: HOSTILE, revision: 1, sha256: 'ab'.repeat(32) },
-      },
-      asserted_only: false,
-      open_flags: 0,
-      links: hostileLinks,
-      evidence: [],
-      incoming: [link({ handle: 'I-9', note: HOSTILE }), link({ handle: HOSTILE })],
-      incoming_total: 450,
-      findings: [],
-      flags: [],
-      author: { kind: 'agent', session_id: HOSTILE, run_id: HOSTILE, role: HOSTILE },
-      reason: HOSTILE,
-    };
+    const entry = hostileEntry();
     const html = render(LedgerEntryBody, { props: { projectId: 'p1', entry } }).body;
     const found = inspect(html);
     expect(found.hostile).toBe(false);
@@ -252,5 +260,85 @@ describe('the entry route', () => {
       '/api/v0/projects/p%2F1/ledger/C-1?revision=3&incoming_after=200',
       '/api/v0/projects/p%2F1/ledger/entry-0123456789abcdef01234567',
     ]);
+  });
+});
+
+const evidence = (fields: Partial<EvidenceLink>): EvidenceLink => ({
+  evidence_id: `ev-${Math.random()}`,
+  role: 'supports',
+  type: 'proof',
+  target: 'entry',
+  target_id: 'entry-0123456789abcdef01234567',
+  revision: 2,
+  block: null,
+  span: null,
+  sha256: null,
+  checked: null,
+  scope: null,
+  added: 1,
+  handle: 'C-3',
+  ...fields,
+});
+
+describe('the evidence and findings on an entry', () => {
+  it('show hostile targets, scopes and findings as text, every link in the workspace', () => {
+    const entry = hostileEntry({
+      evidence: [
+        evidence({ handle: HOSTILE, scope: HOSTILE }),
+        evidence({ handle: 'javascript:alert(1)' }),
+        evidence({ target: 'artifact', target_id: HOSTILE, sha256: HOSTILE }),
+        evidence({ target: 'block', target_id: 'javascript:x', block: HOSTILE, span: HOSTILE }),
+        evidence({ target: 'review', target_id: HOSTILE }),
+        evidence({ role: 'independent_check', checked: 2, scope: '\u202eevil' }),
+      ],
+      findings: [
+        {
+          finding_id: HOSTILE,
+          session: 'javascript:alert(1)',
+          status: HOSTILE,
+          severity: HOSTILE,
+          category: HOSTILE,
+          origin: HOSTILE,
+          field: HOSTILE,
+          revision: 2,
+        } satisfies EntryFinding,
+      ],
+    });
+    const html = render(LedgerEntryBody, { props: { projectId: 'p1', entry } }).body;
+    const found = inspect(html);
+    expect(found.hostile).toBe(false);
+    for (const href of found.hrefs) expect(href.startsWith('#/projects/'), href).toBe(true);
+    expect(html).toContain('Evidence');
+    expect(html).toContain('Independent check, proof, of revision 2');
+    expect(html).toContain('Review findings');
+    expect(found.hrefs).toContain(
+      '#/projects/p1/sessions/javascript%3Aalert(1)/findings/' + encodeURIComponent(HOSTILE),
+    );
+    expect(found.hrefs).toContain(
+      '#/projects/p1/documents/javascript%3Ax/revisions/2/blocks/' + encodeURIComponent(HOSTILE),
+    );
+  });
+
+  it('say "asserted only" for a claim or result without evidence, and nothing for other types', () => {
+    const asserted = render(LedgerEntryBody, {
+      props: { projectId: 'p1', entry: hostileEntry({ asserted_only: true }) },
+    }).body;
+    expect(asserted).toContain('Asserted only');
+    const issue = render(LedgerEntryBody, {
+      props: { projectId: 'p1', entry: hostileEntry({ type: 'issue', asserted_only: null }) },
+    }).body;
+    expect(issue).not.toContain('Evidence');
+  });
+
+  it('show the first evidence links, and offer the rest', () => {
+    const many = Array.from({ length: 60 }, (_, n) =>
+      evidence({ evidence_id: `ev-${n}`, handle: `C-${n + 1}` }),
+    );
+    const html = render(LedgerEntryBody, {
+      props: { projectId: 'p1', entry: hostileEntry({ evidence: many }) },
+    }).body;
+    expect(html).toContain('C-50 r2');
+    expect(html).not.toContain('C-51 r2');
+    expect(html).toContain('Show all 60 evidence links');
   });
 });
