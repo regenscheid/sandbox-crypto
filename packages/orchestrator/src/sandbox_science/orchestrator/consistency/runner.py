@@ -19,6 +19,7 @@ from sandbox_science.orchestrator.model import ChatModel, Message, ModelError, T
 
 from .findings import Findings
 from .models import ReviewConfig, ReviewerFinish
+from .numbers import copied_numbers
 from .prompt_bundle import assemble_reviewer
 from .rubric import RUBRIC, RUBRIC_VERSION
 from .store import MANIFEST_PAGE, Json, ReviewStore, agent_text, clipped, dump
@@ -302,19 +303,25 @@ class ReviewerRunner:
         if self.record["rubric"] != RUBRIC_VERSION:
             raise ValueError("the reserved review rubric differs from the installed rubric")
         bundle = assemble_reviewer(RUBRIC, RUBRIC_VERSION, SPECS, self.memory)
+        # The platform's check of copied numbers comes first, and needs no model (CR-39).
+        copied = await threaded(
+            copied_numbers, self.store, self.project, self.session, self.review, self.owner
+        )
+        opening: Json = {
+            "review": self.review,
+            "instruction": "Read review_manifest first. Check only this pinned snapshot.",
+        }
+        if copied:
+            opening["platform_findings"] = {
+                "about": (
+                    "The platform compared the numbers the snapshot states with those its "
+                    "artifacts hold and recorded these findings; do not record them again."
+                ),
+                "findings": copied,
+            }
         messages: list[Message] = [
             {"role": "system", "content": bundle.system},
-            {
-                "role": "user",
-                "content": dump(
-                    {
-                        "review": self.review,
-                        "instruction": (
-                            "Read review_manifest first. Check only this pinned snapshot."
-                        ),
-                    }
-                ),
-            },
+            {"role": "user", "content": dump(opening)},
         ]
         invalid = 0
         for _ in range(self.config.max_turns):

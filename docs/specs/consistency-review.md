@@ -123,6 +123,12 @@ Terms:
 
   A `math` finding is never `superseded` (CR-28): the check decides instead.
 
+### Copied numbers
+
+*Added 2026-10-15 by the coordinator for lab 39's B6, which the owner can reverse.* A long number an agent copies by hand from a computation's output into a document or the ledger goes wrong by a few digits, and a model reviewing both rarely sees it.
+
+- CR-39. Before the model reviews a snapshot, the platform compares each number of at least 10 digits that its ledger entries (statement and fields) and document blocks state, read through the separators that group digits, with the numbers its text and JSON artifacts hold, including those its entries pin (CR-14). A number that matches none exactly, but is within 3 edits, or 5 % of its digits if more, of one of them, becomes a `fail` finding of category `contradicting_value`, recorded by the review and anchored to the entry's field or the block and to the artifact, with both values and the artifact's key; a number that differs from one of them only in its last two digits, such as p − 1 beside p, is taken as a number of its own. The check needs no model, records at most 4 findings in a review, says that they are its own, and is named to the reviewer, which does not record them again. The findings then follow the review's findings' lifecycle.
+
 ## Contracts used
 
 - `ArtifactRef`: snapshot contents and evidence references are pinned.

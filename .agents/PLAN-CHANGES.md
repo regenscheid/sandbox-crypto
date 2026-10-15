@@ -6,6 +6,7 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 Decision of the coordinator on lab 39's B6, which the owner can reverse:
 
+- **Copied numbers** ([consistency review spec](../docs/specs/consistency-review.md), CR-39). Before the model reviews a snapshot, the platform compares each number of 10 or more digits its ledger entries and document blocks state with the numbers its artifacts hold; one that nearly matches but does not becomes a `fail` finding of the review, with both values. It needs no model.
 - **A review holds what its ledger entries pin** ([consistency review spec](../docs/specs/consistency-review.md), CR-2, CR-14). A snapshot that holds a ledger entry also holds the artifact revisions its evidence pins, whichever session of the project wrote them and however long ago, so the reviewer compares the numbers an entry states with the computation it cites. Ledger pins are project-wide by design. Text and JSON up to 64 KiB come whole; others are left to the entry's evidence, which names them, so that they do not make coverage incomplete. Rubric `sandbox-consistency-2` asks the reviewer to compare them digit by digit.
 
 Decision of the coordinator on the review of the frontier (#304, #310, #321, #323), which the owner can reverse:
