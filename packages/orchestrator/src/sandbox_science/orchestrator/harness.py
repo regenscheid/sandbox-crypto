@@ -671,7 +671,7 @@ class Harness:
             tuple(dict.fromkeys(u.model for u in transcript.usage if u.model is not None))[:10],
             found.read if found is not None else None,
             found.read_proofs if found is not None else None,
-            _recorded(finished.hooks),
+            _recorded(finished.hooks, found.pinned if found is not None and result else []),
             tuple(found.created) if found is not None else (),
         )
 
@@ -906,11 +906,19 @@ async def _track_grant(plans: SessionPlans, context: ExecutionContext, track: st
     return await threaded(grant, plans, context, track)
 
 
-def _recorded(hooks: Sequence[TurnHook]) -> dict[str, JsonValue] | None:
-    """The files a run's calls recorded, as its record keeps them (RA-36)."""
+def _recorded(
+    hooks: Sequence[TurnHook], results: Sequence[dict[str, JsonValue]] = ()
+) -> dict[str, JsonValue] | None:
+    """The files a run's calls recorded, as its record keeps them (RA-36), and the result
+    files it declared, pinned (``results``, RA-38)."""
     found = next((hook for hook in hooks if isinstance(hook, RecordedFiles)), None)
     summary = found.summary() if found is not None else None
-    return cast(dict[str, JsonValue], summary) if isinstance(summary, dict) else None
+    files = cast(dict[str, JsonValue], summary) if isinstance(summary, dict) else None
+    if not results:
+        return files
+    kept: dict[str, JsonValue] = dict(files) if files is not None else {"total": 0, "files": []}
+    kept["results"] = list[JsonValue](results)
+    return kept
 
 
 class _ChildSink:

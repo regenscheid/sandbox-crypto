@@ -57,7 +57,7 @@ CHECK_PROMPT: Final = (
 )
 CHECK: Final = Section("delegated-check", CHECK_VERSION, CHECK_PROMPT)
 
-TASK_VERSION: Final = "sandbox-delegated-task-1"
+TASK_VERSION: Final = "sandbox-delegated-task-2"
 """The version of ``TASK_PROMPT``'s text."""
 TASK_PROMPT: Final = (
     "You are a delegated research agent. Another agent of this session, your parent, "
@@ -78,7 +78,12 @@ TASK_PROMPT: Final = (
     "(what you did, how, and what you found or made, naming the files and entries), "
     "obstacle (only when blocked: what prevents the task), deviations (where you "
     "departed from the brief) and open_questions (what you could not settle), the last "
-    "two lists of strings."
+    "two lists of strings; and, when they apply, dismissals (each line of work you "
+    "dropped, as what, and what ran out, as limit: time, tools, context or ideas), "
+    "obstructions (each claim that something cannot be done, with its evidence as you "
+    "found it) and result_files (the paths of the files that are your results, as your "
+    "calls wrote or published them; the platform pins each to the revision your calls "
+    "made, and refuses one they did not)."
 )
 TASK: Final = Section("delegated-task", TASK_VERSION, TASK_PROMPT)
 

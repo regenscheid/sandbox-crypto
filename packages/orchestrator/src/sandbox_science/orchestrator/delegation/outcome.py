@@ -36,7 +36,8 @@ from sandbox_science.orchestrator.ledger.models import EvidenceLink
 from sandbox_science.orchestrator.notices import OUTCOME_CORRECTION
 
 FORMAT: Final = "sandbox-check-result-2"
-TASK_FORMAT: Final = "sandbox-task-result-1"
+TASK_FORMAT: Final = "sandbox-task-result-2"
+MAX_RESULT_FILES: Final = 50
 MAX_ERRORS: Final = 5
 MAX_BYTES: Final = 16384
 """The longest result, as UTF-8 JSON: whole, it fits a tool result."""
@@ -140,6 +141,7 @@ TASK_SHAPE: Final[dict[str, JsonValue]] = {
     "obstructions": [
         {"claim": "what you claim cannot be done", "evidence": "why, as you found it"}
     ],
+    "result_files": ["the path of each file that is a result, which your calls wrote or published"],
 }
 """A task's result's fields, as the correction notice describes them."""
 
@@ -159,9 +161,10 @@ class Obstruction(StrictContract):
 
 
 class TaskResult(StrictContract):
-    """What a task returns (``sandbox-task-result-1``): the delegated run's claims about
-    what it did, the lines of work it dropped and the obstructions it claims; the
-    outcome's ``ended`` is the platform's observation (PD-17)."""
+    """What a task returns (``sandbox-task-result-2``): the delegated run's claims about
+    what it did, the lines of work it dropped, the obstructions it claims, and the files
+    that are its results (RA-38); the outcome's ``ended`` is the platform's observation
+    (PD-17)."""
 
     status: Literal["complete", "partial", "blocked"]
     summary: Annotated[str, _texts(8000)]
@@ -170,11 +173,16 @@ class TaskResult(StrictContract):
     open_questions: tuple[Item, ...] = _ITEMS
     dismissals: tuple[Dismissal, ...] = Field(default=(), max_length=10)
     obstructions: tuple[Obstruction, ...] = Field(default=(), max_length=5)
+    result_files: tuple[Annotated[str, _texts(4096)], ...] = Field(
+        default=(), max_length=MAX_RESULT_FILES
+    )
 
     @model_validator(mode="after")
     def _consistent(self) -> Self:
         if (self.status == "blocked") != (self.obstacle is not None):
             raise ValueError("a blocked task names its obstacle, and only a blocked one does")
+        if len(set(self.result_files)) != len(self.result_files):
+            raise ValueError("a result file is listed once")
         return self
 
 
@@ -286,6 +294,11 @@ class Outcome(TurnHook):
         """The target's evidence links its reads of the target's revision showed."""
         self.created: list[str] = []
         """The entries the run's ledger changes created, by ID (LG-6's ``produced``)."""
+        self.recorded: dict[str, dict[str, JsonValue]] = {}
+        """The latest revision each path got from the run's calls, recorded or published,
+        by the path as the run named it (RA-36, RA-38)."""
+        self.pinned: list[dict[str, JsonValue]] = []
+        """The result files a task declared, pinned to the revisions its calls made."""
 
     @property
     def read_proofs(self) -> bool | None:
@@ -298,6 +311,7 @@ class Outcome(TurnHook):
 
     async def observe_tool(self, run: RunView, record: dict[str, Any]) -> None:
         self._created(record)
+        self._files(record)
         read = record.get("read")
         if self.target is None or "error" in record or not isinstance(read, dict):
             return
@@ -336,11 +350,64 @@ class Outcome(TurnHook):
                 if isinstance(found, str) and found not in self.created:
                     self.created.append(found)
 
+    def _files(self, record: dict[str, Any]) -> None:
+        """The revisions a call made: those it recorded, and the one it published."""
+        if "error" in record:
+            return
+        report = record.get("recorded_files")
+        listed = cast(dict[str, object], report).get("files") if isinstance(report, dict) else None
+        for entry in cast(list[object], listed) if isinstance(listed, list) else []:
+            if isinstance(entry, dict):
+                found = cast(dict[str, JsonValue], entry)
+                if isinstance(path := found.get("path"), str):
+                    self.recorded[path] = found
+        snapshot, receipt = record.get("artifact"), record.get("artifact_inventory")
+        if isinstance(snapshot, dict) and isinstance(receipt, dict):
+            published = cast(dict[str, Any], receipt)
+            ref = published.get("revision")
+            path = cast(dict[str, Any], snapshot).get("source_path")
+            recorded = published.get("state") == "recorded"
+            if recorded and isinstance(ref, dict) and isinstance(path, str):
+                pinned = cast(dict[str, Any], ref)
+                self.recorded[path] = {
+                    "path": path,
+                    "artifact_id": pinned.get("artifact_id"),
+                    "revision": pinned.get("revision"),
+                    "sha256": pinned.get("sha256"),
+                    "size": pinned.get("size"),
+                    "content_retained": published.get("worker_snapshot") is not None,
+                    "deleted": False,
+                }
+
+    def _pin(self, result: TaskResult) -> list[dict[str, JsonValue]]:
+        """The task's result files, each pinned to the latest revision its calls made, or
+        ``ValueError`` naming those its calls did not make (RA-38)."""
+        pinned: list[dict[str, JsonValue]] = []
+        missing: list[str] = []
+        for path in result.result_files:
+            found = self.recorded.get(path.removeprefix("./"))
+            if found is None or found.get("deleted") is True:
+                missing.append(path)
+                continue
+            pinned.append({k: v for k, v in found.items() if k not in ("deleted", "reproduced")})
+        if missing:
+            raise ValueError(
+                f"result_files: your calls wrote or published no file {', '.join(missing[:5])}; "
+                "a result file is one your calls wrote, as they named it, or published"
+            )
+        return pinned
+
     async def closing(self, run: RunView, answer: str | None) -> Closing:
         try:
-            self.result = parse_task(answer) if self.task else parse(answer, self.target)
+            if self.task:
+                found = parse_task(answer)
+                self.pinned = self._pin(found)
+                self.result = found
+            else:
+                self.result = parse(answer, self.target)
         except ValueError as error:
             self.result = None
+            self.pinned = []
             self.errors = [*self.errors, str(error)[:ERROR_CHARS]][-KEPT_ERRORS:]
             if not self.corrected:
                 # One correction (PD-18); with no turn or room left, the answer stands.
@@ -364,6 +431,7 @@ class Outcome(TurnHook):
             "errors": list(self.errors),
             "read": self.read,
             "read_proofs": self.read_proofs,
+            "result_files": list(self.pinned),
         }
 
 

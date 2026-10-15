@@ -4,6 +4,10 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 ## 2026-10-15
 
+Decision of the coordinator on a delegated task's result files (RA-38), which the owner can reverse:
+
+- **A result file is one the child's calls made** ([research artifacts](../docs/specs/research-artifacts.md), RA-38). The platform checks each declared file against the revisions the child's own calls recorded or published, pins the latest in the outcome, and refuses any other, with the one correction; it does not record a declared file itself. A project that records results only, or a file an ignore pattern leaves out, gets its result through `publish`.
+
 Decisions of the coordinator on delegated tasks' tracks and issues (6b-2), which the owner can reverse:
 
 - **A task's outcome on its issue** ([ledger spec](../docs/specs/ledger.md), LG-6, LG-F8). It ends `produced` when the child created entries, `limit` when it was partial, blocked or stopped (what ran out), and `limit` with `ideas` when it completed and created nothing: `assessment` stays for critiques of other work, and a finished investigation that found nothing leaves the issue open (LG-7).

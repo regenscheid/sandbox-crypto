@@ -530,6 +530,11 @@ class Delegations(TurnHook):
             kept = cast(list[object], listed)[: len(cast(list[object], listed)) // 2]
             files = {**cast(dict[str, object], files), "files": kept, "cut": True}
             whole = {**whole, "files": files}
+        results = whole.get("result_files")
+        while isinstance(results, list) and results and len(dump(whole)) > self.output_chars:
+            kept = cast(list[object], results)[: len(cast(list[object], results)) // 2]
+            whole = {**whole, "result_files": kept, "result_files_cut": True}
+            results = kept
         answer = whole.get("answer")
         while (
             isinstance(answer, str) and len(answer) > 100 and len(dump(whole)) > self.output_chars
@@ -693,7 +698,14 @@ def outcome(delegation: Delegation) -> dict[str, object]:
     whether it read the entry it checked, and its result, or, when that is missing, its
     answer as returned and why it did not validate; then the files its calls recorded,
     the platform's list apart from the child's own claims (RA-36)."""
-    files = {"files": delegation.files} if delegation.files is not None else {}
+    files: dict[str, object] = {}
+    if delegation.files is not None:
+        recorded = dict(delegation.files)
+        results = recorded.pop("results", None)
+        if results:
+            files["result_files"] = results  # the child's results, pinned (RA-38)
+        if recorded.get("total") or recorded.get("gaps"):
+            files["files"] = recorded
     if delegation.result is not None:
         return {**_ending(delegation), "result": delegation.result, **files}
     return {
@@ -712,6 +724,11 @@ def summarized(delegation: Delegation) -> dict[str, object]:
     found: dict[str, object] = _ending(delegation)
     if delegation.files is not None:
         found["files_recorded"] = delegation.files.get("total")
+        results = delegation.files.get("results")
+        if isinstance(results, list) and results:
+            found["result_files"] = [
+                cast(dict[str, object], r).get("path") for r in results[:10] if isinstance(r, dict)
+            ]
     if delegation.result is not None:
         result = delegation.result
         if delegation.kind == "task":
