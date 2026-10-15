@@ -90,6 +90,12 @@ AUTHOR_SPECS = (
                 "maxItems": 16,
                 "items": ArtifactRevisionRef.model_json_schema(),
             },
+            "entry_revisions": {
+                "type": "array",
+                "maxItems": 16,
+                "description": "Changed ledger entry revisions: [entry handle or ID, revision]",
+                "items": {"type": "array"},
+            },
             "operation_id": {"type": "string"},
         },
         ["finding", "expected", "action", "explanation"],

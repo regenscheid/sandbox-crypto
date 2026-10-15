@@ -631,6 +631,7 @@ class Findings:
             and not value.evidence
             and not value.revisions
             and not value.artifact_revisions
+            and not value.entry_revisions
         ):
             raise DocumentError(INVALID_REQUEST, "a claimed fix needs changed evidence references")
         target = self.get(project, session, value.finding)
@@ -645,6 +646,7 @@ class Findings:
                 raise DocumentError(POLICY_DENIED, "changed artifact is unrelated to this finding")
             self.store.artifact_pin(project, session, ref)
             artifact_pins.append(ref.model_dump(mode="json"))
+        entry_pins = self._entry_revisions(project, target, value.entry_revisions)
         pinned: list[Json] = []
         for document, number in value.revisions:
             if type(number) is not int or not 1 <= number <= 999999999:
@@ -668,10 +670,11 @@ class Findings:
             anchors.append(self.validate_anchor(project, session, row[0], a))
         actor = author.actor
         canonical = value.model_dump(mode="json")
-        if not value.artifact_revisions:
-            # Old operation receipts predate this optional field. Their exact
-            # canonical digest remains valid across an upgrade.
-            canonical.pop("artifact_revisions")
+        for optional in ("artifact_revisions", "entry_revisions"):
+            if not getattr(value, optional):
+                # Old operation receipts predate these optional fields. Their exact
+                # canonical digest remains valid across an upgrade.
+                canonical.pop(optional)
         fingerprint = digest(dump([session, canonical, author.role]))
         payload = {
             "action": value.action,
@@ -681,6 +684,9 @@ class Findings:
             "artifact_revisions": artifact_pins,
             "author": author.model_dump(mode="json"),
         }
+        if entry_pins:
+            # Only when there are some: a response without them reads as it always did.
+            payload["entry_revisions"] = [pin for pin, _ in entry_pins]
 
         from .response_bodies import commit as response_commit
         from .response_bodies import original as response_original
@@ -732,7 +738,49 @@ class Findings:
                 locator,
                 locator,
             )
+        for pin, (locator, item, complete) in entry_pins:
+            self.store.observe(
+                project,
+                session,
+                f"response:{value.finding}:{result['revision']}:{pin['entry']}:{pin['revision']}",
+                "ledger",
+                locator,
+                item,
+                complete=complete,
+            )
         return result
+
+    def _entry_revisions(
+        self, project: str, target: Json, cited: tuple[tuple[str, int], ...]
+    ) -> list[tuple[Json, tuple[Json, Json, bool]]]:
+        """The changed ledger entry revisions a claimed fix cites, each pinned with the
+        evidence a confirmation review reads: a revision of an entry the finding is
+        anchored to, later than the one it is anchored to."""
+        from sandbox_science.orchestrator.ledger import Ledger
+
+        from .ledger import entry_item
+
+        anchored: dict[str, int] = {}
+        for anchor in target["anchors"]:
+            location = anchor["locator"]
+            if "entry" in location and isinstance(location.get("revision"), int):
+                entry = location["entry"]
+                anchored[entry] = max(anchored.get(entry, 0), location["revision"])
+        ledger = Ledger(self.store.documents)
+        pins: list[tuple[Json, tuple[Json, Json, bool]]] = []
+        for reference, revision in cited:
+            view = ledger.entry(project, reference, revision)
+            if view.entry_id not in anchored:
+                raise DocumentError(POLICY_DENIED, "changed entry is unrelated to this finding")
+            if revision <= anchored[view.entry_id]:
+                raise DocumentError(
+                    INVALID_REQUEST,
+                    f"{view.handle} r{revision} is not later than the revision the finding "
+                    "is anchored to",
+                )
+            pin = {"entry": view.entry_id, "handle": view.handle, "revision": revision}
+            pins.append((pin, entry_item(view)))
+        return pins
 
     def confirm(self, project: str, session: str, review: str, owner: str, raw: object) -> Json:
         try:
@@ -918,6 +966,28 @@ class Findings:
                 raise DocumentError(
                     POLICY_DENIED, "read the exact changed artifact before deciding"
                 )
+        entries = cast(list[Json], response.get("entry_revisions", []))
+        if entries:
+            ledger_items = [
+                (evidence, stored_json(locator), complete)
+                for evidence, locator, complete in db.execute(
+                    "SELECT evidence_id,locator,complete FROM review_evidence e "
+                    "WHERE kind='ledger' AND (review_id=? OR EXISTS(SELECT 1 FROM "
+                    "review_grants g WHERE g.review_id=? AND g.evidence_id=e.evidence_id))",
+                    (review, review),
+                )
+            ]
+            for pin in entries:
+                if not any(
+                    complete
+                    and covered(evidence)
+                    and (locator.get("entry"), locator.get("revision"))
+                    == (pin["entry"], pin["revision"])
+                    for evidence, locator, complete in ledger_items
+                ):
+                    raise DocumentError(
+                        POLICY_DENIED, "read the pinned changed entry revision before deciding"
+                    )
         revisions = cast(list[Json], response.get("revisions", []))
         if revisions:
             available = list(

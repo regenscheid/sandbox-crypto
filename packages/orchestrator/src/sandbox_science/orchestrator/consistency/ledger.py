@@ -17,7 +17,7 @@ from typing import Any, Final
 
 from sandbox_science.orchestrator.control import EventLog
 from sandbox_science.orchestrator.control.feeds import FeedCursor
-from sandbox_science.orchestrator.ledger import Ledger
+from sandbox_science.orchestrator.ledger import EntryView, Ledger
 
 from .store import MAX_ITEM_BYTES, ReviewStore, dump
 
@@ -105,26 +105,33 @@ def _shortened(link: Json, key: str, keep: int) -> Json:
     return {**link, key: text[:keep] + "…" if keep else None}
 
 
+def entry_item(view: EntryView) -> tuple[Json, Json, bool]:
+    """An entry revision as review evidence: its locator, the entry as it reads at that
+    revision, and whether all of it fits one item."""
+    payload: Json = view.model_dump(
+        mode="json", exclude={"incoming", "incoming_total", "head", "findings"}
+    )
+    payload, complete = _fitted(payload)
+    locator = {
+        "entry": view.entry_id,
+        "handle": view.handle,
+        "revision": view.revision,
+        "run": view.author.get("run_id"),
+    }
+    return locator, payload, complete
+
+
 def _observation(ledger: Ledger, project: str, entry: str, event: Json) -> Observation | None:
     """The observation of an agent's revision of ``entry``; None for the user's."""
     view = ledger.entry(project, entry, event["revision"])
     if view.author.get("kind") not in ("agent", "worker"):
         return None
-    payload: Json = view.model_dump(
-        mode="json", exclude={"incoming", "incoming_total", "head", "findings"}
-    )
-    payload, complete = _fitted(payload)
+    locator, payload, complete = entry_item(view)
     created = "changed" not in event
     changed = set(event.get("changed", ()))
     characters = (len(view.title) if created or "title" in changed else 0) + (
         len(view.statement) if created or "statement" in changed else 0
     )
-    locator = {
-        "entry": entry,
-        "handle": view.handle,
-        "revision": view.revision,
-        "run": view.author.get("run_id"),
-    }
     return (
         f"ledger:{entry}:{view.revision}",
         locator,
