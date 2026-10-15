@@ -83,6 +83,46 @@ _LINK = {
     "required": ["kind"],
     "additionalProperties": False,
 }
+_EVIDENCE = {
+    "type": "object",
+    "description": (
+        "Evidence for the entry: its role, its type, a scope note saying what it covers, "
+        "and one pinned target: entry (with revision, its current one by default), "
+        "artifact with revision (and optionally its sha256), document with revision, "
+        "block and optionally math (a span), or review. An independent_check names the "
+        "revision of this entry it checked as checked. A published claim or result "
+        "cites its reference with a supports link of type source_claim"
+    ),
+    "properties": {
+        "role": {
+            "type": "string",
+            "enum": ["supports", "contradicts", "derivation", "independent_check"],
+        },
+        "type": {
+            "type": "string",
+            "enum": [
+                "proof",
+                "exact_computation",
+                "finite_test",
+                "numerical_experiment",
+                "source_claim",
+                "synthetic",
+            ],
+        },
+        "entry": {"type": "string"},
+        "artifact": {"type": "string"},
+        "document": {"type": "string"},
+        "review": {"type": "string"},
+        "revision": {"type": "integer"},
+        "block": {"type": "string"},
+        "math": {"type": "string"},
+        "sha256": {"type": "string"},
+        "checked": {"type": "integer"},
+        "scope": {"type": "string"},
+    },
+    "required": ["role", "type"],
+    "additionalProperties": False,
+}
 _CHANGE = {
     "type": "object",
     "description": (
@@ -93,7 +133,8 @@ _CHANGE = {
         "category, conditions and measures; a reference's identifiers (doi, eprint, "
         "arxiv, nist, isbn, url), authors, published, version or retrieved, and pdf "
         "(artifact_id, revision, and optionally its sha256). links replaces the "
-        "entry's outgoing links"
+        "entry's outgoing links; evidence adds evidence links, and evidence_removed "
+        "removes those with the IDs it names"
     ),
     "properties": {
         "entry": _ENTRY,
@@ -112,6 +153,8 @@ _CHANGE = {
         },
         "fields": {"type": "object"},
         "links": {"type": "array", "items": _LINK, "maxItems": 64},
+        "evidence": {"type": "array", "items": _EVIDENCE, "maxItems": 32},
+        "evidence_removed": {"type": "array", "items": {"type": "string"}, "maxItems": 32},
     },
     "additionalProperties": False,
 }
@@ -148,6 +191,7 @@ SPECS: Final = (
                 "revision": {"type": "integer", "minimum": 1},
                 "statement_from": {"type": "integer", "minimum": 0},
                 "links_after": {"type": "integer", "minimum": 0},
+                "evidence_after": {"type": "integer", "minimum": 0},
                 "incoming_after": {"type": "integer", "minimum": 0},
             },
             "required": ["entry"],
@@ -172,7 +216,8 @@ SPECS: Final = (
         "Each revision names the revision you read; if the entry changed since, read it "
         "again. A new entry starts in its first status (open, proposed, active, todo). "
         "An operation_id names one change in the project: retrying with it returns the "
-        "first result. A delegated agent creates entries but changes none.",
+        "first result. A delegated agent creates entries and adds evidence to "
+        "entries, and changes nothing else.",
         {
             "type": "object",
             "properties": {
@@ -227,6 +272,7 @@ class _Read(_Args):
     revision: _NUMBER | None = None
     statement_from: _COUNT = 0
     links_after: _COUNT = 0
+    evidence_after: _COUNT = 0
     incoming_after: _COUNT = 0
 
 
@@ -379,7 +425,7 @@ class LedgerTool:
         half the budget holds, then as many links and incoming links as the rest holds;
         ``more`` says where each part goes on. The ledger reads incoming links from
         ``incoming_after`` on, a page at a time."""
-        shown = view.model_dump(mode="json", exclude={"links", "incoming", "statement"})
+        shown = view.model_dump(mode="json", exclude={"links", "evidence", "incoming", "statement"})
         shown["reason"] = _clip(shown["reason"], 1000)
         if len(_dump(shown["fields"])) > self.budget // 4:
             shown["fields"] = {"clipped": _clip(_dump(shown["fields"]), self.budget // 4)}
@@ -394,14 +440,20 @@ class LedgerTool:
             more["statement_from"] = args.statement_from + keep
         parts = {
             "links": (view.links[args.links_after :], args.links_after, len(view.links)),
+            "evidence": (
+                view.evidence[args.evidence_after :],
+                args.evidence_after,
+                len(view.evidence),
+            ),
             "incoming": (view.incoming, args.incoming_after, view.incoming_total),
         }
         for part, (links, start, total) in parts.items():
             items: list[Json] = []
             for link in links:
                 value = link.model_dump(mode="json")
-                if value["note"] is not None:
-                    value["note"] = _clip(value["note"], 1000)
+                for long in ("note", "scope"):
+                    if value.get(long) is not None:
+                        value[long] = _clip(value[long], 1000)
                 # Measured with the longest ``more`` the answer can end with.
                 if len(_dump({**shown, part: [*items, value], "more": _MORE})) > self.budget:
                     break
@@ -413,6 +465,7 @@ class LedgerTool:
             # The next part starts each at its own place; a finished one shows nothing.
             more.setdefault("statement_from", len(view.statement))
             more.setdefault("links_after", len(view.links))
+            more.setdefault("evidence_after", len(view.evidence))
             more.setdefault("incoming_after", view.incoming_total)
         shown["more"] = more
         return _dump(shown)
@@ -484,7 +537,9 @@ class LedgerTool:
         )
 
 
-_MORE: Final = dict.fromkeys(("statement_from", "links_after", "incoming_after"), 999999999)
+_MORE: Final = dict.fromkeys(
+    ("statement_from", "links_after", "evidence_after", "incoming_after"), 999999999
+)
 """The longest ``more`` a read can carry."""
 
 SHOWN_LINES: Final = 20

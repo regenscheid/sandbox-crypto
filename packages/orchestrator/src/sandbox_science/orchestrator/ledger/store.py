@@ -43,6 +43,7 @@ from sandbox_science.orchestrator.documents.normalize import normalize
 from sandbox_science.orchestrator.documents.project_macros import head as macro_head
 from sandbox_science.orchestrator.projects import ProjectError, recorded
 
+from . import evidence
 from .models import (
     DECIDED,
     FIELDS,
@@ -57,6 +58,7 @@ from .models import (
     EntryRevision,
     EntrySummary,
     EntryView,
+    EvidenceLink,
     LinkInput,
     Mutation,
     MutationResult,
@@ -143,6 +145,8 @@ class _Planned:
     """The new revision's links; None keeps the revision before's."""
     previous: list[EntryLink] = field(default_factory=list[EntryLink])
     """The links of the revision before."""
+    evidence: list[EvidenceLink] | None = None
+    """The new revision's evidence links; None keeps the revision before's."""
     changed: list[str] = field(default_factory=list[str])
 
 
@@ -182,11 +186,13 @@ class Ledger:
                 if number == row.head
                 else ([], 0)
             )
+            held = evidence.stored(db, row.entry_id, number)
             return EntryView(
-                **self._summary(row, found),
+                **self._summary(row, found, evidence.asserted_only(row.type, held)),
                 statement=text["body"],
                 fields=json.loads(found[4]),
                 links=self._links(db, row.entry_id, number),
+                evidence=held,
                 incoming=incoming,
                 incoming_total=total,
                 head=row.head,
@@ -222,13 +228,20 @@ class Ledger:
                 ).fetchone()[0]
             rows = db.execute(
                 "SELECT e.entry_id,e.project,e.type,e.number,e.origin,e.head,"
-                "r.revision,r.title,r.status,r.statement,r.fields,r.author,r.reason,r.created "
+                "r.revision,r.title,r.status,r.statement,r.fields,r.author,r.reason,r.created,"
+                "EXISTS(SELECT 1 FROM ledger_evidence v WHERE v.entry_id=e.entry_id "
+                "AND v.revision=e.head) "
                 "FROM ledger_entries e JOIN ledger_revisions r ON r.entry_id=e.entry_id "
                 "AND r.revision=e.head WHERE e.project=? AND e.position>? AND (? IS NULL OR "
                 "e.type=?) AND (? IS NULL OR r.status=?) ORDER BY e.position LIMIT ?",
                 (project, start, kind, kind, status, status, limit + 1),
             ).fetchall()
-        found = [self._summary(_Row(*r[:6]), r[6:]) for r in rows[:limit]]
+        found = [
+            self._summary(
+                _Row(*r[:6]), r[6:], None if r[2] not in ("claim", "result") else not r[14]
+            )
+            for r in rows[:limit]
+        ]
         return EntryPage(
             entries=[EntrySummary(**s) for s in found],
             next_after=found[-1]["entry_id"] if len(rows) > limit else None,
@@ -292,16 +305,18 @@ class Ledger:
         operation ID and receipt. ``provenance`` names where a mutation came from, such
         as the line of a results file (LG-41)."""
         role = self._authority(project, author)
-        pinned: dict[tuple[str, int, str], str] = {}
+        pinned: dict[evidence.Block, str] = {}
         for mutation, provenance in mutations:
-            links = [
-                link
-                for change in mutation.changes
-                for link in change.links or ()
-                if link.document is not None
-            ]
+            blocks: list[evidence.Block] = []
+            for change in mutation.changes:
+                for link in change.links or ():
+                    if link.document and link.revision and link.block:
+                        blocks.append((link.document, link.revision, link.block, None))
+                for item in change.evidence or ():
+                    if item.document and item.revision and item.block:
+                        blocks.append((item.document, item.revision, item.block, item.math))
             try:
-                pinned.update(self._blocks(project, links))
+                pinned.update(self._blocks(project, blocks))
             except DocumentError as error:
                 raise _labelled(error, provenance) from None
         with self.control.write() as tx:
@@ -322,7 +337,7 @@ class Ledger:
         mutation: Mutation,
         author: Author,
         role: str,
-        pinned: dict[tuple[str, int, str], str],
+        pinned: dict[evidence.Block, str],
         provenance: Json | None,
     ) -> MutationResult:
         digest = fingerprint(mutation)
@@ -346,11 +361,13 @@ class Ledger:
                 ]
                 if not p.created and p.links != p.previous:
                     p.changed = [*p.changed, "links"]
+            self._evidence(db, project, p, keys, heads, pinned)
             if not p.created and not p.changed:
                 raise DocumentError(
                     INVALID_REQUEST, f"the change to {p.row.handle} changes nothing"
                 )
         self._check_links(db, planned)
+        self._check_published(db, planned)
         now = self.clock()
         changed: list[ChangedEntry] = []
         for p in planned:
@@ -390,8 +407,12 @@ class Ledger:
         if change.expected is None:
             raise DocumentError(INVALID_REQUEST, "a revision names the revision it expects")
         row = self._find(db, project, change.entry)
-        if role == "delegated":
-            raise _refused("a delegated agent creates entries but revises none")
+        if role == "delegated" and (
+            not change.evidence
+            or change.model_dump(exclude_none=True, exclude={"entry", "expected", "evidence"})
+        ):
+            # LG-13: a delegated agent adds evidence, and changes nothing else.
+            raise _refused("a delegated agent creates entries and adds evidence, nothing else")
         if change.expected != row.head:
             raise DocumentError(
                 CONFLICT,
@@ -439,11 +460,6 @@ class Ledger:
             raise DocumentError(
                 INVALID_REQUEST, "claims and results, and only they, have an origin"
             )
-        if change.origin == "published":
-            # LG-15: a published entry cites its reference through evidence, built next.
-            raise DocumentError(
-                INVALID_REQUEST, "published claims and results come with evidence links"
-            )
         status = _first_status(kind, change.origin)
         if change.status is not None and change.status != status:
             raise DocumentError(INVALID_REQUEST, f"a new {kind} starts {status}")
@@ -475,7 +491,7 @@ class Ledger:
         planned: _Planned,
         link: LinkInput,
         keys: dict[str, _Row],
-        pinned: dict[tuple[str, int, str], str],
+        pinned: dict[evidence.Block, str],
         heads: dict[str, int],
     ) -> EntryLink:
         holders, targets = LINKS[link.kind]
@@ -513,7 +529,7 @@ class Ledger:
             return EntryLink(
                 kind=link.kind,
                 target="block",
-                target_id=pinned[(link.document, link.revision, link.block)],
+                target_id=pinned[(link.document, link.revision, link.block, None)],
                 revision=link.revision,
                 block=link.block,
                 note=link.note,
@@ -586,6 +602,10 @@ class Ledger:
                 now.isoformat(),
             ),
         )
+        held = p.evidence
+        if held is None:  # kept from the revision before
+            held = evidence.stored(db, row.entry_id, before) if before else []
+        evidence.write(db, row.entry_id, row.head, held)
         links = p.links
         if links is None:  # kept from the revision before
             links = self._links(db, row.entry_id, before)
@@ -650,6 +670,79 @@ class Ledger:
         return revision
 
     # Checks.
+
+    def _evidence(
+        self,
+        db: sqlite3.Connection,
+        project: str,
+        p: _Planned,
+        keys: dict[str, _Row],
+        heads: dict[str, int],
+        pinned: dict[evidence.Block, str],
+    ) -> None:
+        """The evidence the change leaves the entry: what it held, without the links the
+        change removes, with those it adds (LG-8)."""
+        if p.change.evidence is None and p.change.evidence_removed is None:
+            return
+        held = evidence.stored(db, p.row.entry_id, p.row.head) if not p.created else []
+        removed = set(p.change.evidence_removed or ())
+        unknown = removed - {link.evidence_id for link in held}
+        if unknown:
+            raise DocumentError(
+                NOT_FOUND, f"{p.row.handle} holds no evidence {', '.join(sorted(unknown))}"
+            )
+        holder = evidence.Holder(p.row.entry_id, p.row.handle, p.row.type, p.row.head)
+        added: list[EvidenceLink] = []
+        for item in p.change.evidence or ():
+            target = None
+            if item.entry is not None:
+                if item.entry.startswith("new:"):
+                    row = keys.get(item.entry.removeprefix("new:"))
+                    if row is None:
+                        raise DocumentError(INVALID_REQUEST, f"no new entry is keyed {item.entry}")
+                else:
+                    row = self._find(db, project, item.entry)
+                target = evidence.EntryTarget(
+                    row.entry_id, row.handle, row.type, heads.get(row.entry_id, row.head)
+                )
+            added.append(evidence.resolve(db, project, holder, item, target, pinned))
+        result = [link for link in held if link.evidence_id not in removed] + added
+        if len({evidence.key(link) for link in result}) != len(result):
+            raise DocumentError(INVALID_REQUEST, f"{p.row.handle} holds that evidence already")
+        if len(result) > 128:
+            raise DocumentError(INVALID_REQUEST, "an entry holds at most 128 evidence links")
+        if sum(len((link.scope or "").encode()) for link in result) > evidence.MAX_SCOPES:
+            raise DocumentError(
+                INVALID_REQUEST,
+                f"{p.row.handle}'s evidence scope notes exceed {evidence.MAX_SCOPES} bytes",
+            )
+        p.evidence = result
+        if not p.created:
+            p.changed = [*p.changed, "evidence"]
+
+    def _check_published(self, db: sqlite3.Connection, planned: list[_Planned]) -> None:
+        """A published claim or result cites its reference through a ``supports`` link of
+        type ``source_claim`` (LG-15), which may be to a reference the same change
+        records."""
+        made = {p.row.entry_id for p in planned if p.row.type == "reference"}
+        for p in planned:
+            if p.row.origin != "published" or (not p.created and p.evidence is None):
+                continue
+            targets = {link.target_id for link in p.evidence or () if link.target == "entry"}
+            references = made | {
+                entry
+                for (entry,) in db.execute(
+                    "SELECT entry_id FROM ledger_entries WHERE type='reference' AND entry_id IN "  # noqa: S608 - placeholders only
+                    f"({','.join('?' * len(targets))})",
+                    tuple(targets),
+                )
+            }
+            if not evidence.cites_reference(p.evidence or [], references):
+                raise DocumentError(
+                    INVALID_REQUEST,
+                    f"{p.row.handle} is published: it cites its reference with a supports "
+                    "link of type source_claim",
+                )
 
     def _check_links(self, db: sqlite3.Connection, planned: list[_Planned]) -> None:
         """What holds once the change commits (LG-5, LG-30). ``supersedes`` and
@@ -774,24 +867,28 @@ class Ledger:
         if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", project) is None:
             raise DocumentError(INVALID_REQUEST, "invalid ledger project")
 
-    def _blocks(self, project: str, links: list[LinkInput]) -> dict[tuple[str, int, str], str]:
-        """The documents of the blocks links pin, by ID, each block checked to exist at
-        its revision: a link names its document by ID or name, and a name can later name
-        another document. Read before the change, since document revisions do not change."""
-        found: dict[tuple[str, int, str], str] = {}
-        for link in links:
-            if link.document is None or link.revision is None or link.block is None:
-                continue
-            key = (link.document, link.revision, link.block)
+    def _blocks(self, project: str, blocks: list[evidence.Block]) -> dict[evidence.Block, str]:
+        """The documents of the blocks and math spans links and evidence pin, by ID, each
+        checked to exist at its revision: a change names a document by ID or name, and a
+        name can later name another document. Read before the change, since document
+        revisions do not change."""
+        found: dict[evidence.Block, str] = {}
+        for key in blocks:
+            name, revision, block, span = key
             if key in found:
                 continue
             with self.control.read() as tx:
-                document = self.documents.find(tx.sql, project, link.document).document_id
-            mapped = self.documents.mapped(project, document, link.revision)
-            if link.block not in mapped.block_ids:
-                raise DocumentError(
-                    NOT_FOUND, f"{link.document} has no block {link.block} at r{link.revision}"
-                )
+                document = self.documents.find(tx.sql, project, name).document_id
+            mapped = self.documents.mapped(project, document, revision)
+            index = mapped.index(block)
+            if index is None:
+                raise DocumentError(NOT_FOUND, f"{name} has no block {block} at r{revision}")
+            if span is not None:
+                at = mapped.span_index(span)
+                if at is None or mapped.parsed.spans[at].block != index:
+                    raise DocumentError(
+                        NOT_FOUND, f"{name} has no math span {span} in block {block} at r{revision}"
+                    )
             found[key] = document
         return found
 
@@ -818,8 +915,9 @@ class Ledger:
         return _Row(*row)
 
     @staticmethod
-    def _summary(row: _Row, revision: tuple[Any, ...]) -> Json:
+    def _summary(row: _Row, revision: tuple[Any, ...], asserted_only: bool | None) -> Json:
         return {
+            "asserted_only": asserted_only,
             "entry_id": row.entry_id,
             "handle": row.handle,
             "type": row.type,
@@ -930,22 +1028,9 @@ def _check_pdf(db: sqlite3.Connection, project: str, fields: Json) -> Json:
     pdf = fields.get("pdf")
     if pdf is None:
         return fields
-    found = db.execute(
-        "SELECT json_extract(record,'$.reference.sha256') FROM artifact_revisions "
-        "WHERE artifact=? AND number=? AND project=?",
-        (pdf["artifact_id"], pdf["revision"], project),
-    ).fetchone()
-    if found is None:
-        raise DocumentError(
-            NOT_FOUND, f"no artifact {pdf['artifact_id']} r{pdf['revision']} in this project"
-        )
-    if pdf.get("sha256", found[0]) != found[0]:
-        raise DocumentError(
-            CONFLICT,
-            f"artifact {pdf['artifact_id']} r{pdf['revision']} has another SHA-256",
-            {"sha256": found[0]},
-        )
-    pdf["sha256"] = found[0]
+    pdf["sha256"] = evidence.retained(
+        db, project, pdf["artifact_id"], pdf["revision"], pdf.get("sha256")
+    )
     if len(_encoded(fields).encode()) > MAX_FIELDS:
         raise DocumentError(INVALID_REQUEST, f"reference fields exceed {MAX_FIELDS} bytes")
     return fields

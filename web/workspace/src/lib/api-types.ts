@@ -160,6 +160,7 @@ export interface EntrySummary {
   title: string;
   status: string;
   updated: string;
+  asserted_only: boolean | null;
 }
 
 /** An entry at one revision, with what it says, its outgoing links and who wrote it, and (at its current revision) the links other entries hold to it. */
@@ -172,9 +173,11 @@ export interface EntryView {
   title: string;
   status: string;
   updated: string;
+  asserted_only: boolean | null;
   statement: string;
   fields: Record<string, unknown>;
   links: EntryLink[];
+  evidence: EvidenceLink[];
   incoming: EntryLink[];
   incoming_total: number;
   head: number;
@@ -197,6 +200,23 @@ export type ErrorKind = "invalid_request" | "unsupported" | "unavailable" | "pol
 export interface EventPage {
   state: "active" | "ended" | "interrupted";
   events: RunEvent[];
+}
+
+/** A stored evidence link: its role and type, its pinned target, its scope, and the revision of the entry that added it, whose author added it (LG-8). */
+export interface EvidenceLink {
+  evidence_id: string;
+  role: "supports" | "contradicts" | "derivation" | "independent_check";
+  type: "proof" | "exact_computation" | "finite_test" | "numerical_experiment" | "source_claim" | "synthetic" | "unclassified";
+  target: "entry" | "artifact" | "block" | "review";
+  target_id: string;
+  revision: number | null;
+  block: string | null;
+  span: string | null;
+  sha256: string | null;
+  checked: number | null;
+  scope: string | null;
+  added: number;
+  handle: string | null;
 }
 
 /** Who asks for an execution, and for which project, session and environment. ``environment_id`` names the logical environment (the project's default environment or a dedicated session environment). The worker reports the concrete sandbox and the environment revision it used in ``Location``. */

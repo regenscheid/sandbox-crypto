@@ -75,6 +75,25 @@ LINKS: Final[dict[str, tuple[tuple[str, ...], tuple[str, ...]]]] = {
 }
 """Which entries hold each kind of link, and what it points to (LG-5)."""
 
+EvidenceRole = Literal["supports", "contradicts", "derivation", "independent_check"]
+EvidenceType = Literal[
+    "proof",
+    "exact_computation",
+    "finite_test",
+    "numerical_experiment",
+    "source_claim",
+    "synthetic",
+    "unclassified",
+]
+"""Evidence types (LG-9); ``unclassified`` is for imported links whose type the source
+does not settle (LG-37)."""
+
+EVIDENCE_HOLDERS: Final = ("claim", "result", "decision")
+"""The entry types that hold evidence links (LG-8)."""
+
+COMPUTATIONAL: Final = frozenset({"exact_computation", "finite_test", "numerical_experiment"})
+"""Evidence types a computation produces."""
+
 Text = Annotated[str, Field(min_length=1, max_length=512)]
 Note = Annotated[str, Field(min_length=1, max_length=4096)]
 Statement = Annotated[str, Field(min_length=1, max_length=8192)]
@@ -95,6 +114,31 @@ class LinkInput(Contract):
     block: Identifier | None = None
     revision: Annotated[int, Field(ge=1, le=999999999, strict=True)] | None = None
     note: Note | None = None
+
+
+class EvidenceInput(Contract):
+    """An evidence link as a change adds it (LG-8): its role, its type, a scope note and
+    one pinned target: an entry revision (``entry``, ``revision`` defaulting to the
+    entry's revision as the change leaves it), an artifact revision (``artifact``,
+    ``revision`` and optionally its ``sha256``), a document block or math span
+    (``document``, ``revision``, ``block`` and optionally ``math``) or a review
+    (``review``). ``checked`` is the revision of this entry an ``independent_check``
+    examined."""
+
+    role: EvidenceRole
+    type: EvidenceType
+    entry: Reference | None = None
+    artifact: Identifier | None = None
+    document: Identifier | None = None
+    review: Identifier | None = None
+    execution: Identifier | None = None
+    revision: Annotated[int, Field(ge=1, le=999999999, strict=True)] | None = None
+    block: Identifier | None = None
+    math: Identifier | None = None
+    sha256: Sha256 | None = None
+    checked: Annotated[int, Field(ge=1, le=999999999, strict=True)] | None = None
+    scope: Note | None = None
+    """What the evidence covers, such as "$p = 17$ only"."""
 
 
 class ClaimFields(Contract):
@@ -178,6 +222,10 @@ class EntryChange(Contract):
     status: Annotated[str, Field(min_length=1, max_length=32)] | None = None
     fields: dict[str, JsonValue] | None = None
     links: list[LinkInput] | None = Field(default=None, max_length=64)
+    evidence: list[EvidenceInput] | None = Field(default=None, max_length=32)
+    """Evidence links to add; the entry keeps those it holds."""
+    evidence_removed: list[Identifier] | None = Field(default=None, max_length=32)
+    """The IDs of evidence links to remove."""
 
 
 class Mutation(Contract):
@@ -204,6 +252,29 @@ class EntryLink(Contract):
     session, and a math finding can move to another."""
 
 
+class EvidenceLink(Contract):
+    """A stored evidence link: its role and type, its pinned target, its scope, and the
+    revision of the entry that added it, whose author added it (LG-8)."""
+
+    evidence_id: str
+    role: EvidenceRole
+    type: EvidenceType
+    target: Literal["entry", "artifact", "block", "review"]
+    target_id: str
+    revision: int | None = None
+    """The target's pinned revision: an entry's, an artifact's or a document's."""
+    block: str | None = None
+    span: str | None = None
+    sha256: str | None = None
+    """An artifact target's SHA-256."""
+    checked: int | None = None
+    """The revision of the holding entry an ``independent_check`` examined."""
+    scope: str | None = None
+    added: int
+    handle: str | None = None
+    """An entry target's handle, as it reads now."""
+
+
 class EntrySummary(Contract):
     """An entry as a list shows it."""
 
@@ -215,6 +286,8 @@ class EntrySummary(Contract):
     title: str
     status: str
     updated: str
+    asserted_only: bool | None = None
+    """For a claim or result: whether it holds no evidence links at all (LG-11)."""
 
 
 class EntryView(EntrySummary):
@@ -224,6 +297,7 @@ class EntryView(EntrySummary):
     statement: str
     fields: dict[str, Any]
     links: list[EntryLink]
+    evidence: list[EvidenceLink]
     incoming: list[EntryLink]
     """Links other entries' current revisions hold to it, in the order those entries were
     made: as many as 200 from the one a read starts at."""
