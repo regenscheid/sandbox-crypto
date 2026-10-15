@@ -29,7 +29,6 @@ from sandbox_science.policy import (
 EXAMPLE = Path(__file__).resolve().parents[3] / "examples" / "policy.yaml"
 FIXTURE = Path(__file__).parent / "fixtures" / "crypto-research-mcp-tools.json"
 CEILING = PoolCeiling.unrestricted()
-PREFIX = "crypto_research_mcp-"
 
 
 class Tool(TypedDict):
@@ -70,23 +69,23 @@ def policy() -> LoadedPolicy:
     return load_policy(EXAMPLE)
 
 
-@pytest.mark.parametrize("tool", load_tools(), ids=lambda tool: tool["name"].removeprefix(PREFIX))
+@pytest.mark.parametrize("tool", load_tools(), ids=lambda tool: tool["name"])
 def test_every_crypto_research_mcp_tool(policy: LoadedPolicy, tool: Tool) -> None:
-    short = tool["name"].removeprefix(PREFIX)
-    expected = Action.ALLOW if short in ALLOWED_DESPITE_CLASS else EXPECTED_BY_CLASS[tool["class_"]]
+    name = tool["name"]
+    expected = Action.ALLOW if name in ALLOWED_DESPITE_CLASS else EXPECTED_BY_CLASS[tool["class_"]]
     operation = McpOperation(server="crypto-research-mcp", method="tools/call", tool=tool["name"])
     decision = evaluate(operation, policy, ceiling=CEILING)
     assert decision.action is expected, decision.reason
 
 
 def test_fixture_covers_the_deliberate_exceptions() -> None:
-    names = {tool["name"].removeprefix(PREFIX) for tool in load_tools()}
+    names = {tool["name"] for tool in load_tools()}
     assert names >= ALLOWED_DESPITE_CLASS
     assert len(names) == 78
 
 
 def test_search_feedback_is_not_allowed_by_the_search_pattern(policy: LoadedPolicy) -> None:
-    tool = PREFIX + "firecrawl-mcp_firecrawl_search_feedback"
+    tool = "firecrawl-mcp_firecrawl_search_feedback"
     decision = evaluate(
         McpOperation(server="crypto-research-mcp", method="tools/call", tool=tool),
         policy,
@@ -201,7 +200,7 @@ def test_example_packages(
                 "jsonrpc": "2.0",
                 "id": 3,
                 "method": "tools/call",
-                "params": {"name": PREFIX + "paper-search-mcp_arxiv_search", "arguments": {}},
+                "params": {"name": "paper-search-mcp_arxiv_search", "arguments": {}},
             },
             "worker",
             Action.ALLOW,

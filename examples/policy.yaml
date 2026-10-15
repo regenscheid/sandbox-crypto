@@ -125,9 +125,8 @@ mcp:
         headers:                                          # a Cloudflare Access service token (owner, 2026-10-14)
           CF-Access-Client-Id: "${provider:crypto-research-mcp.CF_ACCESS_CLIENT_ID}"
           CF-Access-Client-Secret: "${provider:crypto-research-mcp.CF_ACCESS_CLIENT_SECRET}"
-      # The portal prefixes every tool name; patterns match the rest, so a pattern
-      # cannot match the prefix ("research" contains "search").
-      tool_prefix: crypto_research_mcp-
+      # The server lists its tools by their bare names, such as
+      # e-print-mcp_search_eprint, with no portal prefix (lab 39, 2026-10-15).
       # Checked against the server's 78 tools (2026-10-10). Tools are allowed by
       # exact name, so a tool a new server revision adds, or a compound name such as
       # get_or_create_note, asks first (defaults.action). Patterns only escalate or
