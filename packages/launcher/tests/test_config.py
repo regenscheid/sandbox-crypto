@@ -37,7 +37,13 @@ def test_ports_are_plain_numbers_and_loopback_gateways_are_ip_addresses(
             {
                 "worker": {"listen": "127.0.0.1:08100"},
                 "model": {"url": "http://[::1]:4000/v1"},
-                "openshell": {"env": {"XDG_STATE_HOME": "lab/state", "TELEMETRY": "false"}},
+                "openshell": {
+                    "env": {
+                        "XDG_STATE_HOME": "lab/state",
+                        "TELEMETRY": "false",
+                        "OPENSHELL_GATEWAY": "https://127.0.0.1:17670/v1",
+                    }
+                },
             }
         )
     )
@@ -47,6 +53,7 @@ def test_ports_are_plain_numbers_and_loopback_gateways_are_ip_addresses(
     site = config.worker.policy.parent
     assert config.openshell.env["XDG_STATE_HOME"] == str(site / "lab/state")
     assert config.openshell.env["TELEMETRY"] == "false"
+    assert config.openshell.env["OPENSHELL_GATEWAY"] == "https://127.0.0.1:17670/v1"  # a URL
     loopback = load_config(make_config({"model": {"url": "http://127.0.0.1:4000/v1"}}))
     assert loopback.model.url == "http://127.0.0.1:4000/v1"
 

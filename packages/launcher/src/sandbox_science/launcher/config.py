@@ -199,9 +199,12 @@ class OpenShellConfig(BaseModel):
     @classmethod
     def _paths(cls, value: dict[str, str], info: ValidationInfo) -> dict[str, str]:
         """A value with a ``/`` in it, or that starts with ``~``, is a path: absolute, so
-        that every part reaches the same gateway, whatever its working directory."""
+        that every part reaches the same gateway, whatever its working directory. A URL
+        (``scheme://...``) is not a path, and stays as it is."""
         return {
-            key: str(_path(Path(item), info)) if "/" in item or item.startswith("~") else item
+            key: str(_path(Path(item), info))
+            if ("/" in item or item.startswith("~")) and "://" not in item
+            else item
             for key, item in value.items()
         }
 

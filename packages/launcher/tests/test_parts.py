@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import stat
+import threading
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,7 @@ import pytest
 
 from sandbox_science.launcher import parts
 from sandbox_science.launcher.config import LauncherError, load_config
-from sandbox_science.launcher.state import Layout, ensure_token
+from sandbox_science.launcher.state import Layout, ensure_token, write_private
 
 
 def mode(path: Path) -> int:
@@ -128,3 +129,27 @@ def test_a_model_key_file_open_to_others_is_refused_without_reading_it(
     config.model.api_key_file.chmod(0o644)
     with pytest.raises(LauncherError, match=r"the model key file .* is open to other users"):
         parts.check(config)
+
+
+def test_writers_of_one_file_never_share_a_temporary_file(tmp_path: Path) -> None:
+    target = tmp_path / "shared.json"
+
+    failures: list[BaseException] = []
+
+    def write(number: int) -> None:
+        try:
+            for _ in range(50):
+                write_private(target, f"{number}\n" * 1000)
+        except BaseException as failure:  # a writer's temporary file taken by another
+            failures.append(failure)
+
+    threads = [threading.Thread(target=write, args=(number,)) for number in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert failures == []
+    lines = set(target.read_text().splitlines())
+    assert len(lines) == 1  # one writer's whole text, never a mix
+    assert mode(target) == 0o600
+    assert [path.name for path in tmp_path.iterdir()] == ["shared.json"]
