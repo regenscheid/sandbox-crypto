@@ -127,6 +127,15 @@ test('only PDFs open in the viewer, and only when the server has it on', () => {
     size: 10,
     media_type: 'application/pdf',
     created_at: '2026-10-14T00:00:00Z',
+    result: true,
+    deleted: false,
+    content_retained: true,
+    content_note: null,
+    kind: 'agent_publication',
+    session_id: 's1',
+    run_id: 'run-1',
+    role: 'main',
+    tool_call: 'call1',
   } satisfies ArtifactEntry;
   expect(viewable(entry, true)).toBe(true);
   expect(viewable(entry, false)).toBe(false);

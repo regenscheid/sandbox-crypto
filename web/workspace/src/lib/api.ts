@@ -19,6 +19,8 @@ import type {
   SessionView,
   ViewerLink,
 } from './api-types';
+import type { ArtifactFilter, ArtifactGroup, FileSettings } from './artifactFiles';
+import { artifactQuery } from './artifactFiles';
 import type { ServerBlock } from './attach';
 import { ApiError, get, post } from './http';
 import { signOut } from './session';
@@ -453,11 +455,20 @@ export const api = {
     get<PatchPreview>(
       `/projects/${part(project)}/documents/${part(document)}/patches/${part(patch)}/preview`,
     ),
-  /** The project's published artifacts, a page at a time, and whether the viewer is on. */
-  artifacts: (project: string, after: string | null = null) =>
+  /** The project's artifacts of one group, a page at a time, and whether the viewer is on. */
+  artifacts: (
+    project: string,
+    after: string | null,
+    group: ArtifactGroup,
+    filter: ArtifactFilter = { session: '', run: '' },
+  ) =>
     get<ArtifactListing>(
-      `/projects/${part(project)}/artifacts` + (after === null ? '' : `?after=${part(after)}`),
+      `/projects/${part(project)}/artifacts?${artifactQuery(group, filter, after)}`,
     ),
+  /** The project's settings for the files its executions write, with the defaults. */
+  fileSettings: (project: string) => get<FileSettings>(`/projects/${part(project)}/files/settings`),
+  changeFileSettings: (project: string, value: Record<string, unknown>) =>
+    post<FileSettings>(`/projects/${part(project)}/files/settings`, value),
   /** A link that opens one PDF revision in the viewer, for 10 minutes. */
   viewerLink: (project: string, artifact: string, revision: number, sha256: string) =>
     get<ViewerLink>(

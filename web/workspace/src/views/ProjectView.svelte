@@ -4,6 +4,7 @@
   import { formatTime } from '../lib/format';
   import { documentHref, ledgerHref, sessionHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
+  import ProjectFiles from './ProjectFiles.svelte';
   import ProjectMacros from './ProjectMacros.svelte';
   import EnvironmentPanel from './EnvironmentPanel.svelte';
   import ArtifactList from './ArtifactList.svelte';
@@ -36,6 +37,7 @@
     <a href={ledgerHref(projectId)}>The project's ledger</a>: its issues, claims and results, as a
     board.
   </p>
+  <ProjectFiles {projectId} />
 
   <h2>Sessions</h2>
   {#if project.sessions.length === 0}

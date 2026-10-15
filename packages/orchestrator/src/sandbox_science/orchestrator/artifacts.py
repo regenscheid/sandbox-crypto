@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Final, Literal
@@ -44,6 +45,11 @@ _MAX_RECORD: Final = 16 * 1024
 _MAX_REQUEST: Final = 8 * 1024
 _EMPTY: Final = hashlib.sha256(b"").hexdigest()
 _GiB: Final = 1024**3
+_RESULT: Final = (
+    "EXISTS(SELECT 1 FROM artifact_revisions r WHERE r.artifact=artifact_objects.id "
+    "AND json_extract(r.record,'$.publication.kind') IN ('agent_publication','declared_result'))"
+)
+"""An artifact with a published or declared revision: a result (RA-37)."""
 Room = Literal["content", "metadata", "full"]
 """What the budget leaves for a new revision: its bytes, only its hash and size, or nothing."""
 
@@ -597,19 +603,46 @@ class ArtifactInventory:
                 )
             return data
 
-    def list(self, project: str, *, after: str = "") -> ArtifactPage:
-        """At most ten head records, in stable ID order, without content allocation."""
+    def list(
+        self,
+        project: str,
+        *,
+        after: str = "",
+        group: Literal["results", "files"] | None = None,
+        session: str | None = None,
+        run: str | None = None,
+    ) -> ArtifactPage:
+        """At most ten head records, in stable ID order, without content allocation.
+        ``results`` are the artifacts with a published or declared revision, ``files``
+        the others (RA-37); ``session`` and ``run`` keep those with a revision of theirs."""
         self._scope(project)
         if after:
             _IDENTIFIER.validate_python(after)
+        for value in (session, run):
+            if value is not None:
+                _IDENTIFIER.validate_python(value)
         if self.documents.control.missing:
             return ArtifactPage(entries=(), next_after=None)
+        conditions, values = ["project=?", "id>?"], [project, after]
+        if group is not None:
+            conditions.append(("" if group == "results" else "NOT ") + _RESULT)
+        for path, value in (
+            ("$.publication.context.session_id", session),
+            ("$.publication.run_id", run),
+        ):
+            if value is not None:
+                conditions.append(
+                    "EXISTS(SELECT 1 FROM artifact_revisions r "  # noqa: S608 - fixed paths
+                    f"WHERE r.artifact=artifact_objects.id AND json_extract(r.record,'{path}')=?)"
+                )
+                values.append(value)
         with self.documents.control.read() as tx:
             db = tx.sql
             rows = db.execute(
-                "SELECT id,head FROM artifact_objects "
-                "WHERE project=? AND id>? ORDER BY id LIMIT 11",
-                (project, after),
+                "SELECT id,head FROM artifact_objects WHERE "  # noqa: S608 - fixed conditions
+                + " AND ".join(conditions)
+                + " ORDER BY id LIMIT 11",
+                values,
             ).fetchall()
             entries = tuple(
                 self._revision(db, project, artifact, number) for artifact, number in rows[:10]
@@ -620,6 +653,20 @@ class ArtifactInventory:
                 if entries and len(rows) > 10
                 else None,
             )
+
+    def results(self, project: str, artifacts: Sequence[str]) -> set[str]:
+        """Which of ``artifacts`` have a published or declared revision (RA-37)."""
+        self._scope(project)
+        if not artifacts or self.documents.control.missing:
+            return set()
+        with self.documents.control.read() as tx:
+            marks = ",".join("?" * len(artifacts))
+            rows = tx.sql.execute(
+                f"SELECT id FROM artifact_objects WHERE project=? AND id IN ({marks}) AND "  # noqa: S608
+                + _RESULT,
+                (project, *artifacts),
+            ).fetchall()
+        return {row[0] for row in rows}
 
     def events(self, project: str, *, after: int = 0) -> ArtifactEventPage:
         """Bounded immutable event pages, without guessing execution lineage."""
