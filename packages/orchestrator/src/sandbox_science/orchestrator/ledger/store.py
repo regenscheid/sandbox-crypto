@@ -68,6 +68,10 @@ TEXTS: Final = TextRevisions("statement")
 """Each entry's statement, a text revision under the entry's ID."""
 
 RECEIPTS: Final = Receipts("ledger", "operation ID {operation!r} names another ledger change")
+_PROJECT: Final = "project"
+"""The one actor of the ledger's receipts: an operation ID names one change in its
+project, whoever retries it, so a shared results file imported from two sessions
+records its lines once (LG-31, LG-36, LG-41)."""
 
 MAX_FIELDS: Final = 65536
 """An entry's fields, as UTF-8 JSON, are at most this many bytes."""
@@ -287,19 +291,28 @@ class Ledger:
         operation ID and receipt. ``provenance`` names where a mutation came from, such
         as the line of a results file (LG-41)."""
         role = self._authority(project, author)
-        blocks = [
-            link
-            for mutation, _ in mutations
-            for change in mutation.changes
-            for link in change.links or ()
-            if link.document is not None
-        ]
-        pinned = self._blocks(project, blocks)
-        with self.control.write() as tx:
-            return [
-                self._apply(tx.sql, project, mutation, author, role, pinned, provenance)
-                for mutation, provenance in mutations
+        pinned: dict[tuple[str, int, str], str] = {}
+        for mutation, provenance in mutations:
+            links = [
+                link
+                for change in mutation.changes
+                for link in change.links or ()
+                if link.document is not None
             ]
+            try:
+                pinned.update(self._blocks(project, links))
+            except DocumentError as error:
+                raise _labelled(error, provenance) from None
+        with self.control.write() as tx:
+            results: list[MutationResult] = []
+            for mutation, provenance in mutations:
+                try:
+                    results.append(
+                        self._apply(tx.sql, project, mutation, author, role, pinned, provenance)
+                    )
+                except DocumentError as error:
+                    raise _labelled(error, provenance) from None
+            return results
 
     def _apply(
         self,
@@ -312,7 +325,7 @@ class Ledger:
         provenance: Json | None,
     ) -> MutationResult:
         digest = fingerprint(mutation)
-        replay = RECEIPTS.find(db, project, author.actor, mutation.operation_id, digest)
+        replay = RECEIPTS.find(db, project, _PROJECT, mutation.operation_id, digest)
         if replay is not None:
             return MutationResult.model_validate({**replay, "replayed": True})
         numbers: dict[str, int] = {}
@@ -354,7 +367,7 @@ class Ledger:
         RECEIPTS.record(
             db,
             project,
-            author.actor,
+            _PROJECT,
             mutation.operation_id,
             digest,
             result.model_dump(mode="json"),
@@ -952,6 +965,16 @@ def _dropped(p: _Planned, kind: str) -> list[Link]:
         for link in p.previous
         if link.kind == kind and (link.target, link.target_id) not in after
     ]
+
+
+def _labelled(error: DocumentError, provenance: Json | None) -> DocumentError:
+    """``error``, naming the results file's line its mutation came from."""
+    line = (provenance or {}).get("line")
+    if line is None:
+        return error
+    return DocumentError(
+        error.kind, f"line {line}: {error.message}", {**error.details, "line": line}
+    )
 
 
 def _first_error(error: ValidationError) -> str:
