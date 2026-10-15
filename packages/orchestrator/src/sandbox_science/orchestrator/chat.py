@@ -33,7 +33,7 @@ import contextlib
 import json
 import logging
 import secrets
-from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -227,8 +227,14 @@ class UserMessages(TurnHook):
 
     name = SOURCE
 
-    def __init__(self, chat: RunChat) -> None:
-        self.chat = chat
+    def __init__(
+        self,
+        chat: RunChat,
+        discover: Callable[[Sequence[str]], Awaitable[Notice | None]] | None = None,
+    ) -> None:
+        """``discover`` gives the skills notice for the messages taken, which goes just
+        before them (docs/specs/skills.md, SK-35)."""
+        self.chat, self.discover = chat, discover
         self.lost = False
         """Whether a call found the session held by another run."""
 
@@ -236,10 +242,15 @@ class UserMessages(TurnHook):
         found = await self.chat.pending()
         if found:
             await self.chat.offer(found)
-        return tuple(
+        messages = tuple(
             Notice(SOURCE, (message.message_id,), message.text, None, user=True)
             for message in found
         )
+        if messages and self.discover is not None:
+            skills = await self.discover([message.text for message in found])
+            if skills is not None:
+                return (skills, *messages)
+        return messages
 
     async def notices(self, point: Point, run: RunView) -> Sequence[Notice]:
         if self.lost and point == "turn":

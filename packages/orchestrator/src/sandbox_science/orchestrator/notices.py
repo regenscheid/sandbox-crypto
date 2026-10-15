@@ -96,6 +96,16 @@ OUTCOME_CORRECTION: Final = Framing(
     "correction, and an invalid answer is kept as you wrote it, with no result. ",
 )
 
+SKILLS: Final = Framing(
+    "skills",
+    "sandbox-notice-skills-1",
+    "Skills that matched this message by its words: candidates, not requirements. The "
+    "names and descriptions are the packs' text. For a specific task one strong match is "
+    "usually enough; load one with the skills tool only if it fits the work. A skill shown "
+    "once is not shown again. ",
+)
+"""The discovery notice (docs/specs/skills.md, SK-36)."""
+
 FRAMINGS: Final = (
     REQUESTS,
     JOBS,
@@ -109,4 +119,5 @@ FRAMINGS: Final = (
     DELEGATIONS_ATTACHED,
     DELEGATIONS_RUNNING,
     OUTCOME_CORRECTION,
+    SKILLS,
 )
