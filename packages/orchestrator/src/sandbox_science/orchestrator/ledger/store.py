@@ -43,7 +43,7 @@ from sandbox_science.orchestrator.documents.normalize import normalize
 from sandbox_science.orchestrator.documents.project_macros import head as macro_head
 from sandbox_science.orchestrator.projects import ProjectError, recorded
 
-from . import evidence
+from . import evidence, gate
 from .models import (
     DECIDED,
     FIELDS,
@@ -288,6 +288,44 @@ class Ledger:
 
     # Changes.
 
+    def check(
+        self,
+        project: str,
+        reference: str,
+        revision: int,
+        author: Author,
+        *,
+        operation_id: str,
+        note: str | None = None,
+    ) -> MutationResult:
+        """The user's record that they checked ``reference`` at ``revision`` (LG-17): an
+        ``independent_check`` evidence link of the user's, on the entry as it reads at
+        that revision, with the note as its scope. It is a conflict when the entry has
+        moved on. Only the user records one; an agent's check counts for nothing."""
+        if author.kind != "user":
+            raise _refused("only the user records that they checked an entry")
+        self._project(project)
+        with self.control.read() as tx:
+            entry = self._find(tx.sql, project, reference).entry_id
+        check: Json = {
+            "role": "independent_check",
+            "type": "proof",
+            "entry": entry,
+            "revision": revision,
+            "checked": revision,
+        }
+        if note is not None:
+            check["scope"] = note
+        return self.change(
+            project,
+            {
+                "operation_id": operation_id,
+                "reason": note or f"The user checked revision {revision}.",
+                "changes": [{"entry": entry, "expected": revision, "evidence": [check]}],
+            },
+            author,
+        )
+
     def change(
         self, project: str, raw: object, author: Author, *, provenance: Json | None = None
     ) -> MutationResult:
@@ -368,6 +406,7 @@ class Ledger:
                 )
         self._check_links(db, planned)
         self._check_published(db, planned)
+        self._check_decisions(db, planned, role)
         now = self.clock()
         changed: list[ChangedEntry] = []
         for p in planned:
@@ -401,7 +440,7 @@ class Ledger:
         numbers: dict[str, int],
     ) -> _Planned:
         if change.entry is None:
-            return self._plan_create(db, project, change, numbers)
+            return self._plan_create(db, project, change, role, numbers)
         if change.type is not None or change.origin is not None or change.key is not None:
             raise DocumentError(INVALID_REQUEST, "a revision keeps the entry's type and origin")
         if change.expected is None:
@@ -442,14 +481,19 @@ class Ledger:
             if fields != planned.fields:
                 planned.fields, planned.changed = fields, [*planned.changed, "fields"]
         if change.status is not None and change.status != current[2]:
-            planned.status = _status(row, change.status)
+            planned.status = _status(row, current[2], change.status)
             planned.changed = [*planned.changed, "status"]
         if change.links is not None:
             planned.previous = self._links(db, row.entry_id, row.head)
         return planned
 
     def _plan_create(
-        self, db: sqlite3.Connection, project: str, change: EntryChange, numbers: dict[str, int]
+        self,
+        db: sqlite3.Connection,
+        project: str,
+        change: EntryChange,
+        role: str,
+        numbers: dict[str, int],
     ) -> _Planned:
         if change.type is None or change.expected is not None:
             raise DocumentError(INVALID_REQUEST, "a new entry names its type and no revision")
@@ -461,6 +505,11 @@ class Ledger:
                 INVALID_REQUEST, "claims and results, and only they, have an origin"
             )
         status = _first_status(kind, change.origin)
+        if kind == "decision" and change.status == "in_effect":
+            # LG-17: the user or the main agent records a decision in effect at once.
+            if role == "delegated":
+                raise _refused("a delegated agent's decision is proposed")
+            status = "in_effect"
         if change.status is not None and change.status != status:
             raise DocumentError(INVALID_REQUEST, f"a new {kind} starts {status}")
         # Handles count per project and type; a mutation's new entries take the next ones.
@@ -719,6 +768,112 @@ class Ledger:
         p.evidence = result
         if not p.created:
             p.changed = [*p.changed, "evidence"]
+
+    def _check_decisions(self, db: sqlite3.Connection, planned: list[_Planned], role: str) -> None:
+        """Statuses only a decision sets (LG-4): an entry becomes ``established``,
+        ``obstructed`` or ``refuted``, and a decision ``reversed``, only in a change that
+        puts in effect a decision that affects it. The main agent's decision to establish
+        a result needs the gate (LG-17), and one that makes an issue obstructed needs an
+        accepted assessment (LG-7), which work records will carry."""
+        deciding = [
+            p
+            for p in planned
+            if p.row.type == "decision"
+            and p.status == "in_effect"
+            and p.status_before != "in_effect"
+        ]
+        for p in planned:
+            decided = p.status in DECIDED or (p.row.type == "decision" and p.status == "reversed")
+            # An entry stays as decided: while it is established, refuted or obstructed,
+            # what a decision rested on changes only with its status or a new decision.
+            rewritten = (
+                not p.created
+                and p.status_before in DECIDED
+                and p.status == p.status_before
+                and self._rewrites(db, p)
+            )
+            if not (decided and "status" in p.changed) and not rewritten:
+                continue
+            if rewritten and not any(
+                d is not p
+                and any(
+                    link.kind == "affects" and link.target_id == p.row.entry_id
+                    for link in self._final_links(db, d)
+                )
+                for d in deciding
+            ):
+                raise DocumentError(
+                    INVALID_REQUEST,
+                    f"{p.row.handle} is {p.status}: its statement, fields, assumptions and "
+                    "evidence change only with its status, or in a change that puts in "
+                    "effect a decision that affects it",
+                )
+            if not any(
+                d is not p
+                and any(
+                    link.kind == "affects" and link.target_id == p.row.entry_id
+                    for link in self._final_links(db, d)
+                )
+                for d in deciding
+            ):
+                raise DocumentError(
+                    INVALID_REQUEST,
+                    f"{p.row.handle} becomes {p.status} only in a change that puts in effect "
+                    "a decision that affects it",
+                )
+            if role != "main":
+                continue
+            if p.status == "established":
+                held = self._final_evidence(db, p)
+                checked = {link.checked for link in held if link.checked is not None}
+                latest = TEXTS.latest(db, p.row.entry_id)
+                assert latest is not None  # noqa: S101 - an existing entry has a statement
+                now = gate.material(
+                    p.fields,
+                    None if p.statement is not None else latest[0],
+                    self._final_links(db, p),
+                    held,
+                )
+                gate.establish(
+                    db,
+                    p.row.entry_id,
+                    p.row.handle,
+                    held,
+                    now,
+                    gate.examined(db, p.row.entry_id, checked),
+                    p.row.head,
+                )
+            elif p.status == "obstructed":
+                raise gate.refused(
+                    p.row.entry_id,
+                    "assessment",
+                    f"{p.row.handle} becomes obstructed with an assessment that accepts the "
+                    "claimed obstruction; work records are not built yet, so only the user's "
+                    "decision makes an issue obstructed",
+                )
+
+    def _rewrites(self, db: sqlite3.Connection, p: _Planned) -> bool:
+        """Whether the change alters what a decision on ``p``'s entry rested on: its
+        statement, fields, ``assumes`` links or evidence."""
+        if {"statement", "fields", "evidence"} & set(p.changed):
+            return True
+        if "links" not in p.changed:
+            return False
+
+        def assumed(links: list[EntryLink]) -> set[tuple[str, int | None]]:
+            return {(link.target_id, link.revision) for link in links if link.kind == "assumes"}
+
+        return assumed(p.previous) != assumed(self._final_links(db, p))
+
+    def _final_links(self, db: sqlite3.Connection, p: _Planned) -> list[EntryLink]:
+        """The links the change leaves ``p``'s entry."""
+        return p.links if p.links is not None else self._links(db, p.row.entry_id, p.row.head)
+
+    def _final_evidence(self, db: sqlite3.Connection, p: _Planned) -> list[EvidenceLink]:
+        """The evidence the change leaves ``p``'s entry."""
+        if p.evidence is not None:
+            return p.evidence
+        return evidence.stored(db, p.row.entry_id, p.row.head) if not p.created else []
 
     def _check_published(self, db: sqlite3.Connection, planned: list[_Planned]) -> None:
         """A published claim or result cites its reference through a ``supports`` link of
@@ -1048,16 +1203,26 @@ def fingerprint(mutation: Mutation) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-def _status(row: _Row, status: str) -> str:
+def _status(row: _Row, before: str, status: str) -> str:
+    """``status`` for ``row``, which is ``before``, if its type allows the change; that a
+    decision makes it is checked once the whole change is planned (LG-4)."""
     if status not in STATUSES[row.type]:
         raise DocumentError(INVALID_REQUEST, f"a {row.type} is never {status}")
-    if status in DECIDED:
-        raise DocumentError(
-            INVALID_REQUEST, f"only a decision in effect makes an entry {status} (LG-4)"
-        )
-    if status in ("rejected", "reversed"):
-        # LG-30: reversing a decision is a new decision that states its own changes.
-        raise DocumentError(INVALID_REQUEST, f"a decision becomes {status} by another decision")
+    if row.type == "decision":
+        # LG-30: a decision in effect is reversed by another decision, which states its
+        # own changes; nothing returns to a status by itself.
+        if before in ("rejected", "reversed"):
+            raise DocumentError(
+                INVALID_REQUEST, f"a {before} decision stays {before}: make a new decision"
+            )
+        if before == "in_effect" and status != "reversed":
+            raise DocumentError(
+                INVALID_REQUEST, "a decision in effect is reversed by another decision"
+            )
+        if before == "proposed" and status == "reversed":
+            raise DocumentError(INVALID_REQUEST, "a proposed decision is rejected, not reversed")
+    if status == "established" and row.origin != "project":
+        raise DocumentError(INVALID_REQUEST, "only a project claim or result is established")
     if status == "recorded" and row.origin != "published":
         raise DocumentError(INVALID_REQUEST, "only a published entry is recorded")
     if status == "proposed" and row.origin == "published":

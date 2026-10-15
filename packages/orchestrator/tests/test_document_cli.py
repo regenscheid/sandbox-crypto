@@ -175,3 +175,23 @@ def test_an_imported_revision_is_scheduled_for_a_math_check(
         assert jobs.job(check)["revision"] == 1
     finally:
         store.close()
+
+
+def test_the_user_records_a_ledger_check(state: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """``ledger check``: the user's record that they checked an entry at a revision."""
+    from sandbox_science.orchestrator.ledger import Ledger
+
+    documents = DocumentStore(store_path(state))
+    claim = {"type": "claim", "origin": "project", "title": "K", "statement": "s"}
+    Ledger(documents).change(
+        "p1", {"operation_id": "made", "reason": "r", "changes": [claim]}, AGENT
+    )
+    documents.close()
+    where = ("--state-dir", str(state), "--project", "p1")
+    status, out, _ = _run(
+        capsys, "ledger", "check", *where, "C-1", "--revision", "1", "--note", "Read it."
+    )
+    assert status == 0
+    assert json.loads(out)["entries"][0]["revision"] == 2
+    status, _, err = _run(capsys, "ledger", "check", *where, "C-1", "--revision", "1")
+    assert (status, "conflict" in err) == (1, True)

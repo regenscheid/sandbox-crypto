@@ -16,16 +16,18 @@ import asyncio
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Final
+from typing import Annotated, Final
 
 from aiohttp import web
-from pydantic import AwareDatetime
+from pydantic import AwareDatetime, ConfigDict, Field, ValidationError
 
 from sandbox_science.contracts import Contract, ErrorKind, Identifier
+from sandbox_science.orchestrator.documents import USER, DocumentStore
 from sandbox_science.orchestrator.ledger import EntryHistory, EntryPage, EntryView, Ledger
 from sandbox_science.orchestrator.projects import ProjectError
 
-from .context import CONTEXT, identifier, json_answer
+from . import documents
+from .context import CONTEXT, identifier, json_answer, json_body
 
 PATH: Final = "/api/v0/projects/{project}/ledger"
 _ENTRY: Final = re.compile(r"entry-[0-9a-f]{24}|(?:I|C|R|A|D|T|REF)-[1-9][0-9]{0,8}")
@@ -62,6 +64,7 @@ def add_routes(app: web.Application) -> None:
     app.router.add_get(PATH, listing)
     app.router.add_get(PATH + "/{entry}", entry)
     app.router.add_get(PATH + "/{entry}/history", history)
+    app.router.add_post(PATH + "/{entry}/checks", check)
 
 
 def _query(request: web.Request, allowed: set[str]) -> dict[str, str]:
@@ -143,3 +146,37 @@ async def history(request: web.Request) -> web.Response:
         ).model_dump_json()
 
     return await _answer(request, project, read)
+
+
+class CheckRequest(Contract):
+    """The user's record that they checked an entry at the revision they read (LG-17)."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    revision: Annotated[int, Field(ge=1, le=999999999)]
+    note: Annotated[str, Field(min_length=1, max_length=4096)] | None = None
+    operation_id: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")]
+
+
+async def check(request: web.Request) -> web.Response:
+    """POST …/ledger/{entry}/checks: the user checked the entry at ``revision``, the one
+    the page read; a later revision is a conflict. Same-origin, the user's only."""
+    project, reference = identifier(request, "project"), _entry(request)
+    raw = await json_body(request, "ledger check JSON")
+    try:
+        value = CheckRequest.model_validate(raw)
+    except ValidationError:
+        raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid ledger check") from None
+
+    def checked(store: DocumentStore) -> dict[str, object]:
+        result = Ledger(store).check(
+            project,
+            reference,
+            value.revision,
+            USER,
+            operation_id=value.operation_id,
+            note=value.note,
+        )
+        return result.model_dump(mode="json")
+
+    return await documents.answer(request, checked, writer=True)

@@ -228,7 +228,11 @@ def resolve(
     if entry is not None:
         if item.block is not None or item.math is not None or item.sha256 is not None:
             raise DocumentError(INVALID_REQUEST, "an entry target names only its revision")
-        if entry.entry_id == holder.entry_id:
+        if entry.entry_id == holder.entry_id and not (
+            item.role == "independent_check" and item.revision == item.checked
+        ):
+            # Only a check of the entry as it reads names the entry itself: the user's
+            # record that they checked it (Ledger.check).
             raise DocumentError(INVALID_REQUEST, "an entry is not its own evidence")
         revision = entry.head if item.revision is None else item.revision
         if not 1 <= revision <= entry.head:

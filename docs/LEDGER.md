@@ -41,6 +41,20 @@ An entry the same change revises is linked as the change leaves it, so an assump
 
 **Published claims and results (LG-15).** A published claim or result starts `recorded` and cites its reference through a `supports` link of type `source_claim` to a reference entry, which may be one the same change records; a change without one, or one that removes the last, is refused.
 
+**Decisions (LG-4, LG-30).** An entry becomes `established`, `obstructed` or `refuted`, and a decision `reversed`, only in a change that puts in effect a decision that `affects` it: a new decision recorded `in_effect` (by the user or the main agent; a delegated agent's decision is `proposed`), or a proposed one moved to `in_effect`. Only a project claim or result is `established`. While an entry is `established`, `refuted` or `obstructed`, its statement, fields, `assumes` links and evidence change only with its status, or in a change that puts in effect a decision that affects it, which for the main agent's establishing passes the gate again. A proposed decision may be `rejected`; a decision in effect is reversed by a new decision, which states its own changes, and nothing returns to a status by itself; a rejected or reversed decision stays so. Other status changes need no decision.
+
+**The gate (LG-17).** The user's decision establishes a project result as it is. The main agent's needs the gate to hold, and a refusal (`policy_denied`, `gate_not_met: …`, with the entry and the clause in its details) names the first clause that does not:
+
+| Clause | Holds when | Pending, and why |
+| --- | --- | --- |
+| `evidence` | a `supports` or `derivation` link whose type is neither `synthetic` nor `unclassified`, to anything but a review or an entry that is `refuted`, `withdrawn` or `superseded` | No record says which of a target's inputs were synthetic (RA-17), so the link's type alone is read |
+| `independent_check` | when evidence that counts is a `proof`, an `independent_check` the user added themselves at the revision they checked, of a revision whose statement, fields, `assumes` links and evidence that bears on it (`supports`, `derivation`, `contradicts`) the change keeps; the user records one with the workspace's check or `sandbox-science-harness ledger check` | Checks by delegations and verification reviews are not built, so only the user's count |
+| `computation` | computational evidence (`exact_computation`, `finite_test`, `numerical_experiment`) pinned to an artifact revision | Execution targets are not built, so the producing execution is not pinned |
+| `review` | a completed consistency review covered the entry, with no unresolved `fail` finding on it | The reviewer does not read ledger entries yet, so this clause never holds and the main agent establishes nothing; the reviewer's coverage of ledger entries comes next |
+| `flags` | the entry has no open flag | Flags are not built, so this clause holds |
+
+The main agent's decision to make an issue `obstructed` needs an assessment that accepts the claimed obstruction (LG-7), which work records will carry; until they are built it is refused (clause `assessment`), and only the user's decision makes an issue obstructed. A project setting that reserves decisions to the user is not built; by default it reserves none.
+
 **Mutations (LG-30, LG-31).** A change names an operation ID, a reason, and up to 32 entry changes, each creating an entry (its type, title, statement, fields and links) or revising one (its ID or handle and the revision it expects). Entries the same change creates are named `new:<key>`. All of it commits, with its events and its receipt, or none of it does. A stale expected revision is a conflict that names the current one; nothing is rebased. An operation ID names one change in its project, whoever sends it: the same operation ID with the same change returns the first result (`replayed`), and with another change is refused; a change is compared by a digest of its JSON without the fields it leaves unset, so a field a later version adds does not turn a retry into a conflict. An entry is `superseded` exactly while a current revision supersedes it, so a supersedes link and its target becoming `superseded` commit together, and so do the link's removal and the target's leaving `superseded`; an entry that is `superseded` supersedes nothing new, though one that supersedes another may later be superseded. An issue is `split` exactly while it holds `split_into` links, so it names the issues it was split into in the same change. Neither `supersedes` nor `split_into` links ever lead back to their holder.
 
 **Events (LG-33).** Each new revision records `ledger.entry_created` or `ledger.entry_revised` (with the status before and the parts changed) in the control store's event log, under the entry.
@@ -55,7 +69,7 @@ An entry the same change revises is linked as the change leaves it, so an assump
 
 ## Not built yet
 
-- Statuses a decision sets (`established`, `obstructed`, `refuted`), a decision's own `rejected` and `reversed`, decisions' status changes and the gate (LG-4, LG-7, LG-17); evidence pinned to executions, PDF anchors and delegation outcomes (LG-8).
+- The gate's pending clauses (see the table above); the project setting that reserves decisions to the user (LG-13); evidence pinned to executions, PDF anchors and delegation outcomes (LG-8).
 - `dominates` links and the frontier (LG-18 to LG-24); flags (LG-27 to LG-29); work records (LG-6).
 - The GUI's frontier and project-wide history views, its indicators beside a status (open findings and flags), moving cards; the pack's import and the export (LG-34 to LG-39); naming the execution that wrote a results file. The board, the issue list and the entry view with its history are built ([workspace](WORKSPACE.md#views)).
 
