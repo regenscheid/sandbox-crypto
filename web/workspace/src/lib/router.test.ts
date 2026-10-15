@@ -1,6 +1,15 @@
 // SPDX-License-Identifier: MIT
 import { describe, expect, it } from 'vitest';
-import { documentHref, historyHref, parseRoute, pdfHref, projectHref, sessionHref } from './router';
+import {
+  documentHref,
+  historyHref,
+  ledgerEntryHref,
+  ledgerHref,
+  parseRoute,
+  pdfHref,
+  projectHref,
+  sessionHref,
+} from './router';
 
 const SHA = 'ab'.repeat(32);
 
@@ -50,6 +59,22 @@ describe('routes', () => {
     [`#/projects/p1/artifacts/art-1/revisions/2/${SHA.toUpperCase()}`, { view: 'missing' }],
     ['#/projects/p1/artifacts/art-1/revisions/2/abc', { view: 'missing' }],
     ['#/projects/p1/artifacts/art-1/revisions/2', { view: 'missing' }],
+    ['#/projects/p1/ledger', { view: 'ledger', project: 'p1' }],
+    ['#/projects/p1/ledger/', { view: 'ledger', project: 'p1' }],
+    ['#/projects/p1/ledger/C-12', { view: 'entry', project: 'p1', entry: 'C-12', revision: null }],
+    [
+      '#/projects/p1/ledger/REF-3/revisions/2',
+      { view: 'entry', project: 'p1', entry: 'REF-3', revision: 2 },
+    ],
+    [
+      '#/projects/p1/ledger/entry-0123456789abcdef01234567',
+      { view: 'entry', project: 'p1', entry: 'entry-0123456789abcdef01234567', revision: null },
+    ],
+    ['#/projects/p1/ledger/C-0', { view: 'missing' }],
+    ['#/projects/p1/ledger/X-1', { view: 'missing' }],
+    ['#/projects/p1/ledger/C-1/revisions/0', { view: 'missing' }],
+    ['#/projects/p1/ledger/C-1/revisions', { view: 'missing' }],
+    ['#/projects/p1/ledger/C-1/history', { view: 'missing' }],
   ])('%s', (hash, route) => {
     expect(parseRoute(hash)).toEqual(route);
   });
@@ -78,6 +103,13 @@ describe('routes', () => {
       artifact: 'art/1',
       revision: 3,
       sha256: SHA,
+    });
+    expect(parseRoute(ledgerHref('p 1'))).toEqual({ view: 'ledger', project: 'p 1' });
+    expect(parseRoute(ledgerEntryHref('p 1', 'T-4', 7))).toEqual({
+      view: 'entry',
+      project: 'p 1',
+      entry: 'T-4',
+      revision: 7,
     });
     expect(parseRoute(historyHref('p 1', 'doc-1'))).toEqual({
       view: 'history',

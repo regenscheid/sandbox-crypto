@@ -8,6 +8,8 @@
  */
 import type {
   ArtifactListing,
+  LedgerEntry,
+  LedgerListing,
   ProjectAnswer,
   ProjectListing,
   ProjectView,
@@ -460,6 +462,18 @@ export const api = {
     get<ViewerLink>(
       `/projects/${part(project)}/artifacts/${part(artifact)}/revisions/${revision}/viewer` +
         `?sha256=${part(sha256)}`,
+    ),
+  /** A page of the project's ledger entries of one type and current status, oldest first. */
+  ledger: (project: string, type: string, status: string, after: string | null = null) =>
+    get<LedgerListing>(
+      `/projects/${part(project)}/ledger?` +
+        new URLSearchParams({ type, status, ...(after === null ? {} : { after }) }).toString(),
+    ),
+  /** An entry by its handle or ID, at its current revision or at `revision`. */
+  ledgerEntry: (project: string, entry: string, revision: number | null = null) =>
+    get<LedgerEntry>(
+      `/projects/${part(project)}/ledger/${part(entry)}` +
+        (revision === null ? '' : `?revision=${revision}`),
     ),
   history: (project: string, document: string) =>
     get<DocumentHistory>(`/projects/${part(project)}/documents/${part(document)}/history`),
