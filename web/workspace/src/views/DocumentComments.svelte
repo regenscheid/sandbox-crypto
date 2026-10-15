@@ -78,9 +78,10 @@
 <section class="comments" aria-label="Document comments">
   <h2>Comments</h2>
   <p class="muted">
-    Comments keep their original revision and quote. Address a comment to a session to queue a
-    request for its main agent. An active run receives it at its next safe point; an idle session
-    keeps it for its next manually started run.
+    Comments keep their original revision and quote. Address a comment to a session to send its main
+    agent a work request. A running run takes it at its next safe point; an open session with no run
+    starts one for it, as a chat message does. A closed session keeps it for its next run: a request
+    does not reopen it.
   </p>
   <button disabled={threads.loading || posting.busy} onclick={refresh}>Refresh comments</button>
   {#if error}<ErrorMessage {error} />{/if}
@@ -162,7 +163,9 @@
           >Address to main agent <select bind:value={draft.session}
             ><option value="">No work request</option
             >{#each sessions as item (item.session_id)}<option value={item.session_id}
-                >{item.session_id}{item.closed_at ? ' (closed; next run)' : ''}</option
+                >{item.session_id}{item.closed_at
+                  ? ' (closed: waits for its next run)'
+                  : ''}</option
               >{/each}</select
           ></label
         >

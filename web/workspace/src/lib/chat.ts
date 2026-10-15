@@ -20,6 +20,7 @@ import type {
 import { formatCost } from './format';
 import { ApiError, get, post } from './http';
 import { forgetWrite, guardedWrite } from './mutation';
+import { visible } from './text';
 
 export type { ChatMessage, RunEvent, RunLease };
 
@@ -333,7 +334,8 @@ const STOPPED: Record<string, string> = {
     "The run stopped at its own limit: its part of the project's daily cost limit, or a delegated run's tokens.",
   gateway_budget:
     'The run stopped: the model gateway refused the call because its spending budget is used up. What waits for the session waits until the gateway allows calls again.',
-  user_message: 'The run ended its wait for a message.',
+  user_message:
+    'The run stopped without an answer: something newer of yours, a message or a plan change, comes first, and the next run takes it up.',
   cancelled: 'The run was cancelled. Its background jobs keep running.',
   interrupted:
     'The run was interrupted: its process ended. Its messages are held until you resume.',
@@ -344,10 +346,12 @@ const STOPPED: Record<string, string> = {
 export function stoppedText(data: Record<string, unknown>): string {
   const stopped = text(data['stopped']);
   const failure = text(data['failure']);
+  // A reason this view has no words for yet, such as one a new release records, is shown
+  // as the run recorded it.
   const said = Object.hasOwn(STOPPED, stopped)
     ? STOPPED[stopped]!
-    : `The run stopped (${stopped}).`;
-  return failure ? `${said} Failure: ${failure}.` : said;
+    : `The run stopped: ${visible(stopped.replaceAll('_', ' ')) || 'no reason recorded'}.`;
+  return failure ? `${said} Failure: ${visible(failure)}.` : said;
 }
 
 /** A tool call's outcome in a few words: its state, error kind and exit code. */
