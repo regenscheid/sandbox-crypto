@@ -10,8 +10,10 @@ Every step goes in the file ``FAKE_JOURNAL`` names, one line each, and ``FAKE_PA
 - ``ignore-term``: it ignores SIGTERM.
 - ``grant-fails``: the worker's ``policy add`` fails.
 - ``child-in-own-group``: it starts a child in a process group of its own.
+- ``child-stays``: it starts a child in its own session, which outlives it.
 
-The run service notes ``LEAK_CHECK`` and ``PASSED_ON`` when it sees them.
+The run service and the workspace note ``LEAK_CHECK`` and ``PASSED_ON`` when they see
+them.
 """
 
 from __future__ import annotations
@@ -62,8 +64,9 @@ def serve(address: str | None, lines: list[str], *, stream: TextIO = sys.stdout)
         listener.listen()
         listener.settimeout(0.1)
     note("start")
-    if behaviour == "child-in-own-group":
-        child = subprocess.Popen(["sleep", "300"], process_group=0)
+    if behaviour in ("child-in-own-group", "child-stays"):
+        group = 0 if behaviour == "child-in-own-group" else None
+        child = subprocess.Popen(["sleep", "300"], process_group=group)
         note(f"child {child.pid}")
     for line in lines:
         print(line, file=stream, flush=True)
@@ -102,6 +105,9 @@ match (name, args[:2]):
                 note(f"saw {seen}")
         serve(None, [f"serving the sessions of {option('--state-dir')}"], stream=sys.stderr)
     case ("sandbox-science-workspace", ["serve", *_]):
+        for seen in ("LEAK_CHECK", "PASSED_ON"):
+            if seen in os.environ:
+                note(f"saw {seen}")
         listen = option("--listen")
         serve(
             listen,

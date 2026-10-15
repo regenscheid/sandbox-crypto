@@ -109,14 +109,22 @@ def site(make_config: Any, fake_parts: Path, tmp_path: Path) -> Iterator[dict[st
     def launch(
         parts: dict[str, str] | None = None, env: dict[str, str] | None = None, **changes: Any
     ) -> Launcher:
+        fakes = ["FAKE_JOURNAL", "FAKE_PARTS"]
+        extra = changes.pop("pass_env", {})
         config = make_config(
             {
                 "bin_dir": str(fake_parts),
                 "start_timeout": 20,
                 "stop_timeout": changes.pop("stop_timeout", 5),
-                "pass_env": ["FAKE_JOURNAL", "FAKE_PARTS", *changes.pop("pass_env", [])],
-                "worker": {"listen": f"127.0.0.1:{worker}"},
-                "workspace": {"listen": f"127.0.0.1:{workspace}"},
+                "worker": {
+                    "listen": f"127.0.0.1:{worker}",
+                    "pass_env": [*fakes, *extra.get("worker", [])],
+                },
+                "run_service": {"pass_env": [*fakes, *extra.get("run_service", [])]},
+                "workspace": {
+                    "listen": f"127.0.0.1:{workspace}",
+                    "pass_env": [*fakes, *extra.get("workspace", [])],
+                },
                 **changes,
             }
         )
@@ -270,13 +278,32 @@ def test_an_address_something_else_holds_is_refused_before_starting(
     assert journal(site["journal"]) == []
 
 
-def test_parts_get_only_the_environment_they_are_given(site: dict[str, Any]) -> None:
+def test_each_part_gets_only_the_environment_its_table_names(site: dict[str, Any]) -> None:
     launcher = site["launch"](
-        env={"LEAK_CHECK": "an exported key", "PASSED_ON": "1"}, pass_env=["PASSED_ON"]
+        env={"LEAK_CHECK": "an exported key", "PASSED_ON": "1"},
+        pass_env={"run_service": ["PASSED_ON"]},
     )
     launcher.expect("Stop:")
     seen = [line for line in journal(site["journal"]) if " saw " in line]
-    assert seen == ["sandbox-science-harness saw PASSED_ON"]
+    assert seen == ["sandbox-science-harness saw PASSED_ON"]  # not the workspace
+
+
+def test_a_state_directory_open_to_others_is_refused_before_it_is_read(
+    site: dict[str, Any],
+) -> None:
+    launcher = site["launch"]()
+    launcher.expect("Stop:")
+    launcher.process.send_signal(signal.SIGINT)
+    assert launcher.finish() == 0
+    layout = Layout(load_config(launcher.config).state_dir)
+    layout.root.chmod(0o755)
+    try:
+        for command in ("down", "status"):
+            refused = launcher.command(command)
+            assert refused.returncode == 1
+            assert "is open to other users (mode 755)" in refused.stderr
+    finally:
+        layout.root.chmod(0o700)
 
 
 def test_a_part_that_ignores_sigterm_is_killed_after_its_stop_timeout(
@@ -333,6 +360,26 @@ def test_a_part_left_behind_is_shown_and_stopped_by_down(site: dict[str, Any]) -
     assert "stopped the run-service" in stopped.stdout
     assert not alive(harness, record)
     assert not layout.record.exists()
+
+
+def test_a_child_that_outlived_its_part_is_found_and_stopped_by_down(
+    site: dict[str, Any],
+) -> None:
+    launcher = site["launch"]({"sandbox-science-workspace": "child-stays"})
+    launcher.expect("Stop:")
+    (line,) = [line for line in journal(site["journal"]) if " child " in line]
+    child = int(line.rsplit(" ", 1)[1])
+    launcher.process.kill()
+    launcher.finish()
+    # The workspace dies with the launcher; its child, which has no death signal, does not.
+    wait_for(lambda: "sandbox-science-workspace stop" in journal(site["journal"]), "workspace")
+    assert start_time(child) is not None
+    shown = launcher.command("status")
+    assert shown.returncode == 4
+    assert "but the workspace an earlier launcher started still runs" in shown.stdout
+    stopped = launcher.command("down")
+    assert "stopped the workspace" in stopped.stdout
+    wait_for(lambda: start_time(child) is None, "the child outlived down")
 
 
 def test_a_recorded_process_from_another_boot_or_time_is_left_alone(

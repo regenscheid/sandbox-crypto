@@ -34,8 +34,8 @@ from pathlib import Path
 from . import instance, parts
 from .config import LauncherConfig, LauncherError, load_config
 from .instance import Record, RecordedPart
-from .state import Layout
-from .supervise import Part, Running, StopRequested, Supervisor, environment, start_time
+from .state import Layout, check_private
+from .supervise import Part, Running, StopRequested, Supervisor, environment, passed, start_time
 
 NOT_RUNNING = 3
 DEGRADED = 4
@@ -148,7 +148,7 @@ async def _up(
         stop,
         stop_timeout=config.stop_timeout,
         changed=lambda: record(supervisor.running),
-        env=environment(config.pass_env),
+        env=environment(),
     )
     status = 0
     try:
@@ -176,24 +176,31 @@ async def _up(
 async def _start(config: LauncherConfig, layout: Layout, supervisor: Supervisor) -> None:
     timeout = config.start_timeout
     print(f"starting the worker on {config.worker.listen}", flush=True)
+    worker_env = passed(config.worker.pass_env)
     worker = Part(
-        "worker", parts.worker_argv(config, layout), layout.worker, address=config.worker.listen
+        "worker",
+        parts.worker_argv(config, layout),
+        layout.worker,
+        address=config.worker.listen,
+        env=worker_env,
     )
     await supervisor.start(worker, timeout)
     granted = await supervisor.run(
-        "the policy grant", parts.policy_argv(config, layout), layout.worker, timeout
+        "the policy grant", parts.policy_argv(config, layout), layout.worker, timeout, worker_env
     )
     digest = re.search(r"sha256:[0-9a-f]{64}", granted)
     if digest is None:
         raise LauncherError(f"the policy grant named no policy; see {layout.log('launcher')}")
+    harness_env = passed(config.run_service.pass_env)
     for argv in parts.project_argvs(config, layout, digest.group()):
-        await supervisor.run(" ".join(argv[1:3]), argv, layout.control, timeout)
+        await supervisor.run(" ".join(argv[1:3]), argv, layout.control, timeout, harness_env)
     print("starting the run service", flush=True)
     harness = Part(
         "run-service",
         parts.harness_argv(config, layout),
         layout.control,
         ready_line="serving the sessions of",
+        env=harness_env,
     )
     await supervisor.start(harness, timeout)
     print(f"starting the workspace on {config.workspace.listen}", flush=True)
@@ -205,6 +212,7 @@ async def _start(config: LauncherConfig, layout: Layout, supervisor: Supervisor)
         ready_line="/login?token=",
         address=config.workspace.listen,
         private=(LOGIN, layout.login),
+        env=passed(config.workspace.pass_env),
     )
     await supervisor.start(workspace, timeout)
 
@@ -228,6 +236,7 @@ def _announce(config: LauncherConfig, path: Path, layout: Layout) -> None:
 
 def down(config: LauncherConfig) -> int:
     layout = Layout(config.state_dir)
+    check_private(layout.root)  # before anything in it is read
     held = instance.try_lock(layout) if layout.root.is_dir() else None
     if held is not None:
         try:
@@ -270,6 +279,7 @@ def _down_stopped(config: LauncherConfig, layout: Layout) -> int:
 
 def status(config: LauncherConfig) -> int:
     layout = Layout(config.state_dir)
+    check_private(layout.root)  # before anything in it is read
     found = instance.read(layout)
     if not instance.running(layout):
         print("Sandbox Science is not running")
@@ -277,7 +287,7 @@ def status(config: LauncherConfig) -> int:
         for part in left:
             print(
                 f"  but the {part.name} an earlier launcher started still runs (process "
-                f"{part.pid}): sandbox-science down stops it"
+                f"{part.pid}, or what it started): sandbox-science down stops it"
             )
         return DEGRADED if left else NOT_RUNNING
     if found is None:

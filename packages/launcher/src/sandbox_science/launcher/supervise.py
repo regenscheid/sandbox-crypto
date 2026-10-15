@@ -56,13 +56,18 @@ _TRAMPOLINE = (
 )
 
 
-def environment(passed: Iterable[str] = ()) -> dict[str, str]:
-    """The launcher's environment as the parts get it: ``ENVIRONMENT``, ``LC_*`` and
-    ``passed``."""
-    wanted = ENVIRONMENT | set(passed)
+def environment() -> dict[str, str]:
+    """The launcher's environment as every part gets it: ``ENVIRONMENT`` and ``LC_*``."""
     return {
-        key: value for key, value in os.environ.items() if key in wanted or key.startswith("LC_")
+        key: value
+        for key, value in os.environ.items()
+        if key in ENVIRONMENT or key.startswith("LC_")
     }
+
+
+def passed(names: Iterable[str]) -> dict[str, str]:
+    """The variables of the launcher's environment a part's ``pass_env`` names."""
+    return {name: os.environ[name] for name in names if name in os.environ}
 
 
 def start_time(pid: int) -> int | None:
@@ -200,10 +205,18 @@ class Supervisor:
             f"the {part.title} was not ready within {timeout:g} s; its log: {running.log}"
         )
 
-    async def run(self, name: str, argv: list[str], cwd: Path, timeout: float) -> str:
-        """Run a command to its end, its output in the launcher's log, and return it."""
+    async def run(
+        self,
+        name: str,
+        argv: list[str],
+        cwd: Path,
+        timeout: float,
+        env: Mapping[str, str] | None = None,
+    ) -> str:
+        """Run a command to its end, its output in the launcher's log, and return it;
+        ``env`` adds to the parts' environment, as a part's own does."""
         process = await asyncio.create_subprocess_exec(
-            *argv, cwd=cwd, env=self.env, stdin=asyncio.subprocess.DEVNULL,
+            *argv, cwd=cwd, env={**self.env, **(env or {})}, stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
             start_new_session=True,
         )  # fmt: skip
@@ -334,7 +347,7 @@ def end_session(session: int) -> None:
     _end_session(session, signal.SIGKILL)
 
 
-def _members(session: int) -> list[int]:
+def members(session: int) -> list[int]:
     """The processes in ``session``, by ``/proc``."""
     found: list[int] = []
     for entry in os.listdir("/proc"):
@@ -354,8 +367,8 @@ def _members(session: int) -> list[int]:
 def _end_session(session: int, signal_number: int) -> bool:
     """Send ``signal_number`` to every process in ``session``, whatever its process
     group; whether any was there."""
-    members = _members(session)
-    for pid in members:
+    found = members(session)
+    for pid in found:
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.kill(pid, signal_number)
-    return bool(members)
+    return bool(found)

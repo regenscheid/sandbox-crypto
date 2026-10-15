@@ -11,7 +11,9 @@ A process is known by its ID, its start time and the boot it started in (Linux's
 ``boot_id``), never by its ID or command line alone: an ID comes round again, after a
 reboot or in time, and two state directories run the same commands. A part also leads
 its own session. ``down`` or ``up`` stops what a killed launcher left only when all of
-that still holds.
+that still holds. A part's children do not get its death signal, so they can outlive
+it: they are found as the processes still in its session, in the same boot, started
+since it did (Linux reuses no ID that a session still has).
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ from typing import Any, cast
 
 from .config import LauncherError
 from .state import Layout, write_private
-from .supervise import end_session, start_time
+from .supervise import end_session, members, start_time
 
 
 def boot_id() -> str:
@@ -145,11 +147,24 @@ def alive(part: RecordedPart, record: Record) -> bool:
     return part.command.encode() in arguments
 
 
+def lingering(part: RecordedPart, record: Record) -> list[int]:
+    """The processes still in the part's session, the part's own children that outlived
+    it among them."""
+    if record.boot != boot_id():
+        return []
+    return [
+        pid
+        for pid in members(part.pid)
+        if (started := start_time(pid)) is not None and started >= part.started
+    ]
+
+
 def left_behind(record: Record | None) -> list[RecordedPart]:
-    """The parts of a launcher that is gone which still run."""
+    """The parts of a launcher that is gone of which something still runs: the part, or
+    what it started in its session."""
     if record is None or launcher_alive(record):
         return []
-    return [part for part in record.parts if alive(part, record)]
+    return [part for part in record.parts if alive(part, record) or lingering(part, record)]
 
 
 def stop_left_behind(record: Record | None) -> list[RecordedPart]:

@@ -25,12 +25,15 @@ Everything listens on loopback, so only your own computer can reach it. The step
 | `[[projects]]` | Each project: its `id`, the `profile` its environments start from, and the `sessions` to open for chat (`["main"]` by default) |
 | `[model]` | The gateway's `url`, the main agent's model `name`, and `api_key_file`; an optional `reviewer` model is for reviews and the workspace's math repairs |
 | `[worker]` | Its `listen` address, its `pool_id`, and the project `policy` granted to every project |
+| `[run_service]` | Optional: its `pass_env` |
 | `[workspace]` | Its `listen` address, its `preview_listen` address for the PDF viewer (by default the next port), and `static`, the web app's build |
 | `[openshell]` | The worker's own `[openshell]` table ([worker settings](WORKER.md)): the OpenShell CLI and the `env` it needs to reach the gateway, the sandboxes' Python, the isolation tier, the package cache, and `[openshell.environments]` with the profiles' image tags |
 
 `start_timeout` (300 s) and `stop_timeout` (30 s) bound how long each part may take to start and to stop. `bin_dir` says where the parts' commands are, by default beside the launcher's Python.
 
-The parts get only a few of your environment's variables: `PATH`, `HOME`, `USER`, `LOGNAME`, the locale (`LANG`, `LANGUAGE`, `LC_*`), `TZ`, `TMPDIR`, `XDG_RUNTIME_DIR`, the proxies and the CA settings (`SSL_CERT_FILE`, `SSL_CERT_DIR`). An API key you exported in your shell reaches no part. `pass_env` names any more that they need.
+The parts get only a few of your environment's variables: `PATH`, `HOME`, `USER`, `LOGNAME`, the locale (`LANG`, `LANGUAGE`, `LC_*`), `TZ`, `TMPDIR`, `XDG_RUNTIME_DIR`, the proxies and the CA settings (`SSL_CERT_FILE`, `SSL_CERT_DIR`). An API key you exported in your shell reaches no part.
+
+Each part's table can name more with `pass_env`: `[worker]`, `[run_service]` (a table of its own, with only this) and `[workspace]`. The part gets those variables from your environment, and the other parts do not. **Never pass a secret this way.** The run service and the workspace run in the control zone, which must hold no engine or cluster credentials ([threat model](THREAT-MODEL.md)). The model's key reaches the run service only as its file, `api_key_file`.
 
 The state directory must be yours and mode 700. If one is there already and open to other users, the launcher refuses it, rather than change it.
 
