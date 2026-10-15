@@ -357,7 +357,8 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
         f"(default {MAX_INPUT_CHARS:,})",
     )
     command.add_argument(
-        "--watcher-model", help="separate job watcher model alias; omitted: no check-ins"
+        "--watcher-model",
+        help="the job watcher's model alias, which may be MAIN's; omitted: no check-ins",
     )
     command.add_argument(
         "--watcher-script", type=Path, help="scripted watcher replies for validation"
@@ -397,7 +398,9 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
         default=[],
         help="an MCP server behind the proxy whose tools runs get; repeat for more",
     )
-    command.add_argument("--reviewer-model", help="separate consistency reviewer model alias")
+    command.add_argument(
+        "--reviewer-model", help="the consistency reviewer's model alias, which may be MAIN's"
+    )
     command.add_argument(
         "--reviewer-script", type=Path, help="scripted reviewer replies for validation"
     )
@@ -417,8 +420,6 @@ def _check_agent(parser: argparse.ArgumentParser, args: argparse.Namespace) -> N
             parser.error("--watcher-model needs --state-dir for durable accounting")
         if args.watcher_script is None and args.model_url is None:
             parser.error("--watcher-model needs --model-url or --watcher-script")
-        if args.watcher_model == args.model and args.script is None:
-            parser.error("--watcher-model must be a separate model alias")
     elif args.watcher_script is not None:
         parser.error("--watcher-script needs --watcher-model")
     configured_math = (args.math_node, args.math_launcher, args.math_bundle)
@@ -431,8 +432,6 @@ def _check_agent(parser: argparse.ArgumentParser, args: argparse.Namespace) -> N
             parser.error("--reviewer-model needs --state-dir for durable snapshots")
         if args.reviewer_script is None and args.model_url is None:
             parser.error("--reviewer-model needs --model-url or --reviewer-script")
-        if args.reviewer_model == args.model:
-            parser.error("--reviewer-model must be a separate model alias")
     elif args.reviewer_script is not None:
         parser.error("--reviewer-script needs --reviewer-model")
     if args.model_url is not None and args.api_key_file is None:

@@ -38,8 +38,9 @@ uv run sandbox-science-harness run --worker http://127.0.0.1:8100 \
 The first check is due 300 seconds after a job starts; subsequent checks are
 1800 seconds apart, including across repeated waits or harness restarts.
 `--watcher-first-check` and `--watcher-interval` change these intervals in seconds.
-`--watcher-script FILE` supplies scripted replies for tests, with a separately
-named `--watcher-model` alias and `--state-dir` for durable accounting.
+`--watcher-script FILE` supplies scripted replies for tests, with a
+`--watcher-model` alias and `--state-dir` for durable accounting. The watcher's alias may
+be MAIN's: its calls are still its own, with their own limits and accounting.
 
 The watcher receives purpose, expected progress, elapsed time, available CPU
 and memory measurements, and bounded output head and tail as untrusted data.
