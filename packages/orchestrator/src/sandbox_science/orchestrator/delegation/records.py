@@ -32,6 +32,7 @@ from sandbox_science.contracts.model import Contract
 from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.control.errors import INVALID_REQUEST, NOT_FOUND
 from sandbox_science.orchestrator.documents import DocumentStore
+from sandbox_science.orchestrator.runstate import close_events
 
 Ended = Literal["returned", "failed", "cancelled", "limit_reached", "interrupted"]
 """How a delegated run ended, as the harness observed it (PD-17)."""
@@ -191,17 +192,34 @@ class DelegationRecords:
             )
             return _one(tx.sql, project, session, delegation_id)
 
-    def abandon(self, project: str, session: str) -> list[str]:
-        """End ``interrupted`` the session's delegations that are still running: called
-        as a main run starts, when none of the session's can be (PD-40). Their IDs."""
+    def abandon(
+        self, project: str, session: str, *, parent: str | None = None
+    ) -> list[tuple[str, str]]:
+        """End a dead tree, in one transaction (PD-40): the session's delegations still
+        running, or only ``parent``'s, end ``interrupted``, and every run of the
+        session's delegations, or of ``parent``'s, that lacks its ``stopped`` event gets
+        it (``close_events``). Called as a main run starts, when none of the session's
+        delegations can be running, and when the run service ends a dead run. The IDs
+        and runs of the delegations it ended."""
+        now = self.clock.now().astimezone(UTC)
         with self.control.write() as tx:
-            rows = tx.sql.execute(
+            db = tx.sql
+            rows = db.execute(
                 "UPDATE delegations SET ended = 'interrupted', stopped = 'interrupted', "
                 "ended_at = ? WHERE project_id = ? AND session_id = ? AND ended IS NULL "
-                "RETURNING delegation_id",
-                (self._now(), project, session),
+                "AND (? IS NULL OR parent = ?) RETURNING delegation_id, run",
+                (now.isoformat(), project, session, parent, parent),
             ).fetchall()
-        return sorted(delegation_id for (delegation_id,) in rows)
+            unclosed = db.execute(
+                "SELECT d.run FROM delegations AS d WHERE d.project_id = ? AND d.session_id = ? "
+                "AND (? IS NULL OR d.parent = ?) AND NOT EXISTS (SELECT 1 FROM run_events AS e "
+                "WHERE e.project_id = d.project_id AND e.session_id = d.session_id "
+                "AND e.run = d.run AND e.kind = 'stopped') ORDER BY d.run",
+                (project, session, parent, parent),
+            ).fetchall()
+            for (run,) in unclosed:
+                close_events(db, project, session, run, now)
+        return sorted((delegation_id, run) for delegation_id, run in rows)
 
     def get(self, project: str, session: str, delegation_id: str) -> Delegation:
         with self.control.read() as tx:

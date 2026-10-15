@@ -14,7 +14,9 @@ otherwise its answer as returned with the errors (PD-17, PD-18, PD-20). As a tur
 ``Delegations``, which every main run with the stores has:
 
 - ends ``interrupted``, as the run starts, the session's delegations still running,
-  whose process ended (PD-40);
+  whose process ended, and writes the ``stopped`` event of any of the session's
+  delegated runs that lacks it, such as one whose command-line root lost its lease
+  (PD-40);
 - offers, at each safe point, the session's outcomes that no run has acknowledged,
   its own children's and those an earlier run left (PD-35), each as a short summary,
   together at most ``max_chars``; the rest wait for a later safe point;
@@ -428,8 +430,8 @@ class Delegations(TurnHook):
     async def _held(self) -> AsyncGenerator[None]:
         context = self.context
         abandoned = await threaded(self.records.abandon, context.project_id, context.session_id)
-        if abandoned:
-            _log.warning("delegations %s lost their process: interrupted", ", ".join(abandoned))
+        for delegation_id, _ in abandoned:
+            _log.warning("delegation %s lost its process: interrupted", delegation_id)
         try:
             yield
         finally:
