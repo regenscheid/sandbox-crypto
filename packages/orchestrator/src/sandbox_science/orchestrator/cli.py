@@ -11,6 +11,7 @@ sandbox-science-harness project create --state-dir state --project p1 --profile 
 sandbox-science-harness project show --state-dir state --project p1
 sandbox-science-harness project revise --state-dir state --project p1 --policy sha256:... \\
     [--worker URL --token-file worker.token]
+sandbox-science-harness session open --state-dir state --project p1 --session s1 [--dedicated]
 sandbox-science-harness session close --state-dir state --project p1 --session s1 \\
     --worker URL --token-file worker.token
 sandbox-science-harness document import --state-dir state --project p1 [--session s1] \\
@@ -521,6 +522,10 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error("--worker needs --token-file")
             action = project(args)
         case _:
+            if args.action == "close" and (args.worker is None or args.token_file is None):
+                parser.error("session close needs --worker and --token-file")
+            if args.action == "open" and args.worker is not None:
+                parser.error("session open needs no worker: the first run creates its environment")
             action = session(args)
     try:
         return asyncio.run(action)
