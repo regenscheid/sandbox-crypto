@@ -61,6 +61,7 @@ from .chat import session_lease
 from .cli_documents import add_parsers, document, ledger, project, read_secret, session
 from .connectors import ProxyClient, check_proxy
 from .consistency.models import ReviewConfig
+from .control import ControlError
 from .documents import DocumentError, DocumentStore, store_path
 from .harness import (
     Finished,
@@ -258,6 +259,15 @@ def _harness(
             lambda: _gateway(args, args.reviewer_model, max_tokens=2048, max_response_bytes=65536),
         )
         closing(stack, interruption, lambda: _close(reviewer.model))
+    delegated = None
+    if (alias := getattr(args, "delegated_model", None)) is not None:
+        delegated = _role(
+            getattr(args, "delegated_script", None),
+            "--delegated-script",
+            alias,
+            lambda: _gateway(args, alias),
+        )
+        closing(stack, interruption, lambda: _close(delegated.model))
     mcp = None
     if args.mcp_proxy is not None:
         token = read_secret(args.mcp_token_file)
@@ -282,6 +292,7 @@ def _harness(
         stores=stores,
         watcher=watcher,
         reviewer=reviewer,
+        delegated=delegated,
         checker=(
             MathChecker(args.math_node, args.math_launcher, args.math_bundle)
             if args.math_node is not None
@@ -426,6 +437,12 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
         "--reviewer-model", help="the consistency reviewer's model alias, which may be MAIN's"
     )
     command.add_argument(
+        "--delegated-model", help="the model alias delegated runs call (default: MAIN's)"
+    )
+    command.add_argument(
+        "--delegated-script", type=Path, help="scripted delegated replies for validation"
+    )
+    command.add_argument(
         "--reviewer-script", type=Path, help="scripted reviewer replies for validation"
     )
     review = ReviewConfig()
@@ -480,6 +497,11 @@ def _check_agent(parser: argparse.ArgumentParser, args: argparse.Namespace) -> N
             parser.error("--reviewer-model needs --model-url or --reviewer-script")
     elif args.reviewer_script is not None:
         parser.error("--reviewer-script needs --reviewer-model")
+    if args.delegated_model is not None:
+        if args.delegated_script is None and args.model_url is None:
+            parser.error("--delegated-model needs --model-url or --delegated-script")
+    elif args.delegated_script is not None:
+        parser.error("--delegated-script needs --delegated-model")
     if args.model_url is not None and args.api_key_file is None:
         parser.error("--model-url needs --api-key-file")
     if args.max_input_chars < 1:
@@ -608,7 +630,7 @@ def main(argv: list[str] | None = None) -> int:
             action = session(args)
     try:
         return asyncio.run(action)
-    except (WorkerAPIError, ModelError, ProjectError, DocumentError) as exc:
+    except (WorkerAPIError, ModelError, ProjectError, DocumentError, ControlError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

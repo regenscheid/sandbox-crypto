@@ -26,7 +26,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, Protocol
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import JsonValue, TypeAdapter, ValidationError
 
 from sandbox_science.contracts import (
     SYSTEM_CLOCK,
@@ -364,6 +364,8 @@ class Finished:
     ended_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     parent: str | None = None
     delegation: str | None = None
+    alias: str | None = None
+    limits: dict[str, JsonValue] | None = None
 
     @property
     def status(self) -> int:
@@ -379,6 +381,8 @@ class Finished:
             "role": "main" if self.parent is None else "delegated",
             "parent": self.parent,
             "delegation": self.delegation,
+            "alias": self.alias,
+            "limits": self.limits,
             "context": self.context.model_dump(mode="json"),
             "task": self.task,
             "started_at": self.started_at,
@@ -412,9 +416,11 @@ class Harness:
         settings: Settings | None = None,
         clock: Clock = SYSTEM_CLOCK,
         mcp: McpAccess | None = None,
+        delegated: Role | None = None,
     ) -> None:
         """``checker`` is the configured math checker; without it, math checks report
-        the renderer unavailable. A reviewer and a checker need stores."""
+        the renderer unavailable. A reviewer and a checker need stores. ``delegated`` is
+        the model delegated runs call (PD-27, PD-28); MAIN's without it."""
         if stores is None and (reviewer is not None or checker is not None):
             raise ValueError("a reviewer and a math checker need the state directory's stores")
         self.client, self.main, self.stores = client, main, stores
@@ -424,6 +430,11 @@ class Harness:
         """The time the run's messages and leases are read in."""
         self.mcp = mcp
         """The MCP proxy and the servers behind it whose tools runs are offered."""
+        self.delegated = delegated or main
+
+    def role(self, request: RunRequest) -> Role:
+        """The model a run calls: the delegated role's for a delegated run."""
+        return self.main if request.parent is None else self.delegated
 
     async def run(self, request: RunRequest, sink: RunSink) -> Finished:
         """Admit the run (``admit``), then run it (``start``)."""
@@ -471,7 +482,7 @@ class Harness:
                     if chat is not None:
                         hooks = (*hooks, *await self._chat_hooks(admitted, chat, tree))
                     transcript = await run_task(
-                        self.main.model,
+                        self.role(request).model,
                         toolbox,
                         None if request.queued else request.task,
                         run_id=admitted.run_id,
@@ -504,7 +515,21 @@ class Harness:
             hooks,
             parent=admitted.request.parent,
             delegation=admitted.request.delegation,
+            alias=self.role(admitted.request).alias,
+            limits=self._limits(admitted.request),
         )
+
+    def _limits(self, request: RunRequest) -> dict[str, JsonValue]:
+        """The limits a run runs under, as its record keeps them (PD-29)."""
+        found: dict[str, JsonValue] = {
+            "max_turns": request.max_turns or self.settings.max_turns,
+            "max_input_chars": self.settings.max_input_chars,
+        }
+        if request.tokens is not None:
+            found["tokens"] = request.tokens
+        elif self.settings.run_share is not None and self.stores is not None:
+            found["run_share"] = self.settings.run_share
+        return found
 
     def _tree(self, admitted: Admitted) -> TreeBudget | None:
         """A main run's share of the project's model budget, which bounds its whole tree
@@ -561,7 +586,7 @@ class Harness:
         if stores is None or admitted.request.parent is not None:
             return None
         records = DelegationRecords(stores.documents, clock=clock)
-        depth = await threaded(records.depth, context.project_id)
+        limits = await threaded(records.settings, context.project_id)
 
         async def over_budget() -> bool:
             return await threaded(stores.runs.over_budget, context.project_id, clock.now())
@@ -575,10 +600,11 @@ class Harness:
             parent=run_name(admitted.started_at, admitted.run_id),
             runner=functools.partial(self.run_child, admitted, version),
             max_turns=self.settings.max_turns,
-            offer=depth >= 1,
+            offer=limits.depth >= 1,
             wake=chat.arrived if chat is not None else None,
             over_budget=over_budget,
             tree=tree,
+            limits=limits,
             clock=clock,
         )
 
@@ -628,7 +654,7 @@ class Harness:
             fence.refused if fence is not None else None,
             result.model_dump(mode="json") if result is not None else None,
             tuple(found.errors) if found is not None else (),
-            self.main.alias,
+            self.delegated.alias,
             tuple(dict.fromkeys(u.model for u in transcript.usage if u.model is not None))[:10],
             found.read if found is not None else None,
             found.read_proofs if found is not None else None,
@@ -681,7 +707,8 @@ class Harness:
         A delegated run gets its parent's tools without the review tools, the plan tools,
         the delegate tools and connectors; it is not reviewed, and the user's messages do
         not end its job waits (PD-34)."""
-        stores, settings, alias = self.stores, self.settings, self.main.alias
+        stores, settings = self.stores, self.settings
+        alias = self.role(admitted.request).alias
         watcher, reviewer = self.watcher, self.reviewer
         context, run_id = admitted.context, admitted.run_id
         languages, features = admitted.languages, admitted.features

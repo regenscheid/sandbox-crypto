@@ -11,9 +11,10 @@ record is saved (PD-35); until then, the outcome waits for the session's next ma
 A delegation still running when its session's next main run starts has lost its
 process: it ends ``interrupted`` (PD-40).
 
-Each project's setting is how deep its runs may delegate: 0, the default, offers no
-delegation; 1 lets main runs delegate. Each method is one transaction and may run in a
-thread.
+Each project's setting (``DelegationSettings``) says how deep its runs may delegate (0,
+the default, offers no delegation; 1 lets main runs delegate), how many delegated runs
+a session's tree runs at once, and a check's tokens and turns. Each method is one
+transaction and may run in a thread.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Final, Literal, cast
 
-from pydantic import JsonValue
+from pydantic import Field, JsonValue, ValidationError
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, Identifier
 from sandbox_science.contracts.model import Contract
@@ -51,6 +52,20 @@ _COLUMNS: Final = (
     "read_proofs"
 )
 _JSON: Final = ("brief", "result", "errors", "models")
+
+
+class DelegationSettings(Contract):
+    """A project's delegation setting (PD-15, PD-38): what a project leaves out keeps
+    its default."""
+
+    depth: int = Field(default=0, ge=0, le=MAX_DEPTH)
+    """How deep its runs may delegate; 0 offers no delegation."""
+    cap: int = Field(default=10, ge=1, le=20)
+    """Delegated runs a session's tree runs at once."""
+    check_tokens: int = Field(default=150_000, ge=50_000, le=400_000)
+    """A check's tokens, at most: reserved from its root's share of the model budget."""
+    check_turns: int = Field(default=12, ge=1, le=30)
+    """A check's turns, at most, and no more than its parent has left."""
 
 
 class Delegation(Contract):
@@ -116,27 +131,36 @@ class DelegationRecords:
     def _now(self) -> str:
         return self.clock.now().astimezone(UTC).isoformat()
 
-    def depth(self, project: str) -> int:
-        """How deep the project's runs may delegate; 0 when it was never set."""
+    def settings(self, project: str) -> DelegationSettings:
+        """The project's delegation setting; the defaults when it was never set."""
         with self.control.read() as tx:
-            found = tx.sql.execute(
-                "SELECT depth FROM project_delegation WHERE project_id = ?", (project,)
-            ).fetchone()
-        return 0 if found is None else int(found[0])
+            return _settings(tx.sql, project)
 
-    def set_depth(self, project: str, depth: int) -> None:
-        if not 0 <= depth <= MAX_DEPTH:
-            raise ControlError(INVALID_REQUEST, f"a delegation depth is 0 to {MAX_DEPTH}")
+    def configure(self, project: str, **changes: int) -> DelegationSettings:
+        """Change some of the project's delegation setting, keeping the rest; the setting
+        as it now is."""
         with self.control.write() as tx:
+            db = tx.sql
             if (
-                tx.sql.execute("SELECT 1 FROM projects WHERE project_id = ?", (project,)).fetchone()
+                db.execute("SELECT 1 FROM projects WHERE project_id = ?", (project,)).fetchone()
                 is None
             ):
                 raise ControlError(NOT_FOUND, f"no project {project!r}")
-            tx.sql.execute(
-                "INSERT OR REPLACE INTO project_delegation VALUES (?, ?, ?)",
-                (project, depth, self._now()),
+            try:
+                found = DelegationSettings.model_validate(
+                    {**_settings(db, project).model_dump(), **changes}
+                )
+            except ValidationError as error:
+                first = error.errors()[0]
+                where = ".".join(str(part) for part in first["loc"])
+                raise ControlError(INVALID_REQUEST, f"{where}: {first['msg']}") from None
+            limits = _json(found.model_dump(exclude={"depth"}))
+            db.execute(
+                "INSERT OR REPLACE INTO project_delegation (project_id, depth, updated_at, "
+                "limits) VALUES (?, ?, ?, ?)",
+                (project, found.depth, self._now(), limits),
             )
+            return found
 
     def start(self, project: str, session: str, delegation: Delegation) -> None:
         """Write a delegation as its parent starts it."""
@@ -250,6 +274,18 @@ class DelegationRecords:
                 "AND delegation_id = ? AND ended IS NOT NULL AND acknowledged IS NULL",
                 [(run, project, session, delegation_id) for delegation_id in ids],
             )
+
+
+def _settings(db: sqlite3.Connection, project: str) -> DelegationSettings:
+    found = db.execute(
+        "SELECT depth, limits FROM project_delegation WHERE project_id = ?", (project,)
+    ).fetchone()
+    if found is None:
+        return DelegationSettings()
+    depth, limits = found
+    return DelegationSettings.model_validate(
+        {**(json.loads(limits) if limits is not None else {}), "depth": depth}
+    )
 
 
 def _json(value: object) -> str:

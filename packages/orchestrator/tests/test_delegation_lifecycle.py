@@ -77,7 +77,7 @@ def blocking() -> tuple[asyncio.Event, Reply]:
 def depth(harness: Harness, value: int) -> None:
     store = ProjectStore(harness.state)
     try:
-        DelegationRecords(store.control).set_depth(PROJECT, value)
+        DelegationRecords(store.control).configure(PROJECT, depth=value)
     finally:
         store.close()
 

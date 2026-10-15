@@ -187,6 +187,12 @@ class RunRecord(Contract):
     same session that started before it."""
     delegation: Identifier | None = None
     """For a delegated run, the delegation it carries out."""
+    alias: str | None = None
+    """The model alias its calls named (PD-29); its ``usage`` names the models the gateway
+    resolved it to. Older records have none."""
+    limits: dict[str, JsonValue] | None = None
+    """The limits it ran under, as the harness applied them (PD-29): its turns, the
+    longest conversation it sent, and its token limit or its share of the budget."""
     prompt_provenance: Annotated[
         PromptPins | dict[str, JsonValue] | None, Field(union_mode="left_to_right")
     ] = None

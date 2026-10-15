@@ -2129,6 +2129,27 @@ BEGIN SELECT RAISE(ABORT, 'a delegation''s outcome is written once'); END""",
         schema.execute(statement)
 
 
+def _delegation_limits(schema: Schema) -> None:
+    """Version 33: a project's delegation setting gains its limits, as a JSON object: how
+    many delegated runs a session's tree runs at once, and a check's tokens and turns
+    (plans-and-delegation spec, PD-38). The column has no CHECK, which ``ALTER TABLE``
+    would have every row pass: triggers check it as a row is written."""
+    limits = (
+        "(NEW.limits IS NULL OR (json_valid(NEW.limits) AND json_type(NEW.limits) = 'object' "
+        "AND length(CAST(NEW.limits AS BLOB)) <= 4096))"
+    )
+    for statement in (
+        "ALTER TABLE project_delegation ADD COLUMN limits TEXT",
+        f"""CREATE TRIGGER project_delegation_insert BEFORE INSERT ON project_delegation
+WHEN NOT {limits}
+BEGIN SELECT RAISE(ABORT, 'CHECK constraint failed: project_delegation'); END""",
+        f"""CREATE TRIGGER project_delegation_update BEFORE UPDATE ON project_delegation
+WHEN NOT {limits}
+BEGIN SELECT RAISE(ABORT, 'CHECK constraint failed: project_delegation'); END""",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -2161,6 +2182,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _evidence_targets,
     _citation_checks,
     _delegation_reads,
+    _delegation_limits,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

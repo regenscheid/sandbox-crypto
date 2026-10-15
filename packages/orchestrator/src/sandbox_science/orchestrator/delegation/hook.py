@@ -61,17 +61,11 @@ from sandbox_science.orchestrator.worker_client import WorkerAPIError, dump
 from .budget import FLOOR, MIN_CHILD, TreeBudget
 from .outcome import Target, proof_reads
 from .prompt import brief_text, check_task, evidence_line
-from .records import Delegation, DelegationRecords, Ended, Ending
+from .records import Delegation, DelegationRecords, DelegationSettings, Ended, Ending
 from .specs import SPECS, CheckBrief, Named, WaitRequest
 
 _log = logging.getLogger(__name__)
 
-CHECK_TURNS: Final = 12
-"""A check's turns, at most (coordinator, 2026-10-15)."""
-CHECK_TOKENS: Final = 150_000
-"""A check's tokens, at most: its calls' input and output, as the budget counts them."""
-MAX_RUNNING: Final = 10
-"""Delegated runs a session's tree runs at once (PD-38)."""
 STOP_SECONDS: Final = 60.0
 """How long a parent's end, or a cancel, waits for a cancelled child's record."""
 SUMMARY_CHARS: Final = 300
@@ -171,6 +165,7 @@ class Delegations(TurnHook):
         wake: Callable[[], Awaitable[None]] | None = None,
         over_budget: Callable[[], Awaitable[bool]] | None = None,
         tree: TreeBudget | None = None,
+        limits: DelegationSettings | None = None,
         max_chars: int = 5000,
         output_chars: int = 20000,
         clock: Clock = SYSTEM_CLOCK,
@@ -185,6 +180,8 @@ class Delegations(TurnHook):
         self.specs: tuple[ToolSpec, ...] = SPECS if offer else ()
         self.wake, self.over_budget, self.clock = wake, over_budget, clock
         self.tree = tree
+        self.limits = limits or DelegationSettings()
+        """The project's cap and a check's tokens and turns (PD-38)."""
         self.turns_left = max_turns
         """The run's turns left at its last safe point: a child gets no more (PD-38)."""
         self.max_chars, self.output_chars = max_chars, output_chars
@@ -213,10 +210,11 @@ class Delegations(TurnHook):
                 return await self._cancel_one(Named.model_validate(args).delegation_id)
 
     async def _delegate(self, brief: CheckBrief) -> tuple[str, dict[str, Any]]:
-        if len(self._running()) >= MAX_RUNNING:
+        cap = self.limits.cap
+        if len(self._running()) >= cap:
             raise WorkerAPIError(
                 ErrorKind.UNAVAILABLE,
-                f"limit_reached: {MAX_RUNNING} delegated runs are running in this session; "
+                f"limit_reached: {cap} delegated runs are running in this session; "
                 "wait for one to end",
             )
         if self.turns_left <= 0:
@@ -231,9 +229,9 @@ class Delegations(TurnHook):
         project, session = self.context.project_id, self.context.session_id
         entry = await threaded(self.ledger.entry, project, brief.check.entry, brief.check.revision)
         delegation_id, run_id = new_id("dlg"), new_id("run")
-        tokens = CHECK_TOKENS
+        tokens = self.limits.check_tokens
         if self.tree is not None:
-            reserved = await self.tree.reserve(delegation_id, CHECK_TOKENS)
+            reserved = await self.tree.reserve(delegation_id, tokens)
             if reserved is None:
                 raise WorkerAPIError(
                     ErrorKind.UNAVAILABLE,
@@ -271,7 +269,7 @@ class Delegations(TurnHook):
             run_id,
             started,
             brief_text(task, inputs, brief.note),
-            max_turns=min(CHECK_TURNS, self.max_turns, self.turns_left),
+            max_turns=min(self.limits.check_turns, self.max_turns, self.turns_left),
             tokens=tokens,
             target=Target(
                 entry.entry_id,

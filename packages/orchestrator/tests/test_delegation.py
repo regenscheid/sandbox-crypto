@@ -20,10 +20,9 @@ from typing import Any, cast
 import pytest
 
 from sandbox_science.contracts import ExecutionContext
-from sandbox_science.orchestrator import cli
+from sandbox_science.orchestrator import chat, cli
 from sandbox_science.orchestrator.chat import RunChat, SessionHeld
-from sandbox_science.orchestrator.control import ControlError, migrations
-from sandbox_science.orchestrator.delegation import hook
+from sandbox_science.orchestrator.control import migrations
 from sandbox_science.orchestrator.delegation.outcome import parse
 from sandbox_science.orchestrator.delegation.records import (
     Delegation,
@@ -75,7 +74,7 @@ def delegating(harness: Harness) -> Harness:
     """A project whose main runs may delegate, with claim C-1 at revision 1."""
     store = ProjectStore(harness.state)
     try:
-        DelegationRecords(store.control).set_depth(PROJECT, 1)
+        DelegationRecords(store.control).configure(PROJECT, depth=1)
     finally:
         store.close()
     documents = harness.documents()
@@ -132,6 +131,14 @@ def released() -> tuple[asyncio.Event, Reply]:
         event.set()
 
     return event, Reply(calls=[], before=release)
+
+
+def configure(harness: Harness, **changes: int) -> None:
+    store = ProjectStore(harness.state)
+    try:
+        DelegationRecords(store.control).configure(PROJECT, **changes)
+    finally:
+        store.close()
 
 
 def kept(harness: Harness) -> dict[str, RunRecord]:
@@ -363,11 +370,9 @@ async def test_a_check_is_refused_the_tools_its_role_withholds(delegating: Harne
         assert error["message"].startswith("not_permitted_for_role")
 
 
-async def test_a_session_runs_at_most_its_cap_of_checks_at_once(
-    delegating: Harness, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """PD-38: a delegate past the cap is refused, not queued."""
-    monkeypatch.setattr(hook, "MAX_RUNNING", 1)
+async def test_a_session_runs_at_most_its_cap_of_checks_at_once(delegating: Harness) -> None:
+    """PD-38: a delegate past the project's cap is refused, not queued."""
+    configure(delegating, cap=1)
     free, release = released()
 
     async def blocked() -> None:
@@ -391,8 +396,10 @@ async def test_a_session_runs_at_most_its_cap_of_checks_at_once(
 async def test_a_check_stops_at_its_token_limit(
     delegating: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """PD-19, PD-38: a child that used its tokens ends limit_reached, its record kept."""
-    monkeypatch.setattr(hook, "CHECK_TOKENS", 1)
+    """PD-19, PD-38: a child that used its tokens ends limit_reached, its record kept.
+    Its first call, as estimated, is past the project's smallest token limit."""
+    configure(delegating, check_tokens=50_000)
+    monkeypatch.setattr(chat, "ANSWER_TOKENS", 60_000)
     root = await delegating.run(
         "root",
         [Reply(calls=[CHECK]), wait(), Reply("The check ran out of budget.")],
@@ -411,11 +418,6 @@ def test_a_delegations_outcome_is_written_once(tmp_path: Path) -> None:
         store.create(PROJECT, "minimal", "sha256:" + "a" * 64)
         store.open_session(PROJECT, SESSION, dedicated=False)
         records = DelegationRecords(store.control)
-        assert records.depth(PROJECT) == 0
-        with pytest.raises(ControlError, match="0 to 1"):
-            records.set_depth(PROJECT, 2)
-        with pytest.raises(ControlError, match="no project"):
-            records.set_depth("other", 1)
         made = Delegation.model_validate(
             {
                 "delegation_id": "dlg-" + "0" * 24,
@@ -465,18 +467,18 @@ async def test_a_delegated_run_acts_only_while_its_root_holds_the_session(
         projects.open_session(PROJECT, SESSION, dedicated=False)
         state = RunState(projects.control)
         context = ExecutionContext(project_id=PROJECT, session_id=SESSION, environment_id="e")
-        chat = RunChat(state, context, run="child", run_id="c", task="Check.", holder="root")
-        held = SessionHeld(chat)
+        child = RunChat(state, context, run="child", run_id="c", task="Check.", holder="root")
+        held = SessionHeld(child)
         state.acquire(PROJECT, SESSION, "root", "holder-1")
         assert await held.gate("effect") is None
-        await chat.write("model", {"turn": 1})
+        await child.write("model", {"turn": 1})
         state.release(PROJECT, SESSION, "holder-1")
         state.acquire(PROJECT, SESSION, "another", "holder-2")
         refused = await held.gate("effect")
         assert refused is not None
         assert refused.kind == "conflict"
         assert await held.gate("read") is None
-        await chat.write("model", {"turn": 2})  # logged and dropped: the root lost it
+        await child.write("model", {"turn": 2})  # logged and dropped: the root lost it
         assert [e.data["turn"] for e in state.events(PROJECT, SESSION, "child")] == [1]
     finally:
         projects.close()
@@ -500,9 +502,8 @@ def test_a_version_27_store_migrates_with_no_delegations(tmp_path: Path) -> None
     try:
         assert set(migrated.get(PROJECT).sessions) == {SESSION}
         records = DelegationRecords(migrated.control)
-        assert records.depth(PROJECT) == 0
-        records.set_depth(PROJECT, 1)
-        assert records.depth(PROJECT) == 1
+        assert records.settings(PROJECT).depth == 0
+        assert records.configure(PROJECT, depth=1).depth == 1
         assert records.handbacks(PROJECT, SESSION) == []
     finally:
         migrated.close()

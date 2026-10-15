@@ -153,6 +153,8 @@ class ModelConfig(_Strict):
     when unset."""
     watcher_interval: float | None = Field(default=None, gt=0)
     """Seconds between check-ins; the run service's default (1,800) when unset."""
+    delegated: str | None = Field(default=None, min_length=1)
+    """The alias delegated runs call; the main agent's when unset."""
 
     @field_validator("url")
     @classmethod

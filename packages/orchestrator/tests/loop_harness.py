@@ -302,7 +302,9 @@ class Gateway:
     async def handle(self, request: web.Request) -> web.Response:
         body = await request.json()
         alias, messages = str(body["model"]), cast(list[Message], body["messages"])
-        child = alias == "main" and str(messages[0].get("content", "")).startswith(DELEGATED)
+        child = alias == "delegated" or (
+            alias == "main" and str(messages[0].get("content", "")).startswith(DELEGATED)
+        )
         key = "delegated" if child else alias
         self.requests.setdefault(key, []).append(messages)
         self.tools.setdefault(key, []).append(cast(list[Json], body.get("tools") or []))

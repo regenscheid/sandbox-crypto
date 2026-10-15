@@ -235,6 +235,7 @@ def harness_argv(config: LauncherConfig, layout: Layout) -> list[str]:
         watcher += ["--watcher-first-check", f"{model.watcher_first_check:g}"]
     if model.watcher_interval is not None:
         watcher += ["--watcher-interval", f"{model.watcher_interval:g}"]
+    delegated = ["--delegated-model", model.delegated] if model.delegated else []
     shared = [] if service.run_share is None else ["--run-share", str(service.run_share)]
     math: list[str] = []
     if service.math_checks is not None:
@@ -250,7 +251,8 @@ def harness_argv(config: LauncherConfig, layout: Layout) -> list[str]:
         "--worker", worker_url(config),
         "--token-file", str(layout.token("harness-worker")),
         "--model-url", model.url, "--model", model.name,
-        "--api-key-file", str(model.api_key_file), *reviewer, *watcher, *shared, *math,
+        "--api-key-file", str(model.api_key_file), *reviewer, *watcher, *delegated, *shared,
+        *math,
         *mcp.harness_options(config, layout),
     ]  # fmt: skip
 

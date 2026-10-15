@@ -288,6 +288,7 @@ With `--state-dir`, the harness keeps every run that reaches the tool loop, incl
 | --- | --- |
 | `run_id` | The run's ID, which starts the operation IDs of its tool calls |
 | `role`, `parent`, `delegation` | The run's place in its session's tree of runs: `main` for the root, which answers the user, or `delegated` with its parent's record name and its delegation ([plans and delegation](specs/plans-and-delegation.md), PD-32). A delegated run's record is saved before its parent's; older records are `main` |
+| `alias`, `limits` | The model alias its calls named, and the limits it ran under: its turns (`max_turns`), the longest conversation it sent (`max_input_chars`), and its token limit (`tokens`, a delegated run's) or its share of the project's budget (`run_share`, under the run service); older records have neither ([plans and delegation](specs/plans-and-delegation.md), PD-29) |
 | `context` | Project, session, environment and policy revision |
 | `task` | The task as given |
 | `started_at`, `ended_at` | When the run started and ended, in UTC |
