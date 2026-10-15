@@ -235,10 +235,13 @@ class RunService:
         """Run the session's queued messages; whether the run failed."""
         runs, stores = self.runs, self.stores
         sink = LogSink()
+        # The session runs where it was opened: in the project's environment, or its own.
+        known = (await threaded(stores.projects.get, project)).sessions.get(session)
+        dedicated = known is not None and known.dedicated
         admitted = await admit(
             self.harness.client,
             stores.projects,
-            RunRequest(project, session, ""),
+            RunRequest(project, session, "", dedicated=dedicated),
             sink,
             min_isolation_tier=self.harness.settings.min_isolation_tier,
         )

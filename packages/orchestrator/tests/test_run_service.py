@@ -136,6 +136,28 @@ async def test_a_first_message_starts_a_run(harness: Harness) -> None:
     assert events[1].data == {"message_id": "m-1", "text": "What is $2+2$?"}
 
 
+async def test_a_dedicated_session_runs_in_its_own_environment(harness: Harness) -> None:
+    """A session opened with an environment of its own keeps it for its runs (lab 38):
+    the service does not reopen it as one of the project's."""
+    projects = ProjectStore(harness.state)
+    opened = projects.open_session(PROJECT, "d", dedicated=True)
+    default = projects.get(PROJECT).default_environment_id
+    assert opened.environment_id != default
+    runs(harness).post(PROJECT, "d", "m-d", "Hello.", author="user")
+    async with serving(harness, Reply("Hello.")):
+
+        def saved() -> bool:
+            found = projects.runs(PROJECT, "d")
+            return len(found) == 1 and runs(harness).ended(PROJECT, "d", found[0].name)
+
+        await eventually(saved, timeout=20)
+    (entry,) = projects.runs(PROJECT, "d")
+    record = projects.run(PROJECT, "d", entry.name)
+    assert record.context.environment_id == opened.environment_id
+    assert record.final_text == "Hello."
+    assert projects.get(PROJECT).sessions["d"].dedicated
+
+
 async def test_a_later_message_starts_a_run_with_the_earlier_conversation(
     harness: Harness,
 ) -> None:
