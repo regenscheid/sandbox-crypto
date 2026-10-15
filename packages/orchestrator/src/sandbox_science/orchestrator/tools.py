@@ -17,7 +17,7 @@ import json
 import logging
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final, cast
 
@@ -68,6 +68,14 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger(__name__)
 
+SAVED_OUTPUT: Final = "call-output"
+"""The session workspace's directory for output too long for its result, saved whole and
+recorded like any file a call writes (tools spec Shell 5)."""
+LONG_OUTPUT: Final = (
+    " Output too long for the result comes back as its head and tail, marked as a sample, "
+    "and is saved whole to a file the result names."
+)
+"""Said by each tool whose output is saved when it is too long (lane K's triage, P4)."""
 TRACEBACK_LINES: Final = 20
 SHOWN_OUTPUTS: Final = 20
 """Rich outputs shown to the model, the first and last half; a note counts the rest."""
@@ -113,7 +121,7 @@ SAGE: Final = ToolSpec(
     "Sage syntax applies: ^ is exponentiation, 1/3 is an exact rational, and integer literals "
     "are Sage Integers (convert them with int() before json.dumps). Variables persist between "
     "calls until that kernel restarts. Results come back as plain text; run %display latex "
-    "first, or call latex(x), to get LaTeX." + SHARED_IN_CODE,
+    "first, or call latex(x), to get LaTeX." + LONG_OUTPUT + SHARED_IN_CODE,
     {
         "type": "object",
         "properties": {"code": {"type": "string"}, "timeout_seconds": _TIMEOUT},
@@ -228,7 +236,7 @@ SPECS: Final = (
         "shell",
         "Run a bash script in the session's workspace inside the project sandbox. Each call "
         "starts afresh in the workspace (no state carries over except files); stdin is empty. "
-        "Returns the exit code and the output." + STOP_AT_FAILURE + SHARED_IN_CODE,
+        "Returns the exit code and the output." + LONG_OUTPUT + STOP_AT_FAILURE + SHARED_IN_CODE,
         {
             "type": "object",
             "properties": {
@@ -244,7 +252,7 @@ SPECS: Final = (
         "python",
         "Run Python code in the session's persistent kernel inside the project sandbox. "
         "Variables persist between calls until the kernel restarts. Returns printed output, "
-        "the value of the last expression and any exception." + SHARED_IN_CODE,
+        "the value of the last expression and any exception." + LONG_OUTPUT + SHARED_IN_CODE,
         {
             "type": "object",
             "properties": {"code": {"type": "string"}, "timeout_seconds": _TIMEOUT},
@@ -872,10 +880,50 @@ class Toolbox:
             replayed = not created
 
         execution = await self.client.run(request, on_submitted=submitted)
-        record = {"execution": execution.model_dump(mode="json"), "replayed": replayed}
-        return ToolOutcome(
-            self._summary(execution, replayed=replayed), record, written=Written.of(execution)
-        )
+        record: dict[str, Any] = {
+            "execution": execution.model_dump(mode="json"),
+            "replayed": replayed,
+        }
+        written = Written.of(execution)
+        planned = {name: saved_path(execution, name) for name, _, _ in _texts(execution)}
+        text, sampled = self._fit(execution, replayed, planned, {})
+        if not sampled:
+            return ToolOutcome(text, record, written=written)
+        saved, unsaved = await self._save(execution, sampled)
+        if unsaved:
+            text, _ = self._fit(execution, replayed, saved, unsaved)
+        record["saved_output"] = saved
+        paths = (*written.paths, *(path for path in saved.values() if path not in written.paths))
+        return ToolOutcome(text, record, written=replace(written, paths=paths))
+
+    async def _save(
+        self, execution: Execution, names: Sequence[str]
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """Save each of the ``names`` texts whole to its file in the session workspace
+        (tools spec Shell 5): the paths saved, and why the others were not."""
+        texts = {name: text for name, text, _ in _texts(execution)}
+        saved: dict[str, str] = {}
+        unsaved: dict[str, str] = {}
+        for name in names:
+            path = saved_path(execution, name)
+            content = texts[name].encode("utf-8", "replace")
+            try:
+                await self.client.write_file(
+                    WriteFileRequest(
+                        context=self.context,
+                        path=path,
+                        content_b64=base64.b64encode(content).decode(),
+                    )
+                )
+            except WorkerAPIError as error:
+                unsaved[name] = f"{error.kind.value}: {bound(error.message, 200)}"
+                continue
+            except Exception:  # saving never costs the call its result
+                _log.exception("saving the output of %s failed", execution.execution_id)
+                unsaved[name] = "internal: the harness could not write it"
+                continue
+            saved[name] = path
+        return saved, unsaved
 
     async def _pdf(self, kind: str, args: dict[str, Any], operation: str) -> ToolOutcome:
         """A PDF operation in the sandbox; the helper's JSON is formatted for the model."""
@@ -972,11 +1020,23 @@ class Toolbox:
 
         Each text is bounded; while they add up to more, every bound is halved.
         """
+        return self._fit(execution, replayed, None, {})[0]
+
+    def _fit(
+        self,
+        execution: Execution,
+        replayed: bool,
+        saved: Mapping[str, str] | None,
+        unsaved: Mapping[str, str],
+    ) -> tuple[str, list[str]]:
+        """``_summary``'s text, with the texts it shows only in part: with ``saved``,
+        it says they are samples and names their files, or why one was not saved."""
         limit = self.output_chars // 2
         while True:
-            text = dump(_describe(execution, limit, replayed, self.kernel_run))
+            summary = _describe(execution, limit, replayed, self.kernel_run, saved, unsaved)
+            text = dump(summary)
             if len(text) <= self.output_chars or limit <= 64:
-                return text
+                return text, _sampled(execution, limit)
             limit //= 2
 
     def _bound(self, text: str) -> str:
@@ -1150,12 +1210,19 @@ class Toolbox:
 
 
 def _describe(
-    execution: Execution, limit: int, replayed: bool, run: str | None = None
+    execution: Execution,
+    limit: int,
+    replayed: bool,
+    run: str | None = None,
+    saved: Mapping[str, str] | None = None,
+    unsaved: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """The parts of an execution the model reads, each text within ``limit`` characters.
 
     Of the session's running kernels, the run reads only those its cells use: the
-    session's for a main run, its own for a delegated one (``run``).
+    session's for a main run, its own for a delegated one (``run``). With ``saved``,
+    the texts shown only in part are called a sample, with the file each is saved in,
+    or, from ``unsaved``, why it is not (tools spec Shell 5).
     """
     summary: dict[str, Any] = {"state": execution.state.value}
     if replayed:
@@ -1180,6 +1247,8 @@ def _describe(
             outputs = [*outputs[:half], omitted, *outputs[-half:]]
         if outputs:
             summary["outputs"] = outputs
+        if saved is not None:
+            summary.update(_sample_note(execution, limit, saved, unsaved or {}))
         if result.error is not None:
             error: dict[str, Any] = {
                 "kind": result.error.kind.value,
@@ -1229,11 +1298,79 @@ def _describe(
 
 
 def _output(data: dict[str, str], limit: int) -> str:
-    for mime in ("text/latex", "text/markdown", "text/plain"):
-        if mime in data:
-            return bound(data[mime], limit)
+    text = _output_text(data)
+    if text is not None:
+        return bound(text, limit)
     kinds = ", ".join(sorted(data))
     return bound(f"[{kinds} output, not shown]", limit)
+
+
+def _output_text(data: dict[str, str]) -> str | None:
+    for mime in ("text/latex", "text/markdown", "text/plain"):
+        if mime in data:
+            return data[mime]
+    return None
+
+
+def saved_path(execution: Execution, name: str) -> str:
+    """Where the harness saves an execution's ``name`` text whole (tools spec Shell 5)."""
+    return f"{SAVED_OUTPUT}/{execution.execution_id}/{name}.txt"
+
+
+def _texts(execution: Execution) -> list[tuple[str, str, bool]]:
+    """An execution's texts the harness may save: each stream, and each rich output with
+    a text form (``output-1`` for the first), with whether the worker cut it already."""
+    result = execution.result
+    if result is None:
+        return []
+    texts = [
+        (stream.name, stream.text, stream.truncated)
+        for stream in (result.stdout, result.stderr)
+        if stream is not None and stream.total_bytes
+    ]
+    for number, output in enumerate(result.outputs, 1):
+        text = _output_text(output.data)
+        if text is not None:
+            texts.append((f"output-{number}", text, False))
+    return texts
+
+
+def _sampled(execution: Execution, limit: int) -> list[str]:
+    """The texts the model sees only in part when each is bounded to ``limit``."""
+    return [name for name, text, cut in _texts(execution) if cut or len(text) > limit]
+
+
+def _sample_note(
+    execution: Execution, limit: int, saved: Mapping[str, str], unsaved: Mapping[str, str]
+) -> dict[str, Any]:
+    """What tells the model that a text it sees in part is a sample (lane K's triage,
+    P4): which texts, where each is saved whole, and what was not kept or saved."""
+    names = _sampled(execution, limit)
+    if not names:
+        return {}
+    files = {name: saved[name] for name in names if name in saved and name not in unsaved}
+    note = (
+        f"Shown here only in part, as head and tail with the middle left out: "
+        f"{', '.join(names)}. What is shown is a sample: take no counts, identifiers, rows "
+        f"or claims about all or none of it from what you see."
+    )
+    if files:
+        note += " Each is saved whole in its file under saved: read it in parts or compute from it."
+    result = execution.result
+    for stream in () if result is None else (result.stdout, result.stderr):
+        if stream is not None and stream.truncated and stream.name in files:
+            note += (
+                f" The worker kept only the first and last parts of {stream.name} "
+                f"({stream.total_bytes} bytes in all), so its file is a sample too: to keep "
+                f"all of an output this large, write it to a file in the script."
+            )
+    for name in names:
+        if name in unsaved:
+            note += f" {name} could not be saved ({unsaved[name]})."
+    summary: dict[str, Any] = {"sample": note}
+    if files:
+        summary["saved"] = files
+    return summary
 
 
 def bound(text: str, limit: int) -> str:

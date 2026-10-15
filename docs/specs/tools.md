@@ -32,6 +32,14 @@ These belong to other specs: Conda provisioning ([conda-provisioning](conda-prov
    *Not built:* the executor sets `SESSION_WORKSPACE` and `PROJECT_SHARED`, not `PROJECT_DOCUMENTS`. The living documents' files in the sandbox (LD-49) are not built, and the document sync code meant to deliver them was removed from main ([archive](../../.agents/docs/archive/README.md)).
 4. **stdin** is empty, so a command waiting for input reads end-of-file instead of hanging.
 5. **Output.** stdout and stderr are separate streams of ordered chunks, each numbered within the execution. A stream larger than its limit keeps its head and its tail, drops the middle with a marker, and reports the total byte count. Bytes that are not UTF-8 are decoded with replacement characters.
+
+   **Long output is saved** (amended 2026-10-15 by the coordinator, from lane K's triage of the prompt research, P4). The agent may be shown a stream only in part, because it is longer than the agent's result can hold or because the worker cut it.
+   - The harness then saves the stream, as the worker returned it, to `call-output/<execution ID>/stdout.txt` (or `stderr.txt`) in the session workspace.
+   - The file is recorded like any file the call wrote ([research artifacts](research-artifacts.md), RA-27).
+   - The result shows the stream's head and tail, says that what it shows is a sample that no count, identifier, row or claim about all or none may be taken from, and names the file.
+   - Up to the worker's limit (1 MiB a stream by default), the file is the whole stream. Past it, the worker kept only the head and tail, so the result says the file is a sample too and asks for output that large to be written to a file by the script.
+   - A cell's printed output, and the text of its rich outputs, are saved the same way (`output-1.txt` for its first output).
+   - When a file cannot be saved, the result says why, and still calls what it shows a sample. Saving never fails the call.
 6. **Ending.** The result carries the exit code or the terminating signal, the elapsed time, and whether the call timed out or was cancelled. Partial output is kept.
 7. **Timeouts.** Each call has a wall-time limit, with a default and a maximum set by policy. When it expires, each of the call's processes gets SIGTERM, then SIGKILL after a short grace period (OpenShell refuses signals to a whole process group, so the executor signals processes one by one; [worker](../WORKER.md#leftover-processes)).
 8. **Leftover processes.** When a call ends, the processes it started that are still running are terminated, including those that left its process group or session. A shell call cannot leave daemons running ([worker](../WORKER.md#leftover-processes) says how far the executor can find them). A computation that should outlive the call is a background job.
@@ -74,7 +82,7 @@ A background job is a shell command that runs without holding a tool call open: 
 7. **Kernel death.** A kernel that dies (a crash, running out of memory, `os._exit`) ends its running cell with `kernel_died`. The next cell starts a new generation and reports that earlier state was lost. The worker never hides a restart.
 8. **Limits.** A cell has a wall-time limit, like a shell call, after which it is interrupted. Its outputs have size limits; a large rich output is written to a file and referenced instead of being returned inline.
 
-   *Not built:* a rich output over the limit is replaced by a note; nothing spills it to a file ([worker](../WORKER.md#not-built)).
+   *Not built:* a rich output over the worker's limit is replaced by a note; nothing spills it to a file ([worker](../WORKER.md#not-built)). The text of a rich output within that limit, but too long for the agent's result, is saved by the harness (Shell 5).
 9. **Working directory.** A kernel starts in the session workspace.
 10. **Languages.** The agent gets a tool for each language the environment offers (`python`, `sage`), and none for the others. Sage runs in SageMath's own Jupyter kernel, so Sage syntax applies (`^` is exponentiation); the platform never emulates it in Python.
 11. **Closing a session** stops its kernels. Running cells end cancelled, queued cells never start, and the session's next cell starts a new generation that reports the lost state. The session's files stay.
@@ -138,7 +146,7 @@ The harness's instructions tell the agent to wait and retry.
 
 ## Acceptance fixtures
 
-The worker's conformance suite runs these through the worker API against any backend ([worker](../WORKER.md#conformance-suite)); fixture 11, and the notices of fixtures 13 and 16, are the harness's.
+The worker's conformance suite runs these through the worker API against any backend ([worker](../WORKER.md#conformance-suite)); fixtures 11 and 21, and the notices of fixtures 13 and 16, are the harness's.
 
 1. **Shell basics.** `echo hello; echo err >&2; exit 3` gives stdout `hello\n`, stderr `err\n` and exit code 3. The location names the sandbox, not the orchestrator's host.
 2. **Stateful cells.** Cell 1 `x = 41`, then cell 2 `x + 1`, gives an `execute_result` with `text/plain` `42`, in generation 1 of the same kernel.
@@ -160,6 +168,7 @@ The worker's conformance suite runs these through the worker API against any bac
 18. **Waiting with check-ins** (`scripted` watcher). The agent starts a job expected to print a progress line a minute, and waits on it. The watcher is asked after 5 minutes and answers `fine` with a note, which the GUI shows, and the agent's model is not called. The job then stops printing; at the next check-in the watcher answers `needs attention`, and the agent continues its turn with the watcher's reason and the job still running.
 19. **A message during a wait.** While the agent waits on a job, the user sends a message. The agent answers it in the same turn and waits again; the job is not disturbed.
 20. **No watcher.** With no watcher alias configured, a wait makes no model calls until the job ends, and the GUI says that check-ins are off.
+21. **Long output saved** (Shell 5). A shell call printing the numbers 1 to 50,000 returns their head and tail, calls them a sample and names `call-output/<execution ID>/stdout.txt`. The file holds all 50,000 lines and is recorded as an artifact revision of that call. Output the worker cut is saved as the sample it is, and the result says so.
 
 ## Open questions
 

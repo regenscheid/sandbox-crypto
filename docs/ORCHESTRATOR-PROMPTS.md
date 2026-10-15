@@ -47,7 +47,9 @@ What each input does:
   `set -euo pipefail`, or to check each step, so that a failed step does not hide
   behind a later one's success, and to check that the files it should make exist
   before saying it made them; the harness runs a script as written
-  ([tools spec](specs/tools.md), Shell 1).
+  ([tools spec](specs/tools.md), Shell 1). `shell`, `python` and `sage` say that
+  output too long for the result comes back as its head and tail, marked as a
+  sample, and saved whole to a file the result names (Shell 5).
 - **Platform notices.** Fixed framings in `notices.py`, each with an ID and a version,
   followed by bounded JSON data. The run record pins them, and the saved transcript
   keeps the text actually sent. Delivered notice IDs are tracked separately from fetched ones and
