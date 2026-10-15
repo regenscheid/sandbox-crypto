@@ -793,7 +793,12 @@ def test_each_change_to_the_best_known_is_recorded_with_its_cause(ledger: Ledger
            op="est", author=USER)  # fmt: skip
     (latest,) = ledger.frontier_history("p", "key-recovery", limit=1).changes
     assert (latest.conditions, latest.added, latest.removed) == (CLASSICAL, ["R-5"], ["R-2"])
-    assert latest.cause == {"author": "user:user", "entries": ["R-5"], "operation_id": "est"}
+    assert latest.cause == {
+        "author": "user:user",
+        "entries": ["R-5"],
+        "operation_id": "est",
+        "reason": "Recorded.",
+    }
     assert [m.handle for m in latest.best] == ["R-1", "R-5"]
     # P2 stays recorded, and the frontier as it was shows it best known.
     assert ledger.entry("p", "R-2").status == "recorded"
@@ -854,3 +859,96 @@ def test_a_version_26_store_takes_frontier_changes_after_the_migration(
         )  # fmt: skip
     finally:
         migrated.close()
+
+
+def test_a_category_older_than_its_history_gets_a_baseline_first(
+    ledger: Ledger, tmp_path: Path
+) -> None:
+    """L2: P1 was best known before version 27; the first change after it recorded P1 as
+    added by that change, which did not touch it."""
+    from sandbox_science.orchestrator.control import migrations
+    from sandbox_science.orchestrator.documents import DocumentStore, store_path
+
+    from .control_versions import older_store
+    from .test_ledger import NEW
+
+    ledger.define_category("p", KEY_RECOVERY, MAIN)
+    change(ledger, NEW["reference"], op="ref")
+    change(ledger, published("P1", CLASSICAL, time=120, memory=60), op="p1", author=USER)
+    ledger.documents.close()
+    old = tmp_path / "old"
+    old.mkdir()
+    older_store(store_path(tmp_path), store_path(old), migrations.BASELINE + 24)
+    migrated = DocumentStore(store_path(old))
+    migrated.initialize()
+    try:
+        moved = Ledger(migrated)
+        p2 = published("P2", CLASSICAL, time=110, memory=80)
+        moved.change("p", {"operation_id": "p2", "reason": "P2.", "changes": [p2]}, USER)
+        changes = moved.frontier_history("p", "key-recovery").changes
+        assert [
+            (c.cause.get("operation_id"), c.cause.get("baseline"), c.added) for c in changes
+        ] == [
+            ("p2", None, ["R-2"]),
+            (None, "frontier history begins", ["R-1"]),
+        ]
+    finally:
+        migrated.close()
+
+
+def test_the_history_keeps_long_conditions_and_says_why(ledger: Ledger) -> None:
+    """L1, M3, M4: conditions over the history's 8192 bytes aborted a valid change; a
+    group's spelling, from another result, made it a new group; and a cause did not say
+    why or which links."""
+    from .test_ledger import NEW
+    from .test_ledger_decisions import decide
+
+    keys = [f"k{n}" for n in range(16)]
+    ledger.define_category("p", {**KEY_RECOVERY, "conditions": keys}, USER)
+    change(ledger, NEW["reference"], op="ref")
+    wide = dict.fromkeys(keys, "\x01" * 256)
+    change(ledger, published("W", wide, time=1, memory=1), op="wide", author=USER)  # R-1
+    (first,) = ledger.frontier_history("p", "key-recovery").changes
+    assert (first.added, len(first.conditions["#"])) == (["R-1"], 64)
+    # One group, whichever result spells it.
+    narrow = dict.fromkeys(keys, "a")
+    change(ledger, published("P1", narrow, time=120, memory=60), op="p1", author=USER)  # R-2
+    change(ledger, published("P2", dict.fromkeys(keys, "A"), time=125, memory=65),
+           op="p2", author=USER)  # fmt: skip
+    change(ledger, decide("R-2"), {"entry": "R-2", "expected": 1, "status": "refuted"},
+           op="refute", author=USER)  # fmt: skip
+    latest = ledger.frontier_history("p", "key-recovery").changes[0]
+    assert (latest.added, latest.removed, latest.cause["reason"]) == (["R-3"], ["R-2"], "Recorded.")
+    # P2 dominates W, under other conditions, by a link, and the user drops it.
+    link = [{"kind": "dominates", "entry": "R-1", "note": "P2 is faster for every n."}]
+    change(ledger, {"entry": "R-3", "expected": 1, "links": link}, op="link", author=USER)
+    latest = ledger.frontier_history("p", "key-recovery").changes[0]
+    assert (latest.removed, latest.cause["dominates"]) == (
+        ["R-1"],
+        ["R-3 dominates R-1: P2 is faster for every n."],
+    )
+    ledger.drop_dominates("p", "R-3", "R-1", 2, USER, reason="Not for n < 8.", operation_id="d")
+    latest = ledger.frontier_history("p", "key-recovery").changes[0]
+    assert (latest.added, latest.cause["reason"], latest.cause["dominates"]) == (
+        ["R-1"],
+        "Not for n < 8.",
+        ["R-3 no longer dominates R-1"],
+    )
+
+
+def test_a_dominated_result_names_the_best_known_that_dominate_it(ledger: Ledger) -> None:
+    """The write lock's comparisons: P3 is dominated by P1 and by P2, which P1 dominates
+    too; it names P1, the best known."""
+    from .test_ledger import NEW
+
+    ledger.define_category("p", KEY_RECOVERY, MAIN)
+    change(ledger, NEW["reference"], op="ref")
+    for n, (time, memory) in enumerate(((120, 70), (110, 60), (100, 50))):
+        change(ledger, published(f"P{3 - n}", CLASSICAL, time=time, memory=memory),
+               op=f"p{n}", author=USER)  # fmt: skip
+    group = best(ledger.frontier("p", "key-recovery"), CLASSICAL)
+    assert [r.handle for r in group.best] == ["R-3"]
+    assert [(r.handle, r.dominated_by) for r in group.dominated] == [
+        ("R-1", ["R-3"]),
+        ("R-2", ["R-3"]),
+    ]

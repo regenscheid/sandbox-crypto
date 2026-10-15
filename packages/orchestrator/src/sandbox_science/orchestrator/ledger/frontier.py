@@ -32,6 +32,7 @@ links that count for nothing, with why.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -651,16 +652,36 @@ def _dominated(group: FrontierGroup, above: dict[str, list[DominatesLink]]) -> F
 
 
 def _group(category: Category, conditions: dict[str, str], members: list[_Member]) -> FrontierGroup:
-    """One set of conditions' best known, dominated, not compared and candidate results."""
+    """One set of conditions' best known, dominated, not compared and candidate results,
+    each in the order they were made. Read from the best on, a result's dominators all
+    come before it, and one is best known exactly when no best known result before it
+    dominates it, so a group of g results with s best known takes g times s comparisons,
+    not g squared, in the history's write lock too; a dominated result names the best
+    known results that dominate it."""
     compared = [r for r, eligible, _ in members if eligible and _numeric(category, r)]
-    best: list[FrontierResult] = []
-    dominated: list[FrontierResult] = []
-    for result in compared:
-        above = [o.handle for o in compared if o is not result and dominates(category, o, result)]
-        if above:
-            dominated.append(result.model_copy(update={"dominated_by": above}))
+    place = {r.entry_id: n for n, r in enumerate(compared)}
+    signed = {r.entry_id: _goodness(category, r) for r in compared}
+    found: list[tuple[FrontierResult, tuple[float, ...]]] = []
+    above: dict[str, list[FrontierResult]] = {}
+    for result in sorted(compared, key=lambda r: signed[r.entry_id]):
+        mine = signed[result.entry_id]
+        over = [b for b, theirs in found if _ahead(theirs, mine)]
+        if over:
+            above[result.entry_id] = over
         else:
-            best.append(result)
+            found.append((result, mine))
+    best = [r for r in compared if r.entry_id not in above]
+    dominated = [
+        r.model_copy(
+            update={
+                "dominated_by": [
+                    b.handle for b in sorted(above[r.entry_id], key=lambda b: place[b.entry_id])
+                ]
+            }
+        )
+        for r in compared
+        if r.entry_id in above
+    ]
     candidates = [
         result.model_copy(
             update={
@@ -681,6 +702,20 @@ def _group(category: Category, conditions: dict[str, str], members: list[_Member
         not_compared=[r for r, eligible, _ in members if eligible and not _numeric(category, r)],
         candidates=candidates,
     )
+
+
+def _goodness(category: Category, result: FrontierResult) -> tuple[float, ...]:
+    """``result``'s measures, each signed so that less is better: a result that dominates
+    another comes before it in this order."""
+    return tuple(
+        _number(result.measures, m.name) * (1 if m.direction == "lower" else -1)
+        for m in category.measures
+    )
+
+
+def _ahead(a: tuple[float, ...], b: tuple[float, ...]) -> bool:
+    """Whether signed measures ``a`` dominate ``b``: no worse on any, and not the same."""
+    return a != b and all(x <= y for x, y in zip(a, b, strict=True))
 
 
 def _numeric(category: Category, result: FrontierResult) -> bool:
@@ -836,7 +871,7 @@ def record(
                     json.dumps([m.model_dump(mode="json") for m in members]),
                     json.dumps(added),
                     json.dumps(removed),
-                    json.dumps(cause, sort_keys=True),
+                    _bounded(cause),
                     now,
                 ),
             ).lastrowid
@@ -848,7 +883,7 @@ def record(
                     best=members,
                     added=added,
                     removed=removed,
-                    cause=cause,
+                    cause=json.loads(_bounded(cause)),
                     created=now,
                 )
             )
@@ -904,6 +939,40 @@ def past(db: sqlite3.Connection, project: str, category: str, at: str) -> Fronti
     return FrontierPast(category=category, at=at, groups=[g for g in groups if g.best])
 
 
+SLOT_BYTES: Final = 8192
+"""The most bytes of a set of conditions the history keeps (its table's CHECK)."""
+
+CAUSE_BYTES: Final = 16384
+"""The most bytes of a change's cause the history keeps (its table's CHECK)."""
+
+
 def _slot(conditions: dict[str, str]) -> str:
-    """A set of conditions as the history keys it."""
-    return json.dumps(conditions, sort_keys=True, ensure_ascii=False)
+    """A set of conditions as the history keys it: as ``normal`` reads them, so a group
+    keeps its key whichever result's spelling it shows, and within ``SLOT_BYTES``: past
+    them, each value is cut, and ``#`` holds a digest of the whole set, which keeps two
+    sets apart (the review's L1 and M4)."""
+    read = {key: normal(value) for key, value in conditions.items()}
+    text = json.dumps(read, sort_keys=True, ensure_ascii=False)
+    if len(text.encode()) <= SLOT_BYTES:
+        return text
+    cut: dict[str, str] = {key: value[:24] + "…" for key, value in read.items()}
+    cut["#"] = hashlib.sha256(text.encode()).hexdigest()
+    return json.dumps(cut, sort_keys=True, ensure_ascii=False)
+
+
+def _bounded(cause: Json) -> str:
+    """``cause`` as the history keeps it, within ``CAUSE_BYTES``: past them, its reason
+    and links are cut short, and then left out, so recording never refuses a change."""
+    text = json.dumps(cause, sort_keys=True, ensure_ascii=False)
+    for shorter in (
+        {
+            **cause,
+            "reason": str(cause.get("reason", ""))[:200],
+            "dominates": cause.get("dominates", [])[:4],
+        },
+        {key: value for key, value in cause.items() if key not in ("reason", "dominates")},
+    ):
+        if len(text.encode()) <= CAUSE_BYTES:
+            break
+        text = json.dumps(shorter, sort_keys=True, ensure_ascii=False)
+    return text

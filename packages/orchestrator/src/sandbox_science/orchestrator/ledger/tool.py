@@ -45,6 +45,7 @@ from .models import (
     EntryType,
     EntryView,
     FlagCause,
+    FrontierChange,
     FrontierGroup,
     FrontierHistory,
     FrontierResult,
@@ -643,20 +644,21 @@ class LedgerTool:
         return _dump({**shown, "more": {}})
 
     def _frontier_history(self, found: FrontierHistory) -> str:
-        """As many of a category's frontier changes as the budget holds, newest first."""
+        """As many of a category's frontier changes as the budget holds, newest first; a
+        first change too large for it shows as many of its results as it holds, with
+        their counts, and its texts cut short (the review's L3)."""
         shown: list[Json] = []
         for change in found.changes:
-            value = {
-                "seq": change.seq,
-                "conditions": change.conditions,
-                "added": change.added,
-                "removed": change.removed,
-                "best": [m.handle for m in change.best],
-                "operation_id": change.cause.get("operation_id"),
-                "created": change.created,
-            }
-            if len(_dump({"changes": [*shown, value], "history_before": 2**62})) > self.budget:
-                return _dump({"changes": shown, "history_before": shown[-1]["seq"]})
+            value: Json = {}
+            for cap in (50, 20, 10, 5, 2, 1, 0) if not shown else (50,):
+                value = _change(change, cap)
+                if len(_dump({"changes": [*shown, value], "history_before": 2**62})) <= (
+                    self.budget
+                ):
+                    break
+            else:
+                if shown:
+                    return _dump({"changes": shown, "history_before": shown[-1]["seq"]})
             shown.append(value)
         return _dump({"changes": shown, "history_before": found.next_before})
 
@@ -849,6 +851,30 @@ def _shown(result: FrontierResult, *extra: str) -> Json:
         value |= {"open_findings": result.open_findings, "open_flags": result.open_flags}
     for key in extra:
         value[key] = getattr(result, key)
+    return value
+
+
+def _change(change: FrontierChange, cap: int) -> Json:
+    """One frontier change, with as many as ``cap`` of each list of results, its condition
+    values and cause cut to fit when ``cap`` is small."""
+    clip = 200 if cap >= 10 else 40
+    value: Json = {
+        "seq": change.seq,
+        "conditions": {k: _clip(v, clip) for k, v in change.conditions.items()},
+        "created": change.created,
+        "operation_id": change.cause.get("operation_id"),
+    }
+    for key in ("reason", "baseline"):
+        if key in change.cause:
+            value[key] = _clip(str(change.cause[key]), clip)
+    for part, results in (
+        ("added", change.added),
+        ("removed", change.removed),
+        ("best", [m.handle for m in change.best]),
+    ):
+        value[part] = results[:cap]
+        if len(results) > cap:
+            value[f"{part}_total"] = len(results)
     return value
 
 

@@ -371,6 +371,7 @@ export interface FrontierChange {
   removed: string[];
   cause: Record<string, unknown>;
   created: string;
+  more: Record<string, number>;
 }
 
 /** The results of a category under one set of conditions (LG-21). */
@@ -421,6 +422,7 @@ export interface FrontierPastAnswer {
 export interface FrontierPastGroup {
   conditions: Record<string, string>;
   best: FrontierMember[];
+  more: number;
 }
 
 /** A result as the frontier shows it (LG-23): what it states, under which conditions, its measures, origin, status, who wrote it, the types of its evidence, the references it cites and the artifacts it is pinned to, and its open findings and flags. */

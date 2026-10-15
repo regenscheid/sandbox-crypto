@@ -822,3 +822,18 @@ async def test_the_agent_reads_a_frontiers_history(ledger: Ledger) -> None:
         "est",
         None,
     )
+    # L3: a first change larger than the budget is shown cut, not refused.
+    many = [
+        result(conditions={"model": "w", "success": "1/2"}, measures={"time": n, "memory": 9 - n})
+        for n in range(10)
+    ]
+    decided = {**decision, "links": [{"kind": "affects", "entry": f"R-{n}"} for n in range(2, 12)]}
+    made = [{"entry": f"R-{n}", "expected": 1, "status": "established"} for n in range(2, 12)]
+    ledger.change("p", {"operation_id": "many", "reason": "r", "changes": many}, MAIN)
+    ledger.change("p", {"operation_id": "all", "reason": "r", "changes": [decided, *made]}, USER)
+    tiny = tool(ledger)
+    tiny.budget = 320
+    cut = await use(tiny, "ledger_frontier", category="key-recovery", history=True)
+    (shown,) = cut["changes"]
+    assert (len(shown["added"]) < 10, shown["added_total"]) == (True, 10)
+    assert len(json.dumps(cut, separators=(",", ":"))) <= 320

@@ -29,6 +29,7 @@ from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.ledger.models import (
     Category,
     CategoryPage,
+    FrontierChange,
     FrontierGroup,
     FrontierHistory,
     FrontierPast,
@@ -146,6 +147,37 @@ async def frontier(request: web.Request) -> web.Response:
     return await read_answer(request, project, read)
 
 
+def _past(found: FrontierPast) -> FrontierPast:
+    """``found`` with the first ``SHOWN_RESULTS`` best known of each group, and how many
+    more."""
+    groups = [
+        group.model_copy(
+            update={
+                "best": group.best[:SHOWN_RESULTS],
+                "more": max(0, len(group.best) - SHOWN_RESULTS),
+            }
+        )
+        for group in found.groups
+    ]
+    return found.model_copy(update={"groups": groups})
+
+
+def _listed(change: FrontierChange) -> FrontierChange:
+    """``change`` with the first ``SHOWN_RESULTS`` of its best known, added and removed,
+    and how many more of each (the review's L3)."""
+    parts = ("best", "added", "removed")
+    return change.model_copy(
+        update={
+            **{part: getattr(change, part)[:SHOWN_RESULTS] for part in parts},
+            "more": {
+                part: len(getattr(change, part)) - SHOWN_RESULTS
+                for part in parts
+                if len(getattr(change, part)) > SHOWN_RESULTS
+            },
+        }
+    )
+
+
 def _shown(group: FrontierGroup) -> FrontierGroup:
     """``group`` with the first ``SHOWN_RESULTS`` of each kind of result, and how many
     more of each."""
@@ -174,8 +206,11 @@ async def changes(request: web.Request) -> web.Response:
         found = ledger.frontier_history(
             project, name, before=None if before is None else int(before), limit=limit
         )
+        changes = [_listed(change) for change in found.changes]
         return FrontierHistoryAnswer(
-            project_id=project, observed_at=datetime.now(UTC), history=found
+            project_id=project,
+            observed_at=datetime.now(UTC),
+            history=found.model_copy(update={"changes": changes}),
         ).model_dump_json()
 
     return await read_answer(request, project, read)
@@ -195,8 +230,8 @@ async def then(request: web.Request) -> web.Response:
 
     def read(ledger: Ledger) -> str:
         return FrontierPastAnswer(
-            project_id=project, observed_at=datetime.now(UTC), past=ledger.frontier_past(
-                project, name, at)
+            project_id=project, observed_at=datetime.now(UTC), past=_past(
+                ledger.frontier_past(project, name, at))
         ).model_dump_json()  # fmt: skip
 
     return await read_answer(request, project, read)
