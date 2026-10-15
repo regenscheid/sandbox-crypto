@@ -214,13 +214,20 @@ def _copy(db: sqlite3.Connection, table: str, source: str | None = None) -> None
         return
     columns = [row[1] for row in mine if row[1] in theirs]
     keys = [row for row in mine if row[5]]
-    # A table whose key is its rowid copies it with the key; any other keeps its rowids.
+    # A table whose key is its rowid copies it with the key; any other keeps its rowids,
+    # but a table without rowids has none to keep or to order by. Such a table is an index
+    # a trigger fills as the rows it indexes are copied, so what it already holds stays.
     alias = len(keys) == 1 and keys[0][2].upper() == "INTEGER"
+    (sql,) = db.execute(
+        "SELECT sql FROM main.sqlite_master WHERE type='table' AND name=?", (table,)
+    ).fetchone()
+    without = "WITHOUT ROWID" in str(sql).upper()
     names = ",".join(f'"{column}"' for column in columns)
-    rowid = "" if alias else "rowid,"
+    rowid = "" if alias or without else "rowid,"
+    order = "" if without else " ORDER BY rowid"
     db.execute(
-        f'INSERT INTO main."{table}" ({rowid}{names}) '
-        f"SELECT {rowid}{names} FROM {origin} ORDER BY rowid"
+        f'INSERT {"OR IGNORE " if without else ""}INTO main."{table}" ({rowid}{names}) '
+        f"SELECT {rowid}{names} FROM {origin}{order}"
     )
 
 
