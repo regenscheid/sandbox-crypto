@@ -71,10 +71,15 @@ def test_a_setting_keeps_its_defaults_until_changed(tmp_path: Path) -> None:
         ({"check_tokens": 400_001}, "check_tokens"),
         ({"check_turns": 0}, "check_turns"),
         ({"turns": 3}, "turns"),
+        ({"models": ("a", "a")}, "models"),
+        ({"models": tuple(f"m{n}" for n in range(11))}, "models"),
+        ({"models": ("a b",)}, "models.0"),
+        ({"models": ("-a",)}, "models.0"),
+        ({"fallback": "x" * 129}, "fallback"),
     ],
 )
 def test_a_setting_out_of_range_is_refused_and_the_old_one_kept(
-    tmp_path: Path, changes: dict[str, int], message: str
+    tmp_path: Path, changes: dict[str, object], message: str
 ) -> None:
     store = _store(tmp_path)
     try:
@@ -123,21 +128,33 @@ def test_the_cli_shows_and_changes_the_whole_setting(
     assert cli.main(argv) == 0
     assert capsys.readouterr().out == (
         f"project {PROJECT}: delegation depth 0 (off); at most 10 delegated runs at once; "
-        "a check gets 150000 tokens and 12 turns\n"
+        "a check gets 150000 tokens and 12 turns; a brief may choose the models: none; "
+        "fallback: none\n"
     )
     assert cli.main([*argv, "--depth", "1", "--cap", "3", "--check-turns", "4"]) == 0
     assert capsys.readouterr().out == (
         f"project {PROJECT}: delegation depth 1 (main runs delegate checks); at most 3 "
-        "delegated runs at once; a check gets 150000 tokens and 4 turns\n"
+        "delegated runs at once; a check gets 150000 tokens and 4 turns; a brief may "
+        "choose the models: none; fallback: none\n"
+    )
+    assert cli.main([*argv, "--models", "checker-b, anthropic/opus", "--fallback", "main"]) == 0
+    assert capsys.readouterr().out.endswith(
+        "a brief may choose the models: checker-b, anthropic/opus; fallback: main\n"
     )
     assert cli.main([*argv, "--check-tokens", "10"]) == 1
     assert capsys.readouterr().err.startswith("error: check_tokens: ")
+    assert cli.main([*argv, "--models", "a b"]) == 1
+    assert capsys.readouterr().err.startswith("error: models.0: ")
     store = ProjectStore(tmp_path)
     try:
         found = DelegationRecords(store.control).settings(PROJECT)
     finally:
         store.close()
-    assert found == DelegationSettings(depth=1, cap=3, check_turns=4)
+    assert found == DelegationSettings(
+        depth=1, cap=3, check_turns=4, models=("checker-b", "anthropic/opus"), fallback="main"
+    )
+    assert cli.main([*argv, "--models", "", "--fallback", ""]) == 0
+    assert capsys.readouterr().out.endswith("the models: none; fallback: none\n")
 
 
 async def test_a_check_gets_the_projects_turns_and_tokens(delegating: Harness) -> None:

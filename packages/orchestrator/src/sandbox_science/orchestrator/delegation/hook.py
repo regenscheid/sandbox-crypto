@@ -59,10 +59,11 @@ from sandbox_science.orchestrator.projects import RunRecord, run_name
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, dump
 
 from .budget import FLOOR, MIN_CHILD, TreeBudget
+from .models import Choice, ModelChoice
 from .outcome import Target, proof_reads
 from .prompt import brief_text, check_task, evidence_line
 from .records import Delegation, DelegationRecords, DelegationSettings, Ended, Ending
-from .specs import SPECS, CheckBrief, Named, WaitRequest
+from .specs import CheckBrief, Named, WaitRequest, offered
 
 _log = logging.getLogger(__name__)
 
@@ -91,6 +92,8 @@ class Child:
     """The entry and revision it checks, which its result must name."""
     tree: TreeBudget | None = None
     """The root's share of the model budget, which the child's calls spend (PD-38)."""
+    alias: str | None = None
+    """The model alias it calls (PD-28, PD-30); ``None`` for the delegated role's."""
 
 
 @dataclass(frozen=True)
@@ -166,6 +169,7 @@ class Delegations(TurnHook):
         over_budget: Callable[[], Awaitable[bool]] | None = None,
         tree: TreeBudget | None = None,
         limits: DelegationSettings | None = None,
+        models: ModelChoice | None = None,
         max_chars: int = 5000,
         output_chars: int = 20000,
         clock: Clock = SYSTEM_CLOCK,
@@ -177,11 +181,14 @@ class Delegations(TurnHook):
         take at most ``max_chars``, and a wait's result at most ``output_chars``."""
         self.records, self.ledger, self.context = records, ledger, context
         self.parent, self.runner, self.max_turns = parent, runner, max_turns
-        self.specs: tuple[ToolSpec, ...] = SPECS if offer else ()
         self.wake, self.over_budget, self.clock = wake, over_budget, clock
         self.tree = tree
         self.limits = limits or DelegationSettings()
         """The project's cap and a check's tokens and turns (PD-38)."""
+        self.models = models
+        """The model each child calls (PD-28, PD-30); without it, the harness's."""
+        choices = self.limits.models if models is not None else ()
+        self.specs: tuple[ToolSpec, ...] = offered(choices) if offer else ()
         self.turns_left = max_turns
         """The run's turns left at its last safe point: a child gets no more (PD-38)."""
         self.max_chars, self.output_chars = max_chars, output_chars
@@ -222,6 +229,7 @@ class Delegations(TurnHook):
                 ErrorKind.UNAVAILABLE,
                 "limit_reached: this run has no turn left to wait for a delegated run",
             )
+        choice = await self._model(brief.model)
         if self.over_budget is not None and await self.over_budget():
             raise WorkerAPIError(
                 ErrorKind.UNAVAILABLE, "limit_reached: the project has spent its model budget"
@@ -250,12 +258,20 @@ class Delegations(TurnHook):
         # only its note, which cannot stand as the task or as evidence (LG-17).
         task = check_task(entry.handle, brief.check.revision)
         inputs = [evidence_line(link) for link in entry.evidence]
+        written: dict[str, JsonValue] = {
+            "task": task,
+            "note": brief.note,
+            "inputs": list(inputs),
+            "check": check,
+        }
+        if choice is not None:
+            written["model"] = choice.recorded()
         delegation = Delegation(
             delegation_id=delegation_id,
             parent=self.parent,
             run=run_name(started, run_id),
             kind="check",
-            brief={"task": task, "note": brief.note, "inputs": list(inputs), "check": check},
+            brief=written,
             started_at=started,
         )
         try:
@@ -278,20 +294,34 @@ class Delegations(TurnHook):
                 proof_reads(entry.evidence),
             ),
             tree=self.tree,
+            alias=None if choice is None else choice.alias,
         )
         stop = asyncio.Event()
         task = asyncio.create_task(self._run(child, stop), name=f"delegation {delegation_id}")
         self.children[delegation_id] = _Running(
             delegation, run_id, task, stop, {"turns": child.max_turns, "tokens": child.tokens}
         )
-        started_with = {
+        started_with: dict[str, JsonValue] = {
             "delegation_id": delegation_id,
             "run": delegation.run,
             "state": "running",
             "check": {"entry": entry.handle, "revision": brief.check.revision},
             "limits": {"turns": child.max_turns, "tokens": child.tokens},
         }
+        if choice is not None:
+            started_with["model"] = choice.recorded()
         return dump(started_with), {"delegation": started_with}
+
+    async def _model(self, asked: str | None) -> Choice | None:
+        """The model the child calls (PD-28, PD-30); ``None`` for the harness's, when it
+        offers no choice."""
+        if self.models is not None:
+            return await self.models.choose(asked)
+        if asked is not None:
+            raise WorkerAPIError(
+                ErrorKind.POLICY_DENIED, "model_not_allowed: this run offers no choice of model"
+            )
+        return None
 
     async def _run(self, child: Child, stop: asyncio.Event) -> None:
         """Run a child to its end, then write its outcome, however it ended."""

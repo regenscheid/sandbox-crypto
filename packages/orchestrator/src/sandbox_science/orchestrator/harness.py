@@ -52,6 +52,7 @@ from .delegation import prompt as delegated_prompt
 from .delegation.budget import TreeBudget
 from .delegation.fence import ChildFence
 from .delegation.hook import Child, ChildEnd, Delegations
+from .delegation.models import ModelChoice
 from .delegation.outcome import Outcome, Target, result_of
 from .delegation.records import DelegationRecords
 from .documents import DocumentError, DocumentStore, DocumentTool
@@ -74,7 +75,7 @@ from .mathchecks.jobs import Checker
 from .memory import MemoryEntry, ProjectMemory
 from .memory_prompt import for_reviewer, for_run, for_watcher
 from .memory_tools import MemoryTool
-from .model import ChatModel, Message
+from .model import ChatModel, Message, ModelError, ModelGateway
 from .plan_tools import PlanTools
 from .projects import (
     ProjectError,
@@ -222,6 +223,9 @@ class RunRequest:
     tree: TreeBudget | None = None
     """For a delegated run of the run service, its root's share of the model budget,
     which its calls spend (PD-38)."""
+    alias: str | None = None
+    """For a delegated run, the model alias its delegation chose (PD-28, PD-30);
+    ``None`` for the delegated role's."""
 
     @property
     def queued(self) -> bool:
@@ -417,10 +421,13 @@ class Harness:
         clock: Clock = SYSTEM_CLOCK,
         mcp: McpAccess | None = None,
         delegated: Role | None = None,
+        gateway: ModelGateway | None = None,
     ) -> None:
         """``checker`` is the configured math checker; without it, math checks report
         the renderer unavailable. A reviewer and a checker need stores. ``delegated`` is
-        the model delegated runs call (PD-27, PD-28); MAIN's without it."""
+        the model delegated runs call (PD-27, PD-28); MAIN's without it. ``gateway``
+        serves the other aliases a brief may choose, and says which it lists (PD-30);
+        without it, delegated runs call ``delegated``'s alias only."""
         if stores is None and (reviewer is not None or checker is not None):
             raise ValueError("a reviewer and a math checker need the state directory's stores")
         self.client, self.main, self.stores = client, main, stores
@@ -431,10 +438,18 @@ class Harness:
         self.mcp = mcp
         """The MCP proxy and the servers behind it whose tools runs are offered."""
         self.delegated = delegated or main
+        self.gateway = gateway
 
     def role(self, request: RunRequest) -> Role:
-        """The model a run calls: the delegated role's for a delegated run."""
-        return self.main if request.parent is None else self.delegated
+        """The model a run calls: the delegated role's for a delegated run, or the one
+        its delegation chose (PD-28, PD-30)."""
+        if request.parent is None:
+            return self.main
+        if request.alias is None or request.alias == self.delegated.alias:
+            return self.delegated
+        if self.gateway is None:
+            raise ModelError(f"no model gateway serves {request.alias!r}")
+        return Role(self.gateway.model(request.alias), request.alias)
 
     async def run(self, request: RunRequest, sink: RunSink) -> Finished:
         """Admit the run (``admit``), then run it (``start``)."""
@@ -605,6 +620,11 @@ class Harness:
             over_budget=over_budget,
             tree=tree,
             limits=limits,
+            models=ModelChoice(
+                self.delegated.alias,
+                limits,
+                self.gateway.aliases if self.gateway is not None else None,
+            ),
             clock=clock,
         )
 
@@ -628,6 +648,7 @@ class Harness:
             tokens=child.tokens,
             target=child.target,
             tree=child.tree,
+            alias=child.alias,
         )
         admitted = dataclasses.replace(
             parent, request=request, run_id=child.run_id, started_at=child.started_at
@@ -654,7 +675,7 @@ class Harness:
             fence.refused if fence is not None else None,
             result.model_dump(mode="json") if result is not None else None,
             tuple(found.errors) if found is not None else (),
-            self.delegated.alias,
+            request.alias or self.delegated.alias,
             tuple(dict.fromkeys(u.model for u in transcript.usage if u.model is not None))[:10],
             found.read if found is not None else None,
             found.read_proofs if found is not None else None,

@@ -83,6 +83,7 @@ from .model import (
     MAX_RESPONSE_BYTES,
     ChatModel,
     ModelError,
+    ModelGateway,
     OpenAICompatibleModel,
     ScriptedModel,
 )
@@ -268,6 +269,11 @@ def _harness(
             lambda: _gateway(args, alias),
         )
         closing(stack, interruption, lambda: _close(delegated.model))
+    gateway = None
+    if getattr(args, "model_url", None) is not None:
+        # The aliases a delegation chooses, and the list it checks them in (PD-28, PD-30).
+        gateway = ModelGateway(args.model_url, read_secret(args.api_key_file))
+        closing(stack, interruption, gateway.close)
     mcp = None
     if args.mcp_proxy is not None:
         token = read_secret(args.mcp_token_file)
@@ -293,6 +299,7 @@ def _harness(
         watcher=watcher,
         reviewer=reviewer,
         delegated=delegated,
+        gateway=gateway,
         checker=(
             MathChecker(args.math_node, args.math_launcher, args.math_bundle)
             if args.math_node is not None

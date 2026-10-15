@@ -222,6 +222,66 @@ class OpenAICompatibleModel:
             ) from cause
 
 
+class ModelGateway:
+    """The deployment's model gateway, for runs whose alias is chosen as they start, as
+    a delegated run's is (plans-and-delegation spec, PD-28, PD-30): a model for an
+    alias, and the aliases the gateway lists. The models it makes share its session,
+    which ``close`` closes."""
+
+    LISTED_BYTES: Final = 1024 * 1024
+    """The largest list of models read from the gateway."""
+
+    def __init__(self, base_url: str, api_key: str, *, timeout: float = 30) -> None:
+        self.base_url = base_url.rstrip("/")
+        self._api_key = api_key
+        self._timeout = aiohttp.ClientTimeout(total=timeout)
+        self._session: aiohttp.ClientSession | None = None
+
+    def _shared(self) -> aiohttp.ClientSession:
+        if self._session is None:
+            self._session = aiohttp.ClientSession()
+        return self._session
+
+    def model(self, alias: str) -> OpenAICompatibleModel:
+        """A model that calls ``alias``, through the gateway's session."""
+        return OpenAICompatibleModel(self.base_url, alias, self._api_key, session=self._shared())
+
+    async def aliases(self) -> frozenset[str] | None:
+        """The model aliases the gateway lists (``GET /models``, as the LiteLLM proxy
+        serves it); ``None`` when it cannot be asked or its answer is not a list, so
+        that a gateway that lists nothing is not taken to serve nothing."""
+        try:
+            async with self._shared().get(
+                f"{self.base_url}/models",
+                headers={"Authorization": f"Bearer {self._api_key}"},
+                timeout=self._timeout,
+                allow_redirects=False,
+            ) as response:
+                data = await _read_limited(response, self.LISTED_BYTES)
+                if not 200 <= response.status < 300:
+                    _log.warning("the model gateway lists no models: HTTP %s", response.status)
+                    return None
+        except (aiohttp.ClientError, TimeoutError, ModelError) as exc:
+            _log.warning("the model gateway lists no models: %s", type(exc).__name__)
+            return None
+        try:
+            found = _object(json.loads(data)).get("data")
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(found, list):
+            return None
+        return frozenset(
+            cast(str, item["id"])
+            for item in cast(list[object], found)
+            if isinstance(item, dict) and isinstance(cast(dict[str, object], item).get("id"), str)
+        )
+
+    async def close(self) -> None:
+        if self._session is not None:
+            await self._session.close()
+            self._session = None
+
+
 class _RetryableError(Exception):
     def __init__(self, error: ModelError, after: float | None) -> None:
         self.error, self.after = error, after
