@@ -114,7 +114,7 @@ cancellation.
 
 Local tests use real HTTP and cover immutable USER, body and progress history,
 exact replay and stale CAS, authority injection, request and core limits, closed
-and terminal scopes, a close waiting for an edit in progress, a missing pointer
+and terminal scopes, a close landing between the route's check and the edit, a missing pointer
 and SQL rollback. A scripted MAIN test edits through HTTP at the model boundary:
 a read and an effect in the same batch stay fenced until the new read reaches a
 successful model call.

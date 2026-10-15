@@ -20,10 +20,10 @@ project, session and environment. Model arguments cannot replace that context.
 `wait_jobs` takes distinct `job_ids` and `mode: all` (the default) or `first`.
 The same turn stays open while the harness reads worker status; the agent's
 model is never called to poll. Completion, timeout, a watcher attention note,
-or a message from an injected `asyncio.Queue[str]` ends the wait. An interruption
-leaves the computations running. When message and completion race, the message
-is either delivered or remains in the inbox. GUI chat and a CLI live message
-inbox are not built yet; queue injection is the tested control API boundary.
+or a message the user sends in the session's chat ends the wait. An interruption
+leaves the computations running. The message stays in the session's queue and
+reaches the model as the next user message, after the wait's result, so it is
+neither consumed nor repeated ([chat](WORKSPACE.md#chat)).
 
 Without a watcher model alias, waits make no watcher calls and the GUI says
 check-ins are off. To enable the separate role:
@@ -108,9 +108,9 @@ replacement work is admitted; its full log files persist across stop/start.
 
 Still pending:
 
-- A long-lived harness scheduler and project-wide spend accounting.
-  `start_job` refuses `wake_session: true` until a budgeted scheduler can
-  actually start a session turn; detached completion is a next-turn notice.
-- GUI chat and a live CLI inbox. The tested async message boundary can already
-  interrupt a wait without cancelling jobs.
+- Waking a session when a detached job ends, and spend accounting for the
+  watcher and reviewer calls. The run service counts MAIN's tokens per project.
+  `start_job` refuses `wake_session: true` until the service can start a session
+  turn for a finished job; detached completion is a next-turn notice.
+- A terminal inbox for a running `run`; messages come through the workspace's chat.
 - Project-persisted watcher settings. The harness takes them from CLI options.

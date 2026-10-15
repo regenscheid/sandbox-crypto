@@ -123,15 +123,16 @@ after a newer proved edit, not every save. Results of earlier checks are not reu
 for unchanged formulas.
 Document front matter overrides the bounded [project setting](PROJECT-MACROS.md).
 An unchanged formula is therefore checked again after a front-matter or project
-macro change. A document revision atomically pins its save-time project setting;
-an explicitly numbered history view uses that pin, while a current unnumbered
-view uses the current setting. Legacy history without a pin is explicitly unknown.
-Each check separately retains its exact setting revision/hash, resolved definitions
-and context identity. Current-head setting refresh is lazy and bounded by the
+macro change. A document revision atomically records the project setting revision it
+was saved under; an explicitly numbered history view uses that revision, while a
+current unnumbered view uses the current setting. Legacy history without a recorded
+revision is explicitly unknown. Each check records the setting revision it used and
+whether its context was held; the resolved definitions, warnings and context
+identity are derived from that revision and the immutable sources when read.
+Current-head setting refresh is lazy and bounded by the
 active controller; changing settings does not fan out unbounded work or start an
 idle scheduler. A late old-context result stays evidence but cannot decide current
-findings, prove removal or finalize closing ACK. Context quota exhaustion visibly
-holds checking without vetoing ordinary source or setting edits.
+findings, prove removal or finalize closing ACK.
 Check invalidation and authorship are separate: the last revision that added or
 changed the containing stable block proves its owner. Moves and unrelated edits
 preserve that owner, even across later USER changes. Historical jobs reconstruct
@@ -186,8 +187,8 @@ staging record, and a stale save callback cannot decide another run's claim.
 This never invents an additional renderer rejection. Saved summary counts describe
 the closing boundary before this save finalization.
 
-[Project macros](PROJECT-MACROS.md) pin document/comment effective contexts
-and MAIN explanations' agreed original anchor contexts. Contradictory or unknown explanation contexts stay held and allow
+[Project macros](PROJECT-MACROS.md) give document and comment checks their effective
+contexts, and MAIN explanations their agreed original anchor contexts. Contradictory or unknown explanation contexts stay held and allow
 only an inconclusive reviewer outcome; they cannot prove a mechanical fix or
 scientific confirmation. Exact checked context remains available even where a
 thread history uses explicitly diagnostic rendering. Renderer configuration
@@ -208,8 +209,8 @@ Default logical history budgets are 10,000 attempts, 100,000 observations and
 budgets. Reaching one holds the durable backlog visibly; it does not evict
 unresolved evidence, lose revisions or veto ordinary document saves. Automatic
 retention/compaction is not implemented. Individual observations are at most
-32 KiB; APIs page twenty records and prefix-bound persisted metadata before
-parsing. Existing document/text/map limits also apply.
+32 KiB; APIs page twenty records, and the tables check metadata when it is
+written. Existing document/text/map limits also apply.
 
 Unavailable and configuration-changed checks get one explicit current-head retry
 per controller activation, recorded as a new immutable attempt. They do not spin

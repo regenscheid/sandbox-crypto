@@ -86,16 +86,17 @@ and user/prefix entries remain separate. This is recorded membership comparison,
 not proof of a particular filesystem mutation.
 
 All retained fields are compared, including same-version Conda build/channel/
-subdir/archive/SHA-256/MD5/license differences, pip installer/source/hash changes
+subdir/archive/SHA-256/MD5/license differences, pip installer/source/hash/license changes
 and original name spelling. Rows retain both validated original entries and exact
 changed-field names. Python/platform differences are separate bounded header
 changes. Unknown-to-known metadata is a recorded difference, not a claimed install.
 
 Conda license text is declared metadata. Its AGPL flag uses the existing bounded
 `is_agpl` heuristic; it is no new policy decision or licensing certification.
-Absent license text means unknown AGPL status. Pip's retained schema has no
-license field, so both remain unknown; no license is borrowed from another
-operation or similarly named Conda package.
+Absent license text means unknown AGPL status. A pip entry's license is the
+declaration its snapshot recorded ([pip license declarations](PIP-LOCKFILE-LICENSES.md));
+an entry without one is unknown. No license is borrowed from another operation or
+a similarly named Conda package.
 
 ## Stateless pages and owned work
 

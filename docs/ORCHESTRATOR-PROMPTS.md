@@ -23,7 +23,7 @@ IDs are the version strings in the code.
 | MAIN planning guidance | `sandbox-main-plan-1` | [plan_tools.py](../packages/orchestrator/src/sandbox_science/orchestrator/plan_tools.py) `GUIDANCE` | Appended when the six plan tools are offered (stateful MAIN runs) |
 | Research templates | `sandbox-stock-intake-1`, `sandbox-stock-literature-1`, `sandbox-stock-experiment-1`, `sandbox-stock-proof-audit-1`, `sandbox-stock-report-1` | [stock_prompts.py](../packages/orchestrator/src/sandbox_science/orchestrator/stock_prompts.py) | Only with `--research-template` ([research framing](STOCK-RESEARCH-PROMPTS.md)) |
 | MAIN prompt pins | `sandbox-prompt-pins-1` | [prompts.py](../packages/orchestrator/src/sandbox_science/orchestrator/prompts.py) `assemble`; `loop.py` `_sections` | Every MAIN run's record: section, tool and notice-framing pins ([MAIN provenance](MAIN-PROMPT-PROVENANCE.md)) |
-| Offered tool descriptions and schemas | Pinned by hash, not versioned | `tools.py` `SPECS`, `SAGE`, `PDF_SPECS`, `ADMIT_HOSTS` and `Toolbox` (`restart_kernel`); `jobs.py` `JOB_SPECS`; `provision.py` `PROVISION_SPECS`; `documents/tool.py` and `documents/annotation_tools.py` `SPECS`; `consistency/controller.py` `AUTHOR_SPECS`; `plan_tools.py` `SPECS` | Every model call, filtered by the worker's features and the run's capabilities |
+| Offered tool descriptions and schemas | Pinned by hash, not versioned | `tools.py` `SPECS`, `SAGE`, `PDF_SPECS`, `ADMIT_HOSTS` and `Toolbox` (`restart_kernel`); `jobs.py` `JOB_SPECS`; `provision.py` `PROVISION_SPECS`; `documents/tool.py` and `documents/annotation_tools.py` `SPECS`; `consistency/controller.py` `AUTHOR_SPECS`; `plan_tools.py` `SPECS`; connector tools, which their MCP servers list when a run starts (`connectors.py`) | Every model call, filtered by the worker's features and the run's capabilities |
 | Platform notices | `sandbox-notice-requests-1`, `-jobs-1`, `-jobs-attached-1`, `-plans-1`, `-review-findings-1`, `-review-counts-1`, `-math-1` | [notices.py](../packages/orchestrator/src/sandbox_science/orchestrator/notices.py) | User-role messages for document work requests, job completions, reviewer findings and counts, plan reread requirements and closing math findings; job completions also ride on tool results |
 | Kernel package notice | `sandbox-kernels-1` | [notices.py](../packages/orchestrator/src/sandbox_science/orchestrator/notices.py) `KERNELS` | Before a model call in a stateful MAIN run, once per kernel and package revision ([kernel check](KERNEL-REVISIONS.md#kernel-check-before-each-turn)) |
 | Job watcher | `sandbox-job-watcher-1` | [jobs.py](../packages/orchestrator/src/sandbox_science/orchestrator/jobs.py) `WATCHER_PROMPT`; `watcher_prompt.py` | Each due check-in when a watcher alias is configured ([background jobs](BACKGROUND-JOBS.md), [watcher provenance](WATCHER-PROMPT-PROVENANCE.md)) |
@@ -41,9 +41,9 @@ What each input does:
   review as system text. `start_job` says that recovery after a worker or bridge
   restart needs the original executor daemon and sandbox, and that confirmed daemon
   or VM loss reports unknown outcomes as `lost` without resubmitting the command.
-- **Platform notices.** Fixed framings in the loop, followed by bounded JSON data.
-  They are not versioned or pinned; the saved transcript keeps the text actually
-  sent. Delivered notice IDs are tracked separately from fetched ones and
+- **Platform notices.** Fixed framings in `notices.py`, each with an ID and a version,
+  followed by bounded JSON data. The run record pins them, and the saved transcript
+  keeps the text actually sent. Delivered notice IDs are tracked separately from fetched ones and
   acknowledged only after the run is saved.
 - **Watcher.** No tools. It returns `{"state":"fine"|"needs_attention","note":…}`;
   a failed check wakes the waiting MAIN run. It cannot cancel a job or judge
@@ -56,7 +56,8 @@ What each input does:
   of a mechanical finding.
 - **Model adapter.** [model.py](../packages/orchestrator/src/sandbox_science/orchestrator/model.py)
   is provider-neutral, with OpenAI-compatible tool calls, an optional token limit and
-  a bounded response. MAIN has no context budget, compaction or retry.
+  a bounded response. MAIN retries a rate limit or an unavailable upstream up to three
+  times and stops with `context_limit` past `--max-input-chars`; compaction is not built.
 - **Run records.** Saved runs keep the rendered messages and the prompt provenance;
   failed runs keep fixed failure metadata and partial outcomes
   ([projects.py](../packages/orchestrator/src/sandbox_science/orchestrator/projects.py) `RunRecord`).
@@ -193,7 +194,7 @@ authority or proof of provider behavior:
 
 There is no prompt catalog or external prompt loader, no skill loading
 ([skills](specs/skills.md)), no USER plan approval, no link from effects to plan
-steps, no liveness record for interrupted steps, no context budget or compaction,
+steps, no liveness record for interrupted steps, no compaction,
 no resume prompt and no durable record of display-repair calls or spend.
 Delegation is not built: an earlier, unwired prototype, including its delegated-child
 prompt and controller, is kept on the tag `archive/delegation-2026-10`
@@ -234,7 +235,8 @@ These design rules hold for what is built and for the proposals below.
   remain visible. A failed summary does not advance a cursor or drop source context.
   Child contexts receive pinned briefs, not the parent's unbounded transcript.
 - **Capacity and provider failure:** harness errors keep a safe failed run, with no
-  automatic retry. Any future retry must enforce configured or user-authorized
+  automatic retry of its tool effects. The model client retries a rate limit or an
+  unavailable upstream up to three times. Any other future retry must enforce configured or user-authorized
   timing, bounded attempts and model selection, with no silent alias switch and with
   tool effects reconciled first. Prompts cannot implement a durable timer or the
   authority to wake an offline session.

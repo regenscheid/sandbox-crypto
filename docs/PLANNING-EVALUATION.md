@@ -16,9 +16,9 @@ explicitly chosen finite budget. The helper adds no approval gate and does not
 discover provider configuration.
 
 The helper pins the byte hashes of ten production files as they were at
-calibration. Four of them (`loop.py`, `plan_tools.py`, `session_plans.py` and
-`documents/store.py`) have changed since, so the active modes refuse on the
-current source until the pins are updated and the controls rerun.
+calibration. Nine of them no longer match, and two (`prompt_bundle.py` and
+`documents/mathjobs.py`) no longer exist, so the active modes refuse until the
+pins and imports are updated and the controls rerun.
 
 ## Default and active modes
 

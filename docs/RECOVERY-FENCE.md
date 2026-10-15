@@ -16,7 +16,7 @@ Ordinary shell, cell, PDF and background-job requests can wait behind an active 
 
 The hold does not terminate already running research calls or healthy kernels. Recovery does not block result/event/history queries, cancellation, file reads/writes or ordinary inspection. Closing a session, deleting an environment, configured idle suspension and explicit shutdown keep their usual lifecycle meaning; they are not automatic restoration. Restart control launches and actual process/kernel start tasks remain owned through repeated cancellation and shutdown.
 
-Startup reconciles canonical recovery status and unfinished operations conservatively, including valid older-writer installs when a ready gate already exists. All unfinished provisioning operations are classified before any ready gate acknowledgement from that classification batch. Unknown effects remain held/recovery; absence of a row, a lost RPC or a matching package lockfile is not evidence of restoration. Retained malformed scalar/identity/authority state refuses through bounded SQL projections before Python parsing.
+Startup reconciles canonical recovery status and unfinished operations conservatively, including valid older-writer installs when a ready gate already exists. All unfinished provisioning operations are classified before any ready gate acknowledgement from that classification batch. Unknown effects remain held/recovery; absence of a row, a lost RPC or a matching package lockfile is not evidence of restoration. Malformed scalar, identity and authority values are refused when they are written (the store's checks on the gate, recovery mark and provisioning step tables), and reads take the rows as they are.
 
 ## Original binding and deletion
 

@@ -43,10 +43,10 @@ opening, reply or anchor change cannot acquire that text. Legacy/unknown ownersh
 is excluded, never guessed from the latest thread author.
 
 Bodies use ordinary Markdown, matching their GUI renderer. YAML-looking text and
-document containers grant no front matter or macros. Each attempt pins the exact
+document containers grant no front matter or macros. Each attempt records the exact
 body revision/hash, stable block/span, parent document/project, immutable parent
-document macro revision/hash and project setting revision/hash. Resolved effective
-definitions and context identity stay with the check. Document definitions override
+document macro revision/hash and project setting revision. The resolved effective
+definitions and context identity are derived from those revisions when read. Document definitions override
 the bounded [project setting](PROJECT-MACROS.md). Every span is rechecked when
 effective document or project macros change;
 invalidation remains separate from authorship and the two-reflag budget.
@@ -129,5 +129,5 @@ state. Every action checks the marker before opening a writer.
 Checked in the browser with actual local KaTeX 0.18.9 and Node 24.20.0 on synthetic
 state, without model, worker or provider calls, in
 [comment math acceptance](../.agents/docs/agent-reports/comment-math-2026-10-12.md).
-Project-macro inheritance, exact attempt pins and dependency refresh are covered
+Project-macro inheritance, recorded macro revisions and dependency refresh are covered
 by the [project macro tests](PROJECT-MACROS.md#verification-boundary).

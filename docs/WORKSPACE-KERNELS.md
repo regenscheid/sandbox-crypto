@@ -13,10 +13,10 @@ accepts only its path scope, without a body or query arguments.
 The success response is the existing `KernelObservation` plus `project_id`:
 
 ```json
-{"project_id":"example","environment_id":"example-env","session_id":"a","current_revision":2,"kernels":[{"kernel_id":"kernel-a","language":"python","generation":1,"start_revision":1,"current_revision":2,"revision_status":"predates"}],"observed_at":"2026-10-12T22:00:00Z"}
+{"project_id":"example","environment_id":"example-env","session_id":"a","current_revision":2,"kernels":[{"kernel_id":"kernel-a","language":"python","run":null,"generation":1,"start_revision":1,"current_revision":2,"revision_status":"predates"}],"observed_at":"2026-10-12T22:00:00Z"}
 ```
 
-The route forwards the existing revision and kernel fields, including unknown
+A kernel that belongs to a delegated run names it in `run`; the session's own kernels have `run: null`. The route forwards the existing revision and kernel fields, including unknown
 nullable revisions; the worker client checks their scope and coherence.
 `observed_at` remains the worker's receipt time. It does not prove loaded module
 versions, current package contents or future continuity. A successful empty list means an observed
@@ -42,7 +42,7 @@ than disclosure of another environment. There is no fallback to explicit
 The route reads the project record with `ProjectStore.get` in a thread, takes the
 session's environment from it, and asks the worker under the six-second call
 timeout of `Timeouts`. The observer client has its own five-second deadline, an
-8 KiB response limit and no redirects. A timeout answers 503; it does not cancel
+65 KiB response limit (66,560 bytes, enough for a session's kernels and its runs') and no redirects. A timeout answers 503; it does not cancel
 or restart research kernels. Concurrent reads, from two tabs on one session say,
 are all answered. Errors go through the workspace's one error mapping
 ([workspace](WORKSPACE.md#errors-and-records)).

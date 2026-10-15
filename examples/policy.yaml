@@ -1,8 +1,9 @@
 # Example project policy (sandbox-science/v0alpha1). The policy library's tests
 # load this file, so it stays valid; docs/POLICY.md defines the semantics.
 # A deliberately permissive default: reads and package installs flow freely;
-# side effects outside the project (writes, pushes, paid or state-changing
-# MCP tools) ask first.
+# side effects outside the project (writes, pushes, state-changing MCP tools)
+# ask first. Cost is not a side effect here: the MCP services limit and bill
+# their own use.
 
 apiVersion: sandbox-science/v0alpha1
 kind: ProjectPolicy
@@ -127,11 +128,13 @@ mcp:
       # The portal prefixes every tool name; patterns match the rest, so a pattern
       # cannot match the prefix ("research" contains "search").
       tool_prefix: crypto_research_mcp-
-      # Checked against the server's 78 tools (2026-10-10). Reads are allowed by
+      # Checked against the server's 78 tools (2026-10-10). Tools are allowed by
       # exact name, so a tool a new server revision adds, or a compound name such as
       # get_or_create_note, asks first (defaults.action). Patterns only escalate or
-      # deny. The fixture packages/policy/tests/fixtures/crypto-research-mcp-tools.json
-      # pins every tool's outcome.
+      # deny. Cost is the services' to control, so no tool asks because it is billed;
+      # the ones that ask act on the world. The fixture
+      # packages/policy/tests/fixtures/crypto-research-mcp-tools.json pins every
+      # tool's outcome.
       tools:
         allow:
           - attack-catalog-mcp_find_applicable_attacks
@@ -147,19 +150,24 @@ mcp:
           - e-print-mcp_get_eprint
           - e-print-mcp_recent_eprint
           - e-print-mcp_search_eprint
+          - firecrawl-mcp_firecrawl_agent
           - firecrawl-mcp_firecrawl_agent_status
           - firecrawl-mcp_firecrawl_check_crawl_status
+          - firecrawl-mcp_firecrawl_crawl
           - firecrawl-mcp_firecrawl_developer_search
+          - firecrawl-mcp_firecrawl_extract
           - firecrawl-mcp_firecrawl_map
           - firecrawl-mcp_firecrawl_monitor_check
           - firecrawl-mcp_firecrawl_monitor_checks
           - firecrawl-mcp_firecrawl_monitor_get
           - firecrawl-mcp_firecrawl_monitor_list
+          - firecrawl-mcp_firecrawl_parse
           - firecrawl-mcp_firecrawl_research_inspect_paper
           - firecrawl-mcp_firecrawl_research_read_paper
           - firecrawl-mcp_firecrawl_research_related_papers
           - firecrawl-mcp_firecrawl_research_search_github
           - firecrawl-mcp_firecrawl_research_search_papers
+          - firecrawl-mcp_firecrawl_scrape
           - nist-csrc-mcp_nist_browse_catalogs
           - nist-csrc-mcp_nist_get_catalog_item
           - nist-csrc-mcp_nist_get_corpus_status
@@ -188,7 +196,7 @@ mcp:
           - web-fetch-mcp_web_capture
           - web-fetch-mcp_web_fetch
           - web-fetch-mcp_web_fetch_health
-          # Billed per call, but searching is the core research workflow:
+          # Billed per call by the services, which control their own cost:
           - firecrawl-mcp_firecrawl_search
           - paper-search-mcp_scholar_search
           - paper-search-mcp_search_papers
@@ -200,15 +208,10 @@ mcp:
           - nist-mcp_csrc_fulltext
         escalate:
           - "*_feedback"                    # e.g. firecrawl_search_feedback, which submits feedback
-          - "*_refresh_*"
-          - firecrawl-mcp_firecrawl_agent
-          - firecrawl-mcp_firecrawl_crawl
-          - firecrawl-mcp_firecrawl_extract
-          - firecrawl-mcp_firecrawl_interact
+          - "*_refresh_*"                   # rebuilds a server's shared corpus
+          - firecrawl-mcp_firecrawl_interact          # a live browser session can submit forms
           - firecrawl-mcp_firecrawl_interact_stop
-          - firecrawl-mcp_firecrawl_parse
-          - firecrawl-mcp_firecrawl_scrape
-          - firecrawl-mcp_firecrawl_monitor_create
+          - firecrawl-mcp_firecrawl_monitor_create    # monitors run later and can email or call webhooks
           - firecrawl-mcp_firecrawl_monitor_update
           - firecrawl-mcp_firecrawl_monitor_run
         deny:

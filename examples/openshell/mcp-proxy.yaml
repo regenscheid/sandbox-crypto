@@ -253,19 +253,24 @@ network_policies:
             - crypto_research_mcp-e-print-mcp_get_eprint
             - crypto_research_mcp-e-print-mcp_recent_eprint
             - crypto_research_mcp-e-print-mcp_search_eprint
+            - crypto_research_mcp-firecrawl-mcp_firecrawl_agent
             - crypto_research_mcp-firecrawl-mcp_firecrawl_agent_status
             - crypto_research_mcp-firecrawl-mcp_firecrawl_check_crawl_status
+            - crypto_research_mcp-firecrawl-mcp_firecrawl_crawl
             - crypto_research_mcp-firecrawl-mcp_firecrawl_developer_search
+            - crypto_research_mcp-firecrawl-mcp_firecrawl_extract
             - crypto_research_mcp-firecrawl-mcp_firecrawl_map
             - crypto_research_mcp-firecrawl-mcp_firecrawl_monitor_check
             - crypto_research_mcp-firecrawl-mcp_firecrawl_monitor_checks
             - crypto_research_mcp-firecrawl-mcp_firecrawl_monitor_get
             - crypto_research_mcp-firecrawl-mcp_firecrawl_monitor_list
+            - crypto_research_mcp-firecrawl-mcp_firecrawl_parse
             - crypto_research_mcp-firecrawl-mcp_firecrawl_research_inspect_paper
             - crypto_research_mcp-firecrawl-mcp_firecrawl_research_read_paper
             - crypto_research_mcp-firecrawl-mcp_firecrawl_research_related_papers
             - crypto_research_mcp-firecrawl-mcp_firecrawl_research_search_github
             - crypto_research_mcp-firecrawl-mcp_firecrawl_research_search_papers
+            - crypto_research_mcp-firecrawl-mcp_firecrawl_scrape
             - crypto_research_mcp-firecrawl-mcp_firecrawl_search
             - crypto_research_mcp-nist-csrc-mcp_nist_browse_catalogs
             - crypto_research_mcp-nist-csrc-mcp_nist_get_catalog_item

@@ -2,7 +2,7 @@
 
 Working folder for a cryptography/math research workbench with independently deployable orchestration and sandboxed compute.
 
-**Status:** the worker, policy services, harness and web workspace are built in part and run on OpenShell VMs on babbage; the project ledger, chat in the GUI and other deployment targets are not built yet. [STATUS](.agents/STATUS.md) has the current state, the [refactoring plan](.agents/refactor-plan/PLAN.md) the next steps, and the [documentation index](docs/README.md) every page. Development follows [the conventions](.agents/CONVENTIONS.md).
+**Status:** the worker, policy services, harness and web workspace are built in part and run on OpenShell VMs on babbage; the project ledger is built in part (its GUI views are not) and other deployment targets are not built yet. Chat with the main agent in the GUI and a viewer for published PDFs are built. [STATUS](.agents/STATUS.md) has the current state, the [refactoring plan](.agents/refactor-plan/PLAN.md) the next steps, and the [documentation index](docs/README.md) every page. Development follows [the conventions](.agents/CONVENTIONS.md).
 
 ## Terminology
 
@@ -35,7 +35,7 @@ Evaluate NVIDIA OpenShell as the execution backend behind an adapter. Its docume
 | [Documentation index](docs/README.md) | Every page in `docs/`, as reference, design, specification or historical |
 | [Detailed implementation plan](docs/IMPLEMENTATION-PLAN.md) | Shared contracts, component ownership, ordered work packages and evidence gates |
 | [Planning consistency review](.agents/planning-consistency-review-2026-10-10.md) | The 2026-10-10 review of planning drift and reuse of infrastructure and standard components (historical) |
-| [Analysis archive](.agents/docs/README.md) | The three agent source investigations; earlier plan snapshots are the git tags `plan-03-pre-review` and `plan-04-reviewed` |
+| [Analysis archive](.agents/docs/README.md) | The agent source investigations, lab reports and acceptance reports; earlier plan snapshots are the git tags `plan-03-pre-review` and `plan-04-reviewed` |
 | [Feature plan](docs/FEATURE-PLAN.md) | What to incorporate from the three research investigations and how to verify it |
 | [Source study](docs/SOURCE-STUDY.md) | Pinned evidence from Claude Science, Claude Code/Desktop, and OpenScience Desktop |
 | [Research workspace](docs/RESEARCH-WORKSPACE.md) | Living documents, shared ledger, LaTeX, native Sage, and navigable PDFs |

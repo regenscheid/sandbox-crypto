@@ -38,7 +38,7 @@ These belong to other specs: Conda provisioning ([conda-provisioning](conda-prov
 
 ## Background jobs
 
-Implementation status: [built](../BACKGROUND-JOBS.md) in the worker, the harness and the GUI, and checked on OpenShell in [lab 19](../../.agents/docs/agent-reports/babbage-openshell-lab-19-2026-10-12.md). Jobs survive worker restarts through the sandbox daemon (item 10). Automatic wake-up and shared monetary spend accounting are not built; the linked notes also give the current message-inbox and project-settings limits.
+Implementation status: [built](../BACKGROUND-JOBS.md) in the worker, the harness and the GUI, and checked on OpenShell in [lab 19](../../.agents/docs/agent-reports/babbage-openshell-lab-19-2026-10-12.md). Jobs survive worker restarts through the sandbox daemon (item 10). Automatic wake-up and shared monetary spend accounting are not built; the linked notes also give the current project-settings limit.
 
 A background job is a shell command that runs without holding a tool call open: lattice sieving, parameter searches and other computations that take hours (D83, confirmed by the user on 2026-10-11). Usually the agent needs the job's result to finish its turn, so it waits on the job, and a low-cost model checks on the job while it waits.
 
@@ -60,7 +60,7 @@ A background job is a shell command that runs without holding a tool call open: 
 
 ## Kernels
 
-1. **Identity.** A kernel belongs to one session and one language. It has an ID and a *generation*, which starts at 1 and grows by one on every restart.
+1. **Identity.** A kernel belongs to one session and one language, or to one delegated run of the session and one language (PD-37). It has an ID and a *generation*, which starts at 1 and grows by one on every restart.
 2. **Executing a cell** streams its outputs as they occur:
    - text on stdout and stderr;
    - rich results and displays as MIME bundles (`text/plain`, `text/latex`, `text/markdown`, `image/png`, `application/json`, and others);

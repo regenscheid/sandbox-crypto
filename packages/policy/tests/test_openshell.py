@@ -822,7 +822,7 @@ def test_example_mcp_proxy_policy() -> None:
     assert len(tool_rules) == 1
     names = tool_rules[0].allow.tool
     assert isinstance(names, AnyOf)
-    assert len(names.any) == 62
+    assert len(names.any) == 67
     assert all(name.startswith("crypto_research_mcp-") for name in names.any)
     assert [binary.path for binary in entry.binaries] == ["/opt/sandbox-science/bin/python*"]
     # Inside OpenShell the proxy sees only synthetic addresses, so the fence applies the

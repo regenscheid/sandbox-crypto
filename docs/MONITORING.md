@@ -75,7 +75,7 @@ Keep monitoring code/configuration, event storage, and enforcement credentials o
 
 ## Event store
 
-Monitor evidence is kept in the [event store](EVENT-STORE.md) (D74), an append-only SQLite database whose records form a SHA-256 hash chain. Verification finds a record that was changed, removed, inserted or moved, unless whoever did it also recomputed every later hash. Checkpoints of the head, kept where the store's writers cannot change them, also catch that, and records removed from the end. The policy middleware records its escalations, alerts and monitor findings there, the worker its package permission requests and provisioning events, and the MCP proxy its records. The behavior monitor and the orchestrator's own requests are not connected.
+Monitor evidence is kept in the [event store](EVENT-STORE.md) (D74), an append-only SQLite database whose records form a SHA-256 hash chain. Verification finds a record that was changed, removed, inserted or moved, unless whoever did it also recomputed every later hash. Checkpoints of the head, kept where the store's writers cannot change them, also catch that, and records removed from the end. The policy middleware records its escalations, alerts and monitor findings there, the worker its package permission requests and provisioning events, and the MCP proxy its records. The behavior monitor and the orchestrator's own model and fetch requests are not connected; its MCP calls are recorded by the MCP proxy.
 
 ## OpenShell fit: verified documentation and source
 

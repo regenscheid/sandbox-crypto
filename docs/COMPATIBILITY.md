@@ -28,7 +28,7 @@ The digest is `request_digest` in `contracts/canonical.py`: SHA-256 over a domai
 - Any change to what crosses the worker API raises `PROTOCOL_VERSION`.
 - A new request field gets a default that means the old behavior.
 - Changing a default's meaning, or how a field is written in JSON, changes the identity of stored operations. Such a change keeps accepting the old digest for one release, as `worker/identity.py` does now.
-- The worker stores contract JSON as its records and validates it again on read, so a stricter validator can make stored records unreadable. Plan items C-07 and C-08 replace this with a versioned store.
+- The worker stores contract JSON as its records and validates it again on read, so a stricter validator can make stored records unreadable. The worker's store is versioned ([worker](WORKER.md#sandbox-daemon-and-recovery)), and its admission tables check their values when they are written. Executions, events and provisioning records are still contract JSON validated on read. Plan item C-08 covers the rest.
 
 ## Before independent upgrades
 
