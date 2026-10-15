@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -118,11 +121,44 @@ def test_the_example_config_is_a_launcher_config(home: Path) -> None:
     assert config.openshell.model_dump()["environments"]["suspend_after"] == 3600.0
     assert config.run_service.math_checks == example.parent / "../web/workspace/dist-math"
     assert config.model.watcher == config.model.name == config.model.reviewer
+    assert config.model.delegated == config.model.name
     (project,) = config.projects
     assert [(item.id, item.dedicated) for item in project.sessions] == [
         ("main", False),
         ("scratch", True),
     ]
+
+
+def test_the_labs_config_needs_nothing_added_by_hand(home: Path, tmp_path: Path) -> None:
+    """Lab 40, B7: the lab's config script left out the delegated alias and the tool
+    index's ``index`` and ``about``, which the lab then added by hand."""
+    script = Path(__file__).parents[3] / ".agents/labs/launcher_config.py"
+    out = tmp_path / "lab" / "sandbox-science.toml"
+    owner = tmp_path / "test-secret-cloudflare.env"  # only named: the script opens nothing
+    done = subprocess.run(
+        [
+            sys.executable, "-I", str(script), str(out), "--state-dir", str(tmp_path / "state"),
+            "--project", "lab41", "--mcp-proxy", "sandbox-science/mcp-proxy:test",
+            "--provider-env-file", str(owner),
+        ],
+        capture_output=True, text=True, check=False, env={**os.environ, "HOME": str(home)},
+    )  # fmt: skip
+    assert done.returncode == 0, done.stderr
+    assert out.stat().st_mode & 0o777 == 0o600
+    config = load_config(out)
+    assert config.model.delegated == config.model.reviewer == config.model.name
+    proxy = config.mcp_proxy
+    assert proxy is not None
+    assert proxy.provider_env_file == owner
+    assert not owner.exists()
+    listed = ("attack-catalog-mcp", "e-print-mcp", "nist-csrc-mcp", "paper-search-mcp")
+    assert proxy.index == tuple(f"crypto-research-mcp/{n}" for n in (*listed, "web-fetch-mcp"))
+    assert len(proxy.about) == 7
+    assert proxy.about["crypto-research-mcp/web-fetch-mcp"] == (
+        "fetch a web page, or its links, as text"
+    )
+    (project,) = config.projects
+    assert project.id == "lab41"
 
 
 def test_the_examples_mcp_proxy_works_uncommented(home: Path, tmp_path: Path) -> None:
