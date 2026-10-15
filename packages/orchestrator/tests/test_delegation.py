@@ -196,7 +196,7 @@ async def test_a_project_offers_no_delegation_until_its_setting_allows_it(
     argv = ["project", "delegation", "--state-dir", str(harness.state), "--project", PROJECT]
     assert await asyncio.to_thread(cli.main, [*argv, "--depth", "1"]) == 0
     with pytest.raises(SystemExit):
-        cli.main([*argv, "--depth", "2"])  # depth 2 comes later (PD-43)
+        cli.main([*argv, "--depth", "3"])  # two levels at most (PD-15)
     allowed = await harness.run("run-2", [Reply("Done.")])
     assert {"delegate", "wait_delegations"} <= set(tools(allowed))
 

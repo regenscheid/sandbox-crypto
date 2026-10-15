@@ -85,7 +85,11 @@ async def _project_action(args: argparse.Namespace, store: ProjectStore) -> int:
                 if changes
                 else delegations.settings(args.project)
             )
-            state = "off" if found.depth == 0 else "main runs delegate checks"
+            state = (
+                "off",
+                "main runs delegate",
+                "main runs delegate, and the tasks they allow delegate once more",
+            )[found.depth]
             models = ", ".join(found.models) or "none"
             print(
                 f"project {args.project}: delegation depth {found.depth} ({state}); at most "
@@ -449,8 +453,9 @@ def add_parsers(commands: Any) -> None:
     projects.add_argument(
         "--depth",
         type=int,
-        choices=(0, 1),
-        help="delegation: 1 lets main runs delegate checks, 0 (the default) does not",
+        choices=(0, 1, 2),
+        help="delegation: 1 lets main runs delegate, 2 also lets the tasks they allow "
+        "delegate tasks once more, 0 (the default) neither",
     )
     projects.add_argument(
         "--cap", type=int, help="delegation: delegated runs a session runs at once (10)"

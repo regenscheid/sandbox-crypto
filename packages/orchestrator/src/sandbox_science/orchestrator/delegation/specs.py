@@ -82,6 +82,9 @@ class TaskBrief(Contract):
     on, and only those (PD-9); a track has one running delegation at most (PD-12)."""
     issue: str | None = Field(default=None, min_length=1, max_length=128)
     """An issue the task works on, which its outcome is recorded on as work (LG-F8)."""
+    delegate: bool = False
+    """Whether the child may delegate tasks of its own, once more: only a main run's
+    task, in a project whose depth is 2 (PD-15)."""
 
 
 class CheckBrief(Contract):
@@ -172,6 +175,11 @@ SPECS: Final = (
                     "type": "string",
                     "description": "For a task, optional: a track of the session's active "
                     "plan, whose steps it records its progress on; one task at a time",
+                },
+                "delegate": {
+                    "type": "boolean",
+                    "description": "For a task, optional: let it delegate tasks of its own, "
+                    "once more, where the project allows two levels",
                 },
                 "issue": {
                     "type": "string",

@@ -135,6 +135,7 @@ def task_text(
     *,
     track: str | None = None,
     issue: str | None = None,
+    delegate: bool = False,
 ) -> str:
     """A task's brief as the delegated run's first message: the parent's own words, and
     the platform's lines for its track and its issue."""
@@ -147,6 +148,13 @@ def task_text(
         parts.append(
             f"Your track: {track}, of the session's plan. Read its steps with track_read and "
             "record your progress on them with track_progress."
+        )
+    if delegate:
+        parts.append(
+            "You may delegate tasks of your own with delegate, once more: tasks on no "
+            "track, each with at most the tokens you have left. Your children delegate no "
+            "further; you wait on and read only your own; and you cannot give your final "
+            "answer while they run."
         )
     if issue is not None:
         parts.append(

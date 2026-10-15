@@ -25,10 +25,15 @@ otherwise its answer as returned with the errors (PD-17, PD-18, PD-20). As a tur
   Outcomes the answer has not seen continue the run, as other notices do;
 - cancels its running children when it ends, whatever ends it, and waits for their
   records and outcomes (PD-39), since its lease holds their tasks. A child that has not
-  ended in ``STOP_SECONDS`` is recorded ``interrupted``, so a parent's record follows its
-  children's outcomes;
-- acknowledges the outcomes its saved record names: those a model call saw as notices,
-  and those a wait returned before a model call (``summary``).
+  ended in ``STOP_SECONDS``, or in what is left of the time its own parent gave it, is
+  recorded ``interrupted``; each child is given half of that time for its own children,
+  so that every record follows its children's outcomes, level by level;
+- acknowledges the outcomes its saved record names that are its to take: those a model
+  call saw as notices, and those a wait returned before a model call (``summary``).
+
+At depth 2 (PD-15) a main run's task may delegate tasks of its own. That run sees and
+waits on its own children alone; its children's tokens are at most what it has left;
+and an outcome it never received is given with its own, as ``unreceived``.
 """
 
 from __future__ import annotations
@@ -36,9 +41,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Final, Literal, Protocol, cast
 
@@ -55,7 +60,8 @@ from sandbox_science.orchestrator.notices import (
     DELEGATIONS_ATTACHED,
     DELEGATIONS_RUNNING,
 )
-from sandbox_science.orchestrator.projects import RunRecord, run_name
+from sandbox_science.orchestrator.projects import RunRecord, run_id_of, run_name
+from sandbox_science.orchestrator.runstate import call_tokens
 from sandbox_science.orchestrator.session_plans import PlanRef
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, dump
 
@@ -68,13 +74,25 @@ from .work import work_record
 
 _log = logging.getLogger(__name__)
 
+DELEGATIONS_SOURCE: Final = "delegations"
+"""The notice source the hook's notices and acknowledgements name."""
 STOP_SECONDS: Final = 60.0
-"""How long a parent's end, or a cancel, waits for a cancelled child's record."""
+"""How long a parent's end, or a cancel, waits for a cancelled child's record, at most."""
+STOP_SHARE: Final = 0.5
+"""The part of its own wait a parent gives a cancelled child to stop its children."""
 SUMMARY_CHARS: Final = 300
 """The head of a report a notice shows; ``wait_delegations`` returns the whole."""
 WRITES: Final = 3
 """Tries at writing an outcome; one never written ends ``interrupted`` at the session's
 next main run."""
+
+
+@dataclass(eq=False)
+class Deadline:
+    """When a run's end must have stopped its own children, by the event loop's clock:
+    set by its parent as the parent cancels it (PD-39); ``None`` until then."""
+
+    at: float | None = None
 
 
 @dataclass(frozen=True)
@@ -96,6 +114,10 @@ class Child:
     """The model alias it calls (PD-28, PD-30); ``None`` for the delegated role's."""
     track: tuple[PlanRef, str] | None = None
     """For a task on a track, the plan version it works under and the track (PD-9)."""
+    delegate: bool = False
+    """Whether it may delegate tasks of its own, once more (PD-15)."""
+    deadline: Deadline = field(default_factory=Deadline)
+    """When its end must have stopped its own children, once its parent cancels it."""
 
 
 @dataclass(frozen=True)
@@ -114,6 +136,7 @@ class _Planned:
     shown: dict[str, JsonValue]
     """What ``delegate``'s answer says of it."""
     track: tuple[PlanRef, str] | None = None
+    delegate: bool = False
 
 
 @dataclass(frozen=True)
@@ -170,12 +193,13 @@ class _Running:
     stop: asyncio.Event
     limits: dict[str, int]
     """Its turns and tokens, at most."""
+    deadline: Deadline
 
 
 class Delegations(TurnHook):
     """One main run's delegations; the run is ``parent``, the name its record will have."""
 
-    name = "delegations"
+    name = DELEGATIONS_SOURCE
 
     def __init__(
         self,
@@ -192,6 +216,9 @@ class Delegations(TurnHook):
         limits: DelegationSettings | None = None,
         models: ModelChoice | None = None,
         track_grant: Callable[[str], Awaitable[PlanRef]] | None = None,
+        depth: int = 0,
+        tokens: int | None = None,
+        stop_by: Deadline | None = None,
         max_chars: int = 5000,
         output_chars: int = 20000,
         clock: Clock = SYSTEM_CLOCK,
@@ -209,9 +236,19 @@ class Delegations(TurnHook):
         """The project's cap and a check's tokens and turns (PD-38)."""
         self.models = models
         """The model each child calls (PD-28, PD-30); without it, the harness's."""
+        self.depth = depth
+        """0 for a main run's delegations; 1 for a delegated task's own, which are tasks,
+        whose children delegate no further, and which hand back to it alone (PD-15)."""
         self.track_grant = track_grant
         """The plan version a task on a track works under (PD-9); without it, a task
         names no track."""
+        self.tokens = tokens
+        """The run's own token limit, for a delegated run: its children's tokens are
+        carved from what it has left (PD-15)."""
+        self.tokens_left = tokens
+        self.stop_by = stop_by
+        """When the run's end must have stopped its children, once its parent cancels
+        it; without it, ``STOP_SECONDS``."""
         choices = self.limits.models if models is not None else ()
         self.specs: tuple[ToolSpec, ...] = offered(choices) if offer else ()
         self.turns_left = max_turns
@@ -223,10 +260,16 @@ class Delegations(TurnHook):
         self.received: set[str] = set()
         """Outcomes a wait returned that a model call saw."""
 
-    def live(self) -> set[str]:
-        """The run IDs of the running children, whose kernels the parent's kernel check
-        leaves alone (PD-37)."""
-        return {child.run_id for child in self._running()}
+    async def live(self) -> set[str]:
+        """The run IDs of the running children, and for a main run of every delegated run
+        of its tree, grandchildren included, whose kernels its kernel check leaves alone
+        (PD-37)."""
+        found = {child.run_id for child in self._running()}
+        if self.depth == 0:
+            context = self.context
+            runs = await threaded(self.records.running, context.project_id, context.session_id)
+            found.update(run_id for run in runs if (run_id := run_id_of(run)) is not None)
+        return found
 
     # --- The tools ------------------------------------------------------------------
 
@@ -242,17 +285,20 @@ class Delegations(TurnHook):
                 return await self._cancel_one(Named.model_validate(args).delegation_id)
 
     async def _delegate(self, brief: CheckBrief | TaskBrief) -> tuple[str, dict[str, Any]]:
-        cap = self.limits.cap
-        if len(self._running()) >= cap:
+        if self.depth > 0 and isinstance(brief, CheckBrief):
             raise WorkerAPIError(
-                ErrorKind.UNAVAILABLE,
-                f"limit_reached: {cap} delegated runs are running in this session; "
-                "wait for one to end",
+                ErrorKind.POLICY_DENIED,
+                "not_permitted_for_role: a delegated run delegates tasks, never checks",
             )
         if self.turns_left <= 0:
             raise WorkerAPIError(
                 ErrorKind.UNAVAILABLE,
                 "limit_reached: this run has no turn left to wait for a delegated run",
+            )
+        if self.tokens_left is not None and self.tokens_left <= 0:
+            raise WorkerAPIError(
+                ErrorKind.UNAVAILABLE,
+                "limit_reached: this run has no tokens left to give a delegated run",
             )
         choice = await self._model(brief.model)
         if self.over_budget is not None and await self.over_budget():
@@ -261,9 +307,12 @@ class Delegations(TurnHook):
             )
         project, session = self.context.project_id, self.context.session_id
         planned = await (self._check(brief) if isinstance(brief, CheckBrief) else self._task(brief))
+        tokens = planned.tokens
+        if self.tokens_left is not None:
+            tokens = min(tokens, self.tokens_left)  # carved from what the run has left
         delegation_id, run_id = new_id("dlg"), new_id("run")
         started = self.clock.now().astimezone(UTC)
-        limits: dict[str, JsonValue] = {"turns": planned.turns, "tokens": planned.tokens}
+        limits: dict[str, JsonValue] = {"turns": planned.turns, "tokens": tokens}
         written: dict[str, JsonValue] = {**planned.brief, "limits": limits}  # for the tree
         if choice is not None:
             written["model"] = choice.recorded()
@@ -275,22 +324,33 @@ class Delegations(TurnHook):
             brief=written,
             started_at=started,
         )
-        await threaded(self.records.start, project, session, delegation)
+        try:
+            # The cap is the session's tree's, counted over every level, and checked as
+            # the delegation is written (PD-38); so is its track (PD-9).
+            await threaded(self.records.start, project, session, delegation, cap=self.limits.cap)
+        except ControlError as error:
+            raise WorkerAPIError(ErrorKind(error.kind), error.message) from None
         child = Child(
             delegation_id,
             run_id,
             started,
             planned.text,
             max_turns=planned.turns,
-            tokens=planned.tokens,
+            tokens=tokens,
             target=planned.target,
             alias=None if choice is None else choice.alias,
             track=planned.track,
+            delegate=planned.delegate,
         )
         stop = asyncio.Event()
         task = asyncio.create_task(self._run(child, stop), name=f"delegation {delegation_id}")
         self.children[delegation_id] = _Running(
-            delegation, run_id, task, stop, {"turns": child.max_turns, "tokens": child.tokens}
+            delegation,
+            run_id,
+            task,
+            stop,
+            {"turns": child.max_turns, "tokens": child.tokens},
+            child.deadline,
         )
         started_with: dict[str, JsonValue] = {
             "delegation_id": delegation_id,
@@ -328,8 +388,9 @@ class Delegations(TurnHook):
 
     async def _task(self, brief: TaskBrief) -> _Planned:
         """A task, which the parent writes (PD-11), under a task's limits: on a track of
-        the session's active plan, which no other running task has (PD-9, PD-12), and on
-        an issue, which its outcome is recorded on (LG-F8)."""
+        the session's active plan, which no other running task has (PD-9, PD-12; checked
+        as it is written), and on an issue, which its outcome is recorded on (LG-F8). A
+        delegated run's tasks take no track: their parent's track is its own."""
         head = brief.task if len(brief.task) <= SUMMARY_CHARS else brief.task[:SUMMARY_CHARS] + "…"
         written: dict[str, JsonValue] = {
             "task": brief.task,
@@ -341,21 +402,19 @@ class Delegations(TurnHook):
         if brief.track is not None:
             if self.track_grant is None:
                 raise WorkerAPIError(ErrorKind.UNAVAILABLE, "this run's tasks take no track")
-            busy = [
-                r.delegation.delegation_id
-                for r in self._running()
-                if _track(r.delegation) == brief.track
-            ]
-            if busy:
-                raise WorkerAPIError(
-                    ErrorKind.CONFLICT,
-                    f"track_busy: delegation {busy[0]} works on track {brief.track!r}; a track "
-                    "has one running task at most",
-                )
             granted = await self.track_grant(brief.track)
             track = (granted, brief.track)
             written["track"] = {"track_id": brief.track, "plan": granted.model_dump(mode="json")}
             shown["track"] = brief.track
+        if brief.delegate:
+            if self.depth > 0 or self.limits.depth < 2:
+                raise WorkerAPIError(
+                    ErrorKind.POLICY_DENIED,
+                    "not_permitted_for_role: only a main run's task may delegate, in a project "
+                    "whose delegation depth is 2",
+                )
+            written["delegate"] = True
+            shown["delegate"] = True
         issue = None
         if brief.issue is not None:
             found = await threaded(self.ledger.entry, self.context.project_id, brief.issue)
@@ -369,12 +428,20 @@ class Delegations(TurnHook):
         return _Planned(
             "task",
             written,
-            task_text(brief.task, brief.context, brief.inputs, track=brief.track, issue=issue),
+            task_text(
+                brief.task,
+                brief.context,
+                brief.inputs,
+                track=brief.track,
+                issue=issue,
+                delegate=brief.delegate,
+            ),
             min(self.limits.task_turns, self.max_turns, self.turns_left),
             self.limits.task_tokens,
             None,
             shown,
             track,
+            brief.delegate,
         )
 
     async def _model(self, asked: str | None) -> Choice | None:
@@ -481,16 +548,19 @@ class Delegations(TurnHook):
                     with contextlib.suppress(asyncio.CancelledError, Exception):
                         await future
             found = {i: await self._read(i) for i in ids}
+        left = await self._unreceived(found.values())
         shown: list[dict[str, object]] = []
         for delegation in found.values():
             used = len(dump({"reason": reason, "delegations": shown}))
-            shown.append(self._shown(delegation, used))
+            shown.append(self._shown(delegation, used, left.get(delegation.delegation_id, ())))
         result = {"reason": reason, "delegations": shown}
         ended = [i for i, d in found.items() if d.ended is not None]
         return dump(result), {"wait": {"reason": reason, "ended": ended}}
 
     async def _status(self, delegation_id: str) -> tuple[str, dict[str, Any]]:
-        shown = self._shown(await self._read(delegation_id))
+        found = await self._read(delegation_id)
+        left = await self._unreceived([found])
+        shown = self._shown(found, 0, left.get(delegation_id, ()))
         return dump(shown), {"status": {"delegation_id": delegation_id}}
 
     async def _cancel_one(self, delegation_id: str) -> tuple[str, dict[str, Any]]:
@@ -505,21 +575,24 @@ class Delegations(TurnHook):
         if cancelled:
             await self._stopped([child])
         found = await self._read(delegation_id)
-        shown = {**self._shown(found), "cancelled": cancelled}
+        left = await self._unreceived([found])
+        shown = {**self._shown(found, 0, left.get(delegation_id, ())), "cancelled": cancelled}
         return dump(shown), {"cancel": {"delegation_id": delegation_id, "cancelled": cancelled}}
 
-    def _shown(self, delegation: Delegation, used: int = 0) -> dict[str, object]:
+    def _shown(
+        self, delegation: Delegation, used: int = 0, left: Sequence[Delegation] = ()
+    ) -> dict[str, object]:
         """A delegation as a tool returns it: a running one's state, or an ended one's
         whole outcome when it fits the output limit with the ``used`` characters before
         it, which then counts as received once a model call has seen it; otherwise its
-        summary."""
+        summary. ``left`` are its own children's outcomes it never received."""
         if delegation.ended is None:
             child = self.children.get(delegation.delegation_id)
             limits = {"limits": child.limits} if child is not None else {}
             return {**_named(delegation), "state": "running", **limits}
-        whole = outcome(delegation)
+        whole = outcome(delegation, left)
         if used and used + len(dump(whole)) > self.output_chars:
-            return {**summarized(delegation), "more": "read it with delegation_status"}
+            return {**summarized(delegation, left), "more": "read it with delegation_status"}
         # Alone, a result always fits: the list of files is cut first, then a long answer
         # to its head and tail.
         files = whole.get("files")
@@ -546,13 +619,38 @@ class Delegations(TurnHook):
         return whole
 
     async def _read(self, delegation_id: str) -> Delegation:
+        """One of the session's delegations; for a delegated run, one of its own: the
+        rest of the tree is its root's (PD-15)."""
         context = self.context
         try:
-            return await threaded(
+            found = await threaded(
                 self.records.get, context.project_id, context.session_id, delegation_id
             )
         except ControlError as error:
             raise WorkerAPIError(ErrorKind.NOT_FOUND, error.message) from None
+        if self.depth > 0 and found.parent != self.parent:
+            raise WorkerAPIError(
+                ErrorKind.NOT_FOUND, f"delegation {delegation_id!r} is not one of this run's"
+            )
+        return found
+
+    async def _unreceived(self, found: Iterable[Delegation]) -> dict[str, list[Delegation]]:
+        """For each ended delegation that could delegate, its children's outcomes that it
+        never received, which its parent is given with its own so that none is lost."""
+        context = self.context
+        left: dict[str, list[Delegation]] = {}
+        for delegation in found:
+            if delegation.ended is None or delegation.brief.get("delegate") is not True:
+                continue
+            below = await threaded(
+                self.records.handbacks,
+                context.project_id,
+                context.session_id,
+                parent=delegation.run,
+            )
+            if below:
+                left[delegation.delegation_id] = below
+        return left
 
     # --- The turn hook --------------------------------------------------------------
 
@@ -562,9 +660,11 @@ class Delegations(TurnHook):
     @asynccontextmanager
     async def _held(self) -> AsyncGenerator[None]:
         context = self.context
-        abandoned = await threaded(self.records.abandon, context.project_id, context.session_id)
-        for delegation_id, _ in abandoned:
-            _log.warning("delegation %s lost its process: interrupted", delegation_id)
+        # A main run ends the session's dead trees; a delegated run's tree is its root's.
+        if self.depth == 0:
+            abandoned = await threaded(self.records.abandon, context.project_id, context.session_id)
+            for delegation_id, _ in abandoned:
+                _log.warning("delegation %s lost its process: interrupted", delegation_id)
         try:
             yield
         finally:
@@ -572,35 +672,60 @@ class Delegations(TurnHook):
 
     async def _stopped(self, running: Sequence[_Running]) -> None:
         """Cancel children and wait for their records and outcomes; one that has not ended
-        in ``STOP_SECONDS`` is recorded ``interrupted``."""
-        for child in running:
-            child.stop.set()
-            child.task.cancel()
+        in ``STOP_SECONDS``, or by the run's own deadline once its parent cancelled it,
+        is recorded ``interrupted``. Each child is given part of that time to stop its own
+        children, so a run's record follows theirs (PD-39). A cancel of the run itself
+        while it waits ends the wait at its deadline, not at once."""
         if not running:
             return
-        _, left = await asyncio.wait([child.task for child in running], timeout=STOP_SECONDS)
+        loop = asyncio.get_running_loop()
+        until = loop.time() + self._seconds(loop.time())
+        for child in running:
+            child.deadline.at = loop.time() + (until - loop.time()) * STOP_SHARE
+            child.stop.set()
+            child.task.cancel()
+        tasks = [child.task for child in running]
+        cancelled = False
+        while not all(task.done() for task in tasks):
+            seconds = min(until - loop.time(), self._seconds(loop.time()))
+            if seconds <= 0:
+                break
+            try:
+                await asyncio.wait(tasks, timeout=seconds)
+            except asyncio.CancelledError:
+                cancelled = True  # its parent's cancel: it waits on, to its deadline
         for child in running:
             delegation_id = child.delegation.delegation_id
-            if child.task in left:
+            if not child.task.done():
                 _log.error("delegated run %s did not end after its cancel", child.run_id)
                 await self._end(delegation_id, Ending("interrupted", "cancelled"))
             elif child.task.cancelled():  # cancelled before it started: it wrote nothing
                 await self._end(delegation_id, Ending("cancelled", "cancelled"))
+        if cancelled:
+            raise asyncio.CancelledError
+
+    def _seconds(self, now: float) -> float:
+        """How long the run may still wait for its cancelled children."""
+        if self.stop_by is None or self.stop_by.at is None:
+            return STOP_SECONDS
+        return max(0.0, min(STOP_SECONDS, self.stop_by.at - now))
 
     async def notices(self, point: Point, run: RunView) -> Sequence[Notice]:
         found = await self._fresh(run)
         if not found:
             return ()
-        return (self._handback(found, DELEGATIONS_ATTACHED.text if point == "tool" else None),)
+        return (_handback(found, DELEGATIONS_ATTACHED.text if point == "tool" else None),)
 
     async def model_returned(self, run: RunView) -> None:
         self.received |= self.returned
         self.returned.clear()
         self.turns_left = run.turns_left
+        if self.tokens is not None:
+            self.tokens_left = self.tokens - sum(call_tokens(usage) for usage in run.usage)
 
     async def closing(self, run: RunView, answer: str | None) -> Closing:
         found = await self._fresh(run)
-        notices = [self._handback(found)] if found else []
+        notices = [_handback(found)] if found else []
         running = self._running()
         if running:
             waiting = [{**_named(child.delegation), "state": "running"} for child in running]
@@ -625,12 +750,14 @@ class Delegations(TurnHook):
                 ids.update(str(i) for i in cast(list[object], received))
         if ids:
             context = self.context
+            # Only the outcomes offered to this run: one it read of another's stays theirs.
             await threaded(
                 self.records.acknowledge,
                 context.project_id,
                 context.session_id,
                 sorted(ids),
                 self.parent,
+                parent=self.parent if self.depth > 0 else None,
             )
 
     # --- Helpers --------------------------------------------------------------------
@@ -638,34 +765,35 @@ class Delegations(TurnHook):
     def _running(self) -> list[_Running]:
         return [child for child in self.children.values() if not child.task.done()]
 
-    async def _fresh(self, run: RunView) -> list[Delegation]:
+    async def _fresh(self, run: RunView) -> list[tuple[str, dict[str, object]]]:
         """The session's unacknowledged outcomes this run's conversation does not hold,
-        as many as fit in ``max_chars`` as summaries."""
+        as many as fit in ``max_chars`` as summaries, by ID."""
         context = self.context
-        found = await threaded(self.records.handbacks, context.project_id, context.session_id)
+        found = await threaded(
+            self.records.handbacks,
+            context.project_id,
+            context.session_id,
+            parent=self.parent if self.depth > 0 else None,
+        )
         held = set(run.offered.get(self.name, ())) | self.returned | self.received
-        fresh: list[Delegation] = []
+        found = [d for d in found if d.delegation_id not in held]
+        left = await self._unreceived(found)
+        fresh: list[tuple[str, dict[str, object]]] = []
         for delegation in found:
-            if delegation.delegation_id in held:
-                continue
-            if fresh and len(dump([summarized(d) for d in [*fresh, delegation]])) > self.max_chars:
+            shown = summarized(delegation, left.get(delegation.delegation_id, ()))
+            if fresh and len(dump([*(s for _, s in fresh), shown])) > self.max_chars:
                 break
-            fresh.append(delegation)
+            fresh.append((delegation.delegation_id, shown))
         return fresh
 
-    def _handback(self, found: Sequence[Delegation], key: str | None = None) -> Notice:
-        ids = tuple(d.delegation_id for d in found)
-        return Notice(self.name, ids, key or DELEGATIONS.text, [summarized(d) for d in found])
+
+def _handback(found: Sequence[tuple[str, dict[str, object]]], key: str | None = None) -> Notice:
+    ids = tuple(delegation_id for delegation_id, _ in found)
+    return Notice(DELEGATIONS_SOURCE, ids, key or DELEGATIONS.text, [s for _, s in found])
 
 
 async def _ended(tasks: set[asyncio.Task[None]], when: str) -> None:
     await asyncio.wait(tasks, return_when=when)
-
-
-def _track(delegation: Delegation) -> str | None:
-    found = delegation.brief.get("track")
-    track = cast(dict[str, object], found).get("track_id") if isinstance(found, dict) else None
-    return track if isinstance(track, str) else None
 
 
 def _named(delegation: Delegation) -> dict[str, object]:
@@ -693,11 +821,12 @@ def _ending(delegation: Delegation) -> dict[str, object]:
     return found
 
 
-def outcome(delegation: Delegation) -> dict[str, object]:
+def outcome(delegation: Delegation, left: Sequence[Delegation] = ()) -> dict[str, object]:
     """A delegation's whole outcome as its parent receives it (PD-20): how it ended,
     whether it read the entry it checked, and its result, or, when that is missing, its
     answer as returned and why it did not validate; then the files its calls recorded,
-    the platform's list apart from the child's own claims (RA-36)."""
+    the platform's list apart from the child's own claims (RA-36); and the outcomes of
+    its own children that it never received, ``left``, each summarized (PD-15)."""
     files: dict[str, object] = {}
     if delegation.files is not None:
         recorded = dict(delegation.files)
@@ -706,6 +835,8 @@ def outcome(delegation: Delegation) -> dict[str, object]:
             files["result_files"] = results  # the child's results, pinned (RA-38)
         if recorded.get("total") or recorded.get("gaps"):
             files["files"] = recorded
+    if left:
+        files["unreceived"] = [summarized(d) for d in left]
     if delegation.result is not None:
         return {**_ending(delegation), "result": delegation.result, **files}
     return {
@@ -717,11 +848,13 @@ def outcome(delegation: Delegation) -> dict[str, object]:
     }
 
 
-def summarized(delegation: Delegation) -> dict[str, object]:
+def summarized(delegation: Delegation, left: Sequence[Delegation] = ()) -> dict[str, object]:
     """A delegation's outcome as a notice gives it: a check's verdict and status, a
     task's status and the head of its summary, or without a result the head of its
-    answer."""
+    answer; and the IDs of its own children's outcomes it never received, ``left``."""
     found: dict[str, object] = _ending(delegation)
+    if left:
+        found["unreceived"] = [d.delegation_id for d in left[:10]]
     if delegation.files is not None:
         found["files_recorded"] = delegation.files.get("total")
         results = delegation.files.get("results")

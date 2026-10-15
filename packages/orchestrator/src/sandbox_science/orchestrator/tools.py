@@ -883,7 +883,7 @@ class Toolbox:
             hooks.append(MathChecks(self.math_checks))
         if self.check_kernels:
             # The sweep leaves the kernels of the run's own running children (PD-37).
-            keep = self.delegations.live if self.delegations is not None else set
+            keep = self.delegations.live if self.delegations is not None else None
             hooks.append(
                 KernelCheck(
                     self.client,

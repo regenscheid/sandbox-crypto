@@ -168,8 +168,11 @@ async def test_a_main_run_closes_left_kernels_once_the_executor_is_connected() -
         async def close_session(self, context: ExecutionContext, run: str | None = None) -> None:
             self.closed.append(run)
 
+    async def live() -> set[str]:
+        return {"live-child"}
+
     worker = Unconnected()
-    check = KernelCheck(cast(Any, worker), CONTEXT, sweep=True, keep=lambda: {"live-child"})
+    check = KernelCheck(cast(Any, worker), CONTEXT, sweep=True, keep=live)
     box = Toolbox(cast(WorkerClient, worker), CONTEXT)
     model = ScriptedModel([turn(), turn(), ModelTurn("done")])
     await run_task(model, box, "go", run_id="r", hooks=(check,))

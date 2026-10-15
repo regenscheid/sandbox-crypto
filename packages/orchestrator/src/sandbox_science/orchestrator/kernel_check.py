@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Protocol
 
 from sandbox_science.contracts import ExecutionContext, KernelObservation
@@ -43,7 +43,7 @@ class KernelCheck(TurnHook):
         *,
         run: str | None = None,
         sweep: bool = False,
-        keep: Callable[[], set[str]] = set,
+        keep: Callable[[], Awaitable[set[str]]] | None = None,
     ) -> None:
         self.client, self.context = client, context
         self.run = run
@@ -93,7 +93,8 @@ class KernelCheck(TurnHook):
     async def _sweep(self, observed: KernelObservation) -> None:
         runs = {kernel.run for kernel in observed.kernels if kernel.run is not None}
         try:
-            for left in sorted(runs - self.keep()):
+            kept = await self.keep() if self.keep is not None else set[str]()
+            for left in sorted(runs - kept):
                 await self.client.close_session(self.context, run=left)
         except Exception:  # a cleanup: tried again at the next turn, never stops the run
             _log.warning("could not close the kernels earlier runs left", exc_info=True)
