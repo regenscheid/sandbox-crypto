@@ -113,7 +113,11 @@ def project_artifact(
     reason, copied = "", None
     parts = reference.media_type.casefold().split(";")
     params = [p.strip().replace('"', "") for p in parts[1:]]
-    if parts[0].strip() not in _TEXT_TYPES or any(
+    if revision.deleted:
+        available, reason = "unavailable", "the file was deleted"
+    elif not revision.content_retained:
+        available, reason = "unavailable", f"the bytes were not kept ({revision.content_note})"
+    elif parts[0].strip() not in _TEXT_TYPES or any(
         p not in ("charset=utf-8", "charset=utf8", "charset=us-ascii") for p in params
     ):
         available, reason = "binary", "media type is outside the raw text evidence allowlist"
@@ -270,14 +274,19 @@ def _project_events(
             raise DocumentError(CONFLICT, "artifact event scope differs")
         if event.source.context.session_id != session:
             continue
-        if (
-            event.worker_snapshot.project_id != project
-            or event.worker_snapshot.sha256 != event.revision.sha256
-            or event.worker_snapshot.size != event.revision.size
+        snapshot = event.worker_snapshot
+        if snapshot is not None and (
+            snapshot.project_id != project
+            or snapshot.sha256 != event.revision.sha256
+            or snapshot.size != event.revision.size
         ):
             raise DocumentError(CONFLICT, "artifact event snapshot differs")
         locator, payload, complete = project_artifact(
-            store, project, event.revision, event.source, event.worker_snapshot.source_path
+            store,
+            project,
+            event.revision,
+            event.source,
+            snapshot.source_path if snapshot is not None else None,
         )
         found.append(
             _Observation(
@@ -285,7 +294,7 @@ def _project_events(
                 locator,
                 payload,
                 complete,
-                int(event.kind == "artifact.revision_created"),
+                int(event.kind != "artifact.reproduced"),
             )
         )
     return found

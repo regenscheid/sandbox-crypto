@@ -1486,6 +1486,86 @@ def _statement_math(schema: Schema) -> None:
         schema.execute(statement)
 
 
+_RESERVED: Final = 8 * 1024 + 2 * 16 * 1024
+"""Metadata an operation in flight holds back: its request and the worker reference and
+receipt it may still record (``orchestrator/artifacts.py``)."""
+_RECEIPT: Final = 16 * 1024
+"""What an operation with a pinned worker reference may still record: its receipt."""
+
+
+def _operation_cost(row: str) -> str:
+    """The metadata an artifact operation counts: what it stored once it is done, or
+    held without a worker reference, which it never gets; what it stored and the receipt
+    it may still record, with a pinned worker reference; otherwise its reservation."""
+    stored = (
+        f"length(CAST({row}.request AS BLOB))+coalesce(length(CAST({row}.worker AS BLOB)),0)"
+        f"+coalesce(length(CAST({row}.receipt AS BLOB)),0)"
+    )
+    return (
+        f"(CASE WHEN {row}.state='done' OR ({row}.state='intent' AND {row}.receipt IS NOT NULL) "
+        f"THEN {stored} WHEN {row}.state='transfer' THEN {stored}+{_RECEIPT} "
+        f"ELSE {_RESERVED} END)"
+    )
+
+
+_USAGE_ROWS: Final = "INSERT OR IGNORE INTO artifact_usage(project) VALUES (NEW.project),('');"
+_USAGE_OF: Final = "WHERE project IN (NEW.project,'')"
+
+
+def _artifact_usage(schema: Schema) -> None:
+    """Version 20: the artifacts' retention figures are kept as they change, per project
+    and overall (``project = ''``), by triggers on the artifact tables, so checking the
+    budget no longer reads every revision (research artifacts, RA-32)."""
+    schema.execute(
+        """CREATE TABLE artifact_usage (
+    project TEXT PRIMARY KEY,
+    revisions INTEGER NOT NULL DEFAULT 0 CHECK (revisions >= 0),
+    bytes INTEGER NOT NULL DEFAULT 0 CHECK (bytes >= 0),
+    operations INTEGER NOT NULL DEFAULT 0 CHECK (operations >= 0),
+    metadata INTEGER NOT NULL DEFAULT 0 CHECK (metadata >= 0)) STRICT"""
+    )
+    record = "length(CAST(NEW.record AS BLOB))"
+    for statement in (
+        "CREATE TRIGGER artifact_usage_revision AFTER INSERT ON artifact_revisions BEGIN "  # noqa: S608 - constant SQL
+        f"{_USAGE_ROWS} UPDATE artifact_usage SET revisions=revisions+1,"
+        f"bytes=bytes+length(NEW.data),metadata=metadata+{record} {_USAGE_OF}; END",
+        "CREATE TRIGGER artifact_usage_event AFTER INSERT ON artifact_events BEGIN "  # noqa: S608 - constant SQL
+        f"{_USAGE_ROWS} UPDATE artifact_usage SET metadata=metadata+{record} {_USAGE_OF}; END",
+        "CREATE TRIGGER artifact_usage_object AFTER INSERT ON artifact_objects BEGIN "  # noqa: S608 - constant SQL
+        f"{_USAGE_ROWS} UPDATE artifact_usage SET metadata=metadata"
+        f"+length(CAST(NEW.path AS BLOB))+length(NEW.id)+length(NEW.project) {_USAGE_OF}; END",
+        "CREATE TRIGGER artifact_usage_operation AFTER INSERT ON artifact_operations BEGIN "  # noqa: S608 - constant SQL
+        f"{_USAGE_ROWS} UPDATE artifact_usage SET operations=operations+1,metadata=metadata"
+        f"+{_operation_cost('NEW')} {_USAGE_OF}; END",
+        "CREATE TRIGGER artifact_usage_operation_change AFTER UPDATE ON artifact_operations "  # noqa: S608 - constant SQL
+        f"BEGIN UPDATE artifact_usage SET metadata=metadata"
+        f"-{_operation_cost('OLD')}+{_operation_cost('NEW')} {_USAGE_OF}; END",
+    ):
+        schema.execute(statement)
+    for scope in ("project", "''"):
+        schema.execute(
+            "INSERT INTO artifact_usage(project) "  # noqa: S608 - constant SQL
+            f"SELECT {scope} FROM artifact_objects UNION SELECT {scope} FROM artifact_operations"
+        )
+    schema.execute(
+        f"""UPDATE artifact_usage SET
+    revisions=(SELECT count(*) FROM artifact_revisions r
+        WHERE artifact_usage.project IN (r.project,'')),
+    bytes=(SELECT coalesce(sum(length(data)),0) FROM artifact_revisions r
+        WHERE artifact_usage.project IN (r.project,'')),
+    operations=(SELECT count(*) FROM artifact_operations o
+        WHERE artifact_usage.project IN (o.project,'')),
+    metadata=(SELECT coalesce(sum(length(CAST(record AS BLOB))),0) FROM artifact_revisions r
+        WHERE artifact_usage.project IN (r.project,''))
+    +(SELECT coalesce(sum(length(CAST(record AS BLOB))),0) FROM artifact_events e
+        WHERE artifact_usage.project IN (e.project,''))
+    +(SELECT coalesce(sum(length(CAST(path AS BLOB))+length(id)+length(project)),0)
+        FROM artifact_objects b WHERE artifact_usage.project IN (b.project,''))
+    +(SELECT coalesce(sum({_operation_cost("o")}),0) FROM artifact_operations o
+        WHERE artifact_usage.project IN (o.project,''))"""  # noqa: S608 - constant SQL
+    )
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -1505,6 +1585,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _ledger,
     _ledger_links,
     _statement_math,
+    _artifact_usage,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

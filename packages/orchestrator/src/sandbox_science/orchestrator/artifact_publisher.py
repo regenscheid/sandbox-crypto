@@ -7,7 +7,7 @@ import hashlib
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TypeVar
+from typing import Any, Literal, TypeVar
 
 from pydantic import ValidationError
 
@@ -15,11 +15,12 @@ from sandbox_science.contracts import ArtifactRef, ExecutionContext, PublishRequ
 from sandbox_science.contracts.artifact_inventory import (
     ArtifactPublicationSource,
     ArtifactReceipt,
+    ArtifactRevisionRef,
     ArtifactSnapshot,
 )
 
 from .aio import OwnedExecutor
-from .artifacts import ArtifactInventory
+from .artifacts import ArtifactInventory, Room
 from .documents.errors import DocumentError
 from .worker_client import WorkerAPIError, WorkerClient
 
@@ -58,8 +59,58 @@ class ArtifactPublisher:
     async def _sql(self, call: Callable[[], _T]) -> _T:
         return await self._owner.thread(call)
 
+    def source(
+        self, tool_call: str, model: str | None = None, **attribution: Any
+    ) -> ArtifactPublicationSource:
+        """The trusted attribution of this run's call; ``attribution`` adds a recorded
+        file's kind, role and execution (RA-34), never a project or author."""
+        return ArtifactPublicationSource.model_validate(
+            {
+                **attribution,
+                "context": self.context,
+                "run_id": self.run_id,
+                "tool_call": tool_call,
+                "alias": self.alias,
+                "model": model,
+                "worker_endpoint_sha256": hashlib.sha256(self.endpoint.encode()).hexdigest(),
+            }
+        )
+
+    async def room(self, size: int) -> Room:
+        """What the project's budget leaves for a revision of ``size`` bytes."""
+        return await self._sql(lambda: self.inventory.room(self.context.project_id, size))
+
+    async def record_metadata(
+        self,
+        source: ArtifactPublicationSource,
+        path: str,
+        *,
+        sha256: str,
+        size: int,
+        media_type: str,
+        note: Literal["too_large", "quota"],
+    ) -> tuple[ArtifactRevisionRef, bool]:
+        """A revision with the file's hash and size, without its bytes."""
+        return await self._sql(
+            lambda: self.inventory.record_metadata(
+                source, path, sha256=sha256, size=size, media_type=media_type, note=note
+            )
+        )
+
+    async def record_deletion(
+        self, source: ArtifactPublicationSource, path: str
+    ) -> ArtifactRevisionRef | None:
+        """A tombstone, when a live artifact is at ``path``."""
+        return await self._sql(lambda: self.inventory.record_deletion(source, path))
+
     async def publish(
-        self, request: PublishRequest, operation: str, *, tool_call: str, model: str | None = None
+        self,
+        request: PublishRequest,
+        operation: str,
+        *,
+        tool_call: str,
+        model: str | None = None,
+        attribution: dict[str, Any] | None = None,
     ) -> ArtifactPublicationOutcome:
         """Reserve, snapshot once, pin the known outcome, then verify/retain exact bytes."""
         if request.context != self.context:
@@ -73,14 +124,7 @@ class ArtifactPublisher:
                     message="artifact publisher is closing or at its admission limit",
                 ),
             )
-        source = ArtifactPublicationSource(
-            context=self.context,
-            run_id=self.run_id,
-            tool_call=tool_call,
-            alias=self.alias,
-            model=model,
-            worker_endpoint_sha256=hashlib.sha256(self.endpoint.encode()).hexdigest(),
-        )
+        source = self.source(tool_call, model, **(attribution or {}))
         return await self._owner.submit(self._publish(request, operation, source))
 
     def _binding(self) -> None:
