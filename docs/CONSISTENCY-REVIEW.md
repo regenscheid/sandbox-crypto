@@ -3,7 +3,7 @@
 This page describes the automatic consistency reviewer as built in `packages/orchestrator`
 (`sandbox_science.orchestrator.consistency`). It implements the approved
 [behavior specification](specs/consistency-review.md), with a separately authored,
-versioned rubric (`sandbox-consistency-1`, D56). It never executes code. The planning
+versioned rubric (`sandbox-consistency-2`, D56). It never executes code. The planning
 consistency review of 2026-10-10 is kept, as history, in
 [.agents/planning-consistency-review-2026-10-10.md](../.agents/planning-consistency-review-2026-10-10.md).
 
@@ -65,7 +65,7 @@ Refresh and shows the review state at each saved run boundary; it has no push tr
 A snapshot admits at most 256 items and 8 MiB of retained JSON/locator bytes; one item is
 at most 256 KiB. Document reads pin an exact immutable revision and verify its digest.
 Execution output is a bounded copied projection; mutable worker paths and job log files
-are references only. Clipped output cannot have physical line-number anchors. Rich
+are references only. An agent's ledger revision brings in the artifact revisions its evidence pins, once in each review window and whichever session of the project wrote them (CR-14 as amended): text and JSON up to 64 KiB, copied whole and verified, as `artifact` items whose locator names the entry revision (`pinned_by`); they make no review due and are not the run's effects, and one that cannot be copied whole is left to the entry's evidence, so that it does not make coverage incomplete. A confirmation snapshot's changed entry revisions bring theirs too. Clipped output cannot have physical line-number anchors. Rich
 outputs, automatically discovered file contents and a shell artifact inventory are omitted and make
 coverage incomplete. No missing-evidence assessment can become a failing missing-action
 finding, and an incomplete/unchecked window cannot become passed.

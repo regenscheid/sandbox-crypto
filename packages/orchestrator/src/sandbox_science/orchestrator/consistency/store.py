@@ -862,7 +862,7 @@ class ReviewStore:
             if claimed.get("entry_revisions"):
                 from sandbox_science.orchestrator.ledger import EntryView, Ledger
 
-                from .ledger import entry_item
+                from .ledger import entry_item, pinned_items
 
                 heads: set[str] = set()
                 for pin in claimed["entry_revisions"]:
@@ -889,6 +889,12 @@ class ReviewStore:
                                 int(ready),
                             )
                         )
+                        # What its evidence pins comes with it (CR-2 as amended).
+                        for locator, projection in pinned_items(self, project, each):
+                            encoded = dump(projection)
+                            items.append(
+                                EvidenceItem("artifact", dump(locator), encoded, digest(encoded), 1)
+                            )
             for raw in claimed.get("artifact_revisions", []) + claimed.get(
                 "artifact_replacements", []
             ):

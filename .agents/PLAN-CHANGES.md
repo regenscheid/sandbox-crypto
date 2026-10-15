@@ -4,6 +4,10 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 ## 2026-10-15
 
+Decision of the coordinator on lab 39's B6, which the owner can reverse:
+
+- **A review holds what its ledger entries pin** ([consistency review spec](../docs/specs/consistency-review.md), CR-2, CR-14). A snapshot that holds a ledger entry also holds the artifact revisions its evidence pins, whichever session of the project wrote them and however long ago, so the reviewer compares the numbers an entry states with the computation it cites. Ledger pins are project-wide by design. Text and JSON up to 64 KiB come whole; others are left to the entry's evidence, which names them, so that they do not make coverage incomplete. Rubric `sandbox-consistency-2` asks the reviewer to compare them digit by digit.
+
 Decision of the coordinator on the review of the frontier (#304, #310, #321, #323), which the owner can reverse:
 
 - **An agent's published result is unverified until confirmed** ([ledger spec](../docs/specs/ledger.md), LG-16, LG-20). A published result an agent records shows on the frontier as unverified and counts only as a candidate, until the consistency reviewer's citation check (CR-4) confirms that the citation resolves and supports the statement, or the user confirms it; one the user records is eligible at once. Each frontier result shows its author and role. Until CR-4 confirms citations, the user confirms one as the frontier shows it: the user's latest revision of it holds the material shown, and the user wrote that material, by recording the entry or by a revision that brought it in, or checked it (`ledger check`, or the workspace's); a user's other edits, such as a title or a dropped link, confirm nothing (decided after the verification of the review fixes). A disputed result is shown as the revision before it was disputed, which must have been eligible.

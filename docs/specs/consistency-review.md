@@ -21,7 +21,7 @@ Terms:
 ### Reviewer
 
 - CR-1. The reviewer is a separate agent role with its own model settings ([plans and delegation](plans-and-delegation.md), PD-27). It traces claims to evidence and does not recompute (D27; CScience).
-- CR-2. Its tools read the snapshot (transcript entries, execution records and logs, artifact revisions with their extracted text and existing renders, ledger entries, open findings) and record findings. It MUST NOT have shell or kernel access, package installation, writes to files, documents, plans or the ledger, web or MCP access, delegation or permission decisions (CScience's reviewer likewise has no execution, editing, installs, web search or delegation). The harness enforces this with tool grants, not prompt text (new; OpenScience Desktop's reviewer is read-only only by instruction). A reviewer with execution would be the verification role, with its own review type and records (D27).
+- CR-2. Its tools read the snapshot (transcript entries, execution records and logs, artifact revisions with their extracted text and existing renders, including those its ledger entries' evidence pins (CR-14), ledger entries, open findings) and record findings. It MUST NOT have shell or kernel access, package installation, writes to files, documents, plans or the ledger, web or MCP access, delegation or permission decisions (CScience's reviewer likewise has no execution, editing, installs, web search or delegation). The harness enforces this with tool grants, not prompt text (new; OpenScience Desktop's reviewer is read-only only by instruction). A reviewer with execution would be the verification role, with its own review type and records (D27).
 - CR-3. Every read resolves to a revision that existed when the review was dispatched, and the review record lists each revision read (D28).
 
 ### What the reviewer checks
@@ -58,7 +58,7 @@ Terms:
 ### Dispatch
 
 - CR-13. Checkpoint reviews run detached while the author keeps working. A session has at most one review running; triggers that fire meanwhile merge into one pending window (CScience).
-- CR-14. A review's snapshot covers the work from the watermark to its dispatch. A completed review advances the watermark to the end of its snapshot; a failed or dropped review does not, so the next review covers the same work (CScience).
+- CR-14. A review's snapshot covers the work from the watermark to its dispatch. A completed review advances the watermark to the end of its snapshot; a failed or dropped review does not, so the next review covers the same work (CScience). A snapshot that holds a ledger entry also holds the artifact revisions the entry's evidence pins, even ones written before its window and by another session of the project: ledger pins are project-wide by design, so a reviewer in one session may read an artifact another session wrote when a project entry pins it (amended by the coordinator 2026-10-15 for lab 39's B6, which the owner can reverse).
 - CR-15. A terminal review holds the turn's completion: the user sees the final message marked "review pending" (new). If a checkpoint review is running, the terminal review starts after it and absorbs the pending window.
 - CR-16. If the user sends a message while a terminal review is pending, the new turn starts at once. The review continues, and its findings reach the author at the first safe point of the new turn (new).
 

@@ -80,7 +80,7 @@ GOLDEN = {
     "sandbox-notice-math-1": "c65c1f751f7b2928f15f0d846b816e2287eeb3ddd63fa63ad083226fe0cf19c9",
     "sandbox-kernels-1": "a0211d3dbc39708fdf924610123e76f5cb70c5c25d888c29188d858b594733d9",
     "sandbox-job-watcher-1": "4b545fe81e35622bf1b894c435833d78fb122116f9364d429b21c6c3551e1ab1",
-    "sandbox-consistency-1": "311981a62b6e7fe3416ffe3836ab1492e14c25c336db90c82fa9e4f88b23b3d9",
+    "sandbox-consistency-2": "e5c5c248a9ba6109e984200bdfadf674c6c9b07cbef42d08a2586fece11cd874",
     "sandbox-memory-run-1": "b69cc482f75853487a499ac89b5701b148066e919842a9970e6e318b2bdce121",
     "sandbox-memory-reviewer-1": (
         "d391d1a7e6c33b4fca0970450432103c38b5ea34b80821210f7c9d27f80b9742"
