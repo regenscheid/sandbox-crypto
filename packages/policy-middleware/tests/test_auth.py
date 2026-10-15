@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import time
+from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
 
@@ -97,28 +98,32 @@ def test_expiry_allows_the_configured_leeway() -> None:
 @pytest.mark.parametrize(
     "value",
     [
-        pytest.param(token(typ="JWT"), id="generic-typ"),
-        pytest.param(token(key=ed25519.Ed25519PrivateKey.generate()), id="other-key"),
-        pytest.param(token(exp=int(time.time()) - 3600), id="expired"),
-        pytest.param(token(drop=("exp",)), id="no-expiry"),
-        pytest.param(token(iss="https://gateway.example.org"), id="issuer-is-a-url"),
-        pytest.param(token(iss="openshell-gateway:other"), id="other-gateway"),
-        pytest.param(token(drop=("iss",)), id="no-issuer"),
-        pytest.param(token(aud="urn:openshell:extension:middleware:other"), id="other-audience"),
-        pytest.param(token(aud=[AUDIENCE, "urn:other"]), id="extra-audience"),
-        pytest.param(token(drop=("aud",)), id="no-audience"),
-        pytest.param(token(drop=("caller_kind",)), id="no-caller-kind"),
-        pytest.param(token(caller_kind="admin"), id="unknown-caller-kind"),
-        pytest.param(token(drop=("sandbox_id",)), id="supervisor-without-sandbox"),
-        pytest.param(token(sandbox_id=""), id="empty-sandbox"),
-        pytest.param(token(sandbox_id=7), id="numeric-sandbox"),
-        pytest.param("not-a-token", id="garbage"),
-        pytest.param("a" * 9000, id="oversized"),
+        pytest.param(lambda: token(typ="JWT"), id="generic-typ"),
+        pytest.param(lambda: token(key=ed25519.Ed25519PrivateKey.generate()), id="other-key"),
+        pytest.param(lambda: token(exp=int(time.time()) - 3600), id="expired"),
+        pytest.param(lambda: token(drop=("exp",)), id="no-expiry"),
+        pytest.param(lambda: token(iss="https://gateway.example.org"), id="issuer-is-a-url"),
+        pytest.param(lambda: token(iss="openshell-gateway:other"), id="other-gateway"),
+        pytest.param(lambda: token(drop=("iss",)), id="no-issuer"),
+        pytest.param(
+            lambda: token(aud="urn:openshell:extension:middleware:other"), id="other-audience"
+        ),
+        pytest.param(lambda: token(aud=[AUDIENCE, "urn:other"]), id="extra-audience"),
+        pytest.param(lambda: token(drop=("aud",)), id="no-audience"),
+        pytest.param(lambda: token(drop=("caller_kind",)), id="no-caller-kind"),
+        pytest.param(lambda: token(caller_kind="admin"), id="unknown-caller-kind"),
+        pytest.param(lambda: token(drop=("sandbox_id",)), id="supervisor-without-sandbox"),
+        pytest.param(lambda: token(sandbox_id=""), id="empty-sandbox"),
+        pytest.param(lambda: token(sandbox_id=7), id="numeric-sandbox"),
+        pytest.param(lambda: "not-a-token", id="garbage"),
+        pytest.param(lambda: "a" * 9000, id="oversized"),
     ],
 )
-def test_invalid_tokens_are_rejected(value: str) -> None:
+def test_invalid_tokens_are_rejected(value: Callable[[], str]) -> None:
+    """Each token is made as its test runs, so that it is refused for its own fault and
+    not because it expired while a long run reached it."""
     with pytest.raises(AuthError):
-        authenticator().authenticate(bearer(value))
+        authenticator().authenticate(bearer(value()))
 
 
 def forge(header: dict[str, object], claims: dict[str, object], signature: bytes) -> str:
@@ -131,12 +136,8 @@ def forge(header: dict[str, object], claims: dict[str, object], signature: bytes
     return f"{signing_input}.{part(signature)}"
 
 
-FORGED_CLAIMS: dict[str, object] = {
-    "iss": ISSUER,
-    "aud": AUDIENCE,
-    "exp": int(time.time()) + 300,
-    "caller_kind": "gateway",
-}
+def forged_claims() -> dict[str, object]:
+    return {"iss": ISSUER, "aud": AUDIENCE, "exp": int(time.time()) + 300, "caller_kind": "gateway"}
 
 
 def test_algorithm_confusion_is_rejected() -> None:
@@ -145,15 +146,16 @@ def test_algorithm_confusion_is_rejected() -> None:
         serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
     )
     header: dict[str, object] = {"alg": "HS256", "typ": "openshell-ext+jwt"}
-    unsigned = forge(header, FORGED_CLAIMS, b"").rsplit(".", 1)[0]
+    claims = forged_claims()  # once: the signature covers these very claims
+    unsigned = forge(header, claims, b"").rsplit(".", 1)[0]
     signature = hmac.new(public_pem, unsigned.encode(), hashlib.sha256).digest()
     with pytest.raises(AuthError):
-        authenticator().authenticate(bearer(forge(header, FORGED_CLAIMS, signature)))
+        authenticator().authenticate(bearer(forge(header, claims, signature)))
 
 
 def test_unsigned_tokens_are_rejected() -> None:
     for alg in ("none", "None", "EdDSA"):
-        unsigned = forge({"alg": alg, "typ": "openshell-ext+jwt"}, FORGED_CLAIMS, b"")
+        unsigned = forge({"alg": alg, "typ": "openshell-ext+jwt"}, forged_claims(), b"")
         with pytest.raises(AuthError):
             authenticator().authenticate(bearer(unsigned))
 
@@ -161,16 +163,16 @@ def test_unsigned_tokens_are_rejected() -> None:
 @pytest.mark.parametrize(
     "authorization",
     [
-        pytest.param([], id="missing"),
-        pytest.param([f"Bearer {token()}", f"Bearer {token()}"], id="repeated"),
-        pytest.param([f"Basic {token()}"], id="basic"),
-        pytest.param(["Bearer "], id="empty"),
-        pytest.param([token()], id="no-scheme"),
+        pytest.param(list, id="missing"),
+        pytest.param(lambda: [f"Bearer {token()}", f"Bearer {token()}"], id="repeated"),
+        pytest.param(lambda: [f"Basic {token()}"], id="basic"),
+        pytest.param(lambda: ["Bearer "], id="empty"),
+        pytest.param(lambda: [token()], id="no-scheme"),
     ],
 )
-def test_malformed_authorization_is_rejected(authorization: list[str]) -> None:
+def test_malformed_authorization_is_rejected(authorization: Callable[[], list[str]]) -> None:
     with pytest.raises(AuthError):
-        authenticator().authenticate(authorization)
+        authenticator().authenticate(authorization())
 
 
 def test_evaluations_must_come_from_the_requests_sandbox() -> None:
