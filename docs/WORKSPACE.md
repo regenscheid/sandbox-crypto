@@ -88,7 +88,7 @@ All routes need the session and answer JSON. Every route that is a GET also answ
 | GET | `/api/v0/projects/{project}` | `project`: the same facts, its `sessions` (each with its environment, whether it is dedicated, when it was opened and closed, and how many runs it keeps), and its `environments`, the default first, each with the sessions in it |
 | GET | `/api/v0/projects/{project}/artifacts` | The project's published artifacts at their latest revisions, ten at a time (`?after=` an artifact ID), and whether the PDF viewer is on |
 | GET | `/api/v0/projects/{project}/ledger` | The project's ledger entries, oldest first, with handle, type, status and title (`?type=`, `?status=`, `?after=` an entry, `?limit=` up to 200) ([ledger](LEDGER.md)) |
-| GET | `/api/v0/projects/{project}/ledger/{entry}` | An entry, by ID or handle, at its current revision or `?revision=`, with its statement, fields, links and the links other entries hold to it |
+| GET | `/api/v0/projects/{project}/ledger/{entry}` | An entry, by ID or handle, at its current revision or `?revision=`, with its statement, fields, links and the links other entries hold to it, 200 at a time from `?incoming_after=`, with their count |
 | GET | `/api/v0/projects/{project}/ledger/{entry}/history` | An entry's revisions, newest first (`?before=` a revision) |
 | GET | `/api/v0/projects/{project}/artifacts/{artifact}/revisions/{revision}/viewer` | With `?sha256=`, the viewer's URL for that PDF revision on the preview origin, open for 10 minutes, and the path it was published from ([the PDF viewer's origin](#the-pdf-viewers-origin)) |
 | GET | `/api/v0/projects/{project}/macros` | The project's current versioned macro setting ([project macros](PROJECT-MACROS.md#changing-the-setting)) |

@@ -4,7 +4,8 @@
 ``GET /api/v0/projects/{project}/ledger`` answers a page of entries, oldest first, each
 with its handle, type, status and title; ``type`` and ``status`` filter, ``after`` and
 ``limit`` page. ``GET …/ledger/{entry}`` answers an entry at its current revision, or at
-``revision``, with its links and the links other entries hold to it; ``GET
+``revision``, with its links and the links other entries hold to it, 200 at a time from
+``incoming_after``, with their count; ``GET
 …/ledger/{entry}/history`` its revisions, newest first, before ``before``. An entry is
 named by its ID or its handle. Reads go through the read-only control store.
 """
@@ -29,6 +30,7 @@ from .context import CONTEXT, identifier, json_answer
 PATH: Final = "/api/v0/projects/{project}/ledger"
 _ENTRY: Final = re.compile(r"entry-[0-9a-f]{24}|(?:I|C|R|A|D|T|REF)-[1-9][0-9]{0,8}")
 _NUMBER: Final = re.compile(r"[1-9][0-9]{0,8}")
+_COUNT: Final = re.compile(r"0|[1-9][0-9]{0,8}")
 _WORD: Final = re.compile(r"[a-z_]{1,32}")
 
 
@@ -115,10 +117,14 @@ async def listing(request: web.Request) -> web.Response:
 
 async def entry(request: web.Request) -> web.Response:
     project, reference = identifier(request, "project"), _entry(request)
-    raw = _match(_NUMBER, _query(request, {"revision"}).get("revision"), "revision")
+    query = _query(request, {"revision", "incoming_after"})
+    raw = _match(_NUMBER, query.get("revision"), "revision")
+    after = int(_match(_COUNT, query.get("incoming_after", "0"), "incoming_after") or 0)
 
     def read(ledger: Ledger) -> str:
-        found = ledger.entry(project, reference, None if raw is None else int(raw))
+        found = ledger.entry(
+            project, reference, None if raw is None else int(raw), incoming_after=after
+        )
         return LedgerEntry(
             project_id=project, observed_at=datetime.now(UTC), entry=found
         ).model_dump_json()

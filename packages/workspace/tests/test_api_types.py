@@ -9,7 +9,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
-from pydantic import BaseModel, Field
+import pytest
+from pydantic import BaseModel, Field, create_model
 
 SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "generate_api_types.py"
 
@@ -57,3 +58,10 @@ def test_names_that_are_not_identifiers_are_quoted() -> None:
     text = render({"properties": {"content-type": {"type": "string"}, "ok": {}}}, "")
     assert '"content-type": string;' in text
     assert "  ok: unknown;" in text
+
+
+def test_two_models_of_one_name_are_refused() -> None:
+    documents = create_model("Documents", revision=(create_model("Revision", x=(int, ...)), ...))
+    ledger = create_model("Ledger", revision=(create_model("Revision", x=(str, ...)), ...))
+    with pytest.raises(SystemExit, match="two response models share a name"):
+        _generate((documents, ledger))

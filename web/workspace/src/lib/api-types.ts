@@ -166,6 +166,7 @@ export interface EntryView {
   fields: Record<string, unknown>;
   links: EntryLink[];
   incoming: EntryLink[];
+  incoming_total: number;
   head: number;
   author: Record<string, unknown>;
   reason: string;

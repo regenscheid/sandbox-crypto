@@ -150,6 +150,10 @@ def generate() -> str:
         by_alias=False,
         ref_template="#/$defs/{model}",
     )
+    # Two models of one name get module-qualified names, which no one means to import.
+    clashes = sorted(name for name in top["$defs"] if "__" in name)
+    if clashes:
+        raise SystemExit(f"two response models share a name; rename one: {', '.join(clashes)}")
     parts = [HEADER]
     for name, schema in sorted(top["$defs"].items()):
         parts.append("\n" + _comment(schema))

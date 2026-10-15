@@ -100,6 +100,11 @@ async def test_an_entry_reads_with_its_links_at_any_revision(
     assert (first.entry.revision, first.entry.status, first.entry.head) == (1, "todo", 2)
     history = LedgerHistory.model_validate(await (await client.get(BASE + "/T-1/history")).json())
     assert [r.status for r in history.history.revisions] == ["in_progress", "todo"]
+    assert issue.entry.incoming_total == 1
+    later = LedgerEntry.model_validate(
+        await (await client.get(BASE + "/I-1", params={"incoming_after": "1"})).json()
+    )
+    assert (later.entry.incoming, later.entry.incoming_total) == ([], 1)
 
 
 @pytest.mark.parametrize(
@@ -115,6 +120,8 @@ async def test_an_entry_reads_with_its_links_at_any_revision(
         (BASE, {"type": "lesson"}, 400, "invalid_request"),
         (BASE, {"sort": "title"}, 400, "invalid_request"),
         (BASE + "/I-1", {"revision": "one"}, 400, "invalid_request"),
+        (BASE + "/I-1", {"incoming_after": "-1"}, 400, "invalid_request"),
+        (BASE + "/I-1", {"incoming_after": "01"}, 400, "invalid_request"),
     ],
 )
 async def test_reads_outside_the_ledger_are_refused(
