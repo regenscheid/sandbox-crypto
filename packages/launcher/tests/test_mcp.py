@@ -1,0 +1,228 @@
+# SPDX-License-Identifier: MIT
+"""The MCP proxy's sandbox: made on ``up``, deleted on stopping, and never another's.
+
+The OpenShell CLI is a stand-in (fake_openshell.py) whose sandboxes are a JSON file.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import signal
+import socket
+import time
+import tomllib
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from sandbox_science.launcher.config import load_config
+from sandbox_science.launcher.state import Layout
+
+pytestmark = pytest.mark.slow
+
+SANDBOX = "ss-mcp-proxy"
+NAME = re.compile(r"ss-mcp-proxy-[0-9a-f]{6}")
+IMAGE = "sandbox-science/mcp-proxy:test"
+
+
+def free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+@pytest.fixture
+def mcp(site: dict[str, Any], fake_openshell: Path, tmp_path: Path) -> dict[str, Any]:
+    state = tmp_path / "openshell.json"
+    state.write_text(json.dumps({"providers": ["crypto-research-mcp"], "sandboxes": {}}))
+    listen = f"127.0.0.1:{free_port()}"
+
+    def launch(parts: dict[str, str] | None = None) -> Any:
+        return site["launch"](
+            parts,
+            openshell={"cli": str(fake_openshell)},
+            mcp_proxy={
+                "image": IMAGE,
+                "providers": ["crypto-research-mcp"],
+                "credentials": {"crypto-research-mcp.CF_ACCESS_CLIENT_ID": "CF_ACCESS_CLIENT_ID"},
+                "servers": ["crypto-research-mcp"],
+                "listen": listen,
+            },
+        )
+
+    return {"launch": launch, "state": state, "journal": site["journal"], "listen": listen}
+
+
+def journal(path: Path) -> list[str]:
+    return path.read_text().splitlines()
+
+
+def sandboxes(state: Path) -> dict[str, Any]:
+    return json.loads(state.read_text())["sandboxes"]
+
+
+def ours(state: Path, *, but: tuple[str, ...] = ()) -> str:
+    """The one sandbox this launcher made: the configured name and six hex digits."""
+    (name,) = [
+        name for name in sandboxes(state) if name not in but and NAME.fullmatch(name) is not None
+    ]
+    return name
+
+
+def test_up_makes_the_proxys_sandbox_and_deletes_it_when_it_stops(mcp: dict[str, Any]) -> None:
+    launcher = mcp["launch"]()
+    launcher.expect("Stop:")
+    remote = "/sandbox/mcp-proxy"
+    sandbox = ours(mcp["state"])
+    steps = journal(mcp["journal"])
+    made = steps.index("sandbox-science-mcp-proxy compile-policy")
+    assert steps[made:] == [
+        "sandbox-science-mcp-proxy compile-policy",
+        f"openshell sandbox create {sandbox} {IMAGE} provider crypto-research-mcp "
+        "/opt/sandbox-science/bin/mcp-proxy-run",
+        f"openshell exec {sandbox} mkdir -p {remote}",
+        f"openshell upload {sandbox} pool-ceiling.yaml {remote}/",
+        f"openshell upload {sandbox} policy.yaml {remote}/",
+        f"openshell upload {sandbox} proxy.toml {remote}/",
+        f"openshell exec {sandbox} /opt/sandbox-science/bin/sandbox-science-mcp-proxy bind "
+        f"--state-dir {remote}/state --project crypto --policy {remote}/policy.yaml",
+        "openshell forward start",
+        f"sandbox-science-harness has MCP http://{mcp['listen']} for crypto: "
+        "['crypto-research-mcp']",
+        "sandbox-science-harness start",
+        "sandbox-science-workspace start",
+    ]
+    # The proxy's one caller is the run service, by its token's digest only.
+    layout = Layout(load_config(launcher.config).state_dir)
+    token = layout.token("mcp-orchestrator").read_text().strip()
+    proxy = (layout.mcp / "upload" / "proxy.toml").read_text()
+    (caller,) = tomllib.loads(proxy)["callers"]
+    assert caller == {
+        "name": "orchestrator",
+        "token_sha256": hashlib.sha256(token.encode()).hexdigest(),
+        "kind": "orchestrator",
+        "project": "crypto",
+    }
+    assert token not in proxy
+    assert tomllib.loads(proxy)["credentials"] == {
+        "crypto-research-mcp.CF_ACCESS_CLIENT_ID": "CF_ACCESS_CLIENT_ID"
+    }
+    assert f"the MCP proxy's sandbox: {sandbox}" in launcher.command("status").stdout
+    launcher.process.send_signal(signal.SIGINT)
+    assert launcher.finish() == 0
+    assert journal(mcp["journal"])[-5:] == [
+        "sandbox-science-workspace stop",
+        "sandbox-science-harness stop",
+        "openshell forward stop",
+        f"openshell sandbox delete {sandbox}",
+        "sandbox-science-worker stop",
+    ]
+    assert sandboxes(mcp["state"]) == {}
+
+
+def test_a_missing_provider_is_refused_before_anything_starts(mcp: dict[str, Any]) -> None:
+    mcp["state"].write_text(json.dumps({"providers": [], "sandboxes": {}}))
+    launcher = mcp["launch"]()
+    assert launcher.finish() == 1
+    assert "the OpenShell provider crypto-research-mcp does not exist" in launcher.output
+    assert "docs/MCP-CONNECTORS.md" in launcher.output
+    assert journal(mcp["journal"]) == []
+
+
+def test_sandboxes_it_did_not_make_are_left_alone(mcp: dict[str, Any]) -> None:
+    # One by hand with the configured name, and another launcher's with its own suffix.
+    others = {
+        SANDBOX: {"id": "by-hand", "phase": "Ready", "image": "other"},
+        f"{SANDBOX}-cccccc": {"id": "another-launchers", "phase": "Ready", "image": IMAGE},
+    }
+    mcp["state"].write_text(json.dumps({"providers": ["crypto-research-mcp"], "sandboxes": others}))
+    launcher = mcp["launch"]()
+    launcher.expect("Stop:")
+    sandbox = ours(mcp["state"], but=tuple(others))
+    launcher.process.send_signal(signal.SIGINT)
+    assert launcher.finish() == 0
+    assert sandboxes(mcp["state"]) == others
+    deleted = [step for step in journal(mcp["journal"]) if "delete" in step]
+    assert deleted == [f"openshell sandbox delete {sandbox}"]
+
+
+def test_a_record_without_an_id_deletes_only_the_name_it_recorded(mcp: dict[str, Any]) -> None:
+    launcher = mcp["launch"]()
+    launcher.expect("Stop:")
+    launcher.process.send_signal(signal.SIGINT)
+    assert launcher.finish() == 0
+    layout = Layout(load_config(launcher.config).state_dir)
+    # A launcher that died while it created its sandbox, and another launcher's sandbox.
+    (layout.mcp / "sandbox.json").write_text(json.dumps({"name": f"{SANDBOX}-aaaaaa", "id": None}))
+    theirs = {f"{SANDBOX}-bbbbbb": {"id": "theirs", "phase": "Ready", "image": IMAGE}}
+    mcp["state"].write_text(json.dumps({"providers": ["crypto-research-mcp"], "sandboxes": theirs}))
+    assert launcher.command("down").returncode == 0
+    assert sandboxes(mcp["state"]) == theirs
+    assert not (layout.mcp / "sandbox.json").exists()
+    # When the recorded name is there, it is this launcher's, and goes.
+    (layout.mcp / "sandbox.json").write_text(json.dumps({"name": f"{SANDBOX}-aaaaaa", "id": None}))
+    left = {f"{SANDBOX}-aaaaaa": {"id": "half-made", "phase": "Ready", "image": IMAGE}}
+    mcp["state"].write_text(
+        json.dumps({"providers": ["crypto-research-mcp"], "sandboxes": {**theirs, **left}})
+    )
+    stopped = launcher.command("down")
+    assert f"deleted the sandbox {SANDBOX}-aaaaaa an earlier launcher made" in stopped.stdout
+    assert sandboxes(mcp["state"]) == theirs
+
+
+def test_a_failed_create_forgets_its_record_and_deletes_nothing(mcp: dict[str, Any]) -> None:
+    theirs = {f"{SANDBOX}-cccccc": {"id": "theirs", "phase": "Ready", "image": IMAGE}}
+    mcp["state"].write_text(json.dumps({"providers": ["crypto-research-mcp"], "sandboxes": theirs}))
+    launcher = mcp["launch"]({"openshell": "create-fails"})
+    assert launcher.finish() == 1
+    assert "openshell sandbox create failed" in launcher.output
+    layout = Layout(load_config(launcher.config).state_dir)
+    assert not (layout.mcp / "sandbox.json").exists()
+    assert sandboxes(mcp["state"]) == theirs
+    assert not any("delete" in step for step in journal(mcp["journal"]))
+
+
+def test_the_forward_starts_again_later_each_time_it_keeps_stopping(mcp: dict[str, Any]) -> None:
+    launcher = mcp["launch"]({"openshell": "forward-exits-always"})
+    launcher.expect("the mcp forward stopped, with status 1; starting it again in 2 s")
+    launcher.expect("the mcp forward stopped, with status 1; starting it again in 4 s")
+    launcher.process.send_signal(signal.SIGINT)
+    assert launcher.finish() == 0
+    assert sandboxes(mcp["state"]) == {}
+
+
+def test_the_forward_is_not_started_again_on_an_address_someone_took(
+    mcp: dict[str, Any],
+) -> None:
+    host, port = mcp["listen"].rsplit(":", 1)
+    launcher = mcp["launch"]({"openshell": "forward-exits-once"})
+    launcher.expect("the mcp forward stopped, with status 1; starting it again in 2 s")
+    with socket.socket() as squatter:
+        squatter.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        squatter.bind((host, int(port)))
+        squatter.listen()
+        assert launcher.finish() == 1
+    assert f"something else listens on {mcp['listen']}" in launcher.output
+    assert journal(mcp["journal"]).count("openshell forward start") == 1
+    assert sandboxes(mcp["state"]) == {}
+
+
+def test_a_killed_launchers_sandbox_is_deleted_by_down(mcp: dict[str, Any]) -> None:
+    launcher = mcp["launch"]()
+    launcher.expect("Stop:")
+    sandbox = ours(mcp["state"])
+    launcher.process.kill()
+    launcher.finish()
+    deadline = time.monotonic() + 15
+    while "openshell forward stop" not in journal(mcp["journal"]):  # it dies with the launcher
+        assert time.monotonic() < deadline, "the forward outlived the launcher"
+        time.sleep(0.1)
+    shown = launcher.command("status")
+    assert shown.returncode == 4
+    assert f"the sandbox {sandbox} it made may be left" in shown.stdout
+    stopped = launcher.command("down")
+    assert f"deleted the sandbox {sandbox} an earlier launcher made" in stopped.stdout
+    assert sandboxes(mcp["state"]) == {}

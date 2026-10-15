@@ -31,7 +31,7 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import instance, parts
+from . import instance, mcp, parts
 from .config import LauncherConfig, LauncherError, load_config
 from .instance import Record, RecordedPart
 from .state import Layout, check_private
@@ -175,6 +175,8 @@ async def _up(
 
 async def _start(config: LauncherConfig, layout: Layout, supervisor: Supervisor) -> None:
     timeout = config.start_timeout
+    if config.mcp_proxy is not None:
+        await mcp.check_providers(config)
     print(f"starting the worker on {config.worker.listen}", flush=True)
     worker_env = passed(config.worker.pass_env)
     worker = Part(
@@ -194,6 +196,8 @@ async def _start(config: LauncherConfig, layout: Layout, supervisor: Supervisor)
     harness_env = passed(config.run_service.pass_env)
     for argv in parts.project_argvs(config, layout, digest.group()):
         await supervisor.run(" ".join(argv[1:3]), argv, layout.control, timeout, harness_env)
+    if config.mcp_proxy is not None:
+        await mcp.start(config, layout, supervisor, parts.commands(config))
     print("starting the run service", flush=True)
     harness = Part(
         "run-service",
@@ -272,7 +276,10 @@ def _down_stopped(config: LauncherConfig, layout: Layout) -> int:
     for part in stopped:
         print(f"stopped the {part.name} (process {part.pid}) an earlier launcher left running")
     layout.record.unlink(missing_ok=True)
-    if not stopped:
+    made = mcp.recorded(layout)
+    if made is not None and asyncio.run(mcp.delete_recorded(config, layout)):
+        print(f"deleted the sandbox {made[0]} an earlier launcher made")
+    if not stopped and made is None:
         print("Sandbox Science is not running")
     return 0
 
@@ -284,12 +291,17 @@ def status(config: LauncherConfig) -> int:
     if not instance.running(layout):
         print("Sandbox Science is not running")
         left = instance.left_behind(found)
+        made = mcp.recorded(layout)
+        if made is not None:
+            print(
+                f"  but the sandbox {made[0]} it made may be left: sandbox-science down deletes it"
+            )
         for part in left:
             print(
                 f"  but the {part.name} an earlier launcher started still runs (process "
                 f"{part.pid}, or what it started): sandbox-science down stops it"
             )
-        return DEGRADED if left else NOT_RUNNING
+        return DEGRADED if left or made is not None else NOT_RUNNING
     if found is None:
         print(f"Sandbox Science is starting, from {layout.root}")
         return 0
@@ -306,6 +318,9 @@ def status(config: LauncherConfig) -> int:
         if part.address is not None:
             reach = f", {part.address} " + ("answers" if answers else "is silent")
         print(f"  {part.name}: process {part.pid}, {'running' if running else 'stopped'}{reach}")
+    made = mcp.recorded(layout)
+    if made is not None:
+        print(f"  the MCP proxy's sandbox: {made[0]}")
     return 0 if healthy else DEGRADED
 
 

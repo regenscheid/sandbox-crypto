@@ -153,3 +153,31 @@ def test_writers_of_one_file_never_share_a_temporary_file(tmp_path: Path) -> Non
     assert len(lines) == 1  # one writer's whole text, never a mix
     assert mode(target) == 0o600
     assert [path.name for path in tmp_path.iterdir()] == ["shared.json"]
+
+
+def test_the_mcp_proxy_gets_its_files_and_the_run_service_its_flags(
+    make_config: Any, commands: Path
+) -> None:
+    proxy = {
+        "image": "sandbox-science/mcp-proxy:abc1234",
+        "providers": ["p"],
+        "servers": ["s", "t"],
+    }
+    config = load_config(make_config({"bin_dir": str(commands), "mcp_proxy": proxy}))
+    parts.check(config)
+    layout = parts.prepare(config)
+    upload = layout.mcp / "upload"
+    assert mode(layout.mcp) == mode(upload) == 0o700
+    for name in ("pool-ceiling.yaml", "policy.yaml", "proxy.toml"):
+        assert mode(upload / name) == 0o600
+    assert (upload / "policy.yaml").read_text() == config.worker.policy.read_text()
+    assert mode(layout.token("mcp-orchestrator")) == 0o600
+    harness = parts.harness_argv(config, layout)
+    assert harness[harness.index("--mcp-proxy") :] == [
+        "--mcp-proxy", "http://127.0.0.1:18080",
+        "--mcp-token-file", str(layout.token("mcp-orchestrator")),
+        "--mcp-project", "crypto", "--mcp-server", "s", "--mcp-server", "t",
+    ]  # fmt: skip
+    (commands / "sandbox-science-mcp-proxy").unlink()
+    with pytest.raises(LauncherError, match="no sandbox-science-mcp-proxy in"):
+        parts.check(config)
