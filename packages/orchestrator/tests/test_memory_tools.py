@@ -146,7 +146,8 @@ async def test_a_long_memory_comes_in_parts(documents: DocumentStore) -> None:
     seen: list[str] = []
     start: int | None = 0
     while start is not None:
-        part = await call(tools, "memory_list", **{"from": start})
+        out = await tools.call(ToolCall("tc", "memory_list", json.dumps({"from": start})), "op")
+        part = json.loads(out.text)
         assert len(json.dumps(part, ensure_ascii=False, separators=(",", ":"))) <= 4000
         assert part["entries"]
         seen += [entry["entry_id"] for entry in part["entries"]]
