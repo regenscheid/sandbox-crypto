@@ -22,7 +22,9 @@ cannot read through a reviewer grant, spend budget, raise a finding or finalize 
 
 ## Running and scheduling
 
-With `--state-dir`, the harness observes its transcript, canonical execution projections,
+With `--state-dir`, the harness observes its transcript, canonical execution projections
+(one item for each state a tool call saw an execution in, a `wait_jobs` call's ended jobs
+included, whose record keeps their executions for the review: lab 41's B7),
 agent-authored document revisions, the session's agents' ledger revisions and the flags
 their changes raise or clear ([ledger](LEDGER.md))
 and durable explicit-publication artifact events. A run's transcript starts after the

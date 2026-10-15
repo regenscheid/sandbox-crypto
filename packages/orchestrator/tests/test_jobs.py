@@ -161,6 +161,11 @@ async def test_wait_calls_no_main_model_until_job_ends(tmp_path: Path) -> None:
     assert sorted(transcript.delivered_ids("jobs")) == ["exe-1"]
     assert waits(jobs) == []
     assert worker.cancelled == []
+    # The record keeps the ended execution for the review (lab 41's B7); the model's
+    # answer has its summary only.
+    (record,) = transcript.tool_records
+    assert [e["state"] for e in record["executions"]] == ["succeeded"]
+    assert "_ended_executions" not in transcript.messages[-2]["content"]
 
 
 @pytest.mark.asyncio
