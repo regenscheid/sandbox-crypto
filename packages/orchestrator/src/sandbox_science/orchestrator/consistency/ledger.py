@@ -110,7 +110,9 @@ def _observation(ledger: Ledger, project: str, entry: str, event: Json) -> Obser
     view = ledger.entry(project, entry, event["revision"])
     if view.author.get("kind") not in ("agent", "worker"):
         return None
-    payload: Json = view.model_dump(mode="json", exclude={"incoming", "incoming_total", "head"})
+    payload: Json = view.model_dump(
+        mode="json", exclude={"incoming", "incoming_total", "head", "findings"}
+    )
     payload, complete = _fitted(payload)
     created = "changed" not in event
     changed = set(event.get("changed", ()))

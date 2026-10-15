@@ -275,6 +275,21 @@ class EvidenceLink(Contract):
     """An entry target's handle, as it reads now."""
 
 
+class EntryFinding(Contract):
+    """A review finding anchored to the entry, with its own status (LG-25): the field
+    and revision it is anchored to (a math finding's revision is its statement's text
+    revision, and it names no entry revision)."""
+
+    finding_id: str
+    session: str
+    status: str
+    severity: str
+    category: str
+    origin: str
+    field: str | None = None
+    revision: int | None = None
+
+
 class EntrySummary(Contract):
     """An entry as a list shows it."""
 
@@ -303,6 +318,8 @@ class EntryView(EntrySummary):
     made: as many as 200 from the one a read starts at."""
     incoming_total: int
     """How many there are in all."""
+    findings: list[EntryFinding]
+    """The review findings anchored to the entry, newest first: as many as 50."""
     head: int
     author: dict[str, Any]
     reason: str

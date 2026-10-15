@@ -65,6 +65,10 @@ async def test_a_statements_bad_formula_is_a_finding_its_fix_confirms(stores) ->
         "field": "statement",
         "body_revision": 1,
     }
+    shown = Ledger(reviews.documents).entry("p", "C-1").findings
+    assert [(f.finding_id, f.field, f.origin) for f in shown] == [
+        (finding["finding_id"], "statement", "math")
+    ]
     job = MathJobs(reviews).job(finding["math_check_id"])
     assert (job["document"], job["statement"]["entry"]) == (None, entry)
     (notice,) = MathNotices(reviews).pending("p", "s", "run", set())

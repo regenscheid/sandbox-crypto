@@ -82,7 +82,9 @@ SPECS = (
     ),
     schema(
         "review_finding",
-        "Record a bounded, pinned finding. Missing evidence is inconclusive.",
+        "Record a bounded, pinned finding. Missing evidence is inconclusive. Each anchor "
+        "names an evidence ID, and may name a document block and math span, a log range, "
+        "or a field of a ledger entry (title, statement, status, fields, links, evidence).",
         {
             "severity": {"enum": ["fail", "warn", "note"]},
             "category": {

@@ -109,6 +109,7 @@ Main agents may claim fixes or rebut; only a confirmation reviewer or explicit u
 decision can confirm a fix. User writes
 use strict expected revisions and replay-safe operation IDs. A block's supersession
 links old and replacement revisions and never claims that it fixed the finding.
+A finding's anchor may name a field of a ledger entry revision the snapshot holds (`title`, `statement`, `status`, `fields`, `links` or `evidence`); supersession counts such an anchor as replaced only when a later revision of the entry changed that field ([ledger](LEDGER.md)).
 Confirmation decisions compare the pinned finding revision and current head before
 writing. Reviewer confirm/reject also requires audited read ranges covering the finding metadata,
 original/response anchored blocks (or whole items) and exact changed revisions. Empty slices of a nonempty source,

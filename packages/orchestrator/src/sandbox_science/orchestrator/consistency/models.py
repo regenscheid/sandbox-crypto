@@ -74,6 +74,8 @@ class EvidenceAnchor(Contract):
     stream: Literal["stdout", "stderr"] | None = None
     first_line: int | None = Field(default=None, ge=1, le=1000000, strict=True)
     last_line: int | None = Field(default=None, ge=1, le=1000000, strict=True)
+    field: Literal["title", "statement", "status", "fields", "links", "evidence"] | None = None
+    """A field of the ledger entry revision the item is (LG-25)."""
 
 
 class FindingInput(Contract):

@@ -52,6 +52,7 @@ from .models import (
     STATUSES,
     ChangedEntry,
     EntryChange,
+    EntryFinding,
     EntryHistory,
     EntryLink,
     EntryPage,
@@ -195,6 +196,7 @@ class Ledger:
                 evidence=held,
                 incoming=incoming,
                 incoming_total=total,
+                findings=self._findings(db, project, row.entry_id),
                 head=row.head,
                 author=json.loads(found[5]),
                 reason=found[6],
@@ -1093,6 +1095,31 @@ class Ledger:
                 (entry, revision),
             ).fetchall()
         ]
+
+    @staticmethod
+    def _findings(db: sqlite3.Connection, project: str, entry: str) -> list[EntryFinding]:
+        """The review findings anchored to ``entry``, newest first (LG-25)."""
+        found: dict[str, EntryFinding] = {}
+        for row in db.execute(
+            "SELECT f.finding_id,f.session,f.status,f.severity,f.category,f.origin,"
+            "coalesce(json_extract(a.value,'$.field'),json_extract(a.value,'$.locator.field')),"
+            "json_extract(a.value,'$.locator.revision') "
+            "FROM review_findings f, json_each(f.anchors) a WHERE f.project=? "
+            "AND json_extract(a.value,'$.locator.entry')=? ORDER BY f.created DESC,f.rowid DESC",
+            (project, entry),
+        ):
+            if row[0] not in found and len(found) < 50:
+                found[row[0]] = EntryFinding(
+                    finding_id=row[0],
+                    session=row[1],
+                    status=row[2],
+                    severity=row[3],
+                    category=row[4],
+                    origin=row[5],
+                    field=row[6],
+                    revision=row[7],
+                )
+        return list(found.values())
 
     @staticmethod
     def _incoming(

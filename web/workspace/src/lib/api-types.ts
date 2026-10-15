@@ -114,6 +114,18 @@ export interface EditReceipt {
   receipt: PlanReceipt;
 }
 
+/** A review finding anchored to the entry, with its own status (LG-25): the field and revision it is anchored to (a math finding's revision is its statement's text revision, and it names no entry revision). */
+export interface EntryFinding {
+  finding_id: string;
+  session: string;
+  status: string;
+  severity: string;
+  category: string;
+  origin: string;
+  field: string | null;
+  revision: number | null;
+}
+
 export interface EntryHistory {
   entry_id: string;
   handle: string;
@@ -180,6 +192,7 @@ export interface EntryView {
   evidence: EvidenceLink[];
   incoming: EntryLink[];
   incoming_total: number;
+  findings: EntryFinding[];
   head: number;
   author: Record<string, unknown>;
   reason: string;
