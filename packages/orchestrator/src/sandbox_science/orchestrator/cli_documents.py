@@ -104,6 +104,10 @@ async def session(args: argparse.Namespace) -> int:
 
 
 async def _session_action(args: argparse.Namespace, store: ProjectStore) -> int:
+    if args.action == "open":
+        opened = store.open_session(args.project, args.session, dedicated=args.dedicated)
+        print(f"session {args.session} is open, in environment {opened.environment_id}")
+        return 0
     session = store.get(args.project).sessions.get(args.session)
     if session is None:
         print(f"error: project {args.project} has no session {args.session}", file=sys.stderr)
@@ -245,13 +249,18 @@ def add_parsers(commands: Any) -> None:
         help="budget: the MAIN tokens the run service may spend over a rolling 24 hours; "
         "omitted to read",
     )
-    sessions = commands.add_parser("session", help="close a session: stop its kernels")
-    sessions.add_argument("action", choices=("close",))
+    sessions = commands.add_parser(
+        "session", help="open a session, so the GUI can chat in it; or close one: stop its kernels"
+    )
+    sessions.add_argument("action", choices=("open", "close"))
     sessions.add_argument("--state-dir", type=Path, required=True)
     sessions.add_argument("--project", required=True)
     sessions.add_argument("--session", required=True)
-    sessions.add_argument("--worker", required=True)
-    sessions.add_argument("--token-file", type=Path, required=True)
+    sessions.add_argument(
+        "--dedicated", action="store_true", help="open: in an environment of its own"
+    )
+    sessions.add_argument("--worker", help="close: the worker that runs its kernels")
+    sessions.add_argument("--token-file", type=Path)
     document = commands.add_parser("document", help="living documents, as the user")
     actions = document.add_subparsers(dest="action", required=True)
     common = argparse.ArgumentParser(add_help=False)
