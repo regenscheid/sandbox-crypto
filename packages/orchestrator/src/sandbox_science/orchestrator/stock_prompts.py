@@ -64,11 +64,13 @@ _CATALOG = MappingProxyType(
         ),
         "literature": StockPrompt(
             "literature",
-            "sandbox-stock-literature-1",
+            "sandbox-stock-literature-2",
             "Research framing: literature synthesis. Inspect sources through the capabilities "
             "actually offered before citing their contents. Compare assumptions, methods, "
             "evidence and limitations, keeping each claim tied to the source actually read. "
             "Distinguish source claims from your deductions and unresolved disagreements. "
+            "State each search's source, query and date; a search with no hits bounds only "
+            "that search, and is no evidence that the work or attack does not exist. "
             "If retrieval or a necessary source is unavailable, state that limit and retain "
             "useful analysis of the available material; do not manufacture citations or access.",
         ),
