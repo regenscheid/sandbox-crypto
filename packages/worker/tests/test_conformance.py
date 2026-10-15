@@ -515,6 +515,25 @@ async def test_publication_names_the_last_attempt_that_wrote_the_file(worker: Ta
     assert (await worker.publish("c.txt"))["produced_by"] is None
 
 
+async def test_a_call_reports_the_files_it_deleted(worker: Target) -> None:
+    """RA-33: a deleted file is reported, when the whole workspace was compared."""
+    name = f"{worker.context['session_id']}-gone.txt"
+    made = await worker.run(
+        kind="shell", script=f"mkdir -p d && echo x > d/a.txt && echo y > $PROJECT_SHARED/{name}"
+    )
+    assert made["result"]["deleted_files"] == []
+    assert made["result"]["deleted_files_truncated"] is False
+    gone = await worker.run(
+        kind="cell",
+        code="import os\nos.remove('d/a.txt')\n"
+        f"os.remove(os.environ['PROJECT_SHARED'] + '/{name}')",
+    )
+    assert gone["state"] == "succeeded", gone["result"]
+    assert gone["result"]["deleted_files"] == ["d/a.txt", f"shared/{name}"]
+    assert gone["result"]["written_files"] == []
+    assert gone["result"]["deleted_files_truncated"] is False
+
+
 async def test_shared_files_count_writers_from_any_session(worker: Target) -> None:
     name = f"{worker.context['session_id']}.txt"
     writer = await worker.run(

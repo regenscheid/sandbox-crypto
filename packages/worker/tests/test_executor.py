@@ -1073,3 +1073,29 @@ async def test_an_idle_kernel_is_stopped_once_it_has_been_unused_long_enough(
         reaper.cancel()
     finally:
         await instance.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cut", ["before", "after", "error"])
+async def test_deletions_are_reported_only_from_whole_walks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cut: str
+) -> None:
+    """RA-33: a file missing after a walk that was cut short was not shown deleted."""
+    instance = executor.Executor(tmp_path, lambda message: asyncio.sleep(0))
+    (tmp_path / "sessions" / "s1").mkdir(parents=True)
+    (tmp_path / "sessions" / "s1" / "kept.txt").write_text("k")
+    files, cut_short = instance.snapshot("s1")
+    files["gone.txt"] = (1, 1, 1)  # there before the call, not after
+    whole = await instance.written("s1", (files, cut_short))
+    assert (whole["deleted_files"], whole["deleted_files_truncated"]) == (["gone.txt"], False)
+    if cut == "before":
+        cut_short = True
+    elif cut == "error":
+        assert isinstance(files, sandbox_files.SnapshotFiles)
+        files.error = True  # an area the walk could not open
+    else:
+        monkeypatch.setattr(
+            instance, "snapshot", lambda session: (sandbox_files.SnapshotFiles(), True)
+        )
+    partial = await instance.written("s1", (files, cut_short))
+    assert (partial["deleted_files"], partial["deleted_files_truncated"]) == ([], True)

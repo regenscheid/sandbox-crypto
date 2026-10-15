@@ -704,14 +704,7 @@ class Dispatcher:
         running = self.kernels.session_kernels(
             live.execution.context, raw.get("running_kernels"), expected_channel=live.channel
         )
-        written = raw.get("written_files")
-        paths = [
-            path
-            for path in (cast(list[object], written) if isinstance(written, list) else [])
-            if isinstance(path, str)
-            and path
-            and len(path.encode("utf-8", "replace")) <= MAX_PATH_BYTES
-        ]
+        paths, gone = _paths(raw.get("written_files")), _paths(raw.get("deleted_files"))
         location = live.execution.location
         before = location.environment_revision if location is not None else None
         return Result(
@@ -732,6 +725,9 @@ class Dispatcher:
             written_files=tuple(paths[:MAX_WRITTEN]),
             written_files_truncated=raw.get("written_files_truncated") is True
             or len(paths) > MAX_WRITTEN,
+            deleted_files=tuple(gone[:MAX_WRITTEN]),
+            deleted_files_truncated=raw.get("deleted_files_truncated") is not False
+            or len(gone) > MAX_WRITTEN,
             environment_revision=after,
             overlapping_change=raw.get("environment_changing") is True
             or (before is not None and after is not None and before != after),
@@ -883,3 +879,12 @@ class Dispatcher:
                 self.lose(live, "the worker that restarted without a recoverable daemon dispatch")
         for environment_id in recovery:
             await self.recovery.recover(environment_id, startup=True)
+
+
+def _paths(raw: object) -> list[str]:
+    """The paths of an executor's file list that a result can carry."""
+    return [
+        path
+        for path in (cast(list[object], raw) if isinstance(raw, list) else [])
+        if isinstance(path, str) and path and len(path.encode("utf-8", "replace")) <= MAX_PATH_BYTES
+    ]

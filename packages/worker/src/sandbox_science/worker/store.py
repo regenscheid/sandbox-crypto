@@ -488,7 +488,8 @@ class Store:
             cursor = int(row[0])
         rows = self._db.execute(
             "SELECT execution_id, json_remove(record, '$.result.stdout', '$.result.stderr',"
-            " '$.result.outputs', '$.result.written_files', '$.result.notices', '$.result.error')"
+            " '$.result.outputs', '$.result.written_files', '$.result.deleted_files',"
+            " '$.result.notices', '$.result.error')"
             " FROM executions"
             " WHERE environment_id = ? AND session_id = ?"
             " AND json_extract(record, '$.context.project_id') = ?"

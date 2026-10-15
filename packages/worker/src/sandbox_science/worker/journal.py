@@ -268,6 +268,7 @@ class ExecutionJournal:
                     "stderr": None,
                     "outputs": (),
                     "written_files": (),
+                    "deleted_files": (),
                     "notices": (),
                     "error": error,
                 }

@@ -17,7 +17,7 @@ from pydantic import AfterValidator, AwareDatetime, Field, StringConstraints, mo
 from .context import ExecutionContext
 from .model import Contract, Counter, Identifier, Sha256
 
-PROTOCOL_VERSION: Final = 4
+PROTOCOL_VERSION: Final = 5
 """The worker API's version. Releases are lockstep (docs/COMPATIBILITY.md): it changes with
 any change to what the worker or its clients send, and each side refuses another version."""
 PROTOCOL_HEADER: Final = "X-Worker-Protocol"
@@ -437,6 +437,13 @@ class Result(Contract):
     while the attempt ran. An attempt running at the same time in the session may have
     written some of them."""
     written_files_truncated: bool = False
+    deleted_files: tuple[str, ...] = Field(default=(), max_length=1000)
+    """Files of the session workspace or the shared area that were there when the attempt
+    started and are not when it ended (research artifacts, RA-33), as ``written_files``
+    names them. Reported only when the worker compared both areas whole; an attempt
+    running at the same time, or the shared area's sync, may have deleted some of them."""
+    deleted_files_truncated: bool = False
+    """The list is incomplete: the comparison was cut short, or more than 1,000 went."""
     environment_revision: str | None = None
     """The environment's revision when the attempt ended. It differs from the location's
     when the installed packages changed while it ran, which it or an attempt running
