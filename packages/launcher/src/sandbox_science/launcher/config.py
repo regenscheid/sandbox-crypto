@@ -225,6 +225,35 @@ class OpenShellConfig(BaseModel):
         }
 
 
+class McpProxyConfig(_Strict):
+    """The MCP proxy in an OpenShell sandbox of its own (docs/MCP-CONNECTORS.md)."""
+
+    image: str = Field(min_length=1)
+    """Its image, as ``images/build.sh mcp-proxy`` tagged it."""
+    providers: tuple[Identifier, ...] = Field(min_length=1)
+    """The OpenShell providers with the servers' credentials, which the owner creates."""
+    credentials: dict[str, str] = Field(default_factory=dict[str, str])
+    """The proxy's ``[credentials]``: the environment variable that holds each provider
+    credential a server's headers name (docs/MCP-CONNECTORS.md)."""
+    servers: tuple[Identifier, ...] = Field(min_length=1)
+    """The policy's MCP servers whose tools the main agent gets."""
+    project: Identifier | None = None
+    """The project whose runs get them; by default the only project."""
+    policy: ConfigPath | None = None
+    """The policy with the servers; by default the worker's project policy."""
+    targets: ConfigPath | None = None
+    """By default the worker's targets file, which has an ``mcp_proxy`` section."""
+    ceiling: ConfigPath | None = None
+    """By default the worker's pool ceiling."""
+    sandbox: Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9-]{0,11}$")] = (
+        "ss-mcp-proxy"
+    )
+    """The start of the sandbox's name: each launch adds a dash and six random hex digits,
+    within OpenShell's 19 characters."""
+    listen: Listen = "127.0.0.1:18080"
+    """Where the forward to the proxy listens, for the run service."""
+
+
 class LauncherConfig(_Strict):
     state_dir: ConfigPath = Field(
         default=Path("~/.local/state/sandbox-science"), validate_default=True
@@ -241,12 +270,18 @@ class LauncherConfig(_Strict):
     run_service: RunServiceConfig = Field(default_factory=RunServiceConfig)
     workspace: WorkspaceConfig
     openshell: OpenShellConfig
+    mcp_proxy: McpProxyConfig | None = None
 
     @model_validator(mode="after")
     def _consistent(self) -> Self:
         ids = [project.id for project in self.projects]
         if len(set(ids)) != len(ids):
             raise ValueError("each project is listed once")
+        if self.mcp_proxy is not None:
+            if self.mcp_proxy.project is None and len(ids) != 1:
+                raise ValueError("mcp_proxy.project names the project whose runs use it")
+            if self.mcp_project() not in ids:
+                raise ValueError(f"mcp_proxy.project {self.mcp_project()!r} is not a project")
         profiles = self.openshell.environments.profiles
         for project in self.projects:
             if project.profile not in profiles:
@@ -261,11 +296,20 @@ class LauncherConfig(_Strict):
 
     def addresses(self) -> dict[str, str]:
         """Each address the launcher's parts listen on, by what listens there."""
-        return {
+        addresses = {
             "worker": self.worker.listen,
             "workspace": self.workspace.listen,
             "workspace preview": self.workspace.preview(),
         }
+        if self.mcp_proxy is not None:
+            addresses["MCP proxy's forward"] = self.mcp_proxy.listen
+        return addresses
+
+    def mcp_project(self) -> str:
+        """The project whose runs use the MCP proxy, when there is one."""
+        if self.mcp_proxy is not None and self.mcp_proxy.project is not None:
+            return self.mcp_proxy.project
+        return self.projects[0].id
 
     @staticmethod
     def _distinct(addresses: dict[str, str]) -> None:

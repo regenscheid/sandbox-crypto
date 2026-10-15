@@ -9,7 +9,12 @@ address), which go to a private file of their own instead.
 
 A part that listens must find its address free before it starts, and is ready when it
 prints its ready line and its address takes connections while it still runs. One that
-stops before it is ready, or later by itself, stops the launcher.
+stops before it is ready, or later by itself, stops the launcher, unless it is one to
+start again (the MCP proxy's forward, which exits whenever its sandbox stops): that one
+starts again after a delay that doubles while it keeps stopping, and the launcher gives
+up on it after ``RESTARTS`` in a row, or at once if something else took its address.
+Besides the parts, the launcher can have actions to take when it stops, such as deleting
+a sandbox it made; they run in the same reverse order.
 
 Each part dies with the launcher (Linux's ``PR_SET_PDEATHSIG``, set by a small
 trampoline before the part's command runs), so a launcher killed outright leaves no part
@@ -28,7 +33,7 @@ import signal
 import socket
 import sys
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TextIO
@@ -47,12 +52,18 @@ ENVIRONMENT = frozenset(
     }
 )  # fmt: skip
 """The variables of the launcher's environment every part gets, with the ``LC_`` ones."""
+RESTART_DELAYS = (2.0, 4.0, 8.0, 16.0, 32.0, 60.0)
+"""Seconds before a part that is started again starts: doubling while it keeps stopping."""
+RESTARTS = 10
+"""Times in a row a part is started again before the launcher gives up on it."""
+STEADY = 60.0
+"""Seconds a part must run for its next stop to count as the first in a row again."""
 _TRAMPOLINE = (
     "import ctypes, os, sys\n"
     "ctypes.CDLL(None, use_errno=True).prctl(1, 15)  # PR_SET_PDEATHSIG, SIGTERM\n"
     "if os.getppid() != int(sys.argv[1]):\n"
     "    sys.exit(70)  # the launcher died before the signal was set\n"
-    "os.execv(sys.argv[2], sys.argv[2:])\n"
+    "os.execvp(sys.argv[2], sys.argv[2:])\n"
 )
 
 
@@ -107,6 +118,8 @@ class Part:
     private: tuple[re.Pattern[str], Path] | None = None
     """Lines that match go to this file, mode 600, instead of the log."""
     env: Mapping[str, str] = field(default_factory=dict[str, str])
+    restart: bool = False
+    """Started again when it exits, rather than stopping the launcher."""
 
     @property
     def title(self) -> str:
@@ -120,6 +133,9 @@ class Running:
     log: Path
     ready: asyncio.Event = field(default_factory=asyncio.Event)
     pump: asyncio.Task[None] | None = None
+    since: float = field(default_factory=time.monotonic)
+    restarts: int = 0
+    """Times in a row it was started again, for a part that is."""
 
 
 def _append(path: Path) -> int:
@@ -167,6 +183,12 @@ class Supervisor:
         self.changed = changed
         """Called when a part starts or stops, to keep the instance's record."""
         self.running: list[Running] = []
+        self._stack: list[Running | tuple[str, Callable[[], Awaitable[object]]]] = []
+        """The parts and the actions to take on stopping, in the order they came."""
+
+    def on_stop(self, what: str, action: Callable[[], Awaitable[object]]) -> None:
+        """Take ``action`` when the launcher stops, before stopping what came before it."""
+        self._stack.append((what, action))
 
     async def start(self, part: Part, timeout: float) -> Running:
         """Start ``part`` and wait until it is ready."""
@@ -177,6 +199,7 @@ class Supervisor:
             )
         running = await self._spawn(part)
         self.running.append(running)
+        self._stack.append(running)
         self.changed()
         ready = asyncio.ensure_future(self._ready(running))
         exited = asyncio.ensure_future(running.process.wait())
@@ -245,30 +268,73 @@ class Supervisor:
 
     async def watch(self) -> str | None:
         """Wait until the launcher is asked to stop (None) or a part stops by itself."""
-        exits = {asyncio.ensure_future(running.process.wait()): running for running in self.running}
-        stopped = asyncio.ensure_future(self.stop_requested.wait())
-        try:
-            done, _ = await asyncio.wait({stopped, *exits}, return_when=asyncio.FIRST_COMPLETED)
-        finally:
-            for waiting in (stopped, *exits):
-                waiting.cancel()
-        if stopped in done:
-            return None
-        running = next(exits[waiting] for waiting in exits if waiting in done)
-        if running.pump is not None:
-            await running.pump
-        return (
-            f"the {running.part.title} stopped by itself, with status "
-            f"{running.process.returncode}; the end of its log, {running.log}:\n"
-            + tail(running.log)
-        )
+        while True:
+            exits = {
+                asyncio.ensure_future(running.process.wait()): running for running in self.running
+            }
+            stopped = asyncio.ensure_future(self.stop_requested.wait())
+            try:
+                done, _ = await asyncio.wait({stopped, *exits}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                for waiting in (stopped, *exits):
+                    waiting.cancel()
+            if stopped in done:
+                return None
+            running = next(exits[waiting] for waiting in exits if waiting in done)
+            if running.pump is not None:
+                await running.pump
+            if not running.part.restart:
+                return (
+                    f"the {running.part.title} stopped by itself, with status "
+                    f"{running.process.returncode}; the end of its log, {running.log}:\n"
+                    + tail(running.log)
+                )
+            steady = time.monotonic() - running.since >= STEADY
+            restarts = 1 if steady else running.restarts + 1
+            if restarts > RESTARTS:
+                return (
+                    f"the {running.part.title} kept stopping: it was started again "
+                    f"{RESTARTS} times in a row; the end of its log, {running.log}:\n"
+                    + tail(running.log)
+                )
+            delay = RESTART_DELAYS[min(restarts, len(RESTART_DELAYS)) - 1]
+            print(
+                f"the {running.part.title} stopped, with status {running.process.returncode}; "
+                f"starting it again in {delay:g} s",
+                flush=True,
+            )
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self.stop_requested.wait(), delay)
+            if self.stop_requested.is_set():
+                return None
+            await asyncio.to_thread(end_session, running.process.pid)
+            address = running.part.address
+            if address is not None and not free(address):
+                return (
+                    f"something else listens on {address}, where the {running.part.title} "
+                    "would: it is not started again"
+                )
+            again = await self._spawn(running.part)
+            again.restarts = restarts
+            self.running[self.running.index(running)] = again
+            self._stack[self._stack.index(running)] = again
+            self.changed()
 
     async def stop(self, *, now: Callable[[], bool] = lambda: False) -> None:
-        """Stop every part, the last started first. ``now`` cuts each wait short."""
-        while self.running:
-            running = self.running.pop()
-            await self._stop(running, now)
-            self.changed()
+        """Stop every part and take every action, the last first. ``now`` cuts each part's
+        wait short."""
+        while self._stack:
+            entry = self._stack.pop()
+            if isinstance(entry, Running):
+                await self._stop(entry, now)
+                self.running.remove(entry)
+                self.changed()
+                continue
+            what, action = entry
+            try:
+                await action()
+            except Exception as exc:
+                print(f"could not {what}: {exc}", flush=True)
 
     async def _stop(self, running: Running, now: Callable[[], bool]) -> None:
         process = running.process

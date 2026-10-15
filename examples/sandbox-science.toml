@@ -53,3 +53,14 @@ suspend_after = 3600.0
 # The tags images/build.sh printed.
 minimal = "sandbox-science/minimal:02f85b3"
 crypto-base = "sandbox-science/crypto-base:02f85b3"
+
+# The MCP proxy, in an OpenShell sandbox of its own (docs/QUICKSTART.md): uncomment once the
+# provider exists (docs/MCP-CONNECTORS.md) and images/build.sh mcp-proxy has built its image.
+# [mcp_proxy]
+# image = "sandbox-science/mcp-proxy:d27e41a"
+# providers = ["crypto-research-mcp"]
+# servers = ["crypto-research-mcp"]
+#
+# [mcp_proxy.credentials]
+# "crypto-research-mcp.CF_ACCESS_CLIENT_ID" = "CF_ACCESS_CLIENT_ID"
+# "crypto-research-mcp.CF_ACCESS_CLIENT_SECRET" = "CF_ACCESS_CLIENT_SECRET"

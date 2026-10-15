@@ -3,7 +3,8 @@
 `sandbox-science up` runs a local Sandbox Science from one config file:
 - the [worker](WORKER.md), which runs research code in OpenShell sandboxes;
 - the [run service](WORKSPACE.md#chat), which runs the main agent when you chat;
-- the [workspace](WORKSPACE.md), the GUI, with its PDF viewer's origin.
+- the [workspace](WORKSPACE.md), the GUI, with its PDF viewer's origin;
+- optionally, the [MCP proxy](#the-mcp-proxy) in an OpenShell sandbox of its own.
 
 Everything listens on loopback, so only your own computer can reach it. The steps below are for babbage.
 
@@ -28,12 +29,13 @@ Everything listens on loopback, so only your own computer can reach it. The step
 | `[run_service]` | Optional: its `pass_env` |
 | `[workspace]` | Its `listen` address, its `preview_listen` address for the PDF viewer (by default the next port), and `static`, the web app's build |
 | `[openshell]` | The worker's own `[openshell]` table ([worker settings](WORKER.md)): the OpenShell CLI and the `env` it needs to reach the gateway, the sandboxes' Python, the isolation tier, the package cache, and `[openshell.environments]` with the profiles' image tags |
+| `[mcp_proxy]` | Optional: the [MCP proxy](#the-mcp-proxy) |
 
 `start_timeout` (300 s) and `stop_timeout` (30 s) bound how long each part may take to start and to stop. `bin_dir` says where the parts' commands are, by default beside the launcher's Python.
 
 The parts get only a few of your environment's variables: `PATH`, `HOME`, `USER`, `LOGNAME`, the locale (`LANG`, `LANGUAGE`, `LC_*`), `TZ`, `TMPDIR`, `XDG_RUNTIME_DIR`, the proxies and the CA settings (`SSL_CERT_FILE`, `SSL_CERT_DIR`). An API key you exported in your shell reaches no part.
 
-Each part's table can name more with `pass_env`: `[worker]`, `[run_service]` (a table of its own, with only this) and `[workspace]`. The part gets those variables from your environment, and the other parts do not. **Never pass a secret this way.** The run service and the workspace run in the control zone, which must hold no engine or cluster credentials ([threat model](THREAT-MODEL.md)). The model's key reaches the run service only as its file, `api_key_file`.
+Each part's table can name more with `pass_env`: `[worker]`, `[run_service]` (a table of its own, with only this) and `[workspace]`. The part gets those variables from your environment, and the other parts do not. The launcher's own OpenShell commands, and the MCP proxy's forward, get the worker's, with `[openshell] env`. **Never pass a secret this way.** The run service and the workspace run in the control zone, which must hold no engine or cluster credentials ([threat model](THREAT-MODEL.md)). The model's key reaches the run service only as its file, `api_key_file`.
 
 The state directory must be yours and mode 700. If one is there already and open to other users, the launcher refuses it, rather than change it.
 
@@ -81,9 +83,37 @@ Open the GUI at the address the launcher printed. With `127.0.0.1`, the PDF view
 
 The message starts a run of the main agent. The first run of a project has the worker create its environment, an OpenShell sandbox from the project's profile, which takes a minute or two. The panel shows the agent's turns and tool calls as they come, then its answer. [Chat](WORKSPACE.md#chat) has the details: budgets, cancelling and resuming.
 
+## The MCP proxy
+
+With `[mcp_proxy]` in the config, `up` also runs the [MCP proxy](MCP-CONNECTORS.md#the-mcp-proxy-as-built) in an OpenShell sandbox of its own. The main agent of one project then gets the tools of the MCP servers named:
+
+```toml
+[mcp_proxy]
+image = "sandbox-science/mcp-proxy:d27e41a"        # as images/build.sh mcp-proxy tagged it
+providers = ["crypto-research-mcp"]                # OpenShell providers with the servers' credentials
+servers = ["crypto-research-mcp"]                  # servers in the policy whose tools the agent gets
+credentials = { "crypto-research-mcp.CF_ACCESS_CLIENT_ID" = "CF_ACCESS_CLIENT_ID", "crypto-research-mcp.CF_ACCESS_CLIENT_SECRET" = "CF_ACCESS_CLIENT_SECRET" }
+# project = "crypto"                               # by default the only project
+# policy, targets, ceiling                         # by default the worker's policy, targets and pool ceiling
+# sandbox = "ss-mcp-proxy"                         # its name's start, at most 12 characters
+# listen = "127.0.0.1:18080"                       # where the run service reaches it
+```
+
+- **The providers** hold the servers' credentials. You create them yourself ([what the owner does](MCP-CONNECTORS.md#crypto-research-mcp-a-cloudflare-access-service-token)), and the launcher never sees the credentials. If a provider is missing, `up` refuses before it starts anything.
+- **`credentials`** is the proxy's `[credentials]` table: which environment variable holds each provider credential that a server's headers name ([running it](MCP-CONNECTORS.md#running-it)).
+- **What `up` does** is the [steps in running it](MCP-CONNECTORS.md#running-it):
+  1. It compiles the sandbox's policy.
+  2. It creates the sandbox with the providers.
+  3. It uploads the proxy's files. The proxy's one caller is the run service, by its token's digest.
+  4. It binds the project to its policy.
+  5. It forwards `listen` to the proxy. The forward starts again whenever it exits, as it does when the sandbox stops: after 2 s, then twice as long each time it keeps stopping, up to a minute. After ten times in a row, or if something else has taken `listen` meanwhile, the launcher gives up and stops everything, so the run service never sends its token to anyone else.
+- **The targets file** needs an `mcp_proxy` section, as babbage's lab targets have.
+- **Its name** is `sandbox` and six random hex digits, new at each `up`, such as `ss-mcp-proxy-3fa91c`, so it is never another launcher's, or one made by hand.
+- **On stopping**, the launcher deletes the sandbox, after stopping the run service and before the worker. It deletes only the sandbox it made, by the name it recorded before making it and the ID it recorded once it was ready. If the launcher was killed, `down` or the next `up` deletes the sandbox it left.
+
 ## Stopping
 
-Press Ctrl-C where `up` runs, or run `sandbox-science down --config …` from another terminal. Closing the terminal or the SSH session that runs `up` (SIGHUP) stops it the same way, as do SIGTERM and SIGQUIT. The launcher stops the parts in reverse order: the workspace, the run service, then the worker.
+Press Ctrl-C where `up` runs, or run `sandbox-science down --config …` from another terminal. Closing the terminal or the SSH session that runs `up` (SIGHUP) stops it the same way, as do SIGTERM and SIGQUIT. The launcher stops the parts in reverse order: the workspace, the run service, the MCP proxy's forward and sandbox if there are any, then the worker.
 - It gives each part `stop_timeout` to stop after SIGTERM, then kills what is left of the part's session. A second Ctrl-C stops them at once.
 - A part that stops by itself stops the others too, and `up` exits 1 with the end of that part's log.
 
@@ -112,7 +142,8 @@ Everything in it is only for your user: the directories are mode 700 and the fil
 | `tokens/` | The worker's own token and the run service's and the workspace's tokens for it, limited to the config's projects. They are made once and kept. Delete the directory, with Sandbox Science stopped, to have new ones made |
 | `worker/worker.toml`, `worker/state/` | The worker's settings, written at each `up`, and its state directory. Do not delete the state directory while its sandboxes exist: it holds their endpoints |
 | `control/` | The control store, with the projects, sessions, runs and documents, that the run service and the workspace share |
-| `logs/` | Each part's output (`worker.log`, `run-service.log`, `workspace.log`), and `launcher.log` with the output of the commands `up` runs once |
+| `logs/` | Each part's output (`worker.log`, `run-service.log`, `workspace.log`, `mcp-forward.log`), and `launcher.log` with the output of the commands `up` runs once |
+| `mcp-proxy/` | With `[mcp_proxy]`: the proxy's compiled policy, the files uploaded to its sandbox, and the record of the sandbox the launcher made |
 
 ## When something goes wrong
 

@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from . import toml
+from . import mcp, toml
 from .config import LauncherConfig, LauncherError
 from .state import Layout, ensure_token, write_private
 
@@ -64,9 +64,17 @@ def check(config: LauncherConfig) -> None:
         )
     if shutil.which(config.openshell.cli) is None:
         problems.append(f"no OpenShell CLI {config.openshell.cli}")
+    names = [WORKER, HARNESS, WORKSPACE]
+    if config.mcp_proxy is not None:
+        names.append(mcp.COMMAND)
+        problems.extend(
+            f"no MCP proxy {what} at {path}"
+            for what, path in mcp.sources(config).items()
+            if not path.is_file()
+        )
     problems.extend(
         f"no {name} in {commands(config)}"
-        for name in (WORKER, HARNESS, WORKSPACE)
+        for name in names
         if shutil.which(name, path=str(commands(config))) is None
     )
     if problems:
@@ -80,6 +88,8 @@ def prepare(config: LauncherConfig) -> Layout:
     ensure_token(layout.token("worker"))
     digests = {name: ensure_token(layout.token(f"{name}-worker")) for name in CLIENTS}
     write_private(layout.worker_settings, toml.dumps(worker_settings(config, layout, digests)))
+    if config.mcp_proxy is not None:
+        mcp.prepare(config, layout)
     return layout
 
 
@@ -155,6 +165,7 @@ def harness_argv(config: LauncherConfig, layout: Layout) -> list[str]:
         "--token-file", str(layout.token("harness-worker")),
         "--model-url", model.url, "--model", model.name,
         "--api-key-file", str(model.api_key_file), *reviewer,
+        *mcp.harness_options(config, layout),
     ]  # fmt: skip
 
 

@@ -11,6 +11,7 @@
     worker/state/             the worker's state directory, with its lock
     control/                  the control store the run service and workspace share
     logs/<part>.log           what each part writes
+    mcp-proxy/                the MCP proxy's files, and the record of its sandbox
 ```
 
 Delete ``tokens/`` with the launcher stopped to have new tokens made; never delete the
@@ -45,6 +46,7 @@ class Layout:
         self.worker_state = self.worker / "state"
         self.control = root / "control"
         self.logs = root / "logs"
+        self.mcp = root / "mcp-proxy"
 
     def token(self, name: str) -> Path:
         return self.tokens / f"{name}.token"

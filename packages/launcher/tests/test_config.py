@@ -116,3 +116,51 @@ def test_the_example_config_is_a_launcher_config(home: Path) -> None:
     assert config.workspace.static == example.parent / "../web/workspace/dist"
     assert config.workspace.preview() == "127.0.0.2:8201"
     assert config.openshell.model_dump()["environments"]["suspend_after"] == 3600.0
+
+
+def test_the_examples_mcp_proxy_works_uncommented(home: Path, tmp_path: Path) -> None:
+    example = Path(__file__).parents[3] / "examples" / "sandbox-science.toml"
+    lines = example.read_text().splitlines()
+    start = lines.index("# [mcp_proxy]")
+    uncommented = [line.removeprefix("# ").removeprefix("#") for line in lines[start:]]
+    path = tmp_path / "sandbox-science.toml"
+    path.write_text("\n".join([*lines[:start], *uncommented]) + "\n")
+    proxy = load_config(path).mcp_proxy
+    assert proxy is not None
+    assert proxy.providers == ("crypto-research-mcp",)
+    assert proxy.credentials["crypto-research-mcp.CF_ACCESS_CLIENT_SECRET"] == (
+        "CF_ACCESS_CLIENT_SECRET"
+    )
+
+
+MCP = {"image": "sandbox-science/mcp-proxy:abc1234", "providers": ["p"], "servers": ["s"]}
+
+
+def test_the_mcp_proxy_defaults_to_the_only_project(make_config: Any) -> None:
+    config = load_config(make_config({"mcp_proxy": MCP}))
+    assert config.mcp_project() == "crypto"
+    assert config.mcp_proxy is not None
+    assert config.mcp_proxy.sandbox == "ss-mcp-proxy"
+    assert config.addresses()["MCP proxy's forward"] == "127.0.0.1:18080"
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        (
+            {"projects": [{"id": "a", "profile": "minimal"}, {"id": "b", "profile": "minimal"}]},
+            "mcp_proxy.project names the project",
+        ),
+        ({"mcp_proxy": {"project": "other"}}, "is not a project"),
+        ({"mcp_proxy": {"sandbox": "a-name-far-too-long-for-it"}}, "mcp_proxy.sandbox"),
+        ({"mcp_proxy": {"listen": "127.0.0.1:18100"}}, "the worker and the MCP proxy's forward"),
+        ({"mcp_proxy": {"servers": []}}, "mcp_proxy.servers"),
+    ],
+)
+def test_an_mcp_proxy_that_cannot_work_is_refused(
+    make_config: Any, changes: dict[str, Any], message: str
+) -> None:
+    proxy = {**MCP, **changes.get("mcp_proxy", {})}
+    with pytest.raises(LauncherError) as error:
+        load_config(make_config({**changes, "mcp_proxy": proxy}))
+    assert message in str(error.value)
