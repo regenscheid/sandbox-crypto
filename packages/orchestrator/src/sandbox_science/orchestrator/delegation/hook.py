@@ -215,6 +215,11 @@ class Delegations(TurnHook):
                 f"limit_reached: {MAX_RUNNING} delegated runs are running in this session; "
                 "wait for one to end",
             )
+        if self.turns_left <= 0:
+            raise WorkerAPIError(
+                ErrorKind.UNAVAILABLE,
+                "limit_reached: this run has no turn left to wait for a delegated run",
+            )
         if self.over_budget is not None and await self.over_budget():
             raise WorkerAPIError(
                 ErrorKind.UNAVAILABLE, "limit_reached: the project has spent its model budget"
@@ -263,7 +268,7 @@ class Delegations(TurnHook):
             run_id,
             started,
             brief_text(brief, entry.handle),
-            max_turns=max(1, min(CHECK_TURNS, self.max_turns, self.turns_left)),
+            max_turns=min(CHECK_TURNS, self.max_turns, self.turns_left),
             tokens=tokens,
             target=Target(entry.entry_id, entry.handle, brief.check.revision),
             tree=self.tree,
@@ -443,6 +448,8 @@ class Delegations(TurnHook):
             delegation_id = child.delegation.delegation_id
             if child.task in left:
                 _log.error("delegated run %s did not end after its cancel", child.run_id)
+                if self.tree is not None:
+                    self.tree.ended(delegation_id)  # it counts as what it used so far
                 await self._end(delegation_id, Ending("interrupted", "cancelled"))
             elif child.task.cancelled():  # cancelled before it started: it wrote nothing
                 if self.tree is not None:

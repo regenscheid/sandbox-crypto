@@ -138,6 +138,11 @@ class RunView(Protocol):
         ...
 
     @property
+    def size(self) -> int:
+        """What the next model call would send, in characters, tool schemas included."""
+        ...
+
+    @property
     def halted(self) -> str | None:
         """Why a hook stopped the run before its next model call, if one did: the run's
         last closing then has no turn to take."""
