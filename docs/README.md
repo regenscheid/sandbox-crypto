@@ -52,6 +52,7 @@ Progress and history are not kept here: current state is in [STATUS](../.agents/
 | [Project macros](PROJECT-MACROS.md) | The project's math macro setting and front matter |
 | [Project ledger](LEDGER.md) | The ledger's entries, revisions, links and mutations as built |
 | [Project memory](MEMORY.md) | The memory's entries, versions, proposals and the user's decisions as built |
+| [Skills](SKILLS.md) | Importing skill packs from git or an archive, their reports, and the projects' pins |
 | [Math checks](MATH-CHECKS.md) | Durable math checks of document revisions, and the isolated renderer |
 | [Comment math](COMMENT-MATH.md) | Math checks of comment and reply bodies |
 | [Finding prose math](FINDING-PROSE-MATH.md) | Math checks of MAIN fix and rebut explanations |

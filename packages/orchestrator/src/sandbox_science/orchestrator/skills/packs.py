@@ -1,0 +1,116 @@
+# SPDX-License-Identifier: MIT
+"""The skills in a pack's files, and the snapshot that keeps them (docs/specs/skills.md,
+SK-3, SK-6; docs/SKILLS.md).
+
+A skill is a directory directly under the skills' directory holding a ``SKILL.md`` whose
+front matter is read strictly; one that fails is excluded with the reason. A snapshot is
+named by a SHA-256 over its files' paths, executable bits and contents' SHA-256.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+from dataclasses import dataclass, field
+from typing import Final, cast
+
+import yaml
+
+from sandbox_science.orchestrator.documents.frontmatter import NoAliases
+
+from .sources import Fetched, PackFile, Skipped
+
+SKILL_FILE: Final = "SKILL.md"
+MAX_BODY_BYTES: Final = 64 * 1024
+MAX_FRONT_MATTER: Final = 16 * 1024
+MAX_DESCRIPTION: Final = 1024
+MAX_METADATA_BYTES: Final = 16 * 1024
+NAME: Final = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?")
+"""A skill's name, and a source's: lowercase letters, digits and inner hyphens."""
+_FRONT: Final = re.compile(r"---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)(.*)", re.DOTALL)
+_FORMAT: Final = "sandbox-skill-snapshot-1"
+
+
+@dataclass(frozen=True)
+class Skill:
+    name: str
+    description: str
+    body_sha256: str
+    metadata: dict[str, object] = field(default_factory=dict[str, object])
+
+
+@dataclass(frozen=True)
+class Snapshot:
+    """A pack's skills and files, as an import keeps them."""
+
+    fetched: Fetched
+    skills: tuple[Skill, ...]
+    excluded: tuple[Skipped, ...]
+    """Skill directories whose ``SKILL.md`` failed, and why."""
+    sha256: str
+
+
+def snapshot(fetched: Fetched) -> Snapshot:
+    skills: list[Skill] = []
+    excluded: list[Skipped] = []
+    for file in fetched.files:
+        directory, _, rest = file.path.rpartition("/")
+        if rest != SKILL_FILE or "/" in directory:
+            continue
+        if not directory:
+            excluded.append({"path": file.path, "reason": "a skill has a directory of its own"})
+            continue
+        found = read_skill(directory, file.content)
+        if isinstance(found, Skill):
+            skills.append(found)
+        else:
+            excluded.append({"path": file.path, "reason": found})
+    return Snapshot(fetched, tuple(skills), tuple(excluded), snapshot_sha256(fetched.files))
+
+
+def read_skill(directory: str, content: bytes) -> Skill | str:
+    """The skill in a ``SKILL.md``, or why it is excluded."""
+    try:
+        text = content.decode()
+    except UnicodeDecodeError:
+        return "SKILL.md is not UTF-8"
+    found = _FRONT.match(text)
+    if found is None:
+        return "SKILL.md does not start with front matter between --- lines"
+    front, body = found[1], found[2]
+    if len(front) > MAX_FRONT_MATTER:
+        return "the front matter is longer than 16 KiB"
+    if len(body.encode()) > MAX_BODY_BYTES:
+        return "the body is longer than 64 KiB"
+    try:
+        data: object = yaml.load(front, Loader=NoAliases)  # noqa: S506 - a safe loader
+    except (yaml.YAMLError, RecursionError, ValueError):
+        return "the front matter is not valid YAML without aliases"
+    if not isinstance(data, dict) or not all(
+        isinstance(k, str) for k in cast(dict[object, object], data)
+    ):
+        return "the front matter is not a mapping"
+    fields = cast(dict[str, object], data)
+    name, description = fields.pop("name", None), fields.pop("description", None)
+    if not isinstance(name, str) or not NAME.fullmatch(name):
+        return "name is missing, or not lowercase letters, digits and hyphens (at most 64)"
+    if name != directory:
+        return f"name {name!r} is not its directory's name"
+    if not isinstance(description, str) or not description.strip():
+        return "description is missing"
+    if len(description) > MAX_DESCRIPTION:
+        return "description is longer than 1,024 characters"
+    metadata = json.loads(json.dumps(fields, default=str))
+    if len(json.dumps(metadata).encode()) > MAX_METADATA_BYTES:
+        return "the other front matter fields are longer than 16 KiB"
+    digest = hashlib.sha256(body.encode()).hexdigest()
+    return Skill(name, description.strip(), digest, metadata)
+
+
+def snapshot_sha256(files: tuple[PackFile, ...]) -> str:
+    listing = [_FORMAT]
+    for file in sorted(files, key=lambda f: f.path):
+        mode = "x" if file.executable else "-"
+        listing.append(f"{file.path}\0{mode}\0{hashlib.sha256(file.content).hexdigest()}")
+    return hashlib.sha256("\n".join(listing).encode()).hexdigest()
