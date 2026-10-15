@@ -59,8 +59,8 @@ from sandbox_science.orchestrator.projects import RunRecord, run_name
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, dump
 
 from .budget import FLOOR, MIN_CHILD, TreeBudget
-from .outcome import Target
-from .prompt import brief_text
+from .outcome import Target, proof_reads
+from .prompt import brief_text, check_task, evidence_line
 from .records import Delegation, DelegationRecords, Ended, Ending
 from .specs import SPECS, CheckBrief, Named, WaitRequest
 
@@ -115,6 +115,8 @@ class ChildEnd:
     models: tuple[str, ...] = ()
     read_entry: bool | None = None
     """Whether it read the entry it checks at that revision."""
+    read_proofs: bool | None = None
+    """Whether it read the target of each of the entry's proofs at its pinned revision."""
     used: int = 0
     """The tokens its calls used, as the budget counts them."""
 
@@ -246,17 +248,16 @@ class Delegations(TurnHook):
             "handle": entry.handle,
             "revision": brief.check.revision,
         }
+        # The platform writes the task and lists the entry's evidence: the parent adds
+        # only its note, which cannot stand as the task or as evidence (LG-17).
+        task = check_task(entry.handle, brief.check.revision)
+        inputs = [evidence_line(link) for link in entry.evidence]
         delegation = Delegation(
             delegation_id=delegation_id,
             parent=self.parent,
             run=run_name(started, run_id),
             kind="check",
-            brief={
-                "task": brief.task,
-                "context": brief.context,
-                "inputs": list(brief.inputs),
-                "check": check,
-            },
+            brief={"task": task, "note": brief.note, "inputs": list(inputs), "check": check},
             started_at=started,
         )
         try:
@@ -269,10 +270,15 @@ class Delegations(TurnHook):
             delegation_id,
             run_id,
             started,
-            brief_text(brief, entry.handle),
+            brief_text(task, inputs, brief.note),
             max_turns=min(CHECK_TURNS, self.max_turns, self.turns_left),
             tokens=tokens,
-            target=Target(entry.entry_id, entry.handle, brief.check.revision),
+            target=Target(
+                entry.entry_id,
+                entry.handle,
+                brief.check.revision,
+                proof_reads(entry.evidence),
+            ),
             tree=self.tree,
         )
         stop = asyncio.Event()
@@ -306,6 +312,7 @@ class Delegations(TurnHook):
                 end.alias,
                 end.models,
                 end.read_entry,
+                end.read_proofs,
             )
         except asyncio.CancelledError:
             # Cancelled outside its loop, before it started or while it was saved.
@@ -550,6 +557,7 @@ def _ending(delegation: Delegation) -> dict[str, object]:
         "alias": delegation.alias,
         "models": list(delegation.models),
         "read_entry": delegation.read_entry,
+        "read_proofs": delegation.read_proofs,
     }
     if delegation.refused is not None:
         found["refused"] = delegation.refused

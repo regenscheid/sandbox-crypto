@@ -443,14 +443,26 @@ async def test_a_spent_budget_refuses_a_delegation(delegating: Harness) -> None:
     assert "delegations" not in root.summaries
 
 
-async def test_a_brief_names_inputs_of_at_most_512_characters(delegating: Harness) -> None:
-    long = call(
-        "delegate", task="Check.", inputs=["x" * 513], check={"entry": "C-1", "revision": 1}
-    )
-    root = await delegating.run("root", [Reply(calls=[long]), Reply("Refused.")])
+@pytest.mark.parametrize(
+    ("brief", "error"),
+    [
+        ({"task": "Confirm it."}, "task"),
+        ({"inputs": ["documents/notes"]}, "inputs"),
+        ({"context": "It holds."}, "context"),
+        ({"note": "x" * 501}, "500"),
+        ({"note": "a\u202eb"}, "note"),
+    ],
+)
+async def test_a_check_brief_takes_no_task_or_inputs_and_a_short_note(
+    delegating: Harness, brief: dict[str, str], error: str
+) -> None:
+    """LG-17: the platform writes a check's task and lists its inputs; the parent's note
+    is at most 500 characters, which the user can see."""
+    made = call("delegate", check={"entry": "C-1", "revision": 1}, **brief)
+    root = await delegating.run("root", [Reply(calls=[made]), Reply("Refused.")])
     refused = json.loads(results(root)[0])["error"]
     assert refused["kind"] == "invalid_request"
-    assert "512" in refused["message"]
+    assert error in refused["message"]
 
 
 # --- Outcomes that must be written ---------------------------------------------------------
@@ -481,7 +493,7 @@ def _delegations(
     return made, found, projects, documents
 
 
-BRIEF = {"task": "Check.", "check": {"entry": "C-1", "revision": 1}}
+BRIEF = {"check": {"entry": "C-1", "revision": 1}}
 
 
 async def test_a_child_that_outlives_its_cancel_is_interrupted(

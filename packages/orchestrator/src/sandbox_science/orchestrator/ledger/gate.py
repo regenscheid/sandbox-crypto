@@ -10,8 +10,17 @@ refusal names the first clause that does not (``gate_not_met``):
    is neither ``synthetic`` nor ``unclassified``, and whose target is not a review nor an
    entry that is ``refuted``, ``withdrawn`` or ``superseded``;
 2. ``independent_check``: when evidence that counts is of type ``proof``, an
-   ``independent_check`` the user added themselves, at the revision they checked, whose
-   material the change keeps;
+   ``independent_check`` of a revision whose material the change keeps, by the user or
+   by a delegation: one the user added themselves, at the revision they checked, or one
+   whose target is the outcome of a delegation of the project that checked that
+   revision and returned ``confirmed`` and ``complete``, with no plan fence refusal, a
+   whole read of the entry at that revision and of each proof's target at the revision
+   its link pins, run by a run that added none of the entry's proofs (a fresh context,
+   PD-13; the same model counts, coordinator 2026-10-15). A delegation's check counts
+   only while no delegation that checked a revision with the same statement text,
+   fields, assumptions and supporting evidence returned ``refuted``, or
+   ``inconclusive`` from a complete check, or is still running, linked or not; the
+   user's check still counts;
 3. ``computation``: computational evidence pinned to an artifact revision;
 4. ``review``: a completed checkpoint or terminal review (``passed`` or ``findings``)
    whose coverage was complete had in its snapshot, whole, a revision of the entry whose
@@ -27,9 +36,10 @@ refusal names the first clause that does not (``gate_not_met``):
    finding holds;
 6. ``flags``: no open flag on the entry (LG-28).
 
-Some clauses cannot hold in full yet, and the limits are deliberate: checks by
-delegations and verification reviews are not built, so only a check the user produced
-counts in clause 2; no record says which inputs were synthetic (RA-17), so clause 1
+Some clauses cannot hold in full yet, and the limits are deliberate: verification
+reviews are not built, so they do not count in clause 2, whose delegations' runs are
+told apart from a proof's author by the run that added the proof to the entry, not by
+who wrote the block it cites; no record says which inputs were synthetic (RA-17), so clause 1
 reads the link's type alone; execution targets are not built, so clause 3 asks for the
 artifact alone; and no record says which revision of the entry a finding's decision
 saw, so clause 5 reads that the entry kept the material since the finding, over at
@@ -38,6 +48,7 @@ most ``KEPT_REVISIONS`` revisions.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import sqlite3
@@ -46,6 +57,7 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 from sandbox_science.orchestrator.documents.errors import POLICY_DENIED, DocumentError
+from sandbox_science.orchestrator.projects import run_id_of
 
 from . import evidence
 from .models import COMPUTATIONAL, SET_ASIDE, EntryLink, EvidenceLink
@@ -75,6 +87,19 @@ class Material:
     fields: str
     assumes: frozenset[tuple[str, int | None]]
     evidence: frozenset[tuple[object, ...]]
+    text: str | None = None
+    """The SHA-256 of the statement's body, which a revision that restores an earlier
+    text shares with it, under a new text revision."""
+
+    def claimed(self) -> Material:
+        """What the entry claims and rests on: the material with its statement by its
+        body, not its text revision, and without its ``contradicts`` links. A check that
+        disagreed with it holds while the entry keeps this, whatever evidence against it
+        was added or removed since, and when its statement was changed and restored
+        (LG-17)."""
+        kept = frozenset(pinned for pinned in self.evidence if pinned[0] != "contradicts")
+        statement = None if self.text is not None else self.statement
+        return dataclasses.replace(self, statement=statement, evidence=kept)
 
 
 def fingerprint(material: Material) -> str:
@@ -125,9 +150,16 @@ def _pinned(link: EvidenceLink) -> tuple[object, ...]:
 
 
 def material(
-    fields: Json, statement: int | None, links: list[EntryLink], held: list[EvidenceLink]
+    fields: Json,
+    statement: int | None,
+    links: list[EntryLink],
+    held: list[EvidenceLink],
+    text: str | None = None,
 ) -> Material:
+    """The material of a revision: ``statement`` is its statement's text revision, and
+    ``text`` the SHA-256 of its body."""
     return Material(
+        text=text,
         statement=statement,
         fields=json.dumps(fields, sort_keys=True),
         assumes=frozenset(
@@ -200,31 +232,68 @@ def clauses(
     checked = {link.checked for link in held if link.checked is not None}
     if not any(link.type == "proof" for link in counting):
         yield "independent_check", True, "no evidence that counts is a proof, so no check is needed"
-    elif any(
-        link.role == "independent_check"
-        and link.type not in _NOT_COUNTING
-        and link.checked is not None
-        and examined(db, entry, checked).get(link.checked) == now
-        and link.added == link.checked + 1
-        and added_by_user(db, entry, link, before)
-        for link in held
-    ):
-        yield (
-            "independent_check",
-            True,
-            "the user checked a revision with the statement, fields, assumptions and "
-            "evidence it holds",
-        )
     else:
-        yield (
-            "independent_check",
-            False,
-            f"{handle} rests on a proof and has no independent check that counts: one the "
-            "user added themselves, at the revision they checked (the workspace's check, "
-            "or the ledger check command), of a revision whose statement, fields, "
-            "assumptions and evidence the change keeps (checks by delegations are not "
-            "built yet)",
+        kept = examined(db, entry, checked)
+        valid = [
+            link
+            for link in held
+            if link.role == "independent_check"
+            and link.type not in _NOT_COUNTING
+            and link.checked is not None
+            and kept.get(link.checked) == now
+        ]
+        proofs = [link for link in counting if link.type == "proof"]
+        project = _project(db, entry)
+        found = next(
+            (c for d in valid if (c := delegated(db, project, entry, d, proofs)) is not None),
+            None,
         )
+        against = disputed(db, project, entry, now) if found is not None else None
+        if any(checked_by_user(db, entry, link, before) for link in valid):
+            yield (
+                "independent_check",
+                True,
+                "the user checked a revision with the statement, fields, assumptions and "
+                "evidence it holds",
+            )
+        elif found is not None and against is not None and against.running:
+            yield (
+                "independent_check",
+                False,
+                f"delegation {against.delegation} is still checking a revision with the "
+                "statement, fields, assumptions and supporting evidence it holds: wait for "
+                "it, or cancel it",
+            )
+        elif found is not None and against is not None:
+            yield (
+                "independent_check",
+                False,
+                f"delegation {against.delegation} checked a revision with the statement, "
+                "fields, assumptions and supporting evidence it holds and did not confirm "
+                "it (refuted, or a complete check that was inconclusive): while it keeps "
+                "that material, no delegation's check counts, and only the user's check does",
+            )
+        elif found is not None:
+            note = "" if not found.note else f"; the requester's note: {found.note}"
+            yield (
+                "independent_check",
+                True,
+                f"delegation {found.delegation} confirmed a revision with the statement, "
+                f"fields, assumptions and evidence it holds, in a fresh context{note}",
+            )
+        else:
+            yield (
+                "independent_check",
+                False,
+                f"{handle} rests on a proof and has no independent check that counts, of a "
+                "revision whose statement, fields, assumptions and evidence the change "
+                "keeps: one the user added themselves, at the revision they checked (the "
+                "workspace's check, or the ledger check command), or the outcome of a "
+                "delegation that checked that revision and returned confirmed and "
+                "complete, read the entry and its proofs' targets at the revisions they "
+                "pin, met no plan fence, and added none of its proofs, while no check of "
+                "the same material disagreed",
+            )
     if any(link.type in COMPUTATIONAL and link.target != "artifact" for link in counting):
         yield (
             "computation",
@@ -416,6 +485,126 @@ def reviewed(db: sqlite3.Connection, entry: str, *, after: float | None = None) 
     ]
 
 
+@dataclass(frozen=True)
+class Checked:
+    """A delegation's check that counts, and the note its parent gave the checker."""
+
+    delegation: str
+    note: str
+
+
+def delegated(
+    db: sqlite3.Connection,
+    project: str,
+    entry: str,
+    link: EvidenceLink,
+    proofs: list[EvidenceLink],
+) -> Checked | None:
+    """``link``'s delegation, when it is a check that counts (LG-17): its outcome is of a
+    check of ``entry`` at the revision the link names, in ``project``, which returned
+    ``confirmed`` and ``complete``, met no plan fence, read the entry at that revision
+    and the target of each of its proofs at the revision its link pins, and whose run
+    added none of ``proofs`` to the entry. The outcome is written once, so it is read as
+    it is."""
+    if link.target != "delegation":
+        return None
+    found = db.execute(
+        "SELECT kind,brief,ended,result,refused,read_entry,read_proofs,run FROM delegations "
+        "WHERE delegation_id=? AND project_id=?",
+        (link.target_id, project),
+    ).fetchone()
+    if found is None:
+        return None
+    kind, brief, ended, result, refused, read, read_proofs, run = found
+    written: dict[str, Any] = json.loads(brief)
+    check: dict[str, Any] = written.get("check") or {}
+    outcome: dict[str, Any] = json.loads(result) if result is not None else {}
+    if not (
+        kind == "check"
+        and (check.get("entry"), check.get("revision")) == (entry, link.checked)
+        and ended == "returned"
+        and outcome.get("verdict") == "confirmed"
+        and outcome.get("status") == "complete"
+        and refused is None
+        and read == 1
+        and read_proofs == 1
+    ):
+        return None
+    checker = run_id_of(str(run))
+    if checker is None or any(_author_run(db, entry, proof.added) == checker for proof in proofs):
+        return None
+    note = written.get("note")
+    return Checked(link.target_id, note if isinstance(note, str) else "")
+
+
+@dataclass(frozen=True)
+class Disputed:
+    """A check of the same material that did not confirm it, or that is still running."""
+
+    delegation: str
+    running: bool
+
+
+def disputed(db: sqlite3.Connection, project: str, entry: str, now: Material) -> Disputed | None:
+    """The first delegation of ``project`` that checked ``entry``, linked to it or not,
+    at a revision that claims and rests on what ``now`` does (``Material.claimed``), and
+    did not confirm it: it returned ``refuted``, or ``inconclusive`` from a complete
+    check; or one that is still running, which may yet. Retrying a check until one
+    confirms gains nothing (LG-17)."""
+    rows = [
+        (delegation, revision, ended is None)
+        for delegation, revision, ended in db.execute(
+            "SELECT delegation_id,json_extract(brief,'$.check.revision'),ended FROM delegations "
+            "WHERE project_id=? AND kind='check' AND json_extract(brief,'$.check.entry')=? "
+            "AND (ended IS NULL OR (result IS NOT NULL "
+            "AND (json_extract(result,'$.verdict')='refuted' "
+            "OR (json_extract(result,'$.verdict')='inconclusive' "
+            "AND json_extract(result,'$.status')='complete')))) "
+            "ORDER BY started_at, delegation_id",
+            (project, entry),
+        )
+        if isinstance(revision, int)
+    ]
+    held = examined(db, entry, {revision for _, revision, _ in rows})
+    claimed = now.claimed()
+    return next(
+        (
+            Disputed(d, running)
+            for d, revision, running in rows
+            if revision in held and held[revision].claimed() == claimed
+        ),
+        None,
+    )
+
+
+def _project(db: sqlite3.Connection, entry: str) -> str:
+    row = db.execute("SELECT project FROM ledger_entries WHERE entry_id=?", (entry,)).fetchone()
+    return "" if row is None else str(row[0])
+
+
+def _author_run(db: sqlite3.Connection, entry: str, revision: int) -> str | None:
+    row = db.execute(
+        "SELECT json_extract(author,'$.run_id') FROM ledger_revisions "
+        "WHERE entry_id=? AND revision=?",
+        (entry, revision),
+    ).fetchone()
+    return None if row is None else row[0]
+
+
+def checked_by_user(db: sqlite3.Connection, entry: str, link: EvidenceLink, before: int) -> bool:
+    """Whether ``link`` is the user's own check: an ``independent_check`` the user added
+    themselves at the revision after the one it names (the workspace's check, or
+    ``ledger check``). A delegation's outcome the user linked is a delegation's check,
+    not theirs."""
+    return (
+        link.role == "independent_check"
+        and link.target != "delegation"
+        and link.checked is not None
+        and link.added == link.checked + 1
+        and added_by_user(db, entry, link, before)
+    )
+
+
 def added_by_user(db: sqlite3.Connection, entry: str, link: EvidenceLink, before: int) -> bool:
     """Whether the user added ``link``: the revision of ``entry`` that added it is the
     user's. A link the change adds is not (only the main agent's decisions are gated)."""
@@ -434,7 +623,10 @@ def examined(db: sqlite3.Connection, entry: str, revisions: set[int]) -> dict[in
     found: dict[int, Material] = {}
     for revision in revisions:
         row = db.execute(
-            "SELECT statement,fields FROM ledger_revisions WHERE entry_id=? AND revision=?",
+            "SELECT r.statement,r.fields,t.sha256 FROM ledger_revisions r "
+            "LEFT JOIN text_revisions t ON t.subject_type='statement' "
+            "AND t.subject_id=r.entry_id AND t.revision=r.statement "
+            "WHERE r.entry_id=? AND r.revision=?",
             (entry, revision),
         ).fetchone()
         if row is None:
@@ -448,6 +640,6 @@ def examined(db: sqlite3.Connection, entry: str, revisions: set[int]) -> dict[in
             )
         ]
         found[revision] = material(
-            json.loads(row[1]), row[0], links, evidence.stored(db, entry, revision)
+            json.loads(row[1]), row[0], links, evidence.stored(db, entry, revision), row[2]
         )
     return found

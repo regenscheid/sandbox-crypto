@@ -54,10 +54,8 @@ KNOWN = "Write finite fields as GF(p)."
 LATER = "Install Python packages with provision."
 CHECK = call(
     "delegate",
-    task="Check the claim from scratch.",
-    context="It came from Fermat's little theorem.",
-    inputs=["documents/notes"],
     check={"entry": "C-1", "revision": 1},
+    note="It came from Fermat's little theorem.",
 )
 RESULT: dict[str, Any] = {
     "entry": "C-1",
@@ -227,9 +225,8 @@ async def test_a_check_starts_fresh_and_its_outcome_reaches_its_parent(
     assert LATER not in str(first[0]["content"])
     assert [m["role"] for m in first] == ["system", "user"]
     brief = str(first[1]["content"])
-    assert brief.startswith("Check ledger entry C-1 at revision 1.")
-    assert "Task: Check the claim from scratch." in brief
-    assert "- documents/notes" in brief
+    assert brief.startswith("Task: Check whether ledger entry C-1 holds at revision 1, ")
+    assert "The requester's note, not evidence: It came from Fermat's little theorem." in brief
     assert "Characterize the loop." not in json.dumps(first)  # the parent's task
 
     (delegation_id,) = started(root)
@@ -712,5 +709,56 @@ def test_a_version_28_store_keeps_its_delegations_and_their_outcomes(tmp_path: P
         )
         later = records.end(PROJECT, SESSION, f"dlg-{1:024x}", ending)
         assert (later.result, later.errors, later.models) == (RESULT, ("an error",), ("m",))
+    finally:
+        migrated.close()
+
+
+def test_a_version_31_store_keeps_its_outcomes_and_writes_reads_of_proofs_once(
+    tmp_path: Path,
+) -> None:
+    """Version 32 adds whether a check read its proofs' targets: none for the outcomes
+    written before, and once with the rest of an outcome after."""
+    current = ProjectStore(tmp_path / "current")
+    try:
+        current.create(PROJECT, "minimal", "sha256:" + "a" * 64)
+        current.open_session(PROJECT, SESSION, dedicated=False)
+        records = DelegationRecords(current.control)
+        for n in (0, 1):
+            made = Delegation.model_validate(
+                {
+                    "delegation_id": f"dlg-{n:024x}",
+                    "parent": "20261015T120000000000Z-root",
+                    "run": f"20261015T12000{n}000000Z-child",
+                    "kind": "check",
+                    "brief": {"task": "Check."},
+                    "started_at": "2026-10-15T12:00:01+00:00",
+                }
+            )
+            records.start(PROJECT, SESSION, made)
+        records.end(PROJECT, SESSION, f"dlg-{0:024x}", Ending("returned", "answered", "Done."))
+    finally:
+        current.close()
+    target = tmp_path / "old"
+    target.mkdir()
+    older_store(tmp_path / "current" / "control.sqlite3", target / "control.sqlite3", 31)
+    with sqlite3.connect(target / "control.sqlite3") as db:
+        columns = {row[1] for row in db.execute("PRAGMA table_info(delegations)")}
+    assert "read_proofs" not in columns
+    migrated = ProjectStore(target)
+    try:
+        records = DelegationRecords(migrated.control)
+        assert records.get(PROJECT, SESSION, f"dlg-{0:024x}").read_proofs is None
+        for statement, error in (
+            ("UPDATE delegations SET read_proofs = 1 WHERE ended IS NOT NULL", "written once"),
+            ("UPDATE delegations SET read_proofs = 1 WHERE ended IS NULL", "CHECK constraint"),
+        ):
+            with (
+                pytest.raises(sqlite3.IntegrityError, match=error),
+                migrated.control.write() as tx,
+            ):
+                tx.sql.execute(statement)
+        ending = Ending("returned", "answered", REPORT, read_entry=True, read_proofs=True)
+        later = records.end(PROJECT, SESSION, f"dlg-{1:024x}", ending)
+        assert (later.read_entry, later.read_proofs) == (True, True)
     finally:
         migrated.close()

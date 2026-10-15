@@ -990,9 +990,10 @@ class Toolbox:
             summary["content"] = self._bound(text)
         if not content.eof:
             summary["more"] = f"read again with offset {content.offset + len(data)}"
-        return ToolOutcome(
-            dump(summary), {"read": {"path": content.path, "sha256": content.sha256}}
-        )
+        # Whether the model saw the whole file: from its start to its end, as text, unclipped.
+        complete = bool(content.offset == 0 and content.eof and text and summary["content"] == text)
+        read = {"path": content.path, "sha256": content.sha256, "complete": complete}
+        return ToolOutcome(dump(summary), {"read": read})
 
     async def _write(self, args: dict[str, Any], operation: str) -> ToolOutcome:
         content = args.get("content")

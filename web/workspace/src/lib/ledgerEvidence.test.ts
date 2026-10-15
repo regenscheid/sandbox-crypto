@@ -90,6 +90,25 @@ describe('an evidence link', () => {
     );
   });
 
+  it("to a delegation's outcome says what the check returned and shows its parent's note", () => {
+    const outcome = { run: 'r', ended: 'returned', verdict: 'confirmed', status: 'complete' };
+    const check = link({ target: 'delegation', target_id: 'dlg-1', revision: null });
+    expect(evidenceTarget('p1', { ...check, locator: outcome })).toEqual({
+      text: 'delegation dlg-1 (confirmed, complete)',
+      href: null,
+    });
+    expect(
+      evidenceTarget('p1', { ...check, locator: { ...outcome, note: 'Files are in proofs/.' } })
+        .text,
+    ).toBe(
+      "delegation dlg-1 (confirmed, complete); the requester's note, not evidence: “Files are in proofs/.”",
+    );
+    const cancelled = { ...outcome, ended: 'cancelled', verdict: null, status: null };
+    expect(evidenceTarget('p1', { ...check, locator: cancelled }).text).toBe(
+      'delegation dlg-1 (cancelled)',
+    );
+  });
+
   it('reads its role and type, and the revision a check examined', () => {
     expect(evidenceKind(link({}))).toBe('Supports, exact computation');
     expect(evidenceKind(link({ role: 'independent_check', type: 'proof', checked: 5 }))).toBe(

@@ -424,10 +424,13 @@ async def test_the_read_view(client: WorkerClient, store: DocumentStore) -> None
     }
     paragraph = view["blocks"][2]
     assert [math["tex"] for math in paragraph["math"]] == ["p = 17", "a \\in \\F_p^\\times"]
-    assert record == {"read": {"document": view["document"]["id"], "revision": 1}}
+    shown = [block["id"] for block in view["blocks"]]
+    assert record == {"read": {"document": view["document"]["id"], "revision": 1, "blocks": shown}}
     small = DocumentTool(store, CONTEXT, run_id="r", output_chars=900)
-    text, _ = await small.call("document_read", {"document": "ff"}, operation="o")
+    text, partly = await small.call("document_read", {"document": "ff"}, operation="o")
     part = json.loads(text)
+    # The record names the blocks the answer showed, as a check's reads count them.
+    assert partly["read"]["blocks"] == [block["id"] for block in part["blocks"]]
     assert len(text) <= 900 or len(part["blocks"]) == 1
     rest = part["more"]
     text, _ = await small.call(

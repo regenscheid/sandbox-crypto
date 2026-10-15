@@ -325,6 +325,12 @@ def run_name(started_at: datetime, run_id: str) -> str:
     return f"{started_at.astimezone(UTC).strftime(_STARTED)}-{run_id}"
 
 
+def run_id_of(name: str) -> str | None:
+    """The ID of the run a record's name stands for; None for any other name."""
+    found = _run_entry(name)
+    return None if found is None else found.run_id
+
+
 def _run_entry(name: str) -> RunEntry | None:
     """The run a record's name stands for; None for any other name, which is never a path."""
     match = _RUN_NAME.fullmatch(name)

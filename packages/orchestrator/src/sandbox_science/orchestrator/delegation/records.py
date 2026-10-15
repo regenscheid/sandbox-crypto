@@ -47,7 +47,8 @@ PAGE: Final = 50
 
 _COLUMNS: Final = (
     "delegation_id, parent, run, kind, brief, started_at, ended, stopped, report, "
-    "ended_at, refused, acknowledged, result, errors, alias, models, read_entry"
+    "ended_at, refused, acknowledged, result, errors, alias, models, read_entry, "
+    "read_proofs"
 )
 _JSON: Final = ("brief", "result", "errors", "models")
 
@@ -84,6 +85,9 @@ class Delegation(Contract):
     read_entry: bool | None = None
     """For a check: whether a ``ledger_read`` of the child returned the entry at the
     revision its brief names, as the platform observed it."""
+    read_proofs: bool | None = None
+    """For a check: whether the child read the target of each of the entry's proofs at
+    the revision the link pins, as the platform observed it (LG-17)."""
 
 
 @dataclass(frozen=True)
@@ -99,6 +103,7 @@ class Ending:
     alias: str | None = None
     models: tuple[str, ...] = ()
     read_entry: bool | None = None
+    read_proofs: bool | None = None
 
 
 class DelegationRecords:
@@ -171,8 +176,8 @@ class DelegationRecords:
         with self.control.write() as tx:
             tx.sql.execute(
                 "UPDATE delegations SET ended = ?, stopped = ?, report = ?, ended_at = ?, "
-                "refused = ?, result = ?, errors = ?, alias = ?, models = ?, read_entry = ? "
-                "WHERE project_id = ? AND session_id = ? AND delegation_id = ? "
+                "refused = ?, result = ?, errors = ?, alias = ?, models = ?, read_entry = ?, "
+                "read_proofs = ? WHERE project_id = ? AND session_id = ? AND delegation_id = ? "
                 "AND ended IS NULL",
                 (
                     ending.ended,
@@ -185,6 +190,7 @@ class DelegationRecords:
                     _clipped(ending.alias, 256) if ending.alias else None,
                     _fitted([_clipped(m, 128) for m in ending.models], 4096),
                     None if ending.read_entry is None else int(ending.read_entry),
+                    None if ending.read_proofs is None else int(ending.read_proofs),
                     project,
                     session,
                     delegation_id,

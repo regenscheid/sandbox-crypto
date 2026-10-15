@@ -10,7 +10,8 @@ invalid one gets one correction, a turn with the errors (PD-18). If the correcti
 not validate either, or the run has no turn left, the answer stands and the result is
 missing, with the errors; nothing is filled in. The answer itself is kept unchanged as
 the raw payload. The hook also notes whether the run read the entry at that revision
-with ``ledger_read``, which the ledger's gate can ask for (LG-17).
+with ``ledger_read``, and the target of each of its proofs at the revision its link pins
+(``Read``), which the ledger's gate asks for (LG-17).
 
 A result stands only for a run that ended with that answer (``result_of``): one stopped
 by a limit, a cancel or a failure has none, whatever it answered before.
@@ -18,10 +19,9 @@ by a limit, a cancel or a failure has none, whatever it answered before.
 
 from __future__ import annotations
 
-import json
 import re
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from functools import partial
 from typing import Annotated, Any, Final, Literal, Self, cast
 
@@ -31,6 +31,8 @@ from sandbox_science.contracts.model import StrictContract
 from sandbox_science.orchestrator.documents.agent_text import agent_text
 from sandbox_science.orchestrator.documents.errors import DocumentError
 from sandbox_science.orchestrator.hooks import Closing, Notice, RunView, TurnHook
+from sandbox_science.orchestrator.ledger.gate import supporting
+from sandbox_science.orchestrator.ledger.models import EvidenceLink
 from sandbox_science.orchestrator.notices import OUTCOME_CORRECTION
 
 FORMAT: Final = "sandbox-check-result-1"
@@ -98,16 +100,52 @@ class CheckResult(StrictContract):
         return self
 
 
+Read = tuple[str, ...]
+"""What a run read whole, as its tools report it: an entry's statement at a revision
+(``("entry", id, revision)``), a document's block at a revision (``("block", id,
+revision, block)``) or a file by its SHA-256 (``("file", sha256)``)."""
+
+
+@dataclass(frozen=True)
+class Proof:
+    """One of the entry's proofs: its evidence link, which a read of the entry must show,
+    and the read that covers its target."""
+
+    evidence_id: str
+    read: Read
+
+
 @dataclass(frozen=True)
 class Target:
-    """The entry and revision a check's brief names."""
+    """The entry and revision a check's brief names, and its proofs."""
 
     entry_id: str
     handle: str
     revision: int
+    proofs: frozenset[Proof] = field(default_factory=frozenset[Proof])
 
     def named(self, entry: str) -> bool:
         return entry in (self.entry_id, self.handle)
+
+
+def proof_reads(links: Sequence[EvidenceLink]) -> frozenset[Proof]:
+    """The entry's proofs that can count, each with the read that covers its target: an
+    entry's whole statement, or a document's block, at the revision the link pins, or a
+    whole file with the artifact's SHA-256. A proof of another target, as none is yet,
+    is never covered."""
+    found: set[Proof] = set()
+    for link in links:
+        if not (supporting(link) and link.type == "proof"):
+            continue
+        read: Read = ("unreadable", link.evidence_id)
+        if link.target == "entry" and link.revision is not None:
+            read = ("entry", link.target_id, str(link.revision))
+        elif link.target == "block" and link.revision is not None and link.block is not None:
+            read = ("block", link.target_id, str(link.revision), link.block)
+        elif link.target == "artifact" and link.sha256 is not None:
+            read = ("file", link.sha256)
+        found.add(Proof(link.evidence_id, read))
+    return frozenset(found)
 
 
 def parse(answer: str | None, target: Target | None = None) -> CheckResult:
@@ -148,18 +186,47 @@ class Outcome(TurnHook):
         self.errors: list[str] = []
         self.corrected = False
         self.read = False
-        """Whether a ``ledger_read`` of the run returned the target at its revision."""
+        """Whether a ``ledger_read`` of the run showed the target's whole statement at its
+        revision."""
+        self.seen: set[Read] = set()
+        """What the run's tools showed whole."""
+        self.shown: set[str] = set()
+        """The target's evidence links its reads of the target's revision showed."""
+
+    @property
+    def read_proofs(self) -> bool | None:
+        """Whether the run's reads of the entry showed each of its proofs, and read the
+        target of each whole, at the revision its link pins; ``None`` for a run that
+        checks no entry."""
+        if self.target is None:
+            return None
+        return all(p.evidence_id in self.shown and p.read in self.seen for p in self.target.proofs)
 
     async def observe_tool(self, run: RunView, record: dict[str, Any]) -> None:
-        if self.target is None or record.get("ledger") != "ledger_read" or "error" in record:
+        read = record.get("read")
+        if self.target is None or "error" in record or not isinstance(read, dict):
             return
-        found = _entry(run.messages[-1].get("content"))
-        if (
-            found is not None
-            and self.target.named(str(found.get("entry_id")))
-            and found.get("revision") == self.target.revision
-        ):
-            self.read = True
+        shown = cast(dict[str, object], read)
+        revision = shown.get("revision")
+        if record.get("ledger") == "ledger_read" and isinstance(revision, int):
+            entry = str(shown.get("entry"))
+            if shown.get("complete") is True:
+                self.seen.add(("entry", entry, str(revision)))
+            if self.target.named(entry) and revision == self.target.revision:
+                self.read = self.read or shown.get("complete") is True
+                listed = shown.get("evidence")
+                if isinstance(listed, list):
+                    self.shown.update(str(e) for e in cast(list[object], listed))
+        elif isinstance(shown.get("document"), str) and isinstance(revision, int):
+            blocks = shown.get("blocks")
+            if isinstance(blocks, list):
+                document = cast(str, shown["document"])
+                self.seen.update(
+                    ("block", document, str(revision), str(block))
+                    for block in cast(list[object], blocks)
+                )
+        elif isinstance(shown.get("sha256"), str) and shown.get("complete") is True:
+            self.seen.add(("file", cast(str, shown["sha256"])))
 
     async def closing(self, run: RunView, answer: str | None) -> Closing:
         try:
@@ -180,6 +247,7 @@ class Outcome(TurnHook):
             "result": self.result.model_dump(mode="json") if self.result is not None else None,
             "errors": list(self.errors),
             "read": self.read,
+            "read_proofs": self.read_proofs,
         }
 
 
@@ -187,14 +255,3 @@ def result_of(outcome: Outcome, stopped: str, failed: bool) -> CheckResult | Non
     """The result of a run that ended with the answer it gave: ``None`` for one stopped by
     a limit, a cancel or a failure, whatever an earlier closing parsed."""
     return outcome.result if stopped == "answered" and not failed else None
-
-
-def _entry(content: object) -> Mapping[str, object] | None:
-    """The entry a ``ledger_read`` result shows, under any notices that ride on it."""
-    try:
-        value = json.loads(str(content))
-        if isinstance(value, dict) and "tool_result" in value:
-            value = json.loads(str(cast(dict[str, object], value)["tool_result"]))
-    except ValueError:
-        return None
-    return cast(Mapping[str, object], value) if isinstance(value, dict) else None
