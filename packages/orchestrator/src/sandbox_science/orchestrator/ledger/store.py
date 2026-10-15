@@ -40,6 +40,7 @@ from sandbox_science.orchestrator.documents.errors import (
 )
 from sandbox_science.orchestrator.documents.models import Author
 from sandbox_science.orchestrator.documents.normalize import normalize
+from sandbox_science.orchestrator.documents.project_macros import head as macro_head
 from sandbox_science.orchestrator.projects import ProjectError, recorded
 
 from .models import (
@@ -627,14 +628,26 @@ class Ledger:
     def _statement(
         self, db: sqlite3.Connection, row: _Row, text: str | None, author: Author
     ) -> int:
-        """The text revision of the entry's statement: a new one when it changed."""
+        """The text revision of the entry's statement: a new one when it changed, queued
+        for its math check (LG-1, LD-53) with the project macros it was saved with."""
         latest = TEXTS.read(db, row.entry_id)
         if text is None:
             assert latest is not None  # noqa: S101 - an existing entry has a statement
             return latest["revision"]
         prepared = prepare(text, author, latest)
-        TEXTS.append(db, row.entry_id, prepared.revision(prepared.base + 1, author))
-        return prepared.base + 1
+        revision = prepared.base + 1
+        TEXTS.append(
+            db,
+            row.entry_id,
+            prepared.revision(revision, author, macro_revision=macro_head(db, row.project)),
+        )
+        db.execute(
+            "INSERT INTO text_math_sources(subject_type,subject_id,project,target,blocked) "
+            "VALUES('statement',?,?,?,?) ON CONFLICT(subject_type,subject_id) DO UPDATE SET "
+            "target=excluded.target,blocked=excluded.blocked",
+            (row.entry_id, row.project, revision, prepared.held),
+        )
+        return revision
 
     # Checks.
 

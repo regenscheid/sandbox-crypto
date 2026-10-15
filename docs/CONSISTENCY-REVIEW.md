@@ -200,7 +200,7 @@ server and directory afterwards.
 
 ## Mechanical math findings
 
-D82 math checks use the same finding/history and authenticated USER decision surfaces, with explicit `math` origin, a real mechanical check ID and no synthetic reviewer run. Reviewer categories/grants are unchanged and exclude this mechanical authority. Generic confirmation, reflag, supersession and threshold delivery paths cannot decide math findings. A separate bounded controller checks immutable document revisions and collects closing-only notices together with terminal findings, sharing at most two author response rounds. Accepted current formulas and complete parsed removal confirm mechanically; stale, skipped and unavailable evidence never does. USER takeover retains unresolved historical evidence while excluding new author reflags/notices. The checks cover document revisions, comment and reply bodies ([comment math](COMMENT-MATH.md)) and MAIN fix/rebut explanations; details and limits are in [document math checks](MATH-CHECKS.md).
+D82 math checks use the same finding/history and authenticated USER decision surfaces, with explicit `math` origin, a real mechanical check ID and no synthetic reviewer run. Reviewer categories/grants are unchanged and exclude this mechanical authority. Generic confirmation, reflag, supersession and threshold delivery paths cannot decide math findings. A separate bounded controller checks immutable document revisions and collects closing-only notices together with terminal findings, sharing at most two author response rounds. Accepted current formulas and complete parsed removal confirm mechanically; stale, skipped and unavailable evidence never does. USER takeover retains unresolved historical evidence while excluding new author reflags/notices. The checks cover document revisions, comment and reply bodies ([comment math](COMMENT-MATH.md)), MAIN fix/rebut explanations and ledger statements ([ledger](LEDGER.md)); details and limits are in [document math checks](MATH-CHECKS.md).
 
 The [MAIN explanation math checks](FINDING-PROSE-MATH.md) cover only
 agent MAIN fix/rebut explanation source. Its ordinary corrections preserve the
@@ -233,4 +233,4 @@ These are the reviewer's tables in the control store's schema
 - Shell-written artifact inventory and revisions (CRF-6), rich outputs and file contents as evidence, and ledger-specific evidence.
 - Project spend accounting; the gateway's hard spend cap is the monetary boundary.
 - Automatic idle turns, a reviewer that outlives a run, and a push view.
-- Math checks of ledger fields and of reviewer, USER and platform prose (D82).
+- Math checks of ledger fields other than statements and of reviewer, USER and platform prose (D82).

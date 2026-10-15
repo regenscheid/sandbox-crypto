@@ -5,7 +5,8 @@ document's YAML front matter overrides project definitions of the same name.
 Comments use their parent document's effective context; other project text uses
 project definitions. The setting applies to Markdown/KaTeX rendering and the
 mechanical math checks. Entire-LaTeX documents and export staging are separate
-from it. The ledger and other D82 prose sources are not built.
+from it. A ledger statement uses the project definitions alone ([ledger](LEDGER.md));
+other D82 prose sources are not built.
 
 ## Changing the setting
 

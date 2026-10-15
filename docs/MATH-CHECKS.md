@@ -3,9 +3,9 @@
 Saved document revisions are checked for math that KaTeX rejects, through durable
 save scheduling, an isolated renderer, mechanical findings and closing-round delivery
 (D82, document portion of LD-53 to LD-55 and CR-36 to CR-38).
-[Comments and replies](COMMENT-MATH.md) and [MAIN explanation fields](FINDING-PROSE-MATH.md)
-use the same checker and bounds. Ledger entries and other finding prose are not
-checked. The renderer is unavailable until the operator configures it; an
+[Comments and replies](COMMENT-MATH.md), [MAIN explanation fields](FINDING-PROSE-MATH.md)
+and [ledger statements](LEDGER.md) use the same checker and bounds. Other finding
+prose and ledger fields other than statements are not checked. The renderer is unavailable until the operator configures it; an
 unavailable check never establishes rejection or a fix.
 
 `orchestrator.mathcheck.MathChecker` runs a batch of at most 32 formulas from one
