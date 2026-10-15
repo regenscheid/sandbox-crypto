@@ -8,13 +8,24 @@ state_dir = "~/.local/state/sandbox-science"
 [[projects]]
 id = "crypto"
 profile = "minimal"
-sessions = ["main"]
+# A session in the project's default environment, and one in an environment of its own.
+sessions = ["main", { id = "scratch", dedicated = true }]
 
 [model]
 url = "https://litellm-api.npages.org/v1"
 name = "sandbox-orchestrator"
+# Reviews and the workspace's math repairs, and the job watcher's check-ins on long jobs;
+# one alias may serve the main agent and these.
+reviewer = "sandbox-orchestrator"
+watcher = "sandbox-orchestrator"
 # Only the run service reads this file; keep it mode 600.
 api_key_file = "~/.config/sandbox-science/secrets/litellm-harness.key"
+
+[run_service]
+# The math checks on the documents' formulas: npm run build:math in web/workspace, and
+# Node 22.12 or newer.
+math_checks = "../web/workspace/dist-math"
+node = "node"
 
 [worker]
 listen = "127.0.0.1:8100"

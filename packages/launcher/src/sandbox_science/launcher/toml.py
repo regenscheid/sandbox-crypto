@@ -72,6 +72,10 @@ def _value(value: object) -> str:
             return repr(value)
         case str():
             return _string(value)
+        case Mapping():
+            # An inline table, as in an array of names and tables.
+            items = cast(Mapping[str, object], value).items()
+            return "{ " + ", ".join(f"{_key(key)} = {_value(item)}" for key, item in items) + " }"
         case Sequence():
             items = cast(Sequence[object], value)
             return "[" + ", ".join(_value(item) for item in items) + "]"

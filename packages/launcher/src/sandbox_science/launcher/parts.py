@@ -19,7 +19,9 @@ each start.
 
 from __future__ import annotations
 
+import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -79,8 +81,47 @@ def check(config: LauncherConfig) -> None:
         for name in names
         if shutil.which(name, path=str(commands(config))) is None
     )
+    problems.extend(_math_problems(config))
     if problems:
         raise LauncherError("cannot start:\n" + "\n".join(f"  {problem}" for problem in problems))
+
+
+MATH_FILES = ("check-math.mjs", "mathcheck.mjs")
+"""The math checker's launcher and bundle, in ``npm run build:math``'s output."""
+NODE = (22, 12)
+
+
+def node(config: LauncherConfig) -> str | None:
+    """The absolute path of the Node the math checks run on; None if there is none."""
+    found = shutil.which(config.run_service.node)
+    return None if found is None else str(Path(found).absolute())
+
+
+def _math_problems(config: LauncherConfig) -> list[str]:
+    build = config.run_service.math_checks
+    if build is None:
+        return []
+    problems = [
+        f"no math checker build at {build}: in web/workspace, run npm run build:math"
+        for name in MATH_FILES
+        if not (build / name).is_file()
+    ][:1]
+    found = node(config)
+    if found is None:
+        return [*problems, f"no Node {config.run_service.node} for the math checks"]
+    try:
+        said = subprocess.run(  # noqa: S603 - the operator's own Node
+            [found, "--version"], capture_output=True, text=True, timeout=10, check=False
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        said = ""
+    version = re.match(r"v(\d+)\.(\d+)", said.strip())
+    if version is None or (int(version[1]), int(version[2])) < NODE:
+        problems.append(
+            f"the math checks need Node {NODE[0]}.{NODE[1]} or newer; {found} says "
+            f"{said.strip() or 'nothing'}"
+        )
+    return problems
 
 
 def prepare(config: LauncherConfig) -> Layout:
@@ -150,27 +191,43 @@ def project_argvs(config: LauncherConfig, layout: Layout, policy: str) -> list[l
         )
         argvs.append([harness, "project", "revise", *scope, "--policy", policy])
         argvs.extend(
-            [harness, "session", "open", *scope, "--session", session]
+            [harness, "session", "open", *scope, "--session", session.id,
+             *(["--dedicated"] if session.dedicated else [])]
             for session in project.sessions
-        )
+        )  # fmt: skip
     return argvs
 
 
 def harness_argv(config: LauncherConfig, layout: Layout) -> list[str]:
     """The run service: it starts the runs the workspace's chat asks for."""
-    model = config.model
+    model, service = config.model, config.run_service
     reviewer = ["--reviewer-model", model.reviewer] if model.reviewer else []
     if model.review_token_budget is not None:
         reviewer += ["--review-token-budget", str(model.review_token_budget)]
     if model.review_calls_per_hour is not None:
         reviewer += ["--review-calls-per-hour", str(model.review_calls_per_hour)]
+    watcher = ["--watcher-model", model.watcher] if model.watcher else []
+    if model.watcher_calls_per_hour is not None:
+        watcher += ["--watcher-calls-per-hour", str(model.watcher_calls_per_hour)]
+    if model.watcher_first_check is not None:
+        watcher += ["--watcher-first-check", f"{model.watcher_first_check:g}"]
+    if model.watcher_interval is not None:
+        watcher += ["--watcher-interval", f"{model.watcher_interval:g}"]
+    math: list[str] = []
+    if service.math_checks is not None:
+        found = node(config)
+        math = [
+            "--math-node", found or service.node,
+            "--math-launcher", str(service.math_checks / MATH_FILES[0]),
+            "--math-bundle", str(service.math_checks / MATH_FILES[1]),
+        ]  # fmt: skip
     return [
         str(commands(config) / HARNESS), "serve",
         "--state-dir", str(layout.control),
         "--worker", worker_url(config),
         "--token-file", str(layout.token("harness-worker")),
         "--model-url", model.url, "--model", model.name,
-        "--api-key-file", str(model.api_key_file), *reviewer,
+        "--api-key-file", str(model.api_key_file), *reviewer, *watcher, *math,
         *mcp.harness_options(config, layout),
     ]  # fmt: skip
 
