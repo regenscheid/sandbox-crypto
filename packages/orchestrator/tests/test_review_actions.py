@@ -8,6 +8,7 @@ their outcomes and what they made, and the blocks each document revision changed
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -178,3 +179,73 @@ def test_a_review_without_actions_or_documents_has_no_actions_item(store: Any) -
     review = dispatch(reviews)
     kinds = {i["kind"] for i in cast(ReviewStore, reviews).manifest("p", "s", review)["evidence"]}
     assert "actions" not in kinds
+
+
+def published(documents: Any, tmp_path: Path, path: str, data: bytes) -> str:
+    """An artifact revision of project p at ``path``: its ID."""
+    import hashlib
+    from datetime import UTC, datetime
+
+    from sandbox_science.contracts import ArtifactRef
+    from sandbox_science.orchestrator.artifacts import ArtifactInventory
+
+    from .test_ledger_evidence import source
+
+    publisher = source(tmp_path)
+    worker = ArtifactRef(
+        artifact_id="worker-1", project_id="p", source_path=path,
+        media_type="application/json", size=len(data),
+        sha256=hashlib.sha256(data).hexdigest(), created_at=datetime.now(UTC),
+        produced_by="unproven-hint",
+    )  # fmt: skip
+    inventory = ArtifactInventory(documents)
+    inventory.begin(publisher, "publish-1", path, "application/json")
+    inventory.pin(publisher, "publish-1", path, "application/json", worker)
+    receipt = inventory.finish(publisher, "publish-1", path, "application/json", worker, data)
+    assert receipt.revision is not None
+    return receipt.revision.artifact_id
+
+
+def test_a_confirmation_holds_the_fixs_actions_and_the_files_it_names(
+    store: Any, tmp_path: Path
+) -> None:
+    """Lab 41: run 7's "fix" said results/ell.json "concerns a separate subgroup-order
+    task", and a confirmation review confirmed it without the file or what the run did.
+    A confirmation now holds the actions since the finding's review, as an author
+    window's actions item, and the artifacts the fix names by path."""
+    from sandbox_science.orchestrator.artifacts import ArtifactInventory
+    from sandbox_science.orchestrator.consistency.findings import Findings
+
+    from .test_consistency import anchor, claim, raise_finding
+
+    _, documents, now = store
+    reviews = ReviewStore(documents, artifacts=ArtifactInventory(documents), clock=lambda: now[0])
+    artifact = published(documents, tmp_path, "results/ell.json", b'{"ell": 13}\n')
+    claim(reviews)
+    initial = dispatch(reviews)
+    finding = raise_finding(reviews, initial)
+    reviews.finish("p", "s", initial, "owner", "findings", "One finding.")
+    reviews.observe(
+        "p", "s", "turn:action:9", "action", {"run": "author-7", "message": 9},
+        {"tool": "document_patch", "call": "call-9", "target": {"document": "notes"},
+         "outcome": "ok", "made": ["document doc-1 r3"]},
+    )  # fmt: skip
+    Findings(reviews).respond(
+        "p", "s",
+        {"finding": finding["finding_id"], "expected": 1, "action": "fix",
+         "explanation": "Fixed: `results/ell.json` concerns a separate subgroup-order task.",
+         "evidence": [anchor(reviews, initial)], "operation_id": "fix"},
+        MAIN,
+    )  # fmt: skip
+    confirmation = dispatch(reviews, "confirmation")
+    items = reviews.manifest("p", "s", confirmation, limit=50)["evidence"]
+    (cited,) = [i for i in items if i["kind"] == "artifact"]
+    assert cited["locator"]["cited_by"] == {"finding": finding["finding_id"]}
+    assert cited["locator"]["artifact"]["artifact_id"] == artifact
+    text = reviews.read_evidence("p", "s", confirmation, cited["evidence"])["text"]
+    assert "13" in text
+    (listed,) = [i for i in items if i["kind"] == "actions"]
+    found = json.loads(reviews.read_evidence("p", "s", confirmation, listed["evidence"])["text"])
+    assert [(a["tool"], a["made"]) for a in found["actions"]] == [
+        ("document_patch", ["document doc-1 r3"])
+    ]

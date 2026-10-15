@@ -729,6 +729,12 @@ class ReviewStore:
             grants.update(group.grants)
             budget.add(group)
             groups += 1
+        if kind == "confirmation" and included:
+            # What the author did since the findings were raised, to check a claimed fix
+            # against (lab 41): the actions item, as an author window's.
+            item = self._fix_actions(project, session, [finding for finding, _ in included])
+            if item is not None:
+                pinned.append(item)
         # A confirmation pins finding groups rather than consuming author work.
         # A failed author window stays independently queued, with its exact end.
         complete = (
@@ -755,6 +761,46 @@ class ReviewStore:
             if kind == "confirmation"
             else None,
         )
+
+    def _fix_actions(self, project: str, session: str, findings: list[str]) -> EvidenceItem | None:
+        """The actions item of what the session's runs did since the reviews that raised
+        ``findings`` ended, and the blocks each document revision since changed; None when
+        there are none."""
+        from .actions import MAX_ACTIONS, actions_item
+
+        with self.documents.control.read() as tx:
+            db = tx.sql
+            (start,) = db.execute(
+                "SELECT coalesce(min(r.end_seq),0) FROM review_findings f JOIN review_runs r "
+                "ON r.review_id=f.review_id WHERE f.finding_id IN (SELECT value FROM json_each(?))",
+                (json.dumps(findings),),
+            ).fetchone()
+            rows = db.execute(
+                "SELECT seq,source_key,kind,locator,payload FROM review_feed WHERE project=? "
+                "AND session=? AND seq>? AND (kind='action' OR (kind='document' "
+                "AND source_key GLOB 'document:*')) ORDER BY seq LIMIT ?",
+                (project, session, start, 2 * MAX_ACTIONS),
+            ).fetchall()
+        if not rows:
+            return None
+        actions = [
+            (stored_json(locator), stored_json(payload))
+            for _, _, kind, locator, payload in rows
+            if kind == "action"
+        ]
+        revised = [
+            {
+                "document": found.get("document"),
+                "revision": found.get("revision"),
+                **cast(Json, found.get("blocks") or {}),
+            }
+            for _, _, kind, _, payload in rows
+            if kind == "document"
+            for found in [stored_json(payload)]
+        ]
+        located, listed = actions_item(actions, revised, start + 1, rows[-1][0])
+        encoded = dump(listed)
+        return EvidenceItem("actions", dump(located), encoded, digest(encoded), 1)
 
     @staticmethod
     def _dispatch_window(db: sqlite3.Connection, project: str, session: str) -> _Window:
@@ -954,15 +1000,33 @@ class ReviewStore:
                             items.append(
                                 EvidenceItem("source", dump(locator), encoded, digest(encoded), 1)
                             )
+            claimed_pins: set[tuple[str, int]] = set()
             for raw in claimed.get("artifact_revisions", []) + claimed.get(
                 "artifact_replacements", []
             ):
                 ref = ArtifactRevisionRef.model_validate(raw)
+                claimed_pins.add((ref.artifact_id, ref.revision))
                 location, projection, ready = self.artifact_pin(project, session, ref)
                 encoded = dump(projection)
                 items.append(
                     EvidenceItem("artifact", dump(location), encoded, digest(encoded), int(ready))
                 )
+            # The files the fix names by path, so that what it says of them is checked
+            # against them (lab 41: a "fix" that misstated results/ell.json was confirmed).
+            from .artifacts import cited_artifacts
+
+            texts = [str(finding["response"].get("reason") or ""), dump(claimed)]
+            for locator in claimed.get("revisions", []) + claimed.get("replacements", []):
+                texts.append(
+                    self.documents.revision(project, locator["document"], locator["revision"]).text
+                )
+            for locator, projection in cited_artifacts(self, project, session, texts):
+                pin = cast(Json, locator.get("artifact") or {})
+                if (pin.get("artifact_id"), pin.get("revision")) in claimed_pins:
+                    continue
+                encoded = dump(projection)
+                cited = {**locator, "cited_by": {"finding": finding["finding"]}}
+                items.append(EvidenceItem("artifact", dump(cited), encoded, digest(encoded), 1))
         # Cross-snapshot access is an explicit immutable grant. Keeping the original ID
         # makes the retained finding/response anchors readable; it does not give the
         # reviewer ambient access to other reviews.
