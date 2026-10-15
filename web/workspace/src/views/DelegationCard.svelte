@@ -1,9 +1,11 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- One delegation (docs/specs/plans-and-delegation.md, PD-42): its brief, read-only (the
      platform's task, the entry it checks, leading to it at that revision, the inputs, the
-     parent's note, which is not evidence, the model chosen and the limits granted), and,
-     once it ended, its outcome: how it ended, what the platform observed of its reading,
-     the result's verdict, status, coverage, refutation or obstacle and the rest, the
+     parent's note, which is not evidence, the model chosen and the limits granted; for a
+     task, its parent's text and context, its track, its issue and whether it may delegate),
+     and, once it ended, its outcome: how it ended, what the platform observed of a check's
+     reading, the result's verdict (a check's) and status, coverage, refutation or obstacle,
+     a task's dismissals, obstructions and declared result files, and the rest, the
      report, why the plan fence refused calls or the result did not validate, and the
      files its calls recorded, with what they could not record, leading to the artifact
      list of its run (RA-36). Agents'
@@ -66,8 +68,13 @@
           >{:else}{visible(brief.entry.handle)}{/if}
       </p>
     {/if}
+    {#if brief.context}<p class="label">Context from its parent</p>
+      <p class="said">{brief.context}</p>{/if}
     {#if brief.inputs.length}<p class="label">Inputs</p>
       {@render list(brief.inputs)}{/if}
+    {#if brief.track}<p>On the plan's track {brief.track}</p>{/if}
+    {#if brief.issue}<p>On the issue {brief.issue}</p>{/if}
+    {#if brief.delegates}<p>It may delegate tasks of its own.</p>{/if}
     {#if brief.note}
       <p class="label">The parent's note, which is not evidence</p>
       <p class="said">{brief.note}</p>
@@ -81,9 +88,13 @@
     {#if delegation.ended_at}<p class="muted">Ended {formatTime(delegation.ended_at)}</p>{/if}
     {#if reading}<p>{reading}</p>{/if}
     {#if result}
-      <p>
-        <strong>Verdict: {result.verdict}</strong>; status {result.status}
-      </p>
+      {#if delegation.kind === 'task'}
+        <p><strong>Status: {result.status}</strong></p>
+      {:else}
+        <p>
+          <strong>Verdict: {result.verdict}</strong>; status {result.status}
+        </p>
+      {/if}
       {#if result.refutation}<p class="label">Refutation</p>
         <p class="said">{result.refutation}</p>{/if}
       {#if result.obstacle}<p class="label">Obstacle</p>
@@ -98,6 +109,12 @@
         {@render list(result.deviations)}{/if}
       {#if result.openQuestions.length}<p class="label">Open questions</p>
         {@render list(result.openQuestions)}{/if}
+      {#if result.dismissals.length}<p class="label">Work it dropped, and what ran out</p>
+        {@render list(result.dismissals)}{/if}
+      {#if result.obstructions.length}<p class="label">Obstructions it claims, and why</p>
+        {@render list(result.obstructions)}{/if}
+      {#if result.resultFiles.length}<p class="label">Its declared result files</p>
+        {@render list(result.resultFiles)}{/if}
     {:else}
       <p class="problem">It returned no result that validated.</p>
     {/if}
