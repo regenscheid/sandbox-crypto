@@ -71,6 +71,16 @@ class ContextLimitError(ModelError):
     """The conversation is longer than the model's context window."""
 
 
+class GatewayBudgetError(ModelError):
+    """The gateway refused the call because a spending budget is exhausted: its key's,
+    user's or team's, which LiteLLM keeps (run-service spec RS-6d). Not tried again: a
+    later attempt fails the same way until the budget is raised or resets."""
+
+
+GATEWAY_BUDGET: Final = "gateway_budget"
+"""How a run stops when the gateway refuses a call for its budget."""
+
+
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 """The largest answer read from the gateway, by default."""
 RETRIED: Final = frozenset({429, 502, 503, 504})
@@ -85,12 +95,13 @@ class OpenAICompatibleModel:
 
     ``max_tokens``, when given, limits each answer's length. An answer larger than
     ``max_response_bytes``, a redirect (never followed: it would carry the request to
-    another address), and any other status but 2xx are errors. A rate limit (429) or an
-    unavailable upstream (502, 503, 504) is tried again up to ``retries`` times, after
-    ``Retry-After`` or ``backoff`` seconds doubling each time, at most a minute. A
-    gateway that says the conversation exceeds the model's context raises
-    ``ContextLimitError``. An error's message quotes the gateway's answer, with the key
-    replaced if the answer holds it.
+    another address), and any other status but 2xx are errors. A gateway that refuses
+    the call because a spending budget is exhausted raises ``GatewayBudgetError``, never
+    tried again, whatever its status. A rate limit (429) or an unavailable upstream (502,
+    503, 504) is tried again up to ``retries`` times, after ``Retry-After`` or ``backoff``
+    seconds doubling each time, at most a minute. A gateway that says the conversation
+    exceeds the model's context raises ``ContextLimitError``. An error's message quotes
+    the gateway's answer, with the key replaced if the answer holds it.
     """
 
     def __init__(
@@ -185,6 +196,9 @@ class OpenAICompatibleModel:
                 error = ModelError(
                     f"the model gateway returned {status}: {text[:300]}", status=status
                 )
+                # Before the retries: LiteLLM sends some budget refusals as 429s.
+                if 400 <= status < 500 and _budget_exceeded(text):
+                    raise GatewayBudgetError(str(error), status=status)
                 if status in RETRIED:
                     raise _RetryableError(error, _retry_after(response.headers.get("Retry-After")))
                 if status in (400, 413) and _context_exceeded(text):
@@ -213,19 +227,48 @@ def _retry_after(value: str | None) -> float | None:
     return seconds if seconds is not None and 0 <= seconds < float("inf") else None
 
 
+BUDGET_MARKS: Final = (
+    "budget has been exceeded",
+    "budgetexceedederror",
+    "exceededbudget",
+    "exceededtokenbudget",
+    "exceeded budget",
+)
+"""How LiteLLM's errors name a spent budget, in lower case: ``BudgetExceededError``'s
+"Budget has been exceeded! Current cost: ..., Max budget: ...", and the proxy's checks
+of a key's, user's, team's or end user's budget ("ExceededBudget: User=... over
+budget", "ExceededTokenBudget: ...", "... exceeded budget for model=...")."""
+
+
+def _error_fields(text: str) -> dict[str, object]:
+    """The error object of a gateway's answer, or nothing."""
+    try:
+        error = _object(json.loads(text)).get("error")
+    except (ValueError, RecursionError, TypeError):
+        return {}
+    return cast(dict[str, object], error) if isinstance(error, dict) else {}
+
+
+def _budget_exceeded(text: str) -> bool:
+    """Whether a gateway's error says a spending budget is exhausted.
+
+    The error object's ``type`` is LiteLLM's ``budget_exceeded``, or its message names a
+    spent budget as LiteLLM's do (``BUDGET_MARKS``). Its status varies with LiteLLM's
+    version (400, 401 or 429), so it is not consulted. Text elsewhere in the answer,
+    which can quote the request, does not count."""
+    fields = _error_fields(text)
+    message = fields.get("message")
+    said = message.lower() if isinstance(message, str) else ""
+    return fields.get("type") == "budget_exceeded" or any(mark in said for mark in BUDGET_MARKS)
+
+
 def _context_exceeded(text: str) -> bool:
     """Whether a gateway's error says the input is longer than the model's context.
 
     The error object's ``code`` is ``context_length_exceeded`` as OpenAI-compatible
     providers send it, or its message names LiteLLM's ``ContextWindowExceededError``.
     Text elsewhere in the answer, which can quote the request, does not count."""
-    try:
-        error = _object(json.loads(text)).get("error")
-    except (ValueError, RecursionError):
-        return False
-    if not isinstance(error, dict):
-        return False
-    fields = cast(dict[str, object], error)
+    fields = _error_fields(text)
     message = fields.get("message")
     return fields.get("code") == "context_length_exceeded" or (
         isinstance(message, str) and message.startswith("litellm.ContextWindowExceededError")

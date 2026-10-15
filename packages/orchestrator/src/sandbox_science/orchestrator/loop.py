@@ -17,7 +17,14 @@ from typing import Any, Final, Literal, TypeVar
 
 from .hooks import RESPONSE_ROUNDS, Notice, Point, TurnHook
 from .memory_prompt import MemoryGiven
-from .model import ChatModel, ContextLimitError, Message, ModelTurn
+from .model import (
+    GATEWAY_BUDGET,
+    ChatModel,
+    ContextLimitError,
+    GatewayBudgetError,
+    Message,
+    ModelTurn,
+)
 from .plan_tools import GUIDANCE, GUIDANCE_VERSION, Plans
 from .plan_tools import NAMES as PLAN_NAMES
 from .projects import FailurePhase, ModelUsage
@@ -282,7 +289,8 @@ async def _attach(
 
 async def _complete(model: ChatModel, toolbox: Toolbox, transcript: Transcript) -> ModelTurn | None:
     """The model's reply, or ``None`` when the conversation is too long for the model:
-    longer than the run's budget, or than the model's context as the gateway says. No
+    longer than the run's budget, or than the model's context as the gateway says; or
+    when the gateway refused the call for its budget, which ``halted`` then says. No
     model call saw the notices offered since the last one.
     """
     size = transcript.size
@@ -295,6 +303,9 @@ async def _complete(model: ChatModel, toolbox: Toolbox, transcript: Transcript) 
     except ContextLimitError as error:
         _log.warning("the conversation, %d characters, exceeds the model's: %s", size, error)
         reply = None
+    except GatewayBudgetError as error:
+        _log.warning("the model gateway refused the call for its budget: %s", error)
+        transcript.halted, reply = GATEWAY_BUDGET, None
     transcript.phase = "harness"
     if reply is None:
         return None
@@ -313,20 +324,24 @@ async def _complete(model: ChatModel, toolbox: Toolbox, transcript: Transcript) 
 
 async def _halted(hooks: Sequence[TurnHook], transcript: Transcript) -> bool:
     """Whether a hook stops the run before its next model call, as a spent model budget
-    does (run-service spec RS-6a). An answer a closing round was taken for stands, closed
-    again with no turn left to take; the run's ``stopped`` is the hook's reason, unless
-    a hook stopped it at that closing. Notices no model call saw wait for the next run.
-    """
+    does (run-service spec RS-6a)."""
     for hook in hooks:
-        if (reason := await hook.halt(transcript)) is None:
-            continue
-        transcript.room, transcript.halted = False, reason
-        if transcript.pending is not None:
-            await _closing(hooks, transcript, transcript.pending)
-        if transcript.stopped == "answered":
-            transcript.stopped = reason
-        return True
+        if (reason := await hook.halt(transcript)) is not None:
+            await _halt(hooks, transcript, reason)
+            return True
     return False
+
+
+async def _halt(hooks: Sequence[TurnHook], transcript: Transcript, reason: str) -> None:
+    """Stop the run before a model call, for ``reason``: a hook's, or the gateway's
+    refusal for its budget (RS-6d). An answer a closing round was taken for stands,
+    closed again with no turn left to take; the run's ``stopped`` is the reason, unless a
+    hook stopped it at that closing. Notices no model call saw wait for the next run."""
+    transcript.room, transcript.halted = False, reason
+    if transcript.pending is not None:
+        await _closing(hooks, transcript, transcript.pending)
+    if transcript.stopped == "answered":
+        transcript.stopped = reason
 
 
 async def _out_of_room(hooks: Sequence[TurnHook], transcript: Transcript) -> None:
@@ -361,7 +376,10 @@ async def _run_task(
         await _notices(hooks, "turn", transcript)
         transcript.turns = turn + 1
         if (reply := await _complete(model, toolbox, transcript)) is None:
-            await _out_of_room(hooks, transcript)
+            if transcript.halted is not None:  # the gateway's budget is spent
+                await _halt(hooks, transcript, transcript.halted)
+            else:
+                await _out_of_room(hooks, transcript)
             return transcript
         assistant: Message = {"role": "assistant", "content": reply.text}
         if reply.tool_calls:

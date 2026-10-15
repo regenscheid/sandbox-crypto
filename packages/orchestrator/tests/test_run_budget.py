@@ -13,6 +13,7 @@ tokens as the calls made so far: a few tokens a call.
 
 from __future__ import annotations
 
+from sandbox_science.orchestrator import service as service_module
 from sandbox_science.orchestrator.runstate import cost
 from sandbox_science.testing import eventually
 
@@ -36,6 +37,28 @@ async def test_a_run_that_spends_the_budget_stops_before_its_next_call(
     assert states(harness) == {"m-1": "delivered"}
     stopped = runs(harness).events(PROJECT, SESSION, names(harness)[0])[-1]
     assert stopped.data["stopped"] == "budget"
+
+
+async def test_a_gateway_that_refuses_for_its_budget_ends_the_run_and_the_session_waits(
+    harness: Harness,
+) -> None:
+    """RS-6d: the gateway's own budget, as LiteLLM keeps it for the key. The refused call
+    is not tried again, the run ends there, and the message waits, no run starting for it
+    until the session's wait is over."""
+    refusal = '{"error":{"message":"Budget has been exceeded! Current cost: 5.1, Max budget: 5.0","type":"budget_exceeded","param":null,"code":"400"}}'  # noqa: E501
+    post(harness, "m-1", "Are you there?")
+    replies = (Reply(status=400, error=refusal), Reply("Never sent."))
+    async with serving(harness, *replies) as service:
+        (record,) = await ended(harness)
+        await eventually(lambda: (PROJECT, SESSION) in service.waiting_until)
+        waited = service.waiting_until[PROJECT, SESSION] - service.clock.monotonic()
+        assert waited > service_module.MAX_WAIT - 60
+        assert len(names(harness)) == 1  # no other run starts for the waiting message
+    assert (record.stopped, record.failure, record.final_text) == ("gateway_budget", None, None)
+    assert len(harness.gateway.main) == 1
+    assert states(harness) == {"m-1": "queued"}  # no model call saw it: it waits
+    stopped = runs(harness).events(PROJECT, SESSION, names(harness)[0])[-1]
+    assert stopped.data["stopped"] == "gateway_budget"
 
 
 async def test_what_arrives_after_the_budget_is_spent_waits(harness: Harness) -> None:
