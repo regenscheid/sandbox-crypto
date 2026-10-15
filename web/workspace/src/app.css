@@ -199,6 +199,12 @@ ul.links {
   padding-left: 1.2rem;
 }
 
+/* An entry flagged for reconsideration: its count on a card or a row. */
+.flagged {
+  color: var(--approximate);
+  font-size: 0.9em;
+}
+
 /* The PDF viewer's frame, from the preview origin. */
 .pdf-frame {
   display: block;

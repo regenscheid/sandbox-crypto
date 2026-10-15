@@ -1,8 +1,12 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- One ledger entry at a revision, read by its handle or ID, and its history
-     (docs/specs/ledger.md, LG-34). Read-only. -->
+     (docs/specs/ledger.md, LG-34). After the user's change to it, it is read again: the
+     entry shown stays until the new read arrives. -->
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { api } from '../lib/api';
+  import type { LedgerEntry } from '../lib/api-types';
+  import { Detail, noDetail } from '../lib/detail';
   import { ledgerHref, projectHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
   import LedgerEntryBody from './LedgerEntryBody.svelte';
@@ -13,7 +17,17 @@
     entryName,
     revision,
   }: { projectId: string; entryName: string; revision: number | null } = $props();
-  const loading = $derived(api.ledgerEntry(projectId, entryName, revision));
+  const shown = $state(noDetail<string, LedgerEntry>());
+  // The route keys this view by the entry and revision: they never change here.
+  const detail = new Detail(shown, () => api.ledgerEntry(projectId, entryName, revision));
+  void detail.show(untrack(() => `${entryName}@${revision ?? 'current'}`));
+  /** Counts the user's changes, so the history reads its first page again after one. */
+  let changes = $state(0);
+
+  async function changed(): Promise<void> {
+    await detail.reload();
+    changes += 1;
+  }
 </script>
 
 <nav class="trail">
@@ -21,18 +35,19 @@
   <a href={ledgerHref(projectId)}>Ledger</a> /
 </nav>
 
-{#await loading}
-  <h1>{entryName}</h1>
-  <p class="muted">Loading…</p>
-{:then answer}
-  <LedgerEntryBody {projectId} entry={answer.entry} />
+{#if shown.value}
+  {@const entry = shown.value.entry}
+  <LedgerEntryBody {projectId} {entry} {changed} />
   <LedgerHistory
     {projectId}
-    entryId={answer.entry.entry_id}
-    handle={answer.entry.handle}
-    shown={answer.entry.revision}
+    entryId={entry.entry_id}
+    handle={entry.handle}
+    shown={entry.revision}
+    {changes}
+    {changed}
   />
-{:catch error}
+{:else}
   <h1>{entryName}</h1>
-  <ErrorMessage {error} />
-{/await}
+  {#if shown.loading}<p class="muted">Loading…</p>{/if}
+{/if}
+{#if shown.error}<ErrorMessage error={shown.error} />{/if}

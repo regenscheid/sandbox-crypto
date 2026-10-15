@@ -8,7 +8,7 @@ import IssueRow from '../views/IssueRow.svelte';
 import LedgerEntryBody from '../views/LedgerEntryBody.svelte';
 import LedgerLinks from '../views/LedgerLinks.svelte';
 import { api } from './api';
-import type { EntryFinding, EntryLink, EntryView, EvidenceLink } from './api-types';
+import type { EntryFinding, EntryFlag, EntryLink, EntryView, EvidenceLink } from './api-types';
 import { incomingLinks, incomingState, linksByKind, uniqueLinks } from './ledger';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -121,6 +121,7 @@ describe('the ledger views', () => {
         'LedgerEntryView.svelte',
         'LedgerEvidence.svelte',
         'LedgerFindings.svelte',
+        'LedgerFlags.svelte',
         'LedgerHistory.svelte',
         'LedgerIncoming.svelte',
         'LedgerLinks.svelte',
@@ -340,5 +341,66 @@ describe('the evidence and findings on an entry', () => {
     expect(html).toContain('C-50 r2');
     expect(html).not.toContain('C-51 r2');
     expect(html).toContain('Show all 60 evidence links');
+  });
+});
+
+describe('the flags on an entry', () => {
+  const flag = (fields: Partial<EntryFlag>): EntryFlag => ({
+    flag_id: 'flag-1',
+    cause: 'dependency_status',
+    source: { entry: 'entry-0', handle: 'A-1', revision: 2, status: 'withdrawn' },
+    via: null,
+    revision: 3,
+    raised: '2026-10-15T00:00:00Z',
+    reviews: [],
+    reopens: null,
+    ...fields,
+  });
+
+  it('show hostile sources and flag IDs as text, every link in the workspace', () => {
+    const entry = hostileEntry({
+      open_flags: 120,
+      flags: [
+        flag({ flag_id: HOSTILE, source: { handle: HOSTILE, revision: 1 } }),
+        flag({ flag_id: 'flag-2', source: { handle: 'javascript:alert(1)' }, via: HOSTILE }),
+        flag({ flag_id: 'flag-3', cause: 'spread', reviews: [HOSTILE], reopens: HOSTILE }),
+      ],
+    });
+    const html = render(LedgerEntryBody, { props: { projectId: 'p1', entry } }).body;
+    const found = inspect(html);
+    expect(found.hostile).toBe(false);
+    for (const href of found.hrefs) expect(href.startsWith('#/projects/'), href).toBe(true);
+    expect(html).toContain('120 open flags');
+    expect(html).toContain('The newest 3 are listed');
+    expect(html).toContain('Clear all 120 open flags');
+    expect(html).toContain('Reason for clearing (required)');
+  });
+
+  it('show none and offer nothing when the entry has none', () => {
+    const html = render(LedgerEntryBody, {
+      props: { projectId: 'p1', entry: hostileEntry() },
+    }).body;
+    expect(html).not.toContain('Reason for clearing');
+  });
+
+  it('count on an issue row', () => {
+    const html = render(IssueRow, {
+      props: {
+        projectId: 'p1',
+        issue: {
+          entry_id: 'entry-0123456789abcdef01234567',
+          handle: 'I-1',
+          type: 'issue',
+          origin: null,
+          revision: 1,
+          title: 'Q',
+          status: 'open',
+          updated: '2026-10-15T00:00:00Z',
+          asserted_only: null,
+          open_flags: 3,
+        },
+      },
+    }).body;
+    expect(html).toContain('3 open flags');
   });
 });
