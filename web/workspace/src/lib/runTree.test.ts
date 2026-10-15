@@ -10,11 +10,12 @@ import RunTreeNode from '../views/RunTreeNode.svelte';
 import type { Delegation, TreeRun } from './api-types';
 import { hostileMarkup } from './approvalTesting';
 import fixtures from './hidden.fixtures.json';
-import { parseRoute, runHref, treeHref } from './router';
+import { filesHref, parseRoute, runHref, treeHref } from './router';
 import {
   briefView,
   delegationsById,
   endedText,
+  filesView,
   limitsText,
   readingText,
   resultView,
@@ -240,7 +241,101 @@ describe('the run tree views', () => {
                   ...(where === 'the summary' ? { summary: text } : { refutation: text }),
                 },
               });
-      const html = render(DelegationCard, { props: { projectId: 'p1', delegation: shown } }).body;
+      const html = render(DelegationCard, {
+        props: { projectId: 'p1', sessionId: 's1', delegation: shown },
+      }).body;
+      for (const [, code] of hidden) expect(html).toContain(`⟦${code}⟧`);
+    },
+  );
+});
+
+const SHA = 'ab'.repeat(32);
+const file = (path: string, fields: Record<string, unknown> = {}) => ({
+  path,
+  artifact_id: 'art-1',
+  revision: 2,
+  sha256: SHA,
+  size: 2048,
+  content_retained: true,
+  deleted: false,
+  reproduced: false,
+  ...fields,
+});
+
+describe('the files a delegated run recorded', () => {
+  it('lists each, what its revision is, and what the calls could not record', () => {
+    const found = filesView(
+      delegation({
+        files: {
+          total: 5,
+          files: [
+            file('out/table.csv'),
+            file('out/old.csv', { deleted: true, revision: 3, size: 0, content_retained: false }),
+            file('out/big.bin', { content_retained: false, reproduced: true }),
+          ],
+          gaps: { incomplete: 1, failed: 2, 'larger than 4 GiB': 3, ignored: 0 },
+        },
+      }),
+    )!;
+    expect(found.total).toBe(5);
+    expect(found.files).toEqual([
+      { path: 'out/table.csv', what: 'art-1, written r2, 2.0 KiB, sha256 abababababab…' },
+      { path: 'out/old.csv', what: 'art-1, deleted r3: a tombstone' },
+      {
+        path: 'out/big.bin',
+        what: 'art-1, the same bytes again r2, 2.0 KiB, sha256 abababababab…; bytes not kept',
+      },
+    ]);
+    expect(found.gaps).toEqual([
+      '1 list the worker cut short',
+      '2 recordings that stopped part way',
+      '3 left out: larger than 4 GiB',
+    ]);
+    expect(filesView(delegation({ files: null }))).toBeNull();
+  });
+
+  it('show paths as text, isolated, leading to the artifact list of the run', () => {
+    const shown = (runId: string | null, path: string) =>
+      render(DelegationCard, {
+        props: {
+          projectId: 'p1',
+          sessionId: 's1',
+          runId,
+          delegation: delegation({
+            files: { total: 250, files: [file(path)], gaps: { [HOSTILE]: 1 } },
+          }),
+        },
+      }).body;
+    const html = shown('run-child', `${HOSTILE}/‮gnp.exe`);
+    expect(hostileMarkup(html)).toBe(false);
+    expect(html).toContain('<bdi>');
+    expect(html).toContain('⟦U+202E⟧gnp.exe');
+    expect(html).toContain('Files its calls recorded: 250, the first 1 listed');
+    expect([...html.matchAll(/href="([^"]*)"/g)].map((m) => m[1])).toContain(
+      '#/projects/p1/files/s1/run-child',
+    );
+    // The artifact list takes identifiers only: no link for another run ID.
+    expect(shown('../x', 'a').includes('/files/')).toBe(false);
+    expect(shown(null, 'a').includes('/files/')).toBe(false);
+    expect(parseRoute(filesHref('p 1', 's1', 'run-child'))).toEqual({
+      view: 'files',
+      project: 'p 1',
+      session: 's1',
+      run: 'run-child',
+    });
+  });
+
+  const pathCases = fixtures.cases.map((c) => ({ ...c, hidden: c.hidden as [number, string][] }));
+  it.each(pathCases)(
+    '$name, in a path: each hidden character as its code point',
+    ({ text, hidden }) => {
+      const html = render(DelegationCard, {
+        props: {
+          projectId: 'p1',
+          sessionId: 's1',
+          delegation: delegation({ files: { total: 1, files: [file(text)] } }),
+        },
+      }).body;
       for (const [, code] of hidden) expect(html).toContain(`⟦${code}⟧`);
     },
   );

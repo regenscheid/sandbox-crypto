@@ -14,6 +14,8 @@
  * - `#/projects/<project>/documents/<document>/history` who changed what in it;
  * - `#/projects/<project>/artifacts/<artifact>/revisions/<number>/<sha256>` a published
  *   PDF in the viewer, and `…/pages/<page>` opened at a page (a quote's);
+ * - `#/projects/<project>/files/<session>/<run>` the project's artifacts that a run
+ *   recorded, as a delegation's files link to them;
  * - `#/projects/<project>/memory` the project memory: its entries and the proposals that
  *   wait for the user;
  * - `#/projects/<project>/ledger` the project's ledger as a board,
@@ -30,6 +32,7 @@ export type Route =
   | { view: 'session'; project: string; session: string }
   | { view: 'review'; project: string; session: string; review: string }
   | { view: 'tree'; project: string; session: string }
+  | { view: 'files'; project: string; session: string; run: string }
   | { view: 'run'; project: string; session: string; run: string }
   | { view: 'finding'; project: string; session: string; finding: string }
   | {
@@ -85,6 +88,10 @@ export function parseRoute(hash: string): Route {
   if (parts.length === 2) return { view: 'project', project };
   if (parts.length === 3 && parts[2] === 'memory') return { view: 'memory', project };
   if (parts[2] === 'ledger') return ledgerRoute(project, parts.slice(3));
+  if (parts[2] === 'files' && parts.length === 5) {
+    const [session, run] = [decoded(parts[3]!), decoded(parts[4]!)];
+    if (session !== null && run !== null) return { view: 'files', project, session, run };
+  }
   if (parts[2] === 'frontier' && parts.length === 3) return { view: 'categories', project };
   if (parts[2] === 'frontier' && parts.length === 4) {
     const category = parts[3]!;
@@ -163,6 +170,11 @@ export function projectHref(project: string): string {
 
 export function sessionHref(project: string, session: string): string {
   return `${projectHref(project)}/sessions/${encodeURIComponent(session)}`;
+}
+
+/** The project's artifact list, filtered to the files a session's run recorded (RA-37). */
+export function filesHref(project: string, session: string, run: string): string {
+  return `${projectHref(project)}/files/${encodeURIComponent(session)}/${encodeURIComponent(run)}`;
 }
 
 /** A session's run tree (PD-42). */

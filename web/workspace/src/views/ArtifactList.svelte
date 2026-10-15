@@ -3,15 +3,24 @@
      results first, published or declared, then every other file the runs' calls wrote,
      of one session or run, or with a path that has some text, if the user names it. -->
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { type ArtifactFilter, byRevision, NO_FILTER } from '../lib/artifactFiles';
   import ArtifactTable from './ArtifactTable.svelte';
 
-  let { projectId }: { projectId: string } = $props();
-  let session = $state(''),
-    run = $state(''),
-    contains = $state('');
+  let {
+    projectId,
+    initial = NO_FILTER,
+  }: {
+    projectId: string;
+    /** The filter to start with, such as a delegated run's, as a link names it. */
+    initial?: ArtifactFilter;
+  } = $props();
+  const start = untrack(() => initial);
+  let session = $state(start.session),
+    run = $state(start.run),
+    contains = $state(start.contains);
   // Applied when the user leaves a field, not on every key.
-  let filter = $state<ArtifactFilter>({ ...NO_FILTER });
+  let filter = $state<ArtifactFilter>({ ...start });
   function apply() {
     const next = { session: session.trim(), run: run.trim(), contains };
     if (JSON.stringify(next) !== JSON.stringify(filter)) filter = next;

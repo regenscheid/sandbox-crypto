@@ -2,11 +2,13 @@
 /**
  * A session's run tree as the workspace shows it (docs/specs/plans-and-delegation.md,
  * PD-42): its runs nested under their parents, each with its role, state, model and the
- * limits it ran under; and each delegation's brief, read-only, and outcome. The brief's
- * note, the outcome's fields and the report are agents' text, shown with each character
- * a person may not see as its code point.
+ * limits it ran under; and each delegation's brief, read-only, its outcome and the files
+ * its calls recorded (RA-36). The brief's note, the outcome's fields, the report and the
+ * files' paths are agents' text, shown with each character a person may not see as its
+ * code point.
  */
 import type { Delegation, TreeRun } from './api-types';
+import { sizeText } from './pdfAnchors';
 import { visible } from './text';
 
 /** A run with the runs it delegated to, in the order they started. */
@@ -173,4 +175,58 @@ export function readingText(delegation: Pick<Delegation, 'read_entry' | 'read_pr
 /** Each delegation by its ID. */
 export function delegationsById(delegations: readonly Delegation[]): Map<string, Delegation> {
   return new Map(delegations.map((delegation) => [delegation.delegation_id, delegation]));
+}
+
+/** One file a delegated run's calls recorded, as the tree shows it. */
+export interface FileView {
+  /** Its path, each character a person may not see as its code point. */
+  path: string;
+  /** What the revision is: kept, a tombstone, or one whose bytes are not kept. */
+  what: string;
+}
+
+/** The files a delegated run's calls recorded (RA-36), and what they could not record. */
+export interface FilesView {
+  total: number;
+  files: FileView[];
+  /** What the calls left out or cut short, in words, by reason. */
+  gaps: string[];
+}
+
+const GAP_WORDS: Record<string, (count: number) => string> = {
+  incomplete: (n) => `${n} ${n === 1 ? 'list' : 'lists'} the worker cut short`,
+  failed: (n) => `${n} ${n === 1 ? 'recording' : 'recordings'} that stopped part way`,
+};
+
+/** A delegation's recorded files; null when its calls recorded nothing and left nothing out. */
+export function filesView(delegation: Pick<Delegation, 'files'>): FilesView | null {
+  if (delegation.files === null) return null;
+  const files = record(delegation.files);
+  const listed = Array.isArray(files.files) ? files.files.map(record) : [];
+  const gaps = Object.entries(record(files.gaps))
+    .filter(([, count]) => Number.isSafeInteger(count) && (count as number) > 0)
+    .map(([reason, count]) =>
+      reason in GAP_WORDS
+        ? GAP_WORDS[reason]!(count as number)
+        : `${count as number} left out: ${visible(reason)}`,
+    );
+  return {
+    total: Number.isSafeInteger(files.total) ? (files.total as number) : listed.length,
+    files: listed.map((file) => {
+      const revision = Number.isSafeInteger(file.revision) ? ` r${file.revision as number}` : '';
+      const sha =
+        typeof file.sha256 === 'string' ? `, sha256 ${visible(file.sha256.slice(0, 12))}…` : '';
+      const size = Number.isSafeInteger(file.size) ? `, ${sizeText(file.size as number)}` : '';
+      const what =
+        file.deleted === true
+          ? `deleted${revision}: a tombstone`
+          : `${file.reproduced === true ? 'the same bytes again' : 'written'}${revision}${size}${sha}` +
+            (file.content_retained === false ? '; bytes not kept' : '');
+      return {
+        path: visible(typeof file.path === 'string' ? file.path : String(file.path)),
+        what: `${visible(typeof file.artifact_id === 'string' ? file.artifact_id : '?')}, ${what}`,
+      };
+    }),
+    gaps,
+  };
 }
