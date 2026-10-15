@@ -27,11 +27,12 @@ from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import USER, DocumentStore, store_path
 from sandbox_science.orchestrator.jobs import WATCHER_PROMPT, JobTools
 from sandbox_science.orchestrator.jobstate import JobState
-from sandbox_science.orchestrator.memory import ProjectMemory
+from sandbox_science.orchestrator.memory import GIVEN_CHARS, MemoryEntry, ProjectMemory
 from sandbox_science.orchestrator.memory_prompt import (
     REVIEWER_FRAMING,
     WATCHER_FRAMING,
     for_reviewer,
+    for_run,
     for_watcher,
 )
 from sandbox_science.orchestrator.model import Message, ModelTurn, ToolSpec
@@ -182,3 +183,18 @@ def test_a_watcher_pin_names_its_memory_or_none() -> None:
     changed: dict[str, Any] = {"memory": given.pin.model_copy(update={"version": 3})}
     with pytest.raises(ValueError, match="watcher"):
         encode_watcher(empty.provenance.model_copy(update=changed))
+
+
+@pytest.mark.parametrize("give", [for_run, for_reviewer, for_watcher])
+def test_every_roles_section_stays_within_the_bound(give: Any) -> None:
+    """PM-7: whatever the framing, the whole section as sent, the line on entries left
+    out included, stays within the bound."""
+    at = datetime(2026, 10, 15, tzinfo=UTC)
+    entries = tuple(
+        MemoryEntry(entry_id=f"mem-{n}", revision=999999999, text="x" * 1000, changed_at=at)
+        for n in range(999999901, 1000000000)
+    )
+    section = give(999999999, entries).section
+    assert section is not None
+    assert "entries were left out" in section.text
+    assert len(section.text) <= GIVEN_CHARS
