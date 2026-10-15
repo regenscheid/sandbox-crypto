@@ -154,6 +154,48 @@ def test_a_result_in_a_category_gives_each_condition_and_only_its_measures(
     assert [kind for kind, _ in events(ledger)].count("ledger.entry_created") == 2
 
 
+# The review of the frontier stack.
+
+
+def test_a_category_as_long_as_the_model_takes_is_kept(ledger: Ledger) -> None:
+    """L1: a target or units of characters UTF-8 writes in several bytes, within the
+    model's lengths, were refused by the store's CHECKs as an internal error."""
+    wide = {
+        **KEY_RECOVERY,
+        "target": "\U0001d53d" * 4096,
+        "kind": "\u00e9" * 4096,
+        "measures": [
+            {"name": f"m{n}-" + "x" * 120, "unit": "\x01" * 512, "direction": "lower"}
+            for n in range(16)
+        ],
+        "reason": "\U0001d53d" * 4096,
+    }
+    defined = ledger.define_category("p", wide, USER)
+    assert (len(defined.target), defined.measures[15].unit) == (4096, "\x01" * 512)
+    assert ledger.category("p", "key-recovery") == defined
+    too_long = {**wide, "target": "x" * 4097, "operation_id": "long"}
+    with pytest.raises(DocumentError) as refused:
+        ledger.define_category("p", too_long, USER)
+    assert refused.value.kind == "invalid_request"
+
+
+def test_condition_keys_are_compared_folded_and_values_hold_no_hidden_text(
+    ledger: Ledger,
+) -> None:
+    """M4: a key written with capitals is the category's key, once; an agent's condition
+    value with a hidden character is refused (#317's check of every field)."""
+    with pytest.raises(DocumentError, match="each measure and condition key once"):
+        ledger.define_category("p", {**KEY_RECOVERY, "conditions": ["model", "Model"]}, USER)
+    ledger.define_category("p", KEY_RECOVERY, MAIN)
+    capitals = {"Model": "classical", "success": "at least 1/2"}
+    change(ledger, result(conditions=capitals), op="capitals")
+    with pytest.raises(DocumentError, match="the condition keys model more than once"):
+        change(ledger, result(conditions={**CLASSICAL, "MODEL": "quantum"}), op="twice")
+    hidden = {"model": "classical\u200b", "success": "at least 1/2"}
+    with pytest.raises(DocumentError, match=r"fields\.conditions\.model holds U\+200B"):
+        change(ledger, result(conditions=hidden), op="hidden")
+
+
 def test_a_version_25_store_takes_categories_after_the_migration(
     ledger: Ledger, tmp_path: Path
 ) -> None:

@@ -519,7 +519,9 @@ class CategoryDefinition(Contract):
     @model_validator(mode="after")
     def _distinct(self) -> Self:
         names = [measure.name for measure in self.measures]
-        if len(set(names)) != len(names) or len(set(self.conditions)) != len(self.conditions):
+        # The frontier reads condition keys case folded (frontier.normal; they are ASCII).
+        keys = [key.casefold() for key in self.conditions]
+        if len(set(names)) != len(names) or len(set(keys)) != len(keys):
             raise ValueError("a category names each measure and condition key once")
         return self
 

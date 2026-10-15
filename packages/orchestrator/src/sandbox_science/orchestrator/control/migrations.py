@@ -1834,7 +1834,9 @@ def _frontier_categories(schema: Schema) -> None:
     each named in its project, in the order they were defined, at its current revision;
     and every revision, written once: the target and kind of result it compares, its
     measures, each with a unit and a direction, its condition keys, who wrote it, why,
-    and under which operation."""
+    and under which operation. Every definition the model takes fits: 4096 characters
+    of target, kind and reason, and 16 measures, each unit 512 characters, as JSON with
+    every character escaped."""
     name = _NAME.format(column="category")
     for statement in (
         f"""CREATE TABLE frontier_categories (
@@ -1855,11 +1857,11 @@ BEGIN SELECT RAISE(ABORT, 'frontier categories are kept'); END""",
     project TEXT NOT NULL,
     category TEXT NOT NULL,
     revision INTEGER NOT NULL CHECK (revision BETWEEN 1 AND 999999999),
-    target TEXT NOT NULL CHECK (length(CAST(target AS BLOB)) BETWEEN 1 AND 2048),
-    kind TEXT NOT NULL CHECK (length(CAST(kind AS BLOB)) BETWEEN 1 AND 2048),
+    target TEXT NOT NULL CHECK (length(CAST(target AS BLOB)) BETWEEN 1 AND 16384),
+    kind TEXT NOT NULL CHECK (length(CAST(kind AS BLOB)) BETWEEN 1 AND 16384),
     measures TEXT NOT NULL CHECK (json_valid(measures) AND json_type(measures) = 'array'
         AND json_array_length(measures) BETWEEN 1 AND 16
-        AND length(CAST(measures AS BLOB)) <= 16384),
+        AND length(CAST(measures AS BLOB)) <= 65536),
     conditions TEXT NOT NULL CHECK (json_valid(conditions) AND json_type(conditions) = 'array'
         AND json_array_length(conditions) <= 16 AND length(CAST(conditions AS BLOB)) <= 4096),
     author TEXT NOT NULL CHECK (json_valid(author) AND length(CAST(author AS BLOB)) <= 8192),

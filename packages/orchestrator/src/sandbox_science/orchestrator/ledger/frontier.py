@@ -6,13 +6,16 @@ with a unit and a direction (lower or higher is better), and its condition keys
 (LG-18). Categories are versioned project records: the user or the main agent defines
 one, and revises it by naming the revision read; every revision is kept. A result in a
 category gives a value for each of its condition keys, and its measures, which must be
-the category's, as numbers in its units or as given (LG-19).
+the category's, as numbers in its units or as given (LG-19). Condition keys and values are
+compared as ``normal`` makes them, so a capital or a no-break space makes no other key.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
+import unicodedata
 from typing import Any, Final
 
 from sandbox_science.orchestrator.documents.errors import (
@@ -25,6 +28,17 @@ from sandbox_science.orchestrator.documents.errors import (
 from .models import Category, CategoryDefinition, CategoryMeasure, CategoryPage
 
 Json = dict[str, Any]
+
+_SPACES: Final = re.compile(r"\s+")
+
+
+def normal(text: str) -> str:
+    """``text`` as the frontier compares it: in compatibility form (NFKC, which makes a
+    no-break space a space), case folded, and each run of white space one space, with
+    none at either end."""
+    folded = unicodedata.normalize("NFKC", unicodedata.normalize("NFKC", text).casefold())
+    return _SPACES.sub(" ", folded).strip()
+
 
 _COLUMNS: Final = (
     "c.category,r.revision,c.head,r.target,r.kind,r.measures,r.conditions,r.author,r.reason,"
@@ -85,7 +99,7 @@ def define(
             revision,
             value.target,
             value.kind,
-            json.dumps([m.model_dump(mode="json") for m in value.measures]),
+            json.dumps([m.model_dump(mode="json") for m in value.measures], ensure_ascii=False),
             json.dumps(value.conditions),
             json.dumps(author, sort_keys=True),
             value.reason,
@@ -137,8 +151,8 @@ def listing(db: sqlite3.Connection, project: str, after: str | None, limit: int)
 
 def check_result(db: sqlite3.Connection, project: str, fields: Json) -> None:
     """A result's fields as its category reads them (LG-19): the category exists, the
-    result gives a value for each condition key and no other, and its measures are the
-    category's."""
+    result gives a value for each condition key and no other, each once as ``normal``
+    reads keys, and its measures are the category's."""
     name = fields.get("category")
     if name is None:
         return
@@ -147,12 +161,15 @@ def check_result(db: sqlite3.Connection, project: str, fields: Json) -> None:
         raise DocumentError(
             INVALID_REQUEST, f"no frontier category {name}: define it, or name another"
         )
-    conditions = set(fields.get("conditions", {}))
-    missing = [key for key in category.conditions if key not in conditions]
-    unknown = sorted(conditions - set(category.conditions))
+    given = [normal(key) for key in fields.get("conditions", {})]
+    keys = {normal(key) for key in category.conditions}
+    twice = sorted({key for key in given if given.count(key) > 1})
+    missing = [key for key in category.conditions if normal(key) not in given]
+    unknown = sorted(key for key in fields.get("conditions", {}) if normal(key) not in keys)
     measures = {measure.name for measure in category.measures}
     unmeasured = sorted(set(fields.get("measures", {})) - measures)
     problems = [
+        *([f"the condition keys {', '.join(twice)} more than once"] if twice else []),
         *([f"no value for the condition keys {', '.join(missing)}"] if missing else []),
         *([f"condition keys it does not have: {', '.join(unknown)}"] if unknown else []),
         *([f"measures it does not have: {', '.join(unmeasured)}"] if unmeasured else []),
