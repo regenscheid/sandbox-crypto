@@ -25,6 +25,7 @@ const link = (fields: Partial<EntryLink>): EntryLink => ({
   block: null,
   note: null,
   handle: null,
+  session: null,
   ...fields,
 });
 
