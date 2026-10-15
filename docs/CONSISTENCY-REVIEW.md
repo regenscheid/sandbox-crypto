@@ -3,7 +3,7 @@
 This page describes the automatic consistency reviewer as built in `packages/orchestrator`
 (`sandbox_science.orchestrator.consistency`). It implements the approved
 [behavior specification](specs/consistency-review.md), with a separately authored,
-versioned rubric (`sandbox-consistency-3`, D56). It never executes code. The planning
+versioned rubric (`sandbox-consistency-4`, D56). Version 4 has the reviewer find the record of each action the author narrates (in a final answer, a thread reply or a finding response: changed, wrote, recorded, published, ran or fixed): a refused or failed tool call is no record; a narrated action with none is a `fail` of category `missing_action` anchored to the narration, and one whose record says otherwise is `contradicting_value` (CR-4, CR-18). It never executes code. The planning
 consistency review of 2026-10-10 is kept, as history, in
 [.agents/planning-consistency-review-2026-10-10.md](../.agents/planning-consistency-review-2026-10-10.md).
 
