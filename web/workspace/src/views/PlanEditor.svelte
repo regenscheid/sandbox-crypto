@@ -4,6 +4,9 @@
   import { authorLabel, type PlanObservation } from '../lib/plans';
   import { onSignOut } from '../lib/session';
   import { PlanEditSession, textFields, sameRef, type EditorView } from '../lib/planEdits';
+  import { hiddenPlaces } from '../lib/text';
+  import HiddenBanner from './HiddenBanner.svelte';
+  import PlanSaveReview from './PlanSaveReview.svelte';
   let {
     projectId,
     sessionId,
@@ -25,6 +28,19 @@
   const disabled = $derived(!view?.eligible || view.busy || uncertain);
   const current = $derived(view?.current.plan ?? observation.plan!);
   const changed = $derived(draft ? !sameRef(draft.base, current.head.ref) : false);
+  /** Saving makes every field the user's: an agent's version, or any character the user
+      may not see, is shown exactly first (threat model, A3). A retry resends its exact
+      request, already shown. */
+  let reviewing = $state(false);
+  const review = $derived(
+    current.version.author.role !== 'user' ||
+      fields.some((field) => hiddenPlaces(field.value).length > 0),
+  );
+  const before = $derived(
+    new Map(
+      textFields(draft?.baseline ?? current.version.body).map((field) => [field.key, field.value]),
+    ),
+  );
   onMount(() => {
     const session = new PlanEditSession(
       { projectId, sessionId },
@@ -85,10 +101,11 @@
   <form
     onsubmit={(event) => {
       event.preventDefault();
-      void editor?.save();
+      if (review && !uncertain) reviewing = true;
+      else void editor?.save();
     }}
   >
-    <fieldset {disabled}>
+    <fieldset disabled={disabled || reviewing}>
       {#each fields as field (field.key)}
         <label
           >{field.label}<textarea
@@ -98,6 +115,7 @@
             oninput={(event) => editor?.edit(field.key, event.currentTarget.value)}
           ></textarea></label
         >
+        <HiddenBanner text={field.value} />
       {/each}
       <label
         >Reason for the change<textarea
@@ -108,8 +126,14 @@
       >
     </fieldset>
     <div class="actions">
-      <button type="submit" disabled={!view?.eligible || view.busy}
-        >{view?.busy ? 'Saving…' : uncertain ? 'Retry exact save' : 'Save plan text'}</button
+      <button type="submit" disabled={!view?.eligible || view.busy || reviewing}
+        >{view?.busy
+          ? 'Saving…'
+          : uncertain
+            ? 'Retry exact save'
+            : review
+              ? 'Review and save plan text…'
+              : 'Save plan text'}</button
       >
       {#if changed && !uncertain}
         <button type="button" {disabled} onclick={() => editor?.adopt()}
@@ -123,6 +147,23 @@
         >{/if}
     </div>
   </form>
+  {#if reviewing}
+    <PlanSaveReview
+      fields={fields.map((field) => ({
+        key: field.key,
+        label: field.label,
+        value: field.value,
+        before: before.get(field.key) ?? null,
+      }))}
+      author={authorLabel(current.version.author)}
+      busy={!!view?.busy}
+      onconfirm={() => {
+        reviewing = false;
+        void editor?.save();
+      }}
+      oncancel={() => (reviewing = false)}
+    />
+  {/if}
   {#if uncertain}
     <button
       type="button"

@@ -43,6 +43,19 @@ baseline for manual copying. One earlier text draft is retained; another load
 cannot silently replace it. A successful newer save and current refresh preserve
 that retained draft.
 
+## Saving an agent's wording
+
+Saving makes every field of the version the user's, the wording an agent wrote
+included, and agents read it again (threat model, A3). When the version the draft
+is based on is an agent's, or any field holds a character the user may not see or
+tell apart from others, the save first shows each field exactly, every such
+character as its code point (`ApprovalText`), with its changes from that version;
+the user saves from below all of it or goes back to the draft. A field holding one
+also has a banner under its text box naming each, with its line and column. A
+retry resends its exact earlier request and is not shown again. The server already
+refuses these characters in an agent's plan text ([plans](SESSION-PLANS.md)); this
+is for the user's own text and for versions stored before that check.
+
 ## Unknown save outcomes
 
 Before a write, the browser retains its exact operation ID, base, body and reason
@@ -86,5 +99,7 @@ The tests in `web/workspace/src/lib/planEdits.test.ts` cover reference
 preservation, invalid drafts, changed structure and reload, refresh after an
 acknowledged save, conflict and uncertainty, new intent after explicit
 reconciliation, storage failure, one write per session, response limits,
-sign-out, read-only scopes and escaped server-side rendering. A browser run
+sign-out, read-only scopes and escaped server-side rendering. The tests in
+`web/workspace/src/lib/planSave.test.ts` render the review and the banner with
+each kind of hidden content. A browser run
 with a withheld response is in the [acceptance report](../.agents/docs/agent-reports/user-plan-editing-2026-10-13.md).

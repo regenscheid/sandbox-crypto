@@ -99,6 +99,30 @@ export function newlines(text: string): string {
   return text.replace(/\r\n?/g, '\n');
 }
 
+/** Where a text holds a character shown as its code point: its code point, line and column. */
+export interface Place {
+  code: string;
+  line: number;
+  column: number;
+}
+
+/** Each character a text shows as its code point, with its line and column, from 1. */
+export function hiddenPlaces(text: string): Place[] {
+  const found: Place[] = [];
+  let line = 1;
+  let column = 1;
+  for (const part of parts(text)) {
+    if (part.hidden) found.push({ code: codePoint(part.text), line, column });
+    for (const character of part.text) {
+      if (character === '\n') {
+        line++;
+        column = 1;
+      } else column++;
+    }
+  }
+  return found;
+}
+
 /** An ANSI colour or style sequence, which terminals draw as nothing. */
 const STYLE = /\u001b\[[\d;:]*m/g;
 
