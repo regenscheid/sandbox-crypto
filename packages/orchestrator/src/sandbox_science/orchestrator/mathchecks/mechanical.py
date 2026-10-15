@@ -77,6 +77,8 @@ class MechanicalFindings:
                     if "comment" in job
                     else ("response", job["response"]["source"])
                     if "response" in job
+                    else ("statement", job["statement"]["entry"])
+                    if "statement" in job
                     else (None, None)
                 ),
                 item["block"],
@@ -331,6 +333,14 @@ class MechanicalFindings:
                 "field": "explanation",
                 "body_revision": job["revision"],
             }
+        if "statement" in job:
+            # A ledger entry's field (LG-25): its statement, at its text revision.
+            locator = {
+                "entry": job["statement"]["entry"],
+                "handle": job["statement"]["handle"],
+                "field": "statement",
+                "body_revision": job["revision"],
+            }
         return [
             {
                 "check": job["check_id"],
@@ -368,7 +378,14 @@ class MechanicalFindings:
             (
                 source_key(job),
                 job["revision"],
-                job.get("response", job.get("comment", {})).get("identity_floor", 0),
+                next(
+                    (
+                        cast(Json, job[kind])["identity_floor"]
+                        for kind in ("response", "comment", "statement")
+                        if kind in job
+                    ),
+                    0,
+                ),
             ),
         ).fetchall()
         for finding, block, span, session in rows:

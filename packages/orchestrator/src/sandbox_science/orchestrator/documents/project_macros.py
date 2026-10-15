@@ -476,6 +476,7 @@ def _sources() -> tuple[tuple[str, str, str], ...]:
         ),
         ("text_math_sources", _TEXT_CHECK, "s.subject_type='comment' AND s.target>0"),
         ("text_math_sources", _TEXT_CHECK, "s.subject_type='response' AND s.target>0"),
+        ("text_math_sources", _TEXT_CHECK, "s.subject_type='statement' AND s.target>0"),
     )
 
 

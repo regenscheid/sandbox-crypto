@@ -22,6 +22,7 @@ from .comments import metadata, remaining
 from .jobs import Checker, MathJobs
 from .responses import metadata as response_metadata
 from .responses import remaining as response_remaining
+from .statements import remaining as statement_remaining
 
 if TYPE_CHECKING:
     from sandbox_science.orchestrator.projects import RunRecord
@@ -131,6 +132,7 @@ class MathController:
                 needs_refresh(db, self.project)
                 or remaining(db, self.project)
                 or response_remaining(db, self.project)
+                or statement_remaining(db, self.project)
                 or db.execute(
                     (
                         "SELECT 1 FROM math_sources WHERE project=? AND (completed<target OR "

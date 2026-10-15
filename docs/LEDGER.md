@@ -20,6 +20,8 @@ A new entry starts in its type's first status: `proposed` for a project claim or
 
 **Statements.** A statement is Markdown with LaTeX, saved in the dollar form (LD-42). Its revisions are `text_revisions` of kind `statement` under the entry's ID, with their block map and block owners, as comment bodies and explanations keep theirs; an entry revision names the statement's text revision, and a revision that leaves the statement unchanged names the same one.
 
+**Math checks (LG-1, LD-53 to LD-55).** Each new text revision of a statement is queued for the math check documents, comments and explanations have ([math checks](MATH-CHECKS.md)), with the project's macros, since a statement belongs to no document; a project macro change checks it again. A formula KaTeX rejects becomes a `math` finding anchored to the entry's statement at that text revision, for the session of the agent that last changed the formula's block, with the repair as its remedy; text the user wrote gets none. The agent fixes it with `ledger_change`, and the next revision's check confirms the finding fixed, or confirms it when the formula is gone. A revision that keeps the statement is not checked again.
+
 **Links (LG-5).** A revision's links replace the revision before's when a change gives them, and are kept otherwise; a change that gives the links the entry already holds changes nothing. Each kind has the types that may hold it and the targets it may name:
 
 | Kind | Held by | Points to |
@@ -51,7 +53,6 @@ An entry the same change revises is linked as the change leaves it, so an assump
 
 - Statuses a decision sets (`established`, `obstructed`, `refuted`), a decision's own `rejected` and `reversed`, decisions' status changes, evidence links and the gate (LG-4, LG-7, LG-8 to LG-17); published claims and results, which cite their reference through evidence (LG-15).
 - `dominates` links and the frontier (LG-18 to LG-24); flags (LG-27 to LG-29); work records (LG-6).
-- Math checks of statements (LG-1, LD-53).
 - The GUI's ledger, board, frontier, issue-list and history views, the pack's import and the export (LG-34 to LG-39); naming the execution that wrote a results file.
 
 ## Tables

@@ -50,6 +50,9 @@ from .responses import ResponseMath
 from .responses import metadata as response_metadata
 from .responses import queue as response_queue
 from .schedule import LEASE
+from .statements import StatementMath
+from .statements import metadata as statement_metadata
+from .statements import queue as statement_queue
 
 Json = dict[str, Any]
 MAP_BYTES = 16 * 1024 * 1024
@@ -108,6 +111,9 @@ class MathJobs:
         comment = metadata(db, check)
         if comment is not None:
             return CommentMath(self).fence(db, check, owner, comment)
+        statement = statement_metadata(db, check)
+        if statement is not None:
+            return StatementMath(self).fence(db, check, owner, statement)
         row = db.execute(
             (
                 "SELECT j.document,j.revision,j.cursor,j.attribution_cursor FROM math_jobs "
@@ -155,6 +161,7 @@ class MathJobs:
             CommentMath(self).retry(db, project, dump(configuration) if configuration else None)
 
             ResponseMath(self).retry(db, project, dump(configuration) if configuration else None)
+            StatementMath(self).retry(db, project, dump(configuration) if configuration else None)
 
     def claim(self, project: str, owner: str) -> str | None:
         ResponseBodies(self.store).reconcile(project)
@@ -210,7 +217,10 @@ class MathJobs:
                 if selected is not None:
                     return selected
 
-                return ResponseMath(self).claim(db, project, owner, now)
+                selected = ResponseMath(self).claim(db, project, owner, now)
+                if selected is not None:
+                    return selected
+                return StatementMath(self).claim(db, project, owner, now)
             source = tuple(source)
             if db.execute("SELECT count(*) FROM math_jobs").fetchone()[0] >= self.limits.jobs:
                 db.execute(
@@ -284,7 +294,10 @@ class MathJobs:
             response = response_metadata(db, check)
             if response is not None:
                 value["response"] = response
-            elif value["document"] is None:
+            statement = statement_metadata(db, check)
+            if statement is not None:
+                value["statement"] = statement
+            if value["document"] is None and response is None and statement is None:
                 raise DocumentError(INTERNAL, "math job names no source")
 
             value["macro_context"] = job_context(db, check, value["project"])
@@ -346,8 +359,11 @@ class MathJobs:
             db = tx.sql
             comment = metadata(db, check)
             response = response_metadata(db, check)
+            statement = statement_metadata(db, check)
         if response is not None:
             return ResponseMath(self).attribution(check, owner, blocks)
+        if statement is not None:
+            return StatementMath(self).attribution(check, owner, blocks)
         if comment is not None:
             return CommentMath(self).attribution(check, owner, blocks)
         with self.documents.control.read() as tx:
@@ -562,6 +578,8 @@ class MathJobs:
                     ResponseMath(self).finish(db, job)
                 elif "comment" in job:
                     CommentMath(self).finish(db, job)
+                elif "statement" in job:
+                    StatementMath(self).finish(db, job)
                 else:
                     db.execute(
                         (
@@ -577,6 +595,8 @@ class MathJobs:
             return ResponseMath(self).load(job)
         if "comment" in job:
             return CommentMath(self).load(job)
+        if "statement" in job:
+            return StatementMath(self).load(job)
         with self.documents.control.read() as tx:
             db = tx.sql
             row = db.execute(
@@ -601,7 +621,8 @@ class MathJobs:
     ) -> tuple[dict[str, str], list[str], bool]:
         """A check's effective definitions, problems, and whether its context is held:
         the setting it used with its source's own definitions (a document's front
-        matter, a comment's document's, an explanation's anchored documents')."""
+        matter, a comment's document's, an explanation's anchored documents'); a ledger
+        statement has none of its own."""
         project = job["macro_context"]["macros"]
         held = not job["macro_context"]["known"]
         if "response" in job:
@@ -610,6 +631,8 @@ class MathJobs:
             )
         elif "comment" in job:
             macros, problems = resolve(project, CommentMath(self).macros(job))
+        elif "statement" in job:
+            macros, problems = resolve(project, {})
         else:
             mapped = self.load(job) if mapped is None else mapped
             macros, problems = resolve(
@@ -832,6 +855,9 @@ class MathJobs:
                 response = response_metadata(db, entry["check_id"])
                 if response:
                     entry["kind"], entry["response"] = "response", response
+                statement = statement_metadata(db, entry["check_id"])
+                if statement:
+                    entry["kind"], entry["statement"] = "statement", statement
 
                 context = job_context(db, entry["check_id"], project)
                 (held,) = db.execute(
@@ -867,11 +893,13 @@ class MathJobs:
             ]
             comments = comment_queue(db, project)
             responses = response_queue(db, project, session=session)
+            statements = statement_queue(db, project)
+            kinds = (queue, comments, responses, statements)
             return {
                 "checks": checks,
                 "next_after": checks[-1]["check_id"] if len(rows) > 20 else None,
-                "queue": queue[:20] + comments[:20] + responses[:20],
-                "queue_more": len(queue) > 20 or len(comments) > 20 or len(responses) > 20,
+                "queue": [item for kind in kinds for item in kind[:20]],
+                "queue_more": any(len(kind) > 20 for kind in kinds),
             }
 
     def evidence(

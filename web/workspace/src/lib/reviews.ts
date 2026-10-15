@@ -83,9 +83,10 @@ export interface MathJob {
   state: string;
   project_macro_revision?: number;
   macro_context_status?: string;
-  kind?: 'document' | 'comment' | 'response';
+  kind?: 'document' | 'comment' | 'response' | 'statement';
   comment?: { entry_id: string; macro_revision: number; macro_sha256: string };
   response?: { source: string; finding: string; response_revision: number; session: string };
+  statement?: { entry: string; handle: string; project: string };
   cursor: number;
   spans: number | null;
   available: number;
@@ -99,8 +100,9 @@ export interface MathQueue {
   completed: number;
   blocked: string | null;
   running: boolean | number;
-  kind?: 'comment' | 'response';
+  kind?: 'comment' | 'response' | 'statement';
   entry?: string;
+  handle?: string;
   macro_revision?: number;
   macro_target?: number;
   source?: string;

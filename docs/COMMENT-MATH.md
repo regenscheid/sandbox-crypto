@@ -4,8 +4,8 @@ Durable comment openings and replies share the isolated mechanical checker,
 findings and closing delivery of [document revisions](MATH-CHECKS.md) (D82,
 comment portion of LD-53 to LD-55 and CR-36 to CR-38). Eligible MAIN fix/rebut
 explanations are checked as described in [finding prose math](FINDING-PROSE-MATH.md).
-Ledger fields, other excluded prose, idle scheduling and model repair proposals
-are not built. The renderer stays operator-configured and unavailable by default.
+[Ledger statements](LEDGER.md) are checked the same way. Other ledger fields,
+other excluded prose, idle scheduling and model repair proposals are not built. The renderer stays operator-configured and unavailable by default.
 
 ## Immutable source and ordinary corrections
 

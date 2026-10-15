@@ -39,6 +39,8 @@ def sha(text: str) -> str:
 def source_key(job: Json) -> str:
     if "response" in job:
         return job["response"]["source"]
+    if "statement" in job:
+        return "statement:" + job["statement"]["entry"]
     return "comment:" + job["comment"]["entry_id"] if "comment" in job else job["document"]
 
 

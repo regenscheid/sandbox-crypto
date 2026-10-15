@@ -1447,6 +1447,45 @@ BEGIN SELECT RAISE(ABORT, 'ledger revisions are immutable'); END""",
         schema.execute(statement)
 
 
+_STATEMENT_SCOPE: Final = (
+    _JOB_SCOPE  # noqa: S608 - fixed SQL
+    + """
+    UNION ALL SELECT j.check_id,e.project,NULL FROM math_jobs j JOIN math_text_jobs r
+    ON r.check_id=j.check_id AND r.subject_type='statement' JOIN ledger_entries e
+    ON e.entry_id=r.subject_id WHERE j.document IS NULL"""
+)
+
+_STATEMENT_CHECKS: Final = (
+    _TEXT_CHECKS  # noqa: S608 - fixed SQL
+    + """ UNION ALL
+    SELECT j.check_id,'statement:'||r.subject_id,j.revision FROM math_jobs j
+    JOIN math_text_jobs r ON r.check_id=j.check_id AND r.subject_type='statement'
+    JOIN text_math_sources s ON s.subject_type='statement' AND s.subject_id=r.subject_id
+    JOIN ledger_entries e ON e.entry_id=s.subject_id
+    JOIN text_revisions b ON b.subject_type='statement' AND b.subject_id=s.subject_id
+    AND b.revision=j.revision
+    WHERE j.document IS NULL AND s.project=e.project AND s.target=j.revision
+    AND j.source_sha256=b.sha256
+    AND j.rowid=(SELECT max(k.rowid) FROM math_jobs k JOIN math_text_jobs x USING(check_id)
+                WHERE x.subject_type='statement' AND x.subject_id=r.subject_id
+                AND k.revision=j.revision)"""
+)
+
+
+def _statement_math(schema: Schema) -> None:
+    """Version 19: ledger statements are checked for math errors (LG-1, LD-53). The views
+    of a check's scope and of each text's current check gain a branch for statements:
+    a statement's check belongs to its entry's project and to no session, and is current
+    when it is the latest of the statement's latest text revision."""
+    for statement in (
+        "DROP VIEW math_current_checks",
+        "DROP VIEW math_job_scope",
+        _STATEMENT_SCOPE,
+        _STATEMENT_CHECKS,
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -1465,6 +1504,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _text_math,
     _ledger,
     _ledger_links,
+    _statement_math,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

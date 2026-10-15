@@ -8,8 +8,8 @@ Renderer configuration remains operator-owned and defaults to unavailable.
 
 Reviewer assessments, USER responses, platform prose and mechanical diagnostic
 prose are excluded. A mechanical finding cannot become another prose source.
-Ledger fields, model repair proposals, idle dispatch and automatic compaction
-are not built. This checks renderability, not scientific truth.
+Ledger fields other than statements ([ledger](LEDGER.md)), model repair proposals,
+idle dispatch and automatic compaction are not built. This checks renderability, not scientific truth.
 
 ## Source and ordinary correction
 

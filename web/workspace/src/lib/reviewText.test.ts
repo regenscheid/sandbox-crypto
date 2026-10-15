@@ -79,6 +79,9 @@ describe('what the reviews panel says', () => {
     expect(locatorText({ artifact: '{}', run: 'run-1' })).toBe(
       'an artifact published by run run-1',
     );
+    expect(
+      locatorText({ entry: 'entry-1', handle: 'C-3', field: 'statement', body_revision: 2 }),
+    ).toBe('the statement of ledger entry C-3');
     expect(locatorText({})).toBe('a pinned record');
     const item = { kind: 'document', locator: { document: 'doc-1', revision: 3 }, complete: false };
     expect(evidenceText(item as unknown as Evidence)).toBe(
@@ -102,6 +105,12 @@ describe('what the reviews panel says', () => {
     const queued = { document: 'doc-1', target: 3, completed: 2, blocked: null, running: 0 };
     expect(queueText(queued as MathQueue)).toBe('document doc-1 to revision 3 (2 checked): queued');
     expect(queueText({ ...queued, blocked: 'quota' } as MathQueue)).toMatch(/held: quota$/);
+    const statement = { ...check, kind: 'statement', statement: { handle: 'C-3' } };
+    expect(mathCheckText(statement as unknown as MathJob)).toBe(
+      'Statement of C-3 revision 2: complete, 1 rejected, 0 unavailable',
+    );
+    const waiting = { ...queued, kind: 'statement', handle: 'C-3' } as MathQueue;
+    expect(queueText(waiting)).toBe('statement of C-3 to revision 3 (2 checked): queued');
   });
 });
 

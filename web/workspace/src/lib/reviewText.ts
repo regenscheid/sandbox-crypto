@@ -114,6 +114,8 @@ export function locatorText(locator: Record<string, Json>): string {
     return `message ${text(locator['message'])} of run ${text(locator['run'])}`;
   if (text(locator['finding']) && locator['response_revision'] === undefined)
     return `finding ${text(locator['finding'])} revision ${text(locator['revision'])}`;
+  if (text(locator['entry']) && text(locator['field']))
+    return `the ${text(locator['field'])} of ledger entry ${text(locator['handle']) || text(locator['entry'])}`;
   if (locator['artifact'] !== undefined)
     return `an artifact published by run ${text(locator['run']) || 'unknown'}`;
   return 'a pinned record';
@@ -184,7 +186,9 @@ export function mathCheckText(check: MathJob): string {
       ? 'Comment body'
       : check.kind === 'response'
         ? 'Finding explanation'
-        : 'Document';
+        : check.kind === 'statement'
+          ? `Statement of ${check.statement?.handle ?? 'a ledger entry'}`
+          : 'Document';
   return (
     `${what} revision ${check.revision}: ${check.state}, ${check.rejected} rejected, ` +
     `${check.unavailable} unavailable`
@@ -198,7 +202,9 @@ export function queueText(item: MathQueue): string {
       ? `comment ${item.entry ?? ''}`.trim()
       : item.kind === 'response'
         ? `finding ${item.finding ?? ''} response`.trim()
-        : `document ${item.document ?? ''}`.trim();
+        : item.kind === 'statement'
+          ? `statement of ${item.handle ?? item.entry ?? ''}`.trim()
+          : `document ${item.document ?? ''}`.trim();
   const state = item.blocked ? `held: ${item.blocked}` : item.running ? 'running' : 'queued';
   return `${what} to revision ${item.target} (${item.completed} checked): ${state}`;
 }
