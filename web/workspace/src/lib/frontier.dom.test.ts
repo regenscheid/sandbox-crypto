@@ -61,6 +61,7 @@ const result = (handle: string, fields: Partial<FrontierResult> = {}): FrontierR
 
 const group = (attack: string, fields: Partial<FrontierGroup> = {}): FrontierGroup => ({
   conditions: { attack },
+  key: JSON.stringify({ attack }),
   best: [result(`R-${attack.length}`)],
   dominated: [],
   not_compared: [],
@@ -78,6 +79,7 @@ function answer(
     project_id: 'p1',
     observed_at: 'now',
     next_groups_after: next,
+    next_groups_key: null,
     frontier: {
       category: {
         category: 'key-recovery',

@@ -70,6 +70,7 @@ const frontier: FrontierAnswer = {
   project_id: 'p1',
   observed_at: 'now',
   next_groups_after: null,
+  next_groups_key: null,
   frontier: {
     category: {
       category: 'key-recovery',
@@ -88,6 +89,7 @@ const frontier: FrontierAnswer = {
     groups: [
       {
         conditions: { attack: 'dual' },
+        key: JSON.stringify({ attack: 'dual' }),
         best: [result('R-3')],
         dominated: [result('R-5', { dominated_by: ['R-3'], linked_by: [link] })],
         not_compared: [],
