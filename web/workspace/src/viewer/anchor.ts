@@ -12,13 +12,20 @@ export interface ViewerParams {
   capability: string;
   /** The workspace's origin: the only window the viewer sends anchors to. */
   workspace: string;
+  /** The page to open at, such as a quote's; null for the first. */
+  page: number | null;
 }
 
-/** The fragment `#c=<capability>&w=<workspace origin>`; null when it is not one. */
+/**
+ * The fragment `#c=<capability>&w=<workspace origin>`, with `&p=<page>` to open at a page;
+ * null when it is not one. A page that is not a number from 1 opens the first.
+ */
 export function viewerParams(hash: string): ViewerParams | null {
   const found = new URLSearchParams(hash.replace(/^#/, ''));
   const capability = found.get('c') ?? '';
   const workspace = found.get('w') ?? '';
+  const asked = found.get('p') ?? '';
+  const page = /^[1-9][0-9]{0,5}$/.test(asked) ? Number(asked) : null;
   if (!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(capability)) return null;
   try {
     const origin = new URL(workspace);
@@ -26,7 +33,7 @@ export function viewerParams(hash: string): ViewerParams | null {
   } catch {
     return null;
   }
-  return { capability, workspace };
+  return { capability, workspace, page };
 }
 
 /**

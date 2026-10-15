@@ -11,7 +11,7 @@
  *   that revision with one block in focus (a finding's anchor, say);
  * - `#/projects/<project>/documents/<document>/history` who changed what in it;
  * - `#/projects/<project>/artifacts/<artifact>/revisions/<number>/<sha256>` a published
- *   PDF in the viewer;
+ *   PDF in the viewer, and `…/pages/<page>` opened at a page (a quote's);
  * - `#/projects/<project>/memory` the project memory: its entries and the proposals that
  *   wait for the user;
  * - `#/projects/<project>/ledger` the project's ledger as a board,
@@ -35,7 +35,14 @@ export type Route =
       block: string | null;
     }
   | { view: 'history'; project: string; document: string }
-  | { view: 'pdf'; project: string; artifact: string; revision: number; sha256: string }
+  | {
+      view: 'pdf';
+      project: string;
+      artifact: string;
+      revision: number;
+      sha256: string;
+      page: number | null;
+    }
   | { view: 'memory'; project: string }
   | { view: 'ledger'; project: string }
   | { view: 'issues'; project: string }
@@ -106,11 +113,16 @@ export function parseRoute(hash: string): Route {
     if (number !== null && (parts.length === 6 || block !== null))
       return { view: 'document', project, document: name, revision: number, block };
   }
-  if (parts[2] === 'artifacts' && parts.length === 7 && parts[4] === 'revisions') {
+  if (
+    parts[2] === 'artifacts' &&
+    parts[4] === 'revisions' &&
+    (parts.length === 7 || (parts.length === 9 && parts[7] === 'pages'))
+  ) {
     const number = revision(parts[5]);
     const sha256 = parts[6]!;
-    if (number !== null && /^[0-9a-f]{64}$/.test(sha256)) {
-      return { view: 'pdf', project, artifact: name, revision: number, sha256 };
+    const page = parts.length === 9 ? revision(parts[8]) : null;
+    if (number !== null && /^[0-9a-f]{64}$/.test(sha256) && (parts.length === 7 || page !== null)) {
+      return { view: 'pdf', project, artifact: name, revision: number, sha256, page };
     }
   }
   return { view: 'missing' };
@@ -157,8 +169,16 @@ export function historyHref(project: string, document: string): string {
   return `${documentHref(project, document)}/history`;
 }
 
-export function pdfHref(project: string, artifact: string, revision: number, sha256: string) {
-  return `${projectHref(project)}/artifacts/${encodeURIComponent(artifact)}/revisions/${revision}/${sha256}`;
+/** A published PDF revision in the viewer; at `page`, opened at that page. */
+export function pdfHref(
+  project: string,
+  artifact: string,
+  revision: number,
+  sha256: string,
+  page?: number,
+) {
+  const base = `${projectHref(project)}/artifacts/${encodeURIComponent(artifact)}/revisions/${revision}/${sha256}`;
+  return page === undefined ? base : `${base}/pages/${page}`;
 }
 
 export function memoryHref(project: string): string {

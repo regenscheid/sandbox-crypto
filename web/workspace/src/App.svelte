@@ -102,12 +102,13 @@
         <FrontierView projectId={route.project} category={route.category} />
       {/key}
     {:else if route.view === 'pdf'}
-      {#key `${route.project}/${route.artifact}/${route.revision}/${route.sha256}`}
+      {#key `${route.project}/${route.artifact}/${route.revision}/${route.sha256}/${route.page}`}
         <PdfView
           projectId={route.project}
           artifactId={route.artifact}
           revision={route.revision}
           sha256={route.sha256}
+          page={route.page}
         />
       {/key}
     {:else if route.view === 'history'}

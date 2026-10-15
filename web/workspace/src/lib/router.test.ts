@@ -65,8 +65,15 @@ describe('routes', () => {
     ['#/projects/p1/documents/doc-1/elsewhere', { view: 'missing' }],
     [
       `#/projects/p1/artifacts/art-1/revisions/2/${SHA}`,
-      { view: 'pdf', project: 'p1', artifact: 'art-1', revision: 2, sha256: SHA },
+      { view: 'pdf', project: 'p1', artifact: 'art-1', revision: 2, sha256: SHA, page: null },
     ],
+    [
+      `#/projects/p1/artifacts/art-1/revisions/2/${SHA}/pages/14`,
+      { view: 'pdf', project: 'p1', artifact: 'art-1', revision: 2, sha256: SHA, page: 14 },
+    ],
+    [`#/projects/p1/artifacts/art-1/revisions/2/${SHA}/pages/0`, { view: 'missing' }],
+    [`#/projects/p1/artifacts/art-1/revisions/2/${SHA}/pages`, { view: 'missing' }],
+    [`#/projects/p1/artifacts/art-1/revisions/2/${SHA}/lines/3`, { view: 'missing' }],
     [`#/projects/p1/artifacts/art-1/revisions/0/${SHA}`, { view: 'missing' }],
     [`#/projects/p1/artifacts/art-1/revisions/2/${SHA.toUpperCase()}`, { view: 'missing' }],
     ['#/projects/p1/artifacts/art-1/revisions/2/abc', { view: 'missing' }],
@@ -128,7 +135,9 @@ describe('routes', () => {
       artifact: 'art/1',
       revision: 3,
       sha256: SHA,
+      page: null,
     });
+    expect(parseRoute(pdfHref('p 1', 'art/1', 3, SHA, 7))).toMatchObject({ page: 7 });
     expect(parseRoute(ledgerHref('p 1'))).toEqual({ view: 'ledger', project: 'p 1' });
     expect(parseRoute(memoryHref('p/1'))).toEqual({ view: 'memory', project: 'p/1' });
     expect(parseRoute(findingHref('p 1', 's/1', 'f#2'))).toEqual({

@@ -46,6 +46,16 @@ export function viewerOrigin(url: string): string | null {
   }
 }
 
+/**
+ * The viewer's link, opening at `page`: the page goes in the fragment, beside the
+ * capability, so it never reaches a server. The link as given when there is no page or no
+ * fragment to add it to.
+ */
+export function atPage(url: string, page: number | null): string {
+  if (page === null || !Number.isSafeInteger(page) || page < 1 || !url.includes('#')) return url;
+  return `${url}&p=${page}`;
+}
+
 // Control characters and the bidirectional formatting characters, which could make a
 // quote read differently from what it holds (a right-to-left override, say).
 const HIDDEN = /[\p{Cc}\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu;
