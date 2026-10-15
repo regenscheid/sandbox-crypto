@@ -57,7 +57,7 @@ from .documents.annotations import Annotations
 from .documents.tool import WorkRequests
 from .harness import Harness, RunRequest, admit, save
 from .hooks import TurnHook
-from .model import Message
+from .model import GATEWAY_BUDGET, Message
 from .projects import ProjectError, ProjectStore, run_name
 from .runstate import RunState, head_and_tail
 from .tools import ToolOutcome
@@ -349,6 +349,11 @@ class RunService:
                 projects=stores.projects,
                 error=sink.error,
             )
+            if finished.transcript.stopped == GATEWAY_BUDGET:
+                # Every call fails the same way until the gateway's budget is raised or
+                # resets: what waits for the session waits that long (RS-6d).
+                _log.warning("the model gateway's budget is spent; session %s waits", session)
+                self.waiting_until[project, session] = self.clock.monotonic() + MAX_WAIT
             if finished.transcript.stopped == "cancelled":
                 # What it was offered and did not answer waits for the user (RS-11).
                 offered = await threaded(runs.offered_to, project, session, name)

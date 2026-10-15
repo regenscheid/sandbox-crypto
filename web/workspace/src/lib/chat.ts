@@ -280,6 +280,8 @@ const STOPPED: Record<string, string> = {
   budget:
     'The run stopped: the project has spent its model budget for the last 24 hours. What waits for the session waits for the budget.',
   run_budget: "The run stopped: it used its share of the project's daily model budget.",
+  gateway_budget:
+    'The run stopped: the model gateway refused the call because its spending budget is used up. What waits for the session waits until the gateway allows calls again.',
   user_message: 'The run ended its wait for a message.',
   cancelled: 'The run was cancelled. Its background jobs keep running.',
   interrupted:

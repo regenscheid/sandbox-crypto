@@ -4,6 +4,10 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 ## 2026-10-15
 
+Decision of the owner on the model budget: "I would expect budget to mostly be enforced upstream by LiteLLM", and "doing it as cost instead of tokens seems better, too."
+
+- **The gateway's budget** ([run service](../docs/specs/run-service.md), RS-6d). A call LiteLLM refuses because the key's, user's or team's budget is spent is not tried again, even as a 429: the run stops, `gateway_budget`, and the session's messages wait. Cost recording and an optional cost limit per project, in place of the default token budget, follow in their own changes.
+
 Decision of the coordinator on the review of CR-4 (#346, #348 to #350), which the owner can reverse:
 
 - **A PDF quote confirms only a vouched PDF** ([ledger spec](../docs/specs/ledger.md), LG-15, LG-16). A reference's PDF can be any artifact of the project, one an agent made included, and the platform cannot yet tell a downloaded paper from it. A PDF quote confirms a result by the citation check alone only when the PDF's hash is vouched for, by the e-print server naming it in a recorded result (asked of the owner) or by the user's check of a revision of the reference that names it (`ledger check`, or the workspace's, which now take a reference; no other revision of the user's vouches); otherwise the result stays unverified until the user confirms it. An ePrint passage quote confirms by the check alone.

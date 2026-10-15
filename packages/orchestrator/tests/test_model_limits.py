@@ -8,6 +8,7 @@ that only records the waits.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -26,6 +27,7 @@ from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import (
     MAX_RETRY_WAIT,
     ContextLimitError,
+    GatewayBudgetError,
     ModelError,
     ModelTurn,
     OpenAICompatibleModel,
@@ -46,6 +48,36 @@ TOO_LONG = (
     'context length is 8192 tokens","type":"invalid_request_error",'
     '"code":"context_length_exceeded"}}'
 )
+SPENT = {
+    "error": {
+        "message": "Budget has been exceeded! Current cost: 1.0312, Max budget: 1.0",
+        "type": "budget_exceeded",
+        "param": None,
+        "code": "400",
+    }
+}
+"""LiteLLM's proxy refusing a key whose budget is spent (``ProxyErrorTypes.budget_exceeded``)."""
+BUDGET_REFUSALS = {
+    "key, by type": (400, SPENT),
+    "by type alone": (
+        400, {"error": {"message": "Key spend is over its limit", "type": "budget_exceeded"}}
+    ),
+    "user, as a 429": (
+        429,
+        {"error": {"message": "ExceededBudget: User=lab over budget. Spend=5.2, Budget=5.0",
+                   "type": "auth_error", "param": "None", "code": "429"}},
+    ),
+    "token, as a 401": (
+        401,
+        {"error": {"message": "Authentication Error - ExceededTokenBudget: Current spend for "
+                   "token: 7.1; Max Budget for Token: 7.0", "type": "auth_error", "code": "401"}},
+    ),
+    "the SDK's error": (
+        400,
+        {"error": {"message": "litellm.BudgetExceededError: Budget has been exceeded! Current "
+                   "cost: 2.0, Max budget: 2.0", "type": None, "code": "400"}},
+    ),
+}  # fmt: skip
 ANSWER = {
     "model": "resolved-main",
     "choices": [{"message": {"content": "done"}, "finish_reason": "stop"}],
@@ -175,6 +207,33 @@ async def test_litellms_own_context_error_is_recognized(fake: Gateway) -> None:
     fake.answers = [(400, body, {})]
     with pytest.raises(ContextLimitError):
         await complete(fake, Waits())
+
+
+@pytest.mark.parametrize(("status", "body"), BUDGET_REFUSALS.values(), ids=list(BUDGET_REFUSALS))
+async def test_a_spent_gateway_budget_is_its_own_kind_and_never_tried_again(
+    fake: Gateway, status: int, body: dict[str, Any]
+) -> None:
+    fake.answers = [(status, body, {"Retry-After": "0"}), (200, ANSWER, {})]
+    waits = Waits()
+    with pytest.raises(GatewayBudgetError) as refused:
+        await complete(fake, waits)
+    assert (refused.value.status, fake.calls, waits.slept) == (status, 1, [])
+
+
+async def test_rate_limits_and_quoted_budgets_are_not_budget_refusals(fake: Gateway) -> None:
+    rate = {"error": {"message": "Rate limit exceeded: 60 rpm", "type": "rate_limit_error"}}
+    fake.answers = [(429, rate, {"Retry-After": "0"}), (200, ANSWER, {})]
+    waits = Waits()
+    assert (await complete(fake, waits)).text == "done"
+    assert waits.slept == [0.0]  # a rate limit is tried again
+    quoted = {
+        "error": {"message": "Invalid request", "type": "invalid_request_error"},
+        "request": {"messages": [{"content": "Budget has been exceeded! type budget_exceeded"}]},
+    }
+    fake.answers = [(400, quoted, {})]
+    with pytest.raises(ModelError) as failed:
+        await complete(fake, Waits())
+    assert not isinstance(failed.value, GatewayBudgetError)
 
 
 async def test_an_unparseable_answer_never_quotes_the_key(fake: Gateway) -> None:
@@ -415,6 +474,18 @@ async def test_the_gateways_context_error_stops_the_run_without_an_answer(
         status=3,
     )
     assert (record.stopped, record.failure, record.final_text) == ("context_limit", None, None)
+    assert len(record.usage) == 1
+
+
+async def test_a_spent_gateway_budget_stops_the_run_where_it_refused(harness: Harness) -> None:
+    record = await harness.run(
+        "run-1",
+        [Reply(calls=[call("plan_read")]), Reply(status=400, error=json.dumps(SPENT))],
+        status=3,
+    )
+    assert (record.stopped, record.failure, record.final_text) == ("gateway_budget", None, None)
+    assert len(harness.gateway.main) == 2  # the refused call was not tried again
+    assert [tool["tool"] for tool in record.tools] == ["plan_read"]
     assert len(record.usage) == 1
 
 
