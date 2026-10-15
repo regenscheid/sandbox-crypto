@@ -79,6 +79,17 @@ describe('what dominates a result', () => {
     expect(heldLink({ links: [entryLink({ kind: 'compares_to' })] }, 'R-5')).toBeNull();
   });
 
+  it('finds the link to the target among two dominates links one holder holds', () => {
+    const links = [
+      entryLink({ handle: 'R-6', target_id: 'entry-0123456789abcdef0123456f', note: 'to R-6' }),
+      entryLink({ note: 'to R-5' }),
+    ];
+    expect(heldLink({ links }, 'R-5')?.note).toBe('to R-5');
+    expect(heldLink({ links }, 'R-6')?.note).toBe('to R-6');
+    expect(heldLink({ links }, 'entry-0123456789abcdef0123456f')?.note).toBe('to R-6');
+    expect(heldLink({ links }, 'R-7')).toBeNull();
+  });
+
   it('shows the rule and each link, its reason, author and revision, as text', () => {
     const html = render(FrontierResult, {
       props: {
