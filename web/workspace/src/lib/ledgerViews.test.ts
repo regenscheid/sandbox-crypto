@@ -279,6 +279,7 @@ const evidence = (fields: Partial<EvidenceLink>): EvidenceLink => ({
   span: null,
   sha256: null,
   checked: null,
+  locator: null,
   scope: null,
   added: 1,
   handle: 'C-3',

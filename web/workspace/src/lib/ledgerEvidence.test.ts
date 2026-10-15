@@ -21,6 +21,7 @@ const link = (fields: Partial<EvidenceLink>): EvidenceLink => ({
   span: null,
   sha256: null,
   checked: null,
+  locator: null,
   scope: null,
   added: 2,
   handle: 'C-4',
@@ -64,6 +65,29 @@ describe('an evidence link', () => {
       text: 'review rev-1',
       href: null,
     });
+  });
+
+  it('to a quote leads to the reference, with where the quote is in its source', () => {
+    const pdf = link({
+      target: 'quote',
+      target_id: 'entry-1',
+      handle: 'REF-1',
+      revision: 2,
+      sha256: SHA,
+      locator: { source: 'pdf', page: 3, label: '2', first_line: 30, last_line: 31, text: 't' },
+    });
+    expect(evidenceTarget('p1', pdf)).toEqual({
+      text: 'quote of REF-1 r2, PDF page 3 (printed 2), lines 30–31',
+      href: '#/projects/p1/ledger/REF-1/revisions/2',
+    });
+    const eprint = {
+      ...pdf,
+      sha256: null,
+      locator: { source: 'eprint', dated: '2015-06-30', named: { eprint: '2015/625' }, text: 't' },
+    };
+    expect(evidenceTarget('p1', eprint).text).toBe(
+      'quote of REF-1 r2, ePrint 2015/625 dated 2015-06-30',
+    );
   });
 
   it('reads its role and type, and the revision a check examined', () => {

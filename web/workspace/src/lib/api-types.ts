@@ -319,7 +319,7 @@ export interface EvidenceLink {
   evidence_id: string;
   role: "supports" | "contradicts" | "derivation" | "independent_check";
   type: "proof" | "exact_computation" | "finite_test" | "numerical_experiment" | "source_claim" | "synthetic" | "unclassified";
-  target: "entry" | "artifact" | "block" | "review";
+  target: "entry" | "artifact" | "block" | "review" | "quote" | "delegation";
   target_id: string;
   revision: number | null;
   block: string | null;
@@ -329,6 +329,7 @@ export interface EvidenceLink {
   scope: string | null;
   added: number;
   handle: string | null;
+  locator: Record<string, unknown> | null;
 }
 
 /** Who asks for an execution, and for which project, session and environment. ``environment_id`` names the logical environment (the project's default environment or a dedicated session environment). The worker reports the concrete sandbox and the environment revision it used in ``Location``. */

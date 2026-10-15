@@ -2010,6 +2010,57 @@ BEGIN SELECT RAISE(ABORT, 'a delegation''s outcome is written once'); END""",
         schema.execute(statement)
 
 
+def _evidence_targets(schema: Schema) -> None:
+    """Version 30: two more evidence targets, ``quote`` and ``delegation``, and a
+    ``locator`` for what either names beyond its target (docs/specs/ledger.md, LG-8;
+    one migration that lane S's quotes and lane D's delegations share). A quote names
+    the reference it quotes at a revision, with the PDF's SHA-256 when it quotes a
+    PDF, and its locator says where and what: the page, its lines and the text, or
+    the ePrint passage and the date stamp the server gave. A review target alone names
+    no revision; an artifact names its SHA-256."""
+    rebuild(
+        schema,
+        "ledger_evidence",
+        """CREATE TABLE ledger_evidence (
+    entry_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 1 AND 128),
+    evidence_id TEXT NOT NULL
+        CHECK (length(evidence_id) = 33 AND evidence_id GLOB 'evidence-*'
+        AND substr(evidence_id, 10) NOT GLOB '*[^0-9a-f]*'),
+    role TEXT NOT NULL
+        CHECK (role IN ('supports', 'contradicts', 'derivation', 'independent_check')),
+    type TEXT NOT NULL CHECK (type IN ('proof', 'exact_computation', 'finite_test',
+        'numerical_experiment', 'source_claim', 'synthetic', 'unclassified')),
+    target TEXT NOT NULL CHECK (target IN ('entry', 'artifact', 'block', 'review', 'quote',
+        'delegation')),
+    target_id TEXT NOT NULL CHECK (length(CAST(target_id AS BLOB)) BETWEEN 1 AND 128),
+    target_revision INTEGER
+        CHECK (target_revision IS NULL OR target_revision BETWEEN 1 AND 999999999),
+    block TEXT CHECK (block IS NULL OR length(CAST(block AS BLOB)) BETWEEN 1 AND 128),
+    span TEXT CHECK (span IS NULL OR length(CAST(span AS BLOB)) BETWEEN 1 AND 128),
+    sha256 TEXT CHECK (sha256 IS NULL OR (length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*')),
+    checked INTEGER CHECK (checked IS NULL OR checked BETWEEN 1 AND 999999999),
+    scope TEXT CHECK (scope IS NULL OR length(CAST(scope AS BLOB)) BETWEEN 1 AND 16384),
+    added INTEGER NOT NULL CHECK (added BETWEEN 1 AND revision),
+    locator TEXT CHECK (locator IS NULL OR (json_valid(locator) AND json_type(locator) = 'object'
+        AND length(CAST(locator AS BLOB)) <= 16384)),
+    CHECK ((role = 'independent_check') = (checked IS NOT NULL)),
+    CHECK ((target = 'block') = (block IS NOT NULL)),
+    CHECK (span IS NULL OR block IS NOT NULL),
+    CHECK (target != 'review' OR target_revision IS NULL),
+    CHECK (target NOT IN ('entry', 'artifact', 'block', 'quote') OR target_revision IS NOT NULL),
+    CHECK (target != 'artifact' OR sha256 IS NOT NULL),
+    CHECK (sha256 IS NULL OR target IN ('artifact', 'quote', 'delegation')),
+    CHECK (target != 'quote' OR locator IS NOT NULL),
+    CHECK (locator IS NULL OR target IN ('quote', 'delegation')),
+    PRIMARY KEY (entry_id, revision, ordinal),
+    UNIQUE (entry_id, revision, evidence_id),
+    FOREIGN KEY (entry_id, revision) REFERENCES ledger_revisions(entry_id, revision)
+) STRICT""",
+    )
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -2039,6 +2090,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _frontier_changes,
     _delegations,
     _delegation_results,
+    _evidence_targets,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

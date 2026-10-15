@@ -2,16 +2,19 @@
 """Evidence links (docs/specs/ledger.md, LG-8 to LG-11, LG-15).
 
 An evidence link has a role, an evidence type, a scope note and one pinned target: an
-entry, artifact or document revision, a document block or math span, or a review. The
-target is the platform's record; the role, type and scope are the author's assertion
+entry, artifact or document revision, a document block or math span, a review, or a
+quote of a reference: a PDF's page and lines, pinned by the PDF's SHA-256, or an ePrint
+passage, named by the paper and the date stamp the e-print tools gave it (LG-8, CR-4).
+The target is the platform's record; the role, type and scope are the author's assertion
 (LG-10). Links belong to the revision of the entry that holds them, which keeps them
 from revision to revision, each with its ID and the revision that added it, until a
-change removes it. Execution targets, PDF anchors and delegation outcomes are not built
-yet and are refused.
+change removes it. Execution targets and delegation outcomes are not built yet and are
+refused.
 """
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass
 from typing import Final, Literal
@@ -27,10 +30,11 @@ from sandbox_science.orchestrator.documents.errors import (
 from .models import EVIDENCE_HOLDERS, PREFIXES, EvidenceInput, EvidenceLink
 
 _COLUMNS: Final = (
-    "evidence_id,role,type,target,target_id,target_revision,block,span,sha256,checked,scope,added"
+    "evidence_id,role,type,target,target_id,target_revision,block,span,sha256,checked,scope,"
+    "added,locator"
 )
 
-Target = Literal["entry", "artifact", "block", "review"]
+Target = Literal["entry", "artifact", "block", "review", "quote"]
 
 Block = tuple[str, int, str, str | None]
 """A document block or math span as a change names it: document, revision, block, span."""
@@ -67,7 +71,8 @@ def stored(db: sqlite3.Connection, entry: str, revision: int) -> list[EvidenceLi
     ).fetchall():
         values = dict(zip(_COLUMNS.split(","), row, strict=True))
         values["revision"] = values.pop("target_revision")
-        if values["target"] == "entry":
+        values["locator"] = None if values["locator"] is None else json.loads(values["locator"])
+        if values["target"] in ("entry", "quote"):
             kind, number = db.execute(
                 "SELECT type,number FROM ledger_entries WHERE entry_id=?", (values["target_id"],)
             ).fetchone()
@@ -81,7 +86,7 @@ def write(db: sqlite3.Connection, entry: str, revision: int, links: list[Evidenc
     for ordinal, link in enumerate(links, 1):
         db.execute(
             f"INSERT INTO ledger_evidence(entry_id,revision,ordinal,{_COLUMNS}) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 entry,
                 revision,
@@ -98,6 +103,7 @@ def write(db: sqlite3.Connection, entry: str, revision: int, links: list[Evidenc
                 link.checked,
                 link.scope,
                 link.added,
+                None if link.locator is None else json.dumps(link.locator, sort_keys=True),
             ),
         )
 
@@ -153,16 +159,18 @@ def key(link: EvidenceLink) -> tuple[object, ...]:
         link.block,
         link.span,
         link.checked,
+        None if link.locator is None else json.dumps(link.locator, sort_keys=True),
     )
 
 
 def cites_reference(links: list[EvidenceLink], references: set[str]) -> bool:
     """Whether a published entry cites a reference through a ``supports`` link of type
-    ``source_claim`` (LG-15); ``references`` are the IDs of reference entries."""
+    ``source_claim`` (LG-15), to the reference or quoting it; ``references`` are the IDs
+    of reference entries."""
     return any(
         link.role == "supports"
         and link.type == "source_claim"
-        and link.target == "entry"
+        and link.target in ("entry", "quote")
         and link.target_id in references
         for link in links
     )
@@ -203,6 +211,11 @@ def resolve(
             raise DocumentError(NOT_FOUND, f"{holder.handle} has no revision {item.checked}")
     elif item.checked is not None:
         raise DocumentError(INVALID_REQUEST, "only an independent_check names a checked revision")
+    if item.quote is not None:
+        if entry is None or entry.type != "reference":
+            raise DocumentError(INVALID_REQUEST, "a quote names the reference it quotes")
+        if item.type != "source_claim":
+            raise DocumentError(INVALID_REQUEST, "a quote is source_claim evidence")
     if item.type == "source_claim" and (
         entry is None or entry.type != "reference" or item.role not in ("supports", "contradicts")
     ):
@@ -225,6 +238,18 @@ def resolve(
             }
         )
 
+    if item.quote is not None and entry is not None:
+        if item.block is not None or item.math is not None or item.sha256 is not None:
+            raise DocumentError(
+                INVALID_REQUEST, "a quote names its reference, its revision and what it quotes"
+            )
+        revision = entry.head if item.revision is None else item.revision
+        if not 1 <= revision <= entry.head:
+            raise DocumentError(NOT_FOUND, f"{entry.handle} has no revision {revision}")
+        locator = item.quote.model_dump(mode="json", exclude_none=True)
+        return link(
+            "quote", entry.entry_id, revision=revision, handle=entry.handle, locator=locator
+        )
     if entry is not None:
         if item.block is not None or item.math is not None or item.sha256 is not None:
             raise DocumentError(INVALID_REQUEST, "an entry target names only its revision")

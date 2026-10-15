@@ -65,7 +65,30 @@ export function evidenceTarget(project: string, link: EvidenceLink): LinkTarget 
     }
     case 'review':
       return { text: `review ${link.target_id}`, href: null };
+    case 'delegation':
+      return { text: `delegation ${link.target_id}${pinned}`, href: null };
+    case 'quote': {
+      const name = link.handle ?? link.target_id;
+      const where = quoteWhere(link.locator);
+      return {
+        text: `quote of ${name}${pinned}${where}`,
+        href: ENTRY_NAME.test(name)
+          ? ledgerEntryHref(project, name, link.revision ?? undefined)
+          : null,
+      };
+    }
   }
+}
+
+/** Where a quote is in its source: a PDF's page and lines, or an ePrint and its date stamp. */
+export function quoteWhere(locator: Record<string, unknown> | null): string {
+  if (locator === null) return '';
+  if (locator.source === 'pdf') {
+    const label = typeof locator.label === 'string' ? ` (printed ${locator.label})` : '';
+    return `, PDF page ${String(locator.page)}${label}, lines ${String(locator.first_line)}–${String(locator.last_line)}`;
+  }
+  const named = (locator.named ?? {}) as Record<string, unknown>;
+  return `, ePrint ${String(named.eprint ?? '?')} dated ${String(locator.dated)}`;
 }
 
 /** What an evidence link is, in words: its role and type, and the revision a check examined. */

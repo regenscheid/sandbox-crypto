@@ -9,7 +9,7 @@
 import type { LedgerChangeAnswer } from './api';
 import { ApiError } from './api';
 import type { EntryLink, EntryView, EvidenceLink } from './api-types';
-import { evidenceKind } from './ledgerEvidence';
+import { evidenceKind, quoteWhere } from './ledgerEvidence';
 import { guardedWrite } from './mutation';
 import { submit, type Submitting } from './submit';
 
@@ -38,6 +38,14 @@ function exactTarget(link: EvidenceLink): string {
       );
     case 'review':
       return `review ${link.target_id}`;
+    case 'delegation':
+      return `delegation ${link.target_id}${at}${link.sha256 === null ? '' : `, sha256 ${link.sha256}`}`;
+    case 'quote':
+      return (
+        `quote of ${link.handle ?? link.target_id} (${link.target_id})${at}` +
+        (link.sha256 === null ? '' : `, PDF sha256 ${link.sha256}`) +
+        `${quoteWhere(link.locator)}: ${JSON.stringify(String(link.locator?.text ?? ''))}`
+      );
   }
 }
 
