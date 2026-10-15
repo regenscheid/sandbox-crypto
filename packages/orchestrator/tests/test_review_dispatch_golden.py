@@ -5,7 +5,8 @@ confirmation key, with identifiers made deterministic. The digests were taken fr
 code before B-06 split ``dispatch``, and again for each rubric since, which is all that
 changed: ``sandbox-consistency-2`` asked the reviewer to compare an entry's numbers with the
 artifacts it pins (B6), ``sandbox-consistency-3`` to check quotes (CR-4),
-``sandbox-consistency-4`` to find the record of each action the author narrates; a change to any
+``sandbox-consistency-4`` to find the record of each action the author narrates, with
+the window's actions item and each document revision's changed blocks; a change to any
 of them changes what a reviewer sees."""
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ from .test_consistency import MAIN, anchor, claim, dispatch, raise_finding
 from .test_consistency import store as store
 
 GOLDEN = {
-    "author": "c885523b9499a4b9a72772aaf4c03e7bc3ee76b830d68b1c8cb44aab9bf2093a",
+    "author": "77eaf38c45099e0215484606e99d2dcdca7b0d7f2dc6e0bcc2bfc2fdc90db08b",
     "confirmation": "18c8a755a8aaee94dc420265facc3ec3225987fa09db6b8d5b27a5611b980461",
     "fallback": "b3e5f71f4eddd05582b1199e0f73f913b668c7c97af47bb2a050eb733626f3cd",
 }

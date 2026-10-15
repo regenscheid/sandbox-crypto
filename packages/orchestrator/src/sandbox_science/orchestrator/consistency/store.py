@@ -307,7 +307,9 @@ class ReviewStore:
         project: str,
         session: str,
         key: str,
-        kind: Literal["transcript", "execution", "document", "artifact", "ledger", "source"],
+        kind: Literal[
+            "transcript", "execution", "document", "artifact", "ledger", "source", "action"
+        ],
         locator: Json,
         payload: Json,
         *,
@@ -473,6 +475,8 @@ class ReviewStore:
         self, project: str, document: str, number: int
     ) -> tuple[str, Json, Json]:
         """The source key, locator and payload of an agent's document revision."""
+        from .actions import changed_blocks
+
         revision = self.documents.revision(project, document, number)
         common = {"document": document, "revision": number, "sha256": revision.info.sha256}
         return (
@@ -483,6 +487,7 @@ class ReviewStore:
                 "author": revision.info.author.model_dump(mode="json"),
                 "reason": revision.info.reason,
                 "tombstone": revision.info.tombstone,
+                "blocks": changed_blocks(self.documents, project, document, number),
             },
         )
 
@@ -769,7 +774,11 @@ class ReviewStore:
         (a raw ``source``) is not an item: the transcript holds the result the agent saw,
         and only a source a quote cites comes in, pinned beside its entry (``quoted:``),
         so a long read that no quote cites leaves the coverage whole (CR-4)."""
+        from .actions import actions_item
+
         items: list[EvidenceItem] = []
+        actions: list[tuple[Json, Json]] = []
+        revised: list[Json] = []
         size, end = 0, window.watermark
         for seq, key, kind, locator, payload, sha, complete in db.execute(
             "SELECT seq,source_key,kind,locator,payload,sha256,complete FROM review_feed "
@@ -779,12 +788,31 @@ class ReviewStore:
             if kind == "source" and not str(key).startswith("quoted:"):
                 end = seq
                 continue
+            if kind == "action":
+                # One derived item lists the window's actions, after the others.
+                actions.append((stored_json(locator), stored_json(payload)))
+                end = seq
+                continue
             item = EvidenceItem(kind, locator, payload, sha, complete)
-            if items and size + item.size > MAX_SNAPSHOT_BYTES:
+            # Room is kept for the actions item, at most half an item.
+            if items and size + item.size > MAX_SNAPSHOT_BYTES - MAX_ITEM_BYTES // 2:
                 break
             items.append(item)
             size += item.size
             end = seq
+            if kind == "document" and str(key).startswith("document:"):
+                found = stored_json(payload)
+                revised.append(
+                    {
+                        "document": found.get("document"),
+                        "revision": found.get("revision"),
+                        **cast(Json, found.get("blocks") or {}),
+                    }
+                )
+        if actions or revised:
+            located, listed = actions_item(actions, revised, window.watermark + 1, end)
+            encoded = dump(listed)
+            items.append(EvidenceItem("actions", dump(located), encoded, digest(encoded), 1))
         return end, items
 
     @staticmethod

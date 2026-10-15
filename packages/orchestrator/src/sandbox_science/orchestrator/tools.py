@@ -831,6 +831,8 @@ class Toolbox:
                 ErrorKind.INTERNAL,
                 f"the {call.name} tool failed unexpectedly ({type(exc).__name__})",
             )
+        # The review's list of what the run did reads it (CR-2 as amended for lab 40).
+        outcome.record.setdefault("effect", entry.effect)
         if self.recorder is not None and outcome.written is not None:
             try:
                 recorded = await self.recorder.record(
