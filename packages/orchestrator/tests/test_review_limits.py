@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 
 from sandbox_science.orchestrator.consistency.models import ReviewConfig
-from sandbox_science.orchestrator.consistency.runner import ReviewerRunner
+from sandbox_science.orchestrator.consistency.runner import READ_CHARACTERS, Read, ReviewerRunner
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.model import ModelTurn, ToolCall
 
@@ -135,6 +135,41 @@ async def test_the_calls_of_a_turn_past_16_are_not_run_and_the_reviewer_is_told(
         4,
         "Only the first 16 tool calls of a turn run; make this one again in your next turn.",
     )
+
+
+@pytest.mark.asyncio
+async def test_the_reviewer_is_told_a_reads_count_is_characters(store) -> None:
+    """Lab 41: review_read's start and count said nothing of what they count. The reviewer
+    passed the numbers the tool descriptions held, 16 (reads in a turn) and 50 (a manifest
+    page), as each read's count, got 16 or 50 characters of every item, and ended two
+    reviews inconclusive. The offered schema says the count is characters, and its
+    default and maximum, which the read takes."""
+    reviews, _, _ = store
+    review = window(reviews, 2)
+    offered: list[Any] = []
+
+    class Recording(LabReviewer):
+        async def complete(self, messages: Sequence[Any], tools: Sequence[Any]) -> ModelTurn:
+            offered.extend(tools)
+            return await super().complete(messages, tools)
+
+    await ReviewerRunner(reviews, "p", "s", review, "owner", Recording()).run()
+    (read,) = {spec.name: spec for spec in offered if spec.name == "review_read"}.values()
+    properties = read.parameters["properties"]
+    assert "characters to read, not items" in properties["count"]["description"]
+    assert f"{READ_CHARACTERS} by default" in properties["count"]["description"]
+    assert "0 by default" in properties["start"]["description"]
+    assert f"first {READ_CHARACTERS:,} characters" in read.description
+    # What the schema says is what the read does.
+    item = next(i for i in reviews.manifest("p", "s", review)["evidence"])
+    whole = reviews.read_evidence("p", "s", review, item["evidence"])
+    assert (
+        whole["text"]
+        == reviews.read_evidence(
+            "p", "s", review, item["evidence"], start=0, count=READ_CHARACTERS
+        )["text"]
+    )
+    assert Read(evidence=item["evidence"]).count == READ_CHARACTERS
 
 
 @pytest.mark.asyncio

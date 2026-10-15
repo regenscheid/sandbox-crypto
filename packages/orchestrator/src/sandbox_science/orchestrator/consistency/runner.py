@@ -25,11 +25,14 @@ from .prompt_bundle import assemble_reviewer
 from .rubric import RUBRIC, RUBRIC_VERSION
 from .store import MANIFEST_PAGE, Json, ReviewStore, agent_text, clipped, dump
 
+READ_CHARACTERS: Final = 16000
+"""The most characters one ``review_read`` returns, and how many it returns by default."""
+
 
 class Read(Contract):
     evidence: str = Field(pattern=r"^ev-[0-9a-f]{24}$")
     start: int = Field(default=0, ge=0, le=100000000, strict=True)
-    count: int = Field(default=16000, ge=1, le=16000, strict=True)
+    count: int = Field(default=READ_CHARACTERS, ge=1, le=READ_CHARACTERS, strict=True)
     block: str | None = Field(default=None, pattern=r"^b[0-9]{1,9}$")
 
 
@@ -71,12 +74,21 @@ SPECS = (
     ),
     schema(
         "review_read",
-        "Read a bounded slice of one pinned item; documents may name a block. Read up to "
+        "Read a bounded slice of one pinned item, in characters: leave out start and count "
+        f"to read its first {READ_CHARACTERS:,} characters, and continue from the "
+        "next_start the answer gives. Documents may name a block. Read up to "
         f"{TURN_CALLS} items in one turn.",
         {
             "evidence": {"type": "string"},
-            "start": {"type": "integer"},
-            "count": {"type": "integer"},
+            "start": {
+                "type": "integer",
+                "description": "The first character of the item to read; 0 by default",
+            },
+            "count": {
+                "type": "integer",
+                "description": f"How many characters to read, not items; {READ_CHARACTERS} "
+                "by default, and at most that",
+            },
             "block": {"type": "string"},
         },
         ["evidence"],

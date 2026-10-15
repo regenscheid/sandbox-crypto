@@ -83,7 +83,9 @@ publications contribute one finite uncertainty observation rather than disappear
 on restart. Only the publishing session gets a source grant. Producer and observed
 inputs remain unknown. Reproductions do not increment the new-revision trigger, and
 legacy live-tool metadata does not duplicate canonical events when the consumer is active.
-`review_read` slices exact decoded source characters with the original byte SHA;
+`review_read` slices exact decoded source characters with the original byte SHA, at
+most 16,000 a read, which is also its default; its schema says that `start` and `count`
+count characters, not items (lab 41);
 JSON escaping is not treated as source lines. Empty source remains empty and has an
 explicit audited exposure marker. Artifact anchors name the whole revision.
 
