@@ -16,6 +16,7 @@ from aiohttp.test_utils import TestServer
 from sandbox_science.orchestrator.delegation.models import Choice, ModelChoice
 from sandbox_science.orchestrator.delegation.records import DelegationSettings
 from sandbox_science.orchestrator.model import ModelGateway
+from sandbox_science.orchestrator.projects import RunRecord
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 
 from .loop_harness import API_KEY, Gateway, Harness, Reply, call
@@ -112,6 +113,13 @@ async def test_an_answer_that_is_not_a_list_lists_nothing(body: str) -> None:
     assert listed == ({"m"} if "id" in body else None)
 
 
+def answer(root: RunRecord, n: int) -> dict[str, Any]:
+    """The root's ``n``-th tool result, without the delegation notices that ride on it
+    when a child ended before the call returned."""
+    found = json.loads(results(root)[n])
+    return json.loads(found["tool_result"]) if "tool_result" in found else found
+
+
 def model_tool(harness: Harness) -> dict[str, Any] | None:
     (first, *_) = harness.gateway.tools["main"]
     (delegate,) = [t for t in first if t["function"]["name"] == "delegate"]
@@ -135,9 +143,9 @@ async def test_a_delegation_runs_on_the_alias_its_brief_chose(delegating: Harnes
         "description": "Optional: the model alias the checker runs on, of those the project "
         "allows; without it, the delegated role's",
     }
-    began = json.loads(results(root)[0])
+    began = answer(root, 0)
     assert began["model"] == {"alias": "checker-b"}
-    refused = json.loads(results(root)[1])["error"]
+    refused = answer(root, 1)["error"]
     assert refused["kind"] == "policy_denied"
     assert refused["message"].startswith("model_not_allowed")
     (child,) = children(delegating, root)
@@ -153,7 +161,7 @@ async def test_a_run_offered_no_choice_has_no_model_to_choose(delegating: Harnes
     chosen = call("delegate", check={"entry": "C-1", "revision": 1}, model="checker-b")
     root = await delegating.run("root", [Reply(calls=[chosen]), Reply("Refused.")])
     assert model_tool(delegating) is None
-    refused = json.loads(results(root)[0])["error"]
+    refused = answer(root, 0)["error"]
     assert (refused["kind"], refused["message"].split(":")[0]) == (
         "policy_denied",
         "model_not_allowed",
@@ -169,7 +177,7 @@ async def test_an_unlisted_alias_is_refused_without_a_fallback(delegating: Harne
         [Reply(calls=[check]), Reply("No check.")],
         options=["--delegated-model", "delegated"],
     )
-    refused = json.loads(results(root)[0])["error"]
+    refused = answer(root, 0)["error"]
     assert refused["kind"] == "unavailable"
     assert refused["message"].startswith("model_unavailable: the model gateway lists no model")
     assert "delegations" not in root.summaries
@@ -188,7 +196,7 @@ async def test_a_fallback_replaces_an_unlisted_alias_and_is_recorded(
         options=["--delegated-model", "delegated"],
     )
     recorded = {"alias": "main", "asked": "delegated", "fallback": True}
-    assert json.loads(results(root)[0])["model"] == recorded
+    assert answer(root, 0)["model"] == recorded
     (child,) = children(delegating, root)
     assert child.alias == "main"
     assert {usage.model for usage in child.usage} == {"scripted-main"}

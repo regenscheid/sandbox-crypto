@@ -258,11 +258,13 @@ class Delegations(TurnHook):
         # only its note, which cannot stand as the task or as evidence (LG-17).
         task = check_task(entry.handle, brief.check.revision)
         inputs = [evidence_line(link) for link in entry.evidence]
+        turns = min(self.limits.check_turns, self.max_turns, self.turns_left)
         written: dict[str, JsonValue] = {
             "task": task,
             "note": brief.note,
             "inputs": list(inputs),
             "check": check,
+            "limits": {"turns": turns, "tokens": tokens},  # as granted, for the tree (PD-42)
         }
         if choice is not None:
             written["model"] = choice.recorded()
@@ -285,7 +287,7 @@ class Delegations(TurnHook):
             run_id,
             started,
             brief_text(task, inputs, brief.note),
-            max_turns=min(self.limits.check_turns, self.max_turns, self.turns_left),
+            max_turns=turns,
             tokens=tokens,
             target=Target(
                 entry.entry_id,

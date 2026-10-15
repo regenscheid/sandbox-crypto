@@ -337,6 +337,12 @@ def run_id_of(name: str) -> str | None:
     return None if found is None else found.run_id
 
 
+def run_started(name: str) -> datetime | None:
+    """When the run a record's name stands for started; None for any other name."""
+    found = _run_entry(name)
+    return None if found is None else found.started_at
+
+
 def _run_entry(name: str) -> RunEntry | None:
     """The run a record's name stands for; None for any other name, which is never a path."""
     match = _RUN_NAME.fullmatch(name)

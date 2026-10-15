@@ -39,6 +39,7 @@ from sandbox_science.orchestrator.projects import (
     SessionRecord,
 )
 from sandbox_science.orchestrator.runstate import WINDOW, RunState
+from sandbox_science.orchestrator.runtree import RunTree, RunTrees
 
 MAX_RUN_BYTES: Final = 64 * 1024 * 1024
 STORE: Final = web.AppKey("store", ProjectStore)
@@ -157,6 +158,7 @@ def add_routes(app: web.Application) -> None:
     app.router.add_get("/api/v0/projects/{project}", project)
     app.router.add_get("/api/v0/projects/{project}/sessions/{session}", session)
     app.router.add_get("/api/v0/projects/{project}/sessions/{session}/runs/{run}", run)
+    app.router.add_get("/api/v0/projects/{project}/sessions/{session}/tree", tree)
 
 
 async def projects(request: web.Request) -> web.Response:
@@ -177,6 +179,13 @@ async def run(request: web.Request) -> web.Response:
     found = request.match_info["project"], request.match_info["session"], request.match_info["run"]
     limit = request.app[MAX_RUN]
     return await _answer(lambda store: _run(store, *found, limit), request)
+
+
+async def tree(request: web.Request) -> web.Response:
+    """The session's run tree: its runs, running ones included, and its delegations
+    (PD-42)."""
+    found = request.match_info["project"], request.match_info["session"]
+    return await _answer(lambda store: _tree(store, *found), request)
 
 
 async def _answer(
@@ -246,6 +255,12 @@ def _session(store: ProjectStore, project_id: str, session_id: str) -> SessionDe
         session=SessionView.of(found),
         runs=store.runs(project_id, session_id),
     )
+
+
+def _tree(store: ProjectStore, project_id: str, session_id: str) -> RunTree:
+    if session_id not in store.get(project_id).sessions:
+        raise _no_session(project_id, session_id)
+    return RunTrees(store).session(project_id, session_id)
 
 
 def _run(store: ProjectStore, project_id: str, session_id: str, name: str, limit: int) -> Json:

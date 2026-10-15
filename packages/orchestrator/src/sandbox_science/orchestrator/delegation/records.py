@@ -45,6 +45,8 @@ REPORT_CHARS: Final = 16_000
 RESULT_BYTES: Final = 32768
 ERROR_BYTES: Final = 2000
 PAGE: Final = 50
+TREE: Final = 500
+"""The most delegations a session's tree shows: its latest."""
 
 _COLUMNS: Final = (
     "delegation_id, parent, run, kind, brief, started_at, ended, stopped, report, "
@@ -272,6 +274,24 @@ class DelegationRecords:
     def get(self, project: str, session: str, delegation_id: str) -> Delegation:
         with self.control.read() as tx:
             return _one(tx.sql, project, session, delegation_id)
+
+    def listed(
+        self, project: str, session: str, *, limit: int = TREE
+    ) -> tuple[list[Delegation], int]:
+        """The session's delegations, the latest ``limit`` of them oldest first, with how
+        many there are (PD-42)."""
+        with self.control.read() as tx:
+            db = tx.sql
+            (total,) = db.execute(
+                "SELECT count(*) FROM delegations WHERE project_id = ? AND session_id = ?",
+                (project, session),
+            ).fetchone()
+            rows = db.execute(
+                f"SELECT {_COLUMNS} FROM delegations WHERE project_id = ? AND session_id = ? "  # noqa: S608
+                "ORDER BY started_at DESC, delegation_id DESC LIMIT ?",
+                (project, session, limit),
+            ).fetchall()
+        return [_delegation(row) for row in reversed(rows)], int(total)
 
     def handbacks(self, project: str, session: str) -> list[Delegation]:
         """The session's ended delegations that no run has acknowledged, oldest first."""
