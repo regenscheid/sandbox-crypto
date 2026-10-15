@@ -29,14 +29,26 @@ export function kernelPanelScope(
     : null;
 }
 
+/**
+ * The most bytes of a kernel observation to read. It follows the server's bound: an
+ * observation holds up to 128 kernels, the session's own and those of its delegated runs,
+ * one a language each (`MAX_SESSION_KERNELS`), and the workspace accepts 66,560 bytes of it
+ * from the worker (`MAX_KERNEL_OBSERVATION_BYTES`). The workspace adds the project ID, under
+ * 150 bytes; the rest is headroom. A workspace test keeps this at or above that bound.
+ */
+export const KERNEL_OBSERVATION_MAX_BYTES = 68 * 1024;
+
 export async function readKernels(
   scope: KernelScope,
   signal: AbortSignal,
 ): Promise<KernelObservation> {
   const path = `/projects/${encodeURIComponent(scope.projectId)}/sessions/${encodeURIComponent(scope.sessionId)}/kernels`;
-  return inScope(await get<KernelObservation>(path, { signal, maxBytes: 12 * 1024 }), {
-    project_id: scope.projectId,
-    session_id: scope.sessionId,
-    environment_id: scope.environmentId,
-  });
+  return inScope(
+    await get<KernelObservation>(path, { signal, maxBytes: KERNEL_OBSERVATION_MAX_BYTES }),
+    {
+      project_id: scope.projectId,
+      session_id: scope.sessionId,
+      environment_id: scope.environmentId,
+    },
+  );
 }

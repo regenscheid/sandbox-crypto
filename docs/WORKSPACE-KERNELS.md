@@ -41,8 +41,9 @@ than disclosure of another environment. There is no fallback to explicit
 
 The route reads the project record with `ProjectStore.get` in a thread, takes the
 session's environment from it, and asks the worker under the six-second call
-timeout of `Timeouts`. The observer client has its own five-second deadline, an
-65 KiB response limit (66,560 bytes, enough for a session's kernels and its runs') and no redirects. A timeout answers 503; it does not cancel
+timeout of `Timeouts`. The observer client has its own five-second deadline, a
+65 KiB response limit (66,560 bytes, enough for a session's kernels and its runs') and no
+redirects. A timeout answers 503; it does not cancel
 or restart research kernels. Concurrent reads, from two tabs on one session say,
 are all answered. Errors go through the workspace's one error mapping
 ([workspace](WORKSPACE.md#errors-and-records)).
@@ -56,9 +57,13 @@ and unavailable are distinct. A previous observation remains explicitly dated an
 labeled as an unknown current state when polling fails or pauses.
 
 The panel reads through the workspace's shared poller and request function
-([workspace](WORKSPACE.md#the-client)): an eight-second deadline, a 12 KiB answer limit,
+([workspace](WORKSPACE.md#the-client)): an eight-second deadline, a 68 KiB answer limit,
 three seconds between reads, backoff to thirty seconds, no reads while the page is
-hidden, and none after sign-out until the page is reloaded. A reply that arrives
+hidden, and none after sign-out until the page is reloaded. The limit follows the
+observer's 66,560 bytes, plus the project ID that the route adds; a session's listing
+holds at most 128 kernels, and the largest the contract allows is about 55 KiB. An answer
+over the limit fails like any other failed read: the panel says the observation is
+unavailable and the current state unknown. A reply that arrives
 after the page was hidden or the panel replaced is dropped. The browser checks
 only that an observation names the panel's project, session and environment; the
 revision fields are shown as the server sends them. The panel has no restart
