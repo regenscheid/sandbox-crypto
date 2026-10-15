@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -443,6 +444,31 @@ async def test_a_run_asks_one_question_per_reply_and_ten_in_all(
         await tool.call({"question": "More?"}, operation="op-3", call_id="op-3")
     assert refused(error, "policy_denied").startswith("limit_reached")
     assert tool.asked == {"op-1", "op-2"}
+
+
+async def test_a_question_written_as_the_run_is_cancelled_closes_too(
+    questions: Questions, tool: QuestionTool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cancel comes while the question is being written, before the call waits: the
+    close waits for the write, so no question is left open without its run."""
+    writing, written = threading.Event(), threading.Event()
+    ask = questions.ask
+
+    def slow(*args: Any, **kwargs: Any) -> Question:
+        writing.set()
+        written.wait(5)
+        return ask(*args, **kwargs)
+
+    monkeypatch.setattr(questions, "ask", slow)
+    waiting = asyncio.create_task(tool.call({"question": "Go on?"}, operation="o", call_id="c"))
+    await asyncio.to_thread(writing.wait, 5)
+    waiting.cancel()
+    await asyncio.sleep(0.05)
+    written.set()
+    with pytest.raises(asyncio.CancelledError):
+        await waiting
+    closed = questions.ask(CONTEXT, "run-1", "c", "o", "Go on?")  # the question it asked
+    assert (closed.state, closed.reason) == ("interrupted", STOPPED)
 
 
 class _NoWorker:

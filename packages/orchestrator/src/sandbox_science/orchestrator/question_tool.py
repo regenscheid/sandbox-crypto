@@ -154,19 +154,24 @@ class QuestionTool(TurnHook):
                 )
         context = self.context
         project, session = context.project_id, context.session_id
-        question = await threaded(
-            self.questions.ask,
-            context,
-            self.run,
-            call_id if 0 < len(call_id.encode()) <= 256 else operation,
-            operation,
-            request.question,
-            request.options,
-            multiple=request.multiple,
+        # The question is written in a thread, which a cancel does not stop: the close
+        # below waits for it, so a question written as the run ended closes too.
+        asking = asyncio.ensure_future(
+            threaded(
+                self.questions.ask,
+                context,
+                self.run,
+                call_id if 0 < len(call_id.encode()) <= 256 else operation,
+                operation,
+                request.question,
+                request.options,
+                multiple=request.multiple,
+            )
         )
-        self.asked.add(operation)
-        self.in_reply = True
         try:
+            question = await asyncio.shield(asking)
+            self.asked.add(operation)
+            self.in_reply = True
             while question.state == "open":
                 await self.clock.sleep(self.poll)
                 question = await threaded(
@@ -176,18 +181,21 @@ class QuestionTool(TurnHook):
             cancelled = self.stop is not None and self.stop.is_set()
             # The close outlives the cancel.
             with contextlib.suppress(Exception):
-                await asyncio.shield(
-                    threaded(
-                        self.questions.close,
-                        project,
-                        session,
-                        question=question.question_id,
-                        state="cancelled" if cancelled else "interrupted",
-                        reason=CANCELLED if cancelled else STOPPED,
-                    )
-                )
+                await asyncio.shield(self._close(asking, cancelled=cancelled))
             raise
         return result(question)
+
+    async def _close(self, asking: asyncio.Future[Question], *, cancelled: bool) -> None:
+        """Close the question the run asked, once it is written, as the run ended."""
+        question = await asking
+        await threaded(
+            self.questions.close,
+            question.project,
+            question.session,
+            question=question.question_id,
+            state="cancelled" if cancelled else "interrupted",
+            reason=CANCELLED if cancelled else STOPPED,
+        )
 
 
 def result(question: Question) -> tuple[str, dict[str, Any]]:
