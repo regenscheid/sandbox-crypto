@@ -94,7 +94,7 @@ GOLDEN = {
     ),
     "sandbox-delegated-check-2": "f204fe3e60428a9a12ed7306eb46813865c6bb56f628a53b0d17443b385af286",
     "sandbox-job-watcher-1": "4b545fe81e35622bf1b894c435833d78fb122116f9364d429b21c6c3551e1ab1",
-    "sandbox-consistency-2": "e5c5c248a9ba6109e984200bdfadf674c6c9b07cbef42d08a2586fece11cd874",
+    "sandbox-consistency-3": "c0817e3278029c717f79f5709751478842e6a16ce251f18176a79b6035ec7615",
     "sandbox-memory-run-1": "b69cc482f75853487a499ac89b5701b148066e919842a9970e6e318b2bdce121",
     "sandbox-memory-reviewer-1": (
         "d391d1a7e6c33b4fca0970450432103c38b5ea34b80821210f7c9d27f80b9742"

@@ -3,7 +3,7 @@
 This page describes the automatic consistency reviewer as built in `packages/orchestrator`
 (`sandbox_science.orchestrator.consistency`). It implements the approved
 [behavior specification](specs/consistency-review.md), with a separately authored,
-versioned rubric (`sandbox-consistency-2`, D56). It never executes code. The planning
+versioned rubric (`sandbox-consistency-3`, D56). It never executes code. The planning
 consistency review of 2026-10-10 is kept, as history, in
 [.agents/planning-consistency-review-2026-10-10.md](../.agents/planning-consistency-review-2026-10-10.md).
 
@@ -97,7 +97,7 @@ If no confirmation target fits, an incomplete author-work window can still advan
 feed; the omitted claimed fix stays explicitly unconfirmed.
 
 Reviewer tools are only `review_manifest` and `review_read`, `review_checked` (a checked-item record),
-`review_finding` (finding creation) and `review_decide` (confirmation/rebuttal decision). Unknown or denied calls are recorded and consume the
+`review_finding` (finding creation), `review_decide` (confirmation/rebuttal decision) and `review_citation` (a quote's check, CR-4: `supported`, `unsupported` or `inconclusive`, with an explanation, for a quote's recorded source the snapshot holds, once the reviewer has read it and the entry revision that quotes it; written to `citation_checks` with the digest of that revision's statement, fields, assumptions and evidence). Unknown or denied calls are recorded and consume the
 model-turn budget. The reviewer has no worker client, author toolbox, file/network tools,
 policy mutation or delegation. The separate call/hour, turn, time, response/context and
 soft token budgets reserve before awaiting a model. Actual provider usage is recorded;

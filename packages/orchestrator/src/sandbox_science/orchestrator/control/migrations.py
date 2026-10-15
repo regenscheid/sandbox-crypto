@@ -2061,6 +2061,37 @@ def _evidence_targets(schema: Schema) -> None:
     )
 
 
+def _citation_checks(schema: Schema) -> None:
+    """Version 31: the consistency reviewer's checks of quotes (docs/specs/
+    consistency-review.md, CR-4 as the coordinator amended it): for one quote an entry
+    revision holds, the review that checked it, the recorded source it read, the digest
+    of the revision's statement, fields, assumptions and evidence it covered, and the
+    verdict with its explanation. Written once."""
+    for statement in (
+        """CREATE TABLE citation_checks (
+    check_id TEXT PRIMARY KEY CHECK (length(check_id) = 33 AND check_id GLOB 'citation-*'
+        AND substr(check_id, 10) NOT GLOB '*[^0-9a-f]*'),
+    project TEXT NOT NULL CHECK (length(CAST(project AS BLOB)) BETWEEN 1 AND 128),
+    review_id TEXT NOT NULL REFERENCES review_runs(review_id),
+    entry_id TEXT NOT NULL,
+    entry_revision INTEGER NOT NULL CHECK (entry_revision BETWEEN 1 AND 999999999),
+    evidence_id TEXT NOT NULL CHECK (length(CAST(evidence_id AS BLOB)) BETWEEN 1 AND 64),
+    material TEXT NOT NULL CHECK (length(material) = 64 AND material NOT GLOB '*[^0-9a-f]*'),
+    source TEXT NOT NULL CHECK (length(CAST(source AS BLOB)) BETWEEN 1 AND 64),
+    verdict TEXT NOT NULL CHECK (verdict IN ('supported', 'unsupported', 'inconclusive')),
+    explanation TEXT NOT NULL CHECK (length(CAST(explanation AS BLOB)) BETWEEN 1 AND 16384),
+    created REAL NOT NULL,
+    FOREIGN KEY (entry_id, entry_revision) REFERENCES ledger_revisions(entry_id, revision)
+) STRICT""",
+        "CREATE INDEX citation_checks_quotes ON citation_checks(entry_id,evidence_id,created)",
+        """CREATE TRIGGER citation_checks_no_update BEFORE UPDATE ON citation_checks
+BEGIN SELECT RAISE(ABORT, 'citation checks are written once'); END""",
+        """CREATE TRIGGER citation_checks_no_delete BEFORE DELETE ON citation_checks
+BEGIN SELECT RAISE(ABORT, 'citation checks are written once'); END""",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -2091,6 +2122,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _delegations,
     _delegation_results,
     _evidence_targets,
+    _citation_checks,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""
