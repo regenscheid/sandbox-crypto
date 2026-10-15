@@ -6,9 +6,10 @@ The call waits inside itself. The run keeps its session and makes no model call 
 the question closes, however long that takes: no default or timeout ends the wait (open
 question 6). Only the run waits; its jobs and delegated runs go on, and so do the
 user's other sessions (PD-26). The answer comes back as this call's result, so it
-reaches the run and the call that asked (PD-24). A run that ends while it waits, by a
-cancel or a limit, closes its question ``cancelled``: no one is left to read the
-answer.
+reaches the run and the call that asked (PD-24). A run's limits are checked between
+model calls, so none ends the wait. A run that ends while it waits closes its question,
+as no one is left to read the answer: ``cancelled`` when the user cancelled the run,
+``interrupted`` when it stopped otherwise, as when the run service stops.
 
 A delegated run is not offered the tool: one that needs the user ends ``blocked`` with
 its question in its outcome (PD-41).
@@ -33,7 +34,8 @@ from .questions import MAX_DETAIL, MAX_LABEL, MAX_QUESTION, Question, QuestionOp
 
 ASK_USER: Final = "ask_user"
 POLL_SECONDS: Final = 1.0
-ENDED: Final = "the run ended before it was answered"
+CANCELLED: Final = "the run was cancelled"
+STOPPED: Final = "the run stopped before it was answered"
 
 
 class AskRequest(Contract):
@@ -106,10 +108,13 @@ class QuestionTool:
         context: ExecutionContext,
         *,
         run: str,
+        stop: asyncio.Event | None = None,
         poll_seconds: float | None = None,
         clock: Clock = SYSTEM_CLOCK,
     ) -> None:
+        """``stop`` is set when the user cancels the run (RS-11)."""
         self.questions, self.context, self.run = questions, context, run
+        self.stop = stop
         self.poll = POLL_SECONDS if poll_seconds is None else poll_seconds
         self.clock = clock
 
@@ -138,6 +143,7 @@ class QuestionTool:
                     self.questions.get, project, session, question.question_id
                 )
         except asyncio.CancelledError:
+            cancelled = self.stop is not None and self.stop.is_set()
             # The close outlives the cancel.
             with contextlib.suppress(Exception):
                 await asyncio.shield(
@@ -146,8 +152,8 @@ class QuestionTool:
                         project,
                         session,
                         question=question.question_id,
-                        state="cancelled",
-                        reason=ENDED,
+                        state="cancelled" if cancelled else "interrupted",
+                        reason=CANCELLED if cancelled else STOPPED,
                     )
                 )
             raise

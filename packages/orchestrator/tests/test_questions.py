@@ -20,7 +20,7 @@ from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.documents import store_path
 from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.projects import ProjectStore, run_name
-from sandbox_science.orchestrator.question_tool import ENDED, QuestionTool
+from sandbox_science.orchestrator.question_tool import CANCELLED, STOPPED, QuestionTool
 from sandbox_science.orchestrator.questions import Answer, Question, Questions
 from sandbox_science.orchestrator.tools import HARNESS_TOOL_NAMES, Toolbox
 
@@ -344,23 +344,33 @@ async def test_the_tool_says_what_a_decide_or_a_cancel_means(
     assert value["note"]
 
 
+@pytest.mark.parametrize(
+    ("cancelled", "state", "reason"),
+    [(True, "cancelled", CANCELLED), (False, "interrupted", STOPPED)],
+)
 async def test_a_run_that_ends_while_it_waits_closes_its_question(
-    questions: Questions, tool: QuestionTool
+    questions: Questions, cancelled: bool, state: str, reason: str
 ) -> None:
+    """The user's cancel (RS-11) closes it ``cancelled``; a run stopped otherwise, as by
+    the run service stopping, ``interrupted``."""
+    stop = asyncio.Event()
+    tool = QuestionTool(questions, CONTEXT, run="run-1", stop=stop, poll_seconds=0.01)
     waiting = asyncio.create_task(tool.call({"question": "Go on?"}, operation="o", call_id="c"))
     asked = await until_open(questions)
+    if cancelled:
+        stop.set()
     waiting.cancel()
     with pytest.raises(asyncio.CancelledError):
         await waiting
     closed = questions.get("p", "s", asked.question_id)
-    assert (closed.state, closed.reason, closed.answer) == ("cancelled", ENDED, None)
+    assert (closed.state, closed.reason, closed.answer) == (state, reason, None)
     # Replayed, it reports the question closed with no answer.
     value = answer_of((await tool.call({"question": "Go on?"}, operation="o", call_id="c"))[0])
     assert value == {
         "question_id": asked.question_id,
         "answer": None,
-        "state": "cancelled",
-        "note": f"The question closed without an answer: {ENDED}.",
+        "state": state,
+        "note": f"The question closed without an answer: {reason}.",
     }
 
 

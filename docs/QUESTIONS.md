@@ -26,7 +26,7 @@ The answer is the call's result, so it reaches the run and the call that asked, 
 
 The tool's effect class is `read`: asking changes nothing a plan governs, so a run may ask while its plan is a draft. The run's record keeps the call's result and the question's ID, state and answer.
 
-A run that ends while it waits, by a cancel or a limit, closes its question `cancelled` with the reason "the run ended before it was answered": no one is left to read the answer. A replayed call (the same operation ID) finds the question it asked and returns as soon as that question is closed.
+A run's limits are checked between model calls, so none ends the wait. A run that ends while it waits closes its question, as no one is left to read the answer: `cancelled` with the reason "the run was cancelled" when the user cancelled the run (RS-11), and `interrupted` with the reason "the run stopped before it was answered" when it stopped otherwise, as when the run service stops. A replayed call (the same operation ID) finds the question it asked and returns as soon as that question is closed.
 
 A question is not a permission request (PD-25): an answer grants nothing, and the policy still decides every operation.
 

@@ -2297,10 +2297,11 @@ def _cost_limits(schema: Schema) -> None:
 def _user_questions(schema: Schema) -> None:
     """Version 37: questions a main run asks the user (plans-and-delegation spec, PD-23 to
     PD-26): the question, its options and whether several may be chosen, written once by
-    the run that asked; then, once, how it closed: the user's answer, or why no run can
-    receive one. Questions are kept, and are not permission requests (PD-25)."""
+    the run that asked; then, once, how it closed: the user's answer, with the chat
+    message that gave it when the user answered by writing to the session, or why no run
+    can receive one. Questions are kept, and are not permission requests (PD-25)."""
     for statement in (
-        """CREATE TABLE user_questions (
+        f"""CREATE TABLE user_questions (
     question_id TEXT PRIMARY KEY
         CHECK (length(question_id) = 28 AND question_id GLOB 'qst-*'
         AND substr(question_id, 5) NOT GLOB '*[^0-9a-f]*'),
@@ -2319,7 +2320,9 @@ def _user_questions(schema: Schema) -> None:
         AND length(CAST(answer AS BLOB)) <= 131072)),
     closed_at TEXT CHECK (closed_at IS NULL OR length(closed_at) BETWEEN 1 AND 64),
     reason TEXT CHECK (reason IS NULL OR length(CAST(reason AS BLOB)) BETWEEN 1 AND 1024),
+    message_id TEXT UNIQUE CHECK (message_id IS NULL OR ({_ID.format("message_id")})),
     CHECK ((state = 'open') = (closed_at IS NULL)),
+    CHECK (message_id IS NULL OR state = 'answered'),
     CHECK ((state = 'answered') <= (answer IS NOT NULL)),
     CHECK (state NOT IN ('open', 'interrupted') OR answer IS NULL),
     CHECK (multiple = 0 OR json_array_length(options) > 0),

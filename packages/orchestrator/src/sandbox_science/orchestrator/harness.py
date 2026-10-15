@@ -491,6 +491,7 @@ class Harness:
                         lambda close: closing(stack, interruption, close),
                         memory,
                         delegations,
+                        stop,
                     )
                     hooks = toolbox.turn_hooks()
                     request = admitted.request
@@ -699,9 +700,11 @@ class Harness:
         on_close: Callable[[Callable[[], Awaitable[object]]], None],
         memory: Snapshot | None = None,
         delegations: Delegations | None = None,
+        stop: asyncio.Event | None = None,
     ) -> Toolbox:
-        """The run's tools; ``on_close`` takes what closes each part the run made, and
-        ``memory`` is the project memory the run was given, which its reviewer is too.
+        """The run's tools; ``on_close`` takes what closes each part the run made,
+        ``memory`` is the project memory the run was given, which its reviewer is too, and
+        ``stop`` is set when the user cancels the run.
 
         A delegated run gets its parent's tools without the review tools, the plan tools,
         the delegate tools, ``ask_user`` and connectors, and a check only the reads of the
@@ -824,6 +827,7 @@ class Harness:
                 Questions(stores.documents.control, clock=self.clock),
                 context,
                 run=run_name(admitted.started_at, admitted.run_id),
+                stop=stop,
                 clock=self.clock,
             )
         # A delegated run's cells run in kernels of its own, which stop when it ends
