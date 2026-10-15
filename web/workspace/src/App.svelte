@@ -14,6 +14,8 @@
   import IssueList from './views/IssueList.svelte';
   import ProjectList from './views/ProjectList.svelte';
   import ProjectView from './views/ProjectView.svelte';
+  import RunEventsView from './views/RunEventsView.svelte';
+  import RunTreeView from './views/RunTreeView.svelte';
   import SessionView from './views/SessionView.svelte';
   import ProjectMath from './views/ProjectMath.svelte';
 
@@ -55,6 +57,14 @@
     {:else if route.view === 'session'}
       {#key `${route.project}/${route.session}`}
         <SessionView projectId={route.project} sessionId={route.session} />
+      {/key}
+    {:else if route.view === 'tree'}
+      {#key `${route.project}/${route.session}`}
+        <RunTreeView projectId={route.project} sessionId={route.session} />
+      {/key}
+    {:else if route.view === 'run'}
+      {#key `${route.project}/${route.session}/${route.run}`}
+        <RunEventsView projectId={route.project} sessionId={route.session} run={route.run} />
       {/key}
     {:else if route.view === 'review'}
       {#key `${route.project}/${route.session}/${route.review}`}

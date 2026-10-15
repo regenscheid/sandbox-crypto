@@ -3,7 +3,7 @@
   import { api, type SessionDetail } from '../lib/api';
   import { formatTime } from '../lib/format';
   import { initialPoll, Poller, type PollState } from '../lib/poller';
-  import { projectHref } from '../lib/router';
+  import { projectHref, treeHref } from '../lib/router';
   import { kernelPanelScope } from '../lib/kernels';
   import { planPanelScope } from '../lib/plans';
   import ChatPanel from './ChatPanel.svelte';
@@ -44,6 +44,10 @@
   <a href="#/">Projects</a> / <a href={projectHref(projectId)}>{projectId}</a> /
 </nav>
 <h1>Session {sessionId}</h1>
+<p>
+  <a href={treeHref(projectId, sessionId)}>The run tree</a>: its runs, the runs they delegated to,
+  and each delegation's brief and outcome.
+</p>
 
 <PollStatus phase={view.phase} hasData={view.data !== null} what="Session views" />
 {#if view.data}

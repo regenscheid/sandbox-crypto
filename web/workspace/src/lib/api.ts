@@ -27,6 +27,7 @@ import type {
   ProjectListing,
   ProjectView,
   RunEntry,
+  RunTree,
   SessionDetail,
   SessionView,
   ViewerLink,
@@ -459,6 +460,9 @@ export const api = {
     get<JobListing>(`/projects/${part(project)}/sessions/${part(session)}/jobs`, { signal }),
   cancelJob: (project: string, session: string, job: string) =>
     post(`/projects/${part(project)}/sessions/${part(session)}/jobs/${part(job)}/cancel`, {}),
+  /** The session's runs, running ones included, and its delegations (PD-42). */
+  runTree: (project: string, session: string) =>
+    get<RunTree>(`/projects/${part(project)}/sessions/${part(session)}/tree`),
   run: (project: string, session: string, run: string) =>
     get<RunRecord>(`/projects/${part(project)}/sessions/${part(session)}/runs/${part(run)}`),
   documents: (project: string) =>

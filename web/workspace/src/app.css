@@ -214,6 +214,13 @@ ul.links {
   font-size: 0.9em;
 }
 
+/* A session's run tree: each run's delegated runs nested under it. */
+ul.tree {
+  list-style: none;
+  padding-left: 1.2rem;
+  border-left: 1px solid var(--border);
+}
+
 /* A frontier's groups of conditions and their results, and its warnings. */
 .frontier-group {
   border-top: 1px solid var(--border);

@@ -7,7 +7,7 @@
  * - `#/projects/<project>/sessions/<session>` one session and its runs, and
  *   `…/findings/<finding>` one of its review findings, as a ledger entry links to it, and
  *   `…/reviews/<review>` the session with one of its reviews chosen, as a quote's citation
- *   check links to it;
+ *   check links to it, `…/tree` its run tree and `…/runs/<run>` one run's events;
  * - `#/projects/<project>/documents/<document>` a living document's current revision,
  *   `…/revisions/<number>` one of its revisions, and `…/revisions/<number>/blocks/<block>`
  *   that revision with one block in focus (a finding's anchor, say);
@@ -29,6 +29,8 @@ export type Route =
   | { view: 'project'; project: string }
   | { view: 'session'; project: string; session: string }
   | { view: 'review'; project: string; session: string; review: string }
+  | { view: 'tree'; project: string; session: string }
+  | { view: 'run'; project: string; session: string; run: string }
   | { view: 'finding'; project: string; session: string; finding: string }
   | {
       view: 'document';
@@ -95,6 +97,13 @@ export function parseRoute(hash: string): Route {
   if (parts[2] === 'sessions' && parts.length === 4) {
     return { view: 'session', project, session: name };
   }
+  if (parts[2] === 'sessions' && parts.length === 5 && parts[4] === 'tree') {
+    return { view: 'tree', project, session: name };
+  }
+  if (parts[2] === 'sessions' && parts.length === 6 && parts[4] === 'runs') {
+    const run = decoded(parts[5]!);
+    if (run !== null) return { view: 'run', project, session: name, run };
+  }
   if (parts[2] === 'sessions' && parts.length === 6 && parts[4] === 'reviews') {
     const review = decoded(parts[5]!);
     if (review !== null) return { view: 'review', project, session: name, review };
@@ -154,6 +163,16 @@ export function projectHref(project: string): string {
 
 export function sessionHref(project: string, session: string): string {
   return `${projectHref(project)}/sessions/${encodeURIComponent(session)}`;
+}
+
+/** A session's run tree (PD-42). */
+export function treeHref(project: string, session: string): string {
+  return `${sessionHref(project, session)}/tree`;
+}
+
+/** One run's events, as it writes them, running or ended. */
+export function runHref(project: string, session: string, run: string): string {
+  return `${sessionHref(project, session)}/runs/${encodeURIComponent(run)}`;
 }
 
 /** A session with one of its consistency reviews chosen in its review panel. */
