@@ -130,6 +130,7 @@ describe('the ledger views', () => {
       evidence: [],
       incoming: [link({ handle: 'I-9', note: HOSTILE }), link({ handle: HOSTILE })],
       incoming_total: 450,
+      findings: [],
       author: { kind: 'agent', session_id: HOSTILE, run_id: HOSTILE, role: HOSTILE },
       reason: HOSTILE,
     };

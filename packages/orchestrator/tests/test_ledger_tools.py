@@ -616,3 +616,46 @@ async def test_a_read_pages_evidence_within_the_budget(ledger: Ledger) -> None:
             break
         args = {"entry": "C-1", **part["more"]}
     assert targets == [f"A-{n}" for n in range(1, 129)]
+
+
+@pytest.mark.asyncio
+async def test_a_read_of_many_findings_and_long_fields_stays_within_the_budget(
+    ledger: Ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Probe p11 of the verification of #280: 50 findings sat outside the budget and
+    clipped fields were escaped twice, a read of 24,212 characters. Findings page as
+    links do, and the fields are measured as the answer carries them."""
+    from sandbox_science.orchestrator.ledger.models import EntryFinding
+
+    fields = {"identifiers": {"url": "https://example.org/" + '"\\' * 200},
+              "authors": ['"\\' * 120] * 64, "published": "2024"}  # fmt: skip
+    reference = {"type": "reference", "title": "R", "statement": "s", "fields": fields}
+    await use(tool(ledger), "ledger_change", reason="r", changes=[reference])
+    view = ledger.entry("p", "REF-1")
+    findings = [
+        EntryFinding(
+            finding_id=f"finding-{n:024x}",
+            session="s",
+            status="open",
+            severity="fail",
+            category="contradicting_value",
+            origin="review",
+            field="statement",
+            revision=1,
+        )
+        for n in range(50)
+    ]
+    monkeypatch.setattr(
+        ledger, "entry", lambda *args, **kwargs: view.model_copy(update={"findings": findings})
+    )
+    seen: list[str] = []
+    args: dict[str, Any] = {"entry": "REF-1"}
+    for _ in range(20):
+        text = await raw(tool(ledger), "ledger_read", **args)
+        assert len(text) <= 20000, len(text)
+        part = json.loads(text)
+        seen += [finding["finding_id"] for finding in part["findings"]]
+        if not part["more"]:
+            break
+        args = {"entry": "REF-1", **part["more"]}
+    assert seen == [finding.finding_id for finding in findings]

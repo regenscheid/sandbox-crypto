@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
+
 from sandbox_science.orchestrator.consistency.ledger import ingest_ledger
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import USER, Author
@@ -147,3 +149,113 @@ def test_an_entry_too_large_for_an_item_keeps_its_parts_shortened_and_incomplete
     entry = json.loads(payload)
     assert (complete, entry["shortened"], len(entry["links"])) == (0, True, 64)
     assert all(len(link["note"]) <= 201 for link in entry["links"])
+
+
+# Findings on entries (LG-25, CR-17, CR-28 as amended).
+
+
+def finding_on(reviews: ReviewStore, field: str | None) -> tuple[str, str]:
+    """A fail finding on C-1's revision 1, at ``field``; the review and the finding."""
+    from .test_consistency import raise_finding
+
+    ingest_ledger(reviews, "p", "s")
+    review = dispatch(reviews)
+    pinned = anchor(reviews, review, "ledger")
+    found = raise_finding(reviews, review, anchors=[{**pinned, "field": field}])
+    reviews.finish("p", "s", review, "owner", "findings", "One finding.")
+    return review, found["finding_id"]
+
+
+def test_a_finding_anchors_to_an_entrys_field_and_the_entry_shows_it(store) -> None:
+    reviews, _, _ = store
+    change(reviews, CLAIM, op="op-1")
+    _, finding = finding_on(reviews, "statement")
+    view = Ledger(reviews.documents).entry("p", "C-1")
+    assert [(f.finding_id, f.field, f.revision, f.status, f.severity) for f in view.findings] == [
+        (finding, "statement", 1, "open", "fail")
+    ]
+    # A field anchor names a ledger entry revision only.
+    from sandbox_science.orchestrator.documents import DocumentError
+
+    from .test_consistency import claim, raise_finding
+
+    claim(reviews, "Another claim.", "m2")
+    review = dispatch(reviews)
+    message = anchor(reviews, review, "transcript")
+    with pytest.raises(DocumentError, match="field anchor needs a ledger entry"):
+        raise_finding(
+            reviews, review, anchors=[{**message, "field": "statement"}], operation_id="f2"
+        )
+
+
+def superseded(reviews: ReviewStore, finding: str) -> bool:
+    from sandbox_science.orchestrator.consistency.findings import Findings
+
+    Findings(reviews).supersede("p", "s")
+    return Findings(reviews).get("p", "s", finding)["status"] == "superseded"
+
+
+def test_a_field_anchor_is_replaced_only_when_that_field_changes(store) -> None:
+    reviews, _, _ = store
+    change(reviews, CLAIM, op="op-1")
+    _, finding = finding_on(reviews, "statement")
+    change(reviews, {"entry": "C-1", "expected": 1, "title": "Renamed"}, op="op-2")
+    assert not superseded(reviews, finding)
+    change(
+        reviews, {"entry": "C-1", "expected": 2, "statement": "$a^{16} = 1$ in GF(17)."}, op="op-3"
+    )
+    assert superseded(reviews, finding)
+    from sandbox_science.orchestrator.consistency.findings import Findings
+
+    last = Findings(reviews).get("p", "s", finding)["history"][-1]
+    entry = Ledger(reviews.documents).entry("p", "C-1").entry_id
+    assert last["payload"]["ledger_replacements"] == [
+        {"entry": entry, "handle": "C-1", "revision": 3, "field": "statement"}
+    ]
+
+
+def test_an_anchor_is_replaced_only_by_a_revision_that_changes_the_material(store) -> None:
+    """Probe p2 of the review of #280: a whole-entry fail finding was superseded by a
+    title-only revision. Only the statement, fields, assumptions and evidence that can
+    count are what a finding, a check or a review is about (LG-17)."""
+    reviews, _, _ = store
+    change(reviews, CLAIM, op="op-1")
+    _, finding = finding_on(reviews, None)
+    assert not superseded(reviews, finding)
+    change(reviews, {"entry": "C-1", "expected": 1, "status": "disputed"}, op="op-2")
+    change(reviews, {"entry": "C-1", "expected": 2, "title": "Renamed"}, op="op-3")
+    assert not superseded(reviews, finding)
+    change(reviews, {"entry": "C-1", "expected": 3, "statement": "$a^{16} = 1$ in GF(17)."}, op="s")
+    assert superseded(reviews, finding)
+
+
+def test_a_field_anchor_off_the_material_is_not_replaced(store) -> None:
+    reviews, _, _ = store
+    change(reviews, CLAIM, op="op-1")
+    _, finding = finding_on(reviews, "title")
+    change(reviews, {"entry": "C-1", "expected": 1, "title": "Renamed"}, op="op-2")
+    assert not superseded(reviews, finding)
+
+
+def test_a_version_22_stores_findings_are_found_by_their_entries(store, tmp_path) -> None:
+    """Version 23 keeps the entries each finding is anchored to; it fills them from the
+    findings an older store holds."""
+    from sandbox_science.orchestrator.control import migrations
+    from sandbox_science.orchestrator.documents import DocumentStore, store_path
+
+    from .control_versions import older_store
+
+    reviews, documents, _ = store
+    change(reviews, CLAIM, op="op-1")
+    _, finding = finding_on(reviews, "statement")
+    documents.close()
+    old = tmp_path / "old"
+    old.mkdir()
+    older_store(store_path(tmp_path), store_path(old), migrations.BASELINE + 20)
+    migrated = DocumentStore(store_path(old))
+    migrated.initialize()
+    try:
+        view = Ledger(migrated).entry("p", "C-1")
+        assert [(f.finding_id, f.field) for f in view.findings] == [(finding, "statement")]
+    finally:
+        migrated.close()

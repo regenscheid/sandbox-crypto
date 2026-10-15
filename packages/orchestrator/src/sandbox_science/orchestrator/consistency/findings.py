@@ -265,6 +265,8 @@ class Findings:
                 )
             if anchor.block is not None:
                 raise DocumentError(INVALID_REQUEST, "a log anchor cannot also name a block")
+        if anchor.field is not None and item["kind"] != "ledger":
+            raise DocumentError(INVALID_REQUEST, "a field anchor needs a ledger entry revision")
         return {
             **anchor.model_dump(mode="json", exclude_none=True),
             "review": review,
@@ -961,6 +963,33 @@ class Findings:
                 found = self.load(db, project, session, finding)
                 self.transition(db, found, "unaddressed", "platform:review-bound", reason, {})
 
+    def _ledger_replacement(self, project: str, anchor: Json) -> Json | None:
+        """The entry's current revision, when it replaces the anchored one: it is newer,
+        it changed what a decision rests on (its statement, fields, ``assumes`` links or
+        evidence that can count, LG-17), and it changed the anchored field when the
+        anchor names one (CR-28 as amended); None otherwise. A new title, status or other
+        links replace nothing."""
+        from sandbox_science.orchestrator.ledger import Ledger, gate
+
+        ledger = Ledger(self.store.documents)
+        location, field = anchor["locator"], anchor.get("field")
+        old = ledger.entry(project, location["entry"], location["revision"])
+        if old.head <= old.revision:
+            return None
+        new = ledger.entry(project, location["entry"])
+        with self.store.documents.control.read() as tx:
+            held = gate.examined(tx.sql, new.entry_id, {old.revision, new.revision})
+        if held[old.revision] == held[new.revision]:
+            return None
+        if field is not None and getattr(old, field) == getattr(new, field):
+            return None
+        return {
+            "entry": new.entry_id,
+            "handle": new.handle,
+            "revision": new.revision,
+            "field": field,
+        }
+
     def supersede(self, project: str, session: str) -> None:
         """Only replaced anchored blocks count; unrelated document edits do not."""
         self.store.scope(project, session)
@@ -976,13 +1005,21 @@ class Findings:
                     (project, session),
                 )
             ]
-        prepared: list[tuple[Json, list[Json], list[Json]]] = []
+        prepared: list[tuple[Json, list[Json], list[Json], list[Json]]] = []
         for finding in found:
             replacements: list[Json] = []
             artifact_replacements: list[Json] = []
+            ledger_replacements: list[Json] = []
             replaceable = True
             for a in finding["anchors"]:
                 location = a["locator"]
+                if "entry" in location and "revision" in location:
+                    replacement = self._ledger_replacement(project, a)
+                    if replacement is None:
+                        replaceable = False
+                        break
+                    ledger_replacements.append(replacement)
+                    continue
                 if "artifact" in location and self.store.artifacts is not None:
                     old_ref = ArtifactRevisionRef.model_validate(location["artifact"])
                     latest = self.store.artifacts.resolve(
@@ -1035,11 +1072,11 @@ class Findings:
                         "block": a.get("block"),
                     }
                 )
-            if replaceable and (replacements or artifact_replacements):
-                prepared.append((finding, replacements, artifact_replacements))
+            if replaceable and (replacements or artifact_replacements or ledger_replacements):
+                prepared.append((finding, replacements, artifact_replacements, ledger_replacements))
         with self.store.documents.control.write() as tx:
             db = tx.sql
-            for finding, replacements, artifact_replacements in prepared:
+            for finding, replacements, artifact_replacements, ledger_replacements in prepared:
                 current = self.load(db, project, session, finding["finding_id"])
                 if current["status"] == "open" and current["revision"] == finding["revision"]:
                     self.transition(
@@ -1051,5 +1088,6 @@ class Findings:
                         {
                             "replacements": replacements,
                             "artifact_replacements": artifact_replacements,
+                            "ledger_replacements": ledger_replacements,
                         },
                     )
