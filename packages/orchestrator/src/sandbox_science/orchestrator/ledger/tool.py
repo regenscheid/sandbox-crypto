@@ -100,7 +100,8 @@ _EVIDENCE = {
     "description": (
         "Evidence for the entry: its role, its type, a scope note saying what it covers, "
         "and one pinned target: entry (with revision, its current one by default), "
-        "artifact with revision (and optionally its sha256), document with revision, "
+        "artifact with revision (and optionally its sha256; find_artifacts gives an "
+        "artifact's ID, revision and SHA-256 by its path, in any run), document with revision, "
         "block and optionally math (a span), or review. An independent_check names the "
         "revision of this entry it checked as checked. A published claim or result "
         "cites its reference with a supports link of type source_claim"

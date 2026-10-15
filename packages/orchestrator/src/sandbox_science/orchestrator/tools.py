@@ -188,6 +188,36 @@ PDF_SPECS: Final = (
     ),
 )
 
+FIND_ARTIFACTS: Final = ToolSpec(
+    "find_artifacts",
+    "Find the project's artifacts: files published, or recorded from calls, in this run or "
+    "any earlier one. Each comes at its latest revision with its artifact ID, revision and "
+    "SHA-256, which pin it as ledger evidence, and its path, size, media type and whether "
+    "it is a result (published or declared). The most recently changed come first, ten at "
+    "a time; give before (the next_before you got) for the next page.",
+    {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "A file's path as you published it: in the workspace, or shared/…",
+            },
+            "contains": {
+                "type": "string",
+                "description": "Text in the artifact's path, such as a file name; another "
+                "session's files are under sessions/<session>/",
+            },
+            "media_type": {
+                "type": "string",
+                "description": "A media type, or its start, such as application/pdf or image/",
+            },
+            "results_only": {"type": "boolean", "description": "Only published or declared"},
+            "before": {"type": "integer", "minimum": 1},
+        },
+        "additionalProperties": False,
+    },
+)
+
 SPECS: Final = (
     ToolSpec(
         "shell",
@@ -347,6 +377,7 @@ def _harness_tool_names() -> frozenset[str]:
 
     specs = (
         *SPECS,
+        FIND_ARTIFACTS,
         SAGE,
         *PDF_SPECS,
         ADMIT_HOSTS,
@@ -420,6 +451,7 @@ class Toolbox:
             "write_file": ("effect", _plain(self._write)),
             "list_files": ("read", _plain(self._list)),
             "publish": ("effect", self._publish),
+            "find_artifacts": ("read", _plain(self._find_artifacts)),
             "sage": ("effect", _plain(self._sage)),
             RESTART_KERNEL: ("effect", _plain(self._restart)),
             **{
@@ -431,6 +463,8 @@ class Toolbox:
             "provision_status": ("read", _plain(self.provisioning.status)),
         }
         specs = [spec for spec in SPECS if spec.name != "python" or "python" in self.languages]
+        if self.artifacts is not None:
+            specs.append(FIND_ARTIFACTS)
         if "sage" in self.languages:
             specs.append(SAGE)
         if self.languages:
@@ -883,6 +917,57 @@ class Toolbox:
             for d in result.decisions
         ]
         return ToolOutcome("\n".join(lines), {"admissions": decisions})
+
+    async def _find_artifacts(self, args: dict[str, Any], operation: str) -> ToolOutcome:
+        """The project's artifacts, so a later run can pin one as evidence (lab 38, B6)."""
+        assert self.artifacts is not None  # noqa: S101 - offered only with an inventory
+        texts = _known(args, "path", "contains", "media_type")
+        results_only, before = args.get("results_only", False), args.get("before")
+        if (
+            not all(isinstance(value, str) for value in texts.values())
+            or not isinstance(results_only, bool)
+            or (before is not None and (type(before) is not int or before < 1))
+        ):
+            return _failure(
+                ErrorKind.INVALID_REQUEST,
+                "path, contains and media_type are text, results_only true or false, "
+                "and before a cursor from next_before",
+            )
+        found, after, results = await self.artifacts.find(
+            **texts, results_only=results_only, before=before
+        )
+        entries = [
+            {
+                "path": entry.path,
+                "artifact_id": entry.reference.artifact_id,
+                "revision": entry.reference.revision,
+                "sha256": entry.reference.sha256,
+                "size": entry.reference.size,
+                "media_type": entry.reference.media_type,
+                "result": entry.reference.artifact_id in results,
+                "recorded_at": entry.created_at.isoformat(),
+                "by": entry.publication.kind,
+                **({"deleted": True} if entry.deleted else {}),
+                **({"content_kept": False} if not entry.content_retained else {}),
+            }
+            for entry in found
+        ]
+        shown = len(entries)
+        while True:
+            text = dump(
+                {
+                    "artifacts": entries[:shown],
+                    "next_before": after,
+                    **(
+                        {"omitted": f"{len(entries) - shown} more here: narrow with path"}
+                        if shown < len(entries)
+                        else {}
+                    ),
+                }
+            )
+            if len(text) <= self.output_chars or shown == 0:
+                return ToolOutcome(text, {"artifacts": len(entries)})
+            shown //= 2
 
     async def _publish(self, call: Request) -> ToolOutcome:
         request = PublishRequest.model_validate(

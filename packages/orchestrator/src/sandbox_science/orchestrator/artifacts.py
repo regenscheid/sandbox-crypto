@@ -654,20 +654,26 @@ class ArtifactInventory:
         session: str | None = None,
         run: str | None = None,
         contains: str | None = None,
+        at_path: str | None = None,
+        media_type: str | None = None,
     ) -> tuple[tuple[ArtifactRevision, ...], int | None]:
         """At most ten artifacts at their latest revision, the most recently changed
         first, and the next page's ``before`` (``None`` at the end). ``results`` are the
         artifacts with a published or declared revision, ``files`` the others (RA-37);
-        ``session`` and ``run`` keep those with a revision of theirs, and ``contains``
-        those whose path has it."""
+        ``session`` and ``run`` keep those with a revision of theirs, ``contains`` those
+        whose path has it, ``at_path`` the one at that artifact path, and ``media_type``
+        those whose latest revision's media type starts with it, such as ``image/``."""
         self._scope(project)
         for value in (session, run):
             if value is not None:
                 _IDENTIFIER.validate_python(value)
-        if contains is not None and (
-            not 1 <= len(contains) <= 256 or any(ord(c) < 32 or ord(c) == 127 for c in contains)
-        ):
-            raise DocumentError(INVALID_REQUEST, "invalid path filter")
+        for value, what in ((contains, "path filter"), (media_type, "media type filter")):
+            if value is not None and (
+                not 1 <= len(value) <= 256 or any(ord(c) < 32 or ord(c) == 127 for c in value)
+            ):
+                raise DocumentError(INVALID_REQUEST, f"invalid {what}")
+        if at_path is not None:
+            _checked(at_path)
         if before is not None and (type(before) is not int or before < 1):
             raise DocumentError(INVALID_REQUEST, "invalid artifact cursor")
         if self.documents.control.missing:
@@ -693,6 +699,12 @@ class ArtifactInventory:
         if contains is not None:
             conditions.append("instr(o.path,?)>0")
             values.append(contains)
+        if at_path is not None:
+            conditions.append("o.path=?")
+            values.append(at_path)
+        if media_type is not None:
+            conditions.append("instr(json_extract(r.record,'$.reference.media_type'),?)=1")
+            values.append(media_type)
         with self.documents.control.read() as tx:
             db = tx.sql
             # A revision's rowid grows with every insert (nothing vacuums the store), so
@@ -747,6 +759,19 @@ class ArtifactInventory:
             ):
                 raise DocumentError(INTERNAL, "stored artifact event identity differs")
             return ArtifactEventPage(entries=events, next_after=events[-1].seq if events else after)
+
+
+def scoped_path(path: str, session: str) -> str:
+    """The artifact path of a path as a session's tools name it: ``shared/…`` as it is,
+    any other in the session's own area."""
+    return _logical(_checked(path), session)
+
+
+def _checked(path: str) -> str:
+    try:
+        return artifact_path(path)
+    except ValueError:
+        raise DocumentError(INVALID_REQUEST, "invalid artifact path") from None
 
 
 def _logical(path: str, session: str) -> str:
