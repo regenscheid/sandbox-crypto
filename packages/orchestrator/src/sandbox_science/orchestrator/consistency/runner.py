@@ -21,7 +21,7 @@ from .findings import Findings
 from .models import ReviewConfig, ReviewerFinish
 from .prompt_bundle import assemble_reviewer
 from .rubric import RUBRIC, RUBRIC_VERSION
-from .store import MANIFEST_PAGE, Json, ReviewStore, clipped, dump, text
+from .store import MANIFEST_PAGE, Json, ReviewStore, agent_text, clipped, dump
 
 
 class Read(Contract):
@@ -188,7 +188,8 @@ class ReviewerRunner:
                     )
                 elif call.name == "review_checked":
                     checked = Checked.model_validate(raw)
-                    text(checked.statement, 4096)
+                    statement = agent_text(checked.statement, "the statement", 4096)
+                    checked = checked.model_copy(update={"statement": statement})
                     for evidence in checked.evidence:
                         await asyncio.to_thread(
                             self.store.evidence, self.project, self.session, self.review, evidence
@@ -419,21 +420,27 @@ class ReviewerRunner:
                         }
                     )
                 continue
+            refusal = ""
             try:
                 finish = ReviewerFinish.model_validate_json(content)
-                text(finish.summary)
-            except (ValidationError, DocumentError):
+                finish = finish.model_copy(
+                    update={"summary": agent_text(finish.summary, "the summary")}
+                )
+            except (ValidationError, DocumentError) as error:
                 invalid += 1
                 if invalid > 1:
                     await self._finish(
                         "failed", "The reviewer returned invalid final output after one retry."
                     )
                     return
+                if isinstance(error, DocumentError):
+                    refusal = f"{error.message}. "
                 messages.append(
                     {
                         "role": "user",
                         "content": (
-                            "Return the required JSON outcome, summary and cap_reached fields."
+                            f"{refusal}Return the required JSON outcome, summary and "
+                            "cap_reached fields."
                         ),
                     }
                 )

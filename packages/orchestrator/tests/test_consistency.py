@@ -401,6 +401,60 @@ async def test_reviewer_has_no_execution_or_editing_tools(store) -> None:
     assert not (documents.path.parent / "should-not-exist").exists()
 
 
+@pytest.mark.asyncio
+async def test_a_reviewers_summary_and_checked_statements_hold_no_hidden_text(store) -> None:
+    """Threat model, A3: the review list shows the summary and the record its checked
+    statements; a refusal names the character, and the reviewer writes it again."""
+    reviews, documents, _ = store
+    claim(reviews)
+    review = dispatch(reviews)
+    evidence = anchor(reviews, review)["evidence"]
+    hidden = "The transcript " + chr(0x202E) + "is present."
+
+    def checked(statement: str) -> dict[str, object]:
+        return {
+            "tool_calls": [
+                {
+                    "name": "review_checked",
+                    "arguments": {"statement": statement, "evidence": [evidence]},
+                }
+            ]
+        }
+
+    def finish(summary: str) -> dict[str, object]:
+        return {"text": json.dumps({"outcome": "passed", "summary": summary, "cap_reached": False})}
+
+    model = ScriptedModel.from_json(
+        [
+            {"tool_calls": [{"name": "review_read", "arguments": {"evidence": evidence}}]},
+            checked(hidden),
+            checked("The transcript is present.\r\nNothing else."),
+            finish("No inconsistency" + chr(0x200B) + "."),
+            finish("No inconsistency\r\nin the checked transcript."),
+        ]
+    )
+    await ReviewerRunner(reviews, "p", "s", review, "owner", model).run()
+    run = reviews.run("p", "s", review)
+    assert (run["state"], run["summary"]) == (
+        "passed",
+        "No inconsistency\nin the checked transcript.",
+    )
+    with documents.control.read() as tx:
+        records = [
+            (kind, json.loads(payload))
+            for kind, payload in tx.sql.execute(
+                "SELECT kind,payload FROM review_records WHERE review_id=? ORDER BY rowid",
+                (review,),
+            )
+        ]
+    refused = [p["result"] for k, p in records if k == "tool" and "error" in p["result"]]
+    assert refused[0]["message"].startswith("the statement holds U+202E")
+    statements = [p["checked"]["statement"] for k, p in records if k == "checked"]
+    assert statements == ["The transcript is present.\nNothing else."]
+    retry = [m for m in model.requests[-1] if m["role"] == "user"][-1]["content"]
+    assert retry.startswith("the summary holds U+200B")
+
+
 def test_value_finding_has_pinned_document_and_log_anchors(store) -> None:
     reviews, documents, _ = store
     doc = documents.create(

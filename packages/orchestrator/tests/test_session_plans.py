@@ -684,7 +684,7 @@ def test_the_user_keeps_any_text_but_an_agent_writes_none_hidden(plans):
     assert plans.version(actor("user"), receipt.ref).body.goal == raw
     for field in (
         {"goal": "run" + chr(0x200B) + "it"},
-        {"goal": "a" + chr(0x0D) + "b"},
+        {"goal": "a" + chr(0x2066) + "b"},
         {"feasibility": "evil &#x202E;gnp.exe"},
     ):
         with pytest.raises(DocumentError) as refused:
@@ -694,6 +694,9 @@ def test_the_user_keeps_any_text_but_an_agent_writes_none_hidden(plans):
     with pytest.raises(DocumentError) as reason:
         plans.revise(actor(), "agent-reason", receipt.ref, body(), "why" + chr(0x2066))
     assert "the plan.reason" in reason.value.message
+    # An agent's line ends become line feeds before the check, as a document's do.
+    kept = plans.revise(actor(), "agent-crlf", receipt.ref, body(goal="a\r\nb\rc"), "Why\r\n")
+    assert plans.version(actor(), kept.ref).body.goal == "a\nb\nc"
 
 
 @pytest.mark.parametrize("reason", [" ", "x" * 4097, "bad\0reason", "bad\udcff"])

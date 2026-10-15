@@ -9,7 +9,7 @@ import type { Author, Memory, MemoryChange, MemoryProposal, MemoryVersion } from
 import { hiddenReferences } from './approval';
 import { guardedWrite } from './mutation';
 import { submit, type Submitting } from './submit';
-import { blankRun, hiddenCharacters } from './text';
+import { blankRun, hiddenCharacters, newlines } from './text';
 
 export type MemoryAction =
   | { action: 'add'; text: string }
@@ -112,7 +112,8 @@ export function versionText(version: MemoryVersion): string {
  * the shared checks (text.ts, approval.ts) of hidden characters, character references to
  * them, and runs of blank lines.
  */
-export function textProblem(text: string): string | null {
+export function textProblem(written: string): string | null {
+  const text = newlines(written); // as the server keeps it
   const kept = text.trim();
   if (kept.length === 0) return 'An entry has text.';
   if ([...kept].length > MAX_TEXT) return `An entry is at most ${MAX_TEXT} characters.`;

@@ -27,6 +27,23 @@ describe('the hidden characters', () => {
     expect(ranges).toEqual(fixtures.default_ignorable);
   });
 
+  it('leave U+FE0F after every emoji, and in a keycap', () => {
+    const emoji = /^\p{Emoji}$/u;
+    const selector = String.fromCodePoint(0xfe0f);
+    for (let code = 0x80; code <= 0x10ffff; code++) {
+      if (code >= 0xd800 && code <= 0xdfff) continue;
+      const character = String.fromCodePoint(code);
+      if (emoji.test(character)) expect(hiddenCharacters(character + selector)).toEqual([]);
+    }
+    for (const code of fixtures.keycaps.bases) {
+      const base = String.fromCodePoint(code);
+      expect(emoji.test(base)).toBe(true);
+      const keycap = base + selector + String.fromCodePoint(fixtures.keycaps.mark);
+      expect(visible(keycap)).toBe(keycap);
+      expect(visible(base + selector)).toBe(`${base}⟦U+FE0F⟧`);
+    }
+  });
+
   it('show as their code points, and other text as it is', () => {
     expect(visible('a\u200bb\u{e0041}c\u202e\u2028\u0085')).toBe(
       'a⟦U+200B⟧b⟦U+E0041⟧c⟦U+202E⟧⟦U+2028⟧⟦U+0085⟧',

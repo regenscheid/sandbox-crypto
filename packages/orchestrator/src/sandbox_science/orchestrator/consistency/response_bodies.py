@@ -329,7 +329,7 @@ class ResponseBodies:
                 POLICY_DENIED, "only this session MAIN may edit its response source"
             )
         if value.body:
-            agent_text(value.body, "the response")
+            value = value.model_copy(update={"body": agent_text(value.body, "the response")})
         fingerprint = digest(
             dump(["response_edit", session, value.model_dump(mode="json"), author.role])
         )

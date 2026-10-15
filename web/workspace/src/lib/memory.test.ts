@@ -145,7 +145,9 @@ describe('the memory page says', () => {
     expect(textProblem('evil \u202egnp.exe')).toMatch(/U\+202E at character 6/);
     expect(textProblem('a\u0000b')).toMatch(/U\+0000/);
     expect(textProblem('run\u200bit')).toMatch(/U\+200B/);
-    expect(textProblem('\u2764\ufe0f')).toMatch(/U\+FE0F/);
+    expect(textProblem('\u2764\ufe0f')).toBeNull(); // an emoji's colour form
+    expect(textProblem('a\ufe0f')).toMatch(/U\+FE0F/);
+    expect(textProblem('one\r\ntwo\rthree')).toBeNull(); // line ends
     expect(textProblem('evil &#x202E;gnp.exe')).toMatch(/U\+202E as &#x202E;/);
     expect(textProblem('a &amp; b &#x41;')).toBeNull();
     expect(textProblem('a &#x0000202E; b')).toMatch(/U\+202E as &#x0000202E;/);

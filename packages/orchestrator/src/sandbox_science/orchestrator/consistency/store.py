@@ -25,7 +25,9 @@ from sandbox_science.orchestrator.artifacts import ArtifactInventory
 from sandbox_science.orchestrator.control import EventLog, Receipts
 from sandbox_science.orchestrator.control.feeds import FeedCursor
 from sandbox_science.orchestrator.documents import DocumentStore
-from sandbox_science.orchestrator.documents.agent_text import check_agent_text
+from sandbox_science.orchestrator.documents.agent_text import (
+    agent_text as checked_agent_text,
+)
 from sandbox_science.orchestrator.documents.blocks import check_text
 from sandbox_science.orchestrator.documents.errors import (
     CONFLICT,
@@ -186,11 +188,11 @@ def text(value: str, limit: int = 8192) -> str:
 
 
 def agent_text(value: str, what: str, limit: int = 8192) -> str:
-    """Review text an agent wrote, which the user decides on and agents read again: within
-    its bound, and with no character the user may not see (threat model, A3)."""
-    text(value, limit)
-    check_agent_text(value, what)
-    return value
+    """Review text an agent wrote, which the user decides on and agents read again, as it
+    is kept: its line ends line feeds, within its bound, and with no character the user
+    may not see (threat model, A3)."""
+    kept = checked_agent_text(value, what)
+    return text(kept, limit)
 
 
 def clipped(value: str, limit: int) -> str:
@@ -1164,6 +1166,8 @@ class ReviewStore:
         leaves its window to be reviewed again; the third time, it is left unreviewed."""
         if outcome == "running":
             raise DocumentError(INVALID_REQUEST, "a review must end with an outcome")
+        # The reviewer's own summary was checked when it gave it (runner.py); the
+        # platform's can quote an error, which must not keep the review from ending.
         text(summary)
         with self.documents.control.write() as tx:
             db = tx.sql

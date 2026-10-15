@@ -22,8 +22,11 @@ from sandbox_science.orchestrator.projects import ProjectStore
 
 FIXTURES = Path(__file__).resolve().parents[3] / "web" / "workspace" / "src" / "lib"
 FIXTURE: dict[str, Any] = json.loads((FIXTURES / "hidden.fixtures.json").read_text())
+# A carriage return in a line end becomes a line feed before the check (line_ends).
 HIDDEN = [
-    pytest.param(case["text"], id=case["name"]) for case in FIXTURE["cases"] if case["hidden"]
+    pytest.param(case["text"], id=case["name"])
+    for case in FIXTURE["cases"]
+    if case["hidden"] and not case.get("line_ends")
 ] + [
     pytest.param(case["text"], id=case["name"]) for case in FIXTURE["references"] if case["hidden"]
 ]
@@ -50,9 +53,7 @@ def make(documents: DocumentStore, text: str, author: Author = USER, name: str =
     ).document_id
 
 
-# A document's line ends become line feeds when it is saved, so a carriage return does
-# not stay to hide anything.
-@pytest.mark.parametrize("text", [case for case in HIDDEN if case.id != "a carriage return"])
+@pytest.mark.parametrize("text", HIDDEN)
 def test_an_agent_creates_no_document_with_hidden_text(documents: DocumentStore, text: str) -> None:
     with pytest.raises(DocumentError) as refused:
         make(documents, f"# Notes\n\n{text}\n", AGENT)
@@ -175,3 +176,45 @@ def test_an_agents_response_holds_no_hidden_text_but_the_users_may(reviews: Revi
         Findings(reviews).respond("p", "s", response, AGENT)
     assert "the explanation holds U+2066" in refused.value.message
     Findings(reviews).respond("p", "s", response, USER)
+
+
+def test_an_agents_reason_holds_no_hidden_text_but_the_users_may(
+    documents: DocumentStore,
+) -> None:
+    """The reason shows beside the change in the history, and a suggestion's beside Apply."""
+    hidden = "Edit " + chr(0x202E) + "now"
+    with pytest.raises(DocumentError) as refused:
+        documents.create(
+            "p", name="a", title="A", text="x\n", author=AGENT, session_id="s", reason=hidden
+        )
+    assert refused.value.message.startswith("the reason holds U+202E")
+    document = make(documents, "First.\n")
+    block = documents.mapped("p", document).block_ids[0]
+    operations = [{"op": "replace", "block": block, "markdown": "First, edited."}]
+    for author in (AGENT, WORKER):
+        with pytest.raises(DocumentError) as patched:
+            documents.patch(
+                "p", document, base=1, reason=hidden, author=author, operation_id="op-r",
+                operations=operations,
+            )  # fmt: skip
+        assert patched.value.message.startswith("the reason holds U+202E")
+    with pytest.raises(DocumentError) as deleted:
+        documents.delete("p", document, reason=hidden, author=AGENT)
+    assert deleted.value.message.startswith("the reason holds U+202E")
+    mine = documents.patch(
+        "p", document, base=1, reason=hidden, author=USER, operation_id="op-u",
+        operations=operations,
+    )  # fmt: skip
+    assert mine.revision == 2
+
+
+def test_an_agents_line_ends_are_kept_as_line_feeds(documents: DocumentStore) -> None:
+    document = make(documents, "First.\n\nSecond.\n")
+    second = documents.mapped("p", document).block_ids[1]
+    done = documents.patch(
+        "p", document, base=1, reason="Edit", author=AGENT, operation_id="op-1",
+        operations=[{"op": "replace", "block": second, "markdown": "Line one\r\nline two."}],
+    )  # fmt: skip
+    assert documents.revision("p", document, done.revision).text == (
+        "First.\n\nLine one\nline two.\n"
+    )
