@@ -286,6 +286,9 @@ class Gateway:
     delegated: list[Reply] = field(default_factory=list[Reply])
     reviewer: Callable[[list[Message]], Reply] | None = None
     requests: dict[str, list[list[Message]]] = field(default_factory=dict[str, list[list[Message]]])
+    capable: dict[str, bool] | None = None
+    """Whether each alias can call tools, as ``GET /model/info`` says; without it that
+    answers 404."""
     listed: list[str] | None = None
     """The aliases ``GET /models`` lists; without them it answers 404, as a gateway that
     cannot list them."""
@@ -309,6 +312,16 @@ class Gateway:
         assert request.headers.get("Authorization") == f"Bearer {API_KEY}"
         data = [{"id": alias, "object": "model"} for alias in self.listed]
         return web.json_response({"object": "list", "data": data})
+
+    async def model_info(self, request: web.Request) -> web.Response:
+        if self.capable is None:
+            return web.Response(status=404, text="not found")
+        assert request.headers.get("Authorization") == f"Bearer {API_KEY}"
+        data = [
+            {"model_name": alias, "model_info": {"supports_function_calling": calls}}
+            for alias, calls in self.capable.items()
+        ]
+        return web.json_response({"data": data})
 
     async def handle(self, request: web.Request) -> web.Response:
         body = await request.json()
@@ -362,6 +375,7 @@ async def gateway() -> AsyncIterator[Gateway]:
     app = web.Application()
     app.router.add_post("/chat/completions", found.handle)
     app.router.add_get("/models", found.models)
+    app.router.add_get("/model/info", found.model_info)
     async with TestServer(app) as server:
         found.url = str(server.make_url("/")).rstrip("/")
         yield found

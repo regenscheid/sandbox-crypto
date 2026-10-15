@@ -276,6 +276,45 @@ class ModelGateway:
             if isinstance(item, dict) and isinstance(cast(dict[str, object], item).get("id"), str)
         )
 
+    async def tool_calling(self) -> dict[str, bool] | None:
+        """Whether each alias the gateway describes can call tools (``GET /model/info``,
+        as the LiteLLM proxy serves it, its ``supports_function_calling``): an alias it
+        does not describe, or whose answer is not a yes or a no, is left out; ``None``
+        when it cannot be asked (PD-30)."""
+        try:
+            async with self._shared().get(
+                f"{self.base_url}/model/info",
+                headers={"Authorization": f"Bearer {self._api_key}"},
+                timeout=self._timeout,
+                allow_redirects=False,
+            ) as response:
+                data = await _read_limited(response, self.LISTED_BYTES)
+                if not 200 <= response.status < 300:
+                    _log.warning("the model gateway describes no models: HTTP %s", response.status)
+                    return None
+        except (aiohttp.ClientError, TimeoutError, ModelError) as exc:
+            _log.warning("the model gateway describes no models: %s", type(exc).__name__)
+            return None
+        try:
+            found = _object(json.loads(data)).get("data")
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(found, list):
+            return None
+        capable: dict[str, bool] = {}
+        for item in cast(list[object], found):
+            if not isinstance(item, dict):
+                continue
+            entry = cast(dict[str, object], item)
+            name, info = entry.get("model_name"), entry.get("model_info")
+            if not isinstance(name, str) or not isinstance(info, dict):
+                continue
+            calls = cast(dict[str, object], info).get("supports_function_calling")
+            if isinstance(calls, bool):
+                # An alias several deployments serve can call tools when any of them can.
+                capable[name] = capable.get(name, False) or calls
+        return capable
+
     async def close(self) -> None:
         if self._session is not None:
             await self._session.close()
