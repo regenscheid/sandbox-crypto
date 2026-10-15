@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from sandbox_science.orchestrator.consistency import store as storage
+from sandbox_science.orchestrator.consistency.controller import AUTHOR_SPECS
 from sandbox_science.orchestrator.consistency.findings import Findings
 from sandbox_science.orchestrator.consistency.models import ReviewConfig, ReviewType
 from sandbox_science.orchestrator.consistency.runner import ReviewerRunner
@@ -431,6 +432,35 @@ def test_value_finding_has_pinned_document_and_log_anchors(store) -> None:
     assert saved["anchors"][1]["locator"]["attempt"] == "attempt-1"
     with pytest.raises(DocumentError, match="outside the pinned"):
         raise_finding(reviews, review, anchors=[{**log, "last_line": 2}], operation_id="bad-log")
+
+
+def test_a_malformed_response_says_where_and_the_tool_gives_the_shapes(store) -> None:
+    """In lab 38 the main agent cited evidence by document and block, and was told only
+    'invalid finding response', twice. The refusal now names the field, and the tool's
+    schema gives the shapes of evidence anchors and changed revisions."""
+    reviews, _, _ = store
+    claim(reviews)
+    review = dispatch(reviews)
+    finding = raise_finding(reviews, review)
+    reviews.finish("p", "s", review, "owner", "findings", "One contradiction.")
+    response = {
+        "finding": finding["finding_id"],
+        "expected": 1,
+        "action": "rebut",
+        "explanation": "The document now quotes the page.",
+        "evidence": [{"document": "doc-1", "revision": 2, "block": "b2"}],
+        "operation_id": "respond",
+    }
+    with pytest.raises(DocumentError, match=r"invalid finding response: evidence\.0\.evidence"):
+        Findings(reviews).respond("p", "s", response, MAIN)
+    (spec,) = [s for s in AUTHOR_SPECS if s.name == "review_respond"]
+    properties = spec.parameters["properties"]
+    assert properties["evidence"]["items"]["required"] == ["evidence"]
+    assert {"block", "math", "first_line", "last_line"} <= set(
+        properties["evidence"]["items"]["properties"]
+    )
+    pair = properties["revisions"]["items"]
+    assert (pair["minItems"], pair["maxItems"]) == (2, 2)
 
 
 def test_fix_requires_main_or_user_and_confirmation_grant(store) -> None:
