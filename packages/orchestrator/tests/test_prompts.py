@@ -92,7 +92,7 @@ GOLDEN = {
     "sandbox-notice-outcome-correction-1": (
         "4d308ab03dd3549555c60202b1690a59e7025667f6189cdb5abb4aa25cf6eae1"
     ),
-    "sandbox-delegated-check-3": "084b758d57ca73f16f3351e857e2282ea68cae31265a15273ecd9a5febed33c9",
+    "sandbox-delegated-check-4": "20747d152e55230a48dcbec5536c06035ec71310f10fdee9b18f09570e5c11c1",
     "sandbox-job-watcher-1": "4b545fe81e35622bf1b894c435833d78fb122116f9364d429b21c6c3551e1ab1",
     "sandbox-consistency-3": "b5e9a676fb814d224ee4954c0c1de007fb8459af43fa8b31169f2cdb63fb8c94",
     "sandbox-memory-run-1": "b69cc482f75853487a499ac89b5701b148066e919842a9970e6e318b2bdce121",

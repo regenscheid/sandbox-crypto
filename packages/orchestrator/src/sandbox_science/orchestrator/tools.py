@@ -462,10 +462,13 @@ class Toolbox:
         kernel_run: str | None = None,
         delegations: Delegations | None = None,
         delegated: bool = False,
+        check: bool = False,
     ) -> None:
         """For a ``delegated`` run, a call to a tool it is not offered, such as a review,
         plan, delegate or connector tool, is refused with ``not_permitted_for_role``
-        (PD-16)."""
+        (PD-16). A ``check`` run is offered only the reads of the documents, the ledger
+        and the memory, beside its compute and file tools: it changes no entry, document
+        or memory (PD-34, LG-13, as the coordinator tightened them on 2026-10-15)."""
         self.client = client
         self.context = context
         self.output_chars = output_chars
@@ -544,7 +547,8 @@ class Toolbox:
                 bound=True,
             )
         if documents is not None:
-            entries += _group(
+            entries += self._records(
+                check,
                 documents.specs,
                 lambda name, call: documents.call(
                     name,
@@ -575,7 +579,8 @@ class Toolbox:
                 whole=True,
             )
         if ledger is not None:
-            entries += _group(
+            entries += self._records(
+                check,
                 ledger.specs,
                 lambda name, call: ledger.call(
                     name,
@@ -587,7 +592,8 @@ class Toolbox:
                 LEDGER_EFFECTS,
             )
         if memory is not None:
-            entries += _group(
+            entries += self._records(
+                check,
                 memory.specs,
                 lambda name, call: memory.call(
                     name,
@@ -636,6 +642,18 @@ class Toolbox:
             raise ValueError(f"two offered tools have one name: {', '.join(taken)}")
         self.revision = 0
         """Counts the loads of connector tools, which change what a model call carries."""
+
+    @staticmethod
+    def _records(
+        check: bool,
+        specs: Sequence[ToolSpec],
+        run: Callable[[str, Request], Awaitable[tuple[str, dict[str, Any]]]],
+        effects: Mapping[str, Effect],
+    ) -> list[ToolEntry]:
+        """The documents', the ledger's or the memory's tools; for a check, their reads."""
+        return [
+            entry for entry in _group(specs, run, effects) if not check or entry.effect == "read"
+        ]
 
     @property
     def specs(self) -> tuple[ToolSpec, ...]:

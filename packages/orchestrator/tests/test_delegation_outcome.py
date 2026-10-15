@@ -69,8 +69,8 @@ async def test_a_check_that_never_read_its_entry_says_so(delegating: Harness) ->
     assert delegation(delegating, delegation_id).read_entry is False
     (child,) = children(delegating, root)
     assert child.summaries["outcome"] == {
-        "format": "sandbox-check-result-1",
-        "result": {**RESULT, "obstacle": None},
+        "format": "sandbox-check-result-2",
+        "result": {**RESULT, "obstacle": None, "refutation": None},
         "errors": [],
         "read": False,
         "read_proofs": True,  # C-1 at revision 1 rests on no proof

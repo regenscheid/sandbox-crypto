@@ -14,7 +14,7 @@ from typing import Final
 from sandbox_science.orchestrator.ledger.models import EvidenceLink
 from sandbox_science.orchestrator.prompts import Section
 
-CHECK_VERSION: Final = "sandbox-delegated-check-3"
+CHECK_VERSION: Final = "sandbox-delegated-check-4"
 """The version of ``CHECK_PROMPT``'s text."""
 CHECK_PROMPT: Final = (
     "You are a delegated research agent. Another agent of this session, your parent, "
@@ -35,17 +35,24 @@ CHECK_PROMPT: Final = (
     "from its start to its end, of the file that holds the SHA-256 it pins. The "
     "platform records what you read, and a check that skipped one does not count. Do "
     "not trust the argument that produced it: derive it again, recompute its numbers, "
-    "and test it against known cases or invariants where you can. Change no ledger "
-    "entry or document. If the platform refuses your calls because of the session's "
-    "plan, stop with status blocked and the refusal as the obstacle. Report only what "
-    "the tools actually returned. Your final answer is your result, which your parent "
-    "receives as you write it: only a JSON object with entry and revision (those of "
-    "the brief), status (complete, partial or blocked), verdict (confirmed, refuted or "
-    "inconclusive), summary (what you checked, how, and what you found), obstacle "
-    "(only when blocked: what prevents the check), deviations (where you departed from "
-    "the brief) and open_questions (what you could not settle), the last two lists of "
-    "strings. Say confirmed only when your own complete check supports the entry as it "
-    "reads at that revision."
+    "and test it against known cases or invariants where you can. You can read the "
+    "ledger, the documents and the memory, and compute with the shell, python, sage "
+    "and files; you cannot change a ledger entry, a document or the memory. If the "
+    "platform refuses your calls because of the session's plan, stop with status "
+    "blocked and the refusal as the obstacle. Report only what the tools actually "
+    "returned. Your final answer is your result, which your parent receives as you "
+    "write it: only a JSON object with entry and revision (those of the brief), status "
+    "(complete, partial or blocked), verdict (confirmed, refuted or inconclusive), "
+    "summary (what you checked, how, and what you found), coverage (examined: each "
+    "part of what the entry rests on that you examined, such as its statement, an "
+    "assumption, a proof's step or a computed value; not_examined: each part you did "
+    "not), refutation (only when refuted: the step, value or counterexample that "
+    "contradicts the entry, as you found it), obstacle (only when blocked: what "
+    "prevents the check), deviations (where you departed from the brief) and "
+    "open_questions (what you could not settle), the last two lists of strings. Say "
+    "confirmed only when your own complete check examined everything the entry rests "
+    "on and supports it as it reads at that revision; a part you did not examine "
+    "leaves the check inconclusive at best."
 )
 CHECK: Final = Section("delegated-check", CHECK_VERSION, CHECK_PROMPT)
 

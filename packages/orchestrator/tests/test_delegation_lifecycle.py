@@ -13,7 +13,7 @@ import asyncio
 import contextlib
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 
@@ -60,6 +60,7 @@ FENCED = {
     "status": "blocked",
     "verdict": "inconclusive",
     "summary": "I could not compute: the platform refused my calls.",
+    "coverage": {"examined": ["the statement"], "not_examined": ["the computation"]},
     "obstacle": "The plan fence: the session's plan is a draft.",
 }
 
@@ -260,41 +261,42 @@ async def test_a_run_that_fails_after_a_wait_leaves_the_outcome_to_the_next(
 # --- Authority (LG-13) ---------------------------------------------------------------------
 
 
-async def test_a_check_has_a_delegated_agents_ledger_authority(delegating: Harness) -> None:
-    task = {"type": "task", "title": "Recheck", "statement": "Recheck C-1 for p = 2."}
+WITHHELD: Final = {
+    "ledger_change": {"reason": "I checked it.", "changes": []},
+    "ledger_import": {"path": "results.jsonl", "reason": "Results."},
+    "ledger_category": {"category": "key-recovery"},
+    "document_create": {"name": "notes2", "title": "Notes", "text": "x"},
+    "document_patch": {"document": "notes", "revision": 1, "operations": []},
+    "document_delete": {"document": "notes", "reason": "Gone."},
+    "document_comment": {"document": "notes", "block": "b1", "text": "x"},
+    "document_reply": {"document": "notes", "comment": "c1", "text": "x"},
+    "document_comment_edit": {"document": "notes", "comment": "c1", "text": "x"},
+    "document_resolve": {"document": "notes", "comment": "c1"},
+    "memory_propose": {"action": "add", "text": "A fact.", "reason": "Found."},
+}
+"""The tools a check is not offered: it changes no ledger entry, document or memory
+(PD-34, LG-13, as the coordinator tightened them on 2026-10-15)."""
+
+
+@pytest.mark.parametrize("tool", sorted(WITHHELD))
+async def test_a_check_changes_no_entry_document_or_memory(delegating: Harness, tool: str) -> None:
+    """D1: a check reads and recomputes; each tool that writes is withheld, and a call to
+    it is refused."""
     root = await delegating.run(
         "root",
         [Reply(calls=[CHECK]), wait(), Reply("Done.")],
-        delegated=[
-            Reply(
-                calls=[
-                    call(
-                        "ledger_change",
-                        reason="I checked it.",
-                        changes=[{"entry": "C-1", "expected": 1, "status": "established"}],
-                    ),
-                    call("ledger_change", reason="Left for later.", changes=[task]),
-                ]
-            ),
-            Reply(REPORT),
-        ],
+        delegated=[Reply(calls=[call(tool, **WITHHELD[tool])]), Reply(REPORT)],
     )
     (child,) = children(delegating, root)
-    refused, made = (json.loads(r) for r in results(child))
-    assert "not_permitted_for_role" in refused["error"]["message"]
-    (entry,) = made["entries"]
-    documents = delegating.documents()
-    try:
-        view = Ledger(documents).entry(PROJECT, entry["handle"])
-        claim = Ledger(documents).entry(PROJECT, "C-1")
-    finally:
-        documents.close()
-    assert (view.status, view.author["role"], view.author["run_id"]) == (
-        "todo",
-        "delegated",
-        child.run_id,
+    offered = {t["function"]["name"] for t in delegating.gateway.tools["delegated"][0]}
+    assert tool not in offered
+    assert {"ledger_read", "document_read", "memory_list", "shell", "write_file"} <= offered
+    (refused,) = results(child)
+    error = json.loads(refused)["error"]
+    assert (error["kind"], error["message"].split(":")[0]) == (
+        "policy_denied",
+        "not_permitted_for_role",
     )
-    assert (claim.status, claim.revision) == ("proposed", 1)
 
 
 # --- Cancellation and the lease (PD-39) ---------------------------------------------------
