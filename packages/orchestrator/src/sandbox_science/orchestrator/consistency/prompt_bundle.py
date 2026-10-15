@@ -1,5 +1,10 @@
 # SPDX-License-Identifier: MIT
-"""Historical reviewer input identity, independent of scientific authority."""
+"""Historical reviewer input identity, independent of scientific authority.
+
+Format 1 pins the rubric and the tool schemas. Format 2 (assembly
+``sandbox-reviewer-bundle-2``) also pins the project memory section given after the
+rubric: the reviewed run's memory (docs/specs/project-memory.md, PM-6, PM-8).
+"""
 
 from __future__ import annotations
 
@@ -13,13 +18,16 @@ from typing import Annotated, Literal, Self, cast
 from pydantic import ConfigDict, Field, model_validator
 
 from sandbox_science.contracts.model import Contract, Identifier
+from sandbox_science.orchestrator.memory_prompt import MemoryGiven
 from sandbox_science.orchestrator.model import ToolSpec
-from sandbox_science.orchestrator.prompts import schema_json
+from sandbox_science.orchestrator.prompts import SEPARATOR, MemoryPin, schema_json
 
 MAX_SYSTEM_BYTES = 64 * 1024
 MAX_SCHEMA_BYTES = 512 * 1024
 MAX_PROVENANCE_BYTES = 16 * 1024
 ASSEMBLY_VERSION = "sandbox-reviewer-bundle-1"
+MEMORY_ASSEMBLY = "sandbox-reviewer-bundle-2"
+"""The assembly whose system message is the rubric, then the project memory section."""
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
 
@@ -46,11 +54,16 @@ def _fields(pin: ReviewerProvenance) -> dict[str, object]:
     if (
         not isinstance(cast(object, pin), ReviewerProvenance)
         or type(pin.format_version) is not int
-        or pin.format_version != 1
-        or pin.assembly_version != ASSEMBLY_VERSION
+        or (pin.format_version, pin.assembly_version, pin.memory is None)
+        not in ((1, ASSEMBLY_VERSION, True), (2, MEMORY_ASSEMBLY, False))
         or pin.role != "reviewer"
     ):
         raise ValueError("invalid reviewer provenance scalars")
+    memory: dict[str, object] = {}
+    if pin.memory is not None:
+        if not isinstance(cast(object, pin.memory), MemoryPin):
+            raise ValueError("invalid reviewer memory pin")
+        memory = {"memory": MemoryPin.model_validate(pin.memory.model_dump()).model_dump()}
     raw = _rubric(pin.rubric_text)
     if (
         not isinstance(cast(object, pin.rubric_version), str)
@@ -84,6 +97,7 @@ def _fields(pin: ReviewerProvenance) -> dict[str, object]:
         len(raw)
         + sum(5 if ord(c) < 32 else 1 if c in {'"', "\\"} else 0 for c in pin.rubric_text)
         + sum(len(name) + 3 for name in pin.tool_names)
+        + len(_json(memory))
     )
     if cost > MAX_PROVENANCE_BYTES:
         raise ValueError("reviewer provenance exceeds its bound")
@@ -99,13 +113,16 @@ def _fields(pin: ReviewerProvenance) -> dict[str, object]:
         "tool_names": list(pin.tool_names),
         "schema_bytes": pin.schema_bytes,
         "schemas_sha256": pin.schemas_sha256,
+        **memory,
     }
 
 
 class ReviewerProvenance(Contract):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    format_version: int = Field(default=1, strict=True, ge=1, le=1)
-    assembly_version: Literal["sandbox-reviewer-bundle-1"] = ASSEMBLY_VERSION
+    format_version: int = Field(default=1, strict=True, ge=1, le=2)
+    assembly_version: Literal["sandbox-reviewer-bundle-1", "sandbox-reviewer-bundle-2"] = (
+        ASSEMBLY_VERSION
+    )
     role: Literal["reviewer"] = "reviewer"
     rubric_version: Identifier
     rubric_text: str = Field(max_length=MAX_SYSTEM_BYTES)
@@ -116,6 +133,8 @@ class ReviewerProvenance(Contract):
     schema_bytes: int = Field(strict=True, ge=0, le=MAX_SCHEMA_BYTES)
     schemas_sha256: Digest
     bundle_sha256: Digest
+    memory: MemoryPin | None = None
+    """Format 2: the project memory section given after the rubric."""
 
     @model_validator(mode="after")
     def _pins(self) -> Self:
@@ -151,9 +170,20 @@ class ReviewerBundle:
     each call (owner decision 3)."""
 
     provenance: ReviewerProvenance
+    memory_text: str | None = None
+    """The project memory section, which the provenance's memory pin names."""
+
+    @property
+    def system(self) -> str:
+        """The system message: the rubric, then the memory section if one was given."""
+        rubric = self.provenance.rubric_text
+        return rubric if self.memory_text is None else rubric + SEPARATOR + self.memory_text
 
 
-def assemble_reviewer(system: str, version: str, specs: Sequence[ToolSpec]) -> ReviewerBundle:
+def assemble_reviewer(
+    system: str, version: str, specs: Sequence[ToolSpec], memory: MemoryGiven | None = None
+) -> ReviewerBundle:
+    """The reviewer's input: format 1 without ``memory``, format 2 with it."""
     raw = _rubric(system)
     canonical = schema_json(specs)
     names = tuple(spec.name for spec in specs)
@@ -168,6 +198,10 @@ def assemble_reviewer(system: str, version: str, specs: Sequence[ToolSpec]) -> R
         schemas_sha256=hashlib.sha256(b"reviewer-tool-schemas-v1\0" + canonical).hexdigest(),
         bundle_sha256="0" * 64,
     )
+    if memory is not None:
+        pin = pin.model_copy(
+            update={"format_version": 2, "assembly_version": MEMORY_ASSEMBLY, "memory": memory.pin}
+        )
     fields = _fields(pin)
     pin = pin.model_copy(
         update={
@@ -176,4 +210,8 @@ def assemble_reviewer(system: str, version: str, specs: Sequence[ToolSpec]) -> R
             ).hexdigest()
         }
     )
-    return ReviewerBundle(ReviewerProvenance.model_validate_json(encode_provenance(pin)))
+    section = memory.section if memory is not None else None
+    return ReviewerBundle(
+        ReviewerProvenance.model_validate_json(encode_provenance(pin)),
+        section.text if section is not None else None,
+    )

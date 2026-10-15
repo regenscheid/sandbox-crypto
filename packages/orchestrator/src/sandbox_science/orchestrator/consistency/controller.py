@@ -25,6 +25,7 @@ from sandbox_science.orchestrator.hooks import (
     RunView,
     TurnHook,
 )
+from sandbox_science.orchestrator.memory_prompt import MemoryGiven
 from sandbox_science.orchestrator.model import ChatModel, Message, ToolSpec
 from sandbox_science.orchestrator.notices import REVIEW_COUNTS, REVIEW_FINDINGS
 from sandbox_science.orchestrator.projects import recorded
@@ -228,7 +229,10 @@ class ReviewController:
         messages: asyncio.Queue[str] | None = None,
         author_alias: str | None = None,
         persistent: bool = False,
+        memory: MemoryGiven | None = None,
     ) -> None:
+        """``memory`` is the project memory the reviewer is given: the one the reviewed
+        run was given when it started (PM-8)."""
         store.scope(context.project_id, context.session_id)
         project = recorded(store.documents.path.parent, context.project_id)
         if context.environment_id != project.sessions[context.session_id].environment_id:
@@ -241,6 +245,7 @@ class ReviewController:
         self.model, self.alias, self.role, self.messages = model, alias, role, messages
         self.persistent = persistent
         self.author_alias = author_alias
+        self.memory = memory
         self.last_counts: Json | None = None
         self.documents_complete = True
         self.artifacts_complete = True
@@ -357,7 +362,9 @@ class ReviewController:
             self.review = review
             self.review_ids.append(review)
             self.task = asyncio.create_task(
-                ReviewerRunner(self.store, *self.scope, review, self.owner, self.model).run()
+                ReviewerRunner(
+                    self.store, *self.scope, review, self.owner, self.model, memory=self.memory
+                ).run()
             )
         return review
 

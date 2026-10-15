@@ -55,8 +55,8 @@ from .ledger.tool import LedgerTool
 from .loop import MAX_INPUT_CHARS, Interruption, Transcript, run_task, user_cancelled
 from .mathchecks.controller import MathController
 from .mathchecks.jobs import Checker
-from .memory import ProjectMemory
-from .memory_prompt import MemoryGiven, for_run
+from .memory import MemoryEntry, ProjectMemory
+from .memory_prompt import for_reviewer, for_run, for_watcher
 from .memory_tools import MemoryTool
 from .model import ChatModel, Message
 from .plan_tools import PlanTools
@@ -75,6 +75,8 @@ from .tools import HARNESS_TOOL_NAMES, Toolbox, ToolOutcome
 from .worker_client import WorkerAPIError, WorkerClient
 
 _IDENTIFIER: TypeAdapter[str] = TypeAdapter(Identifier)
+Snapshot = tuple[int, tuple[MemoryEntry, ...]]
+"""The project memory at a version: the version and its accepted entries in order."""
 
 _log = logging.getLogger(__name__)
 
@@ -394,7 +396,7 @@ class Harness:
                     memory = await self.memory(admitted)
                     chat = self.chat(admitted)
                     toolbox = await self._toolbox(
-                        admitted, chat, lambda close: closing(stack, interruption, close)
+                        admitted, chat, lambda close: closing(stack, interruption, close), memory
                     )
                     hooks = toolbox.turn_hooks()
                     if chat is not None:
@@ -413,7 +415,7 @@ class Harness:
                         on_tool=sink.tool,
                         research_template=admitted.request.research_template,
                         hooks=hooks,
-                        memory=memory,
+                        memory=for_run(*memory) if memory is not None else None,
                     )
         except BaseException as error:
             if transcript is not None and user_cancelled(error, stop):
@@ -435,17 +437,16 @@ class Harness:
             delegation=admitted.request.delegation,
         )
 
-    async def memory(self, admitted: Admitted) -> MemoryGiven | None:
-        """The project memory the run is given, read once as it starts and kept to its
-        end (PM-5, PM-8); ``None`` without stores."""
+    async def memory(self, admitted: Admitted) -> Snapshot | None:
+        """The project memory the run and its reviewer are given, read once as the run
+        starts and kept to its end (PM-5, PM-8); ``None`` without stores."""
         if self.stores is None:
             return None
-        version, entries = await threaded(
+        return await threaded(
             ProjectMemory(self.stores.documents).snapshot,
             admitted.context.project_id,
             admitted.request.memory_version,
         )
-        return for_run(version, entries)
 
     def chat(self, admitted: Admitted) -> RunChat | None:
         """The run's messages and events, with stores: the run is named as its record
@@ -471,8 +472,10 @@ class Harness:
         admitted: Admitted,
         chat: RunChat | None,
         on_close: Callable[[Callable[[], Awaitable[object]]], None],
+        memory: Snapshot | None = None,
     ) -> Toolbox:
-        """The run's tools; ``on_close`` takes what closes each part the run made."""
+        """The run's tools; ``on_close`` takes what closes each part the run made, and
+        ``memory`` is the project memory the run was given, which its reviewer is too."""
         stores, settings, alias = self.stores, self.settings, self.main.alias
         watcher, reviewer = self.watcher, self.reviewer
         context, run_id = admitted.context, admitted.run_id
@@ -489,6 +492,13 @@ class Harness:
             check_interval_seconds=settings.watcher_interval,
             wake=chat.arrived if chat is not None else None,
             on_wait=chat.waiting if chat is not None else None,
+            # The watcher is given the memory as it is at each check: a job can outlive
+            # its run (PM-8).
+            memory=(
+                (lambda: for_watcher(*ProjectMemory(stores.documents).snapshot(context.project_id)))
+                if stores is not None
+                else None
+            ),
         )
         connectors = None
         if self.mcp is not None and self.mcp.project == context.project_id:
@@ -516,7 +526,7 @@ class Harness:
             read=lambda request: self.client.read_file(request),
         )
         # Main and delegated runs propose; only the user changes the memory (PM-3).
-        memory = MemoryTool(
+        memory_tool = MemoryTool(
             ProjectMemory(stores.documents),
             context,
             run_id=run_id,
@@ -531,6 +541,7 @@ class Harness:
             model=reviewer.model if reviewer is not None else None,
             alias=reviewer.alias if reviewer is not None else None,
             author_alias=alias,
+            memory=for_reviewer(*memory) if memory is not None else None,
         )
         on_close(reviews.close)
         artifacts = ArtifactPublisher(inventory, self.client, context, run_id=run_id, alias=alias)
@@ -583,7 +594,7 @@ class Harness:
             artifacts=artifacts,
             plans=plans,
             ledger=ledger,
-            memory=memory,
+            memory=memory_tool,
             check_kernels=True,
             sweep_left_kernels=kernel_run is None,
             connectors=connectors,

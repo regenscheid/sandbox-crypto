@@ -21,7 +21,14 @@ from sandbox_science.orchestrator.harness import save
 from sandbox_science.orchestrator.hooks import TurnHook
 from sandbox_science.orchestrator.jobs import WATCHER_PROMPT
 from sandbox_science.orchestrator.loop import MAIN_VERSION, SYSTEM_PROMPT, run_task
-from sandbox_science.orchestrator.memory_prompt import RUN_FRAMING, RUN_VERSION
+from sandbox_science.orchestrator.memory_prompt import (
+    REVIEWER_FRAMING,
+    REVIEWER_VERSION,
+    RUN_FRAMING,
+    RUN_VERSION,
+    WATCHER_FRAMING,
+    WATCHER_VERSION,
+)
 from sandbox_science.orchestrator.model import (
     Message,
     ModelError,
@@ -75,6 +82,12 @@ GOLDEN = {
     "sandbox-job-watcher-1": "4b545fe81e35622bf1b894c435833d78fb122116f9364d429b21c6c3551e1ab1",
     "sandbox-consistency-1": "311981a62b6e7fe3416ffe3836ab1492e14c25c336db90c82fa9e4f88b23b3d9",
     "sandbox-memory-run-1": "b69cc482f75853487a499ac89b5701b148066e919842a9970e6e318b2bdce121",
+    "sandbox-memory-reviewer-1": (
+        "d391d1a7e6c33b4fca0970450432103c38b5ea34b80821210f7c9d27f80b9742"
+    ),
+    "sandbox-memory-watcher-1": (
+        "7d0f75c8dfcd72a66c74e0a9d7bd76cb71df5286de234f82573034f717d53790"
+    ),
 }
 
 
@@ -85,6 +98,8 @@ def installed() -> dict[str, str]:
         PROMPT_VERSION: WATCHER_PROMPT,
         RUBRIC_VERSION: RUBRIC,
         RUN_VERSION: RUN_FRAMING,
+        REVIEWER_VERSION: REVIEWER_FRAMING,
+        WATCHER_VERSION: WATCHER_FRAMING,
     }
     texts |= {select_template(t).version: select_template(t).text for t in TEMPLATE_IDS}
     texts |= {framing.version: framing.text for framing in FRAMINGS}
