@@ -79,7 +79,7 @@ def test_exact_historical_text_ordered_schema_pins_and_owned_inputs():
     assert pin.rubric_bytes == len(RUBRIC.encode())
     assert pin.rubric_sha256 == hashlib.sha256(RUBRIC.encode()).hexdigest()
     assert pin.tool_names == tuple(s.name for s in SPECS)
-    assert pin.tool_count == 5
+    assert pin.tool_count == 6
     assert len(encode_provenance(pin).encode()) <= MAX_PROVENANCE_BYTES
     assert assemble_reviewer(RUBRIC + "\n", RUBRIC_VERSION, SPECS).provenance != pin
     assert assemble_reviewer(RUBRIC, RUBRIC_VERSION, tuple(reversed(SPECS))).provenance != pin

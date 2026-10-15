@@ -38,6 +38,7 @@ most ``KEPT_REVISIONS`` revisions.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from collections.abc import Iterator
@@ -74,6 +75,21 @@ class Material:
     fields: str
     assumes: frozenset[tuple[str, int | None]]
     evidence: frozenset[tuple[object, ...]]
+
+
+def fingerprint(material: Material) -> str:
+    """A digest of ``material``: two revisions that hold the same material have the same
+    one, so a check of one covers the other."""
+    return hashlib.sha256(
+        json.dumps(
+            [
+                material.statement,
+                material.fields,
+                sorted(json.dumps(list(a)) for a in material.assumes),
+                sorted(json.dumps(list(e), default=str) for e in material.evidence),
+            ]
+        ).encode()
+    ).hexdigest()
 
 
 def supporting(link: EvidenceLink) -> bool:

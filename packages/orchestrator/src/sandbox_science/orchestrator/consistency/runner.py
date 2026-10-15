@@ -17,6 +17,7 @@ from sandbox_science.orchestrator.documents.errors import DocumentError
 from sandbox_science.orchestrator.memory_prompt import MemoryGiven
 from sandbox_science.orchestrator.model import ChatModel, Message, ModelError, ToolCall, ToolSpec
 
+from .citations import record_citation
 from .findings import Findings
 from .models import ReviewConfig, ReviewerFinish
 from .numbers import copied_numbers
@@ -131,6 +132,20 @@ SPECS = (
         },
         ["finding", "expected", "decision", "explanation", "anchors", "operation_id"],
     ),
+    schema(
+        "review_citation",
+        "Record whether a quote's source supports the entry that quotes it. The source is a "
+        "source item whose locator names quoted_by: what a tool returned, with the tool and "
+        "its arguments. Read all of it and of that entry revision first. supported: it holds "
+        "the quoted text, and the text supports what the entry states, numbers included; "
+        "unsupported: it does not; inconclusive: it cannot decide.",
+        {
+            "source": {"type": "string"},
+            "verdict": {"enum": ["supported", "unsupported", "inconclusive"]},
+            "explanation": {"type": "string"},
+        },
+        ["source", "verdict", "explanation"],
+    ),
 )
 
 
@@ -204,6 +219,16 @@ class ReviewerRunner:
                         "checked",
                         result,
                         owner=self.owner,
+                    )
+                elif call.name == "review_citation":
+                    result = await asyncio.to_thread(
+                        record_citation,
+                        self.store,
+                        self.project,
+                        self.session,
+                        self.review,
+                        self.owner,
+                        raw,
                     )
                 elif call.name == "review_finding":
                     result = await asyncio.to_thread(
