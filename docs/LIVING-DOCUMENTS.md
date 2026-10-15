@@ -41,8 +41,8 @@ These, with the [consistency review's](CONSISTENCY-REVIEW.md#tables), are the co
 
 **Shared pieces.** Five persistence patterns that several features need are one module each in `control/`, over one table each, with a scope or a kind to tell their users apart:
 
-- `Receipts` (`receipts.py`, table `operation_receipts`): the first result of an operation ID, so a retry returns it and a reused ID with another request is refused. The scopes are `document`, `comment`, `review`, `macros` and `ledger`.
-- `EventLog` (`events.py`, table `control_events`): one append-only log, numbered in commit order, with a subject type (`document`, `review`, `finding`, `ledger_entry`); an event also reaches the store's subscribers.
+- `Receipts` (`receipts.py`, table `operation_receipts`): the first result of an operation ID, so a retry returns it and a reused ID with another request is refused. The scopes are `document`, `comment`, `review`, `macros`, `ledger`, `files` and `memory`.
+- `EventLog` (`events.py`, table `control_events`): one append-only log, numbered in commit order, with a subject type (`document`, `review`, `finding`, `ledger_entry`, `memory`); an event also reaches the store's subscribers.
 - `LeasedNotices` (`notices.py`): the lease rules for the notices a run is offered (at most 128 a source, leased for 120 s, renewed, released except what was delivered, acknowledged with the saved record), over each source's own table.
 - `FeedCursor` (`feeds.py`, table `feed_cursors`): how far a consumer has read a feed, moved by compare-and-set in the change that writes what it read.
 - `TextRevisions` (`texts.py`, table `text_revisions`) and the math-check queue for texts (`text_math_sources`, `math_text_jobs`): every revision of a comment body, a MAIN explanation and a ledger entry's statement.

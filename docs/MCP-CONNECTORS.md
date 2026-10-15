@@ -229,8 +229,7 @@ Tested against the proxy and its fake server in one process (`packages/orchestra
 
 ### Not built yet
 
-- Issuing proxy tokens to callers: an operator writes them into the proxy's settings, and gives the harness its own in a file ([the harness's client](#the-harnesss-client)).
-- A product command for the rest of the proxy's sandbox: compiling its policy is one (`compile-policy`), but creating the sandbox, uploading the files, binding projects and forwarding the port are the manual steps above.
+- Issuing proxy tokens to callers: `sandbox-science up` makes the run service's token and gives the proxy its digest, but any other caller's token an operator writes into the proxy's settings, and the harness takes its own from a file ([the harness's client](#the-harnesss-client)).
 - Exporting the event store's records from the proxy's VM to the monitor, and a way for approvals to reach the proxy other than `openshell sandbox exec`.
 - The connector auth service: OAuth with DCR, refresh, the upstream-worker swap for external refresh, and `403 insufficient_scope` as an escalation. Until then an `oauth` server works only with a token put into its provider by hand. crypto-research-mcp does not need it.
 - Binary results as artifact references; they are withheld for now.
@@ -325,7 +324,7 @@ Checked on 2026-10-14 with the owner's service token, outside the proxy:
 - **Access alone works.** An MCP `initialize` carrying `CF-Access-Client-Id` and `CF-Access-Client-Secret` got a normal answer (server `cloudflare-mcp-portal`, protocol 2025-11-25). Without a valid client ID the server answers 401 with an OAuth `WWW-Authenticate` challenge, so OAuth stays a possible second route, and nothing needs it.
 - **What the token sees.** After the owner added a Service Auth policy for each server, the token sees 72 tools from seven servers: `attack-catalog-mcp`, `e-print-mcp`, `firecrawl-mcp`, `nist-csrc-mcp`, `paper-search-mcp`, `patent-search-mcp` and `web-fetch-mcp`; and three portal tools (`portal_list_servers`, `portal_toggle_servers`, `portal_toggle_single_server`).
 - **Cost and escalation.** The services are self-hosted and effectively free, and cost control is theirs in any case. The policy escalates a tool for what it does (feedback, corpus refreshes, live browser sessions, monitors), not for what it costs. A project policy that allows all of the research servers' tools escalates none of them, and then `compile-policy --admit-escalated` is not needed for this server. The `portal_*` tools that change which servers are enabled stay denied to agents.
-- **The example policy.** `examples/policy.yaml` was checked against the 78 tools listed on 2026-10-10 (a test fixture pins each tool's outcome). A tool it does not name asks first, so a server revision that adds tools stays safe.
+- **The example policy.** `examples/policy.yaml` was checked against the 78 tools listed on 2026-10-10 (a test fixture pins each tool's outcome). The listing of 2026-10-15 had 72: the seven `nist-mcp_*` tools were gone, and `firecrawl_monitor_delete` was new. A tool the policy does not name asks first, so a server revision that adds tools stays safe.
 
 ### The harness MCP client: decisions (D-08)
 

@@ -5,7 +5,7 @@ The workspace is the research GUI (W4, D80). It shows the harness's records: the
 - `web/workspace/`: the app the browser runs. Svelte 5 with TypeScript, built by Vite into static HTML, scripts, stylesheets, KaTeX's fonts and distribution notices.
 - `packages/workspace` (`sandbox_science.workspace`): the server, in the project's Python on aiohttp, with the command `sandbox-science-workspace`. It serves the built files and a JSON API, handles login, and asks the reviewer model for math repairs when it is configured to.
 
-Besides runs and documents, the GUI shows a session's plan and progress, with a text editor for the plan ([session plans](#session-plans)); its kernels ([session kernels](#session-kernels)); its background jobs, with cancellation ([background jobs](#background-jobs)); its consistency reviews and math checks, with the user's decisions on findings ([consistency reviews](#consistency-reviews-and-math-checks)); a project's macros; and the recorded provisioning state of a project's environments ([provisioning](#provisioning-observations)). It also shows a session's chat with its main agent and its runs' events as they are written ([chat](#chat)), and a project's published artifacts, with a viewer for PDFs ([the PDF viewer's origin](#the-pdf-viewers-origin)). The ledger's board and views and approvals are not built ([not built](#not-built)).
+Besides runs and documents, the GUI shows a session's plan and progress, with a text editor for the plan ([session plans](#session-plans)); its kernels ([session kernels](#session-kernels)); its background jobs, with cancellation ([background jobs](#background-jobs)); its consistency reviews and math checks, with the user's decisions on findings ([consistency reviews](#consistency-reviews-and-math-checks)); a project's macros; and the recorded provisioning state of a project's environments ([provisioning](#provisioning-observations)). It also shows a session's chat with its main agent and its runs' events as they are written ([chat](#chat)), and a project's published artifacts, with a viewer for PDFs ([the PDF viewer's origin](#the-pdf-viewers-origin)). It shows the project ledger as a board, with its entries, issues, evidence, flags, gate and history, and the project memory with the proposals that wait for the user ([views](#views); [ledger](LEDGER.md), [memory](MEMORY.md)). Approvals are not built ([not built](#not-built)).
 
 ## Building and running
 
@@ -437,11 +437,11 @@ npm install --ignore-scripts --before=2026-10-07T00:00:00Z some-package@1.2.3
 ## Not built
 
 - Detailed plan progress history and plan approval.
-- Rich-text editing, automatic merging of source conflicts, declining suggestions in the GUI, and restoring deleted documents; comments anchored to an artifact or a PDF, and annotation export; and the ledger and board ([research workspace](RESEARCH-WORKSPACE.md)).
+- Rich-text editing, automatic merging of source conflicts, declining suggestions in the GUI, and restoring deleted documents; comments anchored to an artifact or a PDF, and annotation export; the ledger's frontier and project-wide history views, and moving cards ([ledger](LEDGER.md#not-built-yet)).
 - Approvals in the GUI, with re-authentication for high-risk ones (D54), and policy revisions from the GUI. Provisioning operations and permission requests are shown but cannot be answered or changed from the GUI.
 - Previews of rich artifacts other than PDFs on a separate origin (D54); annotations stored on a PDF (RA-21), and pasting a PDF anchor anywhere but as text.
-- Saving Markdown with its math in the dollar form beyond living documents: ledger entries, and direct edits of document files (LD-41, LD-42, LD-50).
-- Math checks for ledger entries and for reviewer, USER and platform prose; automatic compaction of check history; and idle dispatch of checks (the rest of LD-53 to LD-55, D82). Durable records of math-repair model calls and their budget (LD-46).
+- Saving Markdown with its math in the dollar form for direct edits of document files (LD-41, LD-42, LD-50).
+- Math checks for reviewer, USER and platform prose; automatic compaction of check history; and idle dispatch of checks (the rest of LD-53 to LD-55, D82). Durable records of math-repair model calls and their budget (LD-46).
 - KaTeX in a Web Worker, with a time limit that ends a formula's render ([the backlog](../.agents/BACKLOG.md) says why it waits).
 - The end of a session without `session close`.
 - TLS, sessions that survive a restart, and the GUI on another machine than the harness (W5).

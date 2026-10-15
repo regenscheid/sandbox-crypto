@@ -1,48 +1,46 @@
 # Handoff
 
-Updated 2026-10-14, main `959267c`. For the next agent: where things stand, how work is done, and what is next. This file is replaced, not appended to, and stays under 8 KB. Read it with [STATUS.md](STATUS.md), the [refactoring plan](refactor-plan/PLAN.md) and [CONVENTIONS.md](CONVENTIONS.md).
+Updated 2026-10-15, main `b8487377`. For the next coordinator: where things stand, how work is done, and what is next. This file is replaced, not appended to, and stays under about 6 KB. Read it with [STATUS.md](STATUS.md), the [refactoring plan](refactor-plan/PLAN.md) and [CONVENTIONS.md](CONVENTIONS.md).
 
 ## Where things stand
 
-- **The code:** M1 passed on babbage. Most of M2 is built (see [STATUS](STATUS.md#what-works-today)): chat with a live run transcript, the run service, a PDF viewer, user-grade review views and an MCP client. A real model answered one call through the owner's gateway. The ledger's store, links, tools and read routes are built; its GUI views are in review.
-- **The plan:** Phases 0 to 3 are done apart from leftovers, and Phase 4 is under way. The plan's [progress section](refactor-plan/PLAN.md#progress) lists each finding with its PR, and [PLAN-CHANGES](PLAN-CHANGES.md) the decisions made on the way.
-- **In flight:** the ledger's views #259 and #260 (lane G); `session open` #261, the first of lane W's stack for the local launcher (`sandbox-science up`). Merged since the last sync: the ledger backend (#252 to #255), the specs for file recording and project memory (#251, approved, not built) and the worker's deleted-file report (#258).
-- **Lab state:** nothing is running. No lab has run since lab 36, so the worker changes since then have not run on OpenShell ([known issues](STATUS.md#known-issues)).
-- **Secrets:** the owner's gateway and Access keys are files that agents never read ([conventions](CONVENTIONS.md#how-work-is-done)).
-- **Heartbeat:** a conversation task, *Retry stalled orchestrator*, checks every five minutes and resumes a stalled session with the same model.
+- **M2's exit checkpoint was met** in [lab 39](docs/agent-reports/babbage-openshell-lab-39-2026-10-15.md), with two open conditions: B5 (the connector's 72 tools cost about 17,000 tokens in every call) and B6 (numbers the model copies are not checked). [PLAN-CHANGES](PLAN-CHANGES.md) records the decisions made on the way.
+- **In flight:** the ledger's frontier stack, #304, #310, #321 and #323 in that order, under fixes for a review that found three high defects, and #326 off main (lane S, with B6 queued after); B5's on-demand tool loading, #332, #334 and #335 stacked in that order (lane O).
+- **Next:** the first milestone for real use, plan items 7 and 9: delegation and MCP connectors. The owner chose the "check this claim" delegation as the first delegation piece. Phase 5 follows, with the domain packages moving out of the orchestrator.
+- **Lab state:** nothing is running; lab 39 was torn down completely.
 
-## What a new agent needs to know about the code now
+## How work is done
 
-- **Loop and service:** features plug in as turn hooks (`orchestrator/hooks.py`). `Harness` (`harness.py`) is what `run` and `serve` build; `service.py` starts runs for queued chat messages, and `chat.py` delivers them and writes run events. Connector tools come from `connectors.py`, and the ledger's tools from `orchestrator/ledger/` ([ledger](../docs/LEDGER.md)). A run record carries `role`, `parent` and `delegation`.
-- **Control store:** `orchestrator/control/` holds `ControlStore` (`read()` and `write()`), the migration list (version 18) and the shared pieces (`Receipts`, `EventLog`, `LeasedNotices`, `FeedCursor`, `TextRevisions`). To change the schema, append a step to `MIGRATIONS`; never edit `baseline.sql` or a shipped step. Tables check their values when written, and a migration that a row fails leaves the store unchanged. Stacked PRs that add steps renumber on rebase.
-- **Worker:** `manager.py` is a facade over `dispatcher`, `journal`, `recovery`, `connections`, `publication`, `kernels` and others; `build_worker` builds it. The executor's `SANDBOX_FILES` use only the standard library, and a test checks it. Any change to what crosses the worker API raises `PROTOCOL_VERSION` (now 5; [compatibility](../docs/COMPATIBILITY.md)).
-- **Workspace:** routes are plain handlers with one error mapping. The browser shares `lib/http.ts`, `lib/poller.ts`, `lib/mutation.ts` and the list, detail, history and write pieces. Rerun `scripts/generate_api_types.py` when a response model changes.
-- **Policy and MCP:** `policy/approvals` has one `resolve`. `sandbox-science-mcp-proxy compile-policy` compiles the proxy's fence. The example policy allows crypto-research-mcp's tools except those that act on the world, which ask first.
+- **Briefs:** one task per agent, in its own worktree, with the plan's [working rules](CONVENTIONS.md#working-rules) in every brief. Re-check each finding against `origin/main`. Stacked PRs name their base.
+- **Review by risk** (the owner, to save tokens). A full adversarial review by a separate read-only agent for security paths (policy, approvals, MCP, sandbox confinement, auth), storage migrations, concurrency and new features. A light check, where you read the diff and see every check green on its latest run, for code moves backed by tests, docs, test-only PRs and fixes that implement a reviewer's suggestion.
+- **Model routing:** Sonnet for low-risk implementation, tests, docs, light reviews, rebases, CI fixes and status syncs. Opus for security paths and their reviews, storage migrations, concurrency, designs and specs, and anything a Sonnet result leaves in doubt. 
+- **Test hygiene:** `pytest -n 4` at most, only the packages touched, one suite at a time: babbage is shared with labs. `--basetemp` goes under `/home/andy/.cache/pt/<task>/`, never `/tmp`, whose tmpfs filled twice and then broke the Bash tool. Delete scratch by absolute path, with no glob. `--count` needs `-o tmp_path_retention_policy=failed`.
+- **Merging** green PRs, as the owner asked: `gh pr merge N --merge`, then delete the remote branch once the PR reads MERGED. Never use `--delete-branch` on a base with a PR stacked on it: it closes the dependent, and a closed PR's base cannot change. Merge a stack from the bottom: retarget the next PR (`gh pr edit N --base main`), rebase it, renumber its migration, wait for its checks. Then fast-forward the main checkout, run `uv sync --locked` and remove clean merged worktrees. In zsh scripts end each step with `|| exit 1`.
+- **Tracking files:** only the coordinator edits STATUS, this file, PLAN-CHANGES and the plan's progress. Other PRs put their summary in the description and update the `docs/` pages and BACKLOG items they touch.
 
-## How work is done now
+## Secrets
 
-- **Follow the plan and its [working rules](CONVENTIONS.md#working-rules),** and put them in every brief: production callers only, PRs of about 800 product lines at most, the [threat model](../docs/THREAT-MODEL.md) as the bar for defenses, characterization tests first, evidence out of git, no new subsystem in `loop.py`, `manager.py` or `create_app`.
-- **Re-check each finding** against current `origin/main`. The notes were written against `6e9608a`, and much has moved.
-- **Parallel lanes:** one agent per task, in its own worktree, with a written brief. Stacked PRs name their base.
-- **Tracking files:** only the agent coordinating a wave edits STATUS, the handoff, PLAN-CHANGES and the plan's progress. Other PRs put their summary in the PR description and update the docs and BACKLOG items their change affects.
-- **Review by risk:** a full adversarial review by a separate read-only agent for security paths, storage migrations, concurrency and new features; a light check for code moves, docs, test-only PRs and fixes that implement a reviewer's suggestion.
-- **Merging:** the coordinating agent merges green PRs, as the owner asked, then fast-forwards the main checkout, runs `uv sync --locked` and removes clean merged worktrees.
+- The owner's keys are files in `~/.config/sandbox-science/secrets/`: `litellm-harness.key` (the model gateway) and `cloudflare.env` (crypto-research-mcp's Access token). Agents never open, read, list, copy or print them; a program gets a path only when its task says so. Tests use synthetic tokens (`test-secret-…`).
+- **The `cloudflare.env` helper** (the owner, 2026-10-15, "for now"): `[mcp_proxy] provider_env_file` makes `up` run `sandbox_science.launcher.access_provider`, which reads the file in a process of its own and registers the OpenShell provider when the gateway lacks it. Only a lab's own config outside the repository names the real file; the coordinator gives its path when a lab runs. The token then sits in the lab gateway's encrypted store, whose database and key labs never copy, archive or query.
+
+## Labs
+
+- **Tooling** is in [`.agents/labs/`](labs/README.md): `lab_up.sh`, `worker_up.sh`, `lab_down.sh`, and `launcher_config.py`, which writes a lab's launcher config outside the repository (`--mcp-proxy`, `--provider-env-file`).
+- **Rules:** run from a worktree, not the main checkout, whose install serves the lab. Qualification checks go through `systemd-run --user`, since Claude Desktop's shells are exempt from babbage's user-namespace restriction. Stop the forward unit and run `lab_down.sh` for a complete teardown. The lab's `env.sh` hides `gh`'s auth: use another shell. Raw evidence stays outside git.
+- **CI:** `gh pr checks N --watch` right after `gh pr create` can exit at once; wait a few seconds. Rerun a stalled `test (fast)` job.
+
+## The code, briefly
+
+- **Loop and service:** features plug in as turn hooks (`hooks.py`). `Harness` is what `run` and `serve` build; `service.py` starts runs for chat messages and comments. Tools: `connectors.py`, `ledger/`, `memory_tools.py` ([ledger](../docs/LEDGER.md), [memory](../docs/MEMORY.md)).
+- **Control store:** `orchestrator/control/`, schema version 25. Append a step to `MIGRATIONS`; never edit `baseline.sql` or a shipped step.
+- **Worker:** `manager.py` is a facade. A change to an existing request or response raises `PROTOCOL_VERSION` (5); a new route does not ([compatibility](../docs/COMPATIBILITY.md)).
+- **Workspace:** rerun `scripts/generate_api_types.py` when a response model changes. Agent text the user approves goes through `check_agent_text` and `ApprovalText`.
+- **Launcher:** `packages/launcher`, the `sandbox-science` command ([quickstart](../docs/QUICKSTART.md)); it runs the other members as commands.
+- **Policy and MCP:** the example policy allows crypto-research-mcp's tools except those that act on the world; `portal_*` stays denied.
 
 ## What is next
 
-1. Land the open PRs above and start the launcher's next steps.
-2. The ledger: decisions and the gate, evidence, the frontier, flags, statement math checks and the pack import; its views are #259 and #260.
-3. Automatic file recording and project memory ([specs](../docs/specs/research-artifacts.md#files-from-executions-and-delegated-runs), [memory](../docs/specs/project-memory.md)): the worker now reports deleted files, so the harness's recorder, the artifact list and the project settings come next; the memory tool after.
-4. A whole run with the real model. The owner then registers the MCP provider, and a first call goes through the proxy.
-5. A babbage lab for the worker changes since lab 36, then the M2 exit lab.
-6. After the exit lab: delegation and MCP for real research, then Phase 5, which includes moving the domain packages out of the orchestrator.
-
-## Gotchas
-
-- **The lab's `env.sh` breaks `gh`:** it points `XDG_CONFIG_HOME` at the lab. Use another shell.
-- **Watching CI too early:** `gh pr checks N --watch` right after `gh pr create` can exit with "no checks reported". Wait a few seconds.
-- **A stalled `test (fast)` job:** rerun it, and read the heartbeat lines in its log.
-- **Repeat test runs:** `--count` needs `-o tmp_path_retention_policy=failed`.
-- **The main checkout is live during a lab:** the lab's cache and middleware run from its editable install. Use worktrees.
-- **AppArmor:** babbage restricts unprivileged user namespaces; Claude Desktop's shells are exempt, so qualification checks run through `systemd-run --user`.
-- **The forward unit restarts forever:** stop it (`labs/lab_down.sh`) before a lab teardown. Lab scripts run only at the commit their report names.
+1. Land the frontier stack once its fixes pass review, then #326, and lane O's B5 stack (#332, #334, #335).
+2. B5, then B6, so the connector path fits a day and checks its numbers.
+3. Delegation, starting with "check this claim", and MCP for real research ([plan](refactor-plan/PLAN.md), Phase 4 items 7 and 9).
+4. Phase 5, and the after-M2 items in [BACKLOG](BACKLOG.md).
