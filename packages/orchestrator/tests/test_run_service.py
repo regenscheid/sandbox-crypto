@@ -33,7 +33,7 @@ from sandbox_science.orchestrator.harness import Harness as Core
 from sandbox_science.orchestrator.harness import Role, Settings, Stores
 from sandbox_science.orchestrator.harness import admit as harness_admit
 from sandbox_science.orchestrator.jobstate import JobState
-from sandbox_science.orchestrator.model import OpenAICompatibleModel, ScriptedModel
+from sandbox_science.orchestrator.model import Message, OpenAICompatibleModel, ScriptedModel
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
 from sandbox_science.orchestrator.runstate import DeadLease, RunState
 from sandbox_science.orchestrator.service import RunService, earlier_conversation
@@ -297,21 +297,84 @@ async def test_the_projects_cost_counts_what_the_gateway_priced(harness: Harness
     assert state.model_cost(PROJECT, datetime(3000, 1, 1, tzinfo=UTC)) is None
 
 
-async def test_the_earlier_conversation_keeps_the_newest_runs_that_fit(harness: Harness) -> None:
-    for number in (1, 2, 3):
-        await harness.run(f"run-{number}", [Reply(f"Answer {number}.")])
-    projects = ProjectStore(harness.state)
-    state = runs(harness)
-    whole = earlier_conversation(projects, state, PROJECT, SESSION, 10_000)
-    assert [m["content"] for m in whole if m["role"] == "assistant"] == [
-        "Answer 1.",
-        "Answer 2.",
-        "Answer 3.",
+def _said(history: list[Message], role: str) -> list[str]:
+    return [cast(str, message["content"]) for message in history if message["role"] == role]
+
+
+async def _three_runs(harness: Harness, questions: list[str], answers: list[str]) -> list[Message]:
+    for number, (question, answer) in enumerate(zip(questions, answers, strict=True), 1):
+        await harness.run(f"run-{number}", [Reply(answer)], task=question)
+    return earlier_conversation(ProjectStore(harness.state), runs(harness), PROJECT, SESSION, 10**6)
+
+
+async def test_the_earlier_conversation_keeps_every_run_that_fits(harness: Harness) -> None:
+    questions = [f"Question {n}." for n in (1, 2, 3)]
+    answers = [f"Answer {n}." for n in (1, 2, 3)]
+    whole = await _three_runs(harness, questions, answers)
+    assert whole == [
+        message
+        for question, answer in zip(questions, answers, strict=True)
+        for message in (
+            {"role": "user", "content": question},
+            {"role": "assistant", "content": answer},
+        )
     ]
-    task_and_answer = len(whole[0]["content"]) + len("Answer 1.")
-    some = earlier_conversation(projects, state, PROJECT, SESSION, 2 * task_and_answer)
-    assert some[0] == {"role": "user", "content": "(1 earlier runs of this session are left out.)"}
-    assert [m["content"] for m in some if m["role"] == "assistant"] == ["Answer 2.", "Answer 3."]
+
+
+async def test_the_agents_answers_give_way_before_the_users_messages(harness: Harness) -> None:
+    """Lane K's triage, D3: every question stays as written, the newest answers that fit
+    stay whole, and the others are left out with a line that says so."""
+    questions = [f"Question {n}." for n in (1, 2, 3)]
+    answers = [f"Answer {n}: " + "x" * 2000 for n in (1, 2, 3)]
+    await _three_runs(harness, questions, answers)
+    left_out = (
+        "(The agent's answer here, of 2010 characters, is left out to keep the user's "
+        "messages within the earlier conversation's size.)"
+    )
+    budget = sum(map(len, questions)) + 2 * len(left_out) + len(answers[2])
+    history = earlier_conversation(
+        ProjectStore(harness.state), runs(harness), PROJECT, SESSION, budget
+    )
+    assert _said(history, "user") == questions
+    replies = _said(history, "assistant")
+    assert replies[2] == answers[2]
+    assert replies[:2] == [left_out, left_out]
+    assert sum(len(message["content"]) for message in history) <= budget
+    # One character less and the newest answer gives way too; the questions stay.
+    tighter = earlier_conversation(
+        ProjectStore(harness.state), runs(harness), PROJECT, SESSION, budget - 1
+    )
+    assert _said(tighter, "user") == questions
+    assert all(
+        reply.startswith("(The agent's answer here") for reply in _said(tighter, "assistant")
+    )
+
+
+async def test_when_the_users_messages_do_not_fit_the_oldest_runs_go_whole(
+    harness: Harness,
+) -> None:
+    questions = [f"Question {n}: " + "q" * 1000 for n in (1, 2, 3)]
+    answers = [f"Answer {n}." for n in (1, 2, 3)]
+    await _three_runs(harness, questions, answers)
+    budget = len(questions[1]) + len(questions[2]) + 2 * len(answers[0])
+    history = earlier_conversation(
+        ProjectStore(harness.state), runs(harness), PROJECT, SESSION, budget
+    )
+    assert history[0] == {
+        "role": "user",
+        "content": "(The oldest run of this session is left out, with the user's messages "
+        "in it, to keep the earlier conversation within its size.)",
+    }
+    assert _said(history, "user")[1:] == questions[1:]
+    assert _said(history, "assistant") == answers[1:]
+    none = earlier_conversation(ProjectStore(harness.state), runs(harness), PROJECT, SESSION, 10)
+    assert none == [
+        {
+            "role": "user",
+            "content": "(The 3 oldest runs of this session are left out, with the user's "
+            "messages in them, to keep the earlier conversation within its size.)",
+        }
+    ]
 
 
 def test_the_service_needs_stores() -> None:
