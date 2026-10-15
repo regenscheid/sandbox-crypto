@@ -30,7 +30,7 @@ from sandbox_science.orchestrator.documents import USER, DocumentStore, store_pa
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.notices import DELEGATIONS
-from sandbox_science.orchestrator.projects import ProjectStore
+from sandbox_science.orchestrator.projects import ProjectStore, run_name
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.session_plans import PlanBody, SessionPlans
 from sandbox_science.testing import eventually
@@ -330,11 +330,22 @@ async def test_a_lost_lease_cancels_the_live_check(delegating: Harness) -> None:
                 return found == ["cancelled"]
 
             await eventually(cancelled, timeout=20)
+            # Its root lost the session, so the child could not write its stopped event:
+            # the service writes it from the child's record (PD-40).
+            (child,) = kept_children(delegating, held.run)
+            name = run_name(child.started_at, child.run_id)
+            await eventually(lambda: state.ended(PROJECT, SESSION, name), timeout=20)
     finally:
         free.set()
     records = DelegationRecords(ProjectStore(delegating.state).control)
     (outcome,) = records.handbacks(PROJECT, SESSION)
     assert (outcome.ended, outcome.parent) == ("cancelled", held.run)
+    stopped = state.events(PROJECT, SESSION, name)[-1]
+    assert (stopped.kind, stopped.data["stopped"], stopped.data["record"]) == (
+        "stopped",
+        "cancelled",
+        name,
+    )
 
 
 def kept_children(harness: Harness, parent: str) -> list[Any]:

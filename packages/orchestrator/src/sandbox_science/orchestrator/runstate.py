@@ -480,6 +480,49 @@ class RunState:
             )
             return last + 1
 
+    def close(self, project: str, session: str, run: str) -> bool:
+        """Write the ``stopped`` event of a run whose process ended without it, as a
+        delegated run's when its root died (PD-40): from the run's saved record, or else
+        ``interrupted``. A run that wrote no event, or its ``stopped`` already, is left
+        as it is. Whether an event was written."""
+        with self.control.write() as tx:
+            db = tx.sql
+            (last, ended) = db.execute(
+                "SELECT coalesce(max(seq), 0), coalesce(max(kind = 'stopped'), 0) "
+                "FROM run_events WHERE project_id = ? AND session_id = ? AND run = ?",
+                (project, session, run),
+            ).fetchone()
+            if not last or ended:
+                return False
+            saved = db.execute(
+                "SELECT json_extract(record, '$.stopped'), json_extract(record, '$.failure'), "
+                "json_extract(record, '$.final_text') FROM runs WHERE project_id = ? "
+                "AND session_id = ? AND name = ?",
+                (project, session, run),
+            ).fetchone()
+            data: dict[str, JsonValue] = (
+                {
+                    "stopped": saved[0],
+                    "failure": saved[1],
+                    "final_text": _head_and_tail(saved[2]),
+                    "record": run,
+                }
+                if saved is not None
+                else {"stopped": "interrupted", "failure": None, "final_text": None, "record": None}
+            )
+            db.execute(
+                "INSERT INTO run_events VALUES (?, ?, ?, ?, ?, 'stopped', ?)",
+                (
+                    project,
+                    session,
+                    run,
+                    last + 1,
+                    self._now().isoformat(),
+                    json.dumps(data, ensure_ascii=False, allow_nan=False),
+                ),
+            )
+            return True
+
     def known(self, project: str, session: str, run: str) -> bool:
         """Whether the run wrote an event or holds the session."""
         with self.control.read() as tx:
@@ -554,6 +597,13 @@ def _message(row: tuple[object, ...]) -> ChatMessage:
             "offered": offered,
         }
     )
+
+
+def _head_and_tail(text: str | None, keep: int = 4000) -> str | None:
+    """``text``'s head and tail, short enough for an event; the record keeps it whole."""
+    if text is None or len(text) <= 2 * keep:
+        return text
+    return f"{text[:keep]}\n[…]\n{text[-keep:]}"
 
 
 def cost(usage: ModelUsage) -> int:

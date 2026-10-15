@@ -10,7 +10,9 @@ until it is stopped (RS-1). The service and the workspace share the control stor
   own (a lease can look expired while its holder lives, as after a suspend). A run
   whose record was saved is acknowledged from the record; any other gets a ``stopped``
   event, ``interrupted``, and the messages it was offered are held until the user
-  resumes or writes again (RS-12);
+  resumes or writes again (RS-12). Its delegations still running end ``interrupted``,
+  and each of its children's runs gets its ``stopped`` event, from its record if it
+  saved one (PD-40);
 - starts a run for each session that has queued messages and no run (RS-6), within the
   project's model budget (RS-6a). The run's conversation begins with the session's
   earlier tasks and answers (RS-10), then the messages queued once it holds the lease;
@@ -50,6 +52,7 @@ from .aio import threaded
 from .chat import SOURCE, session_lease
 from .control import ControlError
 from .control.errors import BUSY
+from .delegation.records import DelegationRecords
 from .documents.annotations import Annotations
 from .documents.tool import WorkRequests
 from .harness import Harness, RunRequest, admit, save
@@ -123,6 +126,7 @@ class RunService:
         self.waiting_until: dict[tuple[str, str], float] = {}
         self.failures: dict[tuple[str, str], int] = {}
         self.annotations = Annotations(harness.stores.documents)
+        self.delegations = DelegationRecords(harness.stores.documents, clock=clock)
         self.held: dict[tuple[str, str], set[str]] = {}
         """Work requests that start no run, as held messages do not (RS-9, RS-11, RS-12):
         the session's next run is offered them with the others."""
@@ -217,6 +221,13 @@ class RunService:
                 self._hold(project, session, claimed)
         if not await threaded(runs.ended, project, session, run):
             await threaded(runs.append, project, session, run, "stopped", stopped)
+        # Its delegations end with it, and so do their runs' events (PD-40).
+        for delegation_id, _ in await threaded(
+            self.delegations.abandon, project, session, parent=run
+        ):
+            _log.warning("delegation %s of run %s was interrupted", delegation_id, run)
+        for child in await threaded(self.delegations.children, project, session, run):
+            await threaded(runs.close, project, session, child)
 
     async def _run(self, project: str, session: str, active: _Active) -> None:
         key = project, session

@@ -191,17 +191,30 @@ class DelegationRecords:
             )
             return _one(tx.sql, project, session, delegation_id)
 
-    def abandon(self, project: str, session: str) -> list[str]:
-        """End ``interrupted`` the session's delegations that are still running: called
-        as a main run starts, when none of the session's can be (PD-40). Their IDs."""
+    def abandon(
+        self, project: str, session: str, *, parent: str | None = None
+    ) -> list[tuple[str, str]]:
+        """End ``interrupted`` the session's delegations that are still running, or only
+        ``parent``'s: called as a main run starts, when none of the session's can be, and
+        when the run service finds a dead run (PD-40). Their IDs and runs."""
         with self.control.write() as tx:
             rows = tx.sql.execute(
                 "UPDATE delegations SET ended = 'interrupted', stopped = 'interrupted', "
                 "ended_at = ? WHERE project_id = ? AND session_id = ? AND ended IS NULL "
-                "RETURNING delegation_id",
-                (self._now(), project, session),
+                "AND (? IS NULL OR parent = ?) RETURNING delegation_id, run",
+                (self._now(), project, session, parent, parent),
             ).fetchall()
-        return sorted(delegation_id for (delegation_id,) in rows)
+        return sorted((delegation_id, run) for delegation_id, run in rows)
+
+    def children(self, project: str, session: str, parent: str) -> list[str]:
+        """The runs ``parent``'s delegations started, oldest first."""
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT run FROM delegations WHERE project_id = ? AND session_id = ? "
+                "AND parent = ? ORDER BY run",
+                (project, session, parent),
+            ).fetchall()
+        return [run for (run,) in rows]
 
     def get(self, project: str, session: str, delegation_id: str) -> Delegation:
         with self.control.read() as tx:
