@@ -74,6 +74,7 @@ async def test_a_check_that_never_read_its_entry_says_so(delegating: Harness) ->
         "errors": [],
         "read": False,
         "read_proofs": True,  # C-1 at revision 1 rests on no proof
+        "result_files": [],
     }
 
 

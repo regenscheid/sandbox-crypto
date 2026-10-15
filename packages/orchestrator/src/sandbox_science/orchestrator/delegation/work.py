@@ -122,7 +122,7 @@ def _task(delegation: Delegation, created: Sequence[str]) -> list[Json]:
         note = f"{status}: {result.get('summary') or ''}"
     else:
         note = f"{delegation.ended}, {delegation.stopped or 'stopped'}: no result"
-    record["references"] = [_cited(delegation, note)]
+    record["references"] = [_cited(delegation, note), *_results(delegation)]
     records = [record]
     if result is not None:
         for item in _items(result.get("dismissals")):
@@ -147,6 +147,24 @@ def _task(delegation: Delegation, created: Sequence[str]) -> list[Json]:
                 }
             )
     return records[:32]
+
+
+def _results(delegation: Delegation) -> list[Json]:
+    """The task's result files whose bytes the platform keeps, as pinned references
+    (RA-38): the artifact revision and its SHA-256, with its path as the note."""
+    files = delegation.files or {}
+    found: list[Json] = []
+    for item in _items(files.get("results")):
+        if item.get("content_retained") is True and isinstance(item.get("artifact_id"), str):
+            found.append(
+                {
+                    "artifact": item["artifact_id"],
+                    "revision": item.get("revision"),
+                    "sha256": item.get("sha256"),
+                    "note": _clipped(str(item.get("path") or ""), NOTE_CHARS) or "a result",
+                }
+            )
+    return found[:15]
 
 
 def _items(value: object) -> list[dict[str, Any]]:

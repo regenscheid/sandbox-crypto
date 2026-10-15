@@ -41,7 +41,13 @@ DONE: dict[str, Any] = {
     "deviations": [],
     "open_questions": [],
 }
-KEPT: dict[str, Any] = {**DONE, "obstacle": None, "dismissals": [], "obstructions": []}
+KEPT: dict[str, Any] = {
+    **DONE,
+    "obstacle": None,
+    "dismissals": [],
+    "obstructions": [],
+    "result_files": [],
+}
 """``DONE`` as the outcome keeps it."""
 
 
