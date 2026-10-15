@@ -10,7 +10,10 @@
  *   that revision with one block in focus (a finding's anchor, say);
  * - `#/projects/<project>/documents/<document>/history` who changed what in it;
  * - `#/projects/<project>/artifacts/<artifact>/revisions/<number>/<sha256>` a published
- *   PDF in the viewer.
+ *   PDF in the viewer;
+ * - `#/projects/<project>/ledger` the project's ledger as a board, and
+ *   `#/projects/<project>/ledger/<entry>` one entry by its handle or ID, with
+ *   `…/revisions/<number>` for an earlier revision.
  */
 
 export type Route =
@@ -26,7 +29,12 @@ export type Route =
     }
   | { view: 'history'; project: string; document: string }
   | { view: 'pdf'; project: string; artifact: string; revision: number; sha256: string }
+  | { view: 'ledger'; project: string }
+  | { view: 'entry'; project: string; entry: string; revision: number | null }
   | { view: 'missing' };
+
+/** A ledger entry named by its ID or its handle, as the server takes it. */
+export const ENTRY_NAME = /^(?:entry-[0-9a-f]{24}|(?:I|C|R|A|D|T|REF)-[1-9][0-9]{0,8})$/;
 
 function decoded(part: string): string | null {
   try {
@@ -49,6 +57,7 @@ export function parseRoute(hash: string): Route {
   const project = parts.length >= 2 ? decoded(parts[1]!) : null;
   if (project === null) return { view: 'missing' };
   if (parts.length === 2) return { view: 'project', project };
+  if (parts[2] === 'ledger') return ledgerRoute(project, parts.slice(3));
   const name = parts.length >= 4 ? decoded(parts[3]!) : null;
   if (name === null) return { view: 'missing' };
   if (parts[2] === 'sessions' && parts.length === 4) {
@@ -81,6 +90,18 @@ export function parseRoute(hash: string): Route {
   return { view: 'missing' };
 }
 
+/** The board, or one entry: `<entry>` or `<entry>/revisions/<number>` after `ledger/`. */
+function ledgerRoute(project: string, rest: string[]): Route {
+  if (rest.length === 0) return { view: 'ledger', project };
+  const entry = rest[0]!;
+  if (!ENTRY_NAME.test(entry)) return { view: 'missing' };
+  if (rest.length === 1) return { view: 'entry', project, entry, revision: null };
+  const number = rest.length === 3 && rest[1] === 'revisions' ? revision(rest[2]) : null;
+  return number === null
+    ? { view: 'missing' }
+    : { view: 'entry', project, entry, revision: number };
+}
+
 export function projectHref(project: string): string {
   return `#/projects/${encodeURIComponent(project)}`;
 }
@@ -107,4 +128,14 @@ export function historyHref(project: string, document: string): string {
 
 export function pdfHref(project: string, artifact: string, revision: number, sha256: string) {
   return `${projectHref(project)}/artifacts/${encodeURIComponent(artifact)}/revisions/${revision}/${sha256}`;
+}
+
+export function ledgerHref(project: string): string {
+  return `${projectHref(project)}/ledger`;
+}
+
+/** An entry by its handle or ID; at `revision`, that revision. */
+export function ledgerEntryHref(project: string, entry: string, revision?: number): string {
+  const base = `${ledgerHref(project)}/${encodeURIComponent(entry)}`;
+  return revision === undefined ? base : `${base}/revisions/${revision}`;
 }

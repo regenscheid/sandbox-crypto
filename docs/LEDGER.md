@@ -47,13 +47,13 @@ An entry the same change revises is linked as the change leaves it, so an assump
 
 **Results files (LG-41).** Code in the sandbox has no route to the ledger. It writes a results file, JSON Lines with one mutation per line (its operation ID, reason and changes), at most 256 lines and 1 MiB, and the agent imports it with `ledger_import`, naming its path in the workspace and the SHA-256 it read; the import is refused if the file is no longer what the agent read, or if the bytes the worker sent do not match the digest it sent with them. Lines end at a newline only; a line repeats no key and holds no NaN or infinity. Every line is checked as a mutation before anything is recorded; the mutations are then applied in one change, all or none, with the agent's authority, and a refusal names its line. Each revision records the file's path, the SHA-256 of the bytes applied, the session's environment and the line; a line imported before replays its first result, so importing a file again, from any session of the project, records nothing. The answer counts the lines recorded and replayed and lists the first 20, with the handles each made.
 
-**The workspace's reads.** Three read-only routes answer typed models (`LedgerListing`, `LedgerEntry`, `LedgerHistory` in `api-types.ts`) for the GUI's ledger and board views: a page of entries, an entry at a revision, and an entry's history ([workspace](WORKSPACE.md)).
+**The workspace's reads.** Three read-only routes answer typed models (`LedgerListing`, `LedgerEntry`, `LedgerHistory` in `api-types.ts`) for the GUI's ledger and board views: a page of entries, an entry at a revision, and an entry's history ([workspace](WORKSPACE.md)). The views' own tables of the types' statuses, the link kinds and the field names are tested against `web/workspace/src/lib/ledger.fixtures.json`, which `scripts/generate_ledger_fixture.py` writes from `ledger/models.py`; a workspace test fails when it is stale.
 
 ## Not built yet
 
 - Statuses a decision sets (`established`, `obstructed`, `refuted`), a decision's own `rejected` and `reversed`, decisions' status changes, evidence links and the gate (LG-4, LG-7, LG-8 to LG-17); published claims and results, which cite their reference through evidence (LG-15).
 - `dominates` links and the frontier (LG-18 to LG-24); flags (LG-27 to LG-29); work records (LG-6).
-- The GUI's ledger, board, frontier, issue-list and history views, the pack's import and the export (LG-34 to LG-39); naming the execution that wrote a results file.
+- The GUI's issue-list, history and frontier views, its indicators beside a status (open findings and flags), moving cards, and links that lead to a review finding or to a reference's PDF; the pack's import and the export (LG-34 to LG-39); naming the execution that wrote a results file. The board and the entry view are built ([workspace](WORKSPACE.md#views)).
 
 ## Tables
 

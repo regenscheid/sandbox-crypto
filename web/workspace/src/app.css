@@ -158,6 +158,47 @@ th {
   font-size: 0.9rem;
 }
 
+/* The ledger's board: a column for each status, scrolling sideways when they are many. */
+.board-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 1.2rem;
+  align-items: center;
+  margin-bottom: 0.8rem;
+}
+
+.board-controls button[aria-pressed='true'] {
+  font-weight: 600;
+  border-color: var(--text);
+}
+
+.board {
+  display: flex;
+  gap: 0.8rem;
+  overflow-x: auto;
+  align-items: flex-start;
+}
+
+.board-column {
+  flex: 0 0 15rem;
+}
+
+.board-column .card {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.4rem 0.6rem;
+  margin-bottom: 0.5rem;
+}
+
+.board-column .card p {
+  margin: 0.2rem 0;
+}
+
+ul.links {
+  margin: 0;
+  padding-left: 1.2rem;
+}
+
 /* The PDF viewer's frame, from the preview origin. */
 .pdf-frame {
   display: block;

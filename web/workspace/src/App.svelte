@@ -5,6 +5,8 @@
   import DocumentView from './views/DocumentView.svelte';
   import HistoryView from './views/HistoryView.svelte';
   import PdfView from './views/PdfView.svelte';
+  import LedgerBoard from './views/LedgerBoard.svelte';
+  import LedgerEntryView from './views/LedgerEntryView.svelte';
   import ProjectList from './views/ProjectList.svelte';
   import ProjectView from './views/ProjectView.svelte';
   import SessionView from './views/SessionView.svelte';
@@ -56,6 +58,18 @@
           documentId={route.document}
           revision={route.revision}
           block={route.block}
+        />
+      {/key}
+    {:else if route.view === 'ledger'}
+      {#key route.project}
+        <LedgerBoard projectId={route.project} />
+      {/key}
+    {:else if route.view === 'entry'}
+      {#key `${route.project}/${route.entry}/${route.revision}`}
+        <LedgerEntryView
+          projectId={route.project}
+          entryName={route.entry}
+          revision={route.revision}
         />
       {/key}
     {:else if route.view === 'pdf'}

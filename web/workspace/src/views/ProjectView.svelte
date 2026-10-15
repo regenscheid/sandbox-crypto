@@ -2,7 +2,7 @@
 <script lang="ts">
   import { api } from '../lib/api';
   import { formatTime } from '../lib/format';
-  import { documentHref, sessionHref } from '../lib/router';
+  import { documentHref, ledgerHref, sessionHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
   import ProjectMacros from './ProjectMacros.svelte';
   import EnvironmentPanel from './EnvironmentPanel.svelte';
@@ -32,6 +32,10 @@
     <dd>{formatTime(project.updated_at)}</dd>
   </dl>
   <ProjectMacros {projectId} />
+  <p>
+    <a href={ledgerHref(projectId)}>The project's ledger</a>: its issues, claims and results, as a
+    board.
+  </p>
 
   <h2>Sessions</h2>
   {#if project.sessions.length === 0}
