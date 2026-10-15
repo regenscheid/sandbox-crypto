@@ -251,6 +251,24 @@ describe('the history', () => {
           state.entry = { ...state.entry, open_flags: 0, flags: [] };
           return new Response(JSON.stringify(answer({ cleared_total: 1 })));
         }
+        if (url.endsWith('/gate')) {
+          return new Response(
+            JSON.stringify({
+              project_id: 'p1',
+              observed_at: 'now',
+              gate: {
+                entry_id: 'entry-0123456789abcdef01234567',
+                handle: 'C-1',
+                revision: 3,
+                status: 'proposed',
+                applies: true,
+                holds: false,
+                clauses: [],
+                decisions: [],
+              },
+            }),
+          );
+        }
         if (url.includes('/history')) {
           return new Response(
             JSON.stringify({

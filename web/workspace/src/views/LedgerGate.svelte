@@ -35,7 +35,7 @@
   });
 </script>
 
-{#if read.value}
+{#if read.value?.gate}
   <LedgerGatePanel {projectId} gate={read.value.gate} {shown} />
 {:else if read.loading}
   <h2>Gate and decisions</h2>
