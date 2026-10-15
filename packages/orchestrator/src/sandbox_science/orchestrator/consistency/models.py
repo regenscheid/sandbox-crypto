@@ -98,6 +98,10 @@ class FindingResponse(Contract):
     # New document revisions are validated and pinned before claiming a fix.
     revisions: tuple[tuple[DocumentID, RevisionNumber], ...] = Field(default=(), max_length=16)
     artifact_revisions: tuple[ArtifactRevisionRef, ...] = Field(default=(), max_length=16)
+    entry_revisions: tuple[
+        tuple[Annotated[str, Field(min_length=1, max_length=128)], RevisionNumber], ...
+    ] = Field(default=(), max_length=16)
+    """Changed ledger entry revisions, each an entry by ID or handle and its revision."""
     operation_id: OperationID
 
 

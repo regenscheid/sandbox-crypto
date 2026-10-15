@@ -663,3 +663,94 @@ def test_a_superseded_fail_finding_holds_when_the_entry_returns_to_its_material(
     now[0] += 1000
     review_passes(reviews)
     assert clause(reviews, "back-gate", 4) == "finding"
+
+
+# A fix of a ledger finding cites the changed entry revision (CR-22, CR-24).
+
+
+def fix(finding: str, expected: int, *cited: list[Any], op: str = "fix") -> dict[str, Any]:
+    return {
+        "finding": finding,
+        "expected": expected,
+        "action": "fix",
+        "explanation": "The statement now says what the check shows.",
+        "entry_revisions": list(cited),
+        "operation_id": op,
+    }
+
+
+def test_a_fix_cites_the_changed_entry_revision_and_a_confirmation_reads_it(store) -> None:
+    from sandbox_science.orchestrator.consistency.findings import Findings
+    from sandbox_science.orchestrator.documents import DocumentError
+
+    from .test_consistency import read_confirmation
+
+    reviews, _, _ = store
+    change(reviews, CLAIM, CLAIM, op="made")
+    _, finding = finding_on(reviews, "statement")
+    api = Findings(reviews)
+    revision = api.get("p", "s", finding)["revision"]
+    # The cited revision must be a later revision of an entry the finding is on.
+    with pytest.raises(DocumentError, match="not later than") as early:
+        api.respond("p", "s", fix(finding, revision, ["C-1", 1], op="early"), MAIN)
+    assert early.value.kind == "invalid_request"
+    change(reviews, {"entry": "C-1", "expected": 1, "statement": "$a^{16} = 1$ in GF(17)."},
+           op="fixed")  # fmt: skip
+    change(reviews, {"entry": "C-2", "expected": 1, "title": "Other"}, op="other")
+    with pytest.raises(DocumentError, match="unrelated to this finding") as unrelated:
+        api.respond("p", "s", fix(finding, revision, ["C-2", 2], op="other"), MAIN)
+    assert unrelated.value.kind == "policy_denied"
+    claimed = api.respond("p", "s", fix(finding, revision, ["C-1", 2]), MAIN)
+    assert claimed["status"] == "claimed fixed"
+    assert api.respond("p", "s", fix(finding, revision, ["C-1", 2]), MAIN)["replayed"]
+    entry = Ledger(reviews.documents).entry("p", "C-1").entry_id
+    history = api.get("p", "s", finding)["history"]
+    assert history[-1]["payload"]["entry_revisions"] == [
+        {"entry": entry, "handle": "C-1", "revision": 2}
+    ]
+    # The confirmation review pins the changed revision, and confirms only once read.
+    confirm = dispatch(reviews, "confirmation")
+    changed = [
+        item
+        for item in reviews.manifest("p", "s", confirm, limit=20)["evidence"]
+        if item["kind"] == "ledger" and item["locator"]["revision"] == 2
+    ]
+    assert [item["locator"]["handle"] for item in changed] == ["C-1"]
+    decision = {
+        "finding": finding,
+        "expected": claimed["revision"],
+        "decision": "confirm",
+        "explanation": "The statement now agrees with the check.",
+        "anchors": [{"evidence": changed[0]["evidence"]}],
+        "operation_id": "confirm",
+    }
+    with pytest.raises(DocumentError, match="read the pinned"):
+        api.confirm("p", "s", confirm, "owner", decision)
+    read_confirmation(reviews, confirm)
+    assert api.confirm("p", "s", confirm, "owner", decision)["status"] == "confirmed fixed"
+
+
+def test_a_fix_with_entry_revisions_keeps_the_receipts_of_fixes_without_them(store) -> None:
+    """A response without entry revisions has the digest it had before the field was
+    added, so an old receipt replays."""
+    from sandbox_science.orchestrator.consistency.findings import Findings
+    from sandbox_science.orchestrator.consistency.models import FindingResponse
+
+    reviews, _, _ = store
+    change(reviews, CLAIM, op="made")
+    _, finding = finding_on(reviews, "statement")
+    response = FindingResponse.model_validate(
+        {
+            "finding": finding,
+            "expected": 1,
+            "action": "rebut",
+            "explanation": "The statement is right.",
+            "operation_id": "rebut",
+        }
+    )
+    assert "entry_revisions" not in response.model_dump(mode="json", exclude_defaults=True)
+    first = Findings(reviews).respond("p", "s", response.model_dump(mode="json"), MAIN)
+    again = Findings(reviews).respond(
+        "p", "s", {**response.model_dump(mode="json"), "entry_revisions": []}, MAIN
+    )
+    assert again == {**first, "replayed": True}

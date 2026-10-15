@@ -289,7 +289,7 @@ class ReviewStore:
         project: str,
         session: str,
         key: str,
-        kind: Literal["transcript", "execution", "document", "artifact"],
+        kind: Literal["transcript", "execution", "document", "artifact", "ledger"],
         locator: Json,
         payload: Json,
         *,
@@ -841,6 +841,18 @@ class ReviewStore:
                     )
                 encoded = dump(locator)
                 items.append(EvidenceItem("document", encoded, encoded, digest(encoded), 1))
+            if claimed.get("entry_revisions"):
+                from sandbox_science.orchestrator.ledger import Ledger
+
+                from .ledger import entry_item
+
+                for pin in claimed["entry_revisions"]:
+                    view = Ledger(self.documents).entry(project, pin["entry"], pin["revision"])
+                    location, item, ready = entry_item(view)
+                    encoded = dump(item)
+                    items.append(
+                        EvidenceItem("ledger", dump(location), encoded, digest(encoded), int(ready))
+                    )
             for raw in claimed.get("artifact_revisions", []) + claimed.get(
                 "artifact_replacements", []
             ):
