@@ -14,6 +14,7 @@ import tracemalloc
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -909,3 +910,96 @@ async def test_cancelled_caller_later_failure_is_retrieved_and_admission_bounded
     finally:
         release.set()
         await consumer.aclose()
+
+
+# The artifacts a ledger entry's evidence pins (B6, lab 39; CR-2 and CR-14 as amended).
+
+
+def pinned_claim(state) -> Any:
+    """C-1, the main agent's claim, whose evidence pins a JSON artifact and a binary one
+    that a run of another session published; the JSON's reference."""
+    from sandbox_science.orchestrator.ledger import Ledger
+
+    from .test_consistency import MAIN
+
+    reviews, _, source = state
+    context = source.context.model_copy(update={"session_id": "other"})
+    other = source.model_copy(update={"context": context, "run_id": "other-run"})
+    results = publish(state, "res", b'{"q_twist": 4519}\n', "application/json", "r.json", other)
+    plot = publish(state, "plot", b"\x00\x01", "application/octet-stream", "plot.bin", other)
+    evidence = [
+        {"role": "supports", "type": "exact_computation", "artifact": r.artifact_id,
+         "revision": r.revision}
+        for r in (results, plot)
+    ]  # fmt: skip
+    claim = {"type": "claim", "origin": "project", "title": "q'", "statement": "$q' = 4591$.",
+             "evidence": evidence}  # fmt: skip
+    Ledger(reviews.documents).change(
+        "p", {"operation_id": "made", "reason": "r", "changes": [claim]}, MAIN
+    )
+    return results
+
+
+def pinned(reviews, review) -> list[dict[str, Any]]:
+    return [item for item in items(reviews, review) if item["kind"] == "artifact"]
+
+
+def test_an_entry_brings_the_artifacts_its_evidence_pins_into_its_review(state) -> None:
+    """B6 (lab 39): the comment run's reviews held R-1, but not the results JSON its
+    evidence pins, which an earlier run had published, so they could not compare the
+    numbers. A binary pin is left to the entry's evidence and keeps coverage complete."""
+    from sandbox_science.orchestrator.consistency.ledger import ingest_ledger
+    from sandbox_science.orchestrator.ledger import Ledger
+
+    from .test_consistency import MAIN
+
+    reviews, _, _ = state
+    results = pinned_claim(state)
+    assert ingest_ledger(reviews, "p", "s")["complete"]
+    review = dispatch(reviews)
+    (item,) = pinned(reviews, review)
+    assert (item["complete"], item["locator"]["pinned_by"]["handle"]) == (True, "C-1")
+    read = reviews.read_evidence("p", "s", review, item["evidence"], owner="owner")
+    assert (read["text"], read["source_sha256"]) == ('{"q_twist": 4519}\n', results.sha256)
+    with reviews.documents.control.read() as tx:
+        counted = tx.sql.execute(
+            "SELECT artifacts,effects FROM review_feed WHERE kind='artifact'"
+        ).fetchall()
+    assert [tuple(row) for row in counted] == [(0, 0)]  # no review due, not the run's effect
+    reviews.finish("p", "s", review, "owner", "passed", "Checked.")
+    assert reviews.run("p", "s", review)["state"] == "passed"
+    # The next window, where the entry is revised again, holds the artifact again.
+    Ledger(reviews.documents).change(
+        "p",
+        {"operation_id": "t", "reason": "r",
+         "changes": [{"entry": "C-1", "expected": 1, "title": "q prime"}]},
+        MAIN,
+    )  # fmt: skip
+    assert ingest_ledger(reviews, "p", "s")["complete"]
+    again = dispatch(reviews)
+    assert [i["locator"]["pinned_by"]["revision"] for i in pinned(reviews, again)] == [2]
+
+
+def test_a_confirmation_holds_the_artifacts_the_fixed_entry_pins(state) -> None:
+    """B6: the confirmation of a fix to C-1 reads the computation C-1 cites, so a fix that
+    copies a wrong number from elsewhere is compared with it."""
+    from sandbox_science.orchestrator.consistency.findings import Findings
+    from sandbox_science.orchestrator.ledger import Ledger
+
+    from .test_consistency import MAIN
+    from .test_review_ledger import finding_on, fix
+
+    reviews, _, _ = state
+    pinned_claim(state)
+    _, finding = finding_on(reviews, "statement")
+    Ledger(reviews.documents).change(
+        "p",
+        {"operation_id": "fixed", "reason": "r",
+         "changes": [{"entry": "C-1", "expected": 1, "statement": "$q' = 4519$."}]},
+        MAIN,
+    )  # fmt: skip
+    api = Findings(reviews)
+    revision = api.get("p", "s", finding)["revision"]
+    api.respond("p", "s", fix(finding, revision, ["C-1", 2]), MAIN)
+    confirm = dispatch(reviews, "confirmation")
+    assert [i["locator"]["pinned_by"]["revision"] for i in pinned(reviews, confirm)] == [2]

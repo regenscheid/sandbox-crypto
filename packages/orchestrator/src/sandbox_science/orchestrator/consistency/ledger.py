@@ -9,6 +9,10 @@ evidence. A revision's new title and statement count toward the text trigger, an
 claim or result is a structural block (CR-10 as amended). The flags an agent's change
 raises are observations too, which make no review due, and so is an agent's clearing of
 a flag, with its reason (LG-29). The user's revisions and clearings are not reviewed.
+The artifact revisions an observed revision's evidence pins come with it, as artifact
+observations that make no review due, once in each review window, whichever session
+published them (CR-2, CR-14 as amended): the reviewer compares what the entry states with
+what the computation wrote.
 The consumer reads the ledger's events after its cursor in bounded pages, and moves the
 cursor and writes the observations in one change.
 """
@@ -21,6 +25,7 @@ from sandbox_science.orchestrator.control import EventLog
 from sandbox_science.orchestrator.control.feeds import FeedCursor
 from sandbox_science.orchestrator.ledger import EntryView, Ledger
 
+from .artifacts import pinned_artifact
 from .store import MAX_ITEM_BYTES, ReviewStore, dump
 
 Json = dict[str, Any]
@@ -34,6 +39,9 @@ _STRUCTURAL: Final = ("claim", "result")
 Observation = tuple[str, Json, Json, int, int, bool, bool]
 """Its source key, locator, payload, characters, structural blocks, whether it is
 complete, and whether it is an effect of the run."""
+
+MAX_PINNED: Final = 8
+"""The most artifact revisions one entry revision brings into a review."""
 
 
 def ingest_ledger(store: ReviewStore, project: str, session: str, *, drain: bool = False) -> Json:
@@ -53,12 +61,14 @@ def ingest_ledger(store: ReviewStore, project: str, session: str, *, drain: bool
             events = log.page(tx.sql, project, after, 200, through=target)
         if not events:
             break
-        observations = [
+        seen = [
             found
             for event in events
             if event.session == session and event.kind in _KINDS
             if (found := _observation(ledger, project, event.subject, event.payload)) is not None
-        ] + [
+        ]
+        pinned = [item for _, view in seen for item in pinned_items(store, project, view)]
+        observations = [observation for observation, _ in seen] + [
             _flag(event.kind, event.payload)
             for event in events
             if event.session == session and event.kind in _FLAGS
@@ -81,6 +91,22 @@ def ingest_ledger(store: ReviewStore, project: str, session: str, *, drain: bool
                     characters=characters,
                     structural=structural,
                     effects=effects,
+                )
+            watermark = db.execute(
+                "SELECT coalesce(max(watermark),0) FROM review_windows "
+                "WHERE project=? AND session=?",
+                (project, session),
+            ).fetchone()[0]
+            for locator, payload in pinned:
+                pin = locator["artifact"]
+                store.record_observation(
+                    db,
+                    project,
+                    session,
+                    f"pinned:{watermark}:{pin['artifact_id']}:{pin['revision']}",
+                    "artifact",
+                    locator,
+                    payload,
                 )
         after, pages = end, pages - 1
         if after >= target:
@@ -131,8 +157,31 @@ def entry_item(view: EntryView) -> tuple[Json, Json, bool]:
     return locator, payload, complete
 
 
-def _observation(ledger: Ledger, project: str, entry: str, event: Json) -> Observation | None:
-    """The observation of an agent's revision of ``entry``; None for the user's."""
+def pinned_items(store: ReviewStore, project: str, view: EntryView) -> list[tuple[Json, Json]]:
+    """The artifact revisions ``view``'s evidence pins, as many as ``MAX_PINNED``, each
+    copied whole as review evidence with the entry revision that pins it; one whose text
+    cannot be copied whole is left to the entry's evidence, which names it."""
+    found: list[tuple[Json, Json]] = []
+    seen: set[tuple[str, int]] = set()
+    for link in view.evidence:
+        if link.target != "artifact" or link.revision is None:
+            continue
+        if (link.target_id, link.revision) in seen or len(found) >= MAX_PINNED:
+            continue
+        seen.add((link.target_id, link.revision))
+        copied = pinned_artifact(store, project, link.target_id, link.revision, link.sha256)
+        if copied is not None:
+            locator, payload = copied
+            by = {"entry": view.entry_id, "handle": view.handle, "revision": view.revision}
+            found.append(({**locator, "pinned_by": by}, payload))
+    return found
+
+
+def _observation(
+    ledger: Ledger, project: str, entry: str, event: Json
+) -> tuple[Observation, EntryView] | None:
+    """The observation of an agent's revision of ``entry``, and the entry as it reads at
+    that revision; None for the user's."""
     view = ledger.entry(project, entry, event["revision"])
     if view.author.get("kind") not in ("agent", "worker"):
         return None
@@ -150,7 +199,7 @@ def _observation(ledger: Ledger, project: str, entry: str, event: Json) -> Obser
         int(created and view.type in _STRUCTURAL),
         complete,
         True,
-    )
+    ), view
 
 
 def _flag(kind: str, event: Json) -> Observation:

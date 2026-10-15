@@ -153,6 +153,35 @@ def project_artifact(
     return locator, payload, available == "text"
 
 
+def pinned_artifact(
+    store: ReviewStore, project: str, artifact: str, revision: int, sha256: str | None
+) -> tuple[Json, Json] | None:
+    """An artifact revision a project ledger entry's evidence pins, copied as
+    ``project_artifact`` copies one, whichever session published it (ledger pins are
+    project-wide, CR-2 as amended): its locator and projection. None when there is no
+    inventory, the revision is not the project's, or its text cannot be copied whole: an
+    item that is not complete would leave the review's coverage incomplete, and the
+    entry's evidence names the pin anyway."""
+    inventory = store.artifacts
+    if inventory is None or sha256 is None:
+        return None
+    try:
+        found = inventory.resolve(
+            project,
+            ArtifactLink(
+                project_id=project,
+                artifact_id=artifact,
+                mode="pinned",
+                revision=revision,
+                sha256=sha256,
+            ),
+        )
+        locator, payload, ready = project_artifact(store, project, found.reference)
+    except (DocumentError, ValidationError):
+        return None
+    return (locator, payload) if ready else None
+
+
 @dataclass(frozen=True, slots=True)
 class _Observation:
     """One review-feed observation a page of artifact evidence adds."""

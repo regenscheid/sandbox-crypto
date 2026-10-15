@@ -2,8 +2,9 @@
 """Golden snapshots of ``ReviewStore.dispatch`` (B-06): for author work, a confirmation
 that fits and one that does not, the snapshot's items, grants, coverage flag and
 confirmation key, with identifiers made deterministic. The digests were taken from the
-code before B-06 split ``dispatch``; a change to any of them changes what a reviewer
-sees."""
+code before B-06 split ``dispatch``, and again when rubric ``sandbox-consistency-2`` asked
+the reviewer to compare an entry's numbers with the artifacts it pins (B6), which is all
+that changed; a change to any of them changes what a reviewer sees."""
 
 from __future__ import annotations
 
@@ -25,9 +26,9 @@ from .test_consistency import MAIN, anchor, claim, dispatch, raise_finding
 from .test_consistency import store as store
 
 GOLDEN = {
-    "author": "173643b672a77de411ba358dc0b3fc8c14227d6cf4bff3cfd48ce6ceaedecd37",
-    "confirmation": "b31c094ad11cdfef8a53dbb66d9ebfc69691328a39d86305a75dd37214f54f08",
-    "fallback": "c8f000e56c7ff7bc15e4f10552ecf5d29d8839dd83562a5cd2050a87c9f2c7ed",
+    "author": "b9fedea928e4bc5254a6beedccbf96c5cf2a64657684c5dad39360de3bb478f4",
+    "confirmation": "dd68d05071bf43522f69ec566a4e5bb373786ac559929d3a29ebb1537033adbd",
+    "fallback": "4db01a9de6a8c28dcc9f22222bd3b5f7eb6dfa3d92f6220f41175f6eeb6ae2b2",
 }
 
 
