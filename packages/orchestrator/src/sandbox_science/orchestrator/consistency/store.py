@@ -318,7 +318,14 @@ class ReviewStore:
         session: str,
         key: str,
         kind: Literal[
-            "transcript", "execution", "document", "artifact", "ledger", "source", "action"
+            "transcript",
+            "execution",
+            "document",
+            "artifact",
+            "ledger",
+            "source",
+            "action",
+            "delegation",
         ],
         locator: Json,
         payload: Json,

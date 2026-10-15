@@ -268,7 +268,7 @@ def context_items(
     for link in links:
         if link.target == "delegation" and link.target_id not in seen:
             seen.add(link.target_id)
-            outcome = _outcome(store, project, link.target_id)
+            outcome = delegation_outcome(store, project, link.target_id)
             if outcome is not None:
                 locator = {"delegation": link.target_id, "pinned_by": by}
                 found.append(("delegation", f"delegation:{link.target_id}", locator, outcome))
@@ -288,7 +288,7 @@ def context_items(
     return found[:MAX_CONTEXT]
 
 
-def _outcome(store: ReviewStore, project: str, delegation: str) -> Json | None:
+def delegation_outcome(store: ReviewStore, project: str, delegation: str) -> Json | None:
     """A delegation's outcome as review evidence: what it was asked, how it ended, the
     result the child returned with its verdict and coverage, what the platform saw it
     read, and its report, the long texts bounded; None when it has not ended."""
