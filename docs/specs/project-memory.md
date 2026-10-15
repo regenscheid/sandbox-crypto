@@ -1,78 +1,89 @@
 # Project memory
 
-Date: 2026-10-14. **Status: Draft; awaiting the owner.** The owner chose the approach (option (a), 2026-10-14): one project memory document per project, a living document whose agent changes wait as suggestions, its current text given to each run, and no ledger `lesson` type. On 2026-10-14 the owner also decided that the memory is never a file in environments (PM-10) and that every agent role receives it (PM-4). The choices still open are listed under [open questions](#open-questions), each with a recommendation.
+Date: 2026-10-14. **Status: Draft; awaiting the owner's review of this version.** The owner decided on 2026-10-14: a built-in memory tool with its own small store, not a living document; agents only propose and the user decides; every agent role receives the accepted entries; the memory is never a file in any environment; no ledger `lesson` type. The choices still open are under [open questions](#open-questions), each with a recommendation.
 
 ## Scope
 
-Project memory is what the project has learned about how to work, kept so that later runs start from it: conventions and notation, settled facts about the environment and tools, the user's preferences, and pitfalls to avoid. For example: "Write finite fields as `GF(p)`, never `F_p`", "Install Python packages with `provision`; `pip` inside a cell does not survive a restart", "The NIST CSRC server rate-limits after 20 requests a minute".
+Project memory is what the project has learned about how to work, kept so that later agents start from it: conventions and notation, settled facts about the environment and tools, the user's preferences, and pitfalls to avoid. For example: "Write finite fields as `GF(p)`, never `F_p`", "Install Python packages with `provision`; `pip` inside a cell does not survive a restart", "The NIST CSRC server rate-limits after 20 requests a minute".
 
-It is not a place for results or evidence: those are artifacts, documents and, later, ledger entries ([research artifacts](research-artifacts.md), [living documents](living-documents.md), [ledger](ledger.md)). It is not a ledger entry type either; the ledger gets no `lesson` type (owner, 2026-10-14).
+It is not a place for results or evidence: those are artifacts, documents and, later, ledger entries ([research artifacts](research-artifacts.md), [living documents](living-documents.md), [ledger](ledger.md)). The ledger gets no `lesson` type (owner, 2026-10-14).
 
-**What is built today.** Living documents, with revisions, comments and an optional switch that makes agent patches wait as suggestions for the user to accept or decline (LD-20). The GUI accepts suggestions; declining one is a harness command (`document decide … decline`). No document is given to a run: a run starts from its system message, its task and the session's earlier conversation ([run service](run-service.md), RS-10).
+**What is built today.** Nothing: a run starts from its system message, its task and the session's earlier conversation ([run service](run-service.md), RS-10), and nothing the project learned carries over unless the user repeats it. The control store already has the pieces this builds on: operation receipts for safe retries and an event log committed with each change (`control/receipts.py`, `control/events.py`; refactoring plan, B-04).
 
-**What this adds.** One memory document per project, which agents can change only by suggestion, and whose accepted text every agent receives: main and delegated runs, the consistency reviewer and the job watcher.
+**What this adds.** A short list of entries per project. Agents read the accepted entries and propose additions, changes and removals; every proposal waits for the user, who accepts or declines it on the GUI's Memory page and can also edit or delete entries directly. Every agent receives the accepted entries when it starts its work.
+
+Terms:
+
+- **Entry**: one short note of the project memory, with its own history.
+- **Proposal**: an agent's request to add an entry, change one or remove one, with its reason; it waits until the user accepts or declines it.
 
 ## Behavior
 
-- PM-1. **The document.** Each project has one project memory: a project-scope living document named `memory` and titled "Project memory", made with the project, and for an existing project when it is first opened after this is built. It cannot be deleted, renamed or moved to a workbook. Everything else about it is an ordinary living document: Markdown with LaTeX, blocks, revisions, comments (LD-1 to LD-21).
-- PM-2. **Who changes it.** The user edits it directly, as any document. An agent cannot change it: its suggestion switch is always on and cannot be turned off, so every agent patch on it waits as a suggestion (LD-20) until the user accepts or declines it, one by one. An accepted suggestion becomes a revision attributed to the agent run that proposed it, with the user's acceptance recorded; a declined one writes nothing.
-- PM-3. **How an agent proposes.** With the existing `document_patch` tool, naming the memory's ID and the revision it read (`document_read`), as for any document. The tool's result says the patch is waiting for the user. Agents propose memory entries when they learn something later runs should know, and say why in the patch's reason; what kinds of change they may propose is open question 3.
-- PM-4. **Who receives it.** Every agent role (owner, 2026-10-14): each main run and each delegated run at its start, the consistency reviewer with each review, and the job watcher with each check of a job. Any agent with the document tools can also read it with `document_read`. For the reviewer, the memory is guidance about the project, such as its notation and conventions, never evidence: a claim is not supported because the memory states it, and the reviewer's instructions say so. The watcher is called for each check of a running job, up to 60 times an hour per job by default, so the memory adds up to 16,000 characters (about 4,000 tokens) to each of those calls.
-- PM-5. **How it is given.** The text is a section of the agent's system message: for main and delegated runs after the main prompt and before the planning guidance, for the reviewer and the watcher after their own instructions. It is framed as the project's notes that the user accepted. It is guidance, not permission: it grants no tool, path, network access or approval, and the project policy applies as before. The run record, the review's record and the watcher call's record pin the section like the others ([MAIN prompt provenance](../MAIN-PROMPT-PROVENANCE.md), [reviewer](../REVIEWER-PROMPT-PROVENANCE.md) and [watcher](../WATCHER-PROMPT-PROVENANCE.md) provenance): the document's ID and revision, the included text's byte count and SHA-256, and whether it was cut (PM-6).
-- PM-6. **Bound.** At most 16,000 characters of memory (about 4,000 tokens) are given. A longer memory is given whole blocks from its start up to the bound, followed by a line saying how many blocks were left out and that the memory is over its bound. The GUI shows the memory as over its bound, with its size. Nothing is cut from the document itself; the user, or an agent's suggestion that the user accepts, shortens it.
-- PM-7. **Which revision.** A run receives the revision current when it starts, and keeps it to its end; a suggestion accepted during a run reaches the next run. A delegated run receives the revision its root run started with, so the runs of one tree work from the same memory. The reviewer receives the revision the reviewed run started with; the watcher, the revision current when it is called, since a job can outlive its run.
-- PM-8. **What is never given.** Pending and declined suggestions, comments, earlier revisions and the document's history are never part of a run's context. An agent reads them only with the document tools, as data (LD-23).
-- PM-9. **In the GUI.** The project page links to the memory and shows how many suggestions wait. The memory opens as a document, with each waiting suggestion's text, the run that proposed it and its reason, and the user accepts or declines each one there. Declining in the GUI is built with this.
-- PM-10. **No file in environments.** Unlike other documents (LD-3, LD-49), the memory is not written into any environment's `documents/` area, so no code in a sandbox can edit it as a file, and no direct edit (LD-50) can reach it. Runs receive its accepted text in their context (PM-5), and agents read it with `document_read`. A file a call writes at the memory's path, `documents/memory.md`, is an ordinary file of that environment, not the memory. *Decided by the owner (2026-10-14), option (b).* *Rejected alternative:* syncing the file and turning edits of it into suggestions. A direct edit records the environment and possibly the execution, but not reliably which run or call made it (LD-10), so the user could not see who proposed the change; and any code in the sandbox, including a package or a downloaded script, could then queue suggestions for the user to review, which only agents' tool calls should do.
+- PM-1. **The store.** Each project has one memory: a list of entries in the control store. An entry has an ID (`mem-…`), its text (Markdown with LaTeX, at most 1,000 characters) and a revision number. Each change of an entry appends a version recording its text, who proposed it (the agent run, its role and session, the model alias and, when the gateway reports it, the resolved model), when and why, and who accepted it and when; or, for the user's own edit, the user and the time. A removed entry keeps its history. Versions are never changed or deleted.
+- PM-2. **Agents propose; the user decides.** No agent changes the memory. An agent's proposal waits until the user accepts it, which applies it as a new version attributed to the proposing run with the user's acceptance recorded, or declines it, which applies nothing. A proposal to change or remove an entry names the revision it read; if the entry changed since, accepting it shows the user the current text first.
+- PM-3. **The agent tools.** `memory_list` returns the accepted entries: ID, revision and text. `memory_propose` takes one action (`add` with text, `change` with an entry ID, its revision and the new text, or `remove` with an entry ID and its revision) and a reason of at most 500 characters, and returns the proposal's ID and that it waits for the user. A retry with the same operation ID returns the first answer, and the same ID with a different request is refused (operation receipts). A project holds at most 50 waiting proposals, and one run makes at most 10; beyond that `memory_propose` says the user has not caught up. Main and delegated runs have both tools; the consistency reviewer and the job watcher have neither.
+- PM-4. **The user.** The GUI's Memory page lists the accepted entries and, apart, the waiting proposals, each with its text (for a change, beside the current text), the run that proposed it, its role and model, when, and its reason. The user accepts or declines each one, and edits, adds or deletes entries directly; an edit names the revision it saw, so concurrent changes conflict instead of overwriting. Each entry's history is one click away. The project page shows how many proposals wait.
+- PM-5. **Every agent receives it.** Every agent role receives the accepted entries at the start of its work (owner, 2026-10-14): each main and delegated run at its start, the consistency reviewer with each review, and the job watcher with each check of a job. The watcher is called for each check of a running job, up to 60 times an hour per job by default, so the memory adds up to 16,000 characters (about 4,000 tokens) to each of those calls.
+- PM-6. **How it is given.** The entries are a section of the agent's system message: for main and delegated runs after the main prompt and before the planning guidance, for the reviewer and the watcher after their own instructions. The section frames them as the project's notes that the user accepted: guidance, not permission (they grant no tool, path, network access or approval, and the project policy applies as before) and, for the reviewer, not evidence (a claim is not supported because the memory states it). Each agent's record pins the section, as other sections are pinned ([MAIN prompt provenance](../MAIN-PROMPT-PROVENANCE.md), [reviewer](../REVIEWER-PROMPT-PROVENANCE.md) and [watcher](../WATCHER-PROMPT-PROVENANCE.md) provenance): the memory's version (the sequence number of its last change), the entries included, their byte count and SHA-256, and whether any were left out (PM-7).
+- PM-7. **Bound.** At most 16,000 characters of entries are given, in the order the Memory page shows them (oldest accepted first, unless the user moved one). When the accepted entries are longer, the agent receives whole entries up to the bound, followed by a line saying how many were left out. The Memory page flags the overflow with the total size, and the user removes or merges entries, directly or by accepting an agent's proposal.
+- PM-8. **Which version.** An agent receives the memory as it is when it starts and keeps it to its end; a proposal accepted meanwhile reaches the next one. A delegated run receives the version its root run started with, so the runs of one tree work from the same memory. The reviewer receives the version the reviewed run started with; the watcher, the version current when it is called, since a job can outlive its run.
+- PM-9. **What is never given.** Waiting and declined proposals and the entries' histories are never part of an agent's context. `memory_list` returns accepted entries only.
+- PM-10. **Never a file.** The memory is not written into any environment, under `documents/` or anywhere else, so no code in a sandbox can read or change it as a file; agents use `memory_list` and `memory_propose` (owner, 2026-10-14). *Rejected alternative:* a file whose edits become proposals. A file edit records the environment and possibly the execution, but not reliably which run or call made it, so the user could not see who proposed the change; and any code in the sandbox, a package or a downloaded script included, could queue proposals, which only agents' tool calls should do.
+- PM-11. **Changes and events.** Every proposal, decision and direct edit is one change of the control store, with its operation receipt and its events (`memory.proposed`, `memory.decided`, `memory.changed`) committed with it, on the B-04 event log. The GUI and the agents read through the store.
+- PM-12. **Later: memory across projects.** The same entries and proposals can later be kept for a user across projects and given beside a project's memory, within the same bound. Not part of this spec.
 
 ## A worked example
 
-1. Project `ff` is made; its memory is empty apart from its title.
-2. A run spends three calls finding that `pip install` inside a Sage cell is lost when the kernel restarts. It proposes, with `document_patch` on the memory, a block: "Install Python packages with `provision`, not `pip` inside a cell (lost on restart)", with the reason "learned in run r-12 after a kernel restart".
-3. The run ends. The user opens the project page, sees "1 suggestion waiting", reads it and accepts it. The memory is now at revision 2, attributed to run r-12 and accepted by the user.
-4. A later run proposes "Always use 128-bit floats". The user declines it; nothing is written.
-5. The next main run's system message includes the memory at revision 2, and its record pins it. A run it delegates gets the same revision 2, even if the user accepts another suggestion meanwhile.
-6. Months later the memory is 20,000 characters. Runs receive its first 16,000 characters of whole blocks and a line saying 6 blocks were left out; the GUI shows the memory as over its bound. An agent proposes merging old entries; the user accepts, and the next run receives all of it again.
+1. Project `ff` is made; its memory has no entries.
+2. A run spends three calls finding that `pip install` inside a Sage cell is lost when the kernel restarts. It calls `memory_propose` with `add`, the text "Install Python packages with `provision`, not `pip` inside a cell (lost on restart)", and the reason "learned in run r-12 after a kernel restart". The tool answers that proposal `prop-1` waits for the user.
+3. The run ends. The project page shows "1 memory proposal waiting". The user opens the Memory page, reads it, with the run, its role `main` and its model, and accepts it. Entry `mem-1` exists at revision 1, attributed to run r-12 and accepted by the user.
+4. A later run proposes the entry "Always use 128-bit floats". The user declines it; nothing changes.
+5. The next main run's system message holds `mem-1` in the memory section, and its record pins the memory's version. A run it delegates gets the same version, even if the user accepts another proposal meanwhile. When the run's answer is reviewed, the reviewer receives `mem-1` as guidance, not as evidence. A job the run started, checked an hour later, has its watcher receive the memory as it is then.
+6. The user edits `mem-1` on the Memory page to add "Use `provision` with `--channel conda-forge`". It is now at revision 2, attributed to the user.
+7. Months later the entries total 20,000 characters. Agents receive whole entries up to 16,000 characters and a line saying 6 were left out; the Memory page flags the overflow. An agent proposes merging three old entries into one (one `change` and two `remove` proposals); the user accepts them, and the next agent receives all entries again.
 
 ## Contracts used
 
-- Living documents' `Mutation`s, patches, suggestions and their events (`document.suggestion_created`, `document.suggestion_decided`), unchanged.
-- `PromptPins`: one more section, `memory`, versioned by the document's ID and revision.
+- Operation receipts and the event log of the control store (B-04), unchanged.
+- `PromptPins`: one more section, `memory`, in the MAIN, reviewer and watcher records.
+- Tool specs for `memory_list` and `memory_propose`.
 
 ## Acceptance fixtures
 
-**PM-F1 Agents only suggest** (`scripted`; PM-2, PM-3)
-- *When* an agent patches the memory, and a request tries to turn its suggestion switch off or delete it.
-- *Then* the patch waits as a suggestion and the document is unchanged; the switch and the deletion are refused.
+**PM-F1 Agents only propose** (`scripted`; PM-2, PM-3)
+- *When* an agent proposes adding an entry, changing one and removing one, and retries the first with the same operation ID.
+- *Then* three proposals wait, the retry returns the first answer, and `memory_list` returns the entries as they were; no agent tool changes an accepted entry.
 
-**PM-F5 No file to edit** (`worker`; PM-10)
-- *Given* a project whose documents are synced into its environment (LD-49).
-- *When* a call lists `documents/` and then writes `documents/memory.md`.
-- *Then* the listing has no memory file; the written file changes no document and creates no suggestion; the memory is unchanged.
+**PM-F2 Accepted entries reach the next agent** (`scripted`; PM-6, PM-8, PM-9)
+- *Given* a memory with one accepted entry and one waiting proposal.
+- *When* a main run starts, the user accepts the proposal during it, and the run delegates a child.
+- *Then* the scripted model's first request holds the one accepted entry and not the proposal; the child's holds the same; the run record pins that version; the next main run holds both entries.
 
-**PM-F2 Accepted text reaches the next run** (`scripted`; PM-5, PM-7, PM-8)
-- *Given* a memory at revision 2 with one suggestion waiting.
-- *When* a main run starts, the user accepts the suggestion during it, and the run delegates a child.
-- *Then* the scripted model's first request holds revision 2's text and not the suggestion; the child's holds revision 2 too; the run record pins revision 2; the next main run holds revision 3.
-
-**PM-F3 Bound** (`scripted`; PM-6)
-- *Given* a memory of 20,000 characters in 40 blocks.
+**PM-F3 Bound** (`scripted`; PM-7)
+- *Given* accepted entries totalling 20,000 characters.
 - *When* a run starts.
-- *Then* its system message holds whole blocks up to 16,000 characters and a line naming the number left out, and the record's pin says it was cut.
+- *Then* its system message holds whole entries up to 16,000 characters and a line naming how many were left out, and the record's pin says so.
 
-**PM-F4 Every role** (`scripted`; PM-4, PM-5, PM-7)
-- *Given* a memory at revision 2.
-- *When* a main run starts a job and delegates a child, the user accepts a suggestion (revision 3), the run's answer is reviewed, and the job is checked after the run ends.
-- *Then* the main run's, the child's and the reviewer's requests hold revision 2's text, framed as accepted notes (for the reviewer, as guidance and not evidence); the watcher's request holds revision 3; each record pins the revision it used.
+**PM-F4 Every role** (`scripted`; PM-5, PM-6, PM-8)
+- *Given* a memory at version 2.
+- *When* a main run starts a job and delegates a child, the user accepts a proposal (version 3), the run's answer is reviewed, and the job is checked after the run ends.
+- *Then* the main run's, the child's and the reviewer's requests hold version 2's entries, framed as accepted notes (for the reviewer, as guidance and not evidence); the watcher's request holds version 3's; each record pins the version it used.
+
+**PM-F5 No file** (`worker`; PM-10)
+- *When* a call lists the project root, `documents/` and the session workspace, and writes `documents/memory.md`.
+- *Then* no listing shows the memory; the written file is an ordinary file that changes no entry and makes no proposal.
+
+**PM-F6 The user edits** (`scripted`; PM-2, PM-4)
+- *Given* an agent's proposal to change `mem-1` at revision 1.
+- *When* the user edits `mem-1` directly (revision 2), then accepts the proposal.
+- *Then* acceptance first shows the current text, and the accepted change becomes revision 3 with both authors in its history.
 
 ## Open questions
 
-1. **The bound.** *Recommended:* 16,000 characters, cut at whole blocks with a line saying how many were left out (PM-6). A larger bound costs every run more context; a smaller one fills sooner.
-2. **Which roles receive it.** *Decided by the owner (2026-10-14):* every agent role, the reviewer and the watcher included (PM-4).
-3. **What agents may propose.** The owner asked for additions. *Recommended:* any change, as a suggestion (adding, correcting or removing entries), since the user decides each one and stale entries otherwise stay until the user edits them. The alternative refuses agent patches on the memory that change or remove existing blocks.
-4. **Locking.** *Recommended:* the memory's suggestion switch is always on, and the memory cannot be deleted, renamed or moved (PM-1, PM-2), so no run can switch off the user's review.
-5. **Declining in the GUI.** *Recommended:* built with this (PM-9), since today the GUI can only accept suggestions.
+1. **Sizes.** *Recommended:* 1,000 characters an entry, 16,000 characters given to an agent (PM-1, PM-7). A larger bound costs every agent more context, the watcher on every check; a smaller one fills sooner.
+2. **What is left out when the memory is over its bound.** *Recommended:* the entries at the end of the Memory page's order, oldest accepted first, which the user can rearrange (PM-7). The alternative leaves out the oldest, which keeps recent lessons but drops the settled conventions that usually come first.
+3. **Proposal limits.** *Recommended:* 50 waiting proposals per project and 10 per run (PM-3), so that a run cannot bury the user in proposals.
 
 ## Sources
 
-The owner's decision of 2026-10-14 (option (a)), [living documents](living-documents.md) (LD-20, LD-22, LD-23), [MAIN prompt provenance](../MAIN-PROMPT-PROVENANCE.md), [plans and delegation](plans-and-delegation.md) (PD-32, PD-34), [threat model](../THREAT-MODEL.md).
+The owner's decisions of 2026-10-14, the refactoring plan (B-04), [living documents](living-documents.md) (LD-23, for treating other text as data), [MAIN prompt provenance](../MAIN-PROMPT-PROVENANCE.md), [plans and delegation](plans-and-delegation.md) (PD-32, PD-34), [consistency review](consistency-review.md), [threat model](../THREAT-MODEL.md).
