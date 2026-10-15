@@ -4,9 +4,12 @@
  * LG-12; docs/LEDGER.md, "Work records"): what was tried, how it ended and its detail,
  * its pinned references, leading where the workspace shows them, the record it is part
  * of, and who wrote it. What was tried, the reason and each reference's note are the
- * author's text, shown with each character a person may not see as its code point.
+ * author's text, shown with each character a person may not see as its code point. On an
+ * issue's claimed obstruction, the user's acceptance or rejection (LG-7) shows the claim
+ * and the issue as the exact text it holds for.
  */
-import type { WorkRecord } from './api-types';
+import { ApiError } from './api';
+import type { EntryView, WorkRecord } from './api-types';
 import type { LinkTarget } from './ledger';
 import { documentHref, ENTRY_NAME, ledgerEntryHref } from './router';
 import { visible } from './text';
@@ -131,3 +134,58 @@ export function holdsWork(type: string): boolean {
 
 /** How many records a page of the entry view reads. */
 export const WORK_PAGE = 20;
+
+/** The longest note the server takes with an assessment. */
+export const MAX_ASSESSMENT_NOTE = 8192;
+
+/** The user's verdict on a claimed obstruction. */
+export type Assessing = 'accepted' | 'rejected';
+
+/** Whether the entry view offers the user's assessment of `record` on `entry` (LG-7). */
+export function assessable(
+  entry: Pick<EntryView, 'type' | 'revision' | 'head'>,
+  record: Pick<WorkRecord, 'ending'>,
+): boolean {
+  return (
+    entry.type === 'issue' &&
+    entry.revision === entry.head &&
+    record.ending === 'obstruction_claimed'
+  );
+}
+
+/**
+ * A claimed obstruction as the exact text the user assesses: what was tried, then each
+ * piece of its evidence, its pinned target and its note as written.
+ */
+export function claimText(record: WorkRecord): string {
+  const evidence = record.references.map((reference, index) => {
+    const { note, ...target } = reference;
+    const said = typeof note === 'string' ? `\nNote: ${note}` : '';
+    return `${index + 1}. ${JSON.stringify(target)}${said}`;
+  });
+  return evidence.length
+    ? `${record.tried}\n\nIts evidence:\n${evidence.join('\n\n')}`
+    : `${record.tried}\n\nIt cites no evidence.`;
+}
+
+/** Why a note cannot be sent as it is; null when it can. */
+export function assessmentProblem(note: string): string | null {
+  if (!note.trim()) return 'Say what you read, and why you decide so.';
+  if (note.length > MAX_ASSESSMENT_NOTE) {
+    return `The note is longer than ${MAX_ASSESSMENT_NOTE} characters.`;
+  }
+  return null;
+}
+
+/** What to say after an assessment failed on a newer revision; null for another failure. */
+export function assessmentConflict(
+  error: unknown,
+  handle: string,
+  revision: number,
+): string | null {
+  if (!(error instanceof ApiError) || error.status !== 409) return null;
+  return (
+    `${handle} has a newer revision than the r${revision} you read, so nothing was ` +
+    'recorded. Cancel, then open it again to read it as it is now.'
+  );
+}
