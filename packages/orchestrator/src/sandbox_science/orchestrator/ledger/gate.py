@@ -15,18 +15,25 @@ refusal names the first clause that does not (``gate_not_met``):
 3. ``computation``: computational evidence pinned to an artifact revision;
 4. ``review``: a completed checkpoint or terminal review (``passed`` or ``findings``)
    whose coverage was complete had in its snapshot, whole, a revision of the entry whose
-   material the change keeps;
+   material the change keeps; when a fix was confirmed of a ``fail`` finding raised on
+   that material, the review started after the confirmation, so the review that raised
+   it does not count;
 5. ``finding``: no ``fail`` finding anchored to the entry is unresolved: open, claimed
    fixed or unaddressed, or superseded until a completed review that started after the
-   supersession covered the entry's material as the change leaves it (a confirmed or
-   withdrawn one is resolved);
+   supersession covered the entry's material as the change leaves it. A confirmed fix or
+   a withdrawal resolves it, but only for the material it was decided for: while a
+   ``fail`` finding of any status is anchored to a revision whose material the change
+   keeps, the entry must have kept that material at every revision since, or the
+   finding holds;
 6. ``flags``: no open flag on the entry.
 
 Some clauses cannot hold in full yet, and the limits are deliberate: checks by
 delegations and verification reviews are not built, so only a check the user produced
 counts in clause 2; no record says which inputs were synthetic (RA-17), so clause 1
 reads the link's type alone; execution targets are not built, so clause 3 asks for the
-artifact alone; and flags are not built, so clause 6 holds.
+artifact alone; flags are not built, so clause 6 holds; and no record says which
+revision of the entry a finding's decision saw, so clause 5 reads that the entry kept
+the material since the finding, over at most ``KEPT_REVISIONS`` revisions.
 """
 
 from __future__ import annotations
@@ -48,6 +55,12 @@ _NOT_COUNTING: Final = frozenset({"synthetic", "unclassified"})
 
 _SET_ASIDE: Final = frozenset({"refuted", "withdrawn", "superseded"})
 """The statuses of an entry that no longer supports anything."""
+
+_RESOLVED: Final = frozenset({"confirmed fixed", "withdrawn"})
+
+KEPT_REVISIONS: Final = 256
+"""The most revisions since a ``fail`` finding the gate reads to see that the entry kept
+the material the finding was raised on; past it, the entry is taken to have left it."""
 
 
 @dataclass(frozen=True)
@@ -168,38 +181,134 @@ def establish(
             f"{handle}'s computational evidence is not pinned to the artifact revision "
             "that holds the computation",
         )
-    if now not in examined(db, entry, set(reviewed(db, entry))).values():
+    fails = failing(db, entry, now, before)
+    confirmed = max(
+        (
+            f.confirmed
+            for f in fails
+            if f.on_now and f.status == "confirmed fixed" and f.confirmed is not None
+        ),
+        default=None,
+    )
+    if now not in examined(db, entry, set(reviewed(db, entry, after=confirmed))).values():
         raise refused(
             entry,
             "review",
             f"no completed consistency review has covered {handle} as the change leaves "
-            "it: a review whose coverage was complete, and whose snapshot held, whole, a "
-            "revision with the same statement, fields, assumptions and evidence",
+            "it: a review whose coverage was complete, whose snapshot held, whole, a "
+            "revision with the same statement, fields, assumptions and evidence, and "
+            "which started after any fix confirmed of a fail finding raised on them",
         )
-    for finding, status, superseded in db.execute(
-        "SELECT f.finding_id,f.status,(SELECT max(t.created) FROM review_transitions t "
-        "WHERE t.finding_id=f.finding_id AND t.status='superseded') "
-        "FROM review_finding_entries x JOIN review_findings f USING(finding_id) "
-        "WHERE x.entry_id=? AND f.severity='fail' "
-        "AND f.status NOT IN ('confirmed fixed','withdrawn') ORDER BY f.created",
-        (entry,),
-    ):
+    for f in fails:
+        if f.status in _RESOLVED and (not f.on_now or f.kept):
+            continue
+        if f.status in _RESOLVED or (f.status == "superseded" and f.on_now):
+            raise refused(
+                entry,
+                "finding",
+                f"{handle} has a fail finding, {f.finding}, raised on the statement, "
+                "fields, assumptions and evidence the change leaves it, and the entry "
+                "has left that material since: "
+                + (
+                    "the finding was superseded when it left, not resolved"
+                    if f.status == "superseded"
+                    else f"the finding is {f.status}, which was not decided for this material"
+                ),
+            )
         if (
-            status == "superseded"
-            and now in examined(db, entry, set(reviewed(db, entry, after=superseded))).values()
+            f.status == "superseded"
+            and now in examined(db, entry, set(reviewed(db, entry, after=f.superseded))).values()
         ):
             continue
         raise refused(
             entry,
             "finding",
-            f"{handle} has an unresolved fail finding, {finding}: fix or rebut it first"
+            f"{handle} has an unresolved fail finding, {f.finding}: fix or rebut it first"
             + (
                 "; it was superseded, and no review since has covered the entry as it is"
-                if status == "superseded"
+                if f.status == "superseded"
                 else ""
             ),
         )
     # Clause 6, flags: none are raised until flags are built (LG-28).
+
+
+@dataclass(frozen=True)
+class Failing:
+    """A ``fail`` finding anchored to an entry, as the gate reads it for a change."""
+
+    finding: str
+    status: str
+    on_now: bool
+    """An anchor names a revision of the entry whose material the change keeps."""
+    kept: bool
+    """The entry has kept that material at every revision since that one."""
+    confirmed: float | None
+    """When a fix of it was last confirmed."""
+    superseded: float | None
+    """When it was last superseded."""
+
+
+def failing(db: sqlite3.Connection, entry: str, now: Material, before: int) -> list[Failing]:
+    """The ``fail`` findings anchored to ``entry``, in any status, oldest first: whether
+    each was raised on ``now``, the material a change leaves it, and whether the entry
+    has kept that material since, through ``before``, its revision before the change."""
+    rows = db.execute(
+        "SELECT f.finding_id,f.status,"
+        "(SELECT max(t.created) FROM review_transitions t "
+        "WHERE t.finding_id=f.finding_id AND t.status='confirmed fixed'),"
+        "(SELECT max(t.created) FROM review_transitions t "
+        "WHERE t.finding_id=f.finding_id AND t.status='superseded') "
+        "FROM review_finding_entries x JOIN review_findings f USING(finding_id) "
+        "WHERE x.entry_id=? AND f.severity='fail' ORDER BY f.created",
+        (entry,),
+    ).fetchall()
+    anchored: dict[str, set[int]] = {row[0]: set() for row in rows}
+    for finding, revision in db.execute(
+        "SELECT x.finding_id,json_extract(a.value,'$.locator.revision') "
+        "FROM review_finding_entries x JOIN review_findings f USING(finding_id), "
+        "json_each(CASE WHEN json_valid(f.anchors) THEN f.anchors ELSE '[]' END) a "
+        "WHERE x.entry_id=? AND f.severity='fail' "
+        "AND json_extract(a.value,'$.locator.entry')=?",
+        (entry, entry),
+    ):
+        if finding in anchored and type(revision) is int:
+            anchored[finding].add(revision)
+    held = examined(db, entry, {r for revisions in anchored.values() for r in revisions})
+    found: list[Failing] = []
+    for finding, status, confirmed, superseded in rows:
+        on = sorted(r for r in anchored[finding] if held.get(r) == now)
+        found.append(
+            Failing(
+                finding=finding,
+                status=status,
+                on_now=bool(on),
+                kept=bool(on) and _kept(db, entry, on[0], before, now, held),
+                confirmed=confirmed,
+                superseded=superseded,
+            )
+        )
+    return found
+
+
+def _kept(
+    db: sqlite3.Connection,
+    entry: str,
+    since: int,
+    through: int,
+    now: Material,
+    held: dict[int, Material],
+) -> bool:
+    """Whether every revision of ``entry`` after ``since``, through ``through``, holds
+    ``now``; at most ``KEPT_REVISIONS`` of them are read."""
+    if through - since > KEPT_REVISIONS:
+        return False
+    for revision in range(since + 1, through + 1):
+        if revision not in held:
+            held.update(examined(db, entry, {revision}))
+        if held.get(revision) != now:
+            return False
+    return True
 
 
 def reviewed(db: sqlite3.Connection, entry: str, *, after: float | None = None) -> list[int]:

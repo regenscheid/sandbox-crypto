@@ -505,3 +505,161 @@ def test_changing_an_evidence_links_role_is_not_what_the_review_covered(store) -
     }
     change(reviews, turned, op="turned")
     assert clause(reviews, "turned-gate", 3) == "review"
+
+
+# The verification of #281: a confirmed fix or an accepted rebuttal holds only for the
+# material it was decided for.
+
+ANOTHER = {
+    "type": "reference",
+    "title": "Another paper",
+    "statement": "B. Author, *Another paper*.",
+    "fields": {"identifiers": {"eprint": "2024/456"}, "published": "2024-03-01"},
+}
+
+
+def cite(reviews: ReviewStore, op: str, expected: int, cited: str, dropped: str) -> None:
+    """C-1 cites ``cited`` in place of ``dropped``."""
+    (held,) = [
+        link
+        for link in Ledger(reviews.documents).entry("p", "C-1").evidence
+        if link.handle == dropped
+    ]
+    evidence = [{"role": "supports", "type": "source_claim", "entry": cited}]
+    change(reviews, {"entry": "C-1", "expected": expected, "evidence": evidence,
+                     "evidence_removed": [held.evidence_id]}, op=op)  # fmt: skip
+
+
+def decided(reviews: ReviewStore, finding: str, action: str, decision: str) -> None:
+    """The main agent's ``action`` on ``finding``, citing C-1 as a review since saw it,
+    and the reviewer's ``decision`` on it: a confirmation review decides a claimed fix,
+    and the next review a rebuttal."""
+    from sandbox_science.orchestrator.consistency.findings import Findings
+
+    from .test_consistency import read_confirmation
+
+    ingest_ledger(reviews, "p", "s")
+    since = dispatch(reviews)
+    reviews.finish("p", "s", since, "owner", "passed", "Checked.")
+    findings = Findings(reviews)
+    revision = findings.get("p", "s", finding)["revision"]
+    findings.respond(
+        "p",
+        "s",
+        {
+            "finding": finding,
+            "expected": revision,
+            "action": action,
+            "explanation": "C-1 cites REF-2, which states it.",
+            "evidence": [latest(reviews, since)],
+            "operation_id": action,
+        },
+        MAIN,
+    )
+    confirmation = dispatch(reviews, "confirmation" if action == "fix" else "terminal")
+    read_confirmation(reviews, confirmation)
+    findings.confirm(
+        "p",
+        "s",
+        confirmation,
+        "owner",
+        {
+            "finding": finding,
+            "expected": revision + 1,
+            "decision": decision,
+            "explanation": "REF-2 states it.",
+            "anchors": [anchor(reviews, confirmation, "ledger")],
+            "operation_id": decision,
+        },
+    )
+    reviews.finish("p", "s", confirmation, "owner", "passed", "Decided.")
+
+
+def test_p8_a_fix_confirmed_for_other_material_does_not_hold_when_the_entry_returns(
+    store,
+) -> None:
+    """Probe p8: R1 fails C-1 r2 on its evidence; the agent cites REF-2 instead (r3),
+    claims a fix, and a confirmation review confirms it; the agent then cites REF-1
+    again (r4, r2's material). R1 raised a fail on that material, so it does not cover
+    it; and the fix was confirmed for r3's material, so a review since does not resolve
+    the finding for r4's."""
+    reviews, _, now = store
+    supported(reviews)
+    _, finding = finding_on(reviews, "evidence")
+    change(reviews, ANOTHER, op="another")
+    cite(reviews, "swap", 2, "REF-2", "REF-1")
+    decided(reviews, finding, "fix", "confirm")
+    from sandbox_science.orchestrator.consistency.findings import Findings
+
+    assert Findings(reviews).get("p", "s", finding)["status"] == "confirmed fixed"
+    now[0] += 1000
+    cite(reviews, "back", 3, "REF-1", "REF-2")
+    assert clause(reviews, "back-gate", 4) == "review"
+    review_passes(reviews)
+    assert clause(reviews, "reviewed-gate", 4) == "finding"
+    assert Ledger(reviews.documents).entry("p", "C-1").status == "proposed"
+
+
+def test_p8b_a_rebuttal_accepted_for_other_material_does_not_hold_when_the_entry_returns(
+    store,
+) -> None:
+    reviews, _, now = store
+    supported(reviews)
+    _, finding = finding_on(reviews, "evidence")
+    change(reviews, ANOTHER, op="another")
+    cite(reviews, "swap", 2, "REF-2", "REF-1")
+    decided(reviews, finding, "rebut", "accept_rebuttal")
+    from sandbox_science.orchestrator.consistency.findings import Findings
+
+    assert Findings(reviews).get("p", "s", finding)["status"] == "withdrawn"
+    now[0] += 1000
+    cite(reviews, "back", 3, "REF-1", "REF-2")
+    assert clause(reviews, "back-gate", 4) == "finding"
+    review_passes(reviews)
+    assert clause(reviews, "reviewed-gate", 4) == "finding"
+
+
+def test_the_review_that_raised_a_fail_does_not_cover_the_material_it_failed(store) -> None:
+    """The user confirms a fix of R1's fail finding made outside C-1, which keeps its
+    material: R1 does not cover it, a review since does, and the confirmation holds for
+    the material it was decided for."""
+    from sandbox_science.orchestrator.consistency.findings import Findings
+
+    reviews, _, now = store
+    supported(reviews)
+    _, finding = finding_on(reviews, "evidence")
+    revision = Findings(reviews).get("p", "s", finding)["revision"]
+    Findings(reviews).respond(
+        "p",
+        "s",
+        {
+            "finding": finding,
+            "expected": revision,
+            "action": "confirm",
+            "explanation": "The paper's erratum fixed it.",
+            "operation_id": "confirm",
+        },
+        USER,
+    )
+    assert clause(reviews, "raised", 2) == "review"
+    change(reviews, {"entry": "C-1", "expected": 2, "title": "Fermat for 17"}, op="t")
+    now[0] += 1000
+    review_passes(reviews)
+    establish(reviews, "covered", 3)
+    assert Ledger(reviews.documents).entry("p", "C-1").status == "established"
+
+
+def test_a_superseded_fail_finding_holds_when_the_entry_returns_to_its_material(store) -> None:
+    """A fail finding of any status holds the material it was raised on: superseded
+    when C-1 left it, it holds again when C-1 returns, though a review since covered
+    C-1 as it reads."""
+    reviews, _, now = store
+    supported(reviews)
+    _, finding = finding_on(reviews, "evidence")
+    change(reviews, ANOTHER, op="another")
+    cite(reviews, "swap", 2, "REF-2", "REF-1")
+    assert superseded(reviews, finding)
+    cite(reviews, "back", 3, "REF-1", "REF-2")
+    now[0] += 1000
+    review_passes(reviews)
+    assert clause(reviews, "back-gate", 4) == "finding"
