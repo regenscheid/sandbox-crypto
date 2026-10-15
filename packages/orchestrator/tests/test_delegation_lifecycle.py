@@ -306,7 +306,7 @@ async def test_a_lost_lease_cancels_the_live_check(delegating: Harness) -> None:
     state = RunState(ProjectStore(delegating.state).control)
     state.post(PROJECT, SESSION, "m-1", "Check C-1.", author="user")
     try:
-        async with serving(delegating, Reply(calls=[CHECK]), wait(), lease_seconds=2.0):
+        async with serving(delegating, Reply(calls=[CHECK]), wait(), lease_seconds=6.0):
             await eventually(lambda: delegating.gateway.children)
             held = state.lease(PROJECT, SESSION)
             assert held is not None
