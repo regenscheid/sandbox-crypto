@@ -137,6 +137,17 @@ export function collectNotices(root, bundle, distribution = 'gui', sourceRoot = 
     return 'Sandbox Science';
   }
 
+  // A stylesheet split out with a shared chunk has no file of its own: its origins are
+  // the component styles and stylesheets of the chunks that import it.
+  const styleOrigins = new Map();
+  for (const item of Object.values(bundle)) {
+    if (item.type !== 'chunk') continue;
+    const styles = item.moduleIds.filter(id => /[?&]type=style(&|$)|\.css(\?|$)/.test(id));
+    for (const css of item.viteMetadata?.importedCss ?? []) {
+      styleOrigins.set(css, [...(styleOrigins.get(css) ?? []), ...styles]);
+    }
+  }
+
   const files = [];
   for (const item of Object.values(bundle).sort((a, b) => a.fileName < b.fileName ? -1 : a.fileName > b.fileName ? 1 : 0)) {
     const owners = new Set();
@@ -147,8 +158,11 @@ export function collectNotices(root, bundle, distribution = 'gui', sourceRoot = 
         if (!bundle[path]) throw new Error(`Uncovered external bundle import: ${path}`);
       }
     } else if (item.fileName.endsWith('.css') || item.fileName === 'index.html') {
-      if (!item.originalFileNames.length) throw new Error(`Asset has no license origins: ${item.fileName}`);
-      for (const id of item.originalFileNames) owners.add(origin(id));
+      const sources = item.originalFileNames.length
+        ? item.originalFileNames
+        : styleOrigins.get(item.fileName) ?? [];
+      if (!sources.length) throw new Error(`Asset has no license origins: ${item.fileName}`);
+      for (const id of sources) owners.add(origin(id));
       // Vite combines the imported KaTeX stylesheet with project styles.
       if (item.fileName.endsWith('.css') && packages.has('katex')) owners.add('katex');
     } else if (item.originalFileNames.length === 1 &&
