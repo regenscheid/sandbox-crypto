@@ -148,6 +148,9 @@ describe('the memory page says', () => {
     expect(textProblem('\u2764\ufe0f')).toMatch(/U\+FE0F/);
     expect(textProblem('evil &#x202E;gnp.exe')).toMatch(/U\+202E as &#x202E;/);
     expect(textProblem('a &amp; b &#x41;')).toBeNull();
+    expect(textProblem('a &#x0000202E; b')).toMatch(/U\+202E as &#x0000202E;/);
+    expect(textProblem('a &caps; b')).toMatch(/U\+FE00 as &caps;/);
+    expect(textProblem('Use tabs.\n\n\n\nAlso.')).toMatch(/blank lines in a row from line 2/);
     expect(textProblem('tabs\tand\nlines')).toBeNull();
   });
 });

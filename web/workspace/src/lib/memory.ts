@@ -6,9 +6,10 @@
  * (`guardedWrite`), so a retry after a lost answer is not applied twice.
  */
 import type { Author, Memory, MemoryChange, MemoryProposal, MemoryVersion } from './api-types';
+import { hiddenReferences } from './approval';
 import { guardedWrite } from './mutation';
 import { submit, type Submitting } from './submit';
-import { hiddenCharacters } from './text';
+import { blankRun, hiddenCharacters } from './text';
 
 export type MemoryAction =
   | { action: 'add'; text: string }
@@ -106,12 +107,10 @@ export function versionText(version: MemoryVersion): string {
   return `Revision ${version.revision}: ${CHANGES[version.change]} ${how}`;
 }
 
-/** A numeric character reference, which a rendering shows as its character. */
-const REFERENCE = /&#(?:[xX]([0-9a-fA-F]{1,6})|([0-9]{1,7}));/g;
-
 /**
- * Why the server would refuse a text, said before sending; null when it would take it.
- * Hidden characters are the shared set (text.ts); named references the server checks.
+ * Why the server would refuse a text, said before sending; null when it would take it:
+ * the shared checks (text.ts, approval.ts) of hidden characters, character references to
+ * them, and runs of blank lines.
  */
 export function textProblem(text: string): string | null {
   const kept = text.trim();
@@ -124,11 +123,13 @@ export function textProblem(text: string): string | null {
       'see; write it without one.'
     );
   }
-  for (const match of text.matchAll(REFERENCE)) {
-    const code = match[1] !== undefined ? parseInt(match[1], 16) : Number(match[2]);
-    if (code > 0x10ffff) continue;
-    const [hidden] = hiddenCharacters(String.fromCodePoint(code));
-    if (hidden) return `The text writes ${hidden[1]} as ${match[0]}, which you may not see.`;
+  const [reference] = hiddenReferences(text);
+  if (reference) {
+    return `The text writes ${reference[1]} as ${reference[2]}, which you may not see.`;
+  }
+  const blanks = blankRun(text);
+  if (blanks !== null) {
+    return `The text has more than two blank lines in a row from line ${blanks}.`;
   }
   return null;
 }
