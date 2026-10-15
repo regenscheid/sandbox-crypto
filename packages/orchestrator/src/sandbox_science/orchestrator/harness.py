@@ -561,10 +561,12 @@ class Harness:
 
 async def _close_left_run_kernels(client: WorkerClient, context: ExecutionContext) -> None:
     """Close the kernels of delegated runs that ended without closing them: their
-    harness stopped first (PD-40)."""
+    harness stopped first (PD-40). Only an executor already connected is asked, so a
+    run's start never wakes or starts its environment; an unconnected one keeps such
+    kernels until a later run finds it connected."""
     try:
-        listing = await client.kernel_status(context)
-        for run in sorted({kernel.run for kernel in listing.kernels if kernel.run is not None}):
+        observed = await client.observe_kernels(context)
+        for run in sorted({kernel.run for kernel in observed.kernels if kernel.run is not None}):
             await client.close_session(context, run=run)
     except Exception as exc:  # a cleanup: it never stops the run
         _log.warning("could not close the kernels earlier runs left: %s", exc)
