@@ -111,6 +111,8 @@ class ChildEnd:
     """Whether it read the entry it checks at that revision."""
     read_proofs: bool | None = None
     """Whether it read the target of each of the entry's proofs at its pinned revision."""
+    files: dict[str, JsonValue] | None = None
+    """The files its calls recorded, as its record keeps them (RA-36)."""
 
 
 class ChildRunner(Protocol):
@@ -319,6 +321,7 @@ class Delegations(TurnHook):
                 end.models,
                 end.read_entry,
                 end.read_proofs,
+                end.files,
             )
         except asyncio.CancelledError:
             # Cancelled outside its loop, before it started or while it was saved.
@@ -411,7 +414,16 @@ class Delegations(TurnHook):
         whole = outcome(delegation)
         if used and used + len(dump(whole)) > self.output_chars:
             return {**summarized(delegation), "more": "read it with delegation_status"}
-        # Alone, a result always fits; a long answer is cut to its head and tail.
+        # Alone, a result always fits: the list of files is cut first, then a long answer
+        # to its head and tail.
+        files = whole.get("files")
+        while isinstance(files, dict) and len(dump(whole)) > self.output_chars:
+            listed = cast(dict[str, object], files).get("files")
+            if not isinstance(listed, list) or not listed:
+                break
+            kept = cast(list[object], listed)[: len(cast(list[object], listed)) // 2]
+            files = {**cast(dict[str, object], files), "files": kept, "cut": True}
+            whole = {**whole, "files": files}
         answer = whole.get("answer")
         while (
             isinstance(answer, str) and len(answer) > 100 and len(dump(whole)) > self.output_chars
@@ -566,21 +578,26 @@ def _ending(delegation: Delegation) -> dict[str, object]:
 def outcome(delegation: Delegation) -> dict[str, object]:
     """A delegation's whole outcome as its parent receives it (PD-20): how it ended,
     whether it read the entry it checked, and its result, or, when that is missing, its
-    answer as returned and why it did not validate."""
+    answer as returned and why it did not validate; then the files its calls recorded,
+    the platform's list apart from the child's own claims (RA-36)."""
+    files = {"files": delegation.files} if delegation.files is not None else {}
     if delegation.result is not None:
-        return {**_ending(delegation), "result": delegation.result}
+        return {**_ending(delegation), "result": delegation.result, **files}
     return {
         **_ending(delegation),
         "result": None,
         "errors": list(delegation.errors),
         "answer": delegation.report,
+        **files,
     }
 
 
 def summarized(delegation: Delegation) -> dict[str, object]:
     """A delegation's outcome as a notice gives it: its verdict and status, or without a
     result the head of its answer."""
-    found = _ending(delegation)
+    found: dict[str, object] = _ending(delegation)
+    if delegation.files is not None:
+        found["files_recorded"] = delegation.files.get("total")
     if delegation.result is not None:
         result = delegation.result
         return {**found, "verdict": result.get("verdict"), "status": result.get("status")}

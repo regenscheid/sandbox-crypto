@@ -45,15 +45,17 @@ REPORT_CHARS: Final = 16_000
 RESULT_BYTES: Final = 32768
 ERROR_BYTES: Final = 2000
 PAGE: Final = 50
+FILES_BYTES: Final = 131072
+"""The most a delegation's list of recorded files takes, as UTF-8 JSON."""
 TREE: Final = 500
 """The most delegations a session's tree shows: its latest."""
 
 _COLUMNS: Final = (
     "delegation_id, parent, run, kind, brief, started_at, ended, stopped, report, "
     "ended_at, refused, acknowledged, result, errors, alias, models, read_entry, "
-    "read_proofs"
+    "read_proofs, files"
 )
-_JSON: Final = ("brief", "result", "errors", "models")
+_JSON: Final = ("brief", "result", "errors", "models", "files")
 
 
 MAX_MODELS: Final = 10
@@ -123,6 +125,10 @@ class Delegation(Contract):
     read_proofs: bool | None = None
     """For a check: whether the child read the target of each of the entry's proofs at
     the revision the link pins, as the platform observed it (LG-17)."""
+    files: dict[str, JsonValue] | None = None
+    """The artifact revisions and tombstones the child's calls recorded, as the platform
+    observed them: at most 200 (``files``), their ``total`` and the calls' ``gaps``
+    (RA-36). ``None`` when its calls recorded nothing."""
 
 
 @dataclass(frozen=True)
@@ -139,6 +145,7 @@ class Ending:
     models: tuple[str, ...] = ()
     read_entry: bool | None = None
     read_proofs: bool | None = None
+    files: dict[str, JsonValue] | None = None
 
 
 class DelegationRecords:
@@ -221,8 +228,8 @@ class DelegationRecords:
             tx.sql.execute(
                 "UPDATE delegations SET ended = ?, stopped = ?, report = ?, ended_at = ?, "
                 "refused = ?, result = ?, errors = ?, alias = ?, models = ?, read_entry = ?, "
-                "read_proofs = ? WHERE project_id = ? AND session_id = ? AND delegation_id = ? "
-                "AND ended IS NULL",
+                "read_proofs = ?, files = ? WHERE project_id = ? AND session_id = ? "
+                "AND delegation_id = ? AND ended IS NULL",
                 (
                     ending.ended,
                     _clipped(ending.stopped, 64),
@@ -235,6 +242,7 @@ class DelegationRecords:
                     _fitted([_clipped(m, 128) for m in ending.models], 4096),
                     None if ending.read_entry is None else int(ending.read_entry),
                     None if ending.read_proofs is None else int(ending.read_proofs),
+                    _files(ending.files),
                     project,
                     session,
                     delegation_id,
@@ -324,6 +332,20 @@ def _settings(db: sqlite3.Connection, project: str) -> DelegationSettings:
     return DelegationSettings.model_validate(
         {**(json.loads(limits) if limits is not None else {}), "depth": depth}
     )
+
+
+def _files(files: dict[str, JsonValue] | None) -> str | None:
+    """The recorded files as the table keeps them: entries left out from the end until
+    the whole fits ``FILES_BYTES``, with the total kept."""
+    if files is None:
+        return None
+    entries = files.get("files")
+    listed = list(entries) if isinstance(entries, list) else []
+    while True:
+        text = _json({**files, "files": listed})
+        if len(text.encode()) <= FILES_BYTES or not listed:
+            return text
+        listed = listed[: len(listed) // 2]
 
 
 def _json(value: object) -> str:

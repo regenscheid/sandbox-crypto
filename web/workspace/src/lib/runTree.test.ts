@@ -74,6 +74,7 @@ const delegation = (fields: Partial<Delegation> = {}): Delegation => ({
   models: ['model-x'],
   read_entry: true,
   read_proofs: false,
+  files: null,
   ...fields,
 });
 

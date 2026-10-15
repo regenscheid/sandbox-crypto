@@ -219,6 +219,7 @@ export interface Delegation {
   models: string[];
   read_entry: boolean | null;
   read_proofs: boolean | null;
+  files: Record<string, JsonValue> | null;
 }
 
 /** A ``dominates`` link that takes a result from the best known or from those not compared (LG-22): the result that holds it, its reason, and who recorded it in which revision of the holder. */

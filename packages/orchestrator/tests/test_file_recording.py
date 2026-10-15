@@ -176,6 +176,17 @@ async def test_the_run_keeps_its_list_of_recorded_files(recording: Recording) ->
     assert [f["path"] for f in summary["files"]] == ["a.txt", "b.txt"]
 
 
+async def test_the_run_keeps_its_calls_gaps(recording: Recording) -> None:
+    """RA-36: the run's list says what its calls left out, by reason, over all its calls."""
+    await recording.shell("mkdir -p many && for i in $(seq 1 103); do echo $i > many/$i; done")
+    await recording.shell("for i in $(seq 1 102); do echo $i > many/b$i; done")
+    hooks = [h for h in recording.toolbox.turn_hooks() if isinstance(h, RecordedFiles)]
+    summary = hooks[0].summary()
+    assert isinstance(summary, dict)
+    assert summary["total"] == 200
+    assert summary["gaps"] == {"over the 100-file limit of a call": 5}
+
+
 async def test_a_full_budget_keeps_hashes_and_then_stops(worker_url: str, tmp_path: Path) -> None:
     documents = DocumentStore(tmp_path / "control.sqlite3")
     inventory = ArtifactInventory(
