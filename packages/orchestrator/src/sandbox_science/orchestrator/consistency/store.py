@@ -863,6 +863,7 @@ class ReviewStore:
                 from sandbox_science.orchestrator.ledger import EntryView, Ledger
 
                 from .ledger import entry_item, pinned_items
+                from .quotes import quoted_items
 
                 heads: set[str] = set()
                 for pin in claimed["entry_revisions"]:
@@ -894,6 +895,16 @@ class ReviewStore:
                             encoded = dump(projection)
                             items.append(
                                 EvidenceItem("artifact", dump(locator), encoded, digest(encoded), 1)
+                            )
+                        # And so do the recorded sources of its quotes (CR-4).
+                        with self.documents.control.read() as tx:
+                            quoted = quoted_items(tx.sql, project, each)
+                        for locator, message in quoted:
+                            encoded = dump(message)
+                            items.append(
+                                EvidenceItem(
+                                    "transcript", dump(locator), encoded, digest(encoded), 1
+                                )
                             )
             for raw in claimed.get("artifact_revisions", []) + claimed.get(
                 "artifact_replacements", []

@@ -906,7 +906,7 @@ async def test_the_pdf_tools_read_cite_and_render_in_the_sandbox(client: WorkerC
         return (await toolbox.call(_call(name, arguments), operation)).text
 
     info = await tool("pdf_info", "op-pdf-info", path="note.pdf")
-    assert info.startswith(f"note.pdf (sha256 {digest[:16]}…): 1 pages")
+    assert info.startswith(f"note.pdf (sha256 {digest}): 1 pages")
     assert "pages (physical: printed label): 1: 1" in info
     pages = await tool("pdf_pages", "op-pdf-pages", path="note.pdf", pages="1")
     assert "--- page 1 (printed 1) ---" in pages

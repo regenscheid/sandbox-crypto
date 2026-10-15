@@ -12,7 +12,8 @@ a flag, with its reason (LG-29). The user's revisions and clearings are not revi
 The artifact revisions an observed revision's evidence pins come with it, as artifact
 observations that make no review due, once in each review window, whichever session
 published them (CR-2, CR-14 as amended): the reviewer compares what the entry states with
-what the computation wrote.
+what the computation wrote. So do the recorded sources of its quotes of references,
+the tool results an agent read them in, as the platform holds them (CR-4).
 The consumer reads the ledger's events after its cursor in bounded pages, and moves the
 cursor and writes the observations in one change.
 """
@@ -26,6 +27,7 @@ from sandbox_science.orchestrator.control.feeds import FeedCursor
 from sandbox_science.orchestrator.ledger import EntryView, Ledger
 
 from .artifacts import pinned_artifact
+from .quotes import quoted_items
 from .store import MAX_ITEM_BYTES, ReviewStore, dump
 
 Json = dict[str, Any]
@@ -108,6 +110,17 @@ def ingest_ledger(store: ReviewStore, project: str, session: str, *, drain: bool
                     locator,
                     payload,
                 )
+            for _, view in seen:
+                for locator, payload in quoted_items(db, project, view):
+                    store.record_observation(
+                        db,
+                        project,
+                        session,
+                        f"quoted:{watermark}:{locator['quoted_by']['evidence']}",
+                        "transcript",
+                        locator,
+                        payload,
+                    )
         after, pages = end, pages - 1
         if after >= target:
             break
