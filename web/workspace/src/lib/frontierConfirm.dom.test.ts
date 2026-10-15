@@ -253,6 +253,7 @@ describe("the user's confirmation of an unverified result", () => {
             scope: 'Table 3, \u202Erow 2',
             added: 1,
             handle: 'REF-1',
+            locator: null,
           },
         ],
         links: [
