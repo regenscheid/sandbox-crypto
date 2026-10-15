@@ -230,3 +230,294 @@ def test_a_version_25_store_takes_categories_after_the_migration(
         assert moved.define_category("p", KEY_RECOVERY, MAIN).revision == 1
     finally:
         migrated.close()
+
+
+# The best known results (LG-20, LG-21, LG-23): LG-F2 as far as this step goes.
+
+QUANTUM = {"model": "quantum", "success": "at least 1/2"}
+
+
+def published(title: str, conditions: dict[str, str], **measures: Any) -> dict[str, Any]:
+    cite = [{"role": "supports", "type": "source_claim", "entry": "REF-1"}]
+    return {**result(conditions=conditions, measures=measures), "origin": "published",
+            "title": title, "evidence": cite}  # fmt: skip
+
+
+def best(view: Any, conditions: dict[str, str]) -> Any:
+    (group,) = [g for g in view.groups if g.conditions == conditions]
+    return group
+
+
+def test_the_best_known_results_under_each_set_of_conditions(ledger: Ledger) -> None:
+    from .test_ledger import NEW
+    from .test_ledger_decisions import decide
+
+    ledger.define_category("p", KEY_RECOVERY, MAIN)
+    change(ledger, NEW["reference"], op="ref")
+    change(ledger, published("P1", CLASSICAL, time=120, memory=60), op="p1", author=USER)  # R-1
+    change(ledger, published("P2", CLASSICAL, time=110, memory=80), op="p2", author=USER)  # R-2
+    view = ledger.frontier("p", "key-recovery")
+    group = best(view, CLASSICAL)
+    assert [r.handle for r in group.best] == ["R-1", "R-2"]  # conflicting measures
+    (first,) = [r for r in group.best if r.handle == "R-1"]
+    assert (first.status, first.origin, first.sources, first.evidence_types) == (
+        "recorded",
+        "published",
+        ["REF-1"],
+        ["source_claim"],
+    )
+    change(ledger, published("P3", CLASSICAL, time=125, memory=65), op="p3", author=USER)  # R-3
+    change(ledger, published("Q1", QUANTUM, time=90, memory=90), op="q1", author=USER)  # R-4
+    project = result(conditions=CLASSICAL, measures={"time": 105, "memory": 80})
+    change(ledger, {**project, "title": "R1"}, op="r1")  # R-5, proposed
+    change(
+        ledger, published("P4", CLASSICAL, time="$2^{0.29n}$", memory=70), op="p4", author=USER
+    )  # R-6
+    view = ledger.frontier("p", "key-recovery")
+    group = best(view, CLASSICAL)
+    assert [r.handle for r in group.best] == ["R-1", "R-2"]
+    assert [(r.handle, r.dominated_by) for r in group.dominated] == [("R-3", ["R-1"])]
+    assert [r.handle for r in group.not_compared] == ["R-6"]
+    assert [(r.handle, r.status, r.would_dominate) for r in group.candidates] == [
+        ("R-5", "proposed", ["R-2"])
+    ]
+    assert [r.handle for r in best(view, QUANTUM).best] == ["R-4"]
+    # Once established, R1 is best known, and P2 is dominated, still recorded.
+    change(ledger, decide("R-5"), {"entry": "R-5", "expected": 1, "status": "established"},
+           op="est", author=USER)  # fmt: skip
+    group = best(ledger.frontier("p", "key-recovery"), CLASSICAL)
+    assert [r.handle for r in group.best] == ["R-1", "R-5"]
+    assert [(r.handle, r.dominated_by, r.status) for r in group.dominated] == [
+        ("R-2", ["R-5"], "recorded"),
+        ("R-3", ["R-1"], "recorded"),
+    ]
+    assert group.candidates == []
+    # A disputed result stays best known, marked; a refuted one leaves.
+    change(ledger, {"entry": "R-1", "expected": 1, "status": "disputed"}, op="d")
+    group = best(ledger.frontier("p", "key-recovery"), CLASSICAL)
+    assert [(r.handle, r.disputed) for r in group.best] == [("R-1", True), ("R-5", False)]
+    change(ledger, decide("R-1"), {"entry": "R-1", "expected": 2, "status": "refuted"},
+           op="ref-1", author=USER)  # fmt: skip
+    group = best(ledger.frontier("p", "key-recovery"), CLASSICAL)
+    # P3 was dominated only by P1, so it is best known again beside R1.
+    assert [r.handle for r in group.best] == ["R-3", "R-5"]
+    assert [(r.handle, r.dominated_by) for r in group.dominated] == [("R-2", ["R-5"])]
+    assert ledger.frontier("p", "key-recovery").truncated is False
+
+
+def test_a_result_disputed_before_it_was_eligible_is_a_candidate(ledger: Ledger) -> None:
+    ledger.define_category("p", KEY_RECOVERY, MAIN)
+    change(ledger, result(conditions=CLASSICAL, measures={"time": 100, "memory": 50}), op="r")
+    change(ledger, {"entry": "R-1", "expected": 1, "status": "disputed"}, op="d")
+    group = best(ledger.frontier("p", "key-recovery"), CLASSICAL)
+    assert (group.best, [(r.handle, r.status) for r in group.candidates]) == (
+        [],
+        [("R-1", "disputed")],
+    )
+
+
+def test_results_the_category_gained_a_condition_key_after_are_unplaced(ledger: Ledger) -> None:
+    from .test_ledger import NEW
+
+    ledger.define_category("p", KEY_RECOVERY, MAIN)
+    change(ledger, NEW["reference"], op="ref")
+    change(ledger, published("P1", CLASSICAL, time=120, memory=60), op="p1", author=USER)
+    revised = {**KEY_RECOVERY, "expected": 1, "conditions": ["model", "success", "data"],
+               "operation_id": "rev"}  # fmt: skip
+    ledger.define_category("p", revised, MAIN)
+    view = ledger.frontier("p", "key-recovery")
+    assert (view.groups, [r.handle for r in view.unplaced]) == ([], ["R-1"])
+    with pytest.raises(DocumentError) as missing:
+        ledger.frontier("p", "bounds")
+    assert missing.value.kind == "not_found"
+
+
+# The review of the frontier stack: H1, H2, H3, M4, and the main agent's revisions.
+
+
+def test_a_disputed_result_shows_the_revision_that_was_eligible(ledger: Ledger) -> None:
+    """H1: the main agent disputed P1 and rewrote its measures in the same change, and the
+    frontier showed the new ones as best known; a result refuted, then disputed, came
+    back."""
+    from .test_ledger import NEW
+    from .test_ledger_decisions import decide
+
+    ledger.define_category("p", KEY_RECOVERY, MAIN)
+    change(ledger, NEW["reference"], op="ref")
+    change(ledger, published("P1", CLASSICAL, time=120, memory=60), op="p1", author=USER)
+    change(ledger, published("P2", CLASSICAL, time=110, memory=80), op="p2", author=USER)
+    faster = result(conditions=CLASSICAL, measures={"time": 90, "memory": 50})["fields"]
+    change(ledger, {"entry": "R-1", "expected": 1, "status": "disputed", "fields": faster}, op="d")
+    group = best(ledger.frontier("p", "key-recovery"), CLASSICAL)
+    assert [(r.handle, r.revision, r.status, r.disputed, r.measures) for r in group.best] == [
+        ("R-1", 1, "disputed", True, {"time": 120, "memory": 60}),
+        ("R-2", 1, "recorded", False, {"time": 110, "memory": 80}),
+    ]
+    change(ledger, decide("R-2"), {"entry": "R-2", "expected": 1, "status": "refuted"},
+           op="refute", author=USER)  # fmt: skip
+    change(ledger, decide("R-2"), {"entry": "R-2", "expected": 2, "status": "disputed"},
+           op="back", author=USER)  # fmt: skip
+    group = best(ledger.frontier("p", "key-recovery"), CLASSICAL)
+    assert ([r.handle for r in group.best], group.candidates) == (["R-1"], [])
+
+
+def test_every_eligible_result_is_read_and_candidates_are_capped_apart(
+    ledger: Ledger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """H2: as many proposed or withdrawn results as the cap pushed a recorded one out of
+    the frontier's read."""
+    from sandbox_science.orchestrator.ledger import frontier
+
+    from .test_ledger import NEW
+
+    monkeypatch.setattr(frontier, "MAX_CANDIDATES", 2)
+    ledger.define_category("p", KEY_RECOVERY, MAIN)
+    change(ledger, NEW["reference"], op="ref")
+    made = [
+        result(conditions=CLASSICAL, measures={"time": 130 + n, "memory": 70}) for n in range(4)
+    ]
+    change(ledger, *made, op="made")  # R-1 to R-4
+    change(ledger, {"entry": "R-4", "expected": 1, "status": "withdrawn"}, op="w")
+    change(ledger, published("P1", CLASSICAL, time=120, memory=60), op="p1", author=USER)
+    view = ledger.frontier("p", "key-recovery")
+    group = best(view, CLASSICAL)
+    assert [r.handle for r in group.best] == ["R-5"]
+    # The newest come first, and the rest a read further on (the verification).
+    assert ([r.handle for r in group.candidates], view.truncated, view.next_candidates_before) == (
+        ["R-2", "R-3"],
+        True,
+        2,
+    )
+    older = ledger.frontier("p", "key-recovery", candidates_before=2)
+    assert ([r.handle for r in best(older, CLASSICAL).candidates], older.truncated) == (
+        ["R-1"],
+        False,
+    )
+
+
+def test_a_published_result_an_agent_records_is_unverified_until_the_user_confirms_it(
+    ledger: Ledger,
+) -> None:
+    """H3: the main agent recorded a published result with measures its source need not
+    give, and it was best known at once."""
+    from .test_ledger import NEW
+
+    ledger.define_category("p", KEY_RECOVERY, MAIN)
+    change(ledger, NEW["reference"], op="ref")
+    change(ledger, published("P1", CLASSICAL, time=120, memory=60), op="p1")
+    change(ledger, published("P2", CLASSICAL, time=125, memory=65), op="p2", author=USER)
+    group = best(ledger.frontier("p", "key-recovery"), CLASSICAL)
+    assert [(r.handle, r.author) for r in group.best] == [
+        ("R-2", USER.model_dump(exclude_none=True))
+    ]
+    assert [(r.handle, r.unverified, r.author["role"], r.would_dominate)
+            for r in group.candidates] == [("R-1", True, "main", ["R-2"])]  # fmt: skip
+    # The user's check of the revision confirms it, and a title is not what was checked.
+    ledger.check("p", "R-1", 1, USER, operation_id="checked")
+    change(ledger, {"entry": "R-1", "expected": 2, "title": "P1, renamed"}, op="title")
+    group = best(ledger.frontier("p", "key-recovery"), CLASSICAL)
+    assert ([r.handle for r in group.best], [r.handle for r in group.dominated]) == (
+        ["R-1"],
+        ["R-2"],
+    )
+    # Measures the main agent gives after are not what the user confirmed.
+    faster = published("P1", CLASSICAL, time=100, memory=60)["fields"]
+    change(ledger, {"entry": "R-1", "expected": 3, "fields": faster}, op="faster")
+    group = best(ledger.frontier("p", "key-recovery"), CLASSICAL)
+    assert [r.handle for r in group.best] == ["R-2"]
+    assert [(r.handle, r.unverified) for r in group.candidates] == [("R-1", True)]
+
+
+def test_only_the_users_recording_writing_or_check_confirms_an_agents_result(
+    ledger: Ledger,
+) -> None:
+    """The verification's defects 1 and 2: the user checked R-1 at 100 and corrected it to
+    125, the agent put back 100, and R-1 was verified again; and the user's edit of an
+    agent's result's title verified it."""
+    from .test_ledger import NEW
+
+    ledger.define_category("p", KEY_RECOVERY, MAIN)
+    change(ledger, NEW["reference"], op="ref")
+    change(ledger, published("P1", CLASSICAL, time=100, memory=60), op="p1")  # the agent's
+
+    def shown() -> tuple[list[tuple[str, Any]], list[tuple[str, Any]]]:
+        group = best(ledger.frontier("p", "key-recovery"), CLASSICAL)
+        return (
+            [(r.handle, r.measures["time"]) for r in group.best],
+            [(r.handle, r.measures["time"]) for r in group.candidates],
+        )
+
+    def measures(time: int) -> dict[str, Any]:
+        return published("P1", CLASSICAL, time=time, memory=60)["fields"]
+
+    change(ledger, {"entry": "R-1", "expected": 1, "title": "P1."}, op="title", author=USER)
+    assert shown() == ([], [("R-1", 100)])
+    ledger.check("p", "R-1", 2, USER, operation_id="checked")
+    assert shown() == ([("R-1", 100)], [])
+    change(ledger, {"entry": "R-1", "expected": 3, "fields": measures(125)}, op="fix", author=USER)
+    assert shown() == ([("R-1", 125)], [])
+    change(ledger, {"entry": "R-1", "expected": 4, "fields": measures(100)}, op="back")
+    assert shown() == ([], [("R-1", 100)])
+
+
+def test_the_frontier_warns_of_groups_that_only_look_different(ledger: Ledger) -> None:
+    """M4's residue: the user's spellings stay apart, and the frontier says which look
+    alike: a Cyrillic a, and a division slash."""
+    from .test_ledger import NEW
+
+    ledger.define_category("p", KEY_RECOVERY, MAIN)
+    change(ledger, NEW["reference"], op="ref")
+    change(ledger, published("P1", CLASSICAL, time=120, memory=60), op="p1", author=USER)
+    alike = {"model": "cl\u0430ssical", "success": "at least 1\u22152"}
+    change(ledger, published("P2", alike, time=130, memory=70), op="p2", author=USER)
+    view = ledger.frontier("p", "key-recovery")
+    assert (len(view.groups), view.lookalike) == (2, [[CLASSICAL, alike]])
+
+
+def test_condition_values_group_as_they_read(ledger: Ledger) -> None:
+    """M4: a capital, a no-break space or doubled spaces put a result in a group of its
+    own, where it was best known though another dominated it."""
+    from .test_ledger import NEW
+
+    ledger.define_category("p", KEY_RECOVERY, MAIN)
+    change(ledger, NEW["reference"], op="ref")
+    change(ledger, published("P1", CLASSICAL, time=120, memory=60), op="p1", author=USER)
+    for n, written in enumerate(("Classical", "classical\u00a0", "  CLASSICAL ")):
+        conditions = {"Model": written, "success": "at least  1/2"}
+        change(ledger, published(f"P{n + 2}", conditions, time=130 + n, memory=70),
+               op=f"p{n + 2}", author=USER)  # fmt: skip
+    (group,) = ledger.frontier("p", "key-recovery").groups
+    assert group.conditions == CLASSICAL
+    assert ([r.handle for r in group.best], [r.handle for r in group.dominated]) == (
+        ["R-1"],
+        ["R-2", "R-3", "R-4"],
+    )
+
+
+def test_the_frontier_shows_what_the_main_agent_changed_in_its_category(
+    ledger: Ledger,
+) -> None:
+    """The review's hardening: the main agent may revise a category, and the frontier
+    says that it did, and what changed, until the user revises it."""
+    ledger.define_category("p", KEY_RECOVERY, MAIN)
+    revised = ledger.frontier("p", "key-recovery").agent_revised
+    assert revised is not None
+    assert (revised.revision, revised.since, revised.changed) == (1, None, [])
+    ledger.define_category("p", {**KEY_RECOVERY, "expected": 1, "operation_id": "u"}, USER)
+    assert ledger.frontier("p", "key-recovery").agent_revised is None
+    measures = [
+        {**KEY_RECOVERY["measures"][0], "direction": "higher"},
+        {"name": "data", "unit": "log2 queries", "direction": "lower"},
+    ]
+    again = {**KEY_RECOVERY, "expected": 2, "measures": measures, "conditions": ["model"],
+             "operation_id": "a"}  # fmt: skip
+    ledger.define_category("p", again, MAIN)
+    revised = ledger.frontier("p", "key-recovery").agent_revised
+    assert revised is not None
+    assert (revised.revision, revised.since, revised.author["role"]) == (3, 2, "main")
+    assert revised.changed == [
+        "measure time's direction: higher is better",
+        "measure data added, lower is better",
+        "measure memory removed",
+        "condition key success removed",
+    ]

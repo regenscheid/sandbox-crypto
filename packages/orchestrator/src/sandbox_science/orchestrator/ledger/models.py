@@ -552,3 +552,94 @@ class CategoryPage(Contract):
 
     categories: list[Category]
     next_after: str | None
+
+
+class FrontierResult(Contract):
+    """A result as the frontier shows it (LG-23): what it states, under which conditions,
+    its measures, origin, status, who wrote it, the types of its evidence, the references
+    it cites and the artifacts it is pinned to, and its open findings and flags."""
+
+    entry_id: str
+    handle: str
+    revision: int
+    """The revision shown: the current one, or for a disputed result the one before it
+    was disputed, which was eligible (LG-20)."""
+    title: str
+    statement: str
+    status: str
+    origin: str
+    disputed: bool
+    """Eligible, and now ``disputed`` (LG-20)."""
+    unverified: bool = False
+    """A published result an agent recorded that the user has not confirmed as the
+    revision shown reads: a candidate, not eligible (LG-16, LG-20 as amended)."""
+    author: dict[str, Any] = Field(default_factory=dict[str, Any])
+    """Who wrote the revision shown: its kind, and an agent's role."""
+    conditions: dict[str, str]
+    measures: dict[str, float | str]
+    evidence_types: list[str]
+    sources: list[str]
+    """The handles of the references it cites."""
+    artifacts: list[dict[str, Any]]
+    """The artifact revisions its evidence is pinned to."""
+    open_findings: int
+    open_flags: int
+    dominated_by: list[str] = Field(default_factory=list[str])
+    """For a dominated result, the results that dominate it."""
+    would_dominate: list[str] = Field(default_factory=list[str])
+    """For a candidate, the best known results it would dominate if established."""
+
+
+class FrontierGroup(Contract):
+    """The results of a category under one set of conditions (LG-21)."""
+
+    conditions: dict[str, str]
+    best: list[FrontierResult]
+    """The eligible results no other eligible result dominates."""
+    dominated: list[FrontierResult]
+    not_compared: list[FrontierResult]
+    """Eligible results with a measure missing or not a number."""
+    candidates: list[FrontierResult]
+    """Project results that are not eligible yet, and unverified published ones (LG-23)."""
+    more: dict[str, int] = Field(default_factory=dict[str, int])
+    """For an answer that lists only the first of a kind of result (``best``,
+    ``dominated``, ``not_compared``, ``candidates``), how many it leaves out."""
+
+
+class CategoryRevised(Contract):
+    """The main agent's revision of a category that the user has not revised since,
+    which the frontier shows first: what it compares changed without the user."""
+
+    revision: int
+    created: str
+    author: dict[str, Any]
+    reason: str
+    since: int | None
+    """The user's latest revision before it, which ``changed`` compares it with; none
+    when the user wrote none."""
+    changed: list[str]
+    """What changed since, in words, such as ``measure time's direction: higher is
+    better``."""
+
+
+class FrontierView(Contract):
+    """A category's frontier (LG-21, LG-23): its results grouped by their conditions."""
+
+    category: Category
+    groups: list[FrontierGroup]
+    unplaced: list[FrontierResult]
+    """Eligible results that do not give a value for each of the category's condition
+    keys, which it gained after they were recorded."""
+    truncated: bool
+    """Whether the category has more proposed results than the frontier reads as
+    candidates, newest first; it reads every eligible one."""
+    next_candidates_before: int | None = None
+    """When it has, the number of the oldest candidate read: the next read begins there."""
+    lookalike: list[list[dict[str, str]]] = Field(default_factory=list[list[dict[str, str]]])
+    """Sets of groups whose conditions differ only in characters that look alike (a
+    partial table: Unicode dashes and slashes, Cyrillic and Greek letters that look Latin,
+    other scripts' digits): the user's spellings, kept apart, and shown as a warning."""
+    agent_revised: CategoryRevised | None = None
+    """The main agent's revision of the category, when the user has not revised it since."""
+    unplaced_more: int = 0
+    """For an answer that lists only the first unplaced results, how many it leaves out."""
