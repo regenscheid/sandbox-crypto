@@ -562,6 +562,22 @@ export const api = {
     entry: string,
     check: { revision: number; note?: string; operation_id: string },
   ) => post<LedgerChangeAnswer>(`/projects/${part(project)}/ledger/${part(entry)}/checks`, check),
+  /** The user's assessment of an obstruction claimed on an issue, at the revision they read. */
+  assessLedgerEntry: (
+    project: string,
+    entry: string,
+    assessment: {
+      claim: string;
+      verdict: 'accepted' | 'rejected';
+      revision: number;
+      note: string;
+      operation_id: string;
+    },
+  ) =>
+    post<LedgerChangeAnswer>(
+      `/projects/${part(project)}/ledger/${part(entry)}/assessments`,
+      assessment,
+    ),
   /** The user's clearing of open flags on an entry: those named, or else all, with the reason. */
   clearLedgerFlags: (
     project: string,
