@@ -278,15 +278,16 @@ class RunState:
             ).fetchall()
         return [(project, session) for project, session in rows]
 
-    def delivered_texts(self, project: str, session: str, run: str) -> list[str]:
-        """The messages ``run`` delivered, in the order they were written."""
+    def delivered_texts(self, project: str, session: str, run: str) -> list[tuple[float, str]]:
+        """The messages ``run`` delivered, in the order they were written: each one's
+        time, in seconds since the epoch, and its text."""
         with self.control.read() as tx:
             rows = tx.sql.execute(
-                "SELECT text FROM session_messages WHERE project_id = ? AND session_id = ? "
-                "AND run = ? ORDER BY number",
+                "SELECT created_at, text FROM session_messages WHERE project_id = ? "
+                "AND session_id = ? AND run = ? ORDER BY number",
                 (project, session, run),
             ).fetchall()
-        return [text for (text,) in rows]
+        return [(datetime.fromisoformat(at).timestamp(), text) for at, text in rows]
 
     # --- The run lease ---------------------------------------------------------------
 

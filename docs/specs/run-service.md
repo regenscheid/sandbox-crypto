@@ -45,6 +45,7 @@ The browser's views are E-06 and E-07 in the refactoring plan. Waking a session 
   1. the system message;
   2. the session's earlier runs, oldest first: each run's task and user messages and its final answer, within a character budget, with tool calls and their results left out (decided, question 4). The user's messages are what the agent most needs to keep, so they give way last (amended 2026-10-15 by the coordinator, from lane K's triage of the prompt research, D3):
      - every run's task and user messages are kept as written, never cut;
+     - the user's messages are the chat messages and the comments addressed to the session (work requests, RS-6b) that the run delivered, in the order they were written, each comment after a line naming its document: a comment addressed to the agent is the user's instruction, as a chat message is. A run started for comments alone shows them in place of its stand-in task (amended 2026-10-15 by the coordinator);
      - the agent's answers give way first: the newest that fit are kept whole, and each of the others is replaced by a line saying that it was left out and how long it was;
      - when even the user's messages do not fit, the oldest runs are left out whole, and a line says how many, with the user's messages in them;
   3. the new task.
@@ -91,7 +92,7 @@ All are `scripted`, through the workspace's routes and the service, with the scr
 9. **A comment** (RS-6b). A work request to an idle session starts a run that begins with it and delivers it. A work request ends a job wait. After a cancel, an interruption or five failed runs, the request starts no run until a message does, and that run delivers it. With the cost limit reached, it waits, and no model call is made.
 10. **The limit during a run** (RS-6c). A run whose first call reaches the project's cost limit stops before its second, `budget`, with its tool call's result kept. A message that arrived while it ran waits, and is then `refused` with `budget`. A run whose calls reach its part stops, `run_budget`, while the project's limit is not reached. A limit the gateway reports no cost against stops nothing.
 11. **The gateway's budget** (RS-6d). A gateway that refuses a call for its budget, whether as a 400 or a 429, is asked once: the run stops, `gateway_budget`, with its earlier tool results kept, and its message stays queued with no other run for it. A rate limit is still tried again.
-12. **The user's messages give way last** (RS-10). Three earlier runs whose answers do not all fit keep every task as written: the newest answer whole, and a line for each other. When the tasks alone do not fit, the oldest run is left out whole, and a line says so.
+12. **The user's messages give way last** (RS-10). Three earlier runs whose answers do not all fit keep every task as written: the newest answer whole, and a line for each other. When the tasks alone do not fit, the oldest run is left out whole, and a line says so. A comment a run delivered with a message is in the next run's earlier conversation, before the message it was written before, and is kept as the message is while the answer gives way.
 
 ## Decided questions
 
