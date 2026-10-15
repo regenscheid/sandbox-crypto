@@ -256,6 +256,13 @@ describe('the check panel, when the entry moves on under it', () => {
           shown = entry({ revision: 4, head: 4, statement: 'The statement of r4.' });
           return reply(200, { ...answer, cleared_total: 1 });
         }
+        // The work records, read with a claim: none here.
+        if (url.includes('/work?'))
+          return reply(200, {
+            project_id: 'p1',
+            observed_at: 'now',
+            work: { entry_id: 'e', handle: 'X-1', records: [], next_before: null },
+          });
         if (url.endsWith('/gate'))
           return reply(200, {
             project_id: 'p1',

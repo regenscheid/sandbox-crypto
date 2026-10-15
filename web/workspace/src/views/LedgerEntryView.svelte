@@ -12,6 +12,8 @@
   import LedgerEntryBody from './LedgerEntryBody.svelte';
   import LedgerGate from './LedgerGate.svelte';
   import LedgerHistory from './LedgerHistory.svelte';
+  import LedgerWork from './LedgerWork.svelte';
+  import { holdsWork } from '../lib/ledgerWork';
 
   let {
     projectId,
@@ -40,6 +42,7 @@
   {@const entry = shown.value.entry}
   <LedgerEntryBody {projectId} {entry} {changed} />
   <LedgerGate {projectId} entryId={entry.entry_id} shown={entry.revision} {changes} />
+  {#if holdsWork(entry.type)}<LedgerWork {projectId} {entry} {changes} />{/if}
   <LedgerHistory
     {projectId}
     entryId={entry.entry_id}
