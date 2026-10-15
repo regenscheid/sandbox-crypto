@@ -4,17 +4,37 @@
      parent's note, which is not evidence, the model chosen and the limits granted), and,
      once it ended, its outcome: how it ended, what the platform observed of its reading,
      the result's verdict, status, coverage, refutation or obstacle and the rest, the
-     report, and why the plan fence refused calls or the result did not validate. Agents'
+     report, why the plan fence refused calls or the result did not validate, and the
+     files its calls recorded, with what they could not record, leading to the artifact
+     list of its run (RA-36). Agents'
      text is shown as text, each character a person may not see as its code point. Only
      props, so a test renders it on the server. -->
 <script lang="ts">
   import type { Delegation } from '../lib/api-types';
   import { formatTime } from '../lib/format';
-  import { briefView, endedText, readingText, resultView } from '../lib/runTree';
-  import { ENTRY_NAME, ledgerEntryHref } from '../lib/router';
+  import { briefView, endedText, filesView, readingText, resultView } from '../lib/runTree';
+  import { CATEGORY_NAME, ENTRY_NAME, filesHref, ledgerEntryHref } from '../lib/router';
   import { visible } from '../lib/text';
 
-  let { projectId, delegation }: { projectId: string; delegation: Delegation } = $props();
+  let {
+    projectId,
+    sessionId,
+    runId = null,
+    delegation,
+  }: {
+    projectId: string;
+    sessionId: string;
+    /** The delegated run's ID, by which the artifact list finds its files; null when unknown. */
+    runId?: string | null;
+    delegation: Delegation;
+  } = $props();
+  const files = $derived(filesView(delegation));
+  // The artifact list takes identifiers only, as the server does.
+  const listed = $derived(
+    runId !== null && CATEGORY_NAME.test(runId) && CATEGORY_NAME.test(sessionId)
+      ? filesHref(projectId, sessionId, runId)
+      : null,
+  );
   const brief = $derived(briefView(delegation));
   const result = $derived(resultView(delegation));
   const reading = $derived(readingText(delegation));
@@ -89,6 +109,22 @@
         <summary>Its report, as it returned it</summary>
         <p class="said">{visible(delegation.report)}</p>
       </details>
+    {/if}
+    {#if files}
+      <p class="label">
+        Files its calls recorded: {files.total}{files.total > files.files.length
+          ? `, the first ${files.files.length} listed`
+          : ''}{#if listed}
+          · <a href={listed}>in the artifact list</a>{/if}
+      </p>
+      {#if files.files.length}
+        <ul class="links">
+          {#each files.files as file, index (index)}
+            <li><bdi>{file.path}</bdi> <span class="muted">({file.what})</span></li>
+          {/each}
+        </ul>
+      {/if}
+      {#if files.gaps.length}<p class="problem">Not recorded: {files.gaps.join('; ')}.</p>{/if}
     {/if}
     <p class="muted">
       Ran on {delegation.alias ? visible(delegation.alias) : 'an alias it did not name'}{delegation

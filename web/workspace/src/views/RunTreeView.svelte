@@ -53,7 +53,7 @@
   {#if apart.length}
     <h2>Delegations whose runs are not listed</h2>
     {#each apart as delegation (delegation.delegation_id)}
-      <DelegationCard {projectId} {delegation} />
+      <DelegationCard {projectId} {sessionId} {delegation} />
     {/each}
   {/if}
   {#if read.value.delegations_total > read.value.delegations.length}

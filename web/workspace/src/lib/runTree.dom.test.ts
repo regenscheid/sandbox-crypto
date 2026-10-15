@@ -5,6 +5,7 @@
 import { flushSync, mount, unmount, type Component } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import RunEventsView from '../views/RunEventsView.svelte';
+import RunFilesView from '../views/RunFilesView.svelte';
 import RunTreeView from '../views/RunTreeView.svelte';
 import type { Delegation, RunEvent, RunTree, TreeRun } from './api-types';
 
@@ -207,5 +208,69 @@ describe("a run's events", () => {
     expect(
       [...root.querySelectorAll('button')].some((b) => b.textContent?.includes('events')),
     ).toBe(false);
+  });
+});
+
+describe("a delegation's files", () => {
+  it('are listed under it, leading to the artifact list of its run', async () => {
+    const withFiles: RunTree = {
+      ...tree,
+      delegations: [
+        delegation('del-1', 'child', {
+          ended: 'returned',
+          stopped: 'final',
+          files: {
+            total: 2,
+            files: [
+              {
+                path: 'out/‮table.csv',
+                artifact_id: 'art-1',
+                revision: 1,
+                sha256: 'ab'.repeat(32),
+                size: 10,
+                content_retained: true,
+                deleted: false,
+                reproduced: false,
+              },
+            ],
+            gaps: { failed: 1 },
+          },
+        }),
+      ],
+      delegations_total: 1,
+    };
+    treeServer([withFiles]);
+    const root = show(RunTreeView, { projectId: 'p1', sessionId: 's1' });
+    await settle();
+    const nested = root.querySelector('ul.tree li.tree-run li.tree-run')!;
+    expect(nested.querySelector('bdi')!.textContent).toBe('out/⟦U+202E⟧table.csv');
+    expect(nested.textContent!.replace(/\s+/g, ' ')).toContain(
+      'Files its calls recorded: 2, the first 1 listed',
+    );
+    expect(nested.textContent).toContain('Not recorded: 1 recording that stopped part way.');
+    const link = [...nested.querySelectorAll('a')].find(
+      (a) => a.textContent === 'in the artifact list',
+    );
+    expect(link!.getAttribute('href')).toBe('#/projects/p1/files/s1/run-child');
+  });
+
+  it("open the artifact list filtered to the run's files", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        urls.push(url);
+        return new Response(JSON.stringify({ artifacts: [], next_before: null, viewer: false }));
+      }),
+    );
+    const root = show(RunFilesView, { projectId: 'p1', sessionId: 's1', run: 'run-child' });
+    await settle();
+    expect(urls.length).toBeGreaterThan(0);
+    for (const url of urls) {
+      const query = new URL(url, 'http://localhost').searchParams;
+      expect([query.get('session'), query.get('run')]).toEqual(['s1', 'run-child']);
+    }
+    const run = [...root.querySelectorAll('label')].find((l) => l.textContent?.startsWith('Run'))!;
+    expect(run.querySelector('input')!.value).toBe('run-child');
   });
 });

@@ -47,7 +47,7 @@
   </p>
   {#if run.delegation !== null}
     {#if delegation}
-      <DelegationCard {projectId} {delegation} />
+      <DelegationCard {projectId} {sessionId} runId={run.run_id} {delegation} />
     {:else}
       <p class="muted">
         Its delegation <code>{visible(run.delegation)}</code> is older than those the read lists.
