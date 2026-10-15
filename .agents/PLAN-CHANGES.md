@@ -4,6 +4,10 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 ## 2026-10-15
 
+Decision of the coordinator on the PDF tools, from writing the `pdf-reading` skill (#423), which the owner can reverse:
+
+- **One line numbering for the PDF tools** ([PDF sources](../docs/specs/pdf-sources.md), tools item 3, PDF-F7). `pdf_pages` and `pdf_search` number a page's lines one way, running headers, footers and page numbers counted and marked; `pdf_pages` leaves them out unless asked, without renumbering the rest, so a quote cited by either tool's numbers is found (CR-4).
+
 Decisions of the owner on skills, after the first real-use lab. The owner's priority is skill import and discovery tools with a relevance gate like Claude Science's. They are recorded in the [skills spec](../docs/specs/skills.md) as #373 revises it (SK numbers are that revision's). The revision is a draft until the owner answers its questions 15 (built-in skills, and how a pack's names that collide with theirs are handled) and 16 (the system message's skill sections). Skills K2 and later wait for the answers; K1, the import, is built (#376).
 
 - **Show, don't force** (SK-35, SK-36). The relevance gate holds the model's call, not its work. Before a run's first model call, and before the call that carries each new user message, the call waits at most 5 s for a notice of the skills that match, with their names, one-line descriptions and the pack's entry skills. Nothing else is held: the model decides, no load is forced, and no reason for skipping a skill is recorded or shown. A delegated run does its own discovery on its own task.

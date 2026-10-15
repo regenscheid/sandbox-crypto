@@ -16,6 +16,12 @@ they are parsed here, under the limits of a tool call, and never beside the work
 Paths follow the file tools' rules: relative to the session workspace, or ``shared/…``
 for the project's shared area; no absolute paths, ``..`` or symlinks. Boxes are
 ``[x0, y0, x1, y1]`` in PDF points, origin at the bottom left of the media box.
+
+Lines are numbered one way in every operation: each line of a page that has text, from 1
+in the parser's order, running headers, footers and page numbers (tagged ``/Artifact``)
+included and marked ``artifact``. ``pages`` leaves those out unless asked, but never
+renumbers the rest, so a line cited from ``pages`` or ``search`` is the same line, as the
+citation check reads it (docs/specs/pdf-sources.md; consistency review CR-4).
 """
 
 from __future__ import annotations
@@ -28,6 +34,7 @@ import stat
 import struct
 import sys
 import zlib
+from collections import Counter
 from pathlib import Path
 from typing import Any, cast
 
@@ -192,16 +199,48 @@ def _box(raw: Any) -> list[float]:
     return [round(x, 2), round(y, 2), round(x + width, 2), round(y + height, 2)]
 
 
-def lines_of(document: Any, index: int, *, artifacts: bool) -> list[dict[str, Any]]:
+def _word(word: Any) -> tuple[str, tuple[float, ...]]:
+    return str(word.text), tuple(round(float(value), 3) for value in word.bbox)
+
+
+def lines_of(document: Any, index: int) -> list[dict[str, Any]]:
+    """Every line of page ``index`` that has text, numbered from 1 in the parser's order.
+    A line none of whose words is body text, as the parser tells body text from text
+    tagged ``/Artifact``, is marked ``artifact``: a running header or footer, or a page
+    number. A line that mixes the two is body text."""
+    body = Counter(
+        _word(word)
+        for line in document.extract_text_lines(index, include_artifacts=False)
+        for word in line.words
+    )
     lines: list[dict[str, Any]] = []
-    for line in document.extract_text_lines(index, include_artifacts=artifacts):
+    for line in document.extract_text_lines(index, include_artifacts=True):
         text = str(line.text).strip()
         if not text:
             continue
-        lines.append({"n": len(lines) + 1, "text": text[:MAX_LINE_CHARS], "bbox": _box(line.bbox)})
+        entry: dict[str, Any] = {
+            "n": len(lines) + 1,
+            "text": text[:MAX_LINE_CHARS],
+            "bbox": _box(line.bbox),
+        }
+        words = [_word(word) for word in line.words]
+        if words and not any(body[word] for word in words):
+            entry["artifact"] = True
+        for word in words:
+            if body[word]:
+                body[word] -= 1
+        lines.append(entry)
         if len(lines) >= MAX_LINES_PER_PAGE:
             break
     return lines
+
+
+def has_text(document: Any, index: int) -> bool:
+    """Whether page ``index`` has a line of extractable text, of any kind."""
+    return any(
+        str(line.text).strip()
+        for line in document.extract_text_lines(index, include_artifacts=True)
+    )
 
 
 def page_numbers(spec: str, count: int) -> list[int]:
@@ -245,7 +284,7 @@ def info(path: str) -> dict[str, Any]:
                 "width": round(x1 - x0, 2),
                 "height": round(y1 - y0, 2),
                 "rotation": int(document.page_rotation(index) or 0),
-                "has_text": bool(lines_of(document, index, artifacts=True)),
+                "has_text": has_text(document, index),
             }
         )
     outline: list[dict[str, Any]] = []
@@ -286,11 +325,15 @@ def pages(path: str, spec: str, *, artifacts: bool) -> dict[str, Any]:
     labels = page_labels(document, count)
     result: list[dict[str, Any]] = []
     for index in page_numbers(spec, count):
-        lines = lines_of(document, index, artifacts=artifacts)
+        every = lines_of(document, index)
+        lines = every if artifacts else [line for line in every if not line.get("artifact")]
         entry: dict[str, Any] = {"index": index + 1, "label": labels[index], "lines": lines}
-        if len(lines) >= MAX_LINES_PER_PAGE:
+        if not artifacts and len(lines) < len(every):
+            # Left out, not renumbered: the numbers stay those pdf_search gives.
+            entry["artifacts_left_out"] = [line["n"] for line in every if line.get("artifact")]
+        if len(every) >= MAX_LINES_PER_PAGE:
             entry["truncated"] = True
-        if not lines:
+        if not every:
             entry["note"] = "no extractable text on this page; render it to read it"
         result.append(entry)
     return {"parser": parser(), "source": source, "pages": result}
@@ -307,7 +350,7 @@ def search(path: str, query: str) -> dict[str, Any]:
     hits: list[dict[str, Any]] = []
     truncated = False
     for index in range(count):
-        for line in lines_of(document, index, artifacts=True):
+        for line in lines_of(document, index):
             if needle in line["text"].casefold():
                 if len(hits) >= MAX_HITS:
                     truncated = True
