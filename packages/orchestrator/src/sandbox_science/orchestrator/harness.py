@@ -91,6 +91,7 @@ from .recording import FileRecorder, RecordedFiles
 from .runstate import RunState
 from .session_plans import PlanRef, SessionPlans
 from .skills import SkillStore, SkillTool
+from .skills.builtin import builtin_pack
 from .tools import HARNESS_TOOL_NAMES, Toolbox, ToolOutcome
 from .worker_client import WorkerAPIError, WorkerClient
 
@@ -931,8 +932,10 @@ class Harness:
 
 
 def _skills(stores: Stores, project: str, role: str, alias: str | None) -> SkillTool | None:
-    """The run's skills, or ``None`` when the project pins none."""
+    """The run's skills, the built-in skills that ship pinned first (SK-40), or ``None``
+    when the project pins none."""
     store = SkillStore(stores.projects.control)
+    store.ensure(project, builtin_pack())
     found = store.effective(project)
     return SkillTool(store, found, role=role, alias=alias) if found.entries else None
 

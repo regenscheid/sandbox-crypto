@@ -12,6 +12,10 @@ Decisions of the owner on skills, after the first real-use lab. The owner's prio
 - **Packs carry no special files** (SK-26, SK-29 to SK-34). `sandbox-pack.toml` is dropped. At import the skills are embedded through the gateway (a lexical score alone when no model is configured), and one model pass derives entry skills, topics, short descriptions and environment bindings. Its output is checked data, never instructions, and the project's skill settings override it.
 - Also decided: a second source that defines a name already pinned is refused (SK-4), invalid front matter excludes the skill (SK-6), kernel helpers are not built (SK-17), and the relevance threshold is tuned per pack.
 
+Convention, with the built-in skills' import (#426):
+
+- **`skills/builtin/`** holds the built-in skills, a top-level directory of Markdown the harness ships and pins at a run's start (SK-40); added to "Where things live".
+
 Decisions of the coordinator on the skills spec's questions 12 to 14, drafted values the owner did not answer; the owner can reverse them:
 
 - **Notice size and wait** (SK-35, SK-36): a discovery notice shows at most five skills, plus the packs' entry skills, and scoring waits at most 5 s.

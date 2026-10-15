@@ -23,7 +23,9 @@ from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.control.errors import CONFLICT, INVALID_REQUEST, NOT_FOUND
 from sandbox_science.orchestrator.documents.models import Author
 
-from .packs import NAME, Snapshot, body, hidden, served
+from .builtin import BUILTIN, PLATFORM
+from .packs import NAME, Snapshot, body, hidden, served, snapshot
+from .sources import Fetched
 
 REPORT_ITEMS: Final = 200
 """Items a report lists of each kind; it counts the rest."""
@@ -61,6 +63,8 @@ class Pin:
     revision: int
     pinned: Imported
     skills: tuple[str, ...]
+    left_out: tuple[str, ...] = ()
+    """For the built-in skills, those a pinned pack's skill of the same name replaces."""
 
 
 @dataclass(frozen=True)
@@ -112,6 +116,8 @@ class SkillStore:
         one, from the same place at the same revision, and nothing was added."""
         _source(source)
         got = snapshot.fetched
+        if (source == BUILTIN) != (got.kind == BUILTIN):
+            raise ControlError(INVALID_REQUEST, f"{BUILTIN!r} names the built-in skills only")
         with self.control.write() as tx:
             db = tx.sql
             latest = next(iter(_imports(db, source)), None)
@@ -181,12 +187,26 @@ class SkillStore:
                 )
             chosen = matches[0]
             names = set(_names(db, chosen.snapshot))
+            excluded = set(_settings(db, project).excluded)
             for other, snapshot in db.execute(
                 "SELECT p.source,i.snapshot FROM project_skill_pins p JOIN skill_imports i "
                 "USING(import_id) WHERE p.project=? AND p.source!=?",
                 (project, source),
             ).fetchall():
-                if taken := sorted(names & set(_names(db, snapshot))):
+                taken = sorted(names & set(_names(db, snapshot)))
+                if source == BUILTIN:
+                    continue  # a built-in skill gives way to a pinned pack's (SK-4)
+                if other == BUILTIN:
+                    taken = [name for name in taken if f"{BUILTIN}/{name}" not in excluded]
+                    if taken:
+                        hint = " ".join(f"--exclude {BUILTIN}/{name}" for name in taken)
+                        raise ControlError(
+                            CONFLICT,
+                            f"{', '.join(taken)} already defined by the built-in skills: "
+                            f"exclude them first (skills settings --project {project} {hint})",
+                            {"source": BUILTIN, "names": taken},
+                        )
+                if taken:
                     raise ControlError(
                         CONFLICT,
                         f"{', '.join(taken)} already defined by {other}, which the project pins",
@@ -215,7 +235,7 @@ class SkillStore:
             sources: list[str] = []
             for pin in _pins(db, project):
                 found = pin.pinned
-                revision = found.commit or found.archive_sha256 or found.snapshot
+                revision = found.commit or found.archive_sha256 or found.ref or found.snapshot
                 sources.append(f"{pin.source}@{revision}")
                 for name, description, body in db.execute(
                     "SELECT name,description,body_sha256 FROM skill_skills WHERE snapshot=? "
@@ -227,9 +247,24 @@ class SkillStore:
                     )
                     if entry.qualified not in settings.excluded:
                         entries.append(entry)
+        packs = {entry.name for entry in entries if entry.source != BUILTIN}
+        entries = [e for e in entries if e.source != BUILTIN or e.name not in packs]
         given = {entry.qualified for entry in entries}
         always = tuple(skill for skill in settings.always if skill in given)
         return SkillSet(tuple(entries), tuple(sources), always)
+
+    def ensure(self, project: str, fetched: Fetched | None) -> None:
+        """Pin in ``project`` the built-in skills the harness ships (``fetched``), and
+        import them first when they changed (SK-40)."""
+        if fetched is None:
+            return
+        shipped = snapshot(fetched)
+        latest = next(iter(self.imports(BUILTIN)), None)
+        if latest is None or (latest.snapshot, latest.ref) != (shipped.sha256, fetched.ref):
+            latest, _ = self.add(BUILTIN, shipped, PLATFORM)
+        pinned = {pin.source: pin.pinned.import_id for pin in self.pins(project)}
+        if pinned.get(BUILTIN) != latest.import_id:
+            self.pin(project, BUILTIN, PLATFORM)
 
     def file(self, snapshot: str, path: str) -> bytes | None:
         """A snapshot's file, by its path in the snapshot; ``None`` if it has none."""
@@ -431,4 +466,12 @@ def _pins(db: sqlite3.Connection, project: str, source: str | None = None) -> li
     for name, revision, import_id in rows:
         imported = _imports(db, import_id=import_id)[0]
         pins.append(Pin(project, name, revision, imported, tuple(_names(db, imported.snapshot))))
+    if source is None:
+        packs = {skill for pin in pins if pin.source != BUILTIN for skill in pin.skills}
+        pins = [
+            replace(pin, left_out=tuple(s for s in pin.skills if s in packs))
+            if pin.source == BUILTIN
+            else pin
+            for pin in pins
+        ]
     return pins

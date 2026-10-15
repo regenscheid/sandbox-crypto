@@ -2422,6 +2422,36 @@ def _skill_settings(schema: Schema) -> None:
     )
 
 
+def _builtin_skills(schema: Schema) -> None:
+    """Version 42: an import may be of the built-in skills (docs/specs/skills.md, SK-40),
+    which the harness ships: no commit or archive, and its ref names the harness version
+    and the snapshot."""
+    hex64 = "length({0}) = 64 AND {0} NOT GLOB '*[^0-9a-f]*'"
+    name = "length({0}) BETWEEN 1 AND 64 AND {0} NOT GLOB '*[^a-z0-9-]*'"
+    rebuild(
+        schema,
+        "skill_imports",
+        f"""CREATE TABLE skill_imports (
+    import_id INTEGER PRIMARY KEY,
+    source TEXT NOT NULL CHECK ({name.format("source")}),
+    snapshot TEXT NOT NULL REFERENCES skill_snapshots(snapshot),
+    kind TEXT NOT NULL CHECK (kind IN ('git', 'archive', 'builtin')),
+    origin TEXT NOT NULL CHECK (length(CAST(origin AS BLOB)) BETWEEN 1 AND 4096),
+    ref TEXT CHECK (ref IS NULL OR length(ref) BETWEEN 1 AND 200),
+    commit_id TEXT CHECK (commit_id IS NULL OR (length(commit_id) IN (40, 64)
+        AND commit_id NOT GLOB '*[^0-9a-f]*')),
+    archive_sha256 TEXT CHECK (archive_sha256 IS NULL OR ({hex64.format("archive_sha256")})),
+    root TEXT NOT NULL CHECK (length(CAST(root AS BLOB)) <= 1024),
+    report TEXT NOT NULL CHECK (json_valid(report) AND length(CAST(report AS BLOB)) <= 1048576),
+    author TEXT NOT NULL CHECK (json_valid(author) AND length(CAST(author AS BLOB)) <= 4096),
+    created TEXT NOT NULL CHECK (length(created) BETWEEN 1 AND 64),
+    CHECK ((kind = 'git') = (commit_id IS NOT NULL)),
+    CHECK ((kind = 'archive') = (archive_sha256 IS NOT NULL)),
+    CHECK (kind != 'builtin' OR ref IS NOT NULL)
+) STRICT""",
+    )
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -2463,6 +2493,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _delegation_tasks,
     _role_costs,
     _skill_settings,
+    _builtin_skills,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

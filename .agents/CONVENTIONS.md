@@ -19,6 +19,7 @@ Applies to all code and documentation in this repository. Change this file throu
 | `.agents/labs/` | Scripts for labs on babbage against a real OpenShell gateway, and how to run and report them |
 | `packages/<component>/` | One uv workspace member per deployable or shared component |
 | `web/<app>/` | Browser apps, each an npm project of its own: `web/workspace/` is the research workspace GUI (D80, [workspace](../docs/WORKSPACE.md)). Not uv members, since uv, pyright and pytest search `packages/` |
+| `skills/builtin/` | The built-in skills, one `skills/builtin/<name>/SKILL.md` each: Markdown with standard front matter, shipped with the harness, imported and pinned at a run's start as the source `builtin` ([skills](../docs/SKILLS.md#the-built-in-pack)). Edit one in the pull request that changes the tool or rule it describes; `test_builtin_skills.py` checks the tools it names |
 | `examples/` | Illustrative configuration (policy, deployment profiles); tests load these to keep them valid |
 | `images/` | Recipes for the base profile images (`minimal`, `crypto-base`) and the `orchestrator` and `mcp-proxy` images: Containerfile, Conda lockfiles, build, lock and test scripts ([images](../docs/IMAGES.md)) |
 | `scripts/` | Repository tooling, such as the license check |
