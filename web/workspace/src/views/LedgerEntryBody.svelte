@@ -10,6 +10,7 @@
   import { formatTime } from '../lib/format';
   import { authorText, fieldRows, linksByKind, statusText, TYPE_NAME } from '../lib/ledger';
   import { ledgerEntryHref } from '../lib/router';
+  import LedgerCheck from './LedgerCheck.svelte';
   import LedgerEvidence from './LedgerEvidence.svelte';
   import LedgerFindings from './LedgerFindings.svelte';
   import LedgerFlags from './LedgerFlags.svelte';
@@ -74,6 +75,7 @@
 {/if}
 
 <LedgerEvidence {projectId} {entry} />
+<LedgerCheck {projectId} {entry} {changed} />
 <LedgerFindings {projectId} findings={entry.findings} />
 
 <h2>Links</h2>
