@@ -4,9 +4,9 @@ carry (docs/specs/ledger.md, LG-1 to LG-5, LG-30)."""
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Final, Literal
+from typing import Annotated, Any, Final, Literal, Self
 
-from pydantic import Field, JsonValue
+from pydantic import Field, JsonValue, model_validator
 
 from sandbox_science.contracts.model import Contract, Identifier, Sha256
 
@@ -228,12 +228,24 @@ class EntryChange(Contract):
     """The IDs of evidence links to remove."""
 
 
+FlagID = Annotated[str, Field(pattern=r"^flag-[0-9a-f]{24}$")]
+
+
 class Mutation(Contract):
-    """A change to one or more entries, all or nothing, under an operation ID (LG-30)."""
+    """A change to one or more entries, all or nothing, under an operation ID (LG-30);
+    it may also clear flags, with its reason (LG-29)."""
 
     operation_id: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")]
     reason: Note
-    changes: list[EntryChange] = Field(min_length=1, max_length=32)
+    changes: list[EntryChange] = Field(default_factory=list[EntryChange], max_length=32)
+    flags_cleared: list[FlagID] | None = Field(default=None, max_length=64)
+    """Open flags the change clears, with its reason."""
+
+    @model_validator(mode="after")
+    def _changes_something(self) -> Self:
+        if not self.changes and not self.flags_cleared:
+            raise ValueError("a change names entries to change or flags to clear")
+        return self
 
 
 class EntryLink(Contract):
@@ -290,6 +302,23 @@ class EntryFinding(Contract):
     revision: int | None = None
 
 
+class EntryFlag(Contract):
+    """An open flag for reconsideration (LG-28): its cause, what it came from, the flag it
+    spread from, the revision it was raised on, and the reviews whose snapshots held that
+    revision."""
+
+    flag_id: str
+    cause: Literal[
+        "assumption_revised", "assumption_withdrawn", "dependency_status", "evidence_changed",
+        "spread",
+    ]  # fmt: skip
+    source: dict[str, Any]
+    via: str | None
+    revision: int
+    raised: str
+    reviews: list[str]
+
+
 class EntrySummary(Contract):
     """An entry as a list shows it."""
 
@@ -303,6 +332,8 @@ class EntrySummary(Contract):
     updated: str
     asserted_only: bool | None = None
     """For a claim or result: whether it holds no evidence links at all (LG-11)."""
+    open_flags: int = 0
+    """How many flags for reconsideration are open on it (LG-28)."""
 
 
 class EntryView(EntrySummary):
@@ -320,6 +351,8 @@ class EntryView(EntrySummary):
     """How many there are in all."""
     findings: list[EntryFinding]
     """The review findings anchored to the entry, newest first: as many as 50."""
+    flags: list[EntryFlag]
+    """Its open flags, newest first: as many as 50."""
     head: int
     author: dict[str, Any]
     reason: str
@@ -362,3 +395,6 @@ class MutationResult(Contract):
     operation_id: str
     entries: list[ChangedEntry]
     replayed: bool = False
+    flagged: list[str] = Field(default_factory=list[str])
+    """The handles of the entries the change flagged for reconsideration (LG-28)."""
+    flags_cleared: list[str] = Field(default_factory=list[str])

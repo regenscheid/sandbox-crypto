@@ -754,3 +754,56 @@ def test_a_fix_with_entry_revisions_keeps_the_receipts_of_fixes_without_them(sto
         "p", "s", {**response.model_dump(mode="json"), "entry_revisions": []}, MAIN
     )
     assert again == {**first, "replayed": True}
+
+
+# Flags (LG-28, LG-29): the gate's flags clause, and the reviews' reading of flags.
+
+
+def test_an_open_flag_holds_the_gate_until_it_is_cleared_with_a_reason(store) -> None:
+    reviews, _, _ = store
+    supported(reviews)
+    review_passes(reviews)
+    revised = {"entry": "REF-1", "expected": 1, "statement": "A. Author, *A paper*, v2."}
+    change(reviews, revised, op="revised")
+    (flag,) = Ledger(reviews.documents).entry("p", "C-1").flags
+    assert (flag.cause, flag.source["handle"]) == ("evidence_changed", "REF-1")
+    assert clause(reviews, "flagged", 2) == "flags"
+    Ledger(reviews.documents).change(
+        "p",
+        {
+            "operation_id": "clear",
+            "reason": "The new version states the same lemma.",
+            "flags_cleared": [flag.flag_id],
+        },
+        MAIN,
+    )
+    establish(reviews, "established", 2)
+    assert Ledger(reviews.documents).entry("p", "C-1").status == "established"
+
+
+def test_reviews_read_the_flags_an_agent_raises_and_clears(store) -> None:
+    """A raised flag is an observation that makes no review due; the main agent's
+    clearing is one, with its reason; the user's is not the session's to review."""
+    reviews, _, _ = store
+    supported(reviews)
+    change(reviews, {"entry": "REF-1", "expected": 1, "statement": "v2."}, op="v2")
+    (first,) = Ledger(reviews.documents).entry("p", "C-1").flags
+    clear = {"reason": "Same lemma.", "flags_cleared": [first.flag_id]}
+    Ledger(reviews.documents).change("p", {"operation_id": "c1", **clear}, MAIN)
+    change(reviews, {"entry": "REF-1", "expected": 2, "statement": "v3."}, op="v3")
+    (second,) = Ledger(reviews.documents).entry("p", "C-1").flags
+    Ledger(reviews.documents).clear_flags(
+        "p", "C-1", [second.flag_id], USER, reason="Mine.", operation_id="c2"
+    )
+    ingest_ledger(reviews, "p", "s")
+    with reviews.documents.control.read() as tx:
+        rows = tx.sql.execute(
+            "SELECT source_key,characters,structural,effects,payload FROM review_feed "
+            "WHERE kind='ledger' AND json_extract(locator,'$.flag') IS NOT NULL ORDER BY seq"
+        ).fetchall()
+    assert [tuple(row[:4]) for row in rows] == [
+        (f"ledger:{first.flag_id}:raised", 0, 0, 0),
+        (f"ledger:{first.flag_id}:cleared", 0, 0, 1),
+        (f"ledger:{second.flag_id}:raised", 0, 0, 0),
+    ]
+    assert json.loads(rows[1][4])["reason"] == "Same lemma."

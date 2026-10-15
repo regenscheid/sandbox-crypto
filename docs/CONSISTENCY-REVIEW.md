@@ -17,7 +17,8 @@ cannot read through a reviewer grant, spend budget, raise a finding or finalize 
 ## Running and scheduling
 
 With `--state-dir`, the harness observes its transcript, canonical execution projections,
-agent-authored document revisions, the session's agents' ledger revisions ([ledger](LEDGER.md))
+agent-authored document revisions, the session's agents' ledger revisions and the flags
+their changes raise or clear ([ledger](LEDGER.md))
 and durable explicit-publication artifact events. The reviewer uses a distinct
 `--reviewer-model ALIAS` with the existing model gateway, or `--reviewer-script FILE`
 plus that alias for synthetic validation. The adapter limits each answer to 2,048 tokens

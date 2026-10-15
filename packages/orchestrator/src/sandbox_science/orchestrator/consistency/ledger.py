@@ -5,10 +5,12 @@ CR-9, CR-10; docs/specs/ledger.md, LG-33).
 Each revision an agent of the session makes to a ledger entry becomes an observation
 of the session's reviews, of kind ``ledger``: the entry at that revision, with its
 statement, fields, links and evidence, which the reviewer reads as it reads other
-evidence. Its new title and statement count toward the text trigger, and a new claim
-or result is a structural block (CR-10 as amended). The user's revisions are not
-reviewed. The consumer reads the ledger's events after its cursor in bounded pages, and
-moves the cursor and writes the observations in one change.
+evidence. A revision's new title and statement count toward the text trigger, and a new
+claim or result is a structural block (CR-10 as amended). The flags an agent's change
+raises are observations too, which make no review due, and so is an agent's clearing of
+a flag, with its reason (LG-29). The user's revisions and clearings are not reviewed.
+The consumer reads the ledger's events after its cursor in bounded pages, and moves the
+cursor and writes the observations in one change.
 """
 
 from __future__ import annotations
@@ -25,10 +27,13 @@ Json = dict[str, Any]
 
 LEDGER_FEED: Final = FeedCursor("ledger")
 _KINDS: Final = ("ledger.entry_created", "ledger.entry_revised")
+_FLAGS: Final = ("ledger.flag_raised", "ledger.flag_cleared")
 _STRUCTURAL: Final = ("claim", "result")
 """The entries that are a structural block when made (CR-10: "a theorem or claim")."""
 
-Observation = tuple[str, Json, Json, int, int, bool]
+Observation = tuple[str, Json, Json, int, int, bool, bool]
+"""Its source key, locator, payload, characters, structural blocks, whether it is
+complete, and whether it is an effect of the run."""
 
 
 def ingest_ledger(store: ReviewStore, project: str, session: str, *, drain: bool = False) -> Json:
@@ -53,13 +58,17 @@ def ingest_ledger(store: ReviewStore, project: str, session: str, *, drain: bool
             for event in events
             if event.session == session and event.kind in _KINDS
             if (found := _observation(ledger, project, event.subject, event.payload)) is not None
+        ] + [
+            _flag(event.kind, event.payload)
+            for event in events
+            if event.session == session and event.kind in _FLAGS
         ]
         end = events[-1].seq
         with store.documents.control.write() as tx:
             db = tx.sql
             if not LEDGER_FEED.advance(db, project, session, after, end):
                 continue  # another consumer read this page; read on from its cursor
-            for key, locator, payload, characters, structural, complete in observations:
+            for key, locator, payload, characters, structural, complete, effects in observations:
                 store.record_observation(
                     db,
                     project,
@@ -71,7 +80,7 @@ def ingest_ledger(store: ReviewStore, project: str, session: str, *, drain: bool
                     complete=complete,
                     characters=characters,
                     structural=structural,
-                    effects=True,
+                    effects=effects,
                 )
         after, pages = end, pages - 1
         if after >= target:
@@ -109,7 +118,8 @@ def entry_item(view: EntryView) -> tuple[Json, Json, bool]:
     """An entry revision as review evidence: its locator, the entry as it reads at that
     revision, and whether all of it fits one item."""
     payload: Json = view.model_dump(
-        mode="json", exclude={"incoming", "incoming_total", "head", "findings"}
+        mode="json",
+        exclude={"incoming", "incoming_total", "head", "findings", "flags", "open_flags"},
     )
     payload, complete = _fitted(payload)
     locator = {
@@ -139,4 +149,27 @@ def _observation(ledger: Ledger, project: str, entry: str, event: Json) -> Obser
         characters,
         int(created and view.type in _STRUCTURAL),
         complete,
+        True,
+    )
+
+
+def _flag(kind: str, event: Json) -> Observation:
+    """A flag an agent's change raised, which is not the run's effect and makes no review
+    due, or an agent's clearing of one, with its reason."""
+    cleared = kind == "ledger.flag_cleared"
+    locator = {
+        "flag": event["flag"],
+        "entry": event["entry"],
+        "handle": event["handle"],
+        "cleared": cleared,
+        "run": event.get("run"),
+    }
+    return (
+        f"ledger:{event['flag']}:{'cleared' if cleared else 'raised'}",
+        locator,
+        event,
+        0,
+        0,
+        True,
+        cleared,
     )

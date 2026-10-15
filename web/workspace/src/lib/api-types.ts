@@ -145,6 +145,17 @@ export interface EntryFinding {
   revision: number | null;
 }
 
+/** An open flag for reconsideration (LG-28): its cause, what it came from, the flag it spread from, the revision it was raised on, and the reviews whose snapshots held that revision. */
+export interface EntryFlag {
+  flag_id: string;
+  cause: "assumption_revised" | "assumption_withdrawn" | "dependency_status" | "evidence_changed" | "spread";
+  source: Record<string, unknown>;
+  via: string | null;
+  revision: number;
+  raised: string;
+  reviews: string[];
+}
+
 export interface EntryHistory {
   entry_id: string;
   handle: string;
@@ -192,6 +203,7 @@ export interface EntrySummary {
   status: string;
   updated: string;
   asserted_only: boolean | null;
+  open_flags: number;
 }
 
 /** An entry at one revision, with what it says, its outgoing links and who wrote it, and (at its current revision) the links other entries hold to it. */
@@ -205,6 +217,7 @@ export interface EntryView {
   status: string;
   updated: string;
   asserted_only: boolean | null;
+  open_flags: number;
   statement: string;
   fields: Record<string, unknown>;
   links: EntryLink[];
@@ -212,6 +225,7 @@ export interface EntryView {
   incoming: EntryLink[];
   incoming_total: number;
   findings: EntryFinding[];
+  flags: EntryFlag[];
   head: number;
   author: Record<string, unknown>;
   reason: string;

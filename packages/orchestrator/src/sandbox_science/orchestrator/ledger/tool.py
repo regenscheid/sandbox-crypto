@@ -240,6 +240,7 @@ SPECS: Final = (
                 "links_after": {"type": "integer", "minimum": 0},
                 "evidence_after": {"type": "integer", "minimum": 0},
                 "findings_after": {"type": "integer", "minimum": 0},
+                "flags_after": {"type": "integer", "minimum": 0},
                 "incoming_after": {"type": "integer", "minimum": 0},
             },
             "required": ["entry"],
@@ -269,15 +270,21 @@ SPECS: Final = (
         "it (a new decision with status in_effect, or a proposed one moved to in_effect); "
         "establishing a result needs the project's gate, and a refusal names the clause "
         "that does not hold. A delegated agent creates entries, its decisions proposed, "
-        "and adds evidence to entries, and changes nothing else.",
+        "and adds evidence to entries, and changes nothing else. A change can clear open "
+        "flags (flags_cleared) for its reason: the entry still holds, or is revised to.",
         {
             "type": "object",
             "properties": {
                 "reason": {"type": "string", "description": "Why, in a sentence"},
-                "changes": {"type": "array", "items": _CHANGE, "minItems": 1, "maxItems": 32},
+                "changes": {"type": "array", "items": _CHANGE, "maxItems": 32},
+                "flags_cleared": {
+                    "type": "array",
+                    "items": {"type": "string", "pattern": "^flag-[0-9a-f]{24}$"},
+                    "maxItems": 64,
+                },
                 "operation_id": {"type": "string"},
             },
-            "required": ["reason", "changes"],
+            "required": ["reason"],
             "additionalProperties": False,
         },
     ),
@@ -326,6 +333,7 @@ class _Read(_Args):
     links_after: _COUNT = 0
     evidence_after: _COUNT = 0
     findings_after: _COUNT = 0
+    flags_after: _COUNT = 0
     incoming_after: _COUNT = 0
 
 
@@ -431,7 +439,7 @@ class LedgerTool:
         return text, record
 
     def _change(self, args: dict[str, Any], operation: str, author: Author) -> str:
-        unknown = sorted(set(args) - {"reason", "changes", "operation_id"})
+        unknown = sorted(set(args) - {"reason", "changes", "flags_cleared", "operation_id"})
         if unknown:
             raise DocumentError(INVALID_REQUEST, f"unknown arguments: {', '.join(unknown)}")
         result = self.ledger.change(
@@ -479,7 +487,8 @@ class LedgerTool:
         ``more`` says where each part goes on. The ledger reads incoming links from
         ``incoming_after`` on, a page at a time."""
         shown = view.model_dump(
-            mode="json", exclude={"links", "evidence", "incoming", "findings", "statement"}
+            mode="json",
+            exclude={"links", "evidence", "incoming", "findings", "flags", "statement"},
         )
         shown["reason"] = _clip(shown["reason"], 1000)
         room = self.budget // 4
@@ -512,6 +521,7 @@ class LedgerTool:
                 args.findings_after,
                 len(view.findings),
             ),
+            "flags": (view.flags[args.flags_after :], args.flags_after, len(view.flags)),
         }
         for part, (links, start, total) in parts.items():
             items: list[Json] = []
@@ -534,6 +544,7 @@ class LedgerTool:
             more.setdefault("evidence_after", len(view.evidence))
             more.setdefault("incoming_after", view.incoming_total)
             more.setdefault("findings_after", len(view.findings))
+            more.setdefault("flags_after", len(view.flags))
         shown["more"] = more
         return _dump(shown)
 
@@ -605,7 +616,14 @@ class LedgerTool:
 
 
 _MORE: Final = dict.fromkeys(
-    ("statement_from", "links_after", "evidence_after", "incoming_after", "findings_after"),
+    (
+        "statement_from",
+        "links_after",
+        "evidence_after",
+        "incoming_after",
+        "findings_after",
+        "flags_after",
+    ),
     999999999,
 )
 """The longest ``more`` a read can carry."""

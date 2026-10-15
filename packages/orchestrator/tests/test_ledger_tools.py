@@ -691,3 +691,33 @@ def test_the_change_schema_lists_the_values_the_ledger_takes() -> None:
             EvidenceInput.model_validate({"role": role, "type": kind, "entry": "C-1"})
     assert "unclassified" not in evidence["type"]["enum"]
     assert len(spec.description) <= 1024
+
+
+@pytest.mark.asyncio
+async def test_a_change_clears_flags_and_a_read_pages_them(ledger: Ledger) -> None:
+    """LG-29: the agent reads an entry's open flags, a page at a time, and clears them
+    with a change that names them and its reason, and revises nothing."""
+    claim = {"type": "claim", "origin": "project", "title": "C", "statement": "s"}
+    cited = [{"role": "supports", "type": "proof", "entry": "C-1"}]
+    result = {"type": "result", "origin": "project", "title": "R", "statement": "s"}
+    await use(tool(ledger), "ledger_change", "made", reason="r", changes=[claim])
+    await use(tool(ledger), "ledger_change", "cites", reason="r",
+              changes=[{**result, "evidence": cited}])  # fmt: skip
+    for revision in range(1, 4):
+        revised = {"entry": "C-1", "expected": revision, "statement": f"v{revision + 1}"}
+        await use(tool(ledger), "ledger_change", f"v{revision}", reason="r", changes=[revised])
+    read = await use(tool(ledger), "ledger_read", entry="R-1")
+    assert (read["open_flags"], len(read["flags"]), read["more"]) == (3, 3, {})
+    small = tool(ledger)
+    small.budget = len(json.dumps(read)) - 200
+    first = await use(small, "ledger_read", entry="R-1")
+    assert len(first["flags"]) < 3
+    assert first["more"]["flags_after"] == len(first["flags"])
+    rest = await use(small, "ledger_read", entry="R-1", **first["more"])
+    flags = [flag["flag_id"] for flag in first["flags"] + rest["flags"]]
+    assert flags == [flag["flag_id"] for flag in read["flags"]]
+    cleared = await use(
+        tool(ledger), "ledger_change", "clear", reason="R-1 does not use it.", flags_cleared=flags
+    )
+    assert (cleared["entries"], cleared["flags_cleared"]) == ([], flags)
+    assert (await use(tool(ledger), "ledger_read", entry="R-1"))["flags"] == []

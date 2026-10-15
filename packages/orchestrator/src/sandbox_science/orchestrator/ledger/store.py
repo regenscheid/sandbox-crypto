@@ -43,7 +43,7 @@ from sandbox_science.orchestrator.documents.normalize import normalize
 from sandbox_science.orchestrator.documents.project_macros import head as macro_head
 from sandbox_science.orchestrator.projects import ProjectError, recorded
 
-from . import evidence, gate
+from . import evidence, flags, gate
 from .models import (
     DECIDED,
     FIELDS,
@@ -53,6 +53,7 @@ from .models import (
     ChangedEntry,
     EntryChange,
     EntryFinding,
+    EntryFlag,
     EntryHistory,
     EntryLink,
     EntryPage,
@@ -188,8 +189,10 @@ class Ledger:
                 else ([], 0)
             )
             held = evidence.stored(db, row.entry_id, number)
+            open_flags = self._flags(db, row.entry_id)
             return EntryView(
                 **self._summary(row, found, evidence.asserted_only(row.type, held)),
+                open_flags=len(open_flags),
                 statement=text["body"],
                 fields=json.loads(found[4]),
                 links=self._links(db, row.entry_id, number),
@@ -197,6 +200,7 @@ class Ledger:
                 incoming=incoming,
                 incoming_total=total,
                 findings=self._findings(db, project, row.entry_id),
+                flags=open_flags,
                 head=row.head,
                 author=json.loads(found[5]),
                 reason=found[6],
@@ -232,16 +236,21 @@ class Ledger:
                 "SELECT e.entry_id,e.project,e.type,e.number,e.origin,e.head,"
                 "r.revision,r.title,r.status,r.statement,r.fields,r.author,r.reason,r.created,"
                 "EXISTS(SELECT 1 FROM ledger_evidence v WHERE v.entry_id=e.entry_id "
-                "AND v.revision=e.head) "
+                "AND v.revision=e.head),"
+                "(SELECT count(*) FROM ledger_flags f WHERE f.entry_id=e.entry_id "
+                "AND f.cleared IS NULL) "
                 "FROM ledger_entries e JOIN ledger_revisions r ON r.entry_id=e.entry_id "
                 "AND r.revision=e.head WHERE e.project=? AND e.position>? AND (? IS NULL OR "
                 "e.type=?) AND (? IS NULL OR r.status=?) ORDER BY e.position LIMIT ?",
                 (project, start, kind, kind, status, status, limit + 1),
             ).fetchall()
         found = [
-            self._summary(
-                _Row(*r[:6]), r[6:], None if r[2] not in ("claim", "result") else not r[14]
-            )
+            {
+                **self._summary(
+                    _Row(*r[:6]), r[6:], None if r[2] not in ("claim", "result") else not r[14]
+                ),
+                "open_flags": r[15],
+            }
             for r in rows[:limit]
         ]
         return EntryPage(
@@ -328,6 +337,37 @@ class Ledger:
             author,
         )
 
+    def clear_flags(
+        self,
+        project: str,
+        reference: str,
+        flags: list[str],
+        author: Author,
+        *,
+        reason: str,
+        operation_id: str,
+    ) -> MutationResult:
+        """Clear open flags on ``reference`` with ``reason`` (LG-29): a change that clears
+        them and revises nothing. A flag on another entry is not found."""
+        self._project(project)
+        with self.control.read() as tx:
+            db = tx.sql
+            entry = self._find(db, project, reference)
+            for flag in flags:
+                if (
+                    db.execute(
+                        "SELECT 1 FROM ledger_flags WHERE flag_id=? AND entry_id=?",
+                        (flag, entry.entry_id),
+                    ).fetchone()
+                    is None
+                ):
+                    raise DocumentError(NOT_FOUND, f"{entry.handle} has no flag {flag}")
+        return self.change(
+            project,
+            {"operation_id": operation_id, "reason": reason, "flags_cleared": flags},
+            author,
+        )
+
     def change(
         self, project: str, raw: object, author: Author, *, provenance: Json | None = None
     ) -> MutationResult:
@@ -410,6 +450,7 @@ class Ledger:
         self._check_published(db, planned)
         self._check_decisions(db, planned, role)
         now = self.clock()
+        cleared = self._clear(db, project, mutation, author, role, now)
         changed: list[ChangedEntry] = []
         for p in planned:
             self._write(db, project, p, mutation, author, provenance, now)
@@ -422,7 +463,46 @@ class Ledger:
                     created=p.created,
                 )
             )
-        result = MutationResult(operation_id=mutation.operation_id, entries=changed)
+        revised = [
+            flags.Changed(
+                p.row.entry_id,
+                p.row.handle,
+                p.row.type,
+                p.row.head,
+                "statement" in p.changed,
+                p.status,
+                p.status_before,
+            )
+            for p in planned
+            if not p.created
+        ]
+
+        def announce(flag: flags.Raised) -> None:
+            self.events.append(
+                db,
+                "ledger.flag_raised",
+                project,
+                author.session_id,
+                flag.entry_id,
+                {
+                    "flag": flag.flag_id,
+                    "entry": flag.entry_id,
+                    "handle": flag.handle,
+                    "cause": flag.cause,
+                    "source": flag.source,
+                    "via": flag.via,
+                    "operation_id": mutation.operation_id,
+                },
+                now,
+            )
+
+        raised = flags.raise_flags(db, project, revised, now.isoformat(), announce)
+        result = MutationResult(
+            operation_id=mutation.operation_id,
+            entries=changed,
+            flagged=list(dict.fromkeys(flag.handle for flag in raised)),
+            flags_cleared=cleared,
+        )
         RECEIPTS.record(
             db,
             project,
@@ -868,6 +948,63 @@ class Ledger:
             return p.evidence
         return evidence.stored(db, p.row.entry_id, p.row.head) if not p.created else []
 
+    def _clear(
+        self,
+        db: sqlite3.Connection,
+        project: str,
+        mutation: Mutation,
+        author: Author,
+        role: str,
+        now: datetime,
+    ) -> list[str]:
+        """Clear the open flags the mutation names, with its reason (LG-29): the user's or
+        the main agent's to clear, never a delegated agent's."""
+        if not mutation.flags_cleared:
+            return []
+        if role == "delegated":
+            raise _refused("a delegated agent clears no flag")
+        for flag in dict.fromkeys(mutation.flags_cleared):
+            row = db.execute(
+                "SELECT f.entry_id,f.cleared,f.cause,f.source,e.type,e.number "
+                "FROM ledger_flags f JOIN ledger_entries e USING(entry_id) "
+                "WHERE f.flag_id=? AND f.project=?",
+                (flag, project),
+            ).fetchone()
+            if row is None:
+                raise DocumentError(NOT_FOUND, f"no flag {flag} in this project")
+            if row[1] is not None:
+                raise DocumentError(CONFLICT, f"flag {flag} is cleared already")
+            db.execute(
+                "UPDATE ledger_flags SET cleared=?,cleared_by=?,reason=?,operation_id=? "
+                "WHERE flag_id=?",
+                (
+                    now.isoformat(),
+                    author.model_dump_json(exclude_none=True),
+                    mutation.reason,
+                    mutation.operation_id,
+                    flag,
+                ),
+            )
+            self.events.append(
+                db,
+                "ledger.flag_cleared",
+                project,
+                author.session_id,
+                row[0],
+                {
+                    "flag": flag,
+                    "entry": row[0],
+                    "handle": f"{PREFIXES[row[4]]}-{row[5]}",
+                    "cause": row[2],
+                    "source": json.loads(row[3]),
+                    "reason": mutation.reason,
+                    "run": author.run_id,
+                    "operation_id": mutation.operation_id,
+                },
+                now,
+            )
+        return list(dict.fromkeys(mutation.flags_cleared))
+
     def _check_published(self, db: sqlite3.Connection, planned: list[_Planned]) -> None:
         """A published claim or result cites its reference through a ``supports`` link of
         type ``source_claim`` (LG-15), which may be to a reference the same change
@@ -1086,6 +1223,38 @@ class Ledger:
                 (entry, revision),
             ).fetchall()
         ]
+
+    @staticmethod
+    def _flags(db: sqlite3.Connection, entry: str) -> list[EntryFlag]:
+        """The open flags on ``entry``, newest first, each with the reviews whose
+        snapshots held the revision it was raised on (LG-28)."""
+        found: list[EntryFlag] = []
+        for flag, cause, source, via, revision, raised in db.execute(
+            "SELECT flag_id,cause,source,via,revision,raised FROM ledger_flags "
+            "WHERE entry_id=? AND cleared IS NULL ORDER BY raised DESC,rowid DESC LIMIT 50",
+            (entry,),
+        ):
+            reviews = [
+                review
+                for (review,) in db.execute(
+                    "SELECT DISTINCT review_id FROM review_evidence WHERE kind='ledger' "
+                    "AND json_extract(locator,'$.entry')=? "
+                    "AND json_extract(locator,'$.revision')=? ORDER BY review_id",
+                    (entry, revision),
+                )
+            ]
+            found.append(
+                EntryFlag(
+                    flag_id=flag,
+                    cause=cause,
+                    source=json.loads(source),
+                    via=via,
+                    revision=revision,
+                    raised=raised,
+                    reviews=reviews,
+                )
+            )
+        return found
 
     @staticmethod
     def _findings(db: sqlite3.Connection, project: str, entry: str) -> list[EntryFinding]:

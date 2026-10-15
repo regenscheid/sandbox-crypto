@@ -25,15 +25,15 @@ refusal names the first clause that does not (``gate_not_met``):
    ``fail`` finding of any status is anchored to a revision whose material the change
    keeps, the entry must have kept that material at every revision since, or the
    finding holds;
-6. ``flags``: no open flag on the entry.
+6. ``flags``: no open flag on the entry (LG-28).
 
 Some clauses cannot hold in full yet, and the limits are deliberate: checks by
 delegations and verification reviews are not built, so only a check the user produced
 counts in clause 2; no record says which inputs were synthetic (RA-17), so clause 1
 reads the link's type alone; execution targets are not built, so clause 3 asks for the
-artifact alone; flags are not built, so clause 6 holds; and no record says which
-revision of the entry a finding's decision saw, so clause 5 reads that the entry kept
-the material since the finding, over at most ``KEPT_REVISIONS`` revisions.
+artifact alone; and no record says which revision of the entry a finding's decision
+saw, so clause 5 reads that the entry kept the material since the finding, over at
+most ``KEPT_REVISIONS`` revisions.
 """
 
 from __future__ import annotations
@@ -230,7 +230,18 @@ def establish(
                 else ""
             ),
         )
-    # Clause 6, flags: none are raised until flags are built (LG-28).
+    flagged = db.execute(
+        "SELECT flag_id FROM ledger_flags WHERE entry_id=? AND cleared IS NULL "
+        "ORDER BY raised LIMIT 1",
+        (entry,),
+    ).fetchone()
+    if flagged is not None:
+        raise refused(
+            entry,
+            "flags",
+            f"{handle} has an open flag, {flagged[0]}: clear it with a reason once the entry "
+            "still holds, or revise it",
+        )
 
 
 @dataclass(frozen=True)

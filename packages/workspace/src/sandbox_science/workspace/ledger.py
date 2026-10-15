@@ -65,6 +65,7 @@ def add_routes(app: web.Application) -> None:
     app.router.add_get(PATH + "/{entry}", entry)
     app.router.add_get(PATH + "/{entry}/history", history)
     app.router.add_post(PATH + "/{entry}/checks", check)
+    app.router.add_post(PATH + "/{entry}/flags", clear)
 
 
 def _query(request: web.Request, allowed: set[str]) -> dict[str, str]:
@@ -180,3 +181,40 @@ async def check(request: web.Request) -> web.Response:
         return result.model_dump(mode="json")
 
     return await documents.answer(request, checked, writer=True)
+
+
+class ClearRequest(Contract):
+    """The user's clearing of open flags on an entry, with the reason (LG-29)."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    flags: list[Annotated[str, Field(pattern=r"^flag-[0-9a-f]{24}$")]] = Field(
+        min_length=1, max_length=64
+    )
+    reason: Annotated[str, Field(min_length=1, max_length=4096)]
+    operation_id: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")]
+
+
+async def clear(request: web.Request) -> web.Response:
+    """POST …/ledger/{entry}/flags: the user clears open flags on the entry, with the
+    reason: it still holds, or the change does not affect it. Same-origin, the user's
+    only."""
+    project, reference = identifier(request, "project"), _entry(request)
+    raw = await json_body(request, "ledger flags JSON")
+    try:
+        value = ClearRequest.model_validate(raw)
+    except ValidationError:
+        raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid flag clearing") from None
+
+    def cleared(store: DocumentStore) -> dict[str, object]:
+        result = Ledger(store).clear_flags(
+            project,
+            reference,
+            value.flags,
+            USER,
+            reason=value.reason,
+            operation_id=value.operation_id,
+        )
+        return result.model_dump(mode="json")
+
+    return await documents.answer(request, cleared, writer=True)

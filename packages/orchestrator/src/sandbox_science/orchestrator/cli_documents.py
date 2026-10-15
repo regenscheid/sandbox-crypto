@@ -275,18 +275,30 @@ def document(args: argparse.Namespace) -> int:
 
 def ledger(args: argparse.Namespace) -> int:
     """The user's ledger commands: ``check`` records that the user checked an entry at a
-    revision, which the gate's independent check counts (LG-17)."""
+    revision, which the gate's independent check counts (LG-17); ``clear`` clears open
+    flags on an entry with a reason (LG-29)."""
     with contextlib.closing(ProjectStore(args.state_dir, readonly=True)) as projects:
         projects.get(args.project)
     store = DocumentStore(store_path(args.state_dir), producer="harness-cli")
     try:
-        result = Ledger(store).check(
-            args.project,
-            args.entry,
-            args.revision,
-            USER,
-            operation_id=args.operation_id or new_id("check"),
-            note=args.note,
+        result = (
+            Ledger(store).check(
+                args.project,
+                args.entry,
+                args.revision,
+                USER,
+                operation_id=args.operation_id or new_id("check"),
+                note=args.note,
+            )
+            if args.action == "check"
+            else Ledger(store).clear_flags(
+                args.project,
+                args.entry,
+                args.flag,
+                USER,
+                reason=args.reason,
+                operation_id=args.operation_id or new_id("clear"),
+            )
         )
         print(result.model_dump_json(indent=2))
     except DocumentError as error:
@@ -397,3 +409,12 @@ def add_parsers(commands: Any) -> None:
     checked.add_argument("--revision", type=int, required=True, help="the revision you checked")
     checked.add_argument("--note", help="what you checked, as the check's scope")
     checked.add_argument("--operation-id", help="retry with the same ID (default: a new one)")
+    clear = ledger_actions.add_parser(
+        "clear", parents=[common], help="clear open flags on an entry, with the reason (LG-29)"
+    )
+    clear.add_argument("entry", help="the entry's handle (such as C-12) or ID")
+    clear.add_argument(
+        "--flag", action="append", required=True, help="a flag's ID (repeat for more)"
+    )
+    clear.add_argument("--reason", required=True, help="why the entry still holds")
+    clear.add_argument("--operation-id", help="retry with the same ID (default: a new one)")
