@@ -555,6 +555,16 @@ export const api = {
       `/projects/${part(project)}/ledger/${part(entry)}/flags/reopened`,
       change,
     ),
+  /** The user's dropping of an entry's `dominates` link to `target`, at the revision read, with the reason. */
+  dropDominatesLink: (
+    project: string,
+    entry: string,
+    drop: { target: string; revision: number; reason: string; operation_id: string },
+  ) =>
+    post<LedgerChangeAnswer>(
+      `/projects/${part(project)}/ledger/${part(entry)}/dominates/dropped`,
+      drop,
+    ),
   /** A page of an entry's revisions, newest first, before `before`. */
   ledgerHistory: (project: string, entry: string, before: number | null = null) =>
     get<LedgerHistory>(

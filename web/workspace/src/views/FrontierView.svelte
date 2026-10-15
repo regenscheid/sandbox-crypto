@@ -2,7 +2,9 @@
 <!-- A frontier category's frontier (docs/specs/ledger.md, LG-18 to LG-23): the category,
      then its results grouped by their conditions, a page of groups at a time, each group
      once even when pages overlap; the proposed candidates read in windows of the newest,
-     older ones on request; and the eligible results no group places. Read-only. -->
+     older ones on request; the eligible results no group places; and the dominates links
+     that count for nothing. After the user drops a link, the frontier is read again from
+     its first group, and the page says what was dropped. -->
 <script lang="ts">
   import { api } from '../lib/api';
   import type { FrontierGroup, FrontierView } from '../lib/api-types';
@@ -12,6 +14,7 @@
   import ErrorMessage from './ErrorMessage.svelte';
   import Category from './FrontierCategory.svelte';
   import Group from './FrontierGroup.svelte';
+  import Link from './FrontierLink.svelte';
   import Result from './FrontierResult.svelte';
 
   let { projectId, category }: { projectId: string; category: string } = $props();
@@ -45,6 +48,15 @@
     void (groups.items.length === 0 ? list.reload() : list.more());
   }
 
+  /** What the user's last change did, in words. */
+  let notice = $state<string | null>(null);
+
+  /** After the user's drop of a link: say what it did, and read the frontier again. */
+  async function done(text: string): Promise<void> {
+    notice = text;
+    await list.reload();
+  }
+
   /** Read the frontier again with another window of candidates, from its first group. */
   function readWindow(next: number | null, back: (number | null)[]): void {
     before = next;
@@ -59,6 +71,7 @@
   <a href={ledgerHref(projectId)}>Ledger</a> / <a href={frontierHref(projectId)}>Frontier</a> /
 </nav>
 <h1>Frontier: {category}</h1>
+{#if notice}<p role="status">{notice}</p>{/if}
 
 {#if read}
   <Category category={read.category} revised={read.agent_revised} lookalike={read.lookalike} />
@@ -88,7 +101,7 @@
 {/if}
 
 {#each shown as group (groupKey(group.conditions))}
-  <Group {projectId} {group} {measures} />
+  <Group {projectId} {group} {measures} {done} />
 {:else}
   {#if read}<p class="muted">No result of this category is eligible or a candidate yet.</p>{/if}
 {/each}
@@ -116,9 +129,22 @@
     they were recorded.
   </p>
   {#each read.unplaced as result (result.entry_id)}
-    <Result {projectId} {result} {measures} />
+    <Result {projectId} {result} {measures} {done} />
   {/each}
   {#if read.unplaced_more}<p class="muted">
       {moreText({ more: { unplaced: read.unplaced_more } }, 'unplaced')}
     </p>{/if}
+{/if}
+
+{#if read && read.void_links.length}
+  <h2>Links that count for nothing</h2>
+  <p class="muted">
+    Dominates links between eligible results that the frontier does not count, each with why. Drop
+    one, or one of its cycle, to settle it.
+  </p>
+  <ul class="links">
+    {#each read.void_links as link (`${link.entry_id}>${link.target}`)}
+      <Link {projectId} {link} {done} />
+    {/each}
+  </ul>
 {/if}
