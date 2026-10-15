@@ -247,7 +247,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
   - [x] GUI: applying a suggested patch, with a diff against the head
   - [x] GUI: Move to project and Restore this revision
   - [x] GUI: a session plan's save, when it holds agent text
-  - [ ] GUI: finding decisions (statement, remedy, explanation)
+  - [x] GUI: finding decisions (statement, remedy, explanation)
   - [ ] GUI: the editor's raw text, comment threads and chat: a banner and the link list when there is hidden content
   - [ ] The ledger's accept action, when it is built, shows the entry through `ApprovalText`
 - [ ] Previews of rich artifacts (HTML, SVG, notebook output, PDFs) on a separate origin in sandboxed frames (D54); the PDF viewer

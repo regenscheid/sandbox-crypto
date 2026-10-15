@@ -2,6 +2,7 @@
 <!-- The session's consistency reviews, newest first, and the windows none could cover. -->
 <script lang="ts">
   import type { ReviewBrowser, ReviewPanel } from '../lib/reviewBrowser';
+  import { visible } from '../lib/text';
   import {
     leftUnreviewed,
     outcomeText,
@@ -38,7 +39,7 @@
       <span class="muted"
         >{outcomeText(review.state, leftUnreviewed(panel.unreviewed, review.review_id))}.</span
       >
-      {#if review.summary}<p class="summary">{review.summary}</p>{/if}
+      {#if review.summary}<p class="summary">{visible(review.summary)}</p>{/if}
     </li>{/each}
 </ul>
 {#if panel.reviews.next}<button disabled={busy} onclick={() => browser.reviews.more()}

@@ -6,22 +6,19 @@
   import { findingDrafts } from '../lib/drafts';
   import { Earlier } from '../lib/earlier';
   import { afterResponse, findingHistory, findingResponse, startResponse } from '../lib/findings';
-  import {
-    anchorView,
-    decisions,
-    raisedText,
-    severityText,
-    statusText,
-    transitionText,
-  } from '../lib/findingView';
+  import { anchorView, decisions, raisedText, severityText, statusText } from '../lib/findingView';
   import { guardedWrite } from '../lib/mutation';
   import { emptyList } from '../lib/pagedList';
   import { idle, submit } from '../lib/submit';
   import { EvidenceText } from '../lib/evidenceText';
+  import { visible } from '../lib/text';
+  import ApprovalText from './ApprovalText.svelte';
   import ErrorMessage from './ErrorMessage.svelte';
+  import FindingTransition from './FindingTransition.svelte';
+  import HiddenBanner from './HiddenBanner.svelte';
+  import LatestExplanation from './LatestExplanation.svelte';
   import PinnedEvidencePreview from './PinnedEvidencePreview.svelte';
   import Markdown from '../lib/Markdown.svelte';
-  import ResponseBody from './ResponseBody.svelte';
   import { macroSet } from '../lib/macros';
   let {
     projectId,
@@ -137,8 +134,11 @@
     {#each finding.macro_context?.problems ?? [] as problem}<p role="status">
         {problem} Display uses a diagnostic context.
       </p>{/each}
-    <Markdown source={finding.statement} {macros} />{#if finding.remedy}<p>Suggested remedy:</p>
-      <Markdown source={finding.remedy} {macros} />{/if}
+    <Markdown source={finding.statement} {macros} />
+    <HiddenBanner text={finding.statement} links />
+    {#if finding.remedy}<p>Suggested remedy:</p>
+      <Markdown source={finding.remedy} {macros} />
+      <HiddenBanner text={finding.remedy} links />{/if}
     <h4>Where</h4>
     <ul class="anchors">
       {#each anchors as anchor, index (index)}<li>
@@ -154,7 +154,7 @@
     </ul>
     <details>
       <summary>Anchors as recorded</summary>
-      <pre>{JSON.stringify(finding.anchors, null, 2)}</pre>
+      <pre>{visible(JSON.stringify(finding.anchors, null, 2))}</pre>
     </details>
     <!-- Each failure shows beside its own control, so a newer one is never hidden. -->
     {#if evidence.value}<pre aria-label="Mechanical math evidence">{evidence.value}</pre>{/if}
@@ -169,28 +169,18 @@
       >{history.started ? 'Load earlier finding history' : 'Read finding history'}</button
     >
     {#if pages.error}<ErrorMessage error={pages.error} />{/if}
-    {#each history.entries() as entry (entry.revision)}<div class="transition">
-        <p>{transitionText(entry)}</p>
-        {#each entry.macro_context?.problems ?? [] as problem}<p role="status">
-            {problem}
-          </p>{/each}<Markdown
-          source={entry.reason}
-          macros={macroSet(
-            entry.macro_context?.macros ?? {},
-            `${projectId}:${entry.macro_context?.key ?? 'unknown-history'}`,
-          )}
-        />
-        <details>
-          <summary>Decision evidence and attribution</summary>
-          <pre>{JSON.stringify(entry.payload, null, 2)}</pre>
-        </details>
-        {#if entry.response_body}<ResponseBody
-            {projectId}
-            {sessionId}
-            source={entry.response_body}
-          />{/if}
-      </div>{/each}
-    <details>
+    {#each history.entries() as entry (entry.revision)}<FindingTransition
+        {projectId}
+        {sessionId}
+        {entry}
+      />{/each}
+    <details
+      ontoggle={(event) => {
+        // The latest explanation is read when the user opens the response, so it shows
+        // above the decision without a click on the history.
+        if (event.currentTarget.open && !history.started && !pages.loading) void history.read();
+      }}
+    >
       <summary>Respond as user</summary>
       <p>
         {finding.origin === 'math'
@@ -198,6 +188,14 @@
           : 'A claimed fix stays unconfirmed until a confirmation review.'} Confirm and dismiss below
         are explicit user decisions.
       </p>
+      <!-- What the user decides on, exactly as agents read it (threat model, A3): the
+           statement, the remedy and the latest explanation an agent gave. -->
+      <ApprovalText text={finding.statement} label="The finding's statement, exactly" />
+      {#if finding.remedy}<ApprovalText
+          text={finding.remedy}
+          label="Its suggested remedy, exactly"
+        />{/if}
+      <LatestExplanation entries={history.entries()} loading={pages.loading} />
       <fieldset disabled={busy}>
         <p>
           Based on finding revision {draft.expected}. {#if draft.expected !== finding.revision}<button
@@ -224,6 +222,7 @@
             maxlength="8192"
             bind:value={draft.explanation}></textarea></label
         >
+        <HiddenBanner text={draft.explanation} />
         <label
           >Changed document revisions<input
             aria-label="Changed document revisions"
@@ -263,9 +262,6 @@
   pre {
     max-height: 18rem;
     overflow: auto;
-  }
-  .transition {
-    border-top: 1px solid var(--border, #9996);
   }
   .resolved {
     opacity: 0.85;
