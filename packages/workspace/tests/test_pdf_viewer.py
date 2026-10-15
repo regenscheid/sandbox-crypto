@@ -127,7 +127,7 @@ async def test_the_workspace_lists_published_artifacts(origins, published) -> No
     assert response.status == 200
     listing = await response.json()
     assert listing["viewer"] is True
-    assert listing["next_after"] is None
+    assert listing["next_before"] is None
     assert {(item["path"], item["media_type"]) for item in listing["artifacts"]} == {
         ("sessions/a/paper.pdf", "application/pdf"),
         ("sessions/a/notes.txt", "text/plain"),

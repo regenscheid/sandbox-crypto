@@ -3,8 +3,11 @@
 
 Routes (docs/specs/pdf-viewer.md, PV-4):
 
-- ``GET /api/v0/projects/{project}/artifacts?after=ID`` lists the project's published
-  artifacts, each at its latest revision, ten at a time, and says whether the viewer is on.
+- ``GET /api/v0/projects/{project}/artifacts?before=N&group=results|files&session=S&run=R
+  &contains=TEXT`` lists the project's artifacts, each at its latest revision, the most
+  recently changed first, ten at a time: published and declared results, the other
+  recorded files, or both, of a session or a run, with a path that has ``TEXT`` (research
+  artifacts, RA-37); and says whether the viewer is on.
 - ``GET /api/v0/projects/{project}/artifacts/{artifact}/revisions/{revision}/viewer
   ?sha256=HEX`` mints a capability for that exact revision of a PDF and answers the viewer's
   URL on the preview origin, which opens it for 10 minutes (PV-3).
@@ -36,7 +39,7 @@ _IDENTIFIER: Final = TypeAdapter[str](Identifier)
 
 
 class ArtifactEntry(Contract):
-    """A published artifact at its latest revision."""
+    """An artifact at its latest revision, and who made that revision."""
 
     artifact_id: str
     revision: int
@@ -45,11 +48,24 @@ class ArtifactEntry(Contract):
     size: int
     media_type: str
     created_at: datetime
+    result: bool = False
+    """It has a published or declared revision."""
+    deleted: bool = False
+    content_retained: bool = True
+    content_note: str | None = None
+    """Why the bytes were not kept: ``too_large`` or ``quota``."""
+    kind: str = "agent_publication"
+    """How the revision came: published, recorded from a call, or declared a result."""
+    session_id: str
+    run_id: str
+    role: str = "main"
+    tool_call: str
 
 
 class ArtifactListing(Contract):
     artifacts: list[ArtifactEntry]
-    next_after: str | None
+    next_before: int | None
+    """The next page's cursor; ``None`` at the end."""
     viewer: bool
     """Whether the PDF viewer's origin is on."""
 
@@ -71,18 +87,42 @@ def add_routes(app: web.Application) -> None:
 
 async def listing(request: web.Request) -> web.Response:
     project = identifier(request, "project")
-    after = request.query.get("after", "")
-    if after:
-        try:
-            _IDENTIFIER.validate_python(after, strict=True)
-        except ValidationError:
-            raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid artifact cursor") from None
+    group = request.query.get("group")
+    if group not in (None, "results", "files"):
+        raise ProjectError(ErrorKind.INVALID_REQUEST, "group is results or files")
+    raw_before = request.query.get("before", "")
+    if raw_before and not (raw_before.isascii() and raw_before.isdigit() and len(raw_before) < 19):
+        raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid artifact cursor")
+    before = int(raw_before) if raw_before else None
+    contains = request.query.get("contains") or None
+    if contains is not None and (
+        len(contains) > 256 or any(ord(c) < 32 or ord(c) == 127 for c in contains)
+    ):
+        raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid path filter")
+    scope: dict[str, str | None] = {}
+    for name in ("session", "run"):
+        value = request.query.get(name)
+        if value:
+            try:
+                _IDENTIFIER.validate_python(value, strict=True)
+            except ValidationError:
+                raise ProjectError(ErrorKind.INVALID_REQUEST, f"invalid {name}") from None
+        scope[name] = value or None
     context = request.app[CONTEXT]
     on = request.app.get(PREVIEW) is not None
 
     def read() -> str:
         context.projects.get(project)
-        page = ArtifactInventory(context.documents).list(project, after=after)
+        inventory = ArtifactInventory(context.documents)
+        found_entries, next_before = inventory.recent(
+            project,
+            before=before,
+            group=group,
+            session=scope["session"],
+            run=scope["run"],
+            contains=contains,
+        )
+        results = inventory.results(project, [e.reference.artifact_id for e in found_entries])
         entries = [
             ArtifactEntry(
                 artifact_id=found.reference.artifact_id,
@@ -92,10 +132,19 @@ async def listing(request: web.Request) -> web.Response:
                 size=found.reference.size,
                 media_type=found.reference.media_type,
                 created_at=found.created_at,
+                result=found.reference.artifact_id in results,
+                deleted=found.deleted,
+                content_retained=found.content_retained,
+                content_note=found.content_note,
+                kind=found.publication.kind,
+                session_id=found.publication.context.session_id,
+                run_id=found.publication.run_id,
+                role=found.publication.role,
+                tool_call=found.publication.tool_call,
             )
-            for found in page.entries
+            for found in found_entries
         ]
-        answer = ArtifactListing(artifacts=entries, next_after=page.next_after, viewer=on)
+        answer = ArtifactListing(artifacts=entries, next_before=next_before, viewer=on)
         return api.dumps(answer.model_dump(mode="json"))
 
     return json_answer(await asyncio.to_thread(read))

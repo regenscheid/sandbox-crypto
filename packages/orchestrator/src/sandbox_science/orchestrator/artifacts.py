@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Final, Literal
@@ -44,6 +45,18 @@ _MAX_RECORD: Final = 16 * 1024
 _MAX_REQUEST: Final = 8 * 1024
 _EMPTY: Final = hashlib.sha256(b"").hexdigest()
 _GiB: Final = 1024**3
+
+
+def _result(objects: str) -> str:
+    """SQL for an artifact with a published or declared revision: a result (RA-37). The
+    scan is bounded by the revision cap (BACKLOG: a stored flag if it is raised)."""
+    return (
+        "EXISTS(SELECT 1 FROM artifact_revisions k "  # noqa: S608 - a fixed alias
+        f"WHERE k.artifact={objects}.id AND json_extract(k.record,'$.publication.kind') "
+        "IN ('agent_publication','declared_result'))"
+    )
+
+
 Room = Literal["content", "metadata", "full"]
 """What the budget leaves for a new revision: its bytes, only its hash and size, or nothing."""
 
@@ -620,6 +633,85 @@ class ArtifactInventory:
                 if entries and len(rows) > 10
                 else None,
             )
+
+    def recent(
+        self,
+        project: str,
+        *,
+        before: int | None = None,
+        group: Literal["results", "files"] | None = None,
+        session: str | None = None,
+        run: str | None = None,
+        contains: str | None = None,
+    ) -> tuple[tuple[ArtifactRevision, ...], int | None]:
+        """At most ten artifacts at their latest revision, the most recently changed
+        first, and the next page's ``before`` (``None`` at the end). ``results`` are the
+        artifacts with a published or declared revision, ``files`` the others (RA-37);
+        ``session`` and ``run`` keep those with a revision of theirs, and ``contains``
+        those whose path has it."""
+        self._scope(project)
+        for value in (session, run):
+            if value is not None:
+                _IDENTIFIER.validate_python(value)
+        if contains is not None and (
+            not 1 <= len(contains) <= 256 or any(ord(c) < 32 or ord(c) == 127 for c in contains)
+        ):
+            raise DocumentError(INVALID_REQUEST, "invalid path filter")
+        if before is not None and (type(before) is not int or before < 1):
+            raise DocumentError(INVALID_REQUEST, "invalid artifact cursor")
+        if self.documents.control.missing:
+            return (), None
+        conditions: list[str] = ["r.project=?", "o.project=?"]
+        values: list[object] = [project, project]
+        if before is not None:
+            conditions.append("r.rowid<?")
+            values.append(before)
+        if group is not None:
+            conditions.append(("" if group == "results" else "NOT ") + _result("o"))
+        for path, value in (
+            ("$.publication.context.session_id", session),
+            ("$.publication.run_id", run),
+        ):
+            if value is not None:
+                conditions.append(
+                    "EXISTS(SELECT 1 FROM artifact_revisions m "  # noqa: S608 - fixed paths
+                    f"WHERE m.artifact=o.id AND json_extract(m.record,'{path}')=?)"
+                )
+                values.append(value)
+        if contains is not None:
+            conditions.append("instr(o.path,?)>0")
+            values.append(contains)
+        with self.documents.control.read() as tx:
+            db = tx.sql
+            # A revision's rowid grows with every insert (nothing vacuums the store), so
+            # the head's says when the artifact last changed. The walk goes down the
+            # project's revisions, newest first, and keeps the heads: a page of all
+            # files stops at its eleventh, while a rare match reads them all.
+            rows = db.execute(
+                "SELECT o.id,o.head,r.rowid FROM artifact_revisions r CROSS JOIN "  # noqa: S608 - fixed conditions
+                "artifact_objects o ON o.id=r.artifact AND o.head=r.number WHERE "
+                + " AND ".join(conditions)
+                + " ORDER BY r.rowid DESC LIMIT 11",
+                values,
+            ).fetchall()
+            entries = tuple(
+                self._revision(db, project, artifact, number) for artifact, number, _ in rows[:10]
+            )
+            return entries, (rows[9][2] if len(rows) > 10 else None)
+
+    def results(self, project: str, artifacts: Sequence[str]) -> set[str]:
+        """Which of ``artifacts`` have a published or declared revision (RA-37)."""
+        self._scope(project)
+        if not artifacts or self.documents.control.missing:
+            return set()
+        with self.documents.control.read() as tx:
+            marks = ",".join("?" * len(artifacts))
+            rows = tx.sql.execute(
+                f"SELECT id FROM artifact_objects WHERE project=? AND id IN ({marks}) AND "  # noqa: S608
+                + _result("artifact_objects"),
+                (project, *artifacts),
+            ).fetchall()
+        return {row[0] for row in rows}
 
     def events(self, project: str, *, after: int = 0) -> ArtifactEventPage:
         """Bounded immutable event pages, without guessing execution lineage."""

@@ -10,7 +10,7 @@ export interface AdmissionSummary {
   recorded: boolean;
 }
 
-/** A published artifact at its latest revision. */
+/** An artifact at its latest revision, and who made that revision. */
 export interface ArtifactEntry {
   artifact_id: string;
   revision: number;
@@ -19,11 +19,20 @@ export interface ArtifactEntry {
   size: number;
   media_type: string;
   created_at: string;
+  result: boolean;
+  deleted: boolean;
+  content_retained: boolean;
+  content_note: string | null;
+  kind: string;
+  session_id: string;
+  run_id: string;
+  role: string;
+  tool_call: string;
 }
 
 export interface ArtifactListing {
   artifacts: ArtifactEntry[];
-  next_after: string | null;
+  next_before: number | null;
   viewer: boolean;
 }
 
