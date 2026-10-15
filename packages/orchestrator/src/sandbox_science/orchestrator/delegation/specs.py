@@ -44,6 +44,12 @@ class WaitRequest(Contract):
     mode: Literal["all", "first"] = "all"
 
 
+class Named(Contract):
+    """``delegation_status`` and ``cancel_delegation`` name one delegation."""
+
+    delegation_id: Identifier
+
+
 _TEXT = {"type": "string", "maxLength": MAX_TEXT}
 SPECS: Final = (
     ToolSpec(
@@ -54,7 +60,8 @@ SPECS: Final = (
         "and has kernels of its own, so hand over state through files. It runs while you "
         "go on; this returns its delegation_id at once. Its report reaches you as a "
         "delegation notice, or as the result of wait_delegations. You cannot give your "
-        "final answer while it runs.",
+        "final answer while it runs. Its result is its claim: a verdict, a status and a "
+        "summary; the outcome says how the platform saw it end.",
         {
             "type": "object",
             "properties": {
@@ -103,7 +110,33 @@ SPECS: Final = (
             "additionalProperties": False,
         },
     ),
+    ToolSpec(
+        "delegation_status",
+        "Read a delegation of this session: a running one's limits, or an ended one's "
+        "whole outcome.",
+        {
+            "type": "object",
+            "properties": {"delegation_id": {"type": "string"}},
+            "required": ["delegation_id"],
+            "additionalProperties": False,
+        },
+    ),
+    ToolSpec(
+        "cancel_delegation",
+        "Cancel a delegated run you started. It ends cancelled with its record kept; its "
+        "executions are asked to stop. Returns its outcome.",
+        {
+            "type": "object",
+            "properties": {"delegation_id": {"type": "string"}},
+            "required": ["delegation_id"],
+            "additionalProperties": False,
+        },
+    ),
 )
 NAMES: Final = frozenset(spec.name for spec in SPECS)
-EFFECTS: Final[dict[str, Effect]] = {"wait_delegations": "read"}
+EFFECTS: Final[dict[str, Effect]] = {
+    "wait_delegations": "read",
+    "delegation_status": "read",
+    "cancel_delegation": "cancel",
+}
 """``delegate`` is an effect, which the plan fence and the session's lease gate."""

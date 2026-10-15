@@ -2,12 +2,14 @@
 """Delegations and each project's delegation setting, in the control store.
 
 A delegation is written when its parent starts it, with its brief, and once more when
-its child ends, with its outcome: how the child ended, as the harness observed it, the
-child's final answer as it returned it, its report, and why the plan fence refused its
-calls, if it did (PD-17, PD-20, PD-34). Neither changes afterwards. The run that
-received the outcome is written once that run's record is saved (PD-35); until then,
-the outcome waits for the session's next main run. A delegation still running when its
-session's next main run starts has lost its process: it ends ``interrupted`` (PD-40).
+its child ends, with its outcome: how the child ended, as the harness observed it; the
+child's final answer as it returned it, its report; the result that answer gives, if it
+validated, and the validation errors; the model alias and the models the child ran on;
+and why the plan fence refused its calls, if it did (PD-17, PD-20, PD-29, PD-34).
+Neither changes afterwards. The run that received the outcome is written once that run's
+record is saved (PD-35); until then, the outcome waits for the session's next main run.
+A delegation still running when its session's next main run starts has lost its
+process: it ends ``interrupted`` (PD-40).
 
 Each project's setting is how deep its runs may delegate: 0, the default, offers no
 delegation; 1 lets main runs delegate. Each method is one transaction and may run in a
@@ -38,12 +40,15 @@ MAX_DEPTH: Final = 1
 (PD-43: depth 2 comes once one level works)."""
 REPORT_CHARS: Final = 16_000
 """The longest report a delegation keeps whole; the child's record keeps all of it."""
+RESULT_BYTES: Final = 32768
+ERROR_BYTES: Final = 2000
 PAGE: Final = 50
 
 _COLUMNS: Final = (
     "delegation_id, parent, run, kind, brief, started_at, ended, stopped, report, "
-    "ended_at, refused, acknowledged"
+    "ended_at, refused, acknowledged, result, errors, alias, models, read_entry"
 )
+_JSON: Final = ("brief", "result", "errors", "models")
 
 
 class Delegation(Contract):
@@ -67,6 +72,17 @@ class Delegation(Contract):
     """Why the plan fence refused the child's calls, as the platform observed it."""
     acknowledged: str | None = None
     """The run whose saved record says a model call of it saw the outcome."""
+    result: dict[str, JsonValue] | None = None
+    """The child's result, as its output schema validated it; ``None`` when missing."""
+    errors: tuple[str, ...] = ()
+    """Why the child's answers did not validate, in order."""
+    alias: str | None = None
+    """The model alias the child ran under."""
+    models: tuple[str, ...] = ()
+    """The models the gateway named for its calls, in order of first use."""
+    read_entry: bool | None = None
+    """For a check: whether a ``ledger_read`` of the child returned the entry at the
+    revision its brief names, as the platform observed it."""
 
 
 @dataclass(frozen=True)
@@ -77,6 +93,11 @@ class Ending:
     stopped: str
     report: str | None = None
     refused: str | None = None
+    result: dict[str, JsonValue] | None = None
+    errors: tuple[str, ...] = ()
+    alias: str | None = None
+    models: tuple[str, ...] = ()
+    read_entry: bool | None = None
 
 
 class DelegationRecords:
@@ -125,7 +146,7 @@ class DelegationRecords:
                         delegation.parent,
                         delegation.run,
                         delegation.kind,
-                        json.dumps(delegation.brief, ensure_ascii=False),
+                        _json(delegation.brief),
                         delegation.started_at.astimezone(UTC).isoformat(),
                     ),
                 )
@@ -133,18 +154,36 @@ class DelegationRecords:
                 raise ControlError(INVALID_REQUEST, f"the delegation is refused: {error}") from None
 
     def end(self, project: str, session: str, delegation_id: str, ending: Ending) -> Delegation:
-        """Write a delegation's outcome; one written already stands, and is returned."""
+        """Write a delegation's outcome; one written already stands, and is returned.
+
+        Every value is bounded here to the table's checks, so that the write cannot be
+        refused and the outcome lost: a result only for a delegation that returned, and
+        only within its bound; the errors and the models, each clipped, the oldest left
+        out until they fit; the alias and the fence's refusal, clipped."""
+        result = _json(ending.result) if ending.result is not None else None
+        errors = list(ending.errors)
+        if result is not None and (
+            ending.ended != "returned" or len(result.encode()) > RESULT_BYTES
+        ):
+            errors.append("the result was not kept: it ended otherwise, or was too long")
+            result = None
         with self.control.write() as tx:
             tx.sql.execute(
                 "UPDATE delegations SET ended = ?, stopped = ?, report = ?, ended_at = ?, "
-                "refused = ? WHERE project_id = ? AND session_id = ? AND delegation_id = ? "
+                "refused = ?, result = ?, errors = ?, alias = ?, models = ?, read_entry = ? "
+                "WHERE project_id = ? AND session_id = ? AND delegation_id = ? "
                 "AND ended IS NULL",
                 (
                     ending.ended,
-                    ending.stopped,
+                    _clipped(ending.stopped, 64),
                     _kept(ending.report),
                     self._now(),
-                    ending.refused[:2000] if ending.refused else None,
+                    _clipped(ending.refused, 2048) if ending.refused else None,
+                    result,
+                    _fitted([_clipped(e, ERROR_BYTES) for e in errors], 16384),
+                    _clipped(ending.alias, 256) if ending.alias else None,
+                    _fitted([_clipped(m, 128) for m in ending.models], 4096),
+                    None if ending.read_entry is None else int(ending.read_entry),
                     project,
                     session,
                     delegation_id,
@@ -189,6 +228,23 @@ class DelegationRecords:
             )
 
 
+def _json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _clipped(text: str, size: int) -> str:
+    """``text`` cut to at most ``size`` bytes of UTF-8, at a character."""
+    return text.encode()[:size].decode(errors="ignore")
+
+
+def _fitted(items: list[str], size: int) -> str | None:
+    """``items`` as a JSON array of at most ``size`` bytes, the oldest left out until
+    they fit; ``None`` for none."""
+    while items and len(_json(items).encode()) > size:
+        items = items[1:]
+    return _json(items) if items else None
+
+
 def _kept(report: str | None) -> str | None:
     if report is None or len(report) <= REPORT_CHARS:
         return report
@@ -214,5 +270,7 @@ def _one(db: sqlite3.Connection, project: str, session: str, delegation_id: str)
 def _delegation(row: tuple[object, ...]) -> Delegation:
     names = [name.strip() for name in _COLUMNS.split(",")]
     fields = dict(zip(names, row, strict=True))
-    fields["brief"] = json.loads(cast(str, fields["brief"]))
+    for name in _JSON:
+        if fields[name] is not None:
+            fields[name] = json.loads(cast(str, fields[name]))
     return Delegation.model_validate({k: v for k, v in fields.items() if v is not None})

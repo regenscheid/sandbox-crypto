@@ -51,6 +51,7 @@ from .consistency.store import ReviewStore
 from .delegation import prompt as delegated_prompt
 from .delegation.fence import ChildFence
 from .delegation.hook import Child, ChildEnd, Delegations
+from .delegation.outcome import Outcome, Target, result_of
 from .delegation.records import DelegationRecords
 from .documents import DocumentError, DocumentStore, DocumentTool
 from .file_settings import ProjectFiles
@@ -215,6 +216,8 @@ class RunRequest:
     """A delegated run's turns, at most; ``None`` for the harness's setting."""
     tokens: int | None = None
     """A delegated run's token limit (``run_budget`` when its calls reach it)."""
+    target: Target | None = None
+    """For a check, the entry and revision its result must name."""
 
     @property
     def queued(self) -> bool:
@@ -508,7 +511,9 @@ class Harness:
                 admitted.context,
                 run_id=admitted.run_id,
             )
-            return (*limit, SessionHeld(chat), fence, EventLog(chat))
+            # Its result is read from its closing answer once every other hook has had its say.
+            outcome = Outcome(request.target)
+            return (*limit, SessionHeld(chat), fence, outcome, EventLog(chat))
         share = self.settings.run_share
         kept = () if share is None else (ModelBudget(chat, share),)
         return (*kept, UserMessages(chat), EventLog(chat))
@@ -560,6 +565,7 @@ class Harness:
             memory_version=memory_version,
             max_turns=child.max_turns,
             tokens=child.tokens,
+            target=child.target,
         )
         admitted = dataclasses.replace(
             parent, request=request, run_id=child.run_id, started_at=child.started_at
@@ -575,11 +581,20 @@ class Harness:
         )
         transcript = finished.transcript
         fence = next((hook for hook in finished.hooks if isinstance(hook, ChildFence)), None)
+        found = next((hook for hook in finished.hooks if isinstance(hook, Outcome)), None)
+        failed = transcript.failure is not None
+        # A result stands only for a run that ended with that answer.
+        result = result_of(found, transcript.stopped, failed) if found is not None else None
         return ChildEnd(
             transcript.stopped,
-            transcript.failure is not None,
+            failed,
             transcript.final_text,
             fence.refused if fence is not None else None,
+            result.model_dump(mode="json") if result is not None else None,
+            tuple(found.errors) if found is not None else (),
+            self.main.alias,
+            tuple(dict.fromkeys(u.model for u in transcript.usage if u.model is not None))[:10],
+            found.read if found is not None else None,
         )
 
     async def memory(self, admitted: Admitted) -> Snapshot | None:

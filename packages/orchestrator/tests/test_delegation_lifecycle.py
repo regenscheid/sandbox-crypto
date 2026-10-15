@@ -42,6 +42,7 @@ from .loop_harness import worker as worker
 from .test_delegation import (
     CHECK,
     REPORT,
+    RESULT,
     children,
     delegation,
     name,
@@ -53,6 +54,14 @@ from .test_delegation import delegating as delegating
 from .test_run_service import serving
 
 Message = dict[str, Any]
+FENCED = {
+    "entry": "C-1",
+    "revision": 1,
+    "status": "blocked",
+    "verdict": "inconclusive",
+    "summary": "I could not compute: the platform refused my calls.",
+    "obstacle": "The plan fence: the session's plan is a draft.",
+}
 
 
 def blocking() -> tuple[asyncio.Event, Reply]:
@@ -88,7 +97,7 @@ async def test_a_check_keeps_the_plan_fence(delegating: Harness) -> None:
         [Reply(calls=[CHECK]), wait(), Reply(calls=[call("plan_read")]), Reply("Fenced.")],
         delegated=[
             Reply(calls=[call("write_file", path="check.txt", content="x")], before=plan),
-            Reply("Verdict: inconclusive\n\nThe plan fence refused my calls."),
+            Reply(json.dumps(FENCED)),
         ],
     )
     (child,) = children(delegating, root)
@@ -101,6 +110,8 @@ async def test_a_check_keeps_the_plan_fence(delegating: Harness) -> None:
     assert outcome.refused is not None
     assert "draft" in outcome.refused
     assert child.summaries["fence"] == {"refused": outcome.refused}
+    assert outcome.result is not None
+    assert (outcome.result["status"], outcome.result["verdict"]) == ("blocked", "inconclusive")
 
 
 def test_the_fence_holds_once_the_user_changes_an_active_plan(tmp_path: Path) -> None:
@@ -341,10 +352,10 @@ def kept_children(harness: Harness, parent: str) -> list[Any]:
 # --- Bounds, the budget and the setting --------------------------------------------------
 
 
-async def test_handbacks_are_summaries_and_waits_return_whole_reports_in_pages(
+async def test_handbacks_are_summaries_and_waits_return_whole_outcomes_in_pages(
     delegating: Harness,
 ) -> None:
-    long = "Verdict: confirmed\n\n" + "x" * 15_000
+    long = json.dumps({**RESULT, "summary": "x" * 7_900})
     go = asyncio.Event()
 
     async def held() -> None:
@@ -372,12 +383,12 @@ async def test_handbacks_are_summaries_and_waits_return_whole_reports_in_pages(
     attached = json.loads(results(root)[3])["delegation_notices"]
     assert len(attached) == 3
     assert len(json.dumps(attached)) <= 5000
-    assert all(n["report_chars"] == len(long) for n in attached)
-    assert all(len(n["report_head"]) <= hook.SUMMARY_CHARS + 1 for n in attached)
+    assert all((n["verdict"], n["status"]) == ("confirmed", "complete") for n in attached)
     waited = json.loads(results(root)[4])["delegations"]
-    assert waited[0]["report"] == long
-    assert all("more" in d and "report" not in d for d in waited[1:])
-    # The two a wait left out were received through their notices: all are acknowledged.
+    assert [d["result"]["summary"] for d in waited[:2]] == ["x" * 7_900] * 2
+    assert "more" in waited[2]
+    assert "result" not in waited[2] or waited[2].get("result") is None
+    # The one a wait left out was received through its notice: all are acknowledged.
     assert {delegation(delegating, i).acknowledged for i in started(root)} == {name(root)}
 
 

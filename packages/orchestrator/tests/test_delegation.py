@@ -24,6 +24,7 @@ from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator.chat import RunChat, SessionHeld
 from sandbox_science.orchestrator.control import ControlError, migrations
 from sandbox_science.orchestrator.delegation import hook
+from sandbox_science.orchestrator.delegation.outcome import parse
 from sandbox_science.orchestrator.delegation.records import (
     Delegation,
     DelegationRecords,
@@ -32,7 +33,11 @@ from sandbox_science.orchestrator.delegation.records import (
 from sandbox_science.orchestrator.documents import USER
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.memory import ProjectMemory
-from sandbox_science.orchestrator.notices import DELEGATIONS, DELEGATIONS_RUNNING
+from sandbox_science.orchestrator.notices import (
+    DELEGATIONS,
+    DELEGATIONS_RUNNING,
+    OUTCOME_CORRECTION,
+)
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord, run_name
 from sandbox_science.orchestrator.prompts import PromptPins
 from sandbox_science.orchestrator.runstate import RunState
@@ -54,7 +59,16 @@ CHECK = call(
     inputs=["documents/notes"],
     check={"entry": "C-1", "revision": 1},
 )
-REPORT = "Verdict: confirmed\n\nI computed a^16 mod 17 for a = 1..16: each is 1."
+RESULT: dict[str, Any] = {
+    "entry": "C-1",
+    "revision": 1,
+    "status": "complete",
+    "verdict": "confirmed",
+    "summary": "I computed a^16 mod 17 for a = 1..16: each is 1.",
+    "deviations": [],
+    "open_questions": [],
+}
+REPORT = json.dumps(RESULT)
 _ID = re.compile(r"dlg-[0-9a-f]{24}")
 
 
@@ -94,6 +108,20 @@ def wait(mode: str = "all") -> Reply:
             for found in _ID.findall(str(message["content"]))
         ]
         return [call("wait_delegations", delegation_ids=list(dict.fromkeys(found)), mode=mode)]
+
+    return Reply(calls_from=calls)
+
+
+def about(name: str) -> Reply:
+    """A call of ``name`` on the first delegation the run started."""
+
+    def calls(messages: list[Message]) -> list[tuple[str, dict[str, Any]]]:
+        found = next(
+            match[0]
+            for message in messages
+            if message["role"] == "tool" and (match := _ID.search(str(message["content"])))
+        )
+        return [call(name, delegation_id=found)]
 
     return Reply(calls_from=calls)
 
@@ -219,12 +247,15 @@ async def test_a_check_starts_fresh_and_its_outcome_reaches_its_parent(
 
     outcome = delegation(delegating, delegation_id)
     assert (outcome.ended, outcome.stopped, outcome.report) == ("returned", "answered", REPORT)
+    assert outcome.result == {**RESULT, "obstacle": None}
+    assert (outcome.errors, outcome.alias, outcome.models) == ((), "main", ("scripted-main",))
     check = cast(dict[str, Any], outcome.brief["check"])
     assert (check["handle"], check["revision"]) == ("C-1", 1)
     assert outcome.acknowledged == name(root)
     waited = json.loads(results(root)[-1])
     assert waited["reason"] == "ended"
-    assert waited["delegations"][0]["report"] == REPORT
+    assert waited["delegations"][0]["result"]["verdict"] == "confirmed"
+    assert "answer" not in waited["delegations"][0]  # the result stands for it
     assert root.final_text == "C-1 holds: the check confirms it."
 
     # The child's events were written under its root's lease, and the session's later
@@ -239,7 +270,7 @@ async def test_a_check_starts_fresh_and_its_outcome_reaches_its_parent(
         history = earlier_conversation(store, runs, PROJECT, SESSION, 100_000)
     finally:
         store.close()
-    assert REPORT not in json.dumps(history)
+    assert str(RESULT["summary"]) not in json.dumps(history)
 
 
 async def test_a_parent_cannot_answer_while_its_check_runs(delegating: Harness) -> None:
@@ -319,6 +350,8 @@ async def test_a_check_is_refused_the_tools_its_role_withholds(delegating: Harne
                     call("plan_read"),
                     CHECK,
                     call("e-print-mcp_search_eprint", query="Ed448"),  # a connector's
+                    call("delegation_status", delegation_id="dlg-" + "0" * 24),
+                    call("cancel_delegation", delegation_id="dlg-" + "0" * 24),
                 ]
             ),
             Reply("Verdict: inconclusive"),
@@ -326,7 +359,7 @@ async def test_a_check_is_refused_the_tools_its_role_withholds(delegating: Harne
     )
     (child,) = children(delegating, root)
     refused = results(child)
-    assert len(refused) == 4
+    assert len(refused) == 6
     for result in refused:
         error = json.loads(result)["error"]
         assert error["kind"] == "policy_denied"
@@ -478,4 +511,206 @@ def test_a_version_27_store_migrates_with_no_delegations(tmp_path: Path) -> None
         migrated.close()
     with sqlite3.connect(target / "control.sqlite3") as db:
         assert db.execute("PRAGMA user_version").fetchone() == (migrations.VERSION,)
-    assert migrations.VERSION == 28
+    assert migrations.VERSION >= 28
+
+
+@pytest.mark.parametrize(
+    ("answer", "error"),
+    [
+        ("Verdict: confirmed", "Invalid JSON"),
+        ("[1]", "Input should be an object"),
+        (json.dumps({**RESULT, "extra": 1}), "extra: Extra inputs are not permitted"),
+        (json.dumps({**RESULT, "verdict": "true"}), "verdict: Input should be"),
+        (json.dumps({**RESULT, "status": "blocked"}), "names its obstacle"),
+        (json.dumps({**RESULT, "obstacle": "None."}), "names its obstacle"),
+        (
+            json.dumps({**RESULT, "summary": "x" * 8001}),
+            "summary: Value error, a text of 1 to 8000 characters, not 8001",
+        ),
+        (json.dumps({**RESULT, "status": "partial"}), "only a complete check confirms"),
+        (
+            json.dumps({**RESULT, "status": "blocked", "obstacle": "No Sage."}),
+            "only a complete check confirms",
+        ),
+        (
+            json.dumps({**RESULT, "summary": "   "}),
+            "summary: Value error, a text of 1 to 8000 characters, not 0",
+        ),
+        (json.dumps({**RESULT, "summary": "Fine\u200b."}), "a character the user may not see"),
+        (
+            json.dumps({**RESULT, "open_questions": ["Why\u202e?"]}),
+            "a character the user may not see",
+        ),
+        (json.dumps({**RESULT, "deviations": ["d"] * 11}), "deviations: Tuple should have at most"),
+        (
+            json.dumps({**RESULT, "deviations": ["d" * 1001]}),
+            "deviations.0: Value error, a text of 1 to 1000 characters",
+        ),
+        (
+            json.dumps({**RESULT, "summary": "x" * 8000, "deviations": ["d" * 1000] * 10}),
+            "longer than 16384 bytes",
+        ),
+    ],
+)
+def test_a_result_is_checked_against_its_schema(answer: str, error: str) -> None:
+    with pytest.raises(ValueError, match=re.escape(error)):
+        parse(answer)
+
+
+def test_a_result_may_come_in_one_fenced_block() -> None:
+    assert parse(f"```json\n{REPORT}\n```").verdict == "confirmed"
+    assert parse(f"  {REPORT}\n").status == "complete"
+
+
+async def test_an_invalid_result_gets_one_correction_and_stays_as_returned(
+    delegating: Harness,
+) -> None:
+    """PD-F5, PD-18: one correction; then the answer stands, the result is missing, the
+    errors are kept, and nothing is filled in."""
+    root = await delegating.run(
+        "root",
+        [Reply(calls=[CHECK]), wait(), Reply("The check returned no result.")],
+        delegated=[Reply("Verdict: confirmed"), Reply("Still not JSON.")],
+    )
+    first, second = delegating.gateway.children
+    corrections = [
+        m for m in second if str(m.get("content", "")).startswith(OUTCOME_CORRECTION.text)
+    ]
+    assert len(corrections) == 1
+    assert not any(str(m.get("content", "")).startswith(OUTCOME_CORRECTION.text) for m in first)
+    (child,) = children(delegating, root)
+    assert [m["content"] for m in child.messages if m["role"] == "assistant"] == [
+        "Verdict: confirmed",
+        "Still not JSON.",
+    ]
+    (delegation_id,) = started(root)
+    outcome = delegation(delegating, delegation_id)
+    assert (outcome.ended, outcome.result, outcome.report) == ("returned", None, "Still not JSON.")
+    assert len(outcome.errors) == 2
+    received = json.loads(results(root)[-1])["delegations"][0]
+    assert (received["result"], received["answer"]) == (None, "Still not JSON.")
+    assert received["errors"] == list(outcome.errors)
+
+
+async def test_a_corrected_result_is_kept(delegating: Harness) -> None:
+    root = await delegating.run(
+        "root",
+        [Reply(calls=[CHECK]), wait(), Reply("Confirmed.")],
+        delegated=[Reply("Verdict: confirmed"), Reply(f"```json\n{REPORT}\n```")],
+    )
+    (delegation_id,) = started(root)
+    outcome = delegation(delegating, delegation_id)
+    assert outcome.result is not None
+    assert outcome.result["verdict"] == "confirmed"
+    assert len(outcome.errors) == 1
+
+
+async def test_a_blocked_check_names_its_obstacle_and_its_question(delegating: Harness) -> None:
+    """PD-19, PD-41, PD-F6: blocked is the child's claim; the harness saw it return."""
+    blocked = {
+        **RESULT,
+        "status": "blocked",
+        "verdict": "inconclusive",
+        "obstacle": "The capability sage is missing.",
+        "open_questions": ["May I install Sage?"],
+    }
+    root = await delegating.run(
+        "root",
+        [Reply(calls=[CHECK]), wait(), Reply("The check is blocked.")],
+        delegated=[Reply(json.dumps(blocked))],
+    )
+    (delegation_id,) = started(root)
+    outcome = delegation(delegating, delegation_id)
+    assert outcome.ended == "returned"
+    assert outcome.result == blocked
+
+
+async def test_a_parent_reads_and_cancels_its_check(delegating: Harness) -> None:
+    """PD-33, PD-39: delegation_status, then cancel_delegation, which returns the outcome."""
+    free = asyncio.Event()
+
+    async def blocked() -> None:
+        await free.wait()
+
+    try:
+        root = await delegating.run(
+            "root",
+            [
+                Reply(calls=[CHECK]),
+                about("delegation_status"),
+                about("cancel_delegation"),
+                about("cancel_delegation"),
+                Reply("Cancelled."),
+            ],
+            delegated=[Reply(REPORT, before=blocked)],
+        )
+    finally:
+        free.set()
+    status, cancelled, again = (json.loads(r) for r in results(root)[1:])
+    assert (status["state"], status["limits"]) == ("running", {"turns": 12, "tokens": 150_000})
+    assert (cancelled["ended"], cancelled["cancelled"]) == ("cancelled", True)
+    assert (again["ended"], again["cancelled"]) == ("cancelled", False)
+    (child,) = children(delegating, root)
+    assert child.stopped == "cancelled"
+    assert root.final_text == "Cancelled."
+
+
+def test_a_version_28_store_keeps_its_delegations_and_their_outcomes(tmp_path: Path) -> None:
+    """Version 29 adds the result, errors, alias and models to an outcome, written once
+    with the rest of it; an outcome ended before has none."""
+    current = ProjectStore(tmp_path / "current")
+    try:
+        current.create(PROJECT, "minimal", "sha256:" + "a" * 64)
+        current.open_session(PROJECT, SESSION, dedicated=False)
+        records = DelegationRecords(current.control)
+        for n in (0, 1):
+            made = Delegation.model_validate(
+                {
+                    "delegation_id": f"dlg-{n:024x}",
+                    "parent": "20261015T120000000000Z-root",
+                    "run": f"20261015T12000{n}000000Z-child",
+                    "kind": "check",
+                    "brief": {"task": "Check."},
+                    "started_at": "2026-10-15T12:00:01+00:00",
+                }
+            )
+            records.start(PROJECT, SESSION, made)
+        records.end(PROJECT, SESSION, f"dlg-{0:024x}", Ending("returned", "answered", "Done."))
+    finally:
+        current.close()
+    target = tmp_path / "old"
+    target.mkdir()
+    older_store(tmp_path / "current" / "control.sqlite3", target / "control.sqlite3", 28)
+    migrated = ProjectStore(target)
+    try:
+        records = DelegationRecords(migrated.control)
+        ended = records.get(PROJECT, SESSION, f"dlg-{0:024x}")
+        assert (ended.ended, ended.report, ended.result, ended.alias) == (
+            "returned",
+            "Done.",
+            None,
+            None,
+        )
+        with (
+            pytest.raises(sqlite3.IntegrityError, match="written once"),
+            migrated.control.write() as tx,
+        ):
+            tx.sql.execute("UPDATE delegations SET alias = 'late' WHERE ended IS NOT NULL")
+        with (
+            pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed: delegations"),
+            migrated.control.write() as tx,
+        ):
+            tx.sql.execute("UPDATE delegations SET result = '{}' WHERE ended IS NULL")
+        ending = Ending(
+            "returned",
+            "answered",
+            REPORT,
+            result=RESULT,
+            errors=("an error",),
+            alias="main",
+            models=("m",),
+        )
+        later = records.end(PROJECT, SESSION, f"dlg-{1:024x}", ending)
+        assert (later.result, later.errors, later.models) == (RESULT, ("an error",), ("m",))
+    finally:
+        migrated.close()

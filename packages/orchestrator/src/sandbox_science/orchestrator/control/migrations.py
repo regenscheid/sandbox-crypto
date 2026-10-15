@@ -1964,6 +1964,52 @@ BEGIN SELECT RAISE(ABORT, 'delegations are kept'); END""",
         schema.execute(statement)
 
 
+def _delegation_results(schema: Schema) -> None:
+    """Version 29: a delegation's outcome gains the child's result as its output schema
+    validated it, the validation errors, whether the child read the entry it checked,
+    and the model alias and the models it ran on (PD-17, PD-18, PD-29), all written once
+    with the rest of the outcome. A result belongs only to a delegation that returned.
+    The columns have no CHECK, which ``ALTER TABLE`` would have every row pass: triggers
+    check them as a row is written, and the rows written before have none of them."""
+    outcome = (
+        "(NEW.result IS NULL OR (NEW.ended = 'returned' AND json_valid(NEW.result) "
+        "AND json_type(NEW.result) = 'object' AND length(CAST(NEW.result AS BLOB)) <= 32768)) "
+        "AND (NEW.errors IS NULL OR (json_valid(NEW.errors) AND json_type(NEW.errors) = "
+        "'array' AND length(CAST(NEW.errors AS BLOB)) <= 16384)) "
+        "AND (NEW.alias IS NULL OR length(CAST(NEW.alias AS BLOB)) BETWEEN 1 AND 256) "
+        "AND (NEW.models IS NULL OR (json_valid(NEW.models) AND json_type(NEW.models) = "
+        "'array' AND length(CAST(NEW.models AS BLOB)) <= 4096)) "
+        "AND (NEW.read_entry IS NULL OR NEW.read_entry IN (0, 1)) "
+        "AND (NEW.ended IS NOT NULL OR (NEW.result IS NULL AND NEW.errors IS NULL "
+        "AND NEW.alias IS NULL AND NEW.models IS NULL AND NEW.read_entry IS NULL))"
+    )
+    for statement in (
+        "ALTER TABLE delegations ADD COLUMN result TEXT",
+        "ALTER TABLE delegations ADD COLUMN errors TEXT",
+        "ALTER TABLE delegations ADD COLUMN alias TEXT",
+        "ALTER TABLE delegations ADD COLUMN models TEXT",
+        "ALTER TABLE delegations ADD COLUMN read_entry INTEGER",
+        f"""CREATE TRIGGER delegations_outcome_insert BEFORE INSERT ON delegations
+WHEN NOT ({outcome}) BEGIN SELECT RAISE(ABORT, 'CHECK constraint failed: delegations'); END""",
+        f"""CREATE TRIGGER delegations_outcome_update BEFORE UPDATE ON delegations
+WHEN NOT ({outcome}) BEGIN SELECT RAISE(ABORT, 'CHECK constraint failed: delegations'); END""",
+        "DROP TRIGGER delegations_kept",
+        """CREATE TRIGGER delegations_kept BEFORE UPDATE ON delegations
+WHEN NEW.delegation_id IS NOT OLD.delegation_id OR NEW.project_id IS NOT OLD.project_id
+OR NEW.session_id IS NOT OLD.session_id OR NEW.parent IS NOT OLD.parent
+OR NEW.run IS NOT OLD.run OR NEW.kind IS NOT OLD.kind OR NEW.brief IS NOT OLD.brief
+OR NEW.started_at IS NOT OLD.started_at OR (OLD.ended IS NOT NULL AND (
+NEW.ended IS NOT OLD.ended OR NEW.stopped IS NOT OLD.stopped
+OR NEW.report IS NOT OLD.report OR NEW.ended_at IS NOT OLD.ended_at
+OR NEW.refused IS NOT OLD.refused OR NEW.result IS NOT OLD.result
+OR NEW.errors IS NOT OLD.errors OR NEW.alias IS NOT OLD.alias
+OR NEW.models IS NOT OLD.models OR NEW.read_entry IS NOT OLD.read_entry))
+OR (OLD.acknowledged IS NOT NULL AND NEW.acknowledged IS NOT OLD.acknowledged)
+BEGIN SELECT RAISE(ABORT, 'a delegation''s outcome is written once'); END""",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -1992,6 +2038,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _frontier_categories,
     _frontier_changes,
     _delegations,
+    _delegation_results,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""
