@@ -55,6 +55,7 @@ from .chat import SOURCE, session_lease
 from .control import ControlError
 from .control.errors import BUSY
 from .delegation.records import DelegationRecords
+from .documents import DocumentStore
 from .documents.annotations import Annotations
 from .documents.tool import WorkRequests
 from .harness import Harness, RunRequest, admit, save
@@ -345,7 +346,13 @@ class RunService:
             # The run is offered every request that waits, held or not.
             self.held.pop((project, session), None)
             history = await threaded(
-                earlier_conversation, stores.projects, runs, project, session, HISTORY_CHARS
+                earlier_conversation,
+                stores.projects,
+                runs,
+                project,
+                session,
+                HISTORY_CHARS,
+                documents=stores.documents,
             )
             request = dataclasses.replace(
                 admitted.request,
@@ -389,17 +396,27 @@ def unanswered(hooks: Sequence[TurnHook]) -> set[str]:
 
 
 def earlier_conversation(
-    projects: ProjectStore, runs: RunState, project: str, session: str, budget: int
+    projects: ProjectStore,
+    runs: RunState,
+    project: str,
+    session: str,
+    budget: int,
+    *,
+    documents: DocumentStore | None = None,
 ) -> list[Message]:
-    """The session's earlier main runs as conversation (RS-10): each one's task and the
-    user's messages it delivered, then its answer, oldest first. A run that delivered
-    nothing is left out, and so are delegated runs, whose outcomes reached their parents.
+    """The session's earlier main runs as conversation (RS-10): each one's task, and the
+    user's words it delivered in the order they were written, then its answer, oldest
+    first. The user's words are the chat messages and, with ``documents``, the comments
+    addressed to the session (work requests, RS-6b), each after a line naming its
+    document. A run that delivered nothing is left out, and so are delegated runs, whose
+    outcomes reached their parents.
 
     Within ``budget`` characters, the user's messages are kept as written and the agent's
     answers give way first (lane K's triage, D3): the newest answers that fit are kept
     whole, and each other answer is replaced by a line saying it was left out. When even
     the user's messages do not fit, the oldest runs are left out whole, and a line says
     how many."""
+    requests = None if documents is None else Annotations(documents)
     turns: list[tuple[str, str]] = []  # newest first: each run's question and answer
     used = left_out = 0
     for entry in reversed(projects.runs(project, session)):
@@ -411,9 +428,19 @@ def earlier_conversation(
         record = projects.run(project, session, entry.name)
         summary = record.summaries.get("messages")
         initial = isinstance(summary, dict) and bool(summary.get("initial"))
-        parts = ([] if initial else [record.task]) + runs.delivered_texts(
-            project, session, entry.name
+        said = runs.delivered_texts(project, session, entry.name)
+        comments = (
+            []
+            if requests is None
+            else [
+                (at, f"(A comment addressed to you on the document {document}:)\n{text}")
+                for at, document, text in requests.delivered_texts(project, session, record.run_id)
+            ]
         )
+        said = sorted(said + comments, key=lambda item: item[0])
+        # A run started for comments alone has a stand-in task; its comments replace it.
+        no_task = initial or (bool(comments) and record.task == REQUESTS_TASK)
+        parts = ([] if no_task else [record.task]) + [text for _, text in said]
         question = "\n\n".join(part for part in parts if part)
         if not question:
             continue

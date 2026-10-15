@@ -537,7 +537,7 @@ class Harness:
         finally:
             documents.close()
 
-    def work_request(self, operation: str = "request-1") -> str:
+    def work_request(self, operation: str = "request-1", body: str = "Explain the result.") -> str:
         """A USER work request addressed to the session, as its request ID."""
         self.notes()
         documents = self.documents()
@@ -548,7 +548,7 @@ class Harness:
                 {
                     "action": "create",
                     "anchor": {"revision": 1, "block": "b1"},
-                    "body": "Explain the result.",
+                    "body": body,
                     "addressed_to": SESSION,
                     "operation_id": operation,
                 },

@@ -910,6 +910,21 @@ class Annotations:
             project=notice,
         )
 
+    def delivered_texts(self, project: str, session: str, run: str) -> list[tuple[float, str, str]]:
+        """The requests ``run`` delivered, in the order they were written: each comment's
+        time, in seconds since the epoch, its document and its text, as ``pending``
+        offered it (run-service spec RS-10)."""
+        with self.store.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT e.created_at,t.document_id,e.body FROM annotation_requests n "
+                "JOIN annotation_threads t USING(thread_id) "
+                "JOIN annotation_entries e ON e.entry_id=n.entry_id "
+                "WHERE n.project_id=? AND n.session_id=? AND n.delivered_run=? "
+                "ORDER BY e.created_at,n.rowid",
+                (project, session, run),
+            ).fetchall()
+        return [(float(at), str(document), str(body)) for at, document, body in rows]
+
     def waiting(self, scope: tuple[str, str] | None = None) -> list[tuple[str, str, str]]:
         """The requests that wait for a run, oldest first, as (project, session, request
         ID), in every session or in ``scope``'s alone: not answered, delivered by no saved
