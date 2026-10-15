@@ -10,8 +10,9 @@ connectors are offered only to runs of that project.
 
 ``Connectors`` are one run's connector tools (the decisions of 2026-10-14):
 
-- listed at the run's start from each configured server, within a deadline, under the
-  names the server lists, which for a portal such as crypto-research-mcp carry its
+- listed at the run's start from each configured server, within a deadline, a failed
+  listing tried again twice, a second and then two seconds later (a timeout is not), under
+  the names the server lists, which for a portal such as crypto-research-mcp carry its
   prefix. A name a model cannot call, one another server's tool has, or one the harness
   gives its own tools (whether this run has them or not) is left out and logged, and
   so is a server's tool past the per-server cap;
@@ -22,6 +23,10 @@ connectors are offered only to runs of that project.
   tokens for crypto-research-mcp's 72 tools. A query lists the tools that match it well,
   with their purposes, and loads none: loading a query's best matches loaded ten
   unrelated schemas for a search that had no match (lab 40, B4);
+- a server whose listing still failed is unavailable, not empty: the index says so, with
+  the reason, the first ``mcp_tools`` call lists it once more, and the run's record and
+  its ``started`` event keep it (lab 41, B4: one failed listing left a run without
+  connectors, and nothing said so);
 - each with the effect class ``effect``, since the policy marks no connector tool
   read-only, so the plan fence applies;
 - what a server says about a tool is untrusted. Its description loses control and
@@ -99,6 +104,12 @@ MAX_SPEC_BYTES: Final = 512 * 1024
 """All connector tools' descriptions and schemas together, as the model gets them."""
 LIST_SECONDS: Final = 15.0
 """How long listing one server's tools may take at a run's start."""
+LIST_ATTEMPTS: Final = 3
+"""Listings of a server at a run's start, while each fails at once."""
+LIST_BACKOFF: Final = 1.0
+"""Seconds before the second listing of a server; each later one waits twice as long."""
+MAX_FAILURE: Final = 300
+"""Characters of the reason a server's listing failed."""
 CALL_SECONDS: Final = 330.0
 """How long one call may take: longer than the proxy's default ``upstream_timeout``
 (5 minutes), so the proxy's own answer arrives first."""
@@ -430,6 +441,12 @@ class Connectors:
         self.loaded: list[str] = []
         """The tools loaded into the run, in order."""
         self.loaded_chars = 0
+        self.failed: dict[str, str] = {}
+        """The configured servers whose listing failed, with why: unavailable, not empty."""
+        self.relisted: list[str] = []
+        """The servers a later listing reached, after the run's start."""
+        self.taken: set[str] = set()
+        self.retried = False
 
     @property
     def specs(self) -> list[ToolSpec]:
@@ -438,29 +455,74 @@ class Connectors:
     async def load(self, taken: Iterable[str] = ()) -> None:
         """List each server's tools. A server that cannot be listed in time offers none,
         and the run goes on without it; ``taken`` names tools the harness keeps."""
-        names = set(taken)
+        self.taken = set(taken)
         listings: dict[str, list[tuple[str, dict[str, Any]]]] = {}
         for server in self.servers:
+            listed = await self._listed(server, LIST_ATTEMPTS)
+            if listed is not None:
+                listings[server] = self._kept(server, listed, self.taken)
+        self._register(listings)
+
+    async def relist(self) -> list[str]:
+        """List once more, once in the run, each server whose listing failed: the servers
+        that answered now, whose tools join the index."""
+        if self.retried or not self.failed:
+            return []
+        self.retried = True
+        listings: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+        for server in list(self.failed):
+            listed = await self._listed(server, 1)
+            if listed is not None:
+                listings[server] = self._kept(server, listed, self.taken | set(self.tools))
+        self._register(listings)
+        self.relisted.extend(listings)
+        return list(listings)
+
+    async def _listed(self, server: str, attempts: int) -> list[dict[str, Any]] | None:
+        """``server``'s tools, listed up to ``attempts`` times while a listing fails at
+        once, waiting longer each time; ``None``, with the reason kept, when none worked."""
+        delay = LIST_BACKOFF
+        for attempt in range(1, attempts + 1):
             try:
                 async with asyncio.timeout(self.list_seconds):
                     listed = await self._list(server)
-            except (ConnectorError, TimeoutError) as error:
-                _log.warning("the tools of MCP server %s are not offered: %s", server, error)
-                continue
-            kept: list[tuple[str, dict[str, Any]]] = []
-            seen: set[str] = set()
-            for tool in listed:
-                name = tool.get("name")
-                if not isinstance(name, str) or not NAME.fullmatch(name) or name in names | seen:
-                    _log.warning("MCP server %s's tool %r is not offered: its name", server, name)
+            except ConnectorError as error:
+                failure = f"{error.kind}: {error.message}"
+                if attempt < attempts:
+                    _log.info("listing MCP server %s failed (%s): trying again", server, failure)
+                    await asyncio.sleep(delay)
+                    delay *= 2
                     continue
-                seen.add(name)
-                kept.append((name, tool))
-            listings[server] = kept
+            except TimeoutError:
+                failure = f"no listing in {self.list_seconds:g} s"
+            else:
+                self.failed.pop(server, None)
+                return listed
+            self.failed[server] = " ".join(clean(failure).split())[:MAX_FAILURE]
+            _log.warning("the tools of MCP server %s are not offered: %s", server, failure)
+            return None
+        return None
+
+    def _kept(
+        self, server: str, listed: list[dict[str, Any]], names: set[str]
+    ) -> list[tuple[str, dict[str, Any]]]:
+        kept: list[tuple[str, dict[str, Any]]] = []
+        seen: set[str] = set()
+        for tool in listed:
+            name = tool.get("name")
+            if not isinstance(name, str) or not NAME.fullmatch(name) or name in names | seen:
+                _log.warning("MCP server %s's tool %r is not offered: its name", server, name)
+                continue
+            seen.add(name)
+            kept.append((name, tool))
+        return kept
+
+    def _register(self, listings: dict[str, list[tuple[str, dict[str, Any]]]]) -> None:
+        """Offer the listed servers' tools, within the caps."""
         # A name two configured servers list is neither's: one could stand in for the
         # other's tool, whichever was listed first.
         owners = Counter(name for kept in listings.values() for name, _ in kept)
-        size = 0
+        size = sum(tool.cost for tool in self.tools.values())
         for server, kept in listings.items():
             offered = 0
             for name, tool in kept:
@@ -488,7 +550,7 @@ class Connectors:
                 size += offered_tool.cost
                 self.tools[name] = offered_tool
             self.counts[server] = offered
-        for server in self.servers:
+        for server in listings:
             if not self.counts.setdefault(server, 0):
                 _log.warning(
                     "MCP server %s offers no tools: none listed, or the policy denies all "
@@ -497,6 +559,8 @@ class Connectors:
                 )
         keys = {tool.group for tool in self.tools.values()}
         for key in sorted({*self.about, *(self.shown or ())} - keys):
+            if key.partition("/")[0] in self.failed:
+                continue  # said already: its listing failed
             _log.warning(
                 "the tool index has no server %s, which --mcp-about or --mcp-index names: "
                 "name a configured server, or SERVER/BEHIND for one behind a portal",
@@ -517,6 +581,11 @@ class Connectors:
         groups: Counter[str] = Counter()
         unlisted_groups: Counter[str] = Counter()
         unlisted = used = 0
+        for server, failure in sorted(self.failed.items()):
+            lines.append(
+                f"{server} - unavailable: its listing failed ({failure}). Call mcp_tools to "
+                "list it once more; until then its tools cannot be called"
+            )
         for key in sorted(by):
             server = key.partition("/")[0]
             groups[server] += 1
@@ -601,6 +670,10 @@ class Connectors:
         }
         if self.refused:
             found["refused"] = sorted(self.refused)
+        if self.failed:
+            found["unavailable"] = dict(self.failed)
+        if self.relisted:
+            found["relisted"] = list(self.relisted)
         return found
 
     async def _list(self, server: str) -> list[dict[str, Any]]:

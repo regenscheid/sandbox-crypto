@@ -665,27 +665,11 @@ class Toolbox:
         """The run's connector tools: indexed in ``mcp_tools``, and offered once loaded."""
         self.deferred: dict[str, ToolEntry] = {}
         if connectors is not None:
-            # A connector tool is never offered under a name the harness gives a tool of
-            # its own, whether this run has that tool or not: the system prompt names
-            # some of them.
-            names = {entry.spec.name for entry in entries} | HARNESS_TOOL_NAMES
-            for entry in _group(
-                connectors.specs,
-                lambda name, call: connectors.call(name, call.args),
-                {},
-                bound=True,
-            ):
-                if entry.spec.name in names:
-                    _log.warning(
-                        "connector tool %s is not offered: its name is taken", entry.spec.name
-                    )
-                    del connectors.tools[entry.spec.name]
-                else:
-                    self.deferred[entry.spec.name] = entry
-            if self.deferred:
-                entries.append(
-                    ToolEntry(mcp_tools_spec(connectors.index()), "read", _plain(self._mcp_tools))
-                )
+            self._defer(connectors, {entry.spec.name for entry in entries})
+            # A server whose listing failed is unavailable, not missing: mcp_tools says
+            # so, and lists it once more (lab 41, B4).
+            if self.deferred or connectors.failed:
+                entries.append(self._mcp_tools_entry(connectors))
         self.entries = {entry.spec.name: entry for entry in entries}
         if len(self.entries) != len(entries):
             names = [entry.spec.name for entry in entries]
@@ -705,6 +689,26 @@ class Toolbox:
         return [
             entry for entry in _group(specs, run, effects) if not check or entry.effect == "read"
         ]
+
+    def _defer(self, connectors: Connectors, names: set[str]) -> None:
+        """Index the connector tools not yet indexed. A connector tool is never offered
+        under a name the harness gives a tool of its own, whether this run has that tool
+        or not: the system prompt names some of them."""
+        taken = names | HARNESS_TOOL_NAMES
+        for entry in _group(
+            [spec for spec in connectors.specs if spec.name not in self.deferred],
+            lambda name, call: connectors.call(name, call.args),
+            {},
+            bound=True,
+        ):
+            if entry.spec.name in taken:
+                _log.warning("connector tool %s is not offered: its name is taken", entry.spec.name)
+                del connectors.tools[entry.spec.name]
+            else:
+                self.deferred[entry.spec.name] = entry
+
+    def _mcp_tools_entry(self, connectors: Connectors) -> ToolEntry:
+        return ToolEntry(mcp_tools_spec(connectors.index()), "read", _plain(self._mcp_tools))
 
     @property
     def specs(self) -> tuple[ToolSpec, ...]:
@@ -733,7 +737,7 @@ class Toolbox:
             or len(cast(list[object], names)) > MAX_LOAD
             or not all(isinstance(name, str) for name in cast(list[object], names))
             or (query is not None and (not isinstance(query, str) or len(query) > MAX_QUERY))
-            or (not names and not query)
+            or (not names and not query and not self.connectors.failed)
         ):
             return _failure(
                 ErrorKind.INVALID_REQUEST,
@@ -741,9 +745,28 @@ class Toolbox:
                 f"query of at most {MAX_QUERY} characters",
             )
         connectors = self.connectors
-        added, before, unknown, over = self._load(list(dict.fromkeys(cast(list[str], names))))
-        answer: dict[str, Any] = {"loaded": added}
+        answer: dict[str, Any] = {}
         notes: list[str] = []
+        if connectors.failed and not connectors.retried:
+            # A server whose listing failed at the run's start is listed once more.
+            relisted = await connectors.relist()
+            if relisted:
+                self._defer(connectors, set(self.entries) - set(self.deferred))
+                self.entries[MCP_TOOLS] = self._mcp_tools_entry(connectors)
+                self.revision += 1
+                answer["relisted"] = relisted
+                notes.append(
+                    "listed again: their tools are in mcp_tools' index from your next turn, "
+                    "and can be loaded by name now"
+                )
+        if connectors.failed:
+            answer["unavailable"] = dict(connectors.failed)
+            notes.append(
+                "these servers could not be listed: their tools are unavailable in this run, "
+                "not missing; say so rather than conclude that no such tool exists"
+            )
+        added, before, unknown, over = self._load(list(dict.fromkeys(cast(list[str], names))))
+        answer["loaded"] = added
         if before:
             answer["already_loaded"] = before
         harness = [name for name in unknown if name in HARNESS_TOOL_NAMES]

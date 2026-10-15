@@ -42,7 +42,9 @@ from sandbox_science.orchestrator.connectors import (
 from sandbox_science.orchestrator.documents.agent_text import hidden_characters
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolSpec
+from sandbox_science.orchestrator.projects import ProjectStore, run_name
 from sandbox_science.orchestrator.prompts import pin_tools, schema_json
+from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.tools import HARNESS_TOOL_NAMES, Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerClient
 from sandbox_science.policy import HardFloor, PoolCeiling
@@ -57,7 +59,7 @@ from sandbox_science.testing.mcp import (
     text_result,
 )
 
-from .loop_harness import PROJECT, Harness, Reply, call
+from .loop_harness import PROJECT, SESSION, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
@@ -1157,3 +1159,103 @@ async def test_a_delegated_toolbox_refuses_connectors(proxied: Proxied) -> None:
     async with WorkerClient("http://127.0.0.1:9", "test-secret-worker") as client:
         with pytest.raises(ValueError, match="a delegated run gets no connector tools"):
             Toolbox(client, CONTEXT, connectors=connectors, delegated=True)
+
+
+def flaky(proxied: Proxied, failures: int) -> list[int]:
+    """The fake server's tools/list fails ``failures`` times, then lists as it does; the
+    listings asked, in a one-item list."""
+    asked = [0]
+    listing = proxied.fake._listing
+
+    def answer(params: Any) -> dict[str, object]:
+        asked[0] += 1
+        return {"tools": "down"} if asked[0] <= failures else listing(params)
+
+    proxied.fake.listing = answer
+    return asked
+
+
+async def test_a_listing_that_fails_at_once_is_tried_again(
+    proxied: Proxied, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Lab 41, B4: one failed listing left run 1 without connectors."""
+    monkeypatch.setattr(connectors_module, "LIST_BACKOFF", 0.0)
+    asked = flaky(proxied, 2)
+    client = ProxyClient(proxied.url, TOKEN)
+    connectors = Connectors(client, ["papers"], session="s-1")
+    try:
+        await connectors.load()
+    finally:
+        await client.close()
+    assert asked == [3]
+    assert (connectors.failed, connectors.counts) == ({}, {"papers": 8})
+    assert "unavailable" not in connectors.summary()
+
+
+async def test_a_server_listed_on_the_first_mcp_tools_call_after_failing(
+    proxied: Proxied, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(connectors_module, "LIST_BACKOFF", 0.0)
+    asked = flaky(proxied, 3)
+    model, transcript = await run_with(
+        proxied,
+        [
+            {"tool_calls": [{"name": "mcp_tools", "arguments": {"names": ["search"]}}]},
+            {"tool_calls": [{"name": "search", "arguments": {"query": "lattices"}}]},
+            {"text": "Found."},
+        ],
+    )
+    first, second, _ = model.specs
+    (index,) = [spec for spec in first if spec.name == "mcp_tools"]
+    assert "papers - unavailable: its listing failed (upstream_error: " in (index.description)
+    loaded, called, *_ = transcript.tool_records
+    assert loaded["mcp_tools"]["relisted"] == ["papers"]
+    assert loaded["mcp_tools"]["loaded"] == ["search"]
+    assert "unavailable" not in loaded["mcp_tools"]
+    assert called["connector"] == "papers"
+    (index,) = [spec for spec in second if spec.name == "mcp_tools"]
+    assert "unavailable" not in index.description
+    assert "  search" in index.description
+    assert asked == [4]
+    summary = transcript.summaries["connectors"]
+    assert (summary["relisted"], summary["servers"]) == (["papers"], {"papers": 8})
+
+
+async def test_a_server_that_cannot_be_listed_is_unavailable_not_missing(
+    harness: Harness, proxied: Proxied, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Lab 41, B4: the run had no mcp_tools and nothing said why. Now the model reads that
+    the server is unavailable, its one listing more fails too, and the run's record and
+    its started event, which the GUI shows, keep the reason."""
+    monkeypatch.setattr(connectors_module, "LIST_BACKOFF", 0.0)
+    asked = flaky(proxied, 99)
+    token = harness.tmp / "mcp.token"
+    token.write_text(TOKEN)
+    token.chmod(0o600)
+    options = [
+        "--mcp-proxy", proxied.url, "--mcp-token-file", str(token),
+        "--mcp-project", PROJECT, "--mcp-server", "papers",
+    ]  # fmt: skip
+    record = await harness.run(
+        "run-1",
+        [Reply(calls=[call("mcp_tools")]), Reply("The paper archive is unavailable today.")],
+        options=options,
+    )
+    assert asked == [4]  # three at the start, one on the first mcp_tools call
+    (index,) = [t for t in harness.gateway.tools["main"][0] if t["function"]["name"] == "mcp_tools"]
+    assert "papers - unavailable: its listing failed" in index["function"]["description"]
+    (tool,) = record.tools
+    answer = cast(dict[str, Any], tool["mcp_tools"])
+    assert set(answer["unavailable"]) == {"papers"}
+    assert "unavailable in this run, not missing" in answer["note"]
+    summary = cast(dict[str, Any], record.summaries["connectors"])
+    assert (summary["listed"], set(summary["unavailable"])) == (0, {"papers"})
+    store = ProjectStore(harness.state)
+    try:
+        events = RunState(store.control).events(
+            PROJECT, SESSION, run_name(record.started_at, record.run_id)
+        )
+    finally:
+        store.close()
+    started = events[0].data
+    assert started["connectors_unavailable"] == summary["unavailable"]

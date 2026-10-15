@@ -786,6 +786,8 @@ class Harness:
                 shown=self.mcp.shown,
             )
             await connectors.load(taken=HARNESS_TOOL_NAMES)
+            if chat is not None and connectors.failed:
+                chat.unavailable = dict(connectors.failed)
         if stores is None:
             return Toolbox(
                 self.client,

@@ -102,6 +102,9 @@ class RunChat:
         self.requests: Callable[[], bool] | None = None
         """Whether a work request waits that the run may be offered: the run's document
         tool says, once it has one."""
+        self.unavailable: Mapping[str, str] = {}
+        """The MCP servers whose listing failed at the run's start, with why: the
+        ``started`` event says so (lab 41, B4)."""
         self.parent, self.delegation = parent, delegation
         self.poll, self.clock = poll, clock
         self.offered: set[str] = set()
@@ -345,6 +348,11 @@ class EventLog(TurnHook):
                     "message_ids": list(chat.message_ids),
                     "prompt_provenance": (
                         pins.model_dump(mode="json") if pins is not None else None
+                    ),
+                    **(
+                        {"connectors_unavailable": dict(chat.unavailable)}
+                        if chat.unavailable
+                        else {}
                     ),
                 },
             )
