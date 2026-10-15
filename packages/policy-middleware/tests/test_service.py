@@ -2,7 +2,7 @@
 """The gRPC service, exercised over a real channel as OpenShell would call it."""
 
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import grpc
@@ -44,11 +44,17 @@ def token(caller_kind: str = "supervisor", sandbox_id: str | None = "sbx-0001") 
     return jwt.encode(claims, KEY, algorithm="EdDSA", headers={"typ": "openshell-ext+jwt"})
 
 
-def auth(value: str | None = None) -> tuple[tuple[str, str], ...]:
+Metadata = tuple[tuple[str, str], ...]
+
+
+def auth(value: str | None = None) -> Metadata:
     return (("authorization", f"Bearer {value or token()}"),)
 
 
-GATEWAY = auth(token("gateway", None))
+def gateway() -> Metadata:
+    """The gateway's token, made when a test calls: one made as the module is imported
+    expires five minutes later, before a long serial run reaches the test."""
+    return auth(token("gateway", None))
 
 
 @pytest.fixture
@@ -142,7 +148,7 @@ def test_the_server_accepts_openshells_transport() -> None:
 
 def test_describe_returns_the_manifest(channel: grpc.Channel) -> None:
     request = pb.MiddlewareDescribeRequest(gateway=gateway_metadata())
-    manifest = call(channel, "Describe", request, pb.MiddlewareManifest, GATEWAY)
+    manifest = call(channel, "Describe", request, pb.MiddlewareManifest, gateway())
     assert manifest.name == "sandbox-science/policy-middleware"
     assert manifest.expected_audience == AUDIENCE
     assert [(b.operation, b.phase, b.max_payload_bytes) for b in manifest.bindings] == [
@@ -196,7 +202,7 @@ def test_describe_rejects_incompatible_gateways(
     channel: grpc.Channel, request_message: pb.MiddlewareDescribeRequest
 ) -> None:
     with pytest.raises(grpc.RpcError) as error:
-        call(channel, "Describe", request_message, pb.MiddlewareManifest, GATEWAY)
+        call(channel, "Describe", request_message, pb.MiddlewareManifest, gateway())
     assert status_of(error) == grpc.StatusCode.FAILED_PRECONDITION
 
 
@@ -204,7 +210,7 @@ def test_a_newer_minor_version_is_compatible(channel: grpc.Channel) -> None:
     request = pb.MiddlewareDescribeRequest(
         gateway=gateway_metadata(protocol_version=ext.ProtocolVersion(major=1, minor=4))
     )
-    assert call(channel, "Describe", request, pb.MiddlewareManifest, GATEWAY).bindings
+    assert call(channel, "Describe", request, pb.MiddlewareManifest, gateway()).bindings
 
 
 @pytest.mark.parametrize(
@@ -244,7 +250,7 @@ def test_validate_config(channel: grpc.Channel, example: LoadedPolicy) -> None:
         "ValidateConfig",
         pb.ValidateConfigRequest(config=config(example), middleware_name="sandbox-science-policy"),
         pb.ValidateConfigResponse,
-        GATEWAY,
+        gateway(),
     )
     assert valid.valid
     assert valid.reason == ""
@@ -255,12 +261,12 @@ def test_validate_config(channel: grpc.Channel, example: LoadedPolicy) -> None:
         "ValidateConfig",
         pb.ValidateConfigRequest(config=unknown),
         pb.ValidateConfigResponse,
-        GATEWAY,
+        gateway(),
     )
     assert not invalid.valid
     assert "no policy" in invalid.reason
     missing = call(
-        channel, "ValidateConfig", pb.ValidateConfigRequest(), pb.ValidateConfigResponse, GATEWAY
+        channel, "ValidateConfig", pb.ValidateConfigRequest(), pb.ValidateConfigResponse, gateway()
     )
     assert not missing.valid
 
@@ -340,15 +346,15 @@ def test_header_names_are_compared_case_insensitively(
 @pytest.mark.parametrize(
     "metadata",
     [
-        pytest.param(auth(token(sandbox_id="sbx-0002")), id="other-sandbox"),
-        pytest.param(GATEWAY, id="gateway"),
+        pytest.param(lambda: auth(token(sandbox_id="sbx-0002")), id="other-sandbox"),
+        pytest.param(gateway, id="gateway"),
     ],
 )
 def test_only_the_requests_own_supervisor_may_evaluate(
-    channel: grpc.Channel, example: LoadedPolicy, metadata: tuple[tuple[str, str], ...]
+    channel: grpc.Channel, example: LoadedPolicy, metadata: Callable[[], Metadata]
 ) -> None:
     with pytest.raises(grpc.RpcError) as error:
-        call(channel, "EvaluateHttpRequest", evaluation(example), pb.HttpRequestResult, metadata)
+        call(channel, "EvaluateHttpRequest", evaluation(example), pb.HttpRequestResult, metadata())
     assert status_of(error) == grpc.StatusCode.PERMISSION_DENIED
 
 
