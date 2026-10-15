@@ -21,8 +21,17 @@ SLEEPER = [sys.executable, "-c", "import time; time.sleep(60)"]
 
 
 @contextmanager
-def started(argv: list[str], cwd: Path) -> Iterator[subprocess.Popen[bytes]]:
-    process = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+def started(
+    argv: list[str], cwd: Path, *, own_session: bool = False
+) -> Iterator[subprocess.Popen[bytes]]:
+    """``argv`` running in ``cwd``; with ``own_session``, as if from another terminal."""
+    process = subprocess.Popen(
+        argv,
+        cwd=cwd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=own_session,
+    )
     try:
         yield process
     finally:
@@ -76,9 +85,22 @@ def test_a_process_in_a_removed_directory_of_the_same_path_is_not_the_runs(
         assert stranger.pid not in left_behind(base)
 
 
+def test_a_command_this_session_started_is_found_by_the_paths_it_names(tmp_path: Path) -> None:
+    # A command a test starts, such as `sandbox-science-harness serve --state-dir ...`,
+    # works elsewhere and has no --root, but names the test's directory.
+    base, elsewhere = tmp_path / "base", tmp_path / "elsewhere"
+    base.mkdir()
+    elsewhere.mkdir()
+    with (
+        started([*SLEEPER, "--state-dir", str(base / "state")], elsewhere) as bare,
+        started([*SLEEPER, f"--token-file={base}/token"], elsewhere) as option,
+    ):
+        assert set(left_behind(base)) == {bare.pid, option.pid}
+
+
 def test_other_path_arguments_do_not_count(tmp_path: Path) -> None:
-    # Someone watching a log in the run's directory, and a --root that only contains
-    # the base's path as text.
+    # Someone watching a log in the run's directory from another terminal, and a --root
+    # that only contains the base's path as text.
     base, elsewhere = tmp_path / "base", tmp_path / "elsewhere"
     base.mkdir()
     elsewhere.mkdir()
@@ -86,7 +108,9 @@ def test_other_path_arguments_do_not_count(tmp_path: Path) -> None:
     copy.mkdir(parents=True)
     try:
         with (
-            started(["tail", "-F", str(base / "worker.log")], elsewhere) as watcher,
+            started(
+                ["tail", "-F", str(base / "worker.log")], elsewhere, own_session=True
+            ) as watcher,
             started([*SLEEPER, f"--root={copy}/x"], elsewhere) as lookalike,
         ):
             found = left_behind(base)

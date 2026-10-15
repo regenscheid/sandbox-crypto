@@ -50,7 +50,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        tier: [fast, slow]
+        include:
+          - tier: fast
+            test_timeout: 120
+            stack_dump: 100
+          - tier: slow
+            test_timeout: 300
+            stack_dump: 280
     name: test (${{ matrix.tier }})
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -61,14 +67,14 @@ jobs:
           python-version: "3.13"
           enable-cache: true
       - run: uv sync --locked
-      # pytest writes to a file that is printed when it ends: written straight to the step's
-      # output, parallel runs stalled the hosted runner until the job timed out, with no log.
-      - run: |
-          status=0
-          uv run python scripts/tiers.py run ${{ matrix.tier }} -n auto --durations=25 \
-            > "$RUNNER_TEMP/pytest.txt" 2>&1 < /dev/null || status=$?
-          cat "$RUNNER_TEMP/pytest.txt"
-          exit "$status"
+      # A test that runs too long has every thread's stack printed (faulthandler), then its
+      # worker is ended (pytest-timeout's thread method, which works wherever the test is
+      # stuck); xdist names the test. The run stops at 15 minutes, before the job's limit,
+      # so its output is printed either way.
+      - run: >-
+          scripts/ci_pytest.sh 900 ${{ matrix.tier }} -n auto --durations=25
+          --timeout=${{ matrix.test_timeout }} --timeout-method=thread
+          -o faulthandler_timeout=${{ matrix.stack_dump }}
 
   # The whole suite, serially and unfiltered, on every supported Python.
   full:
@@ -105,13 +111,10 @@ jobs:
           python-version: "3.13"
           enable-cache: true
       - run: uv sync --locked
-      - run: |
-          status=0
-          uv run python scripts/tiers.py run slow -n auto --count 10 \
-            -o tmp_path_retention_policy=failed > "$RUNNER_TEMP/pytest.txt" 2>&1 < /dev/null \
-            || status=$?
-          cat "$RUNNER_TEMP/pytest.txt"
-          exit "$status"
+      - run: >-
+          scripts/ci_pytest.sh 4800 slow -n auto --count 10
+          -o tmp_path_retention_policy=failed --timeout=300 --timeout-method=thread
+          -o faulthandler_timeout=280
 
   # The workspace GUI (D80): packages from the lockfile, without install scripts.
   web:

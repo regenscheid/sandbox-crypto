@@ -307,7 +307,12 @@ async def test_serve_runs_the_sessions_until_stopped(harness: Harness) -> None:
         assert runs(harness).service_running()
     finally:
         process.send_signal(signal.SIGINT)
-        _, stderr = await asyncio.wait_for(process.communicate(), 20)
+        try:
+            _, stderr = await asyncio.wait_for(process.communicate(), 20)
+        finally:
+            if process.returncode is None:  # it did not stop: it must not outlive the test
+                process.kill()
+                await process.wait()
     assert b"serving the sessions of" in stderr
     assert b"stopped: runs in progress end interrupted" in stderr
     assert process.returncode == 0

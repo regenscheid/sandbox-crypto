@@ -84,7 +84,7 @@ npm test
 npm run build
 ```
 
-CI runs the same checks. On a pull request it runs them on Python 3.13, with the tests in two parallel jobs, the fast tier and the slow tier (`uv run python scripts/tiers.py run fast -n auto`, and `slow`), beside the web app's checks. A push to main also runs the whole suite serially on Python 3.12 and 3.13. A nightly run does the same, and runs the slow tier ten times over to measure how often its tests flake.
+CI runs the same checks. On a pull request it runs them on Python 3.13, with the tests in two parallel jobs, the fast tier and the slow tier, beside the web app's checks. `scripts/ci_pytest.sh` runs a tier there (`uv run python scripts/tiers.py run fast -n auto`, and `slow`) with its output in a file, printed when pytest ends or a 15-minute deadline stops it. A push to main also runs the whole suite serially on Python 3.12 and 3.13. A nightly run does the same, and runs the slow tier ten times over to measure how often its tests flake.
 
 ## Licensing
 
@@ -118,7 +118,7 @@ CI runs the same checks. On a pull request it runs them on Python 3.13, with the
 - Security behavior gets explicit negative tests (denials, rejected inputs).
 - Integration tests that need OpenShell, KVM, a cluster or the public registries are marked `@pytest.mark.integration`. The root `conftest.py` skips them unless `SS_INTEGRATION=1`. They run on babbage, not in CI.
 - Async tests and fixtures run under pytest-asyncio's auto mode, so they need no `asyncio` mark.
-- Every test has a 300 s limit (pytest-timeout), so a hang fails instead of stalling CI. `--timeout=0` turns it off for long manual runs.
+- Every test has a 300 s limit (pytest-timeout), so a hang fails instead of stalling CI. `--timeout=0` turns it off for long manual runs. In CI a fast-tier test has 120 s; a test past its limit has every thread's stack printed, then its worker is ended and xdist names the test.
 - A component with a deadline, a lease or a polling interval reads time through the `Clock` protocol in `contracts` and takes its timeouts and intervals as constructor parameters, defaulting to `SYSTEM_CLOCK` and the production values. Code that predates this rule is converted as the refactoring plan reaches it. Tests pass `sandbox_science.testing.FakeClock` and short timeouts instead of patching module constants, and wait for a condition with `eventually()` instead of sleeping. A timeout test uses a peer that never answers, so the timeout is the only possible outcome.
 - Tests run in parallel (pytest-xdist), so a test owns its files (`tmp_path`) and does not depend on other tests or their order. `pytest-repeat` (`--count 50`) with `-n 8` checks a test for flakiness; add `-o tmp_path_retention_policy=failed`, since many repetitions fill `/tmp` otherwise.
 - **Tiers.** A test module that starts real processes for its tests (kernels, executors, sandbox daemons, package managers) is marked slow, with `pytestmark = pytest.mark.slow` beside any other marks. The fast tier is everything else, and stays under two minutes on four CPUs. Marks are strict (`--strict-markers`), so a misspelt one fails. `scripts/tiers.py` holds each tier's marker expression; `scripts/tiers.py check` fails when a test is in no tier or in two, or when a `test_*.py` file yields no test, such as one outside `testpaths`.
