@@ -19,7 +19,7 @@ import functools
 import json
 import logging
 import sqlite3
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -248,6 +248,11 @@ class McpAccess:
     client: ProxyClient
     servers: tuple[str, ...]
     project: str
+    about: Mapping[str, str] = field(default_factory=dict[str, str])
+    """The operator's word on what each server is for, by its name in the index: a
+    configured server, or one behind a portal (``e-print-mcp``)."""
+    shown: tuple[str, ...] | None = None
+    """The servers whose tools the index lists one by one; ``None`` lists every one."""
 
 
 class RunSink(Protocol):
@@ -704,7 +709,13 @@ class Harness:
         connectors = None
         if self.mcp is not None and self.mcp.project == context.project_id and not delegated:
             # Listed at the run's start: a server added later is offered to the next run.
-            connectors = Connectors(self.mcp.client, self.mcp.servers, session=context.session_id)
+            connectors = Connectors(
+                self.mcp.client,
+                self.mcp.servers,
+                session=context.session_id,
+                about=self.mcp.about,
+                shown=self.mcp.shown,
+            )
             await connectors.load(taken=HARNESS_TOOL_NAMES)
         if stores is None:
             return Toolbox(

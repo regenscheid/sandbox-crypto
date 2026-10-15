@@ -283,6 +283,8 @@ class Gateway:
     delegated: list[Reply] = field(default_factory=list[Reply])
     reviewer: Callable[[list[Message]], Reply] | None = None
     requests: dict[str, list[list[Message]]] = field(default_factory=dict[str, list[list[Message]]])
+    tools: dict[str, list[list[Json]]] = field(default_factory=dict[str, list[list[Json]]])
+    """The tools each call carried, by alias."""
     numbered: int = 0
 
     @property
@@ -299,7 +301,9 @@ class Gateway:
         body = await request.json()
         alias, messages = str(body["model"]), cast(list[Message], body["messages"])
         child = alias == "main" and str(messages[0].get("content", "")).startswith(DELEGATED)
-        self.requests.setdefault("delegated" if child else alias, []).append(messages)
+        key = "delegated" if child else alias
+        self.requests.setdefault(key, []).append(messages)
+        self.tools.setdefault(key, []).append(cast(list[Json], body.get("tools") or []))
         if child:
             reply = self.delegated.pop(0) if self.delegated else Reply("(no delegated script)")
         elif alias == "main":

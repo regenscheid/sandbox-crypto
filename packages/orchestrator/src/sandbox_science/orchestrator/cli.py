@@ -273,7 +273,9 @@ def _harness(
             )
         proxy = ProxyClient(args.mcp_proxy, token)
         closing(stack, interruption, proxy.close)
-        mcp = McpAccess(proxy, tuple(args.mcp_server), args.mcp_project)
+        about = {name: text for name, _, text in (item.partition("=") for item in args.mcp_about)}
+        shown = tuple(args.mcp_index) if args.mcp_index else None
+        mcp = McpAccess(proxy, tuple(args.mcp_server), args.mcp_project, about, shown)
     return Harness(
         client,
         main,
@@ -404,6 +406,23 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
         help="an MCP server behind the proxy whose tools runs get; repeat for more",
     )
     command.add_argument(
+        "--mcp-about",
+        action="append",
+        default=[],
+        metavar="SERVER[/BEHIND]=TEXT",
+        help="what an MCP server is for, which the tool index says: a --mcp-server, or "
+        "SERVER/BEHIND for a server behind a portal, the one a tool's name starts with "
+        "(crypto-research-mcp/e-print-mcp); repeat for more",
+    )
+    command.add_argument(
+        "--mcp-index",
+        action="append",
+        default=[],
+        metavar="SERVER[/BEHIND]",
+        help="a server whose tools the index lists one by one, named as for --mcp-about; the "
+        "others are found with a query. By default it lists every server's; repeat for more",
+    )
+    command.add_argument(
         "--reviewer-model", help="the consistency reviewer's model alias, which may be MAIN's"
     )
     command.add_argument(
@@ -475,6 +494,25 @@ def _check_agent(parser: argparse.ArgumentParser, args: argparse.Namespace) -> N
     for name in args.mcp_server:
         if not _SERVER.fullmatch(name):
             parser.error(f"--mcp-server {name!r} is not a server name of the project policy")
+    if (args.mcp_about or args.mcp_index) and args.mcp_proxy is None:
+        parser.error("--mcp-about and --mcp-index need --mcp-proxy")
+
+    # A key names a configured server, or SERVER/BEHIND for a server behind it: what an
+    # operator says about one server never reaches another's tools.
+    def configured(key: str) -> bool:
+        server, slash, behind = key.partition("/")
+        return server in args.mcp_server and (not slash or bool(_SERVER.fullmatch(behind)))
+
+    for item in args.mcp_about:
+        key, equals, text = item.partition("=")
+        if not equals or not configured(key) or not text.strip() or len(text) > 200:
+            parser.error(
+                "--mcp-about takes SERVER=TEXT or SERVER/BEHIND=TEXT, for a --mcp-server, "
+                f"with at most 200 characters: {item!r}"
+            )
+    for key in args.mcp_index:
+        if not configured(key):
+            parser.error(f"--mcp-index {key!r} is not a --mcp-server, or SERVER/BEHIND for one")
 
 
 def main(argv: list[str] | None = None) -> int:
