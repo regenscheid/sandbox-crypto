@@ -34,16 +34,17 @@ from sandbox_science.orchestrator.tools import HARNESS_TOOL_NAMES, MCP_TOOLS, SH
 
 PACK: Final = Path(__file__).resolve().parents[3] / "skills" / "builtin"
 
-MAIN: Final = HARNESS_TOOL_NAMES
-"""A main run's tools with every feature on: all the harness's own. Connector tools are
-each project's, loaded through ``mcp_tools``, and are named only in fenced code."""
+MAIN: Final = HARNESS_TOOL_NAMES - {spec.name for spec in TRACK_SPECS}
+"""A main run's tools with every feature on: all the harness's own but a delegated
+task's track tools. Connector tools are each project's, loaded through ``mcp_tools``,
+and are named only in fenced code."""
 DELEGATED: Final = (
     HARNESS_TOOL_NAMES
     - {spec.name for spec in AUTHOR_SPECS}
     - PLAN_NAMES
     - {spec.name for spec in QUESTION_SPECS}
     - {MCP_TOOLS}
-) | {spec.name for spec in TRACK_SPECS}
+)
 """A delegated task's tools: its parent's without the review, plan and question tools
 and connectors (PD-16, PD-34, PD-41), with its track's tools (PD-9), and the delegate
 tools where a main run allows it two levels (PD-15)."""

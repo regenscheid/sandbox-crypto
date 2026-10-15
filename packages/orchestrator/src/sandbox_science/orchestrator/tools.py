@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import codecs
 import hashlib
 import json
 import logging
@@ -46,6 +47,7 @@ from .connectors import MAX_LOAD, MAX_LOADED_CHARS, MAX_QUERY, Connectors
 from .consistency.controller import REVIEW_EFFECTS, ReviewController, Reviews
 from .delegation import specs as delegation_specs
 from .delegation.tracks import EFFECTS as TRACK_EFFECTS
+from .delegation.tracks import SPECS as TRACK_SPECS
 from .documents import annotation_tools
 from .documents.errors import DocumentError
 from .documents.tool import DOCUMENT_EFFECTS, DocumentTool, WorkRequests, with_notices
@@ -451,6 +453,7 @@ def _harness_tool_names() -> frozenset[str]:
         *LEDGER_SPECS,
         *MEMORY_SPECS,
         *delegation_specs.SPECS,
+        *TRACK_SPECS,
         *QUESTION_SPECS,
     )
     return frozenset(spec.name for spec in specs) | {RESTART_KERNEL, MCP_TOOLS}
@@ -1126,7 +1129,8 @@ class Toolbox:
         except binascii.Error:
             return _failure(ErrorKind.INTERNAL, "the worker sent file content that is not base64")
         try:
-            text = data.decode("utf-8")
+            # A range that ends inside a character stops before it; the next read starts there.
+            text = codecs.getincrementaldecoder("utf-8")().decode(data, final=content.eof)
         except UnicodeDecodeError:
             text = None
         summary: dict[str, Any] = {
@@ -1134,15 +1138,33 @@ class Toolbox:
             "size": content.size,
             "sha256": content.sha256,
         }
+        part = self.output_chars // 2  # the most one call shows whole, in bytes or characters
+        whole = False
         if text is None:
             summary["binary"] = f"{len(data)} bytes, not shown"
+            end = content.offset + len(data)
         else:
             summary["content"] = self._bound(text)
-        if not content.eof:
-            summary["more"] = f"read again with offset {content.offset + len(data)}"
-        # Whether the model saw the whole file: from its start to its end, as text, unclipped.
-        complete = bool(content.offset == 0 and content.eof and text and summary["content"] == text)
-        read = {"path": content.path, "sha256": content.sha256, "complete": complete}
+            whole = summary["content"] == text
+            end = content.offset + len(text.encode())
+        if text is not None and not whole:
+            summary["more"] = (
+                f"shown in part: read it in ranges from offset {content.offset}, with length "
+                f"{part} each"
+            )
+        elif end < content.size:
+            summary["more"] = f"read again with offset {end} and length {part}"
+        # What the model saw whole, as text: the bytes from ``offset`` (``shown``), and
+        # whether that is the whole file, from its start to its end.
+        shown = end - content.offset if whole else 0
+        read = {
+            "path": content.path,
+            "sha256": content.sha256,
+            "size": content.size,
+            "offset": content.offset,
+            "shown": shown,
+            "complete": bool(content.offset == 0 and shown and end == content.size),
+        }
         return ToolOutcome(dump(summary), {"read": read})
 
     async def _write(self, args: dict[str, Any], operation: str) -> ToolOutcome:

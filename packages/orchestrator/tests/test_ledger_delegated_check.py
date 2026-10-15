@@ -9,12 +9,15 @@ same material disagreed."""
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
+import re
 from typing import Any
 
 import pytest
 
+from sandbox_science.contracts import WriteFileRequest
 from sandbox_science.orchestrator.delegation.outcome import Outcome, Proof, Target, proof_reads
 from sandbox_science.orchestrator.delegation.prompt import brief_text, check_task
 from sandbox_science.orchestrator.delegation.records import (
@@ -28,9 +31,12 @@ from sandbox_science.orchestrator.documents.models import Author
 from sandbox_science.orchestrator.ledger import Ledger, gate
 from sandbox_science.orchestrator.ledger.models import EvidenceLink, GateClause
 from sandbox_science.orchestrator.loop import Transcript
+from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.projects import ProjectStore
+from sandbox_science.orchestrator.tools import Toolbox
+from sandbox_science.orchestrator.worker_client import WorkerClient
 
-from .loop_harness import PROJECT, Harness, Reply, call
+from .loop_harness import PROJECT, TOKEN, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
@@ -533,6 +539,77 @@ async def test_a_read_in_part_covers_nothing(
 ) -> None:
     found = await observed(records)
     assert (found.read, found.read_proofs) == (read, proofs)
+
+
+def part(offset: int, shown: int, sha256: str = SHA, size: int = 30) -> dict[str, Any]:
+    """A read of the proof file that showed ``shown`` bytes of it whole from ``offset``."""
+    read = {"path": "p.lean", "sha256": sha256, "size": size, "offset": offset, "shown": shown}
+    return {"read": {**read, "complete": False}}
+
+
+async def test_a_proof_file_read_in_ranges_counts_once_they_cover_it() -> None:
+    """A file larger than one read shows counts as read whole once the run's reads
+    together showed every byte of it, in any order, overlapping or not."""
+    found = await observed([*WHOLE[:4], part(20, 10), part(0, 10)])
+    assert found.read_proofs is False
+    found = await observed([*WHOLE[:4], part(20, 10), part(0, 10), part(5, 15)])
+    assert found.read_proofs is True
+
+
+@pytest.mark.parametrize(
+    "parts",
+    [
+        [part(0, 10), part(11, 19)],  # a byte never shown
+        [part(0, 10), part(10, 15)],  # not to its end
+        [part(0, 10), part(10, 20, sha256="cd" * 32)],  # another file's end
+        [part(0, 30, size=31)],  # a file of another size is another
+        [part(0, 10), part(10, 0), {**part(10, 20), "error": {"kind": "internal"}}],
+    ],
+)
+async def test_ranges_with_a_gap_cover_nothing(parts: list[dict[str, Any]]) -> None:
+    found = await observed([*WHOLE[:4], *parts])
+    assert found.read_proofs is False
+
+
+async def test_a_proof_file_larger_than_one_read_shows_is_read_in_ranges(harness: Harness) -> None:
+    """One ``read_file`` shows a large file's head and tail only, and says how to read
+    the rest; following its hints, the reads show every byte once, a character split
+    between two ranges included, and the proof counts as read."""
+    lines = (f"Step {n}: a^16 ≡ 1 (mod 17) for every nonzero a ∈ GF(17).\n" for n in range(1500))
+    text = "≡" * 4000 + "\n" + "".join(lines)  # the first range ends inside a character
+    data = text.encode()
+    link = evidence(1, target="artifact", target_id="artifact-1", revision=1, sha256=SHA)
+    link = link.model_copy(update={"sha256": hashlib.sha256(data).hexdigest()})
+    outcome = Outcome(Target("entry-9", "C-9", 1, proof_reads([link])))
+    run = Transcript(messages=[])
+    entry = {"entry": "entry-9", "revision": 1, "complete": True, "evidence": [link.evidence_id]}
+    await outcome.observe_tool(run, {"ledger": "ledger_read", "read": entry})
+    context = harness.context()
+    async with WorkerClient(harness.worker.url, TOKEN) as client:
+        content = base64.b64encode(data).decode()
+        await client.write_file(
+            WriteFileRequest(context=context, path="proof.md", content_b64=content)
+        )
+        toolbox = Toolbox(client, context)
+        args: dict[str, Any] = {"path": "proof.md"}
+        shown: list[str] = []
+        for n in range(20):
+            done = await toolbox.call(ToolCall(f"c{n}", "read_file", json.dumps(args)), f"op-{n}")
+            await outcome.observe_tool(run, done.record)
+            result = json.loads(done.text)
+            if n == 0:
+                assert "characters omitted" in result["content"]
+                assert outcome.read_proofs is False
+            else:
+                shown.append(result["content"])
+            if "more" not in result:
+                break
+            found = re.search(r"offset (\d+).*length (\d+)", result["more"])
+            assert found is not None, result["more"]
+            args = {"path": "proof.md", "offset": int(found[1]), "length": int(found[2])}
+    assert "".join(shown) == text
+    assert len(shown) > 2
+    assert outcome.read_proofs is True
 
 
 async def test_a_check_that_skipped_a_proofs_target_does_not_count(delegating: Harness) -> None:

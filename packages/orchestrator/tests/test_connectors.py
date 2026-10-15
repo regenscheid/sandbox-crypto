@@ -413,7 +413,8 @@ async def test_a_name_no_run_can_hold_is_not_offered(proxied: Proxied, name: str
 
 
 @pytest.mark.parametrize(
-    "name", ["python", "admit_hosts", "document_reply", "plan_read", "restart_kernel"]
+    "name",
+    ["python", "admit_hosts", "document_reply", "plan_read", "restart_kernel", "track_progress"],
 )
 async def test_a_harness_tool_name_is_never_a_connectors(proxied: Proxied, name: str) -> None:
     assert name in HARNESS_TOOL_NAMES
