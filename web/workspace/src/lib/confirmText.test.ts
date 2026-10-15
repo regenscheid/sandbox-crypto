@@ -45,6 +45,17 @@ describe('adopting a text', () => {
     expect(html).toContain('<ins>Always</ins>');
   });
 
+  it('drops a move or restore waiting to be confirmed when the editor opens', async () => {
+    const source = (await import('../views/DocumentEditor.svelte?raw')).default;
+    const begin = source.slice(
+      source.indexOf('function begin('),
+      source.indexOf('async function save('),
+    );
+    expect(begin).toContain('confirming = null;');
+    expect(begin.indexOf('confirming = null;')).toBeLessThan(begin.indexOf('open = true;'));
+    expect(source).toContain('if (!open) confirming = { action, before };');
+  });
+
   it('renders no text as HTML', () => {
     const views = import.meta.glob(
       ['../views/ConfirmText.svelte', '../views/DocumentEditor.svelte'],

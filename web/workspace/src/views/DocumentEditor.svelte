@@ -49,7 +49,9 @@
     }
     try {
       // Restoring replaces the current text: show the differences from it.
-      confirming = { action, before: (await api.document(projectId, id)).text };
+      const before = (await api.document(projectId, id)).text;
+      // Not if the editor opened while the current text was read.
+      if (!open) confirming = { action, before };
     } catch (caught) {
       error = caught;
     }
@@ -63,6 +65,8 @@
     current = null;
     result = null;
     error = null;
+    // Editing replaces a move or restore the user was asked to confirm.
+    confirming = null;
     open = true;
   }
   async function save() {
