@@ -72,6 +72,13 @@ _UNSAFE: Final = re.compile(r"[^A-Za-z0-9._-]")
 
 _TIMEOUT = {"type": "number", "exclusiveMinimum": 0, "description": "Wall-time limit in seconds"}
 
+SHARED_IN_CODE: Final = (
+    " Code runs in the session's workspace, so a relative shared/ there is a folder of the "
+    "session's own. The project's shared area, shared/… in the file and PDF tools, is "
+    "$PROJECT_SHARED (os.environ['PROJECT_SHARED'])."
+)
+"""Said by each tool that runs code: the file tools' shared/ is not the code's (lab 38)."""
+
 ADMIT_HOSTS: Final = ToolSpec(
     "admit_hosts",
     "Make sites reachable before your code contacts them. Give host names, or host:port "
@@ -102,7 +109,7 @@ SAGE: Final = ToolSpec(
     "Sage syntax applies: ^ is exponentiation, 1/3 is an exact rational, and integer literals "
     "are Sage Integers (convert them with int() before json.dumps). Variables persist between "
     "calls until that kernel restarts. Results come back as plain text; run %display latex "
-    "first, or call latex(x), to get LaTeX.",
+    "first, or call latex(x), to get LaTeX." + SHARED_IN_CODE,
     {
         "type": "object",
         "properties": {"code": {"type": "string"}, "timeout_seconds": _TIMEOUT},
@@ -186,7 +193,7 @@ SPECS: Final = (
         "shell",
         "Run a bash script in the session's workspace inside the project sandbox. Each call "
         "starts afresh in the workspace (no state carries over except files); stdin is empty. "
-        "Returns the exit code and the output.",
+        "Returns the exit code and the output." + SHARED_IN_CODE,
         {
             "type": "object",
             "properties": {
@@ -202,7 +209,7 @@ SPECS: Final = (
         "python",
         "Run Python code in the session's persistent kernel inside the project sandbox. "
         "Variables persist between calls until the kernel restarts. Returns printed output, "
-        "the value of the last expression and any exception.",
+        "the value of the last expression and any exception." + SHARED_IN_CODE,
         {
             "type": "object",
             "properties": {"code": {"type": "string"}, "timeout_seconds": _TIMEOUT},

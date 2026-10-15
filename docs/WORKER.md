@@ -328,7 +328,7 @@ Environments persist, but need not keep running ([projects and sessions](PROJECT
 
 ## Shared data across environments
 
-Each environment is its own sandbox, so the `shared/` area of a project's sessions is a separate directory in each of the project's environments. The worker keeps them in step (D79): it holds the project's copy of every shared file, in a blob store of the project's own, and syncs each environment with it.
+Each environment is its own sandbox, so the `shared/` area of a project's sessions is a separate directory in each of the project's environments. File requests name it `shared/…`; code, which starts in the session's workspace, reaches it at `$PROJECT_SHARED`, and the agent's shell, Python and Sage tools say so. The worker keeps them in step (D79): it holds the project's copy of every shared file, in a blob store of the project's own, and syncs each environment with it.
 
 - **After every call** in an environment (a shell call, a cell, a PDF operation), it copies the files that changed in that environment's `shared/` into the project's copy, before the call's result is reported. A later call anywhere in the project then sees them. Files the call deleted are deleted in the project's copy.
 - **Steps are bounded.** A step starts no transfer 40 seconds after it got its locks, or after 1 GiB read, and all of one sync's steps stop starting transfers after 100 seconds, within the manager's 120. A step records what it copied in batches as it goes, so a large change arrives over several calls instead of never, and environments that wait for one another take turns.

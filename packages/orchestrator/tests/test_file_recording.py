@@ -330,3 +330,19 @@ async def test_a_jobs_files_are_recorded_when_the_run_sees_it_end(recording: Rec
         "op-job", job.execution_id,
     )  # fmt: skip
     assert recording.inventory.content("p1", head.reference) == b"42\n"
+
+
+async def test_code_reaches_the_shared_area_the_file_tools_name(recording: Recording) -> None:
+    """The file and PDF tools' shared/ is $PROJECT_SHARED in code; a relative shared/ in
+    code is a folder of the session's own, and each code tool says so (lab 38)."""
+    described = {spec.name: spec.description for spec in recording.toolbox.specs}
+    assert all("$PROJECT_SHARED" in described[name] for name in ("shell", "python"))
+    await recording.shell(
+        "mkdir -p $PROJECT_SHARED/papers shared && echo project > $PROJECT_SHARED/papers/p.txt"
+        " && echo session > shared/local.txt"
+    )
+    found = await recording.call("read_file", path="shared/papers/p.txt")
+    assert "project" in found.text
+    missing = await recording.call("read_file", path="shared/local.txt")
+    assert "session" not in missing.text
+    assert "shared/papers/p.txt" in recording.heads()
