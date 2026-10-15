@@ -4,7 +4,8 @@
  *
  * - `#/` the projects;
  * - `#/projects/<project>` one project;
- * - `#/projects/<project>/sessions/<session>` one session and its runs;
+ * - `#/projects/<project>/sessions/<session>` one session and its runs, and
+ *   `…/findings/<finding>` one of its review findings, as a ledger entry links to it;
  * - `#/projects/<project>/documents/<document>` a living document's current revision,
  *   `…/revisions/<number>` one of its revisions, and `…/revisions/<number>/blocks/<block>`
  *   that revision with one block in focus (a finding's anchor, say);
@@ -21,6 +22,7 @@ export type Route =
   | { view: 'projects' }
   | { view: 'project'; project: string }
   | { view: 'session'; project: string; session: string }
+  | { view: 'finding'; project: string; session: string; finding: string }
   | {
       view: 'document';
       project: string;
@@ -64,6 +66,10 @@ export function parseRoute(hash: string): Route {
   if (name === null) return { view: 'missing' };
   if (parts[2] === 'sessions' && parts.length === 4) {
     return { view: 'session', project, session: name };
+  }
+  if (parts[2] === 'sessions' && parts.length === 6 && parts[4] === 'findings') {
+    const finding = decoded(parts[5]!);
+    if (finding !== null) return { view: 'finding', project, session: name, finding };
   }
   if (parts[2] === 'documents') {
     if (parts.length === 4)
@@ -111,6 +117,10 @@ export function projectHref(project: string): string {
 
 export function sessionHref(project: string, session: string): string {
   return `${projectHref(project)}/sessions/${encodeURIComponent(session)}`;
+}
+
+export function findingHref(project: string, session: string, finding: string): string {
+  return `${sessionHref(project, session)}/findings/${encodeURIComponent(finding)}`;
 }
 
 export function documentHref(

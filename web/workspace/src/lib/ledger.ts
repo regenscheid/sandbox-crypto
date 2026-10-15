@@ -9,7 +9,7 @@ import type { Author } from './api';
 import type { EntryLink, EntrySummary, EntryView } from './api-types';
 import { describeAuthor } from './authors';
 import { PagedList, type ListState } from './pagedList';
-import { documentHref, ENTRY_NAME, ledgerEntryHref } from './router';
+import { documentHref, ENTRY_NAME, findingHref, ledgerEntryHref, pdfHref } from './router';
 
 export type EntryType = EntrySummary['type'];
 export type LinkKind = EntryLink['kind'];
@@ -103,10 +103,10 @@ export interface LinkTarget {
 
 /**
  * Where a link leads: an entry (to the pinned revision, when the link pins one), or a
- * document block at its revision. A link toward the entry shown (`in`) names the entry
- * that holds it, at its current revision, and the revision of the shown entry it pins. A
- * review finding is named, for now without a page of its own in the project: findings
- * are shown in their session.
+ * document block at its revision, or a review finding in its session. A link toward the
+ * entry shown (`in`) names the entry that holds it, at its current revision, and the
+ * revision of the shown entry it pins. A finding whose session the read does not name is
+ * named only.
  */
 export function linkTarget(
   project: string,
@@ -136,7 +136,12 @@ export function linkTarget(
             : documentHref(project, link.target_id, link.revision, link.block),
       };
     case 'finding':
-      return { text: `review finding ${link.target_id}`, href: null };
+      return link.session === null
+        ? { text: `review finding ${link.target_id}`, href: null }
+        : {
+            text: `review finding ${link.target_id}, session ${link.session}`,
+            href: findingHref(project, link.session, link.target_id),
+          };
   }
 }
 
@@ -224,6 +229,18 @@ export interface FieldRow {
   key: string;
   name: string;
   value: string;
+  /** Where the value leads, when somewhere: a reference's PDF, in the viewer. */
+  href: string | null;
+}
+
+/** A reference's PDF in the viewer, when its field pins the artifact revision and its hash. */
+function pdfField(project: string, value: unknown): string | null {
+  if (value === null || typeof value !== 'object') return null;
+  const { artifact_id, revision, sha256 } = value as Record<string, unknown>;
+  if (typeof artifact_id !== 'string' || artifact_id === '') return null;
+  if (!Number.isSafeInteger(revision) || (revision as number) < 1) return null;
+  if (typeof sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(sha256)) return null;
+  return pdfHref(project, artifact_id, revision as number, sha256);
 }
 
 /** The names of the fields the types give their entries (docs/LEDGER.md), in words. */
@@ -261,7 +278,7 @@ function valueText(value: unknown): string {
  * reference's citation), as rows of text. A field the view does not know yet is still
  * shown, under its own name.
  */
-export function fieldRows(fields: Record<string, unknown>): FieldRow[] {
+export function fieldRows(fields: Record<string, unknown>, project: string): FieldRow[] {
   const known = Object.keys(FIELD_NAMES);
   const names = [
     ...known.filter((name) => name in fields),
@@ -274,6 +291,7 @@ export function fieldRows(fields: Record<string, unknown>): FieldRow[] {
     name: FIELD_NAMES[name] ?? statusText(name),
     // A claim's kind is a word of the spec's, such as `negative_result`.
     value: name === 'kind' ? statusText(valueText(fields[name])) : valueText(fields[name]),
+    href: name === 'pdf' ? pdfField(project, fields[name]) : null,
   }));
 }
 

@@ -34,6 +34,8 @@ const hostileLinks = [
   link({ handle: 'C-1/../../x', target_id: 'C-2' }),
   link({ handle: 'I-1', note: HOSTILE }),
   link({ target: 'finding', target_id: HOSTILE }),
+  link({ target: 'finding', target_id: HOSTILE, session: HOSTILE }),
+  link({ target: 'finding', target_id: 'finding-1', session: 'javascript:alert(1)' }),
   link({ kind: 'assumes', handle: 'A-1', revision: 3 }),
 ];
 
@@ -117,7 +119,12 @@ describe('the ledger views', () => {
         '<javascript:alert(1)>',
         '$\\href{javascript:alert(1)}{x}$',
       ].join('\n\n'),
-      fields: { [HOSTILE]: HOSTILE, kind: HOSTILE, conditions: { [HOSTILE]: HOSTILE } },
+      fields: {
+        [HOSTILE]: HOSTILE,
+        kind: HOSTILE,
+        conditions: { [HOSTILE]: HOSTILE },
+        pdf: { artifact_id: HOSTILE, revision: 1, sha256: 'ab'.repeat(32) },
+      },
       links: hostileLinks,
       incoming: [link({ handle: 'I-9', note: HOSTILE }), link({ handle: HOSTILE })],
       incoming_total: 450,
@@ -131,6 +138,9 @@ describe('the ledger views', () => {
     expect(html).toContain('Links to it');
     expect(html).toContain('(450)');
     expect(html).toContain('More links to it');
+    // The PDF and the findings in their sessions lead somewhere, each encoded.
+    expect(found.hrefs.some((href) => href.includes('/artifacts/'))).toBe(true);
+    expect(found.hrefs.some((href) => href.includes('/findings/'))).toBe(true);
   });
 });
 

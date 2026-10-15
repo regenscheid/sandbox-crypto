@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   documentHref,
+  findingHref,
   historyHref,
   issuesHref,
   ledgerEntryHref,
@@ -22,6 +23,13 @@ describe('routes', () => {
     ['#/projects/p1', { view: 'project', project: 'p1' }],
     ['#/projects/p1/', { view: 'project', project: 'p1' }],
     ['#/projects/p1/sessions/a', { view: 'session', project: 'p1', session: 'a' }],
+    [
+      '#/projects/p1/sessions/a/findings/finding-9',
+      { view: 'finding', project: 'p1', session: 'a', finding: 'finding-9' },
+    ],
+    ['#/projects/p1/sessions/a/findings', { view: 'missing' }],
+    ['#/projects/p1/sessions/a/findings/', { view: 'missing' }],
+    ['#/projects/p1/sessions/a/runs/r1', { view: 'missing' }],
     ['#/projects/p%201', { view: 'project', project: 'p 1' }],
     ['#/projects/%E0%A4%A', { view: 'missing' }],
     ['#/projects', { view: 'missing' }],
@@ -108,6 +116,12 @@ describe('routes', () => {
       sha256: SHA,
     });
     expect(parseRoute(ledgerHref('p 1'))).toEqual({ view: 'ledger', project: 'p 1' });
+    expect(parseRoute(findingHref('p 1', 's/1', 'f#2'))).toEqual({
+      view: 'finding',
+      project: 'p 1',
+      session: 's/1',
+      finding: 'f#2',
+    });
     expect(parseRoute(issuesHref('p 1'))).toEqual({ view: 'issues', project: 'p 1' });
     expect(parseRoute(ledgerEntryHref('p 1', 'T-4', 7))).toEqual({
       view: 'entry',

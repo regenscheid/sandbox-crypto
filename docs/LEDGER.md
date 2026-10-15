@@ -53,7 +53,7 @@ An entry the same change revises is linked as the change leaves it, so an assump
 
 - Statuses a decision sets (`established`, `obstructed`, `refuted`), a decision's own `rejected` and `reversed`, decisions' status changes, evidence links and the gate (LG-4, LG-7, LG-8 to LG-17); published claims and results, which cite their reference through evidence (LG-15).
 - `dominates` links and the frontier (LG-18 to LG-24); flags (LG-27 to LG-29); work records (LG-6).
-- The GUI's frontier and project-wide history views, its indicators beside a status (open findings and flags), moving cards, and links that lead to a review finding or to a reference's PDF; the pack's import and the export (LG-34 to LG-39); naming the execution that wrote a results file. The board, the issue list and the entry view with its history are built ([workspace](WORKSPACE.md#views)).
+- The GUI's frontier and project-wide history views, its indicators beside a status (open findings and flags), moving cards; the pack's import and the export (LG-34 to LG-39); naming the execution that wrote a results file. The board, the issue list and the entry view with its history are built ([workspace](WORKSPACE.md#views)).
 
 ## Tables
 
