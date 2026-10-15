@@ -476,7 +476,9 @@ async def test_a_failing_session_waits_longer_each_time_then_holds_its_messages(
     assert message.reason == "5 runs failed in a row"
     started = [datetime.strptime(name.split("-")[0], "%Y%m%dT%H%M%S%fZ") for name in names(harness)]
     gaps = [(b - a).total_seconds() for a, b in itertools.pairwise(started)]
-    assert gaps[-1] > gaps[0]  # the waits grow
+    # Each run starts at least the doubled wait after the one before; a run's own
+    # duration, which varies under load, only adds to it.
+    assert [gap >= 0.05 * 2**n - 0.01 for n, gap in enumerate(gaps)] == [True] * 4, gaps
 
 
 async def test_a_run_that_delivered_nothing_is_left_out_of_the_conversation(
