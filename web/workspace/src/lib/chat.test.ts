@@ -424,7 +424,7 @@ describe('the transcript of a run', () => {
     expect(stoppedText({ stopped: '' })).toBe('The run stopped: no reason recorded.');
     // A run that stops for something newer of the user's does not say it waited for a message.
     expect(stoppedText({ stopped: 'user_message' })).toBe(
-      'The run stopped without an answer: something newer of yours, a message or a plan change, comes first, and the next run takes it up.',
+      'The run stopped without an answer: a newer message of yours comes first, and the next run takes it up.',
     );
     expect(stoppedText({ stopped: 'budget' })).toBe(
       'The run stopped: the project reached its daily cost limit. What waits for the session waits until the limit allows another run.',
@@ -434,6 +434,10 @@ describe('the transcript of a run', () => {
     );
     expect(stoppedText({ stopped: 'run_budget' })).toBe(
       "The run stopped at its own limit: its part of the project's daily cost limit, or a delegated run's tokens.",
+    );
+    // Lab 41, B2: a plan that held the answer back is not "a wait for a message".
+    expect(stoppedText({ stopped: 'plan_unread' })).toMatch(
+      /^The run stopped without an answer: the session plan has open steps/,
     );
     const [stopped] = chatEntries([event(1, 'stopped', { stopped: 'interrupted' })]);
     expect(stopped).toMatchObject({ problem: true });

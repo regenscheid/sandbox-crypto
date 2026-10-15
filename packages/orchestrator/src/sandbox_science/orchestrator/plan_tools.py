@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Sequence
-from typing import Annotated, Any, Literal, TypeVar
+from typing import Annotated, Any, Final, Literal, TypeVar, cast
 
 from pydantic import Field, ValidationError
 
@@ -36,6 +36,14 @@ from .session_plans import (
     Text,
 )
 
+PLAN_UNREAD = "plan_unread"
+"""How a run stops whose closing answer the plan held back twice: the current plan has
+open steps, and the run did not read it after it changed."""
+ANSWER_HELD = (
+    "Your answer was not taken: the session plan has open steps and this run has not read "
+    "its current version. Read it with plan_read, record your progress, then answer."
+)
+OPEN: Final = frozenset({"pending", "in_progress"})
 MAX_REQUEST_BYTES = 96 * 1024
 MAX_RESPONSE_BYTES = 256 * 1024
 GUIDANCE_VERSION = "sandbox-main-plan-1"
@@ -272,6 +280,26 @@ class PlanTools:
             "event_scan_held": self.held,
         }
 
+    async def open_steps(self) -> tuple[str, list[str]] | None:
+        """The current plan's status and its open steps: those with no progress, pending
+        or in progress, or changed since their progress. A finished plan, or none, has
+        none. ``None`` when the plan cannot be read."""
+        try:
+            plan = await threaded(
+                lambda: self._owned(lambda: self.plans.compact_current(self.authority))
+            )
+        except DocumentError:
+            return None
+        if plan is None:
+            return "no_current_plan", []
+        if plan.head.status in ("completed", "abandoned"):
+            return plan.head.status, []
+        return plan.head.status, [
+            step.step_id
+            for step in plan.steps
+            if step.latest is None or not step.matches_current_step or step.latest.status in OPEN
+        ]
+
     async def model_delivered(self) -> None:
         pending, self.pending_read = self.pending_read, None
         if pending is None:
@@ -474,8 +502,10 @@ class PlanTools:
 
 class Plans(TurnHook):
     """The session plan in a run: its state before each turn when it changed, and a veto
-    on a closing answer while a USER change is unread. The model gets one turn to read
-    it; after that, the run stops for the user rather than present a stale answer."""
+    on a closing answer while the current plan is unread and has open steps: a notice
+    says why, and the model gets one turn to read it; after that, the run stops as
+    ``plan_unread`` rather than present a stale answer. A finished plan, or one whose
+    steps are all done, blocked or skipped, holds no answer back (lab 41, B2)."""
 
     name = "plans"
     veto = True
@@ -501,10 +531,20 @@ class Plans(TurnHook):
         found = await self._state()
         if not (self.tools.requires_read or self.tools.held):
             return Closing("accept", found)
+        steps = await self.tools.open_steps()
+        if steps is not None and not steps[1]:
+            return Closing("accept", found)
         if self.retried or run.turns_left <= 0:
-            return Closing("stop", found, stopped="user_message")
+            return Closing("stop", found, stopped=PLAN_UNREAD)
         self.retried = True
-        return Closing("retry", found, stopped="user_message")
+        # The state notice comes only when it changed: the held answer always says why.
+        state = dict(cast(dict[str, Any], found[0].payload)) if found else {}
+        state.setdefault("planning", "unavailable" if steps is None else steps[0])
+        state.setdefault("reread_required", True)
+        state["answer_held"] = ANSWER_HELD
+        state["open_steps"] = None if steps is None else steps[1]
+        held = Notice(self.name, (), PLANS.text, state)
+        return Closing("retry", (held,), stopped=PLAN_UNREAD)
 
     async def _state(self) -> tuple[Notice, ...]:
         notice = await self.tools.safe_point()

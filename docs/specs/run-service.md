@@ -66,7 +66,7 @@ The browser's views are E-06 and E-07 in the refactoring plan. Waking a session 
   | `tool` | `turn`, `call_id`, `name`, `result` (the text the model read, bounded), `outcome` (state, error kind and exit code when there is one) |
   | `notice` | `source`, `ids`: notices added to the conversation, such as jobs or reviews |
   | `waiting` | `job_ids`, `mode` while the agent waits on jobs; `null` when the wait ends |
-  | `stopped` | `stopped` (`answered`, `turn_limit`, `context_limit`, `user_message`, `cancelled`, `budget`, `run_budget`, `gateway_budget`, `interrupted` or `error`), `failure`, `final_text`, `record` (the saved record's name, or null) |
+  | `stopped` | `stopped` (`answered`, `turn_limit`, `context_limit`, `user_message`, `plan_unread`, `cancelled`, `budget`, `run_budget`, `gateway_budget`, `interrupted` or `error`), `failure`, `final_text`, `record` (the saved record's name, or null) |
 
 - RS-15. **Reading events.** The workspace reads a run's events by cursor, `after=seq` and a `limit`, from the control store, as it reads run records now. Its route returns them with the run's state: active, or ended with the `stopped` event; a delegated run, which holds no lease, is active while its root holds the session (PD-42). The browser polls with the generic `Poller`. SSE can come later without changing the format.
 - RS-16. **Retention.** A run's events stay after its record is saved. The GUI shows the record for ended runs and the events for the active one and for interrupted ones. Interrupted runs have no record.

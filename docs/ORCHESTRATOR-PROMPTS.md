@@ -159,9 +159,12 @@ reread requirement.
 [plan_tools.py](../packages/orchestrator/src/sandbox_science/orchestrator/plan_tools.py))
 checks plan state before each model call and, as a veto on a closing answer, before
 the other hooks and again immediately before the loop accepts the answer, after
-closing review and math awaits. A pending reread allows at
-most one more turn within the remaining budget, then stops with `user_message` and
-no stale final answer. It adds no reviewer or math response rounds. Plan commits are
+closing review and math awaits. A pending reread holds an answer back only while the current plan has open steps
+(pending, in progress, or changed since their progress): a finished plan, or one whose
+steps are all completed, blocked or skipped, holds none (lab 41, B2). A held answer gets
+a plans notice saying why (`answer_held`, with the open steps) and at most one more
+turn within the remaining budget, then the run stops with `plan_unread` and no stale
+final answer. It adds no reviewer or math response rounds. Plan commits are
 durable during the run, independent of a later model failure, cancellation or
 failed run save; progress is not a claim that an interrupted effect succeeded.
 Threaded plan work is drained before the borrowed store closes, including on

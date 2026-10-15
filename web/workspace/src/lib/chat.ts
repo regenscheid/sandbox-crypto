@@ -335,7 +335,9 @@ const STOPPED: Record<string, string> = {
   gateway_budget:
     'The run stopped: the model gateway refused the call because its spending budget is used up. What waits for the session waits until the gateway allows calls again.',
   user_message:
-    'The run stopped without an answer: something newer of yours, a message or a plan change, comes first, and the next run takes it up.',
+    'The run stopped without an answer: a newer message of yours comes first, and the next run takes it up.',
+  plan_unread:
+    'The run stopped without an answer: the session plan has open steps, and the run did not read it after it changed. Send a message to go on.',
   cancelled: 'The run was cancelled. Its background jobs keep running.',
   interrupted:
     'The run was interrupted: its process ended. Its messages are held until you resume.',

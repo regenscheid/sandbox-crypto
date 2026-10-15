@@ -206,7 +206,9 @@ class RunRecord(Contract):
     started_at: datetime
     ended_at: datetime
     stopped: str
-    """``answered``, ``turn_limit``, ``context_limit``, ``user_message``, ``cancelled``
+    """``answered``, ``turn_limit``, ``context_limit``, ``user_message`` (a message came
+    while the run's review held its answer), ``plan_unread`` (the session plan held the
+    answer back: it has open steps the run did not read after they changed), ``cancelled``
     (by the user), ``budget`` (the project spent its model budget during the run),
     ``run_budget`` (the run used its share of it), ``gateway_budget`` (the model gateway
     refused a call because its spending budget is exhausted), or ``error``."""
