@@ -230,3 +230,101 @@ def test_a_version_25_store_takes_categories_after_the_migration(
         assert moved.define_category("p", KEY_RECOVERY, MAIN).revision == 1
     finally:
         migrated.close()
+
+
+# The best known results (LG-20, LG-21, LG-23): LG-F2 as far as this step goes.
+
+QUANTUM = {"model": "quantum", "success": "at least 1/2"}
+
+
+def published(title: str, conditions: dict[str, str], **measures: Any) -> dict[str, Any]:
+    cite = [{"role": "supports", "type": "source_claim", "entry": "REF-1"}]
+    return {**result(conditions=conditions, measures=measures), "origin": "published",
+            "title": title, "evidence": cite}  # fmt: skip
+
+
+def best(view: Any, conditions: dict[str, str]) -> Any:
+    (group,) = [g for g in view.groups if g.conditions == conditions]
+    return group
+
+
+def test_the_best_known_results_under_each_set_of_conditions(ledger: Ledger) -> None:
+    from .test_ledger import NEW
+    from .test_ledger_decisions import decide
+
+    ledger.define_category("p", KEY_RECOVERY, MAIN)
+    change(ledger, NEW["reference"], op="ref")
+    change(ledger, published("P1", CLASSICAL, time=120, memory=60), op="p1")  # R-1
+    change(ledger, published("P2", CLASSICAL, time=110, memory=80), op="p2")  # R-2
+    view = ledger.frontier("p", "key-recovery")
+    group = best(view, CLASSICAL)
+    assert [r.handle for r in group.best] == ["R-1", "R-2"]  # conflicting measures
+    (first,) = [r for r in group.best if r.handle == "R-1"]
+    assert (first.status, first.origin, first.sources, first.evidence_types) == (
+        "recorded",
+        "published",
+        ["REF-1"],
+        ["source_claim"],
+    )
+    change(ledger, published("P3", CLASSICAL, time=125, memory=65), op="p3")  # R-3
+    change(ledger, published("Q1", QUANTUM, time=90, memory=90), op="q1")  # R-4
+    project = result(conditions=CLASSICAL, measures={"time": 105, "memory": 80})
+    change(ledger, {**project, "title": "R1"}, op="r1")  # R-5, proposed
+    change(ledger, published("P4", CLASSICAL, time="$2^{0.29n}$", memory=70), op="p4")  # R-6
+    view = ledger.frontier("p", "key-recovery")
+    group = best(view, CLASSICAL)
+    assert [r.handle for r in group.best] == ["R-1", "R-2"]
+    assert [(r.handle, r.dominated_by) for r in group.dominated] == [("R-3", ["R-1"])]
+    assert [r.handle for r in group.not_compared] == ["R-6"]
+    assert [(r.handle, r.status, r.would_dominate) for r in group.candidates] == [
+        ("R-5", "proposed", ["R-2"])
+    ]
+    assert [r.handle for r in best(view, QUANTUM).best] == ["R-4"]
+    # Once established, R1 is best known, and P2 is dominated, still recorded.
+    change(ledger, decide("R-5"), {"entry": "R-5", "expected": 1, "status": "established"},
+           op="est", author=USER)  # fmt: skip
+    group = best(ledger.frontier("p", "key-recovery"), CLASSICAL)
+    assert [r.handle for r in group.best] == ["R-1", "R-5"]
+    assert [(r.handle, r.dominated_by, r.status) for r in group.dominated] == [
+        ("R-2", ["R-5"], "recorded"),
+        ("R-3", ["R-1"], "recorded"),
+    ]
+    assert group.candidates == []
+    # A disputed result stays best known, marked; a refuted one leaves.
+    change(ledger, {"entry": "R-1", "expected": 1, "status": "disputed"}, op="d")
+    group = best(ledger.frontier("p", "key-recovery"), CLASSICAL)
+    assert [(r.handle, r.disputed) for r in group.best] == [("R-1", True), ("R-5", False)]
+    change(ledger, decide("R-1"), {"entry": "R-1", "expected": 2, "status": "refuted"},
+           op="ref-1", author=USER)  # fmt: skip
+    group = best(ledger.frontier("p", "key-recovery"), CLASSICAL)
+    # P3 was dominated only by P1, so it is best known again beside R1.
+    assert [r.handle for r in group.best] == ["R-3", "R-5"]
+    assert [(r.handle, r.dominated_by) for r in group.dominated] == [("R-2", ["R-5"])]
+    assert ledger.frontier("p", "key-recovery").truncated is False
+
+
+def test_a_result_disputed_before_it_was_eligible_is_a_candidate(ledger: Ledger) -> None:
+    ledger.define_category("p", KEY_RECOVERY, MAIN)
+    change(ledger, result(conditions=CLASSICAL, measures={"time": 100, "memory": 50}), op="r")
+    change(ledger, {"entry": "R-1", "expected": 1, "status": "disputed"}, op="d")
+    group = best(ledger.frontier("p", "key-recovery"), CLASSICAL)
+    assert (group.best, [(r.handle, r.status) for r in group.candidates]) == (
+        [],
+        [("R-1", "disputed")],
+    )
+
+
+def test_results_the_category_gained_a_condition_key_after_are_unplaced(ledger: Ledger) -> None:
+    from .test_ledger import NEW
+
+    ledger.define_category("p", KEY_RECOVERY, MAIN)
+    change(ledger, NEW["reference"], op="ref")
+    change(ledger, published("P1", CLASSICAL, time=120, memory=60), op="p1")
+    revised = {**KEY_RECOVERY, "expected": 1, "conditions": ["model", "success", "data"],
+               "operation_id": "rev"}  # fmt: skip
+    ledger.define_category("p", revised, MAIN)
+    view = ledger.frontier("p", "key-recovery")
+    assert (view.groups, [r.handle for r in view.unplaced]) == ([], ["R-1"])
+    with pytest.raises(DocumentError) as missing:
+        ledger.frontier("p", "bounds")
+    assert missing.value.kind == "not_found"

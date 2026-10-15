@@ -748,5 +748,43 @@ async def test_the_agent_defines_and_reads_frontier_categories(ledger: Ledger) -
     assert [c["category"] for c in listed["categories"]] == ["key-recovery"]
     read = await use(tool(ledger), "ledger_frontier", category="key-recovery", revision=1)
     assert read["conditions"] == ["model", "success"]
+    empty = await use(tool(ledger), "ledger_frontier", category="key-recovery")
+    assert (empty["groups"], empty["more"]) == ([], {})
     wrong = await use(tool(ledger), "ledger_frontier", after="key-recovery", category="x")
     assert wrong["error"]["kind"] == "invalid_request"
+
+
+@pytest.mark.asyncio
+async def test_the_agent_reads_a_frontier_a_group_at_a_time(ledger: Ledger) -> None:
+    """LG-21: the frontier read fits the budget: groups page, and a group shows as many
+    of each kind of result as it holds, with their counts."""
+    from .test_ledger import MAIN
+    from .test_ledger_frontier import KEY_RECOVERY, result
+
+    ledger.define_category("p", KEY_RECOVERY, MAIN)
+    candidates = [
+        result(
+            conditions={"model": f"m{n % 3}", "success": "1/2"},
+            measures={"time": n, "memory": 100 - n},
+        )
+        for n in range(30)
+    ]
+    ledger.change("p", {"operation_id": "made", "reason": "r", "changes": candidates}, MAIN)
+    whole = await use(tool(ledger), "ledger_frontier", category="key-recovery")
+    assert [len(g["candidates"]) for g in whole["groups"]] == [10, 10, 10]
+    assert whole["groups"][0]["candidates"][0] == {
+        "handle": "R-1",
+        "status": "proposed",
+        "origin": "project",
+        "measures": {"time": 0.0, "memory": 100.0},
+        "would_dominate": [],
+    }
+    small = tool(ledger)
+    small.budget = len(json.dumps(whole["groups"][0])) + 900
+    first = await use(small, "ledger_frontier", category="key-recovery")
+    assert (len(first["groups"]), first["more"]) == (1, {"groups_after": 1})
+    tiny = tool(ledger)
+    tiny.budget = 1500
+    clipped = await use(tiny, "ledger_frontier", category="key-recovery")
+    assert clipped["groups"][0]["candidates_total"] == 10
+    assert len(json.dumps(clipped)) <= 1500

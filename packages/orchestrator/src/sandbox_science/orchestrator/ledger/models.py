@@ -548,3 +548,57 @@ class CategoryPage(Contract):
 
     categories: list[Category]
     next_after: str | None
+
+
+class FrontierResult(Contract):
+    """A result as the frontier shows it (LG-23): what it states, under which conditions,
+    its measures, origin, status, the types of its evidence, the references it cites and
+    the artifacts it is pinned to, and its open findings and flags."""
+
+    entry_id: str
+    handle: str
+    revision: int
+    title: str
+    statement: str
+    status: str
+    origin: str
+    disputed: bool
+    """Eligible, and now ``disputed`` (LG-20)."""
+    conditions: dict[str, str]
+    measures: dict[str, float | str]
+    evidence_types: list[str]
+    sources: list[str]
+    """The handles of the references it cites."""
+    artifacts: list[dict[str, Any]]
+    """The artifact revisions its evidence is pinned to."""
+    open_findings: int
+    open_flags: int
+    dominated_by: list[str] = Field(default_factory=list[str])
+    """For a dominated result, the results that dominate it."""
+    would_dominate: list[str] = Field(default_factory=list[str])
+    """For a candidate, the best known results it would dominate if established."""
+
+
+class FrontierGroup(Contract):
+    """The results of a category under one set of conditions (LG-21)."""
+
+    conditions: dict[str, str]
+    best: list[FrontierResult]
+    """The eligible results no other eligible result dominates."""
+    dominated: list[FrontierResult]
+    not_compared: list[FrontierResult]
+    """Eligible results with a measure missing or not a number."""
+    candidates: list[FrontierResult]
+    """Project results that are not eligible yet (LG-23)."""
+
+
+class FrontierView(Contract):
+    """A category's frontier (LG-21, LG-23): its results grouped by their conditions."""
+
+    category: Category
+    groups: list[FrontierGroup]
+    unplaced: list[FrontierResult]
+    """Eligible results that do not give a value for each of the category's condition
+    keys, which it gained after they were recorded."""
+    truncated: bool
+    """Whether the category has more results than the frontier reads."""

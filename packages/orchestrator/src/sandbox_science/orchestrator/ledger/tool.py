@@ -44,6 +44,9 @@ from .models import (
     EntryType,
     EntryView,
     FlagCause,
+    FrontierGroup,
+    FrontierResult,
+    FrontierView,
     Mutation,
     Scheme,
 )
@@ -328,16 +331,21 @@ SPECS: Final = (
     ),
     ToolSpec(
         "ledger_frontier",
-        "Read the project's frontier categories: without category, a page of them; with "
-        "it, that category (its target and kind of result, its measures with their units "
-        "and directions, its condition keys) at its current revision or the one given. A "
-        "result in a category gives a value for each condition key and only its measures.",
+        "Read the project's frontier. Without category: a page of its categories. With "
+        "category: its best known results under each set of conditions (eligible results: "
+        "recorded published ones, established project ones, and those since disputed, "
+        "marked; none dominated by another, at least as good on every measure and better "
+        "on one), the dominated ones, those not compared (a measure missing or not a "
+        "number), and candidates with the best known they would dominate if established. "
+        "With revision: the category's definition at that revision. A result in a "
+        "category gives a value for each condition key and only its measures.",
         {
             "type": "object",
             "properties": {
                 "category": {"type": "string"},
                 "revision": {"type": "integer", "minimum": 1},
                 "after": {"type": "string", "description": "Where the last page ended"},
+                "groups_after": {"type": "integer", "minimum": 0},
             },
             "additionalProperties": False,
         },
@@ -418,6 +426,7 @@ class _Frontier(_Args):
     category: _TEXT | None = None
     revision: _NUMBER | None = None
     after: _TEXT | None = None
+    groups_after: _COUNT = 0
 
 
 class _Import(_Args):
@@ -544,7 +553,10 @@ class LedgerTool:
                 return self._categories(self.ledger.categories(project, after=args.after))
             if args.after is not None:
                 raise DocumentError(INVALID_REQUEST, "after pages the list of categories")
-            return self.ledger.category(project, args.category, args.revision).model_dump_json()
+            if args.revision is not None:
+                found = self.ledger.category(project, args.category, args.revision)
+                return found.model_dump_json()
+            return self._frontier(self.ledger.frontier(project, args.category), args.groups_after)
         if isinstance(args, _List):
             page = self.ledger.entries(
                 project, kind=args.type, status=args.status, after=args.after, limit=args.limit
@@ -557,6 +569,36 @@ class LedgerTool:
             project, args.entry, args.revision, incoming_after=args.incoming_after
         )
         return self._entry(view, args)
+
+    def _frontier(self, view: FrontierView, start: int) -> str:
+        """A category's frontier, its groups from ``start`` on, as many as the budget
+        holds; a first group too large for it shows as many of each kind of result as it
+        holds, with their counts."""
+        category = view.category.model_dump(
+            mode="json", include={"category", "revision", "target", "kind", "measures"}
+        )
+        for long in ("target", "kind"):
+            category[long] = _clip(category[long], 500)
+        shown: Json = {
+            "category": category,
+            "groups": [],
+            "unplaced": [r.handle for r in view.unplaced][:100],
+            "truncated": view.truncated,
+        }
+        for number, group in enumerate(view.groups[start:], start):
+            # A group goes on the next page rather than shortened, unless it is the first.
+            value: Json = {}
+            for cap in (50, 20, 10, 5, 2, 1) if not shown["groups"] else (50,):
+                value = _group(group, cap)
+                if len(_dump({**shown, "groups": [*shown["groups"], value], "more": _GROUPS})) <= (
+                    self.budget
+                ):
+                    break
+            else:
+                if shown["groups"]:
+                    return _dump({**shown, "more": {"groups_after": number}})
+            shown["groups"].append(value)
+        return _dump({**shown, "more": {}})
 
     def _categories(self, page: CategoryPage) -> str:
         """As many categories as the budget holds, their texts shortened."""
@@ -721,6 +763,46 @@ class LedgerTool:
                 "more_lines": max(0, len(results) - SHOWN_LINES),
             }
         )
+
+
+_GROUPS: Final = {"groups_after": 999999999}
+"""The longest ``more`` a frontier read can carry."""
+
+
+def _shown(result: FrontierResult, *extra: str) -> Json:
+    """A result as the frontier read lists it: its handle, status, measures and
+    counts; the rest is ``ledger_read``'s."""
+    value: Json = {
+        "handle": result.handle,
+        "status": result.status,
+        "origin": result.origin,
+        "measures": {
+            name: _clip(m, 60) if isinstance(m, str) else m for name, m in result.measures.items()
+        },
+    }
+    if result.disputed:
+        value["disputed"] = True
+    if result.open_findings or result.open_flags:
+        value |= {"open_findings": result.open_findings, "open_flags": result.open_flags}
+    for key in extra:
+        value[key] = getattr(result, key)
+    return value
+
+
+def _group(group: FrontierGroup, cap: int) -> Json:
+    """One set of conditions, with as many as ``cap`` of each kind of result."""
+    value: Json = {"conditions": group.conditions}
+    for part, extra in (
+        ("best", ()),
+        ("dominated", ("dominated_by",)),
+        ("not_compared", ()),
+        ("candidates", ("would_dominate",)),
+    ):
+        results: list[FrontierResult] = getattr(group, part)
+        value[part] = [_shown(r, *extra) for r in results[:cap]]
+        if len(results) > cap:
+            value[f"{part}_total"] = len(results)
+    return value
 
 
 _MORE: Final = dict.fromkeys(

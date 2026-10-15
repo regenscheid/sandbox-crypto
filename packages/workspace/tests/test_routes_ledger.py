@@ -292,3 +292,49 @@ async def test_the_frontier_categories_through_the_workspace(
     assert one.category.measures[0].direction == "lower"
     await error_of(await client.get(url + "/bounds/definition"), 404, "not_found")
     await error_of(await client.get(url, params={"limit": "0"}), 400, "invalid_request")
+
+
+async def test_a_frontier_through_the_workspace(
+    aiohttp_client: ClientFactory, seeded: Path, static_dir: Path
+) -> None:
+    """LG-21, LG-23: the GUI reads a category's frontier."""
+    from sandbox_science.workspace.frontier import FrontierAnswer
+
+    documents = DocumentStore(store_path(seeded))
+    try:
+        ledger = Ledger(documents)
+        ledger.define_category(
+            "p1",
+            {
+                "category": "key-recovery",
+                "target": "The test scheme",
+                "kind": "Key recovery cost",
+                "measures": [{"name": "time", "unit": "log2 operations", "direction": "lower"}],
+                "conditions": ["model"],
+                "reason": "What the project compares.",
+                "operation_id": "category-1",
+            },
+            MAIN,
+        )
+        candidate = {
+            "type": "result",
+            "origin": "project",
+            "title": "R1",
+            "statement": "Time $2^{105}$.",
+            "fields": {"category": "key-recovery", "conditions": {"model": "classical"},
+                       "measures": {"time": 105}},
+        }  # fmt: skip
+        ledger.change("p1", {"operation_id": "r1", "reason": "r", "changes": [candidate]}, MAIN)
+    finally:
+        documents.close()
+    client = await workspace(aiohttp_client, seeded, static_dir)
+    url = "/api/v0/projects/p1/frontier/key-recovery"
+    answer = FrontierAnswer.model_validate(await (await client.get(url)).json())
+    (group,) = answer.frontier.groups
+    assert (group.conditions, [r.handle for r in group.candidates]) == (
+        {"model": "classical"},
+        ["R-1"],
+    )
+    assert group.candidates[0].statement == "Time $2^{105}$."
+    await error_of(await client.get(url, params={"x": "1"}), 400, "invalid_request")
+    await error_of(await client.get("/api/v0/projects/p1/frontier/bounds"), 404, "not_found")

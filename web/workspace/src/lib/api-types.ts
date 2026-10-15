@@ -319,6 +319,13 @@ export interface ExecutionContext {
   actor: string;
 }
 
+/** A category's frontier as its results read now. */
+export interface FrontierAnswer {
+  project_id: string;
+  observed_at: string;
+  frontier: FrontierView;
+}
+
 /** A page of a project's frontier categories. */
 export interface FrontierCategories {
   project_id: string;
@@ -331,6 +338,44 @@ export interface FrontierCategory {
   project_id: string;
   observed_at: string;
   category: Category;
+}
+
+/** The results of a category under one set of conditions (LG-21). */
+export interface FrontierGroup {
+  conditions: Record<string, string>;
+  best: FrontierResult[];
+  dominated: FrontierResult[];
+  not_compared: FrontierResult[];
+  candidates: FrontierResult[];
+}
+
+/** A result as the frontier shows it (LG-23): what it states, under which conditions, its measures, origin, status, the types of its evidence, the references it cites and the artifacts it is pinned to, and its open findings and flags. */
+export interface FrontierResult {
+  entry_id: string;
+  handle: string;
+  revision: number;
+  title: string;
+  statement: string;
+  status: string;
+  origin: string;
+  disputed: boolean;
+  conditions: Record<string, string>;
+  measures: Record<string, number | string>;
+  evidence_types: string[];
+  sources: string[];
+  artifacts: Record<string, unknown>[];
+  open_findings: number;
+  open_flags: number;
+  dominated_by: string[];
+  would_dominate: string[];
+}
+
+/** A category's frontier (LG-21, LG-23): its results grouped by their conditions. */
+export interface FrontierView {
+  category: Category;
+  groups: FrontierGroup[];
+  unplaced: FrontierResult[];
+  truncated: boolean;
 }
 
 /** One clause of the gate (LG-17): whether it holds for the entry as it reads, and why. */

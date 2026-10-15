@@ -38,7 +38,11 @@ from sandbox_science.orchestrator.memory import MemoryChange
 from sandbox_science.workspace.api import ProjectAnswer, ProjectListing, SessionDetail
 from sandbox_science.workspace.artifacts import ArtifactListing, ViewerLink
 from sandbox_science.workspace.chat import EventPage, MessageAnswer, MessageListing, Requested
-from sandbox_science.workspace.frontier import FrontierCategories, FrontierCategory
+from sandbox_science.workspace.frontier import (
+    FrontierAnswer,
+    FrontierCategories,
+    FrontierCategory,
+)
 from sandbox_science.workspace.kernels import WorkspaceObservation
 from sandbox_science.workspace.ledger import (
     LedgerEntry,
@@ -79,6 +83,7 @@ MODELS: tuple[type[BaseModel], ...] = (
     LedgerGate,
     FrontierCategories,
     FrontierCategory,
+    FrontierAnswer,
     MemoryAnswer,
     MemoryProposals,
     MemoryHistory,

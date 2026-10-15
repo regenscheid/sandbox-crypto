@@ -68,6 +68,7 @@ from .models import (
     EntrySummary,
     EntryView,
     EvidenceLink,
+    FrontierView,
     GateClause,
     GateDecision,
     GateView,
@@ -412,6 +413,16 @@ class Ledger:
                 + ("" if revision is None else f" at revision {revision}"),
             )
         return found
+
+    def frontier(self, project: str, name: str) -> FrontierView:
+        """A category's frontier as its results read now (LG-20, LG-21, LG-23)."""
+        self._project(project)
+        with self.control.read() as tx:
+            db = tx.sql
+            found = frontier.read(db, project, name)
+            if found is None:
+                raise DocumentError(NOT_FOUND, f"no frontier category {name}")
+            return frontier.view(db, project, found)
 
     # Changes.
 

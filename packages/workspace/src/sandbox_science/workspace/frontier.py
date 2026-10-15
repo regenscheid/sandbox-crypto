@@ -3,7 +3,9 @@
 
 ``GET /api/v0/projects/{project}/frontier`` answers a page of the project's frontier
 categories, in the order they were defined (``after``, ``limit``); ``GET
-…/frontier/{category}/definition`` one category, at its current revision or
+…/frontier/{category}`` its frontier: the best known results under each set of
+conditions, with those dominated, not compared and the candidates (LG-20 to LG-23);
+``GET …/frontier/{category}/definition`` one category, at its current revision or
 ``revision``. ``POST …/frontier`` is the user's definition of a category, or its
 revision at the revision read (same-origin, the user's only).
 """
@@ -20,7 +22,7 @@ from pydantic import AwareDatetime
 from sandbox_science.contracts import Contract, Identifier
 from sandbox_science.orchestrator.documents import USER, DocumentStore
 from sandbox_science.orchestrator.ledger import Ledger
-from sandbox_science.orchestrator.ledger.models import Category, CategoryPage
+from sandbox_science.orchestrator.ledger.models import Category, CategoryPage, FrontierView
 
 from . import documents
 from .context import identifier, json_body
@@ -40,6 +42,14 @@ class FrontierCategories(Contract):
     page: CategoryPage
 
 
+class FrontierAnswer(Contract):
+    """A category's frontier as its results read now."""
+
+    project_id: Identifier
+    observed_at: AwareDatetime
+    frontier: FrontierView
+
+
 class FrontierCategory(Contract):
     """One frontier category at one revision."""
 
@@ -51,6 +61,7 @@ class FrontierCategory(Contract):
 def add_routes(app: web.Application) -> None:
     app.router.add_get(PATH, categories)
     app.router.add_post(PATH, define)
+    app.router.add_get(PATH + "/{category}", frontier)
     app.router.add_get(PATH + "/{category}/definition", category)
 
 
@@ -64,6 +75,22 @@ async def categories(request: web.Request) -> web.Response:
         page = ledger.categories(project, after=after, limit=limit)
         return FrontierCategories(
             project_id=project, observed_at=datetime.now(UTC), page=page
+        ).model_dump_json()
+
+    return await read_answer(request, project, read)
+
+
+async def frontier(request: web.Request) -> web.Response:
+    project = identifier(request, "project")
+    name = matched(_NAME, request.match_info["category"], "frontier category")
+    assert name is not None  # noqa: S101 - a path part is always there
+    query_of(request, set())
+
+    def read(ledger: Ledger) -> str:
+        return FrontierAnswer(
+            project_id=project,
+            observed_at=datetime.now(UTC),
+            frontier=ledger.frontier(project, name),
         ).model_dump_json()
 
     return await read_answer(request, project, read)
