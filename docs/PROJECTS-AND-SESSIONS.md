@@ -125,3 +125,34 @@ Not yet built:
 Verify local and hosted pools support persistent data and dependency state, idle suspend/restore, multiple sessions/kernels in the project container, dedicated session provisioning, scoped same-project sharing, concurrent file publication, and truthful restart/reset behavior. Local Kubernetes is an accepted initial execution path. Test monitor attribution when two sessions share one sandbox: sandbox identity alone cannot identify the requesting workbook.
 
 The illustrative [project/session record](../examples/project-sessions.json) contains two workbooks sharing the default container and a third with its own persistent environment. It is not an implemented API or deployment manifest.
+
+## Files executions write
+
+Each project has settings for the files its executions write ([research
+artifacts](specs/research-artifacts.md), RA-29, RA-39; `orchestrator/file_settings.py`):
+
+- `recording`: `all`, the default, records every file a call writes as an artifact
+  revision; `results` records only delegated runs' declared results and published files.
+- `ignore`: patterns, with the rules of `.gitignore`, for the files never recorded by
+  themselves: by default `.jobs/`, `.cache/`, `__pycache__/`, `*.pyc`,
+  `.ipynb_checkpoints/`, `.git/`, `.venv/`, `venv/`, `node_modules/`, `.mypy_cache/`,
+  `.pytest_cache/`, `.ruff_cache/`, `build/`, `dist/`, `*.egg-info/`, `tmp/`, `*.tmp`,
+  `*.swp`, `*~` and `.DS_Store`. A pattern is matched inside its area: the session
+  workspace, or `shared/` without that prefix, segment by segment and without regular
+  expressions, so no name makes matching slow; a path with a name over 255 bytes is never
+  matched (the recorder leaves it out). Negation (`!`) is not supported. At most 200
+  patterns of 256 characters and 64 KiB in all; a pattern that cannot mean anything, such
+  as a backwards class `[z-a]`, is refused.
+
+Only the user changes them, naming the revision read and an operation ID, in the GUI or
+with the command line:
+
+```bash
+sandbox-science-harness project files --state-dir state --project p1
+sandbox-science-harness project files --state-dir state --project p1 --expected 0 \
+  --operation-id o1 --recording results --ignore-defaults --ignore '*.h5'
+```
+
+`--ignore` replaces the list (repeat it for several), `--ignore-defaults` starts from the
+defaults, and `--no-ignore` empties it. The harness's recording of the files is the next
+step of the stack; until then the settings are kept and shown only.
