@@ -76,6 +76,9 @@ def test_a_setting_keeps_its_defaults_until_changed(tmp_path: Path) -> None:
         ({"models": ("a b",)}, "models.0"),
         ({"models": ("-a",)}, "models.0"),
         ({"fallback": "x" * 129}, "fallback"),
+        ({"task_tokens": 49_999}, "task_tokens"),
+        ({"task_tokens": 400_001}, "task_tokens"),
+        ({"task_turns": 41}, "task_turns"),
     ],
 )
 def test_a_setting_out_of_range_is_refused_and_the_old_one_kept(
@@ -128,14 +131,15 @@ def test_the_cli_shows_and_changes_the_whole_setting(
     assert cli.main(argv) == 0
     assert capsys.readouterr().out == (
         f"project {PROJECT}: delegation depth 0 (off); at most 10 delegated runs at once; "
-        "a check gets 150000 tokens and 12 turns; a brief may choose the models: none; "
+        "a check gets 150000 tokens and 12 turns, a task 200000 tokens and 20 turns; a brief "
+        "may choose the models: none; "
         "fallback: none\n"
     )
     assert cli.main([*argv, "--depth", "1", "--cap", "3", "--check-turns", "4"]) == 0
     assert capsys.readouterr().out == (
         f"project {PROJECT}: delegation depth 1 (main runs delegate checks); at most 3 "
-        "delegated runs at once; a check gets 150000 tokens and 4 turns; a brief may "
-        "choose the models: none; fallback: none\n"
+        "delegated runs at once; a check gets 150000 tokens and 4 turns, a task 200000 "
+        "tokens and 20 turns; a brief may choose the models: none; fallback: none\n"
     )
     assert cli.main([*argv, "--models", "checker-b, anthropic/opus", "--fallback", "main"]) == 0
     assert capsys.readouterr().out.endswith(

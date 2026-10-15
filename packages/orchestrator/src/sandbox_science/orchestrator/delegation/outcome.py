@@ -36,6 +36,7 @@ from sandbox_science.orchestrator.ledger.models import EvidenceLink
 from sandbox_science.orchestrator.notices import OUTCOME_CORRECTION
 
 FORMAT: Final = "sandbox-check-result-2"
+TASK_FORMAT: Final = "sandbox-task-result-1"
 MAX_ERRORS: Final = 5
 MAX_BYTES: Final = 16384
 """The longest result, as UTF-8 JSON: whole, it fits a tool result."""
@@ -127,6 +128,33 @@ class CheckResult(StrictContract):
         return self
 
 
+TASK_SHAPE: Final[dict[str, JsonValue]] = {
+    "status": "complete | partial | blocked",
+    "summary": "what you did, how, and what you found or made (at most 8000 characters)",
+    "obstacle": "only and always when blocked: what prevents the task",
+    "deviations": ["where you departed from the brief, and why (at most 10)"],
+    "open_questions": ["what you could not settle, such as a question for the user"],
+}
+"""A task's result's fields, as the correction notice describes them."""
+
+
+class TaskResult(StrictContract):
+    """What a task returns (``sandbox-task-result-1``): the delegated run's claims about
+    what it did; the outcome's ``ended`` is the platform's observation (PD-17)."""
+
+    status: Literal["complete", "partial", "blocked"]
+    summary: Annotated[str, _texts(8000)]
+    obstacle: Annotated[str, _texts(1000)] | None = None
+    deviations: tuple[Item, ...] = _ITEMS
+    open_questions: tuple[Item, ...] = _ITEMS
+
+    @model_validator(mode="after")
+    def _consistent(self) -> Self:
+        if (self.status == "blocked") != (self.obstacle is not None):
+            raise ValueError("a blocked task names its obstacle, and only a blocked one does")
+        return self
+
+
 Read = tuple[str, ...]
 """What a run read whole, as its tools report it: an entry's statement at a revision
 (``("entry", id, revision)``), a document's block at a revision (``("block", id,
@@ -175,14 +203,14 @@ def proof_reads(links: Sequence[EvidenceLink]) -> frozenset[Proof]:
     return frozenset(found)
 
 
-def parse(answer: str | None, target: Target | None = None) -> CheckResult:
-    """The result an answer gives: a JSON object, alone or in one fenced block, naming
-    ``target`` when one is given. Raises ``ValueError`` with what is wrong."""
+def _parsed[R: CheckResult | TaskResult](answer: str | None, schema: type[R]) -> R:
+    """The ``schema`` result an answer gives: a JSON object, alone or in one fenced block.
+    Raises ``ValueError`` with what is wrong."""
     text = (answer or "").strip()
     if (fenced := _FENCED.match(text)) is not None:
         text = fenced[1]
     try:
-        result = CheckResult.model_validate_json(text)
+        result = schema.model_validate_json(text)
     except ValidationError as error:
         found = [
             f"{'.'.join(str(part) for part in e['loc']) or 'result'}: {e['msg']}"
@@ -191,6 +219,18 @@ def parse(answer: str | None, target: Target | None = None) -> CheckResult:
         raise ValueError("; ".join(found)) from None
     if len(result.model_dump_json().encode()) > MAX_BYTES:
         raise ValueError(f"the result is longer than {MAX_BYTES} bytes")
+    return result
+
+
+def parse_task(answer: str | None) -> TaskResult:
+    """The result a task's answer gives; raises ``ValueError`` with what is wrong."""
+    return _parsed(answer, TaskResult)
+
+
+def parse(answer: str | None, target: Target | None = None) -> CheckResult:
+    """The result an answer gives: a JSON object, alone or in one fenced block, naming
+    ``target`` when one is given. Raises ``ValueError`` with what is wrong."""
+    result = _parsed(answer, CheckResult)
     if target is not None and not (
         target.named(result.entry) and result.revision == target.revision
     ):
@@ -207,9 +247,11 @@ class Outcome(TurnHook):
 
     name = "outcome"
 
-    def __init__(self, target: Target | None = None) -> None:
+    def __init__(self, target: Target | None = None, *, task: bool = False) -> None:
+        """``target`` is a check's entry and revision; ``task`` reads a task's result."""
         self.target = target
-        self.result: CheckResult | None = None
+        self.task = task
+        self.result: CheckResult | TaskResult | None = None
         self.errors: list[str] = []
         self.corrected = False
         self.read = False
@@ -257,20 +299,28 @@ class Outcome(TurnHook):
 
     async def closing(self, run: RunView, answer: str | None) -> Closing:
         try:
-            self.result = parse(answer, self.target)
+            self.result = parse_task(answer) if self.task else parse(answer, self.target)
         except ValueError as error:
             self.result = None
             self.errors = [*self.errors, str(error)[:ERROR_CHARS]][-KEPT_ERRORS:]
             if not self.corrected:
                 # One correction (PD-18); with no turn or room left, the answer stands.
                 self.corrected = True
-                found = {"errors": self.errors[-1:], "format": FORMAT, "fields": SHAPE}
+                found = {"errors": self.errors[-1:], "format": self.format, "fields": self.shape}
                 return Closing("continue", (Notice(self.name, (), OUTCOME_CORRECTION.text, found),))
         return Closing()
 
+    @property
+    def format(self) -> str:
+        return TASK_FORMAT if self.task else FORMAT
+
+    @property
+    def shape(self) -> dict[str, JsonValue]:
+        return TASK_SHAPE if self.task else SHAPE
+
     def summary(self) -> object | None:
         return {
-            "format": FORMAT,
+            "format": self.format,
             "result": self.result.model_dump(mode="json") if self.result is not None else None,
             "errors": list(self.errors),
             "read": self.read,
@@ -278,7 +328,7 @@ class Outcome(TurnHook):
         }
 
 
-def result_of(outcome: Outcome, stopped: str, failed: bool) -> CheckResult | None:
+def result_of(outcome: Outcome, stopped: str, failed: bool) -> CheckResult | TaskResult | None:
     """The result of a run that ended with the answer it gave: ``None`` for one stopped by
     a limit, a cancel or a failure, whatever an earlier closing parsed."""
     return outcome.result if stopped == "answered" and not failed else None

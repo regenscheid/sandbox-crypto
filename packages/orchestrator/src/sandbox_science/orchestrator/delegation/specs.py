@@ -1,25 +1,29 @@
 # SPDX-License-Identifier: MIT
 """The delegate tools as the model sees them (plans-and-delegation spec, PD-33).
 
-The first brief is narrow: a check of one ledger entry at one revision, which a run
-with a fresh context does (LG-17). The platform writes a check's task and lists the
-entry's evidence as its inputs; the parent adds at most a short note, which the child
-reads as the requester's note, not evidence (coordinator, 2026-10-15).
+A brief is a check or a task. A check is of one ledger entry at one revision, which a
+run with a fresh context does (LG-17): the platform writes its task and lists the
+entry's evidence as its inputs, and the parent adds at most a short note, which the
+child reads as the requester's note, not evidence (coordinator, 2026-10-15). A task is
+the parent's own (PD-11): its text, a context summary and its inputs, each checked as
+any agent text is, since the child, its record and the workspace show them.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Annotated, Final, Literal
+from functools import partial
+from typing import Annotated, Any, Final, Literal
 
 from pydantic import BeforeValidator, Field
 
-from sandbox_science.contracts import Identifier
+from sandbox_science.contracts import ErrorKind, Identifier
 from sandbox_science.contracts.model import Contract
 from sandbox_science.orchestrator.documents.agent_text import agent_text
 from sandbox_science.orchestrator.documents.errors import DocumentError
 from sandbox_science.orchestrator.hooks import Effect
 from sandbox_science.orchestrator.model import ToolSpec
+from sandbox_science.orchestrator.worker_client import WorkerAPIError
 
 MAX_NOTE: Final = 500
 MAX_WAITED: Final = 10
@@ -42,6 +46,39 @@ def _note(value: object) -> object:
         raise ValueError(error.message) from None
 
 
+MAX_TEXT: Final = 8000
+MAX_INPUTS: Final = 20
+MAX_INPUT: Final = 512
+
+
+def _text(value: object, *, what: str) -> object:
+    """An agent's text as a brief keeps it: trimmed, its line ends made line feeds, and
+    holding no character the user may not see (``check_agent_text``)."""
+    if not isinstance(value, str):
+        return value
+    try:
+        return agent_text(value.strip(), what)
+    except DocumentError as error:
+        raise ValueError(error.message) from None
+
+
+def _texts(what: str) -> BeforeValidator:
+    return BeforeValidator(partial(_text, what=what))
+
+
+class TaskBrief(Contract):
+    """What ``delegate`` takes for a task (PD-11): what to do, what the child needs to
+    know, and the inputs it should read; the parent writes all of it."""
+
+    task: Annotated[str, _texts("the task"), Field(min_length=1, max_length=MAX_TEXT)]
+    context: Annotated[str, _texts("the context"), Field(max_length=MAX_TEXT)] = ""
+    inputs: tuple[
+        Annotated[str, _texts("an input"), Field(min_length=1, max_length=MAX_INPUT)], ...
+    ] = Field(default=(), max_length=MAX_INPUTS)
+    model: str | None = Field(default=None, min_length=1, max_length=128)
+    """A model alias the project lets a brief choose (PD-28)."""
+
+
 class CheckBrief(Contract):
     """What ``delegate`` takes: the entry and revision to check, and the parent's note.
     A brief carries no task or inputs of the parent's, which could carry the verdict."""
@@ -50,6 +87,14 @@ class CheckBrief(Contract):
     note: Annotated[str, BeforeValidator(_note), Field(max_length=MAX_NOTE)] = ""
     model: str | None = Field(default=None, min_length=1, max_length=128)
     """A model alias the project lets a brief choose (PD-28)."""
+
+
+def brief_of(args: dict[str, Any]) -> CheckBrief | TaskBrief:
+    """The brief ``delegate``'s arguments give: a task when they name one, otherwise a
+    check; a brief that names both is refused."""
+    if "task" in args and "check" in args:
+        raise WorkerAPIError(ErrorKind.INVALID_REQUEST, "a brief is a check or a task, not both")
+    return TaskBrief.model_validate(args) if "task" in args else CheckBrief.model_validate(args)
 
 
 class WaitRequest(Contract):
@@ -66,25 +111,28 @@ class Named(Contract):
 SPECS: Final = (
     ToolSpec(
         "delegate",
-        "Start a delegated run that independently checks one ledger entry at one "
-        "revision, such as a proved result before you establish it. The platform writes "
-        "its task: check whether the entry holds at that revision, from its statement, "
-        "fields and evidence; it lists the entry's evidence as the inputs, and starts the "
-        "checker with a fresh context: it sees none of your conversation, and has kernels "
-        "of its own. Your note, if any, reaches it as the requester's note, not evidence. "
+        "Start a delegated run, which works with a fresh context: it sees none of your "
+        "conversation, only its brief, and has kernels of its own. Its brief is a check or "
+        "a task. A check (check) independently checks one ledger entry at one revision, "
+        "such as a proved result before you establish it: the platform writes its task, "
+        "check whether the entry holds at that revision, and lists the entry's evidence as "
+        "its inputs; your note, if any, reaches it as the requester's note, not evidence. "
+        "A task (task) is yours to write: what to do, the context it needs (context), and "
+        "the inputs it should read (inputs); it works under a delegated agent's authority. "
         "It runs while you go on; this returns its delegation_id at once. Its report "
         "reaches you as a delegation notice, or as the result of wait_delegations. You "
-        "cannot give your final answer while it runs. Its result is its claim: a verdict, "
-        "a status and a summary; the outcome says how the platform saw it end. A check "
-        "that returned confirmed counts as the entry's independent check once you add it "
-        "as evidence: role independent_check, delegation its ID, checked the revision it "
-        "checked; one of the same material that refuted it, or completed inconclusive, "
-        "keeps any from counting.",
+        "cannot give your final answer while it runs. Its result is its claim: a status "
+        "and a summary, and for a check a verdict; the outcome says how the platform saw "
+        "it end. A check that returned confirmed counts as the entry's independent check "
+        "once you add it as evidence: role independent_check, delegation its ID, checked "
+        "the revision it checked; one of the same material that refuted it, or completed "
+        "inconclusive, keeps any from counting.",
         {
             "type": "object",
             "properties": {
                 "check": {
                     "type": "object",
+                    "description": "For a check: the entry and the revision to check",
                     "properties": {
                         "entry": {"type": "string", "description": "A handle, such as R-1"},
                         "revision": {"type": "integer", "minimum": 1},
@@ -95,11 +143,27 @@ SPECS: Final = (
                 "note": {
                     "type": "string",
                     "maxLength": MAX_NOTE,
-                    "description": "Optional: what the checker should know, such as where "
-                    "a file is; never the verdict you expect",
+                    "description": "For a check, optional: what the checker should know, "
+                    "such as where a file is; never the verdict you expect",
+                },
+                "task": {
+                    "type": "string",
+                    "maxLength": MAX_TEXT,
+                    "description": "For a task: what to do, and what to return",
+                },
+                "context": {
+                    "type": "string",
+                    "maxLength": MAX_TEXT,
+                    "description": "For a task, optional: what it needs to know",
+                },
+                "inputs": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1, "maxLength": MAX_INPUT},
+                    "maxItems": MAX_INPUTS,
+                    "description": "For a task, optional: paths in the session workspace or "
+                    "shared/, documents and ledger entries it should read",
                 },
             },
-            "required": ["check"],
             "additionalProperties": False,
         },
     ),
@@ -161,7 +225,7 @@ def offered(models: Sequence[str]) -> tuple[ToolSpec, ...]:
     model = {
         "type": "string",
         "enum": list(models),
-        "description": "Optional: the model alias the checker runs on, of those the "
+        "description": "Optional: the model alias the delegated run runs on, of those the "
         "project allows; without it, the delegated role's",
     }
     parameters = {**schema, "properties": {**schema["properties"], "model": model}}

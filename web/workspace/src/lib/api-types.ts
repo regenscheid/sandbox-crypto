@@ -204,7 +204,7 @@ export interface Delegation {
   delegation_id: string;
   parent: string;
   run: string;
-  kind: "check";
+  kind: "check" | "task";
   brief: Record<string, JsonValue>;
   started_at: string;
   ended: "returned" | "failed" | "cancelled" | "limit_reached" | "interrupted" | null;
