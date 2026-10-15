@@ -60,9 +60,11 @@ Every route needs `Authorization: Bearer <token>`: the pool's own token, which a
 | `GET /v1/artifacts/{id}` | → `ArtifactRef` |
 | `GET /v1/artifacts/{id}/content` | → the bytes, with `X-Content-SHA256`, as a download (`Content-Disposition: attachment`, `nosniff` and a sandboxing content security policy), so no media type turns them into a page |
 | `POST /v1/environments` | `EnvironmentRequest` → `EnvironmentInfo`: 201 when created, 200 when the same environment exists, 409 when it exists with another project, profile or policy ([environments](#environments)) |
+| `GET /v1/environments` | → `EnvironmentList`: the environments of the client's projects (every project's for the pool token), deleted ones left out |
 | `GET /v1/environments/{id}` | → `EnvironmentInfo` |
 | `POST /v1/environments/{id}/policy` | `PolicyRevisionRequest` → `EnvironmentInfo` under the new revision |
 | `DELETE /v1/environments/{id}` | → `EnvironmentInfo` in state `deleted` |
+| `POST /v1/environments/{id}/suspend` | → `SuspendResult`: stops the environment's sandbox now, as [idle suspension](#idle-suspension) would. `suspended` is OpenShell's word that the sandbox is stopped, by this request or already: a sandbox recorded stopped whose stop failed or was cut short is stopped again. One in use keeps running, as for idle suspension: running jobs, a publication, a request in flight, or kernels using more than 2% of a core over two samples a second apart. So does one being created |
 | `POST /v1/environments/{id}/admissions` | `AdmissionRequest` (up to 32 hosts and ports) → `AdmissionResult`: each host admitted or refused with the reason, and the environment ([ahead of use](#admission-on-demand)) |
 | `GET /v1/environments/{id}/revisions?after=N&limit=M` | → `RevisionHistory`: a page of the environment's revisions after revision `N` (default -1), oldest first, each with how its change came and its lockfile ([package commands](#package-commands)): at most `M` (1 to 100, the default) and 4 MiB of JSON. `next_after` is the `after` of the next page, while there is one. It works for any environment that ran something; a client limited to projects sees only its projects' environments, and none of the revisions recorded under an ID before the worker created its environment |
 | `GET /v1/environments/{id}/revisions/{n}/lockfile` | → the revision's `Lockfile` as JSON, at most 8 MiB, with `X-Content-SHA256`; `not_found` while it has none |
@@ -313,6 +315,7 @@ Environments persist, but need not keep running ([projects and sessions](PROJECT
   2. It records the environment as `stopped`, then runs `openshell sandbox stop`.
   3. OpenShell keeps a stopped sandbox's writable disk: the session workspaces, the shared area and installed tools survive. Its identity and policy survive too, including hosts admitted on demand and the middleware's binding.
   4. Kernels do not survive. The next cell in a session that had a kernel reports `state_lost`, as after any executor restart.
+- **On request.** `POST /v1/environments/{id}/suspend` suspends an environment now, by the same steps, if nothing is in use there by the same measure, its kernels' CPU taken as two samples a second apart. It then asks OpenShell whether the sandbox is stopped, and stops it again if not, since the record says `stopped` before the stop runs; `sandbox-science down` suspends its projects' environments this way ([quickstart](QUICKSTART.md#stopping)).
 - **Resuming.** Any use of a stopped environment first resumes it: an execution, a file operation, capabilities, `create` with the same request, or a policy revision.
   - The worker reads the sandbox's phase. If a stop failed or was cut short, the sandbox is still ready, and it carries on. Otherwise it runs `openshell sandbox start` and waits up to three minutes for the sandbox to be ready.
   - Phases that cannot lead there (`Error`, `Deleting`, `Completed`) fail at once, and after a failed start the next minute's uses fail at once too.

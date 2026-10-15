@@ -194,9 +194,10 @@ class Launcher:
     def output(self) -> str:
         return "\n".join(self.seen)
 
-    def command(self, name: str) -> subprocess.CompletedProcess[str]:
+    def command(self, name: str, *extra: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            [sys.executable, "-m", "sandbox_science.launcher", name, "--config", str(self.config)],
+            [sys.executable, "-m", "sandbox_science.launcher", name,
+             "--config", str(self.config), *extra],
             capture_output=True, text=True, env=self.env, timeout=60, check=False,
         )  # fmt: skip
 
@@ -246,7 +247,12 @@ def site(make_config: ConfigMaker, fake_parts: Path, tmp_path: Path) -> Iterator
         started.append(launcher)
         return launcher
 
-    yield {"launch": tracked, "journal": journal, "worker": worker}
+    def spawn(config: Path, env: dict[str, str], command: str) -> Launcher:
+        launcher = Launcher(config, env, command)
+        started.append(launcher)
+        return launcher
+
+    yield {"launch": tracked, "spawn": spawn, "journal": journal, "worker": worker}
     for launcher in started:
         if launcher.process.poll() is None:
             launcher.process.send_signal(signal.SIGINT)

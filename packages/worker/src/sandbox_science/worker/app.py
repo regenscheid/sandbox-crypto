@@ -32,6 +32,7 @@ from sandbox_science.contracts import (
     AdmissionResult,
     ArtifactRef,
     EnvironmentInfo,
+    EnvironmentList,
     EnvironmentRequest,
     EnvironmentState,
     ErrorInfo,
@@ -51,6 +52,7 @@ from sandbox_science.contracts import (
     ReadFileRequest,
     SessionClosed,
     SessionCloseRequest,
+    SuspendResult,
     WorkerErrorResponse,
     WriteFileRequest,
 )
@@ -81,6 +83,7 @@ from .lockfile_diffs import LockfileDiffs, Pair
 from .manager import ExecutionManager
 from .provisioner import MAX_WAIT, RESERVED_OPERATION, Provisioner
 from .settings import ClientSettings, token_digest
+from .suspend import busy
 from .timeouts import seconds
 
 _log = logging.getLogger(__name__)
@@ -260,10 +263,12 @@ def create_app(
     app.add_routes(
         [
             web.post("/v1/environments", create_environment),
+            web.get("/v1/environments", list_environments),
             web.get("/v1/environments/{environment_id}", get_environment),
             web.post("/v1/environments/{environment_id}/policy", revise_environment),
             web.delete("/v1/environments/{environment_id}", delete_environment),
             web.post("/v1/environments/{environment_id}/admissions", admit_hosts),
+            web.post("/v1/environments/{environment_id}/suspend", suspend_environment),
             web.get("/v1/environments/{environment_id}/revisions", environment_revisions),
             web.get(
                 "/v1/environments/{environment_id}/revisions/{revision}/lockfile",
@@ -595,6 +600,33 @@ def _environment(request: web.Request, environments: Environments) -> str:
 async def get_environment(request: web.Request) -> web.Response:
     environments = _environments(request)
     return _json(environments.get(_environment(request, environments)))
+
+
+async def list_environments(request: web.Request) -> web.Response:
+    """The environments of the client's projects, so an operator can see what runs."""
+    environments = _environments(request)
+    listed = environments.records.listed(_client(request).projects)
+    return _json(EnvironmentList(environments=tuple(listed)))
+
+
+async def suspend_environment(request: web.Request) -> web.Response:
+    """Stop the environment's sandbox now, as idle suspension would (W3).
+
+    The same rule holds as for an idle environment: one in use keeps running, its
+    kernels' CPU sampled twice a second apart included (``suspend.busy``), and its next
+    use starts a stopped one again, with its files and installed tools. ``suspended`` is
+    OpenShell's word on the sandbox, not the worker's record (``Environments.stop_now``).
+    """
+    environments = _environments(request)
+    environment_id = _environment(request, environments)
+    manager = request.app[MANAGER]
+    if environments.get(environment_id).state is EnvironmentState.READY and await busy(
+        manager, environment_id, manager.clock
+    ):
+        suspended = False
+    else:
+        suspended = await environments.stop_now(environment_id, manager.clock.monotonic())
+    return _json(SuspendResult(environment=environments.get(environment_id), suspended=suspended))
 
 
 async def revise_environment(request: web.Request) -> web.Response:

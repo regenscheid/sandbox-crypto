@@ -10,6 +10,7 @@ settings hold the digests of the two clients' tokens:
 | ``worker`` | nobody: the worker's own pool token, which acts for every project | the worker |
 | ``harness-worker`` | the run service, for the projects in the config | the worker |
 | ``workspace-worker`` | the workspace, for the same projects | the worker |
+| ``launcher-worker`` | the launcher, for the same projects' sandboxes | the worker |
 
 The run service and the workspace share the control store and need no token between
 them; the browser logs in to the workspace with the address the workspace makes at
@@ -30,8 +31,9 @@ from .state import Layout, ensure_token, write_private
 WORKER = "sandbox-science-worker"
 HARNESS = "sandbox-science-harness"
 WORKSPACE = "sandbox-science-workspace"
-CLIENTS = ("harness", "workspace")
-"""The worker's clients, each with a token limited to the config's projects."""
+CLIENTS = ("harness", "workspace", "launcher")
+"""The worker's clients, each with a token limited to the config's projects: the launcher's
+own lists and suspends the projects' research sandboxes (sandboxes.py)."""
 
 
 def commands(config: LauncherConfig) -> Path:

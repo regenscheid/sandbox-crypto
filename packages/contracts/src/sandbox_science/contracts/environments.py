@@ -101,3 +101,19 @@ class AdmissionDecision(Contract):
 class AdmissionResult(Contract):
     decisions: tuple[AdmissionDecision, ...]
     environment: EnvironmentInfo
+
+
+class EnvironmentList(Contract):
+    """The environments of the projects a client may act for, deleted ones left out."""
+
+    environments: tuple[EnvironmentInfo, ...]
+
+
+class SuspendResult(Contract):
+    """What asking to suspend an environment did (W3)."""
+
+    environment: EnvironmentInfo
+    suspended: bool
+    """Whether OpenShell says its sandbox is stopped now: by this request, or already. False
+    while it is in use (running jobs, a publication, a request in flight or kernels
+    computing keep it running), while it is being created, or when its stop failed."""

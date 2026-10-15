@@ -6,11 +6,15 @@ description = "Starts, supervises and stops a local Sandbox Science from one con
 requires-python = ">=3.12"
 license = "MIT"
 dependencies = [
+    "sandbox-science-contracts",
     "pydantic>=2.9",
 ]
 
 [project.scripts]
 sandbox-science = "sandbox_science.launcher.cli:main"
+
+[tool.uv.sources]
+sandbox-science-contracts = { workspace = true }
 
 [build-system]
 requires = ["hatchling>=1.25"]

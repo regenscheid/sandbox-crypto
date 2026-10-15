@@ -54,6 +54,8 @@ class Record:
     config: str
     gui: str | None
     parts: tuple[RecordedPart, ...]
+    purpose: str = "up"
+    """``up``, or ``down`` while it runs the worker alone to suspend the sandboxes."""
 
     def dumps(self) -> str:
         fields = asdict(self)
@@ -124,6 +126,7 @@ def read(layout: Layout) -> Record | None:
                 )
                 for part in cast(list[dict[str, Any]], raw["parts"])
             ),
+            purpose=str(raw.get("purpose", "up")),
         )
     except (OSError, ValueError, KeyError, TypeError):
         return None

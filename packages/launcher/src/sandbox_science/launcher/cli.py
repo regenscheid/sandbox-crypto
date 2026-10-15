@@ -3,7 +3,7 @@
 
 ```
 sandbox-science up [--config sandbox-science.toml]
-sandbox-science down [--config sandbox-science.toml]
+sandbox-science down [--config sandbox-science.toml] [--keep-sandboxes]
 sandbox-science status [--config sandbox-science.toml]
 ```
 
@@ -11,10 +11,13 @@ sandbox-science status [--config sandbox-science.toml]
 the worker, then grants the project policy, makes the projects and opens their
 sessions, then starts the run service and the workspace, each once the one before is
 ready. It prints the GUI's address and how to log in, and runs until Ctrl-C, SIGTERM,
-SIGHUP or SIGQUIT (or ``down``), when it stops the parts in reverse order. A part that
-stops by itself stops the rest. ``status`` exits 0 while an instance runs as it should,
-3 when none runs, and 4 when something is wrong: a part stopped or silent, or left
-behind by a launcher that was killed.
+SIGHUP or SIGQUIT (or ``down``), when it stops the parts in reverse order, suspending
+the projects' research sandboxes before the worker (sandboxes.py). ``down
+--keep-sandboxes`` sends SIGUSR1 instead, which leaves them running. A part that stops
+by itself stops the rest, and leaves the sandboxes running. ``status`` exits 0 while an
+instance runs as it should, 3 when none runs, and 4 when something is wrong: a part
+stopped or silent, something left behind by a launcher that was killed, or research
+sandboxes running with the rest stopped.
 """
 
 from __future__ import annotations
@@ -31,10 +34,10 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import instance, mcp, parts
+from . import instance, mcp, parts, sandboxes
 from .config import LauncherConfig, LauncherError, load_config
 from .instance import Record, RecordedPart
-from .state import Layout, check_private
+from .state import Layout, check_private, write_private
 from .supervise import Part, Running, StopRequested, Supervisor, environment, passed, start_time
 
 NOT_RUNNING = 3
@@ -56,6 +59,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     ):
         command = commands.add_parser(name, help=text)
         command.add_argument("--config", type=Path, default=Path("sandbox-science.toml"))
+        if name == "down":
+            command.add_argument(
+                "--keep-sandboxes",
+                action="store_true",
+                help="leave the research sandboxes running, rather than suspend them",
+            )
     args = parser.parse_args(argv)
     try:
         config = load_config(args.config)
@@ -63,7 +72,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             case "up":
                 return up(config, args.config.absolute())
             case "down":
-                return down(config)
+                return down(config, args.config.absolute(), keep=args.keep_sandboxes)
             case _:
                 return status(config)
     except LauncherError as exc:
@@ -91,7 +100,7 @@ def up(config: LauncherConfig, path: Path) -> int:
 
 
 def _recorder(
-    config: LauncherConfig, path: Path, layout: Layout
+    config: LauncherConfig, path: Path, layout: Layout, purpose: str = "up"
 ) -> Callable[[list[Running]], None]:
     """Keep the instance's record as its parts start and stop."""
     started_at = datetime.now(UTC).isoformat(timespec="seconds")
@@ -118,6 +127,7 @@ def _recorder(
                     )
                     for r in running
                 ),
+                purpose=purpose,
             ),
         )
 
@@ -133,16 +143,24 @@ async def _up(
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
     asked = 0
+    outcome = sandboxes.Outcome()
+    hurry = asyncio.Event()
+    """A second Ctrl-C: stop waiting, for the parts and for the suspension."""
 
-    def ask() -> None:
+    def ask(keep: bool) -> None:
         nonlocal asked
         asked += 1
         if asked == 1:
+            outcome.tried, outcome.kept = not keep, keep
             print("stopping; Ctrl-C again to stop at once", flush=True)
+        else:
+            hurry.set()
         stop.set()
 
     for number in STOP_SIGNALS:
-        loop.add_signal_handler(number, ask)
+        loop.add_signal_handler(number, ask, False)
+    loop.add_signal_handler(signal.SIGUSR1, ask, True)  # down --keep-sandboxes
+    layout.stopped.unlink(missing_ok=True)
     supervisor = Supervisor(
         layout,
         stop,
@@ -152,7 +170,7 @@ async def _up(
     )
     status = 0
     try:
-        await _start(config, layout, supervisor)
+        await _start(config, layout, supervisor, outcome, hurry)
         _announce(config, path, layout)
         reason = await supervisor.watch()
         if reason is not None:
@@ -164,29 +182,48 @@ async def _up(
         print(f"error: {exc}", file=sys.stderr, flush=True)
         status = 1
     finally:
-        await supervisor.stop(now=lambda: asked > 1)
+        await supervisor.stop(now=hurry.is_set)
         for leftover in (layout.login, layout.record):
             leftover.unlink(missing_ok=True)
-        for number in STOP_SIGNALS:
+        for number in (*STOP_SIGNALS, signal.SIGUSR1):
             loop.remove_signal_handler(number)
     print("Sandbox Science stopped", flush=True)
-    return status
+    write_private(layout.stopped, outcome.dumps() + "\n")
+    return max(status, outcome.report())
 
 
-async def _start(config: LauncherConfig, layout: Layout, supervisor: Supervisor) -> None:
+def _worker(config: LauncherConfig, layout: Layout) -> Part:
+    return Part(
+        "worker",
+        parts.worker_argv(config, layout),
+        layout.worker,
+        address=config.worker.listen,
+        env=passed(config.worker.pass_env),
+    )
+
+
+async def _start(
+    config: LauncherConfig,
+    layout: Layout,
+    supervisor: Supervisor,
+    outcome: sandboxes.Outcome,
+    hurry: asyncio.Event,
+) -> None:
     timeout = config.start_timeout
     if config.mcp_proxy is not None:
         await mcp.check_providers(config)
     print(f"starting the worker on {config.worker.listen}", flush=True)
     worker_env = passed(config.worker.pass_env)
-    worker = Part(
-        "worker",
-        parts.worker_argv(config, layout),
-        layout.worker,
-        address=config.worker.listen,
-        env=worker_env,
-    )
-    await supervisor.start(worker, timeout)
+    await supervisor.start(_worker(config, layout), timeout)
+    # Taken just before the worker stops, once the run service and the workspace have.
+    api = sandboxes.WorkerApi(parts.worker_url(config), layout.token("launcher-worker"))
+    listing = asyncio.ensure_future(sandboxes.keep_listing(api, layout))
+
+    async def research_sandboxes() -> None:
+        listing.cancel()
+        await sandboxes.at_stop(api, layout, outcome, hurry)
+
+    supervisor.on_stop("look after the research sandboxes", research_sandboxes)
     granted = await supervisor.run(
         "the policy grant", parts.policy_argv(config, layout), layout.worker, timeout, worker_env
     )
@@ -238,13 +275,13 @@ def _announce(config: LauncherConfig, path: Path, layout: Layout) -> None:
     )
 
 
-def down(config: LauncherConfig) -> int:
+def down(config: LauncherConfig, path: Path, *, keep: bool) -> int:
     layout = Layout(config.state_dir)
     check_private(layout.root)  # before anything in it is read
     held = instance.try_lock(layout) if layout.root.is_dir() else None
     if held is not None:
         try:
-            return _down_stopped(config, layout)
+            return _down_stopped(config, path, layout, keep=keep)
         finally:
             os.close(held)
     if not instance.running(layout):
@@ -256,8 +293,16 @@ def down(config: LauncherConfig) -> int:
             f"an instance holds {layout.lock}, but its record does not name it: try again, "
             "or press Ctrl-C where it runs"
         )
-    os.kill(found.pid, signal.SIGTERM)
-    patience = config.stop_timeout * (len(found.parts) + 1) + 30
+    if found.purpose == "down":
+        print(
+            f"a sandbox-science down (process {found.pid}) is suspending the research "
+            "sandboxes: waiting for it",
+            flush=True,
+        )
+    else:
+        layout.stopped.unlink(missing_ok=True)
+        os.kill(found.pid, signal.SIGUSR1 if keep else signal.SIGTERM)
+    patience = config.stop_timeout * (len(found.parts) + 1) + sandboxes.SUSPEND_TIMEOUT + 30
     deadline = time.monotonic() + patience
     while instance.running(layout):
         if time.monotonic() > deadline:
@@ -267,11 +312,16 @@ def down(config: LauncherConfig) -> int:
             )
         time.sleep(0.2)
     print("Sandbox Science stopped")
-    return 0
+    outcome = sandboxes.Outcome.read(layout.stopped)
+    if outcome is None:
+        print("what happened to the research sandboxes is not known: sandbox-science status says")
+        return 0 if keep else 1
+    return outcome.report()
 
 
-def _down_stopped(config: LauncherConfig, layout: Layout) -> int:
-    """``down`` with the lock held, so no ``up`` runs: clean up after one that was killed."""
+def _down_stopped(config: LauncherConfig, path: Path, layout: Layout, *, keep: bool) -> int:
+    """``down`` with the lock held, so no ``up`` runs: clean up after one that was killed,
+    and suspend the research sandboxes that still run, starting the worker for it."""
     stopped = instance.stop_left_behind(instance.read(layout))
     for part in stopped:
         print(f"stopped the {part.name} (process {part.pid}) an earlier launcher left running")
@@ -281,7 +331,71 @@ def _down_stopped(config: LauncherConfig, layout: Layout) -> int:
         print(f"deleted the sandbox {made[0]} an earlier launcher made")
     if not stopped and made is None:
         print("Sandbox Science is not running")
-    return 0
+    known = sandboxes.remembered(layout)
+    if keep or known is None:
+        return 0  # kept on request, or no worker of this state directory ever listed any
+    if sandboxes.Outcome.read(layout.stopped) is None:
+        # The last stop said nothing of them (a launcher killed outright): the list may
+        # be half a minute old, so the worker lists them again.
+        print("starting the worker to list and suspend the research sandboxes", flush=True)
+    else:
+        try:
+            now = asyncio.run(sandboxes.checked(config, known[1]))
+        except LauncherError:
+            now = known[1]  # OpenShell could not say: they may run
+        running = [item for item in now if item.state not in ("suspended", "gone")]
+        if not running:
+            return 0
+        print(
+            "starting the worker to suspend the research sandboxes " + sandboxes.describe(running),
+            flush=True,
+        )
+    parts.prepare(config)
+    return asyncio.run(_suspend_with_worker(config, path, layout))
+
+
+async def _suspend_with_worker(config: LauncherConfig, path: Path, layout: Layout) -> int:
+    """Start the worker alone, suspend the research sandboxes through it, and stop it.
+
+    Its record says it is ``down``'s, so another ``down`` waits for it rather than
+    signal it, and ``status`` says so. A stop signal (Ctrl-C, SIGTERM, SIGHUP, SIGQUIT
+    or SIGUSR1) stops waiting for the suspension, and stops the worker in order.
+    """
+    loop = asyncio.get_running_loop()
+    hurry = asyncio.Event()
+
+    def ask() -> None:
+        if not hurry.is_set():
+            print("stopping; no longer waiting for the suspension", flush=True)
+        hurry.set()
+
+    for number in (*STOP_SIGNALS, signal.SIGUSR1):
+        loop.add_signal_handler(number, ask)
+    record = _recorder(config, path, layout, purpose="down")
+    supervisor = Supervisor(
+        layout,
+        hurry,
+        stop_timeout=config.stop_timeout,
+        changed=lambda: record(supervisor.running),
+        env=environment(),
+    )
+    outcome = sandboxes.Outcome(tried=True)
+    try:
+        await supervisor.start(_worker(config, layout), config.start_timeout)
+        api = sandboxes.WorkerApi(parts.worker_url(config), layout.token("launcher-worker"))
+        await sandboxes.at_stop(api, layout, outcome, hurry)
+    except StopRequested:
+        outcome.reason = "stopped before the worker was ready"
+    except LauncherError as exc:
+        print(f"error: {exc}", file=sys.stderr, flush=True)
+        outcome.reason = str(exc)
+    finally:
+        await supervisor.stop()
+        layout.record.unlink(missing_ok=True)
+        for number in (*STOP_SIGNALS, signal.SIGUSR1):
+            loop.remove_signal_handler(number)
+    write_private(layout.stopped, outcome.dumps() + "\n")
+    return outcome.report()
 
 
 def status(config: LauncherConfig) -> int:
@@ -301,10 +415,19 @@ def status(config: LauncherConfig) -> int:
                 f"  but the {part.name} an earlier launcher started still runs (process "
                 f"{part.pid}, or what it started): sandbox-science down stops it"
             )
-        return DEGRADED if left or made is not None else NOT_RUNNING
+        shown, research = sandboxes.lines(config, layout, None)
+        for line in shown:
+            print(line)
+        return DEGRADED if left or made is not None or research else NOT_RUNNING
     if found is None:
         print(f"Sandbox Science is starting, from {layout.root}")
         return 0
+    if found.purpose == "down":
+        print(
+            f"Sandbox Science is stopping: sandbox-science down (process {found.pid}) runs "
+            "the worker alone to suspend the research sandboxes"
+        )
+        return DEGRADED
     print(f"Sandbox Science is running (process {found.pid}, since {found.started_at})")
     print(f"  config: {found.config}")
     if found.gui is not None and layout.login.exists():
@@ -321,6 +444,13 @@ def status(config: LauncherConfig) -> int:
     made = mcp.recorded(layout)
     if made is not None:
         print(f"  the MCP proxy's sandbox: {made[0]}")
+    api = sandboxes.WorkerApi(parts.worker_url(config), layout.token("launcher-worker"))
+    try:
+        listed = asyncio.run(api.sandboxes())
+    except LauncherError:
+        listed = None  # the worker does not answer: ask OpenShell
+    for line in sandboxes.lines(config, layout, listed)[0]:
+        print(line)
     return 0 if healthy else DEGRADED
 
 

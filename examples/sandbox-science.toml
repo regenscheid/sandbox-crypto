@@ -46,7 +46,9 @@ OPENSHELL_TELEMETRY_ENABLED = "false"
 policy_store = "~/.local/state/openshell-lab/middleware/state"
 targets = "~/.local/state/openshell-lab/targets.yaml"
 ceiling = "~/.local/state/openshell-lab/middleware/pool-ceiling.yaml"
-# Stop a project's sandbox after an hour unused; its next use starts it again.
+# Suspend a project's sandbox after an hour unused, while Sandbox Science runs; its next use
+# starts it again. sandbox-science down, or Ctrl-C to up, suspends them all the same way
+# (down --keep-sandboxes leaves them running).
 suspend_after = 3600.0
 
 [openshell.environments.profiles]

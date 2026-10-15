@@ -301,6 +301,21 @@ class EnvironmentRecords:
             if info.project_id in wanted and info.state is not EnvironmentState.DELETED
         ]
 
+    def listed(self, projects: Iterable[str] | None) -> list[EnvironmentInfo]:
+        """The environments that are not deleted, of ``projects`` or of every project."""
+        wanted = None if projects is None else set(projects)
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT document FROM environments ORDER BY environment_id"
+            ).fetchall()
+        infos = [EnvironmentInfo.model_validate_json(row[0]) for row in rows]
+        return [
+            info
+            for info in infos
+            if (wanted is None or info.project_id in wanted)
+            and info.state is not EnvironmentState.DELETED
+        ]
+
     def sandbox_taken(self, sandbox: str) -> bool:
         with self._lock:
             row = self._db.execute(
@@ -827,6 +842,49 @@ class Environments:
                 return False
             _log.info("suspended environment %s (sandbox %s)", environment_id, info.sandbox)
             return True
+
+    async def stop_now(self, environment_id: str, idle_since: float) -> bool:
+        """Suspend the environment now, as ``suspend`` does, and say whether OpenShell
+        has its sandbox stopped.
+
+        ``suspend`` records ``stopped`` before it stops the sandbox, so a stop that failed
+        or was cut short leaves the record saying stopped while the sandbox runs. Here
+        the sandbox's own phase decides: a sandbox recorded stopped is stopped again
+        unless OpenShell says it is, and the answer is OpenShell's.
+        """
+        info = self.records.get(environment_id)
+        if info is not None and info.state is EnvironmentState.READY:
+            await self.suspend(environment_id, idle_since)
+        async with self._lock(environment_id):
+            info = self.records.get(environment_id)
+            if info is None or info.state is not EnvironmentState.STOPPED:
+                return False  # in use, being created, or gone
+            if await self._stopped(info, wait=False):
+                return True
+            try:
+                await self.cli.run("sandbox", "stop", info.sandbox)
+            except WorkerError as error:
+                _log.warning("could not stop sandbox %s again: %s", info.sandbox, error.message)
+                return False
+            return await self._stopped(info, wait=True)
+
+    async def _stopped(self, info: EnvironmentInfo, *, wait: bool) -> bool:
+        """Whether OpenShell has the environment's own sandbox stopped; with ``wait``,
+        once it says so, within the resume timeout."""
+        deadline = self.clock.monotonic() + self.resume_timeout
+        while True:
+            try:
+                document = await self.cli.sandbox(info.sandbox)
+            except WorkerError:
+                return False
+            if document is None or document.get("id") != info.sandbox_id:
+                return False  # gone, or another sandbox under its name
+            phase = document.get("phase")
+            if phase == "Stopped":
+                return True
+            if not wait or phase in _DEAD_PHASES or self.clock.monotonic() > deadline:
+                return False
+            await self.clock.sleep(self.poll_seconds)
 
     async def resume(self, environment_id: str) -> None:
         """Start a stopped environment's sandbox again; the backend calls it before an executor.

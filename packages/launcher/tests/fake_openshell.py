@@ -5,7 +5,8 @@ Its providers and sandboxes are a JSON file, the one ``FAKE_OPENSHELL`` names, a
 it does goes in ``FAKE_JOURNAL`` as the parts' stand-ins' steps do. With ``FAKE_PARTS``
 saying ``{"openshell": "forward-exits-once"}``, the first forward exits a moment after
 it starts, as one does when its sandbox stops; with ``forward-exits-always``, every one
-does; with ``create-fails``, ``sandbox create`` fails and makes nothing.
+does; with ``create-fails``, ``sandbox create`` fails and makes nothing; with
+``get-fails``, ``sandbox get`` cannot reach the gateway.
 """
 
 from __future__ import annotations
@@ -73,6 +74,9 @@ match args:
         providers = [{"name": name, "type": "cloudflare-access"} for name in load()["providers"]]
         print(json.dumps({"providers": providers}))
     case ["sandbox", "get", name, "-o", "json"]:
+        if behaviour == "get-fails":
+            print("error: the gateway is not reachable", file=sys.stderr)
+            sys.exit(1)
         found = load()["sandboxes"].get(name)
         if found is None:
             print(f"\x1b[31mError:\x1b[0m sandbox {name} not found", file=sys.stderr)
