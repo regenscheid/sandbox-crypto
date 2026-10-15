@@ -6,6 +6,7 @@ import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 import FrontierCategory from '../views/FrontierCategory.svelte';
 import FrontierGroup from '../views/FrontierGroup.svelte';
+import ResultCard from '../views/FrontierResult.svelte';
 import type {
   Category,
   CategoryRevised,
@@ -14,6 +15,7 @@ import type {
 } from './api-types';
 import {
   conditionsText,
+  confirmedText,
   indicatorsText,
   lookalikeText,
   measuresText,
@@ -109,9 +111,41 @@ describe('the frontier in words', () => {
 
   it('names who wrote an unverified result, with the role, and the revision to confirm', () => {
     expect(unverifiedText(result({ author: AGENT, revision: 3 }))).toBe(
-      'Unverified: published by analyst agent run run-1 of session s1, role analyst, and not ' +
-        'confirmed by you as r3 reads, so it is a candidate.',
+      'Unverified: published by analyst agent run run-1 of session s1, role analyst, and ' +
+        'confirmed as r3 reads neither by you nor by a citation check of every quote it holds, ' +
+        'so it is a candidate.',
     );
+  });
+
+  it('names who confirmed a published result: the user or the citation check', () => {
+    expect(confirmedText(result({ confirmed_by: 'user', revision: 4 }))).toBe(
+      'Confirmed by you, as r4 reads.',
+    );
+    expect(confirmedText(result({ confirmed_by: 'citation check', revision: 4 }))).toBe(
+      'Confirmed by the citation check: the consistency reviewer found every quote of r4 ' +
+        'supported.',
+    );
+    expect(confirmedText(result({ confirmed_by: null }))).toBe('');
+    // A value the view does not know is shown as text, hidden characters as code points.
+    expect(confirmedText(result({ confirmed_by: 'a\u202Eb' }))).toBe('Confirmed by a⟦U+202E⟧b.');
+  });
+
+  it('shows who confirmed it beside where the unverified mark would be, and never both', () => {
+    const shown = (fields: Partial<FrontierResult>) =>
+      render(ResultCard, {
+        props: {
+          projectId: 'p1',
+          result: result({ origin: 'published', author: AGENT, ...fields }),
+          measures: category().measures,
+          done: async () => {},
+        },
+      }).body;
+    const checked = shown({ confirmed_by: 'citation check' });
+    expect(checked).toContain('Confirmed by the citation check');
+    expect(checked).not.toContain('Unverified');
+    const open = shown({ unverified: true });
+    expect(open).toContain('Unverified: published by');
+    expect(open).not.toContain('Confirmed by');
   });
 
   it('gives the indicators, the evidence types in words', () => {

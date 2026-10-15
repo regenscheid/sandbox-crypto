@@ -233,6 +233,10 @@ ul.links {
   margin: 0.2rem 0;
 }
 
+.frontier-result .confirmed {
+  color: var(--ok);
+}
+
 .frontier-action {
   border: 1px solid var(--border);
   padding: 0.6rem;

@@ -60,12 +60,36 @@ export function writerText(author: Record<string, unknown>): string {
   return role === null ? authorText(author) : `${authorText(author)}, role ${role}`;
 }
 
-/** The mark on an agent's published result that the user has not confirmed. */
+/**
+ * The mark on an agent's published result that neither the user nor the consistency
+ * reviewer's citation check has confirmed (LG-16, CR-4).
+ */
 export function unverifiedText(result: Pick<FrontierResult, 'revision' | 'author'>): string {
   return (
-    `Unverified: published by ${writerText(result.author)}, and not confirmed by you as ` +
-    `r${result.revision} reads, so it is a candidate.`
+    `Unverified: published by ${writerText(result.author)}, and confirmed as r${result.revision} ` +
+    'reads neither by you nor by a citation check of every quote it holds, so it is a candidate.'
   );
+}
+
+/**
+ * Who confirmed a published result, in words (`confirmed_by`, LG-16, CR-4): the user, or
+ * the consistency reviewer's citation check of every quote the revision shown holds;
+ * empty for a result nobody confirmed and for a project result.
+ */
+export function confirmedText(result: Pick<FrontierResult, 'revision' | 'confirmed_by'>): string {
+  switch (result.confirmed_by) {
+    case null:
+      return '';
+    case 'user':
+      return `Confirmed by you, as r${result.revision} reads.`;
+    case 'citation check':
+      return (
+        `Confirmed by the citation check: the consistency reviewer found every quote of ` +
+        `r${result.revision} supported.`
+      );
+    default:
+      return `Confirmed by ${visible(result.confirmed_by)}.`;
+  }
 }
 
 /** The mark on a result that became disputed while it was eligible. */
