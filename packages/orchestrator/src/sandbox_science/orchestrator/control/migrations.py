@@ -2204,6 +2204,80 @@ BEGIN SELECT RAISE(ABORT, 'work records are append-only'); END""",
         schema.execute(statement)
 
 
+def _skills(schema: Schema) -> None:
+    """Version 35: imported skill packs (docs/specs/skills.md, SK-1 to SK-6): their files,
+    content-addressed and written once (``skill_blobs``); each snapshot's files and the
+    skills it holds; each import, with its source, origin, ref, resolved commit or
+    archive digest and report; and each project's pin of a source's import, whose
+    revision counts its moves."""
+    hex64 = "length({0}) = 64 AND {0} NOT GLOB '*[^0-9a-f]*'"
+    name = "length({0}) BETWEEN 1 AND 64 AND {0} NOT GLOB '*[^a-z0-9-]*'"
+    for statement in (
+        f"""CREATE TABLE skill_blobs (
+    sha256 TEXT PRIMARY KEY CHECK ({hex64.format("sha256")}),
+    content BLOB NOT NULL CHECK (length(content) <= 1048576)
+) STRICT""",
+        f"""CREATE TABLE skill_snapshots (
+    snapshot TEXT PRIMARY KEY CHECK ({hex64.format("snapshot")}),
+    files INTEGER NOT NULL CHECK (files BETWEEN 1 AND 4096),
+    bytes INTEGER NOT NULL CHECK (bytes BETWEEN 0 AND 33554432)
+) STRICT""",
+        """CREATE TABLE skill_files (
+    snapshot TEXT NOT NULL REFERENCES skill_snapshots(snapshot),
+    path TEXT NOT NULL CHECK (length(CAST(path AS BLOB)) BETWEEN 1 AND 1024),
+    blob TEXT NOT NULL REFERENCES skill_blobs(sha256),
+    executable INTEGER NOT NULL CHECK (executable IN (0, 1)),
+    PRIMARY KEY (snapshot, path)
+) STRICT""",
+        f"""CREATE TABLE skill_skills (
+    snapshot TEXT NOT NULL REFERENCES skill_snapshots(snapshot),
+    name TEXT NOT NULL CHECK ({name.format("name")}),
+    description TEXT NOT NULL CHECK (length(description) BETWEEN 1 AND 1024),
+    body_sha256 TEXT NOT NULL CHECK ({hex64.format("body_sha256")}),
+    metadata TEXT NOT NULL CHECK (json_valid(metadata)
+        AND length(CAST(metadata AS BLOB)) <= 16384),
+    PRIMARY KEY (snapshot, name)
+) STRICT""",
+        f"""CREATE TABLE skill_imports (
+    import_id INTEGER PRIMARY KEY,
+    source TEXT NOT NULL CHECK ({name.format("source")}),
+    snapshot TEXT NOT NULL REFERENCES skill_snapshots(snapshot),
+    kind TEXT NOT NULL CHECK (kind IN ('git', 'archive')),
+    origin TEXT NOT NULL CHECK (length(CAST(origin AS BLOB)) BETWEEN 1 AND 4096),
+    ref TEXT CHECK (ref IS NULL OR length(ref) BETWEEN 1 AND 200),
+    commit_id TEXT CHECK (commit_id IS NULL OR (length(commit_id) IN (40, 64)
+        AND commit_id NOT GLOB '*[^0-9a-f]*')),
+    archive_sha256 TEXT CHECK (archive_sha256 IS NULL OR ({hex64.format("archive_sha256")})),
+    root TEXT NOT NULL CHECK (length(CAST(root AS BLOB)) <= 1024),
+    report TEXT NOT NULL CHECK (json_valid(report) AND length(CAST(report AS BLOB)) <= 1048576),
+    author TEXT NOT NULL CHECK (json_valid(author) AND length(CAST(author AS BLOB)) <= 4096),
+    created TEXT NOT NULL CHECK (length(created) BETWEEN 1 AND 64),
+    CHECK ((kind = 'git') = (commit_id IS NOT NULL)),
+    CHECK ((kind = 'archive') = (archive_sha256 IS NOT NULL))
+) STRICT""",
+        "CREATE INDEX skill_imports_source ON skill_imports(source,import_id)",
+        f"""CREATE TABLE project_skill_pins (
+    project TEXT NOT NULL REFERENCES projects(project_id),
+    source TEXT NOT NULL CHECK ({name.format("source")}),
+    import_id INTEGER NOT NULL REFERENCES skill_imports(import_id),
+    revision INTEGER NOT NULL CHECK (revision BETWEEN 1 AND 999999999),
+    author TEXT NOT NULL CHECK (json_valid(author) AND length(CAST(author AS BLOB)) <= 4096),
+    pinned TEXT NOT NULL CHECK (length(pinned) BETWEEN 1 AND 64),
+    PRIMARY KEY (project, source)
+) STRICT""",
+        """CREATE TRIGGER project_skill_pins_forward BEFORE UPDATE ON project_skill_pins
+WHEN NEW.project != OLD.project OR NEW.source != OLD.source OR NEW.revision != OLD.revision + 1
+BEGIN SELECT RAISE(ABORT, 'a skill pin moves one revision at a time'); END""",
+    ):
+        schema.execute(statement)
+    for table in ("skill_blobs", "skill_snapshots", "skill_files", "skill_skills", "skill_imports"):
+        for action in ("UPDATE", "DELETE"):
+            schema.execute(
+                f"CREATE TRIGGER {table}_no_{action.lower()} BEFORE {action} ON {table} "
+                f"BEGIN SELECT RAISE(ABORT, 'imported skill packs are written once'); END"
+            )
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -2238,6 +2312,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _delegation_reads,
     _delegation_limits,
     _ledger_work,
+    _skills,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

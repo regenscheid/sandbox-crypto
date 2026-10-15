@@ -13,7 +13,7 @@ Date: 2026-10-11. Work package W0 ([implementation plan](../IMPLEMENTATION-PLAN.
 | [Living documents](living-documents.md) | Draft; main questions settled by the user (2026-10-11) | In part: [living documents](../LIVING-DOCUMENTS.md); document files in environments and exports are not built |
 | [Plans and delegation](plans-and-delegation.md) | Approved (2026-10-14); questions 6 and 7 remain open (5 answered with the ledger) | Plans in part: [session plans](../SESSION-PLANS.md); delegation is not built: the run tree's parent link and kernels per run exist, but nothing starts delegated runs (the earlier prototype is [archived](../../.agents/docs/archive/README.md)) |
 | [Project ledger, board and frontier](ledger.md) | Approved (2026-10-14); its questions decided | In part: [ledger](../LEDGER.md): entries, links, evidence, decisions and the gate, flags, statement math checks, the agent's tools, the results-file import and the GUI's board, issue list, entry view and history. The frontier (in review), work records, the pack import and export, and the gate's pending clauses are not built |
-| [Skills](skills.md) | Draft | Not built |
+| [Skills](skills.md) | Draft | In part: importing packs from git or an archive, with reports, and pinning them in projects ([skills](../SKILLS.md)); runs do not see skills yet |
 | [Run service](run-service.md) | Approved; its questions decided (2026-10-14) | Built: the run service, the workspace's chat routes and the session page's chat panel ([workspace](../WORKSPACE.md#chat)); waking a session when a detached job ends is not built |
 | [Project memory](project-memory.md) | Approved (2026-10-14) | Built: [project memory](../MEMORY.md); memory across projects (PM-12) is later |
 

@@ -66,7 +66,7 @@ _DEFINITIONS: Final = frozenset(
 """Commands that define macros, as the browser refuses them in a formula."""
 
 
-class _NoAliases(yaml.SafeLoader):
+class NoAliases(yaml.SafeLoader):
     """The safe loader, refusing aliases."""
 
     def compose_node(self, parent: Any, index: Any) -> Any:
@@ -91,7 +91,7 @@ def read_front_matter(content: str) -> FrontMatter:
             problems=(f"front matter over {MAX_FRONT_MATTER} characters is not read",)
         )
     try:
-        data: object = yaml.load(content, Loader=_NoAliases)  # noqa: S506 - a safe loader
+        data: object = yaml.load(content, Loader=NoAliases)  # noqa: S506 - a safe loader
     except (yaml.YAMLError, RecursionError, ValueError) as exc:
         return FrontMatter(problems=(f"the front matter is not YAML: {str(exc)[:200]}",))
     if data is None:

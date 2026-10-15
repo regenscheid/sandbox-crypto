@@ -59,6 +59,8 @@ from sandbox_science.contracts import ErrorKind, Identifier
 
 from .chat import session_lease
 from .cli_documents import add_parsers, document, ledger, project, read_secret, session
+from .cli_skills import add_parser as add_skills_parser
+from .cli_skills import skills
 from .connectors import ProxyClient, check_proxy
 from .consistency.models import ReviewConfig
 from .control import ControlError
@@ -587,7 +589,16 @@ def main(argv: list[str] | None = None) -> int:
         f"(default {RUN_SHARE}); each run also stops once the project has spent its budget",
     )
     add_parsers(commands)
+    add_skills_parser(commands)
     args = parser.parse_args(argv)
+    if args.command == "skills":
+        if args.action == "import" and args.archive is not None and args.ref is not None:
+            parser.error("--ref goes with --git")
+        try:
+            return skills(args)
+        except (ProjectError, OSError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
     if args.command == "ledger":
         try:
             return ledger(args)
