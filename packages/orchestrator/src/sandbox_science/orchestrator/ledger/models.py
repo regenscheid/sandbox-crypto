@@ -59,6 +59,10 @@ STATUSES: Final[dict[str, tuple[str, ...]]] = {
 DECIDED: Final = frozenset({"established", "obstructed", "refuted"})
 """Statuses only a decision in effect sets (LG-4, LG-7, LG-17)."""
 
+SET_ASIDE: Final = frozenset({"refuted", "withdrawn", "superseded"})
+"""The statuses of an entry that no longer supports anything, which it leaves only by a
+decision in effect that affects it."""
+
 LINKS: Final[dict[str, tuple[tuple[str, ...], tuple[str, ...]]]] = {
     # kind: (the types that may hold it, the types it may point to; "finding" and
     # "block" are a review finding and a document block)

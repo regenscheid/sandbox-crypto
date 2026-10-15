@@ -51,6 +51,7 @@ from .models import (
     LINKS,
     MAX_CLEARED,
     PREFIXES,
+    SET_ASIDE,
     SHOWN_FLAGGED,
     STATUSES,
     ChangedEntry,
@@ -978,8 +979,13 @@ class Ledger:
         ``obstructed`` or ``refuted``, and a decision ``reversed``, only in a change that
         puts in effect a decision that affects it. The main agent's decision to establish
         a result needs the gate (LG-17), and one that makes an issue obstructed needs an
-        accepted assessment (LG-7), which work records will carry. Returns the entries
-        the gate passed, which the flags the change raises must spare."""
+        accepted assessment (LG-7), which work records will carry. An entry leaves
+        ``refuted``, ``withdrawn`` or ``superseded`` only by such a decision too, which
+        for the main agent's on a claim or result passes the gate, whatever status it
+        brings the entry back to; and a claim or result that was once established or
+        recorded keeps its statement, fields, assumptions and evidence while it is
+        ``disputed``, as a decided one does. Returns the entries the gate passed, which
+        the flags the change raises must spare."""
         gated: set[str] = set()
         deciding = [
             p
@@ -989,13 +995,19 @@ class Ledger:
             and p.status_before != "in_effect"
         ]
         for p in planned:
-            decided = p.status in DECIDED or (p.row.type == "decision" and p.status == "reversed")
+            decided = (
+                p.status in DECIDED
+                or (p.row.type == "decision" and p.status == "reversed")
+                # Set aside, an entry comes back only by a decision.
+                or (not p.created and p.status_before in SET_ASIDE)
+            )
             # An entry stays as decided: while it is established, refuted or obstructed,
-            # what a decision rested on changes only with its status or a new decision.
+            # or disputed after it was established or recorded, what a decision rested on
+            # changes only with its status or a new decision.
             rewritten = (
                 not p.created
-                and p.status_before in DECIDED
                 and p.status == p.status_before
+                and (p.status_before in DECIDED or self._disputed_once_held(db, p))
                 and self._rewrites(db, p)
             )
             if not (decided and "status" in p.changed) and not rewritten:
@@ -1024,12 +1036,20 @@ class Ledger:
             ):
                 raise DocumentError(
                     INVALID_REQUEST,
-                    f"{p.row.handle} becomes {p.status} only in a change that puts in effect "
-                    "a decision that affects it",
+                    f"{p.row.handle} leaves {p.status_before} only in a change that puts in "
+                    "effect a decision that affects it"
+                    if p.status_before in SET_ASIDE
+                    else f"{p.row.handle} becomes {p.status} only in a change that puts in "
+                    "effect a decision that affects it",
                 )
             if role != "main":
                 continue
-            if p.status == "established":
+            # Set aside, a claim or result the main agent brings back by any road passes
+            # the gate: through disputed or proposed it could otherwise be recorded again
+            # with nothing checked.
+            if p.status == "established" or (
+                p.status_before in SET_ASIDE and p.row.type in ("claim", "result")
+            ):
                 held = self._final_evidence(db, p)
                 latest = TEXTS.latest(db, p.row.entry_id)
                 assert latest is not None  # noqa: S101 - an existing entry has a statement
@@ -1050,6 +1070,21 @@ class Ledger:
                     "decision makes an issue obstructed",
                 )
         return gated
+
+    @staticmethod
+    def _disputed_once_held(db: sqlite3.Connection, p: _Planned) -> bool:
+        """Whether ``p`` is a claim or result, disputed, that was once established or
+        recorded: the frontier still shows it as it was then (LG-20)."""
+        return (
+            p.status_before == "disputed"
+            and p.row.type in ("claim", "result")
+            and db.execute(
+                "SELECT 1 FROM ledger_revisions WHERE entry_id=? "
+                "AND status IN ('established','recorded') LIMIT 1",
+                (p.row.entry_id,),
+            ).fetchone()
+            is not None
+        )
 
     def _rewrites(self, db: sqlite3.Connection, p: _Planned) -> bool:
         """Whether the change alters what a decision on ``p``'s entry rested on: its

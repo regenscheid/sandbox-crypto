@@ -197,6 +197,68 @@ def test_an_obstruction_needs_an_assessment_the_main_agent_cannot_give_yet(
 # The review of #277.
 
 
+# The review of the frontier (H1).
+
+PUBLISHED = (
+    {**NEW["reference"], "key": "paper"},
+    {
+        **NEW["result"],
+        "origin": "published",
+        "evidence": [{"role": "supports", "type": "source_claim", "entry": "new:paper"}],
+    },
+)
+"""REF-1, and R-1, a published result that cites it."""
+
+
+def test_a_refuted_result_comes_back_only_by_a_decision(ledger: Ledger) -> None:
+    """Probe H1: the user refutes R-1, a published result; the main agent recorded it
+    again, or disputed it first, and R-1 was back on the frontier with nothing decided."""
+    change(ledger, *PUBLISHED)
+    change(ledger, decide("R-1"), status("R-1", 1, "refuted"), op="refute", author=USER)
+    for value in ("recorded", "disputed"):
+        with pytest.raises(DocumentError, match="R-1 leaves refuted only in a change"):
+            change(ledger, status("R-1", 2, value), op=f"back-{value}")
+        # The main agent's decision passes the gate, whatever status it brings R-1 to.
+        with pytest.raises(DocumentError, match="gate_not_met") as refused:
+            change(ledger, decide("R-1"), status("R-1", 2, value), op=f"main-{value}")
+        assert refused.value.details["clause"] == "review"
+    change(ledger, decide("R-1"), status("R-1", 2, "recorded"), op="user", author=USER)
+    assert ledger.entry("p", "R-1").status == "recorded"
+
+
+def test_a_withdrawn_entry_comes_back_only_by_a_decision(ledger: Ledger) -> None:
+    change(ledger, NEW["claim"], NEW["issue"])
+    change(ledger, status("C-1", 1, "withdrawn"), status("I-1", 1, "withdrawn"), op="withdraw")
+    for entry, value in (("C-1", "proposed"), ("I-1", "open")):
+        with pytest.raises(DocumentError, match=f"{entry} leaves withdrawn only in a change"):
+            change(ledger, status(entry, 2, value), op=f"back-{entry}")
+    # The main agent brings an issue back by its decision, and a claim through the gate.
+    change(ledger, decide("I-1"), status("I-1", 2, "open"), op="issue")
+    assert ledger.entry("p", "I-1").status == "open"
+    with pytest.raises(DocumentError, match="gate_not_met") as refused:
+        change(ledger, decide("C-1"), status("C-1", 2, "proposed"), op="claim")
+    assert refused.value.details["clause"] == "evidence"
+    change(ledger, decide("C-1"), status("C-1", 2, "proposed"), op="user", author=USER)
+    assert ledger.entry("p", "C-1").status == "proposed"
+
+
+def test_a_disputed_result_keeps_what_it_was_recorded_on(ledger: Ledger) -> None:
+    """Probe H1: the main agent disputes R-1, a recorded result, rewrites its measures
+    while it is disputed, and records it again with measures nobody recorded."""
+    change(ledger, *PUBLISHED, NEW["result"])
+    change(ledger, status("R-1", 1, "disputed"), status("R-2", 1, "disputed"), op="dispute")
+    faster = {"fields": {"category": "key-recovery", "measures": {"time": 90, "memory": 80}}}
+    for rewrite in ({"statement": "Time $2^{90}$."}, faster):
+        with pytest.raises(DocumentError, match="R-1 is disputed: its statement, fields"):
+            change(ledger, {"entry": "R-1", "expected": 2, **rewrite}, op=f"r-{len(rewrite)}")
+    # One never recorded or established is not held to what it was.
+    change(ledger, {"entry": "R-2", "expected": 2, **faster}, op="r-2")
+    # A decision that affects R-1 may rewrite it, as may a change that leaves disputed.
+    change(ledger, decide("R-1"), {"entry": "R-1", "expected": 2, **faster}, op="decided")
+    change(ledger, {"entry": "R-1", "expected": 3, "status": "recorded", **faster}, op="back")
+    assert ledger.entry("p", "R-1").fields["measures"] == {"time": 90, "memory": 80}
+
+
 def test_an_established_entry_keeps_what_it_was_established_on(ledger: Ledger) -> None:
     """Probe p3: the user establishes C-1; the main agent then rewrites its statement,
     fields or evidence, and C-1 stayed established."""

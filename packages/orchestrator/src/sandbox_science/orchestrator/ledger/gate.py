@@ -47,15 +47,12 @@ from typing import Any, Final
 from sandbox_science.orchestrator.documents.errors import POLICY_DENIED, DocumentError
 
 from . import evidence
-from .models import COMPUTATIONAL, EntryLink, EvidenceLink
+from .models import COMPUTATIONAL, SET_ASIDE, EntryLink, EvidenceLink
 
 Json = dict[str, Any]
 
 _NOT_COUNTING: Final = frozenset({"synthetic", "unclassified"})
 
-
-_SET_ASIDE: Final = frozenset({"refuted", "withdrawn", "superseded"})
-"""The statuses of an entry that no longer supports anything."""
 
 _RESOLVED: Final = frozenset({"confirmed fixed", "withdrawn"})
 
@@ -126,7 +123,7 @@ def counts(db: sqlite3.Connection, link: EvidenceLink) -> bool:
         "ON r.entry_id=e.entry_id AND r.revision=e.head WHERE e.entry_id=?",
         (link.target_id,),
     ).fetchone()
-    return row is not None and row[0] not in _SET_ASIDE
+    return row is not None and row[0] not in SET_ASIDE
 
 
 def refused(entry: str, clause: str, message: str) -> DocumentError:
