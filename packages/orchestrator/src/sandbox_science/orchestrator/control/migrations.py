@@ -2425,9 +2425,41 @@ def _skill_settings(schema: Schema) -> None:
 def _builtin_skills(schema: Schema) -> None:
     """Version 42: an import may be of the built-in skills (docs/specs/skills.md, SK-40),
     which the harness ships: no commit or archive, and its ref names the harness version
-    and the snapshot."""
+    and the snapshot. The source ``builtin`` is theirs alone. A pack the user imported
+    under that name before is renamed ``builtin-user`` (or ``builtin-user-2`` and on, if
+    taken), with its pins and the settings that name its skills; each of its imports'
+    reports says so in a warning."""
     hex64 = "length({0}) = 64 AND {0} NOT GLOB '*[^0-9a-f]*'"
     name = "length({0}) BETWEEN 1 AND 64 AND {0} NOT GLOB '*[^a-z0-9-]*'"
+    taken = {row[0] for row in schema.execute("SELECT DISTINCT source FROM skill_imports")}
+    if "builtin" in taken:
+        candidates = ("builtin-user", *(f"builtin-user-{n}" for n in range(2, 10000)))
+        renamed = next(candidate for candidate in candidates if candidate not in taken)
+        note = (
+            f"renamed from builtin to {renamed} by version 42: builtin names the platform's "
+            "own skills"
+        )
+        guards = schema.execute(
+            "SELECT name,sql FROM sqlite_master WHERE type='trigger' "
+            "AND name IN ('skill_imports_no_update','project_skill_pins_forward')"
+        ).fetchall()
+        for guard, _ in guards:
+            schema.execute(f'DROP TRIGGER "{guard}"')
+        schema.execute(
+            "UPDATE skill_imports SET source=?,report=json_set(report,'$.warnings',json("
+            "json_insert(coalesce(json_extract(report,'$.warnings'),'[]'),'$[#]',?))) "
+            "WHERE source='builtin'",
+            (renamed, note),
+        )
+        schema.execute("UPDATE project_skill_pins SET source=? WHERE source='builtin'", (renamed,))
+        for column in ("always", "omitted"):
+            schema.execute(
+                f"UPDATE project_skill_settings SET {column}="  # noqa: S608 - its own names
+                f"replace({column},'\"builtin/','\"' || ? || '/')",
+                (renamed,),
+            )
+        for _, sql in guards:
+            schema.execute(sql)
     rebuild(
         schema,
         "skill_imports",
@@ -2447,7 +2479,8 @@ def _builtin_skills(schema: Schema) -> None:
     created TEXT NOT NULL CHECK (length(created) BETWEEN 1 AND 64),
     CHECK ((kind = 'git') = (commit_id IS NOT NULL)),
     CHECK ((kind = 'archive') = (archive_sha256 IS NOT NULL)),
-    CHECK (kind != 'builtin' OR ref IS NOT NULL)
+    CHECK (kind != 'builtin' OR ref IS NOT NULL),
+    CHECK ((source = 'builtin') = (kind = 'builtin'))
 ) STRICT""",
     )
 

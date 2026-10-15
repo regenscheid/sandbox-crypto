@@ -30,6 +30,7 @@ from sandbox_science.orchestrator.loop import SYSTEM_PROMPT
 from sandbox_science.orchestrator.plan_tools import NAMES as PLAN_NAMES
 from sandbox_science.orchestrator.question_tool import SPECS as QUESTION_SPECS
 from sandbox_science.orchestrator.skills import from_archive, snapshot
+from sandbox_science.orchestrator.skills.builtin import ROLES as BUILTIN_ROLES
 from sandbox_science.orchestrator.tools import HARNESS_TOOL_NAMES, MCP_TOOLS, SHARED_IN_CODE
 
 PACK: Final = Path(__file__).resolve().parents[3] / "skills" / "builtin"
@@ -49,16 +50,9 @@ and connectors (PD-16, PD-34, PD-41), with its track's tools (PD-9), and the del
 tools where a main run allows it two levels (PD-15)."""
 TABLES: Final = {"main": MAIN, "delegated": DELEGATED}
 
-ROLES: Final = {
-    "computation": ("main",),
-    "delegating-work": ("main", "delegated"),
-    "environment-setup": ("main",),
-    "literature-search": ("main",),
-    "pdf-reading": ("main",),
-    "recording-results": ("main",),
-    "writing-documents": ("main",),
-}
-"""Each built-in skill, and the roles whose tools it names. A new skill is added here."""
+ROLES: Final = BUILTIN_ROLES
+"""Each built-in skill, and the roles whose tools it names, which are the roles whose runs
+get it (skills/builtin.py). A new skill is added there."""
 
 ALLOWED: Final = {
     "$PROJECT_SHARED": SHARED_IN_CODE,

@@ -936,7 +936,7 @@ def _skills(stores: Stores, project: str, role: str, alias: str | None) -> Skill
     when the project pins none."""
     store = SkillStore(stores.projects.control)
     store.ensure(project, builtin_pack())
-    found = store.effective(project)
+    found = store.effective(project, role)
     return SkillTool(store, found, role=role, alias=alias) if found.entries else None
 
 
