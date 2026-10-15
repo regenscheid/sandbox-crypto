@@ -2,7 +2,8 @@
 """A delegated run's own limits (plans-and-delegation spec, PD-38; run-service spec, RS-6a
 and RS-6c). Nothing is reserved for a child from its root (the owner, 2026-10-15): each
 child is bounded by its project's check tokens and turns, no more turns than its parent
-has left, and the project's budget at every run's safe points."""
+has left, and the project's daily cost limit, if it has one, at every run's safe points.
+With no limit, nothing stops or refuses a run for spending."""
 
 from __future__ import annotations
 
@@ -35,9 +36,16 @@ def _chat(tmp_path: Path) -> tuple[ProjectStore, RunState, RunChat]:
     projects.create(PROJECT, "minimal", "sha256:" + "a" * 64)
     projects.open_session(PROJECT, SESSION, dedicated=False)
     state = RunState(projects.control)
-    state.set_budget(PROJECT, 1_000_000)
     context = ExecutionContext(project_id=PROJECT, session_id=SESSION, environment_id="e")
     return projects, state, RunChat(state, context, run="root", run_id="root", task="Go.")
+
+
+def _priced(cost: float) -> Transcript:
+    """A run whose calls cost ``cost``, as the gateway reported it."""
+    found = Transcript(messages=[{"role": "user", "content": "Go."}])
+    found.turns = 1
+    found.usage.append(ModelUsage(model="m", input_tokens=10, output_tokens=1, cost=cost))
+    return found
 
 
 def _sized(tokens: int, *, used: int = 0) -> Transcript:
@@ -49,11 +57,10 @@ def _sized(tokens: int, *, used: int = 0) -> Transcript:
     return found
 
 
-async def test_the_run_service_reserves_nothing_for_its_checks(delegating: Harness) -> None:
-    """Under the run service, with the root's share of a 1,000,000 budget 500,000, four
-    checks each get the project's 150,000 tokens: nothing is reserved from the root and
-    nothing refused for the budget."""
-    RunState(ProjectStore(delegating.state).control).set_budget(PROJECT, 1_000_000)
+async def test_with_nothing_set_delegate_wait_and_halt_all_work(delegating: Harness) -> None:
+    """Under the run service, with no cost limit and no share, four checks each get the
+    project's 150,000 tokens, the root waits for them and answers: nothing is reserved,
+    refused or stopped for spending."""
     free = asyncio.Event()
 
     async def held() -> None:
@@ -100,12 +107,17 @@ async def test_a_child_stops_before_a_call_that_would_pass_its_limit(tmp_path: P
         projects.close()
 
 
-async def test_a_root_stops_at_its_share_of_the_projects_budget(tmp_path: Path) -> None:
-    projects, _, chat = _chat(tmp_path)
+async def test_a_root_stops_at_its_share_of_the_cost_limit_and_never_without_one(
+    tmp_path: Path,
+) -> None:
+    projects, state, chat = _chat(tmp_path)
     try:
-        root = ModelBudget(chat, 0.5)
-        assert await root.halt(_sized(0, used=499_999)) is None
-        assert await root.halt(_sized(0, used=500_000)) == "run_budget"
+        root, unbounded = ModelBudget(chat, 0.5), ModelBudget(chat)
+        assert await root.halt(_priced(10.0)) is None  # no limit: no share of one
+        state.set_cost_limit(PROJECT, 1.0)
+        assert await root.halt(_priced(0.49)) is None
+        assert await root.halt(_priced(0.5)) == "run_budget"
+        assert await unbounded.halt(_priced(0.9)) is None  # no share of its own
     finally:
         projects.close()
 

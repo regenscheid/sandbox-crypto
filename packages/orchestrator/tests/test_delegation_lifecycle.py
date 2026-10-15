@@ -436,12 +436,12 @@ async def test_a_project_that_stopped_delegating_still_gets_its_outcomes(
     assert later.delivered["delegations"] == [delegation_id]
 
 
-async def test_a_spent_budget_refuses_a_delegation(delegating: Harness) -> None:
-    RunState(ProjectStore(delegating.state).control).set_budget(PROJECT, 1)
-    root = await delegating.run("root", [Reply(calls=[CHECK]), Reply("No budget.")])
+async def test_a_reached_cost_limit_refuses_a_delegation(delegating: Harness) -> None:
+    RunState(ProjectStore(delegating.state).control).set_cost_limit(PROJECT, 0.01)
+    root = await delegating.run("root", [Reply(calls=[CHECK], cost="0.02"), Reply("No budget.")])
     refused = json.loads(results(root)[0])["error"]
     assert refused["kind"] == "unavailable"
-    assert "model budget" in refused["message"]
+    assert "daily cost limit" in refused["message"]
     assert "delegations" not in root.summaries
 
 

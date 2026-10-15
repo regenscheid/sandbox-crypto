@@ -96,6 +96,25 @@ def test_command_lines_name_files_never_secrets(make_config: Any, commands: Path
         parts.project_argvs(config, layout, "sha256:" + "b" * 64, {"crypto": "crypto-base"})
 
 
+def test_a_daily_cost_limit_is_set_for_each_project(make_config: Any, commands: Path) -> None:
+    model = {"daily_cost_limit": 25}
+    config = load_config(make_config({"bin_dir": str(commands), "model": model}))
+    layout = Layout(config.state_dir)
+    budget = [
+        argv
+        for argv in parts.project_argvs(config, layout, "sha256:" + "a" * 64)
+        if argv[1:3] == ["project", "budget"]
+    ]
+    assert [argv[-4:] for argv in budget] == [["--project", "crypto", "--daily-cost-limit", "25"]]
+    unset = load_config(make_config({"bin_dir": str(commands)}))
+    assert not any(
+        argv[1:3] == ["project", "budget"]
+        for argv in parts.project_argvs(unset, layout, "sha256:" + "a" * 64)
+    )
+    with pytest.raises(LauncherError, match="daily_cost_limit"):
+        load_config(make_config({"bin_dir": str(commands), "model": {"daily_cost_limit": -1}}))
+
+
 def test_check_names_everything_missing_and_never_reads_the_key(
     make_config: Any, commands: Path, tmp_path: Path
 ) -> None:

@@ -4,15 +4,18 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from sandbox_science.orchestrator.control import ControlError, store_path
-from sandbox_science.orchestrator.projects import ProjectStore
+from sandbox_science.orchestrator import cli
+from sandbox_science.orchestrator.control import ControlError, migrations, store_path
+from sandbox_science.orchestrator.projects import ProjectStore, run_name
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.testing import FakeClock
+
+from .control_versions import at_version
 
 
 def store(tmp_path: Path, clock: FakeClock | None = None) -> tuple[ProjectStore, RunState]:
@@ -149,15 +152,25 @@ def test_held_and_refused_messages(tmp_path: Path) -> None:
     projects.close()
 
 
-def test_a_projects_budget_is_a_setting(tmp_path: Path) -> None:
+def test_a_projects_daily_cost_limit_is_an_optional_setting(tmp_path: Path) -> None:
     projects, state = store(tmp_path)
-    assert state.budget("p") == 2_000_000
-    state.set_budget("p", 5000)
-    assert state.budget("p") == 5000
+    now = datetime.now(UTC)
+    assert state.cost_limit("p") is None  # none by default: nothing is kept
+    assert not state.over_cost_limit("p", now)
+    state.set_cost_limit("p", 2.5)
+    assert state.cost_limit("p") == 2.5
+    assert not state.over_cost_limit("p", now)  # the gateway priced nothing yet
+    run = run_name(now, "priced")
+    state.append("p", "s", run, "assistant", {"usage": {"input_tokens": 9, "cost": 2.5}})
+    assert state.over_cost_limit("p", now)
+    assert not state.over_cost_limit("p", now + timedelta(hours=25))  # out of the window
+    state.set_cost_limit("p", None)
+    assert (state.cost_limit("p"), state.over_cost_limit("p", now)) == (None, False)
+    for wrong in (-1.0, 2e9):
+        with pytest.raises(ControlError):
+            state.set_cost_limit("p", wrong)
     with pytest.raises(ControlError):
-        state.set_budget("p", -1)
-    with pytest.raises(ControlError):
-        state.set_budget("nope", 1)
+        state.set_cost_limit("nope", 1)
     projects.close()
 
 
@@ -172,3 +185,41 @@ def test_dead_leases_and_the_services_heartbeat(tmp_path: Path) -> None:
     assert [lease.run for lease in state.dead()] == ["run-a"]
     assert not state.service_running()
     projects.close()
+
+
+def test_the_cli_shows_sets_and_removes_the_cost_limit(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store(tmp_path)[0].close()
+    argv = ["project", "budget", "--state-dir", str(tmp_path), "--project", "p"]
+    assert cli.main(argv) == 0
+    assert capsys.readouterr().out == "project p: no daily cost limit, in the gateway's currency\n"
+    assert cli.main([*argv, "--daily-cost-limit", "12.5"]) == 0
+    assert capsys.readouterr().out == (
+        "project p: a daily cost limit of 12.5, in the gateway's currency\n"
+    )
+    assert cli.main([*argv, "--no-cost-limit"]) == 0
+    assert capsys.readouterr().out.startswith("project p: no daily cost limit")
+    assert cli.main([*argv, "--daily-cost-limit", "-1"]) == 1
+    assert "a daily cost limit is 0 to" in capsys.readouterr().err
+
+
+def test_a_version_35_store_drops_its_token_budgets(tmp_path: Path) -> None:
+    """The token budgets go with their table; the cost limits start empty: none is kept."""
+    path = store_path(tmp_path)
+    with at_version(35):
+        projects = ProjectStore(tmp_path)
+        projects.create("p", "minimal", "sha256:" + "a" * 64)
+        projects.close()
+    with sqlite3.connect(path) as db:
+        db.execute("INSERT INTO project_budgets VALUES ('p', 5000, '2026-10-15T00:00:00+00:00')")
+    migrated = ProjectStore(tmp_path)
+    try:
+        assert RunState(migrated.control).cost_limit("p") is None
+    finally:
+        migrated.close()
+    with sqlite3.connect(path) as db:
+        tables = {name for (name,) in db.execute("SELECT name FROM sqlite_master")}
+        assert db.execute("PRAGMA user_version").fetchone() == (migrations.VERSION,)
+    assert "project_budgets" not in tables
+    assert "project_cost_limits" in tables

@@ -48,7 +48,15 @@ from .control import ControlError
 from .control.errors import CONFLICT
 from .hooks import Closing, Effect, Notice, Point, Refusal, RunView, TurnHook
 from .projects import ModelUsage, RunRecord
-from .runstate import MAX_EVENT_BYTES, PAGE, ChatMessage, EventKind, RunState, cost
+from .runstate import (
+    MAX_EVENT_BYTES,
+    PAGE,
+    WINDOW,
+    ChatMessage,
+    EventKind,
+    RunState,
+    call_tokens,
+)
 from .tools import bound
 
 _log = logging.getLogger(__name__)
@@ -158,29 +166,30 @@ class RunChat:
 
 
 class ModelBudget(TurnHook):
-    """The project's MAIN budget, kept at the run's safe points (RS-6a, RS-6c), and a
-    delegated run's own token limit (PD-38)."""
+    """The project's daily cost limit, if it has one, kept at the run's safe points
+    (RS-6a, RS-6c), and a delegated run's own token limit (PD-38)."""
 
     name = "budget"
 
     def __init__(self, chat: RunChat, share: float | None = None, *, tokens: int | None = None):
-        """``share`` is the part of the project's budget one run may use, above 0 and at
-        most 1; ``tokens``, a delegated run's limit, takes its place."""
-        if (share is None) == (tokens is None):
-            raise ValueError("a run's budget is a share or a token limit")
+        """``share`` is the part of the project's daily cost limit one run may use, above
+        0 and at most 1, if any; ``tokens`` is a delegated run's limit."""
         self.chat, self.share, self.tokens = chat, share, tokens
 
     async def halt(self, run: RunView) -> str | None:
         state, project = self.chat.state, self.chat.context.project_id
-        # Its own calls are among the project's: their events are written as they return.
-        if await threaded(state.over_budget, project, self.chat.clock.now()):
-            return "budget"
-        own = sum(cost(usage) for usage in run.usage)
-        if self.tokens is not None:
-            # A delegated run stops before a call that would take it past its limit.
-            if own + estimate(run) >= self.tokens:
+        limit = await threaded(state.cost_limit, project)
+        if limit is not None:
+            # Its own calls are among the project's: their events are written as they return.
+            spent = await threaded(state.model_cost, project, self.chat.clock.now() - WINDOW)
+            if spent is not None and spent >= limit:
+                return "budget"
+            own = sum(usage.cost or 0 for usage in run.usage)
+            if self.share is not None and own > 0 and own >= self.share * limit:
                 return "run_budget"
-        elif own >= cast(float, self.share) * await threaded(state.budget, project):
+        # A delegated run stops before a call that would take it past its limit.
+        used = sum(call_tokens(usage) for usage in run.usage)
+        if self.tokens is not None and used + estimate(run) >= self.tokens:
             return "run_budget"
         return None
 

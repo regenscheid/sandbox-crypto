@@ -91,7 +91,7 @@ from .model import (
 )
 from .projects import ProjectError, ProjectStore, run_name
 from .runstate import RunState
-from .service import POLL_SECONDS, RUN_SHARE, RunService
+from .service import POLL_SECONDS, RunService
 from .stock_prompts import TEMPLATE_IDS
 from .tools import ToolOutcome
 from .worker_client import WorkerAPIError, WorkerClient
@@ -317,6 +317,8 @@ def _harness(
             review_token_budget=args.review_token_budget,
             review_calls_per_hour=args.review_calls_per_hour,
             # serve keeps the budget during its runs; run on the command line does not.
+            # serve keeps the projects' cost limits during its runs; run does not.
+            cost_limits=getattr(args, "command", None) == "serve",
             run_share=None if (share := getattr(args, "run_share", None)) is None else share / 100,
         ),
         mcp=mcp,
@@ -584,9 +586,8 @@ def main(argv: list[str] | None = None) -> int:
     serve.add_argument(
         "--run-share",
         type=int,
-        default=RUN_SHARE,
-        help="the percent of the project's daily MAIN budget one run may use "
-        f"(default {RUN_SHARE}); each run also stops once the project has spent its budget",
+        help="the percent of a project's daily cost limit one run may use, when the project "
+        "has a limit (none by default); each run stops once the project reaches its limit",
     )
     add_parsers(commands)
     add_skills_parser(commands)
@@ -629,7 +630,7 @@ def main(argv: list[str] | None = None) -> int:
             _check_agent(parser, args)
             if not math.isfinite(args.poll) or args.poll <= 0:
                 parser.error("--poll must be positive and finite")
-            if not 1 <= args.run_share <= 100:
+            if args.run_share is not None and not 1 <= args.run_share <= 100:
                 parser.error("--run-share is a percent, 1 to 100")
             action = _serve(args)
         case "project":

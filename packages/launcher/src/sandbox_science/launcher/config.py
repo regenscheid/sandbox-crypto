@@ -155,6 +155,10 @@ class ModelConfig(_Strict):
     """Seconds between check-ins; the run service's default (1,800) when unset."""
     delegated: str | None = Field(default=None, min_length=1)
     """The alias delegated runs call; the main agent's when unset."""
+    daily_cost_limit: float | None = Field(default=None, ge=0, le=1_000_000_000)
+    """What each project's runs may cost over a rolling 24 hours, as the gateway reports
+    it, in its currency (normally USD); ``up`` sets it for each project. Unset, as by
+    default, ``up`` leaves each project's limit as it is: none, unless one was set."""
 
     @field_validator("url")
     @classmethod
@@ -213,8 +217,8 @@ class WorkerConfig(_Strict):
 
 class RunServiceConfig(_Strict):
     run_share: int | None = Field(default=None, ge=1, le=100)
-    """The percent of the project's daily MAIN budget one run may use; the run service's
-    default (50) when unset."""
+    """The percent of a project's daily cost limit one run may use, when the project has
+    a limit; none when unset."""
     math_checks: ConfigPath | None = None
     """The math checker's build, ``web/workspace/dist-math`` after ``npm run build:math``:
     with it, the run service checks the documents' formulas; without it, every formula

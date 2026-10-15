@@ -2278,6 +2278,22 @@ BEGIN SELECT RAISE(ABORT, 'a skill pin moves one revision at a time'); END""",
             )
 
 
+def _cost_limits(schema: Schema) -> None:
+    """Version 36: a project's optional daily cost limit, in the gateway's currency
+    (run-service spec RS-6a; the owner, 2026-10-15), in place of its MAIN token budget,
+    whose table goes with what it held: spending is mostly enforced upstream, by the
+    gateway's own budget, and a project without a limit has none."""
+    for statement in (
+        """CREATE TABLE project_cost_limits (
+    project_id TEXT PRIMARY KEY REFERENCES projects (project_id),
+    daily_cost REAL NOT NULL CHECK (daily_cost BETWEEN 0 AND 1000000000),
+    updated_at TEXT NOT NULL
+) STRICT""",
+        "DROP TABLE project_budgets",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -2313,6 +2329,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _delegation_limits,
     _ledger_work,
     _skills,
+    _cost_limits,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

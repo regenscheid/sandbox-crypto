@@ -156,14 +156,16 @@ async def test_requests_an_interrupted_run_held_start_no_run(harness: Harness) -
     assert record.delivered["requests"] == [request]
 
 
-async def test_a_spent_budget_makes_a_request_wait(harness: Harness) -> None:
-    runs(harness).set_budget(PROJECT, 0)
+async def test_a_reached_cost_limit_makes_a_request_wait(harness: Harness) -> None:
+    await harness.run("run-1", [Reply("A priced answer.", cost="0.75")])
+    runs(harness).set_cost_limit(PROJECT, 0.5)
+    harness.gateway.main.clear()
     request = harness.work_request()
     async with serving(harness, Reply("Never sent.")) as service:
         await eventually(lambda: (PROJECT, SESSION) in service.waiting_until, timeout=10)
         await asyncio.sleep(0.3)
     assert harness.gateway.main == []
-    assert names(harness) == []
+    assert len(names(harness)) == 1  # the earlier, priced run alone
     assert harness.request_states() == {request: "queued"}
 
 
