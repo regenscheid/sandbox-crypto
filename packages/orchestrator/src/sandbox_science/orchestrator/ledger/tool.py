@@ -113,7 +113,9 @@ _EVIDENCE = {
         "artifact with revision (and optionally its sha256; find_artifacts gives an "
         "artifact's ID, revision and SHA-256 by its path, in any run), document with revision, "
         "block and optionally math (a span), or review. An independent_check names the "
-        "revision of this entry it checked as checked. A published claim or result "
+        "revision of this entry it checked as checked; its target can be delegation: the "
+        "ID of a delegation that checked that revision, once it ended (the gate counts "
+        "one that returned confirmed and complete). A published claim or result "
         "cites its reference with a supports link of type source_claim, best with quote: "
         "what it quotes, as you read it, from the PDF (page and lines as pdf_pages or "
         "pdf_search numbered them) or from the e-print tools (the date stamp they gave)"
@@ -138,6 +140,7 @@ _EVIDENCE = {
         "artifact": {"type": "string"},
         "document": {"type": "string"},
         "review": {"type": "string"},
+        "delegation": {"type": "string"},
         "revision": {"type": "integer"},
         "block": {"type": "string"},
         "math": {"type": "string"},

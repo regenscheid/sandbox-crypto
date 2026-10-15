@@ -2,14 +2,15 @@
 """Evidence links (docs/specs/ledger.md, LG-8 to LG-11, LG-15).
 
 An evidence link has a role, an evidence type, a scope note and one pinned target: an
-entry, artifact or document revision, a document block or math span, a review, or a
-quote of a reference: a PDF's page and lines, pinned by the PDF's SHA-256, or an ePrint
-passage, named by the paper and the date stamp the e-print tools gave it (LG-8, CR-4).
+entry, artifact or document revision, a document block or math span, a review, a quote
+of a reference: a PDF's page and lines, pinned by the PDF's SHA-256, or an ePrint
+passage, named by the paper and the date stamp the e-print tools gave it (LG-8, CR-4),
+or the outcome of a delegation that checked the entry, which is written once: an
+``independent_check`` of the revision its brief named (LG-17, PD-17).
 The target is the platform's record; the role, type and scope are the author's assertion
 (LG-10). Links belong to the revision of the entry that holds them, which keeps them
 from revision to revision, each with its ID and the revision that added it, until a
-change removes it. Execution targets and delegation outcomes are not built yet and are
-refused.
+change removes it. Execution targets are not built yet and are refused.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
-from typing import Final, Literal
+from typing import Any, Final, Literal
 
 from sandbox_science.contracts import new_id
 from sandbox_science.orchestrator.documents.errors import (
@@ -34,7 +35,7 @@ _COLUMNS: Final = (
     "added,locator"
 )
 
-Target = Literal["entry", "artifact", "block", "review", "quote"]
+Target = Literal["entry", "artifact", "block", "review", "quote", "delegation"]
 
 Block = tuple[str, int, str, str | None]
 """A document block or math span as a change names it: document, revision, block, span."""
@@ -198,11 +199,19 @@ def resolve(
         raise DocumentError(INVALID_REQUEST, f"{article} {holder.type} holds no evidence")
     if item.type == "unclassified":
         raise DocumentError(INVALID_REQUEST, "unclassified evidence comes only from imports")
-    named = (item.entry, item.artifact, item.document, item.review, item.execution)
+    named = (
+        item.entry,
+        item.artifact,
+        item.document,
+        item.review,
+        item.delegation,
+        item.execution,
+    )
     if sum(value is not None for value in named) != 1:
         raise DocumentError(
             INVALID_REQUEST,
-            "evidence names one target: an entry, an artifact, a document block or a review",
+            "evidence names one target: an entry, an artifact, a document block, a review "
+            "or a delegation",
         )
     if item.execution is not None:
         raise DocumentError(
@@ -245,6 +254,8 @@ def resolve(
             }
         )
 
+    if item.delegation is not None:
+        return link("delegation", item.delegation, locator=_checked_by(db, project, holder, item))
     if item.quote is not None and entry is not None:
         if item.block is not None or item.math is not None or item.sha256 is not None:
             raise DocumentError(
@@ -291,3 +302,48 @@ def resolve(
     ):
         raise DocumentError(NOT_FOUND, f"no review {item.review} in this project")
     return link("review", item.review)
+
+
+def _checked_by(
+    db: sqlite3.Connection, project: str, holder: Holder, item: EvidenceInput
+) -> dict[str, object]:
+    """The outcome of the delegation ``item`` names, as its link records it: a check of
+    ``holder`` at the revision ``item`` says it examined, which has ended."""
+    if item.role != "independent_check":
+        raise DocumentError(
+            INVALID_REQUEST, "a delegation's outcome is evidence only as an independent_check"
+        )
+    if any(
+        value is not None
+        for value in (item.revision, item.block, item.math, item.sha256, item.quote)
+    ):
+        raise DocumentError(INVALID_REQUEST, "a delegation target names only the delegation")
+    found = db.execute(
+        "SELECT kind,brief,ended,run,alias,models,result FROM delegations "
+        "WHERE delegation_id=? AND project_id=?",
+        (item.delegation, project),
+    ).fetchone()
+    if found is None:
+        raise DocumentError(NOT_FOUND, f"no delegation {item.delegation} in this project")
+    kind, brief, ended, run, alias, models, result = found
+    check: dict[str, Any] = json.loads(brief).get("check") or {}
+    if kind != "check" or (check.get("entry"), check.get("revision")) != (
+        holder.entry_id,
+        item.checked,
+    ):
+        raise DocumentError(
+            INVALID_REQUEST,
+            f"delegation {item.delegation} did not check {holder.handle} at revision "
+            f"{item.checked}",
+        )
+    if ended is None:
+        raise DocumentError(CONFLICT, f"delegation {item.delegation} has not ended")
+    outcome: dict[str, Any] = json.loads(result) if result is not None else {}
+    return {
+        "run": run,
+        "alias": alias,
+        "models": json.loads(models) if models is not None else [],
+        "ended": ended,
+        "verdict": outcome.get("verdict"),
+        "status": outcome.get("status"),
+    }

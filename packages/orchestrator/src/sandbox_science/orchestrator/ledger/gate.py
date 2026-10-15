@@ -10,8 +10,12 @@ refusal names the first clause that does not (``gate_not_met``):
    is neither ``synthetic`` nor ``unclassified``, and whose target is not a review nor an
    entry that is ``refuted``, ``withdrawn`` or ``superseded``;
 2. ``independent_check``: when evidence that counts is of type ``proof``, an
-   ``independent_check`` the user added themselves, at the revision they checked, whose
-   material the change keeps;
+   ``independent_check`` of a revision whose material the change keeps, by the user or
+   by a delegation: one the user added themselves, at the revision they checked, or one
+   whose target is the outcome of a delegation that checked that revision and returned
+   ``confirmed`` and ``complete``, with no plan fence refusal and a ``ledger_read`` of the
+   entry at that revision, run by a run that added none of the entry's proofs (a
+   fresh context, PD-13; the same model counts, coordinator 2026-10-15);
 3. ``computation``: computational evidence pinned to an artifact revision;
 4. ``review``: a completed checkpoint or terminal review (``passed`` or ``findings``)
    whose coverage was complete had in its snapshot, whole, a revision of the entry whose
@@ -27,9 +31,10 @@ refusal names the first clause that does not (``gate_not_met``):
    finding holds;
 6. ``flags``: no open flag on the entry (LG-28).
 
-Some clauses cannot hold in full yet, and the limits are deliberate: checks by
-delegations and verification reviews are not built, so only a check the user produced
-counts in clause 2; no record says which inputs were synthetic (RA-17), so clause 1
+Some clauses cannot hold in full yet, and the limits are deliberate: verification
+reviews are not built, so they do not count in clause 2, whose delegations' runs are
+told apart from a proof's author by the run that added the proof to the entry, not by
+who wrote the block it cites; no record says which inputs were synthetic (RA-17), so clause 1
 reads the link's type alone; execution targets are not built, so clause 3 asks for the
 artifact alone; and no record says which revision of the entry a finding's decision
 saw, so clause 5 reads that the entry kept the material since the finding, over at
@@ -200,31 +205,49 @@ def clauses(
     checked = {link.checked for link in held if link.checked is not None}
     if not any(link.type == "proof" for link in counting):
         yield "independent_check", True, "no evidence that counts is a proof, so no check is needed"
-    elif any(
-        link.role == "independent_check"
-        and link.type not in _NOT_COUNTING
-        and link.checked is not None
-        and examined(db, entry, checked).get(link.checked) == now
-        and link.added == link.checked + 1
-        and added_by_user(db, entry, link, before)
-        for link in held
-    ):
-        yield (
-            "independent_check",
-            True,
-            "the user checked a revision with the statement, fields, assumptions and "
-            "evidence it holds",
-        )
     else:
-        yield (
-            "independent_check",
-            False,
-            f"{handle} rests on a proof and has no independent check that counts: one the "
-            "user added themselves, at the revision they checked (the workspace's check, "
-            "or the ledger check command), of a revision whose statement, fields, "
-            "assumptions and evidence the change keeps (checks by delegations are not "
-            "built yet)",
-        )
+        kept = examined(db, entry, checked)
+        valid = [
+            link
+            for link in held
+            if link.role == "independent_check"
+            and link.type not in _NOT_COUNTING
+            and link.checked is not None
+            and kept.get(link.checked) == now
+        ]
+        proofs = [link for link in counting if link.type == "proof"]
+        if any(
+            link.target != "delegation"
+            and link.checked is not None
+            and link.added == link.checked + 1
+            and added_by_user(db, entry, link, before)
+            for link in valid
+        ):
+            yield (
+                "independent_check",
+                True,
+                "the user checked a revision with the statement, fields, assumptions and "
+                "evidence it holds",
+            )
+        elif found := next((d for d in valid if delegated(db, entry, d, proofs)), None):
+            yield (
+                "independent_check",
+                True,
+                f"delegation {found.target_id} confirmed a revision with the statement, "
+                "fields, assumptions and evidence it holds, in a fresh context",
+            )
+        else:
+            yield (
+                "independent_check",
+                False,
+                f"{handle} rests on a proof and has no independent check that counts, of a "
+                "revision whose statement, fields, assumptions and evidence the change "
+                "keeps: one the user added themselves, at the revision they checked (the "
+                "workspace's check, or the ledger check command), or the outcome of a "
+                "delegation that checked that revision and returned confirmed and "
+                "complete, read the entry at that revision, met no plan fence, and added "
+                "none of its proofs",
+            )
     if any(link.type in COMPUTATIONAL and link.target != "artifact" for link in counting):
         yield (
             "computation",
@@ -414,6 +437,49 @@ def reviewed(db: sqlite3.Connection, entry: str, *, after: float | None = None) 
         )
         if isinstance(revision, int)
     ]
+
+
+def delegated(
+    db: sqlite3.Connection, entry: str, link: EvidenceLink, proofs: list[EvidenceLink]
+) -> bool:
+    """Whether ``link`` is a delegation's check that counts (LG-17): its outcome is of a
+    check of ``entry`` at the revision the link names, which returned ``confirmed`` and
+    ``complete``, met no plan fence, read the entry at that revision, and whose run added
+    none of ``proofs`` to the entry. The outcome is written once, so it is read as it is."""
+    if link.target != "delegation":
+        return False
+    found = db.execute(
+        "SELECT kind,brief,ended,result,refused,read_entry,run FROM delegations "
+        "WHERE delegation_id=?",
+        (link.target_id,),
+    ).fetchone()
+    if found is None:
+        return False
+    kind, brief, ended, result, refused, read, run = found
+    check: dict[str, Any] = json.loads(brief).get("check") or {}
+    outcome: dict[str, Any] = json.loads(result) if result is not None else {}
+    if not (
+        kind == "check"
+        and (check.get("entry"), check.get("revision")) == (entry, link.checked)
+        and ended == "returned"
+        and outcome.get("verdict") == "confirmed"
+        and outcome.get("status") == "complete"
+        and refused is None
+        and read == 1
+    ):
+        return False
+    # A run's name is its start time, a dash and its ID, which its changes name.
+    checker = str(run).partition("-")[2]
+    return not any(_author_run(db, entry, proof.added) == checker for proof in proofs)
+
+
+def _author_run(db: sqlite3.Connection, entry: str, revision: int) -> str | None:
+    row = db.execute(
+        "SELECT json_extract(author,'$.run_id') FROM ledger_revisions "
+        "WHERE entry_id=? AND revision=?",
+        (entry, revision),
+    ).fetchone()
+    return None if row is None else row[0]
 
 
 def added_by_user(db: sqlite3.Connection, entry: str, link: EvidenceLink, before: int) -> bool:

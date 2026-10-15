@@ -61,7 +61,9 @@ SPECS: Final = (
         "go on; this returns its delegation_id at once. Its report reaches you as a "
         "delegation notice, or as the result of wait_delegations. You cannot give your "
         "final answer while it runs. Its result is its claim: a verdict, a status and a "
-        "summary; the outcome says how the platform saw it end.",
+        "summary; the outcome says how the platform saw it end. A check that returned "
+        "confirmed counts as the entry's independent check once you add it as evidence: "
+        "role independent_check, delegation its ID, checked the revision it checked.",
         {
             "type": "object",
             "properties": {

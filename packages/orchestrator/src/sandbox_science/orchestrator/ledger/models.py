@@ -171,9 +171,10 @@ class EvidenceInput(Contract):
     one pinned target: an entry revision (``entry``, ``revision`` defaulting to the
     entry's revision as the change leaves it), an artifact revision (``artifact``,
     ``revision`` and optionally its ``sha256``), a document block or math span
-    (``document``, ``revision``, ``block`` and optionally ``math``) or a review
-    (``review``). ``checked`` is the revision of this entry an ``independent_check``
-    examined."""
+    (``document``, ``revision``, ``block`` and optionally ``math``), a review
+    (``review``), or, for an ``independent_check``, the outcome of a delegation that
+    checked this entry (``delegation``). ``checked`` is the revision of this entry an
+    ``independent_check`` examined."""
 
     role: EvidenceRole
     type: EvidenceType
@@ -181,6 +182,7 @@ class EvidenceInput(Contract):
     artifact: Identifier | None = None
     document: Identifier | None = None
     review: Identifier | None = None
+    delegation: Identifier | None = None
     execution: Identifier | None = None
     revision: Annotated[int, Field(ge=1, le=999999999, strict=True)] | None = None
     block: Identifier | None = None
@@ -344,7 +346,6 @@ class EvidenceLink(Contract):
     role: EvidenceRole
     type: EvidenceType
     target: Literal["entry", "artifact", "block", "review", "quote", "delegation"]
-    """``delegation`` is lane D's (version 30 allows it); this lane gives it no behaviour."""
     target_id: str
     revision: int | None = None
     """The target's pinned revision: an entry's, an artifact's or a document's."""
@@ -360,7 +361,9 @@ class EvidenceLink(Contract):
     """An entry target's handle, as it reads now; a quote's reference's."""
     locator: dict[str, Any] | None = None
     """For a quote: its source, where it is (the PDF and its page and lines, or the
-    ePrint and its date stamp) and its text."""
+    ePrint and its date stamp) and its text. For a delegation's outcome: the run that
+    checked, the model alias and the models it ran on, and how it ended, as the outcome
+    says (the outcome is written once)."""
 
 
 class EntryFinding(Contract):
