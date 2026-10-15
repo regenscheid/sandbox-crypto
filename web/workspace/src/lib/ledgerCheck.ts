@@ -38,6 +38,8 @@ function exactTarget(link: EvidenceLink): string {
       );
     case 'review':
       return `review ${link.target_id}`;
+    case 'delegation':
+      return `delegation ${link.target_id}${at}${link.sha256 === null ? '' : `, sha256 ${link.sha256}`}`;
     case 'quote':
       return (
         `quote of ${link.handle ?? link.target_id} (${link.target_id})${at}` +

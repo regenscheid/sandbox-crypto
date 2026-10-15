@@ -72,6 +72,7 @@ def test_a_quote_names_what_it_quotes(ledger: Ledger) -> None:
             (quoting({**EPRINT, "dated": None}, "REF-1"), "names the date stamp"),
             (quoting({**PDF, "first_line": 32}, "REF-1"), "run from its first to its last"),
             (quoting(PDF, "REF-1", sha256="a" * 64), "names its reference, its revision"),
+            (quoting({**EPRINT, "text": "order 4q'."}, "REF-1"), "at least 20 characters"),
         )
     ):
         with pytest.raises(DocumentError, match=message) as refused:

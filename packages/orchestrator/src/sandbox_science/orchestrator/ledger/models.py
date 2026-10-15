@@ -120,6 +120,10 @@ class LinkInput(Contract):
     note: Note | None = None
 
 
+MIN_QUOTE: Final = 20
+"""The fewest characters, white space aside, a quote holds."""
+
+
 class QuoteInput(Contract):
     """What a claim or result quotes from the reference it cites (LG-8, CR-4): a PDF's
     page and lines as ``pdf_pages`` or ``pdf_search`` numbered them, with the page's
@@ -137,9 +141,15 @@ class QuoteInput(Contract):
     ``2015-06-30T18:41:29Z; 2015-06-30T20:25:17Z``: the paper ID and this stamp are
     what names the version, as the server reports it."""
     text: Annotated[str, Field(min_length=1, max_length=2000)]
+    """At least ``MIN_QUOTE`` characters that are not white space: a few words match too
+    much to vouch for anything."""
 
     @model_validator(mode="after")
     def _source(self) -> Self:
+        if sum(not c.isspace() for c in self.text) < MIN_QUOTE:
+            raise ValueError(
+                f"a quote holds at least {MIN_QUOTE} characters that are not white space"
+            )
         if self.source == "pdf":
             if self.page is None or self.first_line is None or self.last_line is None:
                 raise ValueError("a PDF quote names its page and its first and last lines")
@@ -333,7 +343,8 @@ class EvidenceLink(Contract):
     evidence_id: str
     role: EvidenceRole
     type: EvidenceType
-    target: Literal["entry", "artifact", "block", "review", "quote"]
+    target: Literal["entry", "artifact", "block", "review", "quote", "delegation"]
+    """``delegation`` is lane D's (version 30 allows it); this lane gives it no behaviour."""
     target_id: str
     revision: int | None = None
     """The target's pinned revision: an entry's, an artifact's or a document's."""

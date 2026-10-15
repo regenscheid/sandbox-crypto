@@ -65,6 +65,8 @@ export function evidenceTarget(project: string, link: EvidenceLink): LinkTarget 
     }
     case 'review':
       return { text: `review ${link.target_id}`, href: null };
+    case 'delegation':
+      return { text: `delegation ${link.target_id}${pinned}`, href: null };
     case 'quote': {
       const name = link.handle ?? link.target_id;
       const where = quoteWhere(link.locator);

@@ -319,7 +319,7 @@ export interface EvidenceLink {
   evidence_id: string;
   role: "supports" | "contradicts" | "derivation" | "independent_check";
   type: "proof" | "exact_computation" | "finite_test" | "numerical_experiment" | "source_claim" | "synthetic" | "unclassified";
-  target: "entry" | "artifact" | "block" | "review" | "quote";
+  target: "entry" | "artifact" | "block" | "review" | "quote" | "delegation";
   target_id: string;
   revision: number | null;
   block: string | null;
