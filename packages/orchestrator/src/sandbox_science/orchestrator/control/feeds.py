@@ -17,7 +17,7 @@ from typing import Final
 class FeedCursor:
     """The cursors of one feed, such as the reviewer's reading of the documents' events."""
 
-    FEEDS: Final = ("document", "artifact")
+    FEEDS: Final = ("document", "artifact", "ledger")
 
     def __init__(self, feed: str) -> None:
         if feed not in self.FEEDS:
