@@ -1,12 +1,13 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- One accepted entry of the project memory (docs/specs/project-memory.md, PM-4): its
-     text through the Markdown component, whether agents receive it, and the user's
+     exact text as every agent reads it (ApprovalText, with a rendered preview), whether
+     agents receive it, and the user's
      changes, each naming the revision shown. Its history is one click away. -->
 <script lang="ts">
   import type { MemoryEntry } from '../lib/api-types';
-  import Markdown from '../lib/Markdown.svelte';
   import { formatTime } from '../lib/format';
   import { type MemoryAction, textProblem } from '../lib/memory';
+  import ApprovalText from './ApprovalText.svelte';
   import MemoryHistory from './MemoryHistory.svelte';
 
   let {
@@ -59,7 +60,7 @@
     {#if !given}<strong>not given to agents: past the bound</strong>{/if}
   </p>
   {#if draft === null}
-    <Markdown source={entry.text} />
+    <ApprovalText text={entry.text} preview label="Exactly as every agent reads it" />
     <button type="button" disabled={busy} onclick={edit}>Edit</button>
     <button type="button" disabled={busy || first} onclick={() => move('up')}>Move up</button>
     <button type="button" disabled={busy || last} onclick={() => move('down')}>Move down</button>
@@ -73,7 +74,7 @@
           {entry.entry_id} changed while you edited it: it is now at revision {entry.revision}, and
           your text is based on revision {base}. Its text now:
         </p>
-        <Markdown source={entry.text} />
+        <ApprovalText text={entry.text} label="Its text now" />
         <button type="button" onclick={() => (base = entry.revision)}
           >Keep my text, over revision {entry.revision}</button
         >

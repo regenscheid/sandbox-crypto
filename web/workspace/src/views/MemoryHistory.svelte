@@ -1,14 +1,15 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- An entry's versions, newest first, 50 at a time (docs/specs/project-memory.md, PM-1,
-     PM-4): what each changed, its text, who proposed it and why, and that the user
-     accepted or made it. -->
+     PM-4): what each changed, its exact text (ApprovalText), who proposed it and why, and
+     that the user accepted or made it; a move says the text did not change. -->
 <script lang="ts">
   import { api } from '../lib/api';
   import type { MemoryVersion } from '../lib/api-types';
-  import Markdown from '../lib/Markdown.svelte';
   import { formatTime } from '../lib/format';
   import { versionText } from '../lib/memory';
   import { emptyList, PagedList } from '../lib/pagedList';
+  import { visible } from '../lib/text';
+  import ApprovalText from './ApprovalText.svelte';
   import ErrorMessage from './ErrorMessage.svelte';
 
   let { projectId, entry }: { projectId: string; entry: string } = $props();
@@ -21,15 +22,16 @@
 </script>
 
 <ol class="history">
-  {#each versions.items as version (version.revision)}
+  {#each versions.items as version (version.version)}
     <li>
       <p>
         {versionText(version)}, {formatTime(version.at)}{#if version.reason}; the reason given: <bdi
-            >{version.reason}</bdi
+            >{visible(version.reason)}</bdi
           >{/if}
       </p>
-      {#if version.text !== null && version.change !== 'moved'}<Markdown
-          source={version.text}
+      {#if version.text !== null && version.change !== 'moved'}<ApprovalText
+          text={version.text}
+          label="Its text then"
         />{/if}
     </li>
   {/each}

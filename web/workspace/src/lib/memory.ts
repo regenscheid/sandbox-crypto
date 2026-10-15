@@ -8,6 +8,7 @@
 import type { Author, Memory, MemoryChange, MemoryProposal, MemoryVersion } from './api-types';
 import { guardedWrite } from './mutation';
 import { submit, type Submitting } from './submit';
+import { hiddenCharacters } from './text';
 
 export type MemoryAction =
   | { action: 'add'; text: string }
@@ -99,18 +100,35 @@ export function versionText(version: MemoryVersion): string {
     version.proposal !== null && version.proposer !== null
       ? `by the user, accepting ${version.proposal} from ${proposerText(version.proposer)}`
       : 'by the user';
+  if (version.change === 'moved') {
+    return `Moved, text unchanged (still revision ${version.revision}), ${how}`;
+  }
   return `Revision ${version.revision}: ${CHANGES[version.change]} ${how}`;
 }
 
-const REFUSED = /[\x00-\x08\x0b-\x1f\x7f\u202a-\u202e\u2066-\u2069]/;
+/** A numeric character reference, which a rendering shows as its character. */
+const REFERENCE = /&#(?:[xX]([0-9a-fA-F]{1,6})|([0-9]{1,7}));/g;
 
-/** Why the server would refuse a text, said before sending; null when it would take it. */
+/**
+ * Why the server would refuse a text, said before sending; null when it would take it.
+ * Hidden characters are the shared set (text.ts); named references the server checks.
+ */
 export function textProblem(text: string): string | null {
   const kept = text.trim();
   if (kept.length === 0) return 'An entry has text.';
   if ([...kept].length > MAX_TEXT) return `An entry is at most ${MAX_TEXT} characters.`;
-  if (REFUSED.test(kept)) {
-    return 'An entry holds no control characters or bidirectional formatting characters.';
+  const [first] = hiddenCharacters(text);
+  if (first) {
+    return (
+      `The text holds ${first[1]} at character ${first[0] + 1}, a character you may not ` +
+      'see; write it without one.'
+    );
+  }
+  for (const match of text.matchAll(REFERENCE)) {
+    const code = match[1] !== undefined ? parseInt(match[1], 16) : Number(match[2]);
+    if (code > 0x10ffff) continue;
+    const [hidden] = hiddenCharacters(String.fromCodePoint(code));
+    if (hidden) return `The text writes ${hidden[1]} as ${match[0]}, which you may not see.`;
   }
   return null;
 }
