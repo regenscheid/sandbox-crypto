@@ -342,8 +342,10 @@ A background job's files are recorded when a run first makes its completion noti
 the recorder reads the job's whole result from the worker (its status leaves the file
 lists out) and records them as for a call, attributed to the operation that started
 the job and its execution; the notice carries the counts. A notice made again, after
-a run that failed, records them again, which keeps the first revisions. Delegated
-runs' declared results (RA-38) come with delegation. The GUI's artifact list shows
+a run that failed, records them again, which keeps the first revisions. A delegated
+run's calls record files the same way. Its delegation's outcome lists them (RA-36) and,
+for a task, pins the result files it declared, each one a revision its own calls made
+(RA-38; [research artifacts](specs/research-artifacts.md)). The GUI's artifact list shows
 results first and every other recorded file under **All files**, the most recently
 changed first, with who made each latest revision; it filters by session, run and a
 path's text ([workspace](WORKSPACE.md); RA-37).
@@ -430,8 +432,6 @@ with synthetic state and no live model, worker or OpenShell VM.
 
 ## Not built
 
-- Recording delegated runs' declared results and a delegated run's list of its files
-  (RA-36, RA-38), with delegation.
 - An artifact's history of revisions and tombstones in the GUI, and a run's page that
   lists its results, its recorded files and the gaps (RA-37).
 - Complete telemetry and snapshotting, link semantics, authenticated feed binding and

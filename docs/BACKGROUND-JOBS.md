@@ -54,12 +54,13 @@ what to do next.
 Watcher calls reserve their budget before contacting the model. The default
 is 60 calls per project in a rolling hour (`--watcher-calls-per-hour`), shared
 across processes and runs. Requests, answers, requested alias, resolved model,
-token usage when supplied by the gateway, and the
+token usage and cost when supplied by the gateway, and the
 [prompt provenance](WATCHER-PROMPT-PROVENANCE.md) are kept in the control store.
 A failed or interrupted request still spends its reservation. Exhaustion
 stops further check-ins until reservations leave the hour; the jobs keep
-running. This is a durable role call budget, not the future project-wide
-monetary spend accounting.
+running. This is a durable role call budget. The cost of each call counts in the
+project's cost and its optional daily cost limit ([run service](specs/run-service.md),
+RS-6a).
 
 ## Notices and persistence
 
@@ -112,8 +113,7 @@ replacement work is admitted; its full log files persist across stop/start.
 
 Still pending:
 
-- Waking a session when a detached job ends, and spend accounting for the
-  watcher and reviewer calls. The run service counts MAIN's tokens per project.
+- Waking a session when a detached job ends.
   `start_job` refuses `wake_session: true` until the service can start a session
   turn for a finished job; detached completion is a next-turn notice.
 - A terminal inbox for a running `run`; messages come through the workspace's chat.

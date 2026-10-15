@@ -455,7 +455,7 @@ npm install --ignore-scripts --before=2026-10-07T00:00:00Z some-package@1.2.3
 ## Not built
 
 - Detailed plan progress history and plan approval.
-- Rich-text editing, automatic merging of source conflicts, declining suggestions in the GUI, and restoring deleted documents; comments anchored to an artifact or a PDF, and annotation export; the frontier's history and dominance details, and the ledger's project-wide history view, and moving cards ([ledger](LEDGER.md#not-built-yet)).
+- Rich-text editing, automatic merging of source conflicts, declining suggestions in the GUI, and restoring deleted documents; comments anchored to an artifact or a PDF, and annotation export; the ledger's project-wide history view and moving cards ([ledger](LEDGER.md#not-built-yet)).
 - Approvals in the GUI, with re-authentication for high-risk ones (D54), and policy revisions from the GUI. Provisioning operations and permission requests are shown but cannot be answered or changed from the GUI.
 - Previews of rich artifacts other than PDFs on a separate origin (D54); annotations stored on a PDF (RA-21), and pasting a PDF anchor anywhere but as text.
 - Saving Markdown with its math in the dollar form for direct edits of document files (LD-41, LD-42, LD-50).

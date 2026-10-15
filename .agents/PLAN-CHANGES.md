@@ -4,6 +4,42 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 ## 2026-10-15
 
+Decisions of the owner on skills, after the first real-use lab. The owner's priority is skill import and discovery tools with a relevance gate like Claude Science's. They are recorded in the [skills spec](../docs/specs/skills.md) as #373 revises it (SK numbers are that revision's). The revision is a draft until the owner answers its questions 15 (built-in skills, and how a pack's names that collide with theirs are handled) and 16 (the system message's skill sections). Skills K2 and later wait for the answers; K1, the import, is built (#376).
+
+- **Show, don't force** (SK-35, SK-36). The relevance gate holds the model's call, not its work. Before a run's first model call, and before the call that carries each new user message, the call waits at most 5 s for a notice of the skills that match, with their names, one-line descriptions and the pack's entry skills. Nothing else is held: the model decides, no load is forced, and no reason for skipping a skill is recorded or shown. A delegated run does its own discovery on its own task.
+- **Every call carries an index only** (SK-7, SK-38, SK-39). A compact index within a budget (drafted at 12,000 characters), compressed to names grouped by topic when it does not fit, with search for the rest. Bodies load on demand, or at every run's start from a per-project list that is empty by default, within 100,000 characters per run.
+- **Import fetches and pins, with no hash required** (SK-1, SK-2, SK-28). `skills import --git <url-or-path> [--ref <ref>]`, or `--archive`, runs on the user's machine with the user's git. The ref defaults to the default branch and its resolved commit is the pin; the launcher keeps its pin until the user asks to update. Platform services and sandboxes never fetch a pack.
+- **Packs carry no special files** (SK-26, SK-29 to SK-34). `sandbox-pack.toml` is dropped. At import the skills are embedded through the gateway (a lexical score alone when no model is configured), and one model pass derives entry skills, topics, short descriptions and environment bindings. Its output is checked data, never instructions, and the project's skill settings override it.
+- Also decided: a second source that defines a name already pinned is refused (SK-4), invalid front matter excludes the skill (SK-6), kernel helpers are not built (SK-17), and the relevance threshold is tuned per pack.
+
+Decision of the owner on lab models:
+
+- **Labs keep the weaker model on purpose.** Labs use the gateway alias `sandbox-orchestrator`, which a weaker model serves, because its errors (wrong labels, edits claimed but not made, stray tool calls) show how the platform handles model mistakes. The owner uses a stronger model in normal operation. A lab's model-quality failure is a finding about the platform's checks, not a reason to change the alias.
+
+Decision of the coordinator on lane K's triage item D16 (the triage's number, not the decision register's), which the owner can reverse:
+
+- **OpenScience's two derived skills are never imported.** OpenScience's `conducting-scientific-research` and `scientific-problem-selection` derive from Claude Science text, so they are not imported, adapted or paraphrased. NOTICE files are checked before anything is borrowed from OpenScience or Open Science Desktop, since a permissive license does not settle D56. The triage puts the rule in the licensing or external-skills docs and in the skills import review; neither says it yet.
+
+Decisions of the coordinator on lane K's triage, items P1 and P2 (#389), which the owner can reverse:
+
+- **A refusal is a decision, and a search miss is not absence** ([orchestrator prompts](../docs/ORCHESTRATOR-PROMPTS.md); `sandbox-main-4`). A request awaiting approval is retried once it is approved. Any other refusal with a reason is the user's policy deciding: it is not resubmitted unchanged and its content is not fetched another way (another host, mirror, source, tool or encoding); the agent says what was refused and why, uses what is allowed, or asks with `ask_user`. A search with no hits shows only that this query found nothing in that source as it reads now: the agent reports the source, query and date and never concludes that no result or attack is known. The tool descriptions of `admit_hosts`, `provision`, `mcp_tools` and `pdf_search` and the literature framing carry the same points. The wording is the project's own, as D56 requires.
+- **A sample is not the whole** (#389, with #388). The system message says counts, identifiers, rows and all-or-none claims come from the saved file a sample names, never from the sample.
+
+Decisions of the coordinator on lab 40's B2 and B4, which the owner can reverse:
+
+- **An agent's rebuttal is not offered back to it** (#397; [consistency review](../docs/CONSISTENCY-REVIEW.md)). A finding an agent rebuts stays open at a new revision, and every open review finding at the interrupt severity was queued as a notice, so a run got its own rebuttal back and rebutted again until its turns ran out. An agent's response queues no notice. The reviewer's decision on it and the user's responses still do.
+- **An `mcp_tools` query lists and loads nothing** (#401; [MCP connectors](../docs/MCP-CONNECTORS.md)). A query returns at most 8 tools that match well, each with its server, purpose and whether it is loaded; the model loads by name. A query of one or two words needs every word, a longer one two thirds, and one match must be in a tool's name or purpose. When nothing fits, the answer says so, and that the harness's own tools (`ledger_*`, `document_*`, `plan_*`) need no loading.
+
+Decisions of the coordinator on delegation's second level and its models (#375, #394, #405, #410), which the owner can reverse:
+
+- **Depth 2** ([plans and delegation](../docs/specs/plans-and-delegation.md), PD-15, PD-43). A main run's task brief may carry `delegate: true` only at depth 2. That child delegates tasks and never checks, and its own children delegate nothing. Handbacks go to the direct parent, so a grandchild's outcome never reaches the main run; a lead that ended without receiving a child's outcome passes it up as `unreceived`. The cap counts every running delegation of the session. A delegated run's tasks take no track and get at most the tokens and turns it has left. A cancel or a dead tree's end reaches every level.
+- **The delegated model** (PD-27 to PD-30). A brief may choose among the aliases the project's setting lists (none by default, so no choice), and the project may name a fallback. The delegated role's own alias is the deployment's setting, as MAIN's is, and is called even when the gateway's list leaves it out (amends PD-F11 for lab 40's B1). An alias a brief chose that the gateway does not list is replaced by the fallback, or `delegate` is refused with `model_unavailable`; so is any alias the gateway says cannot call tools. An alias the gateway does not describe, or a gateway that cannot say, is taken at its word.
+
+Decisions of the coordinator on the verification of the frontier's fixes, which the owner can reverse:
+
+- **An agent's condition values are printable ASCII** ([ledger spec](../docs/specs/ledger.md), LG-18). A letter of another script that looks Latin, a Unicode dash or slash, or other digits do not make a group of their own. The user's values are free, and groups that differ only in look-alike characters stay apart with a `lookalike` warning.
+- **A cycle of `dominates` links made later voids them at read** (LG-22). A change that makes a cycle is refused. A cycle a later change makes (a dispute, a revision of a category or result, an entry back from set aside) voids its links when the frontier is read, and the frontier lists them with why until the user drops one.
+
 Lab 40's findings, built by lane W:
 
 - **Every role's calls count in the project's cost** ([run service](../docs/specs/run-service.md), RS-6a; B5). The reviewer's and the job watcher's calls keep the cost the gateway reported (control store version 40), and the project's cost and its daily limit count them with MAIN's and delegated runs' calls.
