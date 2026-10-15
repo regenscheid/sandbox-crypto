@@ -36,6 +36,25 @@ export interface ArtifactListing {
   viewer: boolean;
 }
 
+/** Who made a change, and how (LD-10). - ``user``: the workspace's user, directly or through a fixture. - ``agent``: an agent run, with its session, role, model and tool call. - ``import``: an import the user started, by its ID. - ``platform``: a platform service, such as the math repair (later). - ``worker``: captured code output, with trusted binding and incarnation context. */
+export interface Author {
+  kind: "user" | "agent" | "worker" | "import" | "platform";
+  user: string | null;
+  session_id: string | null;
+  run_id: string | null;
+  role: string | null;
+  model: string | null;
+  alias: string | null;
+  tool_call: string | null;
+  import_id: string | null;
+  service: string | null;
+  worker_binding: string | null;
+  environment_id: string | null;
+  incarnation: string | null;
+  execution_id: string | null;
+  attempt_id: string | null;
+}
+
 /** A body edit against an exact base version. */
 export interface BodyChange {
   operation_id: string;
@@ -350,6 +369,85 @@ export interface LockfileSelection {
   revision: number;
   record_sha256: string;
   lockfile: LockfileRef | null;
+}
+
+/** A project's memory as the Memory page shows it: the accepted entries in order. */
+export interface Memory {
+  project: string;
+  version: number;
+  entries: MemoryEntry[];
+  characters: number;
+  given: number;
+  waiting: number;
+}
+
+/** A project's memory, and the characters of entries an agent receives at most. */
+export interface MemoryAnswer {
+  memory: Memory;
+  bound: number;
+}
+
+/** What a change did: the memory's version after it, and what it named. */
+export interface MemoryChange {
+  version: number;
+  entry_id: string | null;
+  revision: number | null;
+  proposal_id: string | null;
+  replayed: boolean;
+}
+
+/** An accepted entry at its current revision, or at a version of the memory. */
+export interface MemoryEntry {
+  entry_id: string;
+  revision: number;
+  text: string;
+  changed_at: string;
+}
+
+export interface MemoryEntryHistory {
+  entry_id: string;
+  removed: boolean;
+  versions: MemoryVersion[];
+  next_before: number | null;
+}
+
+/** A page of an entry's versions. */
+export interface MemoryHistory {
+  history: MemoryEntryHistory;
+}
+
+/** An agent's proposal, with the entry it would change as that entry is now. */
+export interface MemoryProposal {
+  proposal_id: string;
+  action: "add" | "change" | "remove";
+  entry_id: string | null;
+  base: number | null;
+  text: string | null;
+  reason: string;
+  proposer: Author;
+  proposed_at: string;
+  state: "waiting" | "accepted" | "declined";
+  decided_at: string | null;
+  current: MemoryEntry | null;
+}
+
+/** The proposals that wait for the user. */
+export interface MemoryProposals {
+  proposals: MemoryProposal[];
+}
+
+/** One version of an entry: what changed, who applied it, and whose proposal. */
+export interface MemoryVersion {
+  revision: number;
+  version: number;
+  change: "added" | "edited" | "removed" | "moved";
+  text: string | null;
+  author: Author;
+  at: string;
+  proposal: string | null;
+  proposer: Author | null;
+  proposed_at: string | null;
+  reason: string | null;
 }
 
 /** A message as written, and the run that holds the session, if one does. */

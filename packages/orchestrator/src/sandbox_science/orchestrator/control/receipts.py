@@ -32,7 +32,7 @@ class Receipts:
     request gets when its operation ID already names another change; ``{operation}``
     in it names that ID."""
 
-    SCOPES: Final = ("document", "comment", "review", "macros", "ledger", "files")
+    SCOPES: Final = ("document", "comment", "review", "macros", "ledger", "files", "memory")
 
     def __init__(self, scope: str, conflict: str) -> None:
         if scope not in self.SCOPES:

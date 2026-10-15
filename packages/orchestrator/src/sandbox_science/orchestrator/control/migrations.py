@@ -1666,6 +1666,107 @@ def _ledger_review_index(schema: Schema) -> None:
         schema.execute(statement)
 
 
+def _numbered(column: str, prefix: str) -> str:
+    """A check that ``column`` is ``prefix-N``, N from 1 to 999999999."""
+    start = len(prefix) + 2
+    return (
+        f"{column} GLOB '{prefix}-[1-9]*' AND length({column}) <= {start + 8} "
+        f"AND substr({column}, {start}) NOT GLOB '*[^0-9]*'"
+    )
+
+
+def _memory(schema: Schema) -> None:
+    """Version 24: the project memory (docs/specs/project-memory.md, PM-1 to PM-3, PM-11):
+    each project's entries, numbered ``mem-N``, with their place on the Memory page; their
+    versions, written once; the agents' proposals, numbered ``prop-N``, each decided once;
+    and the memory's version, which counts the changes of its accepted entries."""
+    entry, proposal = _numbered("entry_id", "mem"), _numbered("proposal_id", "prop")
+    for statement in (
+        """CREATE TABLE memory_heads (
+    project TEXT PRIMARY KEY CHECK (length(CAST(project AS BLOB)) BETWEEN 1 AND 128),
+    version INTEGER NOT NULL CHECK (version BETWEEN 0 AND 999999999),
+    entries INTEGER NOT NULL CHECK (entries BETWEEN 0 AND 999999999),
+    proposals INTEGER NOT NULL CHECK (proposals BETWEEN 0 AND 999999999)
+) STRICT""",
+        """CREATE TRIGGER memory_heads_no_delete BEFORE DELETE ON memory_heads
+BEGIN SELECT RAISE(ABORT, 'a project memory is kept'); END""",
+        f"""CREATE TABLE memory_entries (
+    project TEXT NOT NULL REFERENCES memory_heads(project),
+    entry_id TEXT NOT NULL CHECK ({entry}),
+    head INTEGER NOT NULL CHECK (head BETWEEN 1 AND 999999999),
+    position INTEGER NOT NULL CHECK (position BETWEEN 1 AND 999999999),
+    removed INTEGER NOT NULL CHECK (removed IN (0, 1)),
+    PRIMARY KEY (project, entry_id)
+) STRICT""",
+        "CREATE INDEX memory_entries_order ON memory_entries(project,removed,position)",
+        """CREATE TRIGGER memory_entries_kept BEFORE UPDATE OF project,entry_id ON memory_entries
+BEGIN SELECT RAISE(ABORT, 'a memory entry keeps its identity'); END""",
+        """CREATE TRIGGER memory_entries_head BEFORE UPDATE OF head ON memory_entries
+WHEN NEW.head != OLD.head + 1
+BEGIN SELECT RAISE(ABORT, 'a memory entry moves one revision at a time'); END""",
+        """CREATE TRIGGER memory_entries_removed BEFORE UPDATE OF removed ON memory_entries
+WHEN NEW.removed < OLD.removed
+BEGIN SELECT RAISE(ABORT, 'a removed memory entry stays removed'); END""",
+        """CREATE TRIGGER memory_entries_no_delete BEFORE DELETE ON memory_entries
+BEGIN SELECT RAISE(ABORT, 'memory entries are kept'); END""",
+        f"""CREATE TABLE memory_versions (
+    project TEXT NOT NULL,
+    entry_id TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK (revision BETWEEN 1 AND 999999999),
+    version INTEGER NOT NULL CHECK (version BETWEEN 1 AND 999999999),
+    change TEXT NOT NULL CHECK (change IN ('added', 'edited', 'removed', 'moved')),
+    text TEXT CHECK (text IS NULL OR length(text) BETWEEN 1 AND 1000),
+    position INTEGER NOT NULL CHECK (position BETWEEN 1 AND 999999999),
+    author TEXT NOT NULL CHECK (json_valid(author) AND length(CAST(author AS BLOB)) <= 4096),
+    proposal TEXT CHECK (proposal IS NULL OR ({_numbered("proposal", "prop")})),
+    created TEXT NOT NULL CHECK (length(created) BETWEEN 1 AND 64),
+    CHECK ((change = 'removed') = (text IS NULL)),
+    PRIMARY KEY (project, entry_id, revision),
+    FOREIGN KEY (project, entry_id) REFERENCES memory_entries(project, entry_id)
+) STRICT""",
+        "CREATE INDEX memory_versions_version ON memory_versions(project,version)",
+        """CREATE TRIGGER memory_versions_no_update BEFORE UPDATE ON memory_versions
+BEGIN SELECT RAISE(ABORT, 'memory versions are immutable'); END""",
+        """CREATE TRIGGER memory_versions_no_delete BEFORE DELETE ON memory_versions
+BEGIN SELECT RAISE(ABORT, 'memory versions are immutable'); END""",
+        f"""CREATE TABLE memory_proposals (
+    project TEXT NOT NULL REFERENCES memory_heads(project),
+    proposal_id TEXT NOT NULL CHECK ({proposal}),
+    action TEXT NOT NULL CHECK (action IN ('add', 'change', 'remove')),
+    entry_id TEXT CHECK (entry_id IS NULL OR ({entry})),
+    base INTEGER CHECK (base IS NULL OR base BETWEEN 1 AND 999999999),
+    text TEXT CHECK (text IS NULL OR length(text) BETWEEN 1 AND 1000),
+    reason TEXT NOT NULL CHECK (length(reason) BETWEEN 1 AND 500),
+    proposer TEXT NOT NULL
+        CHECK (json_valid(proposer) AND length(CAST(proposer AS BLOB)) <= 4096),
+    run_id TEXT NOT NULL CHECK (length(CAST(run_id AS BLOB)) BETWEEN 1 AND 128),
+    session TEXT NOT NULL CHECK (length(CAST(session AS BLOB)) BETWEEN 1 AND 128),
+    created TEXT NOT NULL CHECK (length(created) BETWEEN 1 AND 64),
+    state TEXT NOT NULL CHECK (state IN ('waiting', 'accepted', 'declined')),
+    decided TEXT CHECK (decided IS NULL OR length(decided) BETWEEN 1 AND 64),
+    decider TEXT CHECK (decider IS NULL
+        OR (json_valid(decider) AND length(CAST(decider AS BLOB)) <= 4096)),
+    CHECK ((action = 'add') = (entry_id IS NULL)),
+    CHECK ((entry_id IS NULL) = (base IS NULL)),
+    CHECK ((action = 'remove') = (text IS NULL)),
+    CHECK ((state = 'waiting') = (decided IS NULL)),
+    CHECK ((decided IS NULL) = (decider IS NULL)),
+    PRIMARY KEY (project, proposal_id)
+) STRICT""",
+        "CREATE INDEX memory_proposals_state ON memory_proposals(project,state)",
+        "CREATE INDEX memory_proposals_runs ON memory_proposals(project,run_id)",
+        """CREATE TRIGGER memory_proposals_kept BEFORE UPDATE OF
+project,proposal_id,action,entry_id,base,text,reason,proposer,run_id,session,created
+ON memory_proposals BEGIN SELECT RAISE(ABORT, 'a memory proposal is written once'); END""",
+        """CREATE TRIGGER memory_proposals_decided BEFORE UPDATE OF state,decided,decider
+ON memory_proposals WHEN OLD.state != 'waiting'
+BEGIN SELECT RAISE(ABORT, 'a memory proposal is decided once'); END""",
+        """CREATE TRIGGER memory_proposals_no_delete BEFORE DELETE ON memory_proposals
+BEGIN SELECT RAISE(ABORT, 'memory proposals are kept'); END""",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -1689,6 +1790,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _file_settings,
     _ledger_evidence,
     _ledger_review_index,
+    _memory,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""
