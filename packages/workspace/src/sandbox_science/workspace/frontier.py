@@ -180,11 +180,13 @@ def _listed(change: FrontierChange) -> FrontierChange:
 
 def _shown(group: FrontierGroup) -> FrontierGroup:
     """``group`` with the first ``SHOWN_RESULTS`` of each kind of result, and how many
-    more of each."""
+    more of each: the candidates newest first, as the frontier reads them, so a group's
+    newest are never the ones left out."""
     parts = ("best", "dominated", "not_compared", "candidates")
     return group.model_copy(
         update={
             **{part: getattr(group, part)[:SHOWN_RESULTS] for part in parts},
+            "candidates": group.candidates[::-1][:SHOWN_RESULTS],
             "more": {
                 part: len(getattr(group, part)) - SHOWN_RESULTS
                 for part in parts

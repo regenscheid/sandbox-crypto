@@ -386,17 +386,18 @@ async def test_a_frontier_through_the_workspace(
     first, _ = answer.frontier.groups
     assert (first.conditions, [r.handle for r in first.candidates]) == (
         {"model": "classical"},
-        ["R-1", "R-2"],
+        ["R-2", "R-1"],
     )
-    assert first.candidates[0].statement == "Time $2^{105}$."
+    assert first.candidates[-1].statement == "Time $2^{105}$."
     assert answer.next_groups_after is None
     monkeypatch.setattr(frontier, "SHOWN_RESULTS", 1)
     page = FrontierAnswer.model_validate(
         await (await client.get(url, params={"limit": "1"})).json()
     )
     (group,) = page.frontier.groups
+    # The newest of a group's candidates first, consistent with candidates_before.
     assert ([r.handle for r in group.candidates], group.more, page.next_groups_after) == (
-        ["R-1"],
+        ["R-2"],
         {"candidates": 1},
         1,
     )
