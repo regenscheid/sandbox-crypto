@@ -38,7 +38,7 @@ from sandbox_science.orchestrator.projects import (
     RunEntry,
     SessionRecord,
 )
-from sandbox_science.orchestrator.runstate import WINDOW, RunState
+from sandbox_science.orchestrator.runstate import WINDOW, CostRole, RunState
 from sandbox_science.orchestrator.runtree import RunTree, RunTrees
 
 MAX_RUN_BYTES: Final = 64 * 1024 * 1024
@@ -126,6 +126,17 @@ class EnvironmentView(Contract):
     sessions: list[Identifier]
 
 
+class RoleCost(Contract):
+    """What one role's model calls cost: the main agent's runs, delegated runs, the
+    reviewer's or the job watcher's (lab 40, B5)."""
+
+    role: CostRole
+    last_day: float | None
+    """Its calls in the last 24 hours; null when the gateway priced none of them."""
+    total: float
+    """All its calls the project keeps."""
+
+
 class ModelCost(Contract):
     """What the project's model calls cost, as the gateway reported it, in its currency
     (LiteLLM's is USD); null where it reported none. Calls it gave no cost for count for
@@ -136,6 +147,9 @@ class ModelCost(Contract):
     made in them."""
     total: float | None
     """Every run the project keeps, and every reviewer and job watcher call."""
+    by_role: list[RoleCost]
+    """The same by role, for each role the gateway priced a call of: main, delegated,
+    reviewer, watcher, in that order."""
 
 
 class ProjectView(ProjectFacts):
@@ -240,9 +254,15 @@ def _project(store: ProjectStore, project_id: str) -> ProjectView:
     ]
     facts = ProjectFacts.of(record).model_dump()
     runs = RunState(store)
+    day = runs.model_costs(project_id, datetime.now(UTC) - WINDOW)
+    every = runs.model_costs(project_id)
     cost = ModelCost(
-        last_day=runs.model_cost(project_id, datetime.now(UTC) - WINDOW),
-        total=runs.model_cost(project_id),
+        last_day=sum(day.values()) if day else None,
+        total=sum(every.values()) if every else None,
+        by_role=[
+            RoleCost(role=role, last_day=day.get(role), total=total)
+            for role, total in every.items()
+        ],
     )
     return ProjectView(**facts, sessions=sessions, environments=environments, model_cost=cost)
 

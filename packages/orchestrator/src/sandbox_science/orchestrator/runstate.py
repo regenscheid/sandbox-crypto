@@ -45,6 +45,10 @@ WINDOW: Final = timedelta(hours=24)
 """The daily cost limit's window (RS-6a)."""
 MAX_COST: Final = 1_000_000_000
 """The largest daily cost limit, in the gateway's currency."""
+CostRole = Literal["main", "delegated", "reviewer", "watcher"]
+"""Whose model calls a cost is for: the main agent's runs, delegated runs, the reviewer
+and the job watcher (lab 40, B5)."""
+COST_ROLES: Final[tuple[CostRole, ...]] = ("main", "delegated", "reviewer", "watcher")
 MAX_MESSAGE_BYTES: Final = 65536
 MAX_EVENT_BYTES: Final = 65536
 PAGE: Final = 200
@@ -458,46 +462,49 @@ class RunState:
         return spent is not None and spent >= limit
 
     def model_cost(self, project: str, since: datetime | None = None) -> float | None:
-        """What the project's model calls cost, as the gateway reported it (RS-6a): the
-        calls of its runs that started at ``since`` or later, main and delegated, from
-        saved records' ``usage`` and the ``assistant`` events of runs without a record;
-        and the reviewer's and the job watcher's calls made at ``since`` or later (lab
-        40, B5). Every call without ``since``. ``None`` when the gateway reported no
+        """What the project's model calls cost, as the gateway reported it (RS-6a): every
+        role's, as ``model_costs`` gives them. ``None`` when the gateway reported no
         call's cost."""
-        total, priced = self._usage(project, since, "json_extract(u, '$.cost')")
-        after = 0.0 if since is None else since.timestamp()
-        with self.control.read() as tx:
-            for table, made in (("review_calls", "created"), ("job_watcher_calls", "requested_at")):
-                cost, count = tx.sql.execute(
-                    f"SELECT coalesce(sum(cost), 0), count(cost) FROM {table} "  # noqa: S608
-                    f"WHERE project = ? AND {made} >= ?",
-                    (project, after),
-                ).fetchone()
-                total, priced = total + cost, priced + count
-        return float(total) if priced else None
+        costs = self.model_costs(project, since)
+        return sum(costs.values()) if costs else None
 
-    def _usage(self, project: str, since: datetime | None, value: str) -> tuple[float, int]:
-        """The sum of ``value`` over the usage of the project's calls since ``since``,
-        and how many calls had one: saved records' ``usage``, and the ``assistant``
-        events of runs without a record."""
+    def model_costs(self, project: str, since: datetime | None = None) -> dict[CostRole, float]:
+        """What the project's model calls cost by role, as the gateway reported it, in
+        ``COST_ROLES``' order: the calls of its runs that started at ``since`` or later,
+        main and delegated, from saved records' ``usage`` and the ``assistant`` events of
+        runs without a record; and the reviewer's and the job watcher's calls made at
+        ``since`` or later (lab 40, B5). Every call without ``since``. A role none of
+        whose calls the gateway priced is left out."""
         first = "" if since is None else run_name(since, "")
-        totals = f"SELECT coalesce(sum({value}), 0), count({value})"
+        after = 0.0 if since is None else since.timestamp()
+        cost = "json_extract(u, '$.cost')"
         with self.control.read() as tx:
-            saved = tx.sql.execute(
-                f"{totals} FROM (SELECT usage.value AS u "  # noqa: S608
-                "FROM runs, json_each(runs.record, '$.usage') AS usage "
-                "WHERE runs.project_id = ? AND runs.name >= ?)",
-                (project, first),
-            ).fetchone()
-            unsaved = tx.sql.execute(
-                f"{totals} FROM (SELECT json_extract(e.data, '$.usage') "  # noqa: S608
-                "AS u FROM run_events AS e WHERE e.project_id = ? AND e.run >= ? "
+            rows = tx.sql.execute(
+                f"SELECT role, sum({cost}), count({cost}) FROM ("  # noqa: S608
+                "SELECT coalesce(json_extract(runs.record, '$.role'), 'main') AS role, "
+                "usage.value AS u FROM runs, json_each(runs.record, '$.usage') AS usage "
+                "WHERE runs.project_id = ? AND runs.name >= ? "
+                "UNION ALL SELECT coalesce((SELECT json_extract(s.data, '$.role') "
+                "FROM run_events AS s WHERE s.project_id = e.project_id "
+                "AND s.session_id = e.session_id AND s.run = e.run AND s.kind = 'started' "
+                "LIMIT 1), 'main'), json_extract(e.data, '$.usage') "
+                "FROM run_events AS e WHERE e.project_id = ? AND e.run >= ? "
                 "AND e.kind = 'assistant' AND NOT EXISTS (SELECT 1 FROM runs WHERE "
                 "runs.project_id = e.project_id AND runs.session_id = e.session_id "
-                "AND runs.name = e.run))",
-                (project, first),
-            ).fetchone()
-        return saved[0] + unsaved[0], saved[1] + unsaved[1]
+                "AND runs.name = e.run)) GROUP BY role",
+                (project, first, project, first),
+            ).fetchall()
+            for role, table, made in (
+                ("reviewer", "review_calls", "created"),
+                ("watcher", "job_watcher_calls", "requested_at"),
+            ):
+                rows += tx.sql.execute(
+                    f"SELECT ?, sum(cost), count(cost) FROM {table} "  # noqa: S608
+                    f"WHERE project = ? AND {made} >= ?",
+                    (role, project, after),
+                ).fetchall()
+        priced = {str(role): float(total) for role, total, count in rows if count}
+        return {role: priced[role] for role in COST_ROLES if role in priced}
 
     def offered_to(self, project: str, session: str, run: str) -> list[str]:
         """The queued messages ``run`` was offered last: what it saw and did not answer."""

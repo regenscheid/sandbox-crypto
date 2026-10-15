@@ -775,6 +775,7 @@ export interface MessageListing {
 export interface ModelCost {
   last_day: number | null;
   total: number | null;
+  by_role: RoleCost[];
 }
 
 /** A Python distribution that pip or uv installed beside the Conda packages. */
@@ -1145,6 +1146,13 @@ export interface RevisionSummaryPage {
   limit: number;
   next_after: number | null;
   revisions: RevisionSummary[];
+}
+
+/** What one role's model calls cost: the main agent's runs, delegated runs, the reviewer's or the job watcher's (lab 40, B5). */
+export interface RoleCost {
+  role: "main" | "delegated" | "reviewer" | "watcher";
+  last_day: number | null;
+  total: number;
 }
 
 /** A run a session keeps, named by when it started and its run ID, with its place in the session's tree of runs. */
