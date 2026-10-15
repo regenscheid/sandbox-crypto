@@ -52,6 +52,11 @@ class EmbeddingError(Exception):
     """The gateway's embeddings could not be had, or are not of the vectors in use."""
 
 
+Paid = list[tuple[str, int, float | None]]
+"""Calls the gateway answered, each with its model (the alias when the answer named none),
+the texts and the cost it reported: kept as they come, so a later failure loses none."""
+
+
 class Space(NamedTuple):
     """Where vectors can be compared: the model the gateway reported, and dimensions."""
 
@@ -80,13 +85,14 @@ class Embedder:
             await self._session.close()
             self._session = None
 
-    async def embed(self, texts: Sequence[str]) -> Embedded:
-        """Each text's unit vector, in order, all in one space."""
+    async def embed(self, texts: Sequence[str], paid: Paid | None = None) -> Embedded:
+        """Each text's unit vector, in order, all in one space; each call the gateway
+        answered goes into ``paid`` as it comes."""
         vectors: list[list[float]] = []
         space: Space | None = None
         costs: list[float] = []
         for start in range(0, len(texts), BATCH):
-            got = await self._batch(list(texts[start : start + BATCH]))
+            got = await self._batch(list(texts[start : start + BATCH]), paid)
             if space is not None and got.space != space:
                 raise EmbeddingError(
                     f"the gateway answered in {tuple(space)}, then in {tuple(got.space)}"
@@ -98,7 +104,7 @@ class Embedder:
             raise EmbeddingError("nothing to embed")
         return Embedded(space, vectors, sum(costs) if costs else None)
 
-    async def _batch(self, texts: list[str]) -> Embedded:
+    async def _batch(self, texts: list[str], paid: Paid | None) -> Embedded:
         if self._session is None:
             self._session = aiohttp.ClientSession()
         try:
@@ -120,17 +126,26 @@ class Embedder:
             raise EmbeddingError(
                 f"the gateway could not be reached ({type(error).__name__})"
             ) from None
+        model, indexes = self.alias, None
         try:
             answer = _json(raw)
+            model = str(answer.get("model") or self.alias)
             data = cast(list[dict[str, Any]], answer["data"])
             indexes = sorted(int(item["index"]) for item in data)
-            if indexes != list(range(len(texts))):
-                raise ValueError("its indexes are not those of the texts")
             ordered = sorted(data, key=lambda item: int(item["index"]))
             vectors = [unit([float(x) for x in item["embedding"]]) for item in ordered]
-            model = str(answer.get("model") or self.alias)
         except (KeyError, TypeError, ValueError) as error:
-            raise EmbeddingError(f"the gateway's answer is not embeddings ({error})") from None
+            # Its values stay out of the message, which run records keep (a field could
+            # echo the key): only what kind of failure it was.
+            raise EmbeddingError(
+                f"the gateway's answer is not embeddings ({type(error).__name__})"
+            ) from None
+        finally:
+            if paid is not None:  # answered, and so charged, whatever it holds
+                shown = model if len(model.encode()) <= MAX_MODEL_BYTES else self.alias
+                paid.append((shown, len(texts), cost))
+        if indexes != list(range(len(texts))):
+            raise EmbeddingError("the gateway's answer is not embeddings (its indexes)")
         dimensions = {len(vector) for vector in vectors}
         if len(dimensions) != 1 or not 0 < (size := dimensions.pop()) <= MAX_DIMENSIONS:
             raise EmbeddingError("the gateway's vectors are not of one size the store keeps")
@@ -177,12 +192,17 @@ class Ensured:
 
 
 async def ensure(
-    store: SkillStore, embedder: Embedder, snapshot: str, space: Space | None = None
+    store: SkillStore,
+    embedder: Embedder,
+    snapshot: str,
+    space: Space | None = None,
+    paid: Paid | None = None,
 ) -> Ensured | None:
     """Embed ``snapshot``'s skills that have no vector in ``space``, or else in the space
     the alias answered in last, and the gateway is asked nothing when its vectors there
     cover every skill. Without either, one skill's embedding tells the space. Each
-    answer must be in that space. ``None`` for a snapshot with no skills."""
+    answer must be in that space. Each call the gateway answered goes into ``paid``,
+    whatever happens after it. ``None`` for a snapshot with no skills."""
     found = await threaded(store.skills, snapshot)
     if not found:
         return None
@@ -200,14 +220,14 @@ async def ensure(
     asked = 0
     if space is None:
         first = next(iter(texts))
-        probe = await embedder.embed([texts[first]])
+        probe = await embedder.embed([texts[first]], paid)
         space, named[first], asked = probe.space, probe.vectors[0], 1
         costs += [] if probe.cost is None else [probe.cost]
     have = set(await threaded(store.vectors, snapshot, *space))
     named = {name: vector for name, vector in named.items() if name not in have}
     missing = [name for name in texts if name not in have and name not in named]
     if missing:
-        more = await embedder.embed([texts[name] for name in missing])
+        more = await embedder.embed([texts[name] for name in missing], paid)
         if more.space != space:  # the next try makes them in the space it answers in now
             await threaded(store.saw_space, snapshot, embedder.alias, *more.space)
             raise EmbeddingError(f"the gateway answered in {tuple(more.space)}, not {tuple(space)}")
@@ -220,10 +240,19 @@ async def ensure(
     return Ensured(space, len(named), len(have), asked, cost)
 
 
+async def count_paid(store: SkillStore, project: str | None, paid: Paid) -> None:
+    """Count ``project``'s calls the gateway answered, priced as it reported (RS-6a)."""
+    if project is None:
+        return
+    for model, texts, cost in paid:
+        await threaded(store.add_embedding_call, project, model, texts, cost)
+
+
 class SkillVectors:
     """The process's skill vectors for one embedder: made in the background, one task per
-    snapshot at a time, so that no run waits for them; a failure is tried again only
-    after a backoff that doubles, from ``BACKOFF_FIRST`` to ``BACKOFF_MAX`` seconds."""
+    snapshot at a time, so that no run waits for the gateway; a failure is tried again
+    only after a backoff that doubles, from ``BACKOFF_FIRST`` to ``BACKOFF_MAX``
+    seconds."""
 
     def __init__(self, embedder: Embedder, clock: Clock = SYSTEM_CLOCK) -> None:
         self.embedder, self.clock = embedder, clock
@@ -236,33 +265,57 @@ class SkillVectors:
 
     async def start(self, store: SkillStore, snapshots: Iterable[str], project: str) -> None:
         """Have the vectors of ``snapshots``: those the store has in the space the alias
-        answered in last, read now, and the others made in the background, where nothing
-        waits for them; the calls' cost is ``project``'s."""
+        answered in last are read before this returns, and the others are made in the
+        background, where nothing waits for them; the calls' cost is ``project``'s. Each
+        snapshot's task is registered before anything is awaited, so that two starts
+        never make two."""
+        read: list[asyncio.Future[None]] = []
         for snapshot in dict.fromkeys(snapshots):
             if snapshot in self._ready or snapshot in self._tasks:
                 continue
             failed = self._failed.get(snapshot)
             if failed is not None and self.clock.monotonic() < failed[0]:
                 continue
-            last = await threaded(store.space_for, snapshot, self.embedder.alias)
-            if snapshot not in self._hints and last is not None and last[2]:
-                space = Space(last[0], last[1])
-                self._ready[snapshot] = (space, await threaded(store.vectors, snapshot, *space))
-                continue
-            self._tasks[snapshot] = asyncio.create_task(self._make(store, snapshot, project))
+            settled = asyncio.get_running_loop().create_future()
+            self._spawn(store, snapshot, project, settled)
+            read.append(settled)
+        for settled in read:
+            await settled
 
-    async def _make(self, store: SkillStore, snapshot: str, project: str) -> None:
+    def _spawn(
+        self,
+        store: SkillStore,
+        snapshot: str,
+        project: str,
+        settled: asyncio.Future[None] | None = None,
+    ) -> None:
+        self._tasks[snapshot] = asyncio.create_task(self._make(store, snapshot, project, settled))
+
+    async def _make(
+        self,
+        store: SkillStore,
+        snapshot: str,
+        project: str,
+        settled: asyncio.Future[None] | None,
+    ) -> None:
+        """Read the snapshot's vectors, or, settling ``settled`` first so that the run
+        goes on, have the gateway make them."""
         hint = self._hints.pop(snapshot, None)
+        paid: Paid = []
         try:
-            made = await ensure(store, self.embedder, snapshot, hint)
+            if hint is None:
+                last = await threaded(store.space_for, snapshot, self.embedder.alias)
+                if last is not None and last[2]:
+                    space = Space(last[0], last[1])
+                    vectors = await threaded(store.vectors, snapshot, *space)
+                    self._ready[snapshot] = (space, vectors)
+                    return
+            _settle(settled)
+            made = await ensure(store, self.embedder, snapshot, hint, paid)
             if made is None:
                 self._ready[snapshot] = (Space("", 0), {})
                 return
             kept = await threaded(store.vectors, snapshot, *made.space)
-            if made.texts:
-                await threaded(
-                    store.add_embedding_call, project, made.space.model, made.texts, made.cost
-                )
             self._ready[snapshot] = (made.space, kept)
             self._failed.pop(snapshot, None)
         except Exception as error:  # remembered, and tried again later
@@ -276,7 +329,13 @@ class SkillVectors:
                 "embedding the skills of %s failed, again in %g s: %s", snapshot, delay, reason
             )
         finally:
-            self._tasks.pop(snapshot, None)
+            _settle(settled)
+            if self._tasks.get(snapshot) is asyncio.current_task():
+                del self._tasks[snapshot]
+            try:
+                await count_paid(store, project, paid)  # what was paid, the build failed or not
+            except Exception:
+                _log.exception("counting the embedding calls of %s failed", snapshot)
 
     def ready(
         self, snapshots: Iterable[str]
@@ -292,16 +351,27 @@ class SkillVectors:
         ]
         return found, (reasons[0] if reasons else None)
 
-    async def moved(self, store: SkillStore, snapshots: Iterable[str], space: Space) -> None:
-        """The gateway answers in ``space`` now, not in the vectors' space: the next run
-        that starts, here or in another process, has them made in it."""
+    async def moved(
+        self, store: SkillStore, snapshots: Iterable[str], space: Space, project: str
+    ) -> None:
+        """The gateway answers in ``space`` now, not in the vectors' space: they are made
+        again in it, from now on in the background, and a run in another process starts
+        them too."""
         for snapshot in snapshots:
             self._ready.pop(snapshot, None)
+            self._failed.pop(snapshot, None)
             self._hints[snapshot] = space
             await threaded(store.saw_space, snapshot, self.embedder.alias, *space)
+            if snapshot not in self._tasks:
+                self._spawn(store, snapshot, project)
 
     async def close(self) -> None:
         for task in list(self._tasks.values()):
             task.cancel()
         await asyncio.gather(*self._tasks.values(), return_exceptions=True)
         await self.embedder.close()
+
+
+def _settle(settled: asyncio.Future[None] | None) -> None:
+    if settled is not None and not settled.done():
+        settled.set_result(None)

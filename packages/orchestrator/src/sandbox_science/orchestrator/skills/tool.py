@@ -33,7 +33,7 @@ from sandbox_science.contracts.clock import SYSTEM_CLOCK, Clock
 from sandbox_science.orchestrator.aio import threaded
 from sandbox_science.orchestrator.model import ToolSpec
 
-from .embeddings import QUERY_CHARS, EmbeddingError, SkillVectors, cosine
+from .embeddings import QUERY_CHARS, EmbeddingError, Paid, SkillVectors, cosine, count_paid
 from .index import SkillsGiven, give, marker
 from .packs import served
 from .store import MAX_LOADED, Entry, SkillSet, SkillStore
@@ -151,46 +151,60 @@ class SkillTool:
         await vectors.start(self.store, snapshots, project)
 
     async def similarity(self, text: str) -> tuple[dict[str, float], str | None]:
-        """Each skill's cosine similarity with ``text``; or none, and why: ``pending``
-        while the vectors are made, or their failure. Raises ``EmbeddingError`` when the
-        gateway cannot embed ``text``, or answers in a space other than the vectors'."""
+        """Each skill's cosine similarity with ``text``, and why some packs' skills are
+        left out of it, if any are: ``pending`` while their vectors are made, their
+        failure, or their vectors' being of another model, which has them made again.
+        None at all, and why, when no pack's vectors can be compared. Raises
+        ``EmbeddingError`` when the gateway cannot embed ``text``, or when it answers in
+        a space none of the vectors are in."""
         if self.vectors is None:
             return {}, None
         ready, why = self.vectors.ready({entry.snapshot for entry in self.skills.entries})
         if not any(found for _, found in ready.values()):
             return {}, why or "pending"
-        answer = await self.vectors.embedder.embed([text[:QUERY_CHARS]])
-        if self.project is not None:
-            await threaded(
-                self.store.add_embedding_call, self.project, answer.space.model, 1, answer.cost
-            )
+        paid: Paid = []
+        try:
+            answer = await self.vectors.embedder.embed([text[:QUERY_CHARS]], paid)
+        finally:
+            await count_paid(self.store, self.project, paid)
         usable = {s: found for s, (space, found) in ready.items() if space == answer.space}
-        if not usable:
-            spaces = ", ".join(sorted({str(tuple(space)) for space, _ in ready.values()}))
-            await self.vectors.moved(self.store, ready, answer.space)
-            raise EmbeddingError(
-                f"the gateway answered in {tuple(answer.space)}, not in {spaces} as the "
-                "skills' vectors; they are made again for the next run"
+        stale = {s for s, (space, found) in ready.items() if found and space != answer.space}
+        if stale:  # made again in the space the gateway answers in now
+            spaces = ", ".join(sorted({str(tuple(ready[s][0])) for s in stale}))
+            await self.vectors.moved(self.store, stale, answer.space, self.project or "")
+            moved = (
+                f"the gateway answered in {tuple(answer.space)}, not in {spaces} as some "
+                "skills' vectors; they are being made again"
             )
+            if not usable:
+                raise EmbeddingError(moved)
+            why = moved
         query = answer.vectors[0]
-        return {
+        found = {
             entry.qualified: cosine(query, usable[entry.snapshot][entry.name])
             for entry in self.skills.entries
             if entry.name in usable.get(entry.snapshot, {})
-        }, None
+        }
+        missing = {
+            e.snapshot for e in self.skills.entries if e.name not in usable.get(e.snapshot, {})
+        }
+        return found, (f"partial: {why or 'pending'}" if missing else None)
 
     async def bounded(self, work: Awaitable[T]) -> T:
-        """``work``'s result, or ``TimeoutError`` once ``wait`` seconds of the clock pass."""
+        """``work``'s result, or ``TimeoutError`` once ``wait`` seconds of the clock pass.
+        However the wait ends, by the clock or by the run's cancellation, ``work`` is
+        cancelled if it has not finished."""
         task = asyncio.ensure_future(work)
         timer = asyncio.ensure_future(self.clock.sleep(self.wait))
         try:
             await asyncio.wait((task, timer), return_when=asyncio.FIRST_COMPLETED)
+            if not task.done():
+                raise TimeoutError
+            return task.result()
         finally:
             timer.cancel()
-        if not task.done():
-            task.cancel()
-            raise TimeoutError
-        return task.result()
+            if not task.done():
+                task.cancel()
 
     def summary(self, model: str | None) -> dict[str, Any] | None:
         """The skills loaded at the run's start, as load records naming the model that
@@ -244,8 +258,8 @@ class SkillTool:
             except EmbeddingError as error:
                 why = f"failed: {error}"
             if similar:
-                record["scoring"] = "hybrid"
-            else:
+                record["scoring"] = "partial" if why else "hybrid"
+            if why or not similar:
                 record["embedding"] = (why or "none")[:300]
         found = hybrid(self.skills.entries, query, similar)[:MAX_FOUND]
         answer: dict[str, Any] = {"searched": len(self.skills.entries), "found": []}

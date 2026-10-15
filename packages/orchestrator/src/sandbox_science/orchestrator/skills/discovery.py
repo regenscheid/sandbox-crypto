@@ -122,9 +122,9 @@ class SkillDiscovery(TurnHook):
                     similar, why = await self.tool.similarity(text)
                 except EmbeddingError as error:
                     why = f"failed: {error}"
-                if similar:
-                    record["scoring"] = "hybrid"
-                else:
+                if similar:  # only some packs compared by meaning: partial
+                    record["scoring"] = "partial" if why else "hybrid"
+                if why or not similar:
                     record["embedding"] = (why or "none")[:300]
             return await asyncio.to_thread(matches, self.tool, text, skip, similar)
 

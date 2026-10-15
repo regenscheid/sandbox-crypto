@@ -21,7 +21,7 @@ from .control.errors import INVALID_REQUEST
 from .documents import USER
 from .projects import ProjectStore
 from .skills import SkillSettings, SkillStore, from_archive, from_git, snapshot
-from .skills.embeddings import Embedder, EmbeddingError, ensure
+from .skills.embeddings import MAX_MODEL_BYTES, Embedder, EmbeddingError, Paid, ensure
 
 
 def skills(args: argparse.Namespace) -> int:
@@ -64,11 +64,13 @@ async def _embed(store: SkillStore, args: argparse.Namespace, snapshot: str) -> 
     failure leaves the import as it is, with a warning: runs embed what they lack, and
     importing again embeds the skills."""
     embedder = Embedder(args.model_url, args.embedding_model, args.api_key_file.read_text().strip())
+    paid: Paid = []
     try:
-        made = await ensure(store, embedder, snapshot)
+        made = await ensure(store, embedder, snapshot, paid=paid)
     except EmbeddingError as error:
         print(f"warning: embedding the skills failed: {error}", file=sys.stderr)
-        return {"alias": args.embedding_model, "failed": str(error)}
+        costs = [cost for _, _, cost in paid if cost is not None]
+        return {"alias": args.embedding_model, "failed": str(error), "cost": sum(costs) or None}
     finally:
         await embedder.close()
     if made is None:
@@ -81,6 +83,14 @@ async def _embed(store: SkillStore, args: argparse.Namespace, snapshot: str) -> 
         "reused": made.reused,
         "cost": made.cost,
     }
+
+
+def embedding_alias(value: str) -> str:
+    """An embedding model alias, as the control store keeps it: refused here, before any
+    call, when it is not."""
+    if not value or len(value.encode()) > MAX_MODEL_BYTES:
+        raise argparse.ArgumentTypeError(f"an alias of 1 to {MAX_MODEL_BYTES} bytes")
+    return value
 
 
 def _settings(store: SkillStore, args: argparse.Namespace) -> SkillSettings:
@@ -129,7 +139,9 @@ def add_parser(commands: Any) -> None:
         "--path", help="the directory of the skills (default: skills/ if there, else the top)"
     )
     imported.add_argument(
-        "--embedding-model", help="the gateway's embedding model alias, to embed the skills"
+        "--embedding-model",
+        type=embedding_alias,
+        help="the gateway's embedding model alias, to embed the skills",
     )
     imported.add_argument("--model-url", help="--embedding-model: the gateway's base URL")
     imported.add_argument("--api-key-file", type=Path, help="--embedding-model: its key")

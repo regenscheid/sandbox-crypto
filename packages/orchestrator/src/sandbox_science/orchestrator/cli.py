@@ -60,7 +60,7 @@ from sandbox_science.contracts import ErrorKind, Identifier
 from .chat import session_lease
 from .cli_documents import add_parsers, document, ledger, project, read_secret, session
 from .cli_skills import add_parser as add_skills_parser
-from .cli_skills import skills
+from .cli_skills import embedding_alias, skills
 from .connectors import ProxyClient, check_proxy
 from .consistency.models import ReviewConfig
 from .control import ControlError
@@ -383,6 +383,7 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
     command.add_argument("--model", default="main", help="model alias")
     command.add_argument(
         "--skills-embedding-model",
+        type=embedding_alias,
         help="the gateway's embedding model alias: skills are compared by meaning too",
     )
     command.add_argument("--api-key-file", type=Path)
