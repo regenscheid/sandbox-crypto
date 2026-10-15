@@ -800,12 +800,22 @@ async def test_a_service_that_loses_the_session_logs_one_line(
         runs(harness).acquire(PROJECT, SESSION, "other-run", "other-holder")
         return admitted
 
+    def busy_lines() -> list[logging.LogRecord]:
+        return [record for record in caplog.records if "is busy" in record.getMessage()]
+
     monkeypatch.setattr(service_module, "admit", admit)
     post(harness, "m-1", "Who answers?")
+    # The test takes the service's looks itself and waits for the line, not for a time:
+    # half a second used to pass before a loaded runner's admission did (lane K, -n 4).
     with caplog.at_level(logging.INFO):
-        async with serving(harness, Reply("Not this one."), retry=60):
-            await asyncio.sleep(0.5)
-    busy = [record for record in caplog.records if "is busy" in record.getMessage()]
+        async with serving(harness, Reply("Not this one."), retry=60, serve=False) as service:
+            await service.tick()  # starts the run, which finds the session taken
+            await eventually(busy_lines, timeout=60, describe="the busy line")
+            await eventually(lambda: all(a.task and a.task.done() for a in service.active.values()))
+            for _ in range(3):  # later looks wait out the retry: no second run, no line
+                await service.tick()
+            assert service.active == {}
+    busy = busy_lines()
     assert len(busy) == 1
     assert busy[0].exc_info is None
     assert harness.gateway.main == []
