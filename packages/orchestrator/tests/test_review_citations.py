@@ -7,6 +7,7 @@ and the reviewer's tool reaches it."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 
@@ -27,7 +28,7 @@ from .test_review_quotes import EPRINT_TOOL, STAMP, call, passages, quoting
 ARGUMENTS = {"paper_id": "2024/123", "query": "twist"}
 
 
-def quoted(reviews: ReviewStore) -> tuple[str, str, str]:
+def quoted(reviews: ReviewStore, arguments: dict[str, Any] = ARGUMENTS) -> tuple[str, str, str]:
     """C-1 quotes the ePrint of REF-1 that the agent read; a review of it: the review,
     the quote's source in it and C-1's revision in it."""
     ledger = Ledger(reviews.documents)
@@ -36,7 +37,7 @@ def quoted(reviews: ReviewStore) -> tuple[str, str, str]:
                             "published": "2024-02-01"}}  # fmt: skip
     ledger.change("p", {"operation_id": "ref", "reason": "r", "changes": [reference]}, MAIN)
     found = "Curve coefficients. We show that the twist has order 4q' with q' prime."
-    call(reviews, 1, EPRINT_TOOL, ARGUMENTS, passages("2024/123", "twist", found),
+    call(reviews, 1, EPRINT_TOOL, arguments, passages("2024/123", "twist", found),
          {"connector": "crypto-research-mcp"})  # fmt: skip
     quote = {"source": "eprint", "dated": STAMP, "text": "the twist has order 4q' with q' prime"}
     claim = {"type": "claim", "origin": "published", "title": "Twist",
@@ -54,7 +55,11 @@ def quoted(reviews: ReviewStore) -> tuple[str, str, str]:
 
 def read_all(reviews: ReviewStore, review: str, *evidence: str) -> None:
     for item in evidence:
-        reviews.read_evidence("p", "s", review, item, owner="owner")
+        start: int | None = 0
+        while start is not None:
+            start = reviews.read_evidence("p", "s", review, item, start=start, owner="owner")[
+                "next_start"
+            ]
 
 
 def test_the_reviewer_checks_a_quote_it_has_read_whole(store: Any) -> None:
@@ -133,3 +138,40 @@ async def test_the_reviewers_tool_records_the_check(store: Any) -> None:
     with reviews.documents.control.read() as tx:
         verdicts = [row[0] for row in tx.sql.execute("SELECT verdict FROM citation_checks")]
     assert verdicts == ["supported"]
+
+
+def test_long_arguments_are_kept_clipped_and_by_their_digest(store: Any) -> None:
+    """The verification's N3: the arguments were cut at 8192 characters, but the column
+    holds 8192 bytes of JSON, so a query of two-byte characters failed the review. The
+    check keeps valid JSON within the bound, saying it is clipped, and the whole's digest."""
+    reviews, _, _ = store
+    arguments = {"paper_id": "2024/123", "query": "twist " + "é" * 5000}
+    review, source, entry = quoted(reviews, arguments)
+    read_all(reviews, review, source, entry)
+    verdict = {"source": source, "verdict": "supported", "explanation": "It says so."}
+    record_citation(reviews, "p", "s", review, "owner", verdict)
+    with reviews.documents.control.read() as tx:
+        kept, digest = tx.sql.execute(
+            "SELECT source_arguments,source_arguments_sha256 FROM citation_checks"
+        ).fetchone()
+    whole = json.dumps(arguments, ensure_ascii=False, sort_keys=True)
+    assert len(kept.encode()) <= 8192
+    assert whole.startswith(json.loads(kept)["clipped"])
+    assert digest == hashlib.sha256(whole.encode()).hexdigest()
+
+
+def test_a_check_that_cannot_be_stored_is_the_tools_error(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The verification's N3: a storage error is the reviewer's tool error, which the
+    reviewer sees, not the review's failure."""
+    from sandbox_science.orchestrator.consistency import citations
+
+    reviews, _, _ = store
+    review, source, entry = quoted(reviews)
+    read_all(reviews, review, source, entry)
+    monkeypatch.setattr(citations, "fitted_json", lambda encoded, limit: "x" * (limit + 1))
+    verdict = {"source": source, "verdict": "supported", "explanation": "It says so."}
+    with pytest.raises(DocumentError, match="could not be stored") as refused:
+        record_citation(reviews, "p", "s", review, "owner", verdict)
+    assert refused.value.kind == "invalid_request"

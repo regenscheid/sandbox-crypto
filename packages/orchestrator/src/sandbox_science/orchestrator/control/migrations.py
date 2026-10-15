@@ -2065,7 +2065,8 @@ def _citation_checks(schema: Schema) -> None:
     """Version 31: the consistency reviewer's checks of quotes (docs/specs/
     consistency-review.md, CR-4 as the coordinator amended it): for one quote an entry
     revision holds, the review that checked it, the source it read with the tool
-    and the arguments that returned it, the digest
+    and the arguments that returned it (whole when they fit 8 KiB of JSON, else clipped,
+    with the digest of the whole), the digest
     of the revision's statement, fields, assumptions and evidence it covered, and the
     verdict with its explanation. Written once."""
     for statement in (
@@ -2082,6 +2083,8 @@ def _citation_checks(schema: Schema) -> None:
     source_tool TEXT NOT NULL CHECK (length(CAST(source_tool AS BLOB)) BETWEEN 1 AND 128),
     source_arguments TEXT NOT NULL CHECK (json_valid(source_arguments)
         AND length(CAST(source_arguments AS BLOB)) <= 8192),
+    source_arguments_sha256 TEXT NOT NULL CHECK (length(source_arguments_sha256) = 64
+        AND source_arguments_sha256 NOT GLOB '*[^0-9a-f]*'),
     verdict TEXT NOT NULL CHECK (verdict IN ('supported', 'unsupported', 'inconclusive')),
     explanation TEXT NOT NULL CHECK (length(CAST(explanation AS BLOB)) BETWEEN 1 AND 16384),
     created REAL NOT NULL,
