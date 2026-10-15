@@ -284,6 +284,19 @@ async def test_a_spent_budget_refuses_the_message(harness: Harness) -> None:
     assert names(harness) == []
 
 
+async def test_the_projects_cost_counts_what_the_gateway_priced(harness: Harness) -> None:
+    state = runs(harness)
+    assert state.model_cost(PROJECT) is None  # nothing priced yet
+    await harness.run("run-1", [Reply("Answer.", cost="0.25")])
+    run = "29991231T000000000000Z-interrupted"  # an interrupted run: events, no record
+    state.append(PROJECT, SESSION, run, "assistant", {"usage": {"input_tokens": 1, "cost": 0.5}})
+    state.append(PROJECT, SESSION, run, "assistant", {"usage": {"input_tokens": 9}})
+    assert state.model_cost(PROJECT) == 0.75
+    assert state.model_cost(PROJECT, datetime.now(UTC) - timedelta(hours=1)) == 0.75
+    assert state.model_cost(PROJECT, datetime(3000, 1, 1, tzinfo=UTC)) is None
+    assert state.spent(PROJECT, datetime.now(UTC) - timedelta(hours=1)) > 0  # tokens still
+
+
 async def test_spending_counts_saved_and_interrupted_runs(harness: Harness) -> None:
     record = await harness.run("run-1", [Reply("Answer.")])
     state = runs(harness)

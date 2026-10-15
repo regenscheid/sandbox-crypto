@@ -1,6 +1,15 @@
 // SPDX-License-Identifier: MIT
 
 /** A time as the reader's locale writes it, to the second; the ISO text when unreadable. */
+/**
+ * A cost as the gateway reported it, in its currency, which for LiteLLM is US dollars:
+ * two decimals from a cent, two significant digits below it.
+ */
+export function formatCost(value: number): string {
+  if (value === 0) return '$0';
+  return `$${value >= 0.01 ? value.toFixed(2) : value.toPrecision(2)}`;
+}
+
 export function formatTime(iso: string | null | undefined): string {
   if (!iso) return '';
   const time = new Date(iso);

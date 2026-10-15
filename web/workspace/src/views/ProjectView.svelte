@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 <script lang="ts">
   import { api } from '../lib/api';
-  import { formatTime } from '../lib/format';
+  import { formatCost, formatTime } from '../lib/format';
   import { documentHref, ledgerHref, memoryHref, sessionHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
   import ProjectFiles from './ProjectFiles.svelte';
@@ -32,6 +32,14 @@
     <dd>{formatTime(project.created_at)}</dd>
     <dt>Updated</dt>
     <dd>{formatTime(project.updated_at)}</dd>
+    {#if project.model_cost.total !== null}
+      <dt>Model cost</dt>
+      <dd>
+        {formatCost(project.model_cost.last_day ?? 0)} in the last 24 hours, {formatCost(
+          project.model_cost.total,
+        )} in all, as the gateway reported it
+      </dd>
+    {/if}
   </dl>
   <ProjectMacros {projectId} />
   <p>

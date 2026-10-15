@@ -25,7 +25,7 @@ import json
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Final, Self, cast
 
 from aiohttp import hdrs, web
@@ -38,6 +38,7 @@ from sandbox_science.orchestrator.projects import (
     RunEntry,
     SessionRecord,
 )
+from sandbox_science.orchestrator.runstate import WINDOW, RunState
 
 MAX_RUN_BYTES: Final = 64 * 1024 * 1024
 STORE: Final = web.AppKey("store", ProjectStore)
@@ -124,9 +125,21 @@ class EnvironmentView(Contract):
     sessions: list[Identifier]
 
 
+class ModelCost(Contract):
+    """What the project's model calls cost, as the gateway reported it, in its currency
+    (LiteLLM's is USD); null where it reported none. Calls it gave no cost for count for
+    nothing: nothing is estimated."""
+
+    last_day: float | None
+    """Runs that started in the last 24 hours."""
+    total: float | None
+    """Every run the project keeps."""
+
+
 class ProjectView(ProjectFacts):
     sessions: list[ProjectSession]
     environments: list[EnvironmentView]
+    model_cost: ModelCost
 
 
 class ProjectAnswer(Contract):
@@ -216,7 +229,12 @@ def _project(store: ProjectStore, project_id: str) -> ProjectView:
         for environment_id in record.environments()
     ]
     facts = ProjectFacts.of(record).model_dump()
-    return ProjectView(**facts, sessions=sessions, environments=environments)
+    runs = RunState(store)
+    cost = ModelCost(
+        last_day=runs.model_cost(project_id, datetime.now(UTC) - WINDOW),
+        total=runs.model_cost(project_id),
+    )
+    return ProjectView(**facts, sessions=sessions, environments=environments, model_cost=cost)
 
 
 def _session(store: ProjectStore, project_id: str, session_id: str) -> SessionDetail:

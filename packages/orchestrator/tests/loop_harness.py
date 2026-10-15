@@ -267,6 +267,8 @@ class Reply:
     error: str = "synthetic gateway failure"
     """The body of an answer that is not a 200."""
     retry_after: str | None = None
+    cost: str | None = None
+    """The call's cost, as LiteLLM's proxy reports it in ``x-litellm-response-cost``."""
 
 
 def call(name: str, /, **arguments: Any) -> tuple[str, Json]:
@@ -330,12 +332,14 @@ class Gateway:
         message: Json = {"role": "assistant", "content": reply.text}
         if tool_calls:
             message["tool_calls"] = tool_calls
+        priced = {} if reply.cost is None else {"x-litellm-response-cost": reply.cost}
         return web.json_response(
             {
                 "model": f"scripted-{alias}",
                 "choices": [{"message": message, "finish_reason": "stop"}],
                 "usage": {"prompt_tokens": len(messages), "completion_tokens": self.numbered},
-            }
+            },
+            headers=priced,
         )
 
 

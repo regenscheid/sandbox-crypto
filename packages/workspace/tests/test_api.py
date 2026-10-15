@@ -18,7 +18,7 @@ from aiohttp.test_utils import TestClient
 
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator.control import migrations, store_path
-from sandbox_science.orchestrator.projects import ProjectStore, RunRecord, SessionRecord
+from sandbox_science.orchestrator.projects import ModelUsage, ProjectStore, RunRecord, SessionRecord
 from sandbox_science.workspace import api
 from sandbox_science.workspace.app import create_app
 
@@ -111,6 +111,26 @@ async def test_one_project_with_its_sessions_and_environments(
         {"environment_id": record.default_environment_id, "default": True, "sessions": ["a", "b"]},
         {"environment_id": sessions["c"]["environment_id"], "default": False, "sessions": ["c"]},
     ]
+
+
+async def test_a_projects_model_cost_is_what_the_gateway_reported(
+    client: TestClient[Any, Any], state_dir: Path
+) -> None:
+    found = (await get(client, "/api/v0/projects/p1"))["project"]
+    assert found["model_cost"] == {"last_day": None, "total": None}  # nothing priced
+    store = ProjectStore(state_dir)
+    now = datetime.now(UTC)
+    priced = store.run("p1", "a", FIRST_RUN).model_copy(
+        update={
+            "run_id": "run-priced",
+            "started_at": now,
+            "ended_at": now,
+            "usage": [ModelUsage(input_tokens=10, output_tokens=2, cost=0.125)],
+        }
+    )
+    store.save_run(priced)
+    found = (await get(client, "/api/v0/projects/p1"))["project"]
+    assert found["model_cost"] == {"last_day": 0.125, "total": 0.125}
 
 
 async def test_one_session_with_its_runs_oldest_first(client: TestClient[Any, Any]) -> None:

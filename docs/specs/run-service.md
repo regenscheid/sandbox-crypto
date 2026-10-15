@@ -54,7 +54,7 @@ The browser's views are E-06 and E-07 in the refactoring plan. Waking a session 
   | `started` | `project`, `session`, `run_id`, `message_ids` (the messages it answers), `prompt_provenance` (the pins), and the run tree's `role`, `parent` and `delegation` (PD-32) |
   | `user` | `message_id` (null for a CLI task), `text` |
   | `model` | `turn`: a model call started (the GUI shows that the agent is thinking) |
-  | `assistant` | `turn`, `text`, `tool_calls`: `[{id, name, arguments}]`, `usage`: `{model, input_tokens, output_tokens, characters}` as the record keeps it (RS-6a) |
+  | `assistant` | `turn`, `text`, `tool_calls`: `[{id, name, arguments}]`, `usage`: `{model, input_tokens, output_tokens, characters, cost}` as the record keeps it (RS-6a); `cost` is what the gateway reported the call cost (LiteLLM's `x-litellm-response-cost`, or the answer's `usage.cost`), null when it reported none |
   | `tool` | `turn`, `call_id`, `name`, `result` (the text the model read, bounded), `outcome` (state, error kind and exit code when there is one) |
   | `notice` | `source`, `ids`: notices added to the conversation, such as jobs or reviews |
   | `waiting` | `job_ids`, `mode` while the agent waits on jobs; `null` when the wait ends |

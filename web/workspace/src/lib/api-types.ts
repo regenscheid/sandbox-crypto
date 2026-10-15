@@ -705,6 +705,12 @@ export interface MessageListing {
   environment: EnvironmentState | null;
 }
 
+/** What the project's model calls cost, as the gateway reported it, in its currency (LiteLLM's is USD); null where it reported none. Calls it gave no cost for count for nothing: nothing is estimated. */
+export interface ModelCost {
+  last_day: number | null;
+  total: number | null;
+}
+
 /** A Python distribution that pip or uv installed beside the Conda packages. */
 export interface PipDistribution {
   name: string;
@@ -864,6 +870,7 @@ export interface ProjectView {
   updated_at: string;
   sessions: ProjectSession[];
   environments: EnvironmentView[];
+  model_cost: ModelCost;
 }
 
 export interface ProvisionDetail {

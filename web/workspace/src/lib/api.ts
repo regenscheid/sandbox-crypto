@@ -163,6 +163,8 @@ export interface ModelUsage {
   model: string | null;
   input_tokens: number | null;
   output_tokens: number | null;
+  /** What the call cost, as the gateway reported it; null or absent when it reported none. */
+  cost?: number | null;
 }
 
 /** One expression KaTeX rejected, as the page asks for its repair. */

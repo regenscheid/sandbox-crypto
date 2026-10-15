@@ -6,6 +6,7 @@
  * arguments and results as plain text.
  */
 import type { Json, ModelUsage, RunRecord, ToolRecord } from './api';
+import { formatCost } from './format';
 
 export interface ToolStep {
   name: string;
@@ -204,10 +205,20 @@ export function usageLine(usage: readonly ModelUsage[] | undefined): string | nu
   const models = [...new Set(usage.map((call) => call.model).filter((name) => name !== null))];
   const missing = usage.some((call) => call.input_tokens === null || call.output_tokens === null);
   const calls = `${usage.length} model ${usage.length === 1 ? 'call' : 'calls'}`;
+  const priced = usage.filter((call) => typeof call.cost === 'number');
+  const spent = priced.reduce((sum, call) => sum + (call.cost ?? 0), 0);
+  const cost =
+    priced.length === 0
+      ? ''
+      : `, ${formatCost(spent)}` +
+        (priced.length < usage.length
+          ? ` for the ${priced.length} calls the gateway gave a cost for`
+          : '');
   return (
     `${calls}${models.length ? ` (${models.join(', ')})` : ''}, ` +
     `${total('input_tokens')} input and ${total('output_tokens')} output tokens` +
-    (missing ? ', some counts not reported by the gateway' : '')
+    (missing ? ', some counts not reported by the gateway' : '') +
+    cost
   );
 }
 
