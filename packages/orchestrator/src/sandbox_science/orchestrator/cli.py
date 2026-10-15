@@ -21,8 +21,8 @@ sandbox-science-harness document export DOC [--revision N] [--output ff.md] \\
 sandbox-science-harness document (list | show DOC [--revision N] | history DOC) \\
     --state-dir state --project p1
 sandbox-science-harness document suggestions DOC (on | off) --state-dir state --project p1
-sandbox-science-harness document decide DOC PATCH (accept | reject) --state-dir state \\
-    --project p1
+sandbox-science-harness document decide DOC PATCH (accept [--base N] | reject) \\
+    --state-dir state --project p1
 sandbox-science-harness document delete DOC --reason "…" --state-dir state --project p1
 ```
 

@@ -23,6 +23,7 @@ from sandbox_science.orchestrator.documents.agent_text import (
     check_agent_text,
     hidden_characters,
     hidden_references,
+    visible,
 )
 from sandbox_science.orchestrator.documents.errors import DocumentError
 
@@ -130,3 +131,17 @@ def test_every_text_of_a_value_is_kept_and_checked_by_its_place() -> None:
         agent_values({"k" + chr(0x200B): 1}, "the plan")
     assert key.value.message.startswith("a key of the plan holds U+200B")
     assert chr(0x200B) not in key.value.message
+
+
+@pytest.mark.parametrize("case", FIXTURE["cases"], ids=lambda case: case["name"])
+def test_a_terminal_shows_each_hidden_character_as_its_code_point(case: dict[str, Any]) -> None:
+    shown = visible(case["text"])
+    assert hidden_characters(shown) == []
+    for _, code in case["hidden"]:
+        assert f"\u27e6{code}\u27e7" in shown
+
+
+@pytest.mark.parametrize("case", FIXTURE["chips"]["cases"], ids=lambda case: case["name"])
+def test_a_terminal_shows_look_alikes_as_the_browser_does(case: dict[str, Any]) -> None:
+    shown = visible(case["text"])
+    assert shown.count("\u27e6") == len(case["chipped"])

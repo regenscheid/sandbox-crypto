@@ -83,9 +83,16 @@ def test_suggestions_decided_from_the_command_line(
         operation_id="o",
         operations=[{"op": "replace", "block": "b1", "markdown": "Better."}],
     )
-    status, out, _ = _run(
-        capsys, "document", "decide", *where, "ff", suggested.patch_id or "", "accept"
-    )
+    decide = ("document", "decide", *where, "ff", suggested.patch_id or "", "accept")
+    # First the text as it would be saved, exactly; then the user accepts it at that base.
+    status, out, err = _run(capsys, *decide)
+    assert (status, out) == (1, "Better.\n")
+    assert "run again with --base 1" in err
+    assert store.revision("p1", "ff").text == "Text.\n"
+    status, out, err = _run(capsys, *decide, "--base", "2")
+    assert status == 1
+    assert "is at revision 1, not 2" in err
+    status, out, _ = _run(capsys, *decide, "--base", "1")
     assert json.loads(out)["outcome"] == "accepted"
     assert store.revision("p1", "ff").text == "Better.\n"
     status, out, _ = _run(capsys, "document", "delete", *where, "ff", "--reason", "done")

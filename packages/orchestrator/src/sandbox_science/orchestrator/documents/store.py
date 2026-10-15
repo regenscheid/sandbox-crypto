@@ -1483,12 +1483,21 @@ class DocumentStore:
             return row.info.model_copy(update={"takes_suggestions": on})
 
     def decide(
-        self, project_id: str, reference: str, patch_id: str, *, accept: bool, author: Author
+        self,
+        project_id: str,
+        reference: str,
+        patch_id: str,
+        *,
+        accept: bool,
+        author: Author,
+        base: int | None = None,
     ) -> ChangeResult:
         """The user accepts a suggestion, which applies as a patch does (LD-17), or rejects it.
 
         An accepted suggestion's revision is attributed to its author, with the user's
-        acceptance recorded.
+        acceptance recorded. ``base``, when given, is the revision the user saw the
+        suggestion's text against: a newer one is a conflict, so what is accepted is what
+        was shown (threat model, A3).
         """
         if author.kind != "user":
             raise DocumentError(POLICY_DENIED, "only the user decides on suggestions")
@@ -1499,6 +1508,13 @@ class DocumentStore:
             db = tx.sql
             row = self._find(db, project_id, reference)
             suggestion = self._suggestion(db, row, patch_id)
+            if accept and base is not None and base != row.info.head:
+                raise DocumentError(
+                    CONFLICT,
+                    f"document {row.info.name} is at revision {row.info.head}, not {base}: "
+                    "read the suggestion's text again",
+                    {"current": row.info.head},
+                )
             now = self._clock()
             if not accept:
                 db.execute(

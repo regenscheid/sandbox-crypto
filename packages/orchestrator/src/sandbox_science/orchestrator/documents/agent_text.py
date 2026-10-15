@@ -181,6 +181,28 @@ def agent_values[T](value: T, where: str) -> T:
     return cast(T, found)
 
 
+CHIPS: Final = (frozenset(("Zs",)), frozenset((0x0020,)), frozenset((0x2800, 0xFFFC)))
+"""Characters shown as code points though not refused, which can pass for other text: the
+categories, the code points they leave out, and the code points added (the fixture's
+``chips``)."""
+
+
+def visible(text: str) -> str:
+    """``text`` with each hidden character, and each that can pass for other text, written
+    as its code point, ``⟦U+202E⟧``, as the GUI shows it (text.ts, ``visible``): for a
+    terminal, where they would otherwise act or pass unseen."""
+    hidden = {index for index, _ in hidden_characters(text)}
+    categories, plain, extra = CHIPS
+    return "".join(
+        f"⟦{_code(char)}⟧"
+        if index in hidden
+        or ord(char) in extra
+        or (unicodedata.category(char) in categories and ord(char) not in plain)
+        else char
+        for index, char in enumerate(text)
+    )
+
+
 def _code(char: str) -> str:
     return f"U+{ord(char):04X}"
 

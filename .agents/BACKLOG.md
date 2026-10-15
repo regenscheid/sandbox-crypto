@@ -244,7 +244,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [ ] Hidden text in what the user approves and agents then read (threat model, A3): the shared pieces (`check_agent_text`, `ApprovalText`, the widened `visible()`, `hidden.fixtures.json`) and the project memory are built; the other surfaces follow, checked on write only, so stored text still reads, and the user's own text shown with chips, never refused
   - [x] Server: documents agents create and agents' or captured code's patches, agents' comments, review text (statements, remedies, confirmations, response explanations and bodies), and every text an agent writes into a session plan
   - [ ] Server: ledger statements and fields (after lane S's flags, #296)
-  - [ ] GUI: applying a suggested patch, with a diff against the head
+  - [x] GUI: applying a suggested patch, with a diff against the head
   - [ ] GUI: Move to project and Restore this revision
   - [ ] GUI: a session plan's save, when it holds agent text
   - [ ] GUI: finding decisions (statement, remedy, explanation)
