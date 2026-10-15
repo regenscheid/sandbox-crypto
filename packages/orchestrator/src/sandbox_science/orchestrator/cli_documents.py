@@ -60,11 +60,22 @@ async def _project_action(args: argparse.Namespace, store: ProjectStore) -> int:
 
             store.get(args.project)
             delegations = DelegationRecords(store.control)
-            if args.depth is not None:
-                delegations.set_depth(args.project, args.depth)
-            depth = delegations.depth(args.project)
-            state = "off" if depth == 0 else "main runs delegate checks"
-            print(f"project {args.project}: delegation depth {depth} ({state})")
+            changes = {
+                name: value
+                for name in ("depth", "cap", "check_tokens", "check_turns")
+                if (value := getattr(args, name)) is not None
+            }
+            found = (
+                delegations.configure(args.project, **changes)
+                if changes
+                else delegations.settings(args.project)
+            )
+            state = "off" if found.depth == 0 else "main runs delegate checks"
+            print(
+                f"project {args.project}: delegation depth {found.depth} ({state}); at most "
+                f"{found.cap} delegated runs at once; a check gets {found.check_tokens} "
+                f"tokens and {found.check_turns} turns"
+            )
         case "macros":
             from .documents import USER, DocumentStore, store_path
             from .documents.project_macros import ProjectMacros
@@ -405,8 +416,16 @@ def add_parsers(commands: Any) -> None:
         "--depth",
         type=int,
         choices=(0, 1),
-        help="delegation: 1 lets main runs delegate checks, 0 (the default) does not; "
-        "omitted to read",
+        help="delegation: 1 lets main runs delegate checks, 0 (the default) does not",
+    )
+    projects.add_argument(
+        "--cap", type=int, help="delegation: delegated runs a session runs at once (10)"
+    )
+    projects.add_argument(
+        "--check-tokens", type=int, help="delegation: a check's tokens, at most (150000)"
+    )
+    projects.add_argument(
+        "--check-turns", type=int, help="delegation: a check's turns, at most (12)"
     )
     sessions = commands.add_parser(
         "session", help="open a session, so the GUI can chat in it; or close one: stop its kernels"
