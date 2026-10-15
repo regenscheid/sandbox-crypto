@@ -13,7 +13,12 @@ import pytest
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.documents.models import Author
 from sandbox_science.orchestrator.ledger import Ledger
-from sandbox_science.workspace.ledger import LedgerEntry, LedgerHistory, LedgerListing
+from sandbox_science.workspace.ledger import (
+    LedgerCitations,
+    LedgerEntry,
+    LedgerHistory,
+    LedgerListing,
+)
 
 from .route_support import ClientFactory, assert_security_headers, error_of, origin, workspace
 
@@ -204,6 +209,20 @@ async def test_the_user_checks_a_reference_through_the_workspace(
     entry = LedgerEntry.model_validate(await (await client.get(BASE + "/REF-1")).json()).entry
     (check,) = entry.evidence
     assert (check.role, check.checked, entry.author["kind"]) == ("independent_check", 1, "user")
+
+
+async def test_an_entry_reads_its_quotes_citation_checks(
+    aiohttp_client: ClientFactory, seeded: Path, static_dir: Path
+) -> None:
+    """CR-4's read for the entry view: each quote of the revision with its checks; an
+    entry without quotes has none, and the read takes only a revision."""
+    client = await workspace(aiohttp_client, seeded, static_dir)
+    response = await client.get(BASE + "/C-1/citations?revision=1")
+    assert response.status == 200, await response.text()
+    found = LedgerCitations.model_validate(await response.json()).citations
+    assert (found.handle, found.revision, found.quotes) == ("C-1", 1, [])
+    await error_of(await client.get(BASE + "/C-1/citations?after=1"), 400, "invalid_request")
+    await error_of(await client.get(BASE + "/C-1/citations?revision=9"), 404, "not_found")
 
 
 async def test_the_user_drops_a_dominates_link_through_the_workspace(

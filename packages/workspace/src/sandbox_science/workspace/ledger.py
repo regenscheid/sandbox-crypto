@@ -24,7 +24,13 @@ from pydantic import AwareDatetime, ConfigDict, Field, ValidationError
 from sandbox_science.contracts import Contract, ErrorKind, Identifier
 from sandbox_science.orchestrator.documents import USER, DocumentStore
 from sandbox_science.orchestrator.ledger import EntryHistory, EntryPage, EntryView, Ledger
-from sandbox_science.orchestrator.ledger.models import MAX_CLEARED, FlagCause, FlagID, GateView
+from sandbox_science.orchestrator.ledger.models import (
+    MAX_CLEARED,
+    EntryCitations,
+    FlagCause,
+    FlagID,
+    GateView,
+)
 from sandbox_science.orchestrator.projects import ProjectError
 
 from . import documents
@@ -61,6 +67,14 @@ class LedgerGate(Contract):
     gate: GateView
 
 
+class LedgerCitations(Contract):
+    """The consistency reviewer's checks of the quotes a ledger entry's revision holds."""
+
+    project_id: Identifier
+    observed_at: AwareDatetime
+    citations: EntryCitations
+
+
 class LedgerHistory(Contract):
     """A page of a ledger entry's revisions."""
 
@@ -74,6 +88,7 @@ def add_routes(app: web.Application) -> None:
     app.router.add_get(PATH + "/{entry}", entry)
     app.router.add_get(PATH + "/{entry}/history", history)
     app.router.add_get(PATH + "/{entry}/gate", gate_read)
+    app.router.add_get(PATH + "/{entry}/citations", citations)
     app.router.add_post(PATH + "/{entry}/checks", check)
     app.router.add_post(PATH + "/{entry}/flags", clear)
     app.router.add_post(PATH + "/{entry}/flags/reopened", reopen)
@@ -170,6 +185,23 @@ async def gate_read(request: web.Request) -> web.Response:
     def read(ledger: Ledger) -> str:
         return LedgerGate(
             project_id=project, observed_at=datetime.now(UTC), gate=ledger.gate(project, reference)
+        ).model_dump_json()
+
+    return await read_answer(request, project, read)
+
+
+async def citations(request: web.Request) -> web.Response:
+    """GET …/ledger/{entry}/citations: each quote of the entry's revision (``?revision=``,
+    the current one by default) with the consistency reviewer's checks of it, newest
+    first, as many as 20 with their count, each saying whether it checked that revision's
+    material (CR-4); a read, which changes nothing."""
+    project, reference = identifier(request, "project"), _entry(request)
+    raw = matched(_NUMBER, query_of(request, {"revision"}).get("revision"), "revision")
+
+    def read(ledger: Ledger) -> str:
+        found = ledger.citations(project, reference, None if raw is None else int(raw))
+        return LedgerCitations(
+            project_id=project, observed_at=datetime.now(UTC), citations=found
         ).model_dump_json()
 
     return await read_answer(request, project, read)

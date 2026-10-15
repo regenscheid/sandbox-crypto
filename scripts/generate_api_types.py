@@ -47,6 +47,7 @@ from sandbox_science.workspace.frontier import (
 )
 from sandbox_science.workspace.kernels import WorkspaceObservation
 from sandbox_science.workspace.ledger import (
+    LedgerCitations,
     LedgerEntry,
     LedgerGate,
     LedgerHistory,
@@ -81,6 +82,7 @@ MODELS: tuple[type[BaseModel], ...] = (
     ViewerLink,
     LedgerListing,
     LedgerEntry,
+    LedgerCitations,
     LedgerHistory,
     LedgerGate,
     FrontierCategories,
