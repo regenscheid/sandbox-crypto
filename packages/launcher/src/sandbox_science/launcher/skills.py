@@ -3,7 +3,10 @@
 docs/specs/skills.md, SK-28).
 
 ``up`` imports a pack the control store has no import of, and pins it in each project
-that names it and does not pin it yet; otherwise it fetches nothing and keeps the pin.
+that names it and does not pin it yet; otherwise it fetches nothing and keeps the pin. A
+pack that cannot be imported or pinned, as when its repository cannot be reached or a
+skill of it has a built-in skill's name, is reported and left as it was: ``up`` goes on
+without it, and ``skills update`` exits 1.
 ``up --update-skills`` and ``sandbox-science skills update`` import each pack again from
 its ref, and move each project's pin to the import, saying what changed since the pin it
 left. Each step is a ``sandbox-science-harness skills`` command, run on the user's machine
@@ -46,15 +49,16 @@ async def keep(
     *,
     update: bool = False,
     only: Iterable[str] = (),
-) -> list[str]:
-    """Import and pin the config's packs, or only those named; what happened, a line each."""
+) -> tuple[list[str], list[str]]:
+    """Import and pin the config's packs, or only those named: what happened, a line each,
+    and the packs that failed, each left as it was."""
     chosen = set(only)
     unknown = chosen - set(config.skills.packs)
     if unknown:
         raise LauncherError(f"no skills.packs {', '.join(sorted(unknown))} in the config")
     packs = {n: p for n, p in config.skills.packs.items() if not chosen or n in chosen}
     if not packs:
-        return []
+        return [], []
     # The harness's environment, as the run service's, with what git needs besides.
     env = {**passed(config.run_service.pass_env), **passed(config.skills.pass_env)}
 
@@ -76,21 +80,25 @@ async def keep(
             pins = cast(list[dict[str, Any]], await answer("list", "--project", project.id))
             pinned[project.id] = {pin["source"]: pin for pin in pins}
     lines: list[str] = []
+    failed: list[str] = []
     for name, pack in packs.items():
-        imports = cast(list[dict[str, Any]], await answer("list", "--source", name))
-        if update or not imports:
-            found = cast(dict[str, Any], await answer(*import_argv(config, name, pack)))
-            lines.append(_imported(name, found, first=not imports))
-        else:
-            lines.append(
-                f"skills: {name} kept at {_revision(imports[0])}{_differs(pack, imports[0])}"
-            )
-        for project in (p.id for p in config.projects if name in p.skills):
-            had = pinned[project].get(name)
-            if had is None or update:
-                pin = await answer("pin", "--project", project, "--source", name)
-                lines.append(_pinned(project, name, cast(dict[str, Any], pin), had))
-    return lines
+        try:
+            imports = cast(list[dict[str, Any]], await answer("list", "--source", name))
+            if update or not imports:
+                found = cast(dict[str, Any], await answer(*import_argv(config, name, pack)))
+                lines.append(_imported(name, found, first=not imports))
+            else:
+                kept = imports[0]
+                lines.append(f"skills: {name} kept at {_revision(kept)}{_differs(pack, kept)}")
+            for project in (p.id for p in config.projects if name in p.skills):
+                had = pinned[project].get(name)
+                if had is None or update:
+                    pin = await answer("pin", "--project", project, "--source", name)
+                    lines.append(_pinned(project, name, cast(dict[str, Any], pin), had))
+        except LauncherError as error:  # this pack's, left as it was; the others go on
+            failed.append(name)
+            lines.append(f"skills: {name} is left as it was: {error}")
+    return lines, failed
 
 
 def _harness(config: LauncherConfig, layout: Layout, action: str) -> list[str]:

@@ -278,7 +278,8 @@ async def _start(
     existing = await _existing(config, layout, supervisor, timeout, harness_env)
     for argv in parts.project_argvs(config, layout, digest.group(), existing):
         await supervisor.run(" ".join(argv[1:3]), argv, layout.control, timeout, harness_env)
-    for line in await skills.keep(config, layout, supervisor, update=update):
+    lines, _ = await skills.keep(config, layout, supervisor, update=update)
+    for line in lines:  # a pack that failed is said here, and the rest starts without it
         print(line, flush=True)
     if config.mcp_proxy is not None:
         await mcp.start(config, layout, supervisor, parts.commands(config))
@@ -362,10 +363,10 @@ def update_skills(config: LauncherConfig, packs: Sequence[str]) -> int:
     if not layout.control.is_dir():
         raise LauncherError("sandbox-science up makes the projects first")
     supervisor = Supervisor(layout, asyncio.Event(), stop_timeout=config.stop_timeout)
-    lines = asyncio.run(skills.keep(config, layout, supervisor, update=True, only=packs))
+    lines, failed = asyncio.run(skills.keep(config, layout, supervisor, update=True, only=packs))
     for line in lines:
         print(line)
-    return 0
+    return 1 if failed else 0
 
 
 def down(config: LauncherConfig, path: Path, *, keep: bool) -> int:

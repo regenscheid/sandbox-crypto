@@ -70,7 +70,9 @@ def _config(
 def _keep(config: LauncherConfig, *, update: bool = False) -> list[str]:
     layout = Layout(config.state_dir)
     supervisor = Supervisor(layout, asyncio.Event(), stop_timeout=5)
-    return asyncio.run(skills.keep(config, layout, supervisor, update=update))
+    lines, failed = asyncio.run(skills.keep(config, layout, supervisor, update=update))
+    assert failed == []
+    return lines
 
 
 def _imports(config: LauncherConfig) -> list[dict[str, Any]]:
@@ -136,6 +138,39 @@ def test_an_update_needs_the_projects_and_names_a_failed_fetch(
     missing, config = _config(make_config, tmp_path / "nowhere")
     Layout(config.state_dir).make()
     assert cli.main(["skills", "update", "--config", str(missing)]) == 1
-    said = capsys.readouterr().err
-    assert "skills import failed, with status 1" in said
+    said = capsys.readouterr().out
+    assert "skills: ss is left as it was: skills import failed, with status 1" in said
     assert "nowhere' does not appear to be a git repository" in said
+
+
+def test_a_pack_that_fails_leaves_the_others_going(
+    make_config: Any, pack: Path, tmp_path: Path
+) -> None:
+    """``up`` goes on without a pack it cannot import, and the others are imported and
+    pinned all the same."""
+    path = make_config(
+        {
+            "bin_dir": str(HARNESS.parent),
+            "projects": [{"id": "crypto", "profile": "minimal", "skills": ["gone", "ss"]}],
+            "skills": {
+                "packs": {"gone": {"git": str(tmp_path / "nowhere")}, "ss": {"git": str(pack)}}
+            },
+        }
+    )
+    config = load_config(path)
+    layout = Layout(config.state_dir)
+    layout.make()
+    subprocess.run(
+        [str(HARNESS), "project", "create", "--state-dir", str(layout.control),
+         "--project", "crypto", "--profile", "minimal", "--policy", "sha256:" + "a" * 64],
+        capture_output=True, check=True,
+    )  # fmt: skip
+    supervisor = Supervisor(layout, asyncio.Event(), stop_timeout=5)
+    lines, failed = asyncio.run(skills.keep(config, layout, supervisor))
+    assert failed == ["gone"]
+    assert lines[0].startswith("skills: gone is left as it was: skills import failed")
+    first = _git(pack, "rev-parse", "HEAD")[:12]
+    assert lines[1:] == [
+        f"skills: ss imported at {first}, 2 skills",
+        f"skills: crypto pins ss at {first}",
+    ]
