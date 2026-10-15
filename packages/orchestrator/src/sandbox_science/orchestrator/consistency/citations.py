@@ -2,17 +2,22 @@
 """The reviewer's check of a quote (docs/specs/consistency-review.md, CR-4, as the
 coordinator decided on 2026-10-15).
 
-A review that holds a quote's recorded source (``consistency/quotes.py``) may record
+A review that holds a quote's source (``consistency/quotes.py``): what a tool returned,
+with the tool and its arguments, which may be an agent's own PDF unless it is vouched for,
+may record
 whether it supports the entry revision that quotes it: ``supported`` when the source
 holds the quoted text and it supports what the entry states, its numbers included;
 ``unsupported`` when it does not; ``inconclusive`` when the source cannot decide. The
-reviewer must have read the source and the entry revision in this review. The check is
+reviewer must have read all of the source and of the entry revision in this review. The
+check keeps the tool and the arguments the source came from. The check is
 bound to the digest of the revision's statement, fields, assumptions and evidence, so a
 later revision that keeps them keeps it, and one that changes them needs another.
 """
 
 from __future__ import annotations
 
+import json
+import sqlite3
 from typing import Literal, cast
 
 from pydantic import Field, ValidationError
@@ -33,18 +38,42 @@ from .store import Json, ReviewStore, stored_json
 
 
 class CitationInput(Contract):
-    """A reviewer's verdict on one quote's recorded source."""
+    """A reviewer's verdict on one quote's source."""
 
     source: EvidenceID
-    """The pinned source: a transcript item of this review that names ``quoted_by``."""
+    """The pinned source: a ``source`` item of this review that names ``quoted_by``."""
     verdict: Literal["supported", "unsupported", "inconclusive"]
     explanation: str = Field(min_length=1, max_length=4096)
+
+
+def read_whole(db: sqlite3.Connection, review: str, evidence: str) -> bool:
+    """Whether the review read all of item ``evidence``, from its first character to its
+    last, in the slices it asked for."""
+    ranges = [
+        location
+        for (raw,) in db.execute(
+            "SELECT locator FROM review_reads WHERE review_id=? AND evidence_id=? "
+            "ORDER BY seq LIMIT 1000",
+            (review, evidence),
+        )
+        if (location := cast(Json, json.loads(raw))).get("block") is None
+        and (location.get("returned_characters", 0) > 0 or location.get("empty_source"))
+    ]
+    if any(location.get("empty_source") for location in ranges):
+        return True
+    total = max((int(location.get("total_characters", 0)) for location in ranges), default=0)
+    end = 0
+    for location in sorted(ranges, key=lambda value: int(value["start"])):
+        if int(location["start"]) > end:
+            return False
+        end = max(end, int(location["start"]) + int(location["returned_characters"]))
+    return total > 0 and end >= total
 
 
 def record_citation(
     store: ReviewStore, project: str, session: str, review: str, owner: str, raw: object
 ) -> Json:
-    """Record a reviewer's check of the quote whose recorded source ``raw`` names."""
+    """Record a reviewer's check of the quote whose source ``raw`` names."""
     try:
         value = CitationInput.model_validate(raw)
     except ValidationError:
@@ -54,11 +83,11 @@ def record_citation(
         db = tx.sql
         store.owner(store.load_run(db, project, session, review), owner)
         row = db.execute(
-            "SELECT kind,locator FROM review_evidence WHERE evidence_id=? AND review_id=?",
+            "SELECT kind,locator,payload FROM review_evidence WHERE evidence_id=? AND review_id=?",
             (value.source, review),
         ).fetchone()
         found: object = None if row is None else stored_json(row[1]).get("quoted_by")
-        if row is None or row[0] != "transcript" or not isinstance(found, dict):
+        if row is None or row[0] != "source" or not isinstance(found, dict):
             raise DocumentError(
                 NOT_FOUND, "source is no quote's recorded source in this review's snapshot"
             )
@@ -81,25 +110,26 @@ def record_citation(
             "ORDER BY ordinal LIMIT 1",
             (review, entry, revision),
         ).fetchone()
-        read = {
-            e
-            for (e,) in db.execute(
-                "SELECT DISTINCT evidence_id FROM review_reads WHERE review_id=?", (review,)
-            )
-        }
-        if value.source not in read or item is None or item[0] not in read:
+        if (
+            item is None
+            or not read_whole(db, review, value.source)
+            or not read_whole(db, review, item[0])
+        ):
             raise DocumentError(
                 POLICY_DENIED,
-                "read the quote's recorded source and the entry revision that quotes it "
+                "read all of the quote's source and of the entry revision that quotes it "
                 "with review_read before checking the citation",
             )
+        record = stored_json(row[2])
+        tool = str(record.get("tool", ""))[:128] or "unknown"
+        arguments = json.dumps(record.get("arguments", {}), ensure_ascii=False, sort_keys=True)
         material = gate.examined(db, entry, {revision}).get(revision)
         assert material is not None  # noqa: S101 - the revision holds the quote
         check = new_id("citation")
         db.execute(
             "INSERT INTO citation_checks(check_id,project,review_id,entry_id,entry_revision,"
-            "evidence_id,material,source,verdict,explanation,created) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            "evidence_id,material,source,source_tool,source_arguments,verdict,explanation,"
+            "created) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 check,
                 project,
@@ -109,6 +139,8 @@ def record_citation(
                 quote,
                 gate.fingerprint(material),
                 value.source,
+                tool,
+                arguments[:8192],
                 value.verdict,
                 explanation,
                 store.clock(),

@@ -97,7 +97,7 @@ If no confirmation target fits, an incomplete author-work window can still advan
 feed; the omitted claimed fix stays explicitly unconfirmed.
 
 Reviewer tools are only `review_manifest` and `review_read`, `review_checked` (a checked-item record),
-`review_finding` (finding creation), `review_decide` (confirmation/rebuttal decision) and `review_citation` (a quote's check, CR-4: `supported`, `unsupported` or `inconclusive`, with an explanation, for a quote's recorded source the snapshot holds, once the reviewer has read it and the entry revision that quotes it; written to `citation_checks` with the digest of that revision's statement, fields, assumptions and evidence). Unknown or denied calls are recorded and consume the
+`review_finding` (finding creation), `review_decide` (confirmation/rebuttal decision) and `review_citation` (a quote's check, CR-4: `supported`, `unsupported` or `inconclusive`, with an explanation, for a quote's `source` item the snapshot holds, once the reviewer has read all of it and of the entry revision that quotes it; written to `citation_checks` with the digest of that revision's statement, fields, assumptions and evidence, and the tool and arguments the source came from. The rubric tells the reviewer that a source is what a tool returned, and may be a PDF an agent made unless the PDF is vouched for). Unknown or denied calls are recorded and consume the
 model-turn budget. The reviewer has no worker client, author toolbox, file/network tools,
 policy mutation or delegation. The separate call/hour, turn, time, response/context and
 soft token budgets reserve before awaiting a model. Actual provider usage is recorded;

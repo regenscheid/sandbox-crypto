@@ -18,8 +18,10 @@ Hold durable documents and final reports to a stricter standard than tentative d
 An artifact item whose locator names pinned_by is the computation that ledger entry's
 evidence pins, copied whole: compare each number the entry and the documents state with
 it, digit by digit; a number copied by hand is often a few digits off.
-A transcript item whose locator names quoted_by is the platform's record of the source a
-ledger entry quotes; read it and the entry, and record with review_citation whether it
+A source item whose locator names quoted_by is what a tool returned when an agent read
+the source a ledger entry quotes, with the tool and its arguments: a passage from the
+e-print server, or lines of a PDF, which may be a file an agent made unless the PDF is
+vouched for. Read all of it and of the entry, and record with review_citation whether it
 holds the quoted text and supports what the entry states.
 
 Missing or truncated evidence is a limit of the review, not proof of fabrication. Use

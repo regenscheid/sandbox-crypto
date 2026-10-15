@@ -134,11 +134,11 @@ SPECS = (
     ),
     schema(
         "review_citation",
-        "Record whether a quote's recorded source supports the entry that quotes it. The "
-        "source is a transcript item whose locator names quoted_by; read it and that entry "
-        "revision first. supported: it holds the quoted text, and the text supports what the "
-        "entry states, numbers included; unsupported: it does not; inconclusive: it cannot "
-        "decide.",
+        "Record whether a quote's source supports the entry that quotes it. The source is a "
+        "source item whose locator names quoted_by: what a tool returned, with the tool and "
+        "its arguments. Read all of it and of that entry revision first. supported: it holds "
+        "the quoted text, and the text supports what the entry states, numbers included; "
+        "unsupported: it does not; inconclusive: it cannot decide.",
         {
             "source": {"type": "string"},
             "verdict": {"enum": ["supported", "unsupported", "inconclusive"]},

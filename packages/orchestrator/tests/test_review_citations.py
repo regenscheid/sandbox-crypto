@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: MIT
 """The reviewer's check of a quote (docs/specs/consistency-review.md, CR-4, as the
-coordinator decided): once it has read a quote's recorded source and the entry revision
-that quotes it, the reviewer records whether the source supports it, bound to the
-revision's material; and the reviewer's tool reaches it."""
+coordinator decided, and the review of it): once it has read all of a quote's source and
+of the entry revision that quotes it, the reviewer records whether the source supports
+it, bound to the revision's material and to the tool and arguments the source came from;
+and the reviewer's tool reaches it."""
 
 from __future__ import annotations
 
@@ -21,22 +22,23 @@ from sandbox_science.orchestrator.model import ScriptedModel
 
 from .test_consistency import MAIN, dispatch
 from .test_consistency import store as store
-from .test_review_quotes import STAMP, quoting, read
+from .test_review_quotes import EPRINT_TOOL, STAMP, call, passages, quoting
 
-TOOL = "crypto_research_mcp-e-print-mcp_eprint_fulltext"
+ARGUMENTS = {"paper_id": "2024/123", "query": "twist"}
 
 
 def quoted(reviews: ReviewStore) -> tuple[str, str, str]:
     """C-1 quotes the ePrint of REF-1 that the agent read; a review of it: the review,
-    the quote's recorded source in it and C-1's revision in it."""
+    the quote's source in it and C-1's revision in it."""
     ledger = Ledger(reviews.documents)
     reference = {"type": "reference", "title": "A paper", "statement": "A paper.",
                  "fields": {"identifiers": {"eprint": "2024/123"},
                             "published": "2024-02-01"}}  # fmt: skip
     ledger.change("p", {"operation_id": "ref", "reason": "r", "changes": [reference]}, MAIN)
-    passage = f"[2024/123] A paper | Date: {STAMP} | ... the twist has order 4q'. ..."
-    read(reviews, 1, TOOL, {"paper_id": "2024/123", "query": "twist"}, passage)
-    quote = {"source": "eprint", "dated": STAMP, "text": "the twist has order 4q'."}
+    found = "Curve coefficients. We show that the twist has order 4q' with q' prime."
+    call(reviews, 1, EPRINT_TOOL, ARGUMENTS, passages("2024/123", "twist", found),
+         {"connector": "crypto-research-mcp"})  # fmt: skip
+    quote = {"source": "eprint", "dated": STAMP, "text": "the twist has order 4q' with q' prime"}
     claim = {"type": "claim", "origin": "published", "title": "Twist",
              "statement": "The twist has order $4q'$.", "evidence": [quoting(quote)]}  # fmt: skip
     ledger.change("p", {"operation_id": "c", "reason": "r", "changes": [claim]}, MAIN)
@@ -50,15 +52,19 @@ def quoted(reviews: ReviewStore) -> tuple[str, str, str]:
     return review, source, entry
 
 
-def test_the_reviewer_checks_a_quote_it_has_read(store: Any) -> None:
+def read_all(reviews: ReviewStore, review: str, *evidence: str) -> None:
+    for item in evidence:
+        reviews.read_evidence("p", "s", review, item, owner="owner")
+
+
+def test_the_reviewer_checks_a_quote_it_has_read_whole(store: Any) -> None:
     reviews, _, _ = store
     review, source, entry = quoted(reviews)
     verdict = {"source": source, "verdict": "supported", "explanation": "It says so."}
-    with pytest.raises(DocumentError, match="read the quote's recorded source") as unread:
+    with pytest.raises(DocumentError, match="read all of the quote's source") as unread:
         record_citation(reviews, "p", "s", review, "owner", verdict)
     assert unread.value.kind == "policy_denied"
-    for evidence in (source, entry):
-        reviews.read_evidence("p", "s", review, evidence, owner="owner")
+    read_all(reviews, review, source, entry)
     with pytest.raises(DocumentError, match="no quote's recorded source") as other:
         record_citation(reviews, "p", "s", review, "owner", {**verdict, "source": entry})
     assert other.value.kind == "not_found"
@@ -67,8 +73,43 @@ def test_the_reviewer_checks_a_quote_it_has_read(store: Any) -> None:
     view = Ledger(reviews.documents).entry("p", "C-1")
     with reviews.documents.control.read() as tx:
         material = gate.examined(tx.sql, view.entry_id, {1})[1]
-        row = tx.sql.execute("SELECT evidence_id,material,verdict FROM citation_checks").fetchone()
-    assert tuple(row) == (view.evidence[0].evidence_id, gate.fingerprint(material), "supported")
+        row = tx.sql.execute(
+            "SELECT evidence_id,material,verdict,source_tool,source_arguments FROM citation_checks"
+        ).fetchone()
+    assert tuple(row[:3]) == (view.evidence[0].evidence_id, gate.fingerprint(material), "supported")
+    assert (row[3], json.loads(row[4])) == (EPRINT_TOOL, ARGUMENTS)
+
+
+def test_one_character_of_the_source_is_no_read_of_it(store: Any) -> None:
+    """Review hardening: "read both" means the whole item, not one character of it."""
+    reviews, _, _ = store
+    review, source, entry = quoted(reviews)
+    read_all(reviews, review, entry)
+    reviews.read_evidence("p", "s", review, source, count=1, owner="owner")
+    verdict = {"source": source, "verdict": "supported", "explanation": "It says so."}
+    with pytest.raises(DocumentError, match="read all of the quote's source"):
+        record_citation(reviews, "p", "s", review, "owner", verdict)
+    total = reviews.read_evidence("p", "s", review, source)["total_characters"]
+    reviews.read_evidence("p", "s", review, source, start=2, owner="owner")
+    with pytest.raises(DocumentError, match="read all of the quote's source"):
+        record_citation(reviews, "p", "s", review, "owner", verdict)  # a gap at 1
+    reviews.read_evidence("p", "s", review, source, start=1, count=total - 1, owner="owner")
+    assert record_citation(reviews, "p", "s", review, "owner", verdict)["verdict"] == "supported"
+
+
+def test_each_verdict_is_recorded(store: Any) -> None:
+    reviews, _, _ = store
+    review, source, entry = quoted(reviews)
+    read_all(reviews, review, source, entry)
+    for verdict in ("unsupported", "inconclusive", "supported"):
+        record_citation(reviews, "p", "s", review, "owner",
+                        {"source": source, "verdict": verdict, "explanation": "Why."})  # fmt: skip
+    with reviews.documents.control.read() as tx:
+        rows = [r[0] for r in tx.sql.execute("SELECT verdict FROM citation_checks ORDER BY rowid")]
+    assert rows == ["unsupported", "inconclusive", "supported"]
+    with pytest.raises(DocumentError, match="invalid citation check"):
+        record_citation(reviews, "p", "s", review, "owner",
+                        {"source": source, "verdict": "true", "explanation": "Why."})  # fmt: skip
 
 
 @pytest.mark.asyncio
@@ -76,14 +117,14 @@ async def test_the_reviewers_tool_records_the_check(store: Any) -> None:
     reviews, _, _ = store
     review, source, entry = quoted(reviews)
 
-    def call(name: str, **arguments: Any) -> dict[str, Any]:
+    def tool(name: str, **arguments: Any) -> dict[str, Any]:
         return {"name": name, "arguments": arguments}
 
     model = ScriptedModel.from_json(
         [
-            {"tool_calls": [call("review_read", evidence=source),
-                            call("review_read", evidence=entry)]},
-            {"tool_calls": [call("review_citation", source=source, verdict="supported",
+            {"tool_calls": [tool("review_read", evidence=source),
+                            tool("review_read", evidence=entry)]},
+            {"tool_calls": [tool("review_citation", source=source, verdict="supported",
                                  explanation="The passage states it.")]},
             {"text": json.dumps({"outcome": "passed", "summary": "The citation holds."})},
         ]
