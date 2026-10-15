@@ -97,9 +97,16 @@ credentials = { "crypto-research-mcp.CF_ACCESS_CLIENT_ID" = "CF_ACCESS_CLIENT_ID
 # policy, targets, ceiling                         # by default the worker's policy, targets and pool ceiling
 # sandbox = "ss-mcp-proxy"                         # its name's start, at most 12 characters
 # listen = "127.0.0.1:18080"                       # where the run service reaches it
+# provider_env_file = "/path/to/the/owners/cloudflare.env"                # registers crypto-research-mcp from it
+# provider_profile = "examples/openshell/profiles/cloudflare-access.yaml"    # needed with provider_env_file
 ```
 
-- **The providers** hold the servers' credentials. You create them yourself ([what the owner does](MCP-CONNECTORS.md#crypto-research-mcp-a-cloudflare-access-service-token)), and the launcher never sees the credentials. If a provider is missing, `up` refuses before it starts anything.
+- **The providers** hold the servers' credentials. You create them yourself ([what the owner does](MCP-CONNECTORS.md#crypto-research-mcp-a-cloudflare-access-service-token)), or `up` registers `crypto-research-mcp` from `provider_env_file`. The launcher never sees the credentials. If a provider is still missing, `up` refuses before it starts anything.
+- **`provider_env_file`** names the owner's file with crypto-research-mcp's Access service token. This is babbage's default for now (the owner, 2026-10-15). Only a config outside the repository names the real file, such as a lab's ([labs](../.agents/labs/README.md)): whoever writes the config also chooses the OpenShell CLI that gets the values.
+  - When the gateway has no such provider, as a new lab gateway doesn't, `up` registers it from the file before it starts anything.
+  - The registration runs in a process of its own (`sandbox_science.launcher.access_provider`), with the parts' usual environment and `[openshell] env` alone. The launcher never opens the file, and the values reach only the OpenShell command that registers them, and OpenShell's own encrypted store ([from the owner's file](MCP-CONNECTORS.md#crypto-research-mcp-a-cloudflare-access-service-token)).
+  - `up --refresh-provider` registers it again even if it exists, as after a rotation.
+  - It needs `provider_profile`, the provider's OpenShell profile, which `up` imports when the gateway has none.
 - **`credentials`** is the proxy's `[credentials]` table: which environment variable holds each provider credential that a server's headers name ([running it](MCP-CONNECTORS.md#running-it)).
 - **What `up` does** is the [steps in running it](MCP-CONNECTORS.md#running-it):
   1. It compiles the sandbox's policy.

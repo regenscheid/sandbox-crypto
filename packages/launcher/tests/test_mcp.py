@@ -26,6 +26,10 @@ pytestmark = pytest.mark.slow
 SANDBOX = "ss-mcp-proxy"
 NAME = re.compile(r"ss-mcp-proxy-[0-9a-f]{6}")
 IMAGE = "sandbox-science/mcp-proxy:test"
+PROFILE = Path(__file__).parents[3] / "examples/openshell/profiles/cloudflare-access.yaml"
+ID = "test-secret-client-id-launcher"
+SECRET = "test-secret-client-secret-launcher"
+REGISTERED = "crypto-research-mcp CF_ACCESS_CLIENT_ID CF_ACCESS_CLIENT_SECRET"
 
 
 def free_port() -> int:
@@ -40,9 +44,19 @@ def mcp(site: dict[str, Any], fake_openshell: Path, tmp_path: Path) -> dict[str,
     state.write_text(json.dumps({"providers": ["crypto-research-mcp"], "sandboxes": {}}))
     listen = f"127.0.0.1:{free_port()}"
 
-    def launch(parts: dict[str, str] | None = None) -> Any:
+    def launch(
+        parts: dict[str, str] | None = None,
+        registration: Path | None = None,
+        options: tuple[str, ...] = (),
+    ) -> Any:
+        registered = (
+            {"provider_env_file": str(registration), "provider_profile": str(PROFILE)}
+            if registration is not None
+            else {}
+        )
         return site["launch"](
             parts,
+            options=options,
             openshell={"cli": str(fake_openshell)},
             mcp_proxy={
                 "image": IMAGE,
@@ -50,6 +64,7 @@ def mcp(site: dict[str, Any], fake_openshell: Path, tmp_path: Path) -> dict[str,
                 "credentials": {"crypto-research-mcp.CF_ACCESS_CLIENT_ID": "CF_ACCESS_CLIENT_ID"},
                 "servers": ["crypto-research-mcp"],
                 "listen": listen,
+                **registered,
             },
         )
 
@@ -130,6 +145,73 @@ def test_a_missing_provider_is_refused_before_anything_starts(mcp: dict[str, Any
     assert "the OpenShell provider crypto-research-mcp does not exist" in launcher.output
     assert "docs/MCP-CONNECTORS.md" in launcher.output
     assert journal(mcp["journal"]) == []
+
+
+def owners_file(tmp_path: Path) -> Path:
+    """A synthetic stand-in for the owner's file: obviously fake values."""
+    path = tmp_path / "cloudflare.env"
+    path.write_text(f"CF-Access-Client-Id: = {ID}\nCF-Access-Client-Secret: = '{SECRET}'\n")
+    path.chmod(0o600)
+    return path
+
+
+def nothing_kept_them(launcher: Any, tmp_path: Path) -> None:
+    """The values are in no output and in no file but the owner's."""
+    assert ID not in launcher.output
+    assert SECRET not in launcher.output
+    for path in tmp_path.rglob("*"):
+        if path.is_file() and path.name != "cloudflare.env":
+            data = path.read_bytes()
+            assert ID.encode() not in data, path
+            assert SECRET.encode() not in data, path
+
+
+def test_up_registers_a_missing_provider_from_the_owners_file(
+    mcp: dict[str, Any], tmp_path: Path
+) -> None:
+    mcp["state"].write_text(json.dumps({"providers": [], "sandboxes": {}}))
+    launcher = mcp["launch"](registration=owners_file(tmp_path))
+    launcher.expect("Stop:")
+    assert journal(mcp["journal"])[:4] == [
+        "openshell provider profile lint cloudflare-access.yaml",
+        "openshell provider profile import cloudflare-access.yaml",
+        f"openshell provider create cloudflare-access {REGISTERED}",
+        "sandbox-science-worker start",
+    ]
+    assert "created the OpenShell provider crypto-research-mcp from" in launcher.output
+    launcher.process.send_signal(signal.SIGINT)
+    assert launcher.finish() == 0
+    nothing_kept_them(launcher, tmp_path)
+
+
+def test_up_registers_an_existing_provider_again_only_when_asked(
+    mcp: dict[str, Any], tmp_path: Path
+) -> None:
+    path = owners_file(tmp_path)
+    mcp["state"].write_text(
+        json.dumps(
+            {
+                "providers": ["crypto-research-mcp"],
+                "profiles": ["cloudflare-access"],
+                "sandboxes": {},
+            }
+        )
+    )
+    launcher = mcp["launch"](registration=path)
+    launcher.expect("Stop:")
+    launcher.process.send_signal(signal.SIGINT)
+    assert launcher.finish() == 0
+    assert not any(step.startswith("openshell provider") for step in journal(mcp["journal"]))
+    mcp["journal"].write_text("")
+    launcher = mcp["launch"](registration=path, options=("--refresh-provider",))
+    launcher.expect("Stop:")
+    assert journal(mcp["journal"])[:2] == [
+        f"openshell provider update {REGISTERED}",
+        "sandbox-science-worker start",
+    ]
+    launcher.process.send_signal(signal.SIGINT)
+    assert launcher.finish() == 0
+    nothing_kept_them(launcher, tmp_path)
 
 
 def test_sandboxes_it_did_not_make_are_left_alone(mcp: dict[str, Any]) -> None:
