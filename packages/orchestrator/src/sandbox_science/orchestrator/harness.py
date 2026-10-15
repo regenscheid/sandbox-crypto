@@ -41,7 +41,7 @@ from . import mathchecks
 from .aio import threaded
 from .artifact_publisher import ArtifactPublisher
 from .artifacts import ArtifactInventory
-from .chat import EventLog, RunChat, UserMessages
+from .chat import EventLog, ModelBudget, RunChat, UserMessages
 from .connectors import Connectors, ProxyClient
 from .consistency.controller import ReviewController
 from .consistency.models import ReviewConfig
@@ -145,6 +145,15 @@ class Settings:
     """The tokens one consistency review may use, over all its calls."""
     review_calls_per_hour: int = ReviewConfig().calls_per_hour
     """The reviewer calls a project may make in an hour."""
+    run_share: float | None = None
+    """With stores, the part of the project's MAIN budget one run may use, above 0 and at
+    most 1: each run then stops at a safe point once its own calls have used it, or once
+    the project has spent its budget (RS-6a). ``None``, as for ``run`` on the command
+    line, keeps no budget during a run."""
+
+    def __post_init__(self) -> None:
+        if self.run_share is not None and not 0 < self.run_share <= 1:
+            raise ValueError("run_share is above 0 and at most 1")
 
     def reviews(self) -> ReviewConfig:
         """The review settings of a project that has none of its own."""
@@ -420,8 +429,10 @@ class Harness:
                     )
                     hooks = toolbox.turn_hooks()
                     if chat is not None:
+                        budget = self.settings.run_share
+                        kept = () if budget is None else (ModelBudget(chat, budget),)
                         # The user's messages reach the model last; the events come last.
-                        hooks = (*hooks, UserMessages(chat), EventLog(chat))
+                        hooks = (*hooks, *kept, UserMessages(chat), EventLog(chat))
                     request = admitted.request
                     transcript = await run_task(
                         self.main.model,

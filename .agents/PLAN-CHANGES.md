@@ -4,6 +4,10 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 ## 2026-10-15
 
+Decision on lab 39 (#331), which the owner can reverse:
+
+- **The model budget during a run** ([run service](../docs/specs/run-service.md), RS-6c). A run checks the project's MAIN budget before each model call after the first, as well as at its start, and stops there once the project has spent it (`budget`) or once its own calls have used its share of it (`run_budget`; half by default, `serve --run-share`). An answer it gave stands, and what no model call saw waits for the next run. Lab 39's comment run spent 370,000 tokens past its cap because the budget was checked only at the start.
+
 Decision on lab 38 (#305), which the owner can reverse:
 
 - **A comment starts a run** ([run service](../docs/specs/run-service.md), RS-6b; LD-22). A work request to an idle session starts a run as a chat message does, within the model budget, and it ends a job wait. Requests get no `held` or `refused` state, which would need a migration: where a message would be held, the run service keeps the request from starting a run until the session's next run or the service's restart, and over the budget it looks again every 15 minutes.

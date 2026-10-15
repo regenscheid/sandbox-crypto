@@ -414,6 +414,12 @@ describe('the transcript of a run', () => {
       'The run failed. Failure: model.',
     );
     expect(stoppedText({ stopped: 'constructor' })).toBe('The run stopped (constructor).');
+    expect(stoppedText({ stopped: 'budget' })).toBe(
+      'The run stopped: the project has spent its model budget for the last 24 hours. What waits for the session waits for the budget.',
+    );
+    expect(stoppedText({ stopped: 'run_budget' })).toBe(
+      "The run stopped: it used its share of the project's daily model budget.",
+    );
     const [stopped] = chatEntries([event(1, 'stopped', { stopped: 'interrupted' })]);
     expect(stopped).toMatchObject({ problem: true });
   });

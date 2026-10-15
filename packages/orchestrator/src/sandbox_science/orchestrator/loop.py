@@ -309,6 +309,24 @@ async def _complete(model: ChatModel, toolbox: Toolbox, transcript: Transcript) 
     return reply
 
 
+async def _halted(hooks: Sequence[TurnHook], transcript: Transcript) -> bool:
+    """Whether a hook stops the run before its next model call, as a spent model budget
+    does (run-service spec RS-6a). An answer a closing round was taken for stands, closed
+    again with no turn left to take; the run's ``stopped`` is the hook's reason, unless
+    a hook stopped it at that closing. Notices no model call saw wait for the next run.
+    """
+    for hook in hooks:
+        if (reason := await hook.halt(transcript)) is None:
+            continue
+        transcript.room = False
+        if transcript.pending is not None:
+            await _closing(hooks, transcript, transcript.pending)
+        if transcript.stopped == "answered":
+            transcript.stopped = reason
+        return True
+    return False
+
+
 async def _out_of_room(hooks: Sequence[TurnHook], transcript: Transcript) -> None:
     """The conversation has no room for another model call.
 
@@ -335,6 +353,8 @@ async def _run_task(
     """Run the observed conversation; ``run_id`` prefixes every worker operation ID."""
     await _notices(hooks, "start", transcript)
     for turn in range(transcript.max_turns):
+        if turn and await _halted(hooks, transcript):
+            return transcript
         await _notices(hooks, "turn", transcript)
         transcript.turns = turn + 1
         if (reply := await _complete(model, toolbox, transcript)) is None:

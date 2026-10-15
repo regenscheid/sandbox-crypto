@@ -198,7 +198,8 @@ class RunRecord(Contract):
     ended_at: datetime
     stopped: str
     """``answered``, ``turn_limit``, ``context_limit``, ``user_message``, ``cancelled``
-    (by the user), or ``error``."""
+    (by the user), ``budget`` (the project spent its model budget during the run),
+    ``run_budget`` (the run used its share of it), or ``error``."""
     failure: FailurePhase | None = None
     """Failed phase; old records omit it. Partial messages are observations, not an answer."""
     delivered: dict[Identifier, list[Identifier]] = Field(

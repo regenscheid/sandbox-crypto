@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Final, Literal, cast
 
 from pydantic import Field, JsonValue
@@ -32,13 +32,15 @@ from sandbox_science.contracts.model import Contract
 from .control import ControlError, ControlStore
 from .control.errors import BUSY, CONFLICT, INVALID_REQUEST, NOT_FOUND
 from .documents import DocumentStore
-from .projects import run_name
+from .projects import ModelUsage, run_name
 
 LEASE_SECONDS: Final = 60.0
 """How long a run's lease outlives its last renewal (RS-5)."""
 SERVICE_SECONDS: Final = 30.0
 """How old the run service's heartbeat may be while it runs (RS-3)."""
 MAIN_TOKENS: Final = 2_000_000
+WINDOW: Final = timedelta(hours=24)
+"""The model budget's window (RS-6a)."""
 """A project's default model budget: MAIN tokens over a rolling 24 hours (RS-6a)."""
 MAX_MESSAGE_BYTES: Final = 65536
 MAX_EVENT_BYTES: Final = 65536
@@ -403,6 +405,10 @@ class RunState:
             except sqlite3.IntegrityError:
                 raise ControlError(INVALID_REQUEST, "a budget is 0 to 10^12 tokens") from None
 
+    def over_budget(self, project: str, now: datetime) -> bool:
+        """Whether the project has spent its MAIN budget over the window to ``now``."""
+        return self.spent(project, now - WINDOW) >= self.budget(project)
+
     def spent(self, project: str, since: datetime) -> int:
         """MAIN's tokens in the project's runs that started at ``since`` or later: saved
         records' ``usage``, and interrupted runs' ``assistant`` events. A call without
@@ -547,3 +553,11 @@ def _message(row: tuple[object, ...]) -> ChatMessage:
             "offered": offered,
         }
     )
+
+
+def cost(usage: ModelUsage) -> int:
+    """One call's spending, as ``RunState.spent`` counts it (RS-6a): its tokens, or a
+    quarter of its characters when the gateway gave no token counts."""
+    if usage.input_tokens is not None and usage.output_tokens is not None:
+        return usage.input_tokens + usage.output_tokens
+    return (usage.characters or 0) // 4

@@ -224,7 +224,7 @@ def test_dedicated_sessions_watcher_and_math_reach_their_commands(
                 "projects": [{"id": "crypto", "profile": "minimal",
                               "sessions": ["a", {"id": "c", "dedicated": True}]}],
                 "model": {"watcher": "watcher", "watcher_interval": 600},
-                "run_service": {"math_checks": str(build), "node": str(node)},
+                "run_service": {"math_checks": str(build), "node": str(node), "run_share": 25},
             }
         )
     )  # fmt: skip
@@ -236,13 +236,15 @@ def test_dedicated_sessions_watcher_and_math_reach_their_commands(
     harness = parts.harness_argv(config, layout)
     assert harness[harness.index("--watcher-model") + 1] == "watcher"
     assert harness[harness.index("--watcher-interval") + 1] == "600"
+    assert harness[harness.index("--run-share") + 1] == "25"
     assert "--watcher-calls-per-hour" not in harness  # the run service's default
     assert harness[harness.index("--math-node") + 1] == str(node)
     assert harness[harness.index("--math-launcher") + 1] == str(build / "check-math.mjs")
     assert harness[harness.index("--math-bundle") + 1] == str(build / "mathcheck.mjs")
     plain = load_config(make_config({"bin_dir": str(commands)}))
     assert not any(
-        flag.startswith(("--watcher", "--math")) for flag in parts.harness_argv(plain, layout)
+        flag.startswith(("--watcher", "--math", "--run-share"))
+        for flag in parts.harness_argv(plain, layout)
     )
 
 
