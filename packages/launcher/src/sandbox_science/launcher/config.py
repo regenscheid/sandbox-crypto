@@ -212,6 +212,13 @@ def _origin(value: str, info: ValidationInfo) -> str:
     return str(_path(Path(value), info))
 
 
+def _alias(value: str) -> str:
+    """An alias the control store can keep, as the harness's flags check it."""
+    if len(value.encode()) > 200:
+        raise ValueError("an alias of at most 200 bytes")
+    return value
+
+
 class SkillPackConfig(_Strict):
     """A skill pack the projects use (docs/SKILLS.md): from git or an archive."""
 
@@ -237,9 +244,12 @@ class SkillsConfig(_Strict):
     packs: dict[SourceName, SkillPackConfig] = Field(default_factory=dict[str, SkillPackConfig])
     """By source name. ``up`` imports each once and pins it in the projects that name it;
     ``up --update-skills`` and ``sandbox-science skills update`` fetch them again."""
-    embedding_model: str | None = Field(default=None, min_length=1)
-    """The gateway's embedding alias: imports embed the skills, and runs compare them with
-    what they search for by meaning as well as words. None by default: words only."""
+    embedding_model: Annotated[str, AfterValidator(_alias)] | None = Field(
+        default=None, min_length=1
+    )
+    """The gateway's embedding alias, of at most 200 bytes: imports embed the skills, and
+    runs compare them with what they search for by meaning as well as words. None by
+    default: words only."""
     pass_env: tuple[Variable, ...] = ()
     """Environment variables the import's git gets besides the usual few and the run
     service's ``pass_env``, such as ``SSH_AUTH_SOCK`` for an ssh URL."""

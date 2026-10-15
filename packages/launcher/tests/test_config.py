@@ -101,6 +101,7 @@ def test_a_command_name_is_left_to_the_path(make_config: Any) -> None:
         ({"skills": {"packs": {"builtin": {"git": "g"}}}}, "platform's own skills"),
         ({"skills": {"packs": {"Crypto": {"git": "g"}}}}, "skills.packs.Crypto"),
         ({"skills": {"embedding_model": ""}}, "skills.embedding_model"),
+        ({"skills": {"embedding_model": "a" * 201}}, "an alias of at most 200 bytes"),
     ],
 )
 def test_a_config_that_cannot_work_is_refused_by_what_is_wrong(
