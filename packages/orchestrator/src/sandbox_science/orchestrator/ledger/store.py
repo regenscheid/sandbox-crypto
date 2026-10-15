@@ -678,6 +678,7 @@ class Ledger:
                     INVALID_REQUEST, f"the change to {p.row.handle} changes nothing"
                 )
         self._check_links(db, planned)
+        self._check_dominates(db, project, planned, role)
         self._check_published(db, planned)
         gated = self._check_decisions(db, planned, role)
         now = self.clock()
@@ -855,8 +856,8 @@ class Ledger:
         holders, targets = LINKS[link.kind]
         if planned.row.type not in holders:
             raise DocumentError(INVALID_REQUEST, f"a {planned.row.type} holds no {link.kind} link")
-        if link.kind == "dominates":
-            raise DocumentError(INVALID_REQUEST, "dominates links come with the frontier")
+        if link.kind == "dominates" and link.note is None:
+            raise DocumentError(INVALID_REQUEST, "a dominates link states its reason")
         if link.kind == "compares_to" and link.note is None:
             raise DocumentError(INVALID_REQUEST, "a compares_to link states the difference")
         named = [link.entry, link.finding, link.document]
@@ -1384,6 +1385,53 @@ class Ledger:
                     f"{p.row.handle} is published: it cites its reference with a supports "
                     "link of type source_claim",
                 )
+
+    def _check_dominates(
+        self, db: sqlite3.Connection, project: str, planned: list[_Planned], role: str
+    ) -> None:
+        """A ``dominates`` link a change adds (LG-22): the user's or the main agent's,
+        between two results of one category, both eligible as the change leaves them,
+        where the rule cannot compare them."""
+        by_id = {p.row.entry_id: p for p in planned}
+        for p in planned:
+            for link in _added(p, "dominates"):
+                if role == "delegated":
+                    raise _refused("a delegated agent records no dominates link")
+                other = by_id.get(link.target_id)
+                if other is not None:
+                    target = (other.row.handle, other.row.origin, other.status, other.fields)
+                else:
+                    row = db.execute(
+                        "SELECT e.type,e.number,e.origin,r.status,r.fields FROM ledger_entries e "
+                        "JOIN ledger_revisions r ON r.entry_id=e.entry_id AND r.revision=e.head "
+                        "WHERE e.entry_id=?",
+                        (link.target_id,),
+                    ).fetchone()
+                    target = (f"{PREFIXES[row[0]]}-{row[1]}", row[2], row[3], json.loads(row[4]))
+                handle, origin, status, fields = target
+                for name, entry, of, now in (
+                    (p.row.handle, p.row.entry_id, p.row.origin, p.status),
+                    (handle, link.target_id, origin, status),
+                ):
+                    if not frontier.is_eligible(db, entry, of, now):
+                        raise DocumentError(
+                            INVALID_REQUEST,
+                            f"{name} is not eligible for the frontier: a dominates link is "
+                            "between recorded published or established project results",
+                        )
+                name = p.fields.get("category")
+                category = None if name is None else frontier.read(db, project, name)
+                if category is None or fields.get("category") != name:
+                    raise DocumentError(
+                        INVALID_REQUEST,
+                        f"{p.row.handle} and {handle} are not results of one frontier category",
+                    )
+                if frontier.comparable(category, p.fields, fields):
+                    raise DocumentError(
+                        INVALID_REQUEST,
+                        f"the frontier compares {p.row.handle} and {handle} itself: their "
+                        "conditions are equal and their measures numbers",
+                    )
 
     def _check_links(self, db: sqlite3.Connection, planned: list[_Planned]) -> None:
         """What holds once the change commits (LG-5, LG-30). ``supersedes`` and

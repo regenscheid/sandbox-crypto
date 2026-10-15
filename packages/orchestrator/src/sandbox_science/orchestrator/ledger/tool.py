@@ -74,7 +74,8 @@ _LINK = {
         "A link: its kind, and one target: entry (a handle, an ID, or new:<key> for an "
         "entry this change creates), finding (a review finding's ID), or document with "
         "revision and block. revision also pins an entry target; note states a "
-        "compares_to link's difference"
+        "compares_to link's difference, or a dominates link's reason (one eligible result "
+        "dominates another of its category where the frontier cannot compare them)"
     ),
     "properties": {
         "kind": {
@@ -89,6 +90,7 @@ _LINK = {
                 "split_into",
                 "affects",
                 "concerns",
+                "dominates",
             ],
         },
         "entry": {"type": "string"},
