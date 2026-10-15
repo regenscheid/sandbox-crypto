@@ -1,8 +1,14 @@
 {
   "format_version": 1,
   "captured_date": "2026-10-14",
-  "status": "planning and source inspection, isolated delegation-record and original run/kernel-binding validation, bounded scripted planning-evaluator calibration, thirty-six OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, project macro native browser and actual KaTeX acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-14). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed. Raw lab evidence (JSON records, screenshots) is kept outside git since 2026-10-14; reports name each archived file by its SHA-256.",
+  "status": "planning and source inspection, isolated delegation-record and original run/kernel-binding validation, bounded scripted planning-evaluator calibration, thirty-seven OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, project macro native browser and actual KaTeX acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-15). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed. Raw lab evidence (JSON records, screenshots) is kept outside git since 2026-10-14; reports name each archived file by its SHA-256.",
   "files": [
+    {
+      "path": "agent-reports/babbage-openshell-lab-37-2026-10-15.md",
+      "category": "runtime-validation",
+      "bytes": 7076,
+      "sha256": "a5f1a9608c40b228f581d4aa910f05b094db9f1c956a3853b68c3d96ed631b3f"
+    },
     {
       "path": "agent-reports/babbage-openshell-lab-36-2026-10-14.md",
       "category": "runtime-validation",
