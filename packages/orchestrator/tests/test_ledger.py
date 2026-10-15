@@ -648,14 +648,18 @@ def test_superseded_stays_paired_with_its_link_both_ways(ledger: Ledger) -> None
     with pytest.raises(DocumentError, match="C-1 is superseded only while an entry supersedes"):
         change(ledger, {"entry": "C-2", "expected": 1, "links": []}, op="drop")
     assert len(events(ledger)) == 3
-    # Both together undo the supersession.
-    change(
-        ledger,
+    # Both together undo the supersession, with a decision: set aside, C-1 comes back
+    # only by one.
+    undo = (
         {"entry": "C-2", "expected": 1, "links": []},
         {"entry": "C-1", "expected": 2, "status": "proposed"},
-        op="undo",
     )
-    assert ledger.entry("p", "C-1").incoming == []
+    with pytest.raises(DocumentError, match="C-1 leaves superseded only in a change"):
+        change(ledger, *undo, op="undo")
+    decision = {**NEW["decision"], "status": "in_effect"}
+    affects = [{"kind": "affects", "entry": "C-1"}]
+    change(ledger, {**decision, "links": affects}, *undo, op="undone", author=USER)
+    assert [link.kind for link in ledger.entry("p", "C-1").incoming] == ["affects"]
 
 
 def test_an_issue_is_split_exactly_while_it_holds_split_into_links(ledger: Ledger) -> None:

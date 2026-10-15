@@ -45,6 +45,10 @@ Decisions of the coordinator, which the owner can reverse:
 - **Publishing makes a file a result** (#313, lab 38 B7; RA-9 and RA-37 amended). A publication or declared result that finds the bytes a call recorded still makes the artifact a result, pinning the existing revision. A call that writes the same bytes again makes nothing a result.
 - **Review limits for a large model** (#314, #316, lab 38 B8). A review gets 24 calls, 300 s, 300,000 characters of context and 400,000 tokens, counted from the provider's usage, and a project 240 reviewer calls an hour. A turn's calls past 16 are answered `not_run` rather than failing the review, and a window a limit cut short is reviewed again.
 
+Decision of the coordinator on the review of the frontier (#326), which the owner can reverse:
+
+- **Set-aside entries come back only by a decision** ([ledger spec](../docs/specs/ledger.md), LG-4). An entry leaves `refuted`, `withdrawn` or `superseded` only in a change that puts in effect a decision that affects it, and the main agent's decision that brings a claim or result back passes the gate, whatever status it brings it back to: through `disputed` it could otherwise be `recorded` again with nothing checked. While a claim or result that was once established or recorded is `disputed`, its statement, fields, assumptions and evidence are kept, as an established one's are. Undoing a supersession takes a decision too.
+
 ## 2026-10-14, later (PRs #165–#258)
 
 Decisions of the owner since the last sync (PRs #165–#258):
