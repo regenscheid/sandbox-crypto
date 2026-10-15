@@ -15,6 +15,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import struct
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -323,6 +324,69 @@ class SkillStore:
         content = self.file(entry.snapshot, f"{entry.name}/SKILL.md") or b""
         return served(body(content.decode(errors="replace")))
 
+    def skills(self, snapshot: str) -> list[tuple[str, str]]:
+        """A snapshot's skills' names and descriptions."""
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT name,description FROM skill_skills WHERE snapshot=? ORDER BY name",
+                (snapshot,),
+            ).fetchall()
+        return [(row[0], row[1]) for row in rows]
+
+    def vectors(self, snapshot: str, model: str, dimensions: int) -> dict[str, list[float]]:
+        """A snapshot's skills' vectors by ``model`` in ``dimensions`` (SK-29)."""
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT name,vector FROM skill_vectors WHERE snapshot=? AND model=? "
+                "AND dimensions=?",
+                (snapshot, model, dimensions),
+            ).fetchall()
+        return {row[0]: unpack(bytes(row[1])) for row in rows}
+
+    def add_vectors(
+        self, snapshot: str, model: str, dimensions: int, named: dict[str, list[float]]
+    ) -> None:
+        """Keep the vectors, unless an earlier call kept them; a vector the store refuses
+        is an error, never passed over."""
+        with self.control.write() as tx:
+            for name, vector in named.items():
+                tx.sql.execute(
+                    "INSERT INTO skill_vectors VALUES(?,?,?,?,?) "
+                    "ON CONFLICT(snapshot,model,dimensions,name) DO NOTHING",
+                    (snapshot, model, dimensions, name, pack(vector)),
+                )
+
+    def saw_space(self, snapshot: str, alias: str, model: str, dimensions: int) -> None:
+        """``alias`` answered in this space for ``snapshot``, whose vectors there are kept."""
+        with self.control.write() as tx:
+            tx.sql.execute(
+                "INSERT INTO skill_vector_spaces VALUES(?,?,?,?,?) ON CONFLICT(snapshot,alias,"
+                "model,dimensions) DO UPDATE SET seen=excluded.seen",
+                (snapshot, alias, model, dimensions, datetime.now(UTC).timestamp()),
+            )
+
+    def space_for(self, snapshot: str, alias: str) -> tuple[str, int, bool] | None:
+        """The space ``alias`` last answered in for ``snapshot``, and whether its vectors
+        there cover every skill of it; ``None`` if it never answered."""
+        with self.control.read() as tx:
+            row = tx.sql.execute(
+                "SELECT s.model,s.dimensions,(SELECT count(*) FROM skill_vectors v WHERE "
+                "v.snapshot=s.snapshot AND v.model=s.model AND v.dimensions=s.dimensions) = "
+                "(SELECT count(*) FROM skill_skills k WHERE k.snapshot=s.snapshot) "
+                "FROM skill_vector_spaces s WHERE s.snapshot=? AND s.alias=? "
+                "ORDER BY s.seen DESC LIMIT 1",
+                (snapshot, alias),
+            ).fetchone()
+        return None if row is None else (str(row[0]), int(row[1]), bool(row[2]))
+
+    def add_embedding_call(self, project: str, model: str, texts: int, cost: float | None) -> None:
+        """Count one embedding call of ``project``'s, priced as the gateway reported."""
+        with self.control.write() as tx:
+            tx.sql.execute(
+                "INSERT INTO skill_embedding_calls VALUES(?,?,?,?,?)",
+                (project, datetime.now(UTC).timestamp(), model, texts, cost),
+            )
+
     def settings(self, project: str) -> SkillSettings:
         if self.control.missing:
             return SkillSettings(project, 0)
@@ -401,6 +465,15 @@ class SkillStore:
             return []
         with self.control.read() as tx:
             return _pins(tx.sql, project)
+
+
+def pack(vector: list[float]) -> bytes:
+    """A vector as the store keeps it: little-endian float32."""
+    return struct.pack(f"<{len(vector)}f", *vector)
+
+
+def unpack(blob: bytes) -> list[float]:
+    return list(struct.unpack(f"<{len(blob) // 4}f", blob))
 
 
 def _settings(db: sqlite3.Connection, project: str) -> SkillSettings:

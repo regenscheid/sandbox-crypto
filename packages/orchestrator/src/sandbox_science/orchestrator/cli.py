@@ -92,6 +92,7 @@ from .model import (
 from .projects import ProjectError, ProjectStore, run_name
 from .runstate import RunState
 from .service import POLL_SECONDS, RunService
+from .skills.embeddings import Embedder, SkillVectors
 from .stock_prompts import TEMPLATE_IDS
 from .tools import ToolOutcome
 from .worker_client import WorkerAPIError, WorkerClient
@@ -276,6 +277,11 @@ def _harness(
         # The aliases a delegation chooses, and the list it checks them in (PD-28, PD-30).
         gateway = ModelGateway(args.model_url, read_secret(args.api_key_file))
         closing(stack, interruption, gateway.close)
+    vectors = None
+    if (embedding := getattr(args, "skills_embedding_model", None)) is not None:
+        embedder = Embedder(args.model_url, embedding, read_secret(args.api_key_file))
+        vectors = SkillVectors(embedder)
+        closing(stack, interruption, vectors.close)
     mcp = None
     if args.mcp_proxy is not None:
         token = read_secret(args.mcp_token_file)
@@ -322,6 +328,7 @@ def _harness(
             run_share=None if (share := getattr(args, "run_share", None)) is None else share / 100,
         ),
         mcp=mcp,
+        vectors=vectors,
     )
 
 
@@ -374,6 +381,10 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
         "redirects are not followed",
     )
     command.add_argument("--model", default="main", help="model alias")
+    command.add_argument(
+        "--skills-embedding-model",
+        help="the gateway's embedding model alias: skills are compared by meaning too",
+    )
     command.add_argument("--api-key-file", type=Path)
     command.add_argument("--min-isolation-tier", type=int, default=3)
     command.add_argument("--allow-unisolated", action="store_true")
@@ -515,6 +526,8 @@ def _check_agent(parser: argparse.ArgumentParser, args: argparse.Namespace) -> N
         parser.error("--delegated-script needs --delegated-model")
     if args.model_url is not None and args.api_key_file is None:
         parser.error("--model-url needs --api-key-file")
+    if getattr(args, "skills_embedding_model", None) is not None and args.model_url is None:
+        parser.error("--skills-embedding-model needs --model-url")
     if args.max_input_chars < 1:
         parser.error("--max-input-chars must be at least 1")
     mcp = (args.mcp_proxy, args.mcp_token_file, args.mcp_project)
@@ -595,6 +608,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "skills":
         if args.action == "import" and args.archive is not None and args.ref is not None:
             parser.error("--ref goes with --git")
+        if (
+            args.action == "import"
+            and args.embedding_model is not None
+            and (args.model_url is None or args.api_key_file is None)
+        ):
+            parser.error("--embedding-model needs --model-url and --api-key-file")
         try:
             return skills(args)
         except (ProjectError, OSError) as exc:

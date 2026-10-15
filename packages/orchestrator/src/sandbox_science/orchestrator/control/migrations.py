@@ -2485,6 +2485,49 @@ def _builtin_skills(schema: Schema) -> None:
     )
 
 
+def _skill_vectors(schema: Schema) -> None:
+    """Version 43: each skill's embedding for retrieval (docs/specs/skills.md, SK-29), by
+    snapshot, the model the gateway reported and its dimensions, as little-endian float32,
+    written once: an import of the same snapshot by the same model reuses them, and
+    another model's are kept apart. The space each alias last answered in, by snapshot,
+    so that an import whose vectors are there asks the gateway nothing. And the gateway's
+    embedding calls, with what it reported they cost, by project (RS-6a)."""
+    name = "length(name) BETWEEN 1 AND 64 AND name NOT GLOB '*[^a-z0-9-]*'"
+    model = "length(CAST(model AS BLOB)) BETWEEN 1 AND 200"
+    for statement in (
+        f"""CREATE TABLE skill_vectors (
+    snapshot TEXT NOT NULL,
+    model TEXT NOT NULL CHECK ({model}),
+    dimensions INTEGER NOT NULL CHECK (dimensions BETWEEN 1 AND 16384),
+    name TEXT NOT NULL CHECK ({name}),
+    vector BLOB NOT NULL CHECK (length(vector) = 4 * dimensions),
+    PRIMARY KEY (snapshot, model, dimensions, name),
+    FOREIGN KEY (snapshot, name) REFERENCES skill_skills(snapshot, name)
+) STRICT""",
+        """CREATE TRIGGER skill_vectors_no_update BEFORE UPDATE ON skill_vectors
+BEGIN SELECT RAISE(ABORT, 'skill vectors are written once'); END""",
+        """CREATE TRIGGER skill_vectors_no_delete BEFORE DELETE ON skill_vectors
+BEGIN SELECT RAISE(ABORT, 'skill vectors are written once'); END""",
+        f"""CREATE TABLE skill_vector_spaces (
+    snapshot TEXT NOT NULL REFERENCES skill_snapshots(snapshot),
+    alias TEXT NOT NULL CHECK (length(CAST(alias AS BLOB)) BETWEEN 1 AND 200),
+    model TEXT NOT NULL CHECK ({model}),
+    dimensions INTEGER NOT NULL CHECK (dimensions BETWEEN 1 AND 16384),
+    seen REAL NOT NULL,
+    PRIMARY KEY (snapshot, alias, model, dimensions)
+) STRICT""",
+        f"""CREATE TABLE skill_embedding_calls (
+    project TEXT NOT NULL REFERENCES projects(project_id),
+    created REAL NOT NULL,
+    model TEXT NOT NULL CHECK ({model}),
+    texts INTEGER NOT NULL CHECK (texts BETWEEN 1 AND 100000),
+    cost REAL CHECK (cost IS NULL OR cost >= 0)
+) STRICT""",
+        "CREATE INDEX skill_embedding_calls_project ON skill_embedding_calls(project,created)",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -2527,6 +2570,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _role_costs,
     _skill_settings,
     _builtin_skills,
+    _skill_vectors,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

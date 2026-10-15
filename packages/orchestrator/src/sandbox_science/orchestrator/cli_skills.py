@@ -8,6 +8,7 @@ a project's pins (docs/SKILLS.md). Each prints JSON and is attributed to the use
 from __future__ import annotations
 
 import argparse
+import asyncio
 import contextlib
 import json
 import sys
@@ -20,6 +21,7 @@ from .control.errors import INVALID_REQUEST
 from .documents import USER
 from .projects import ProjectStore
 from .skills import SkillSettings, SkillStore, from_archive, from_git, snapshot
+from .skills.embeddings import Embedder, EmbeddingError, ensure
 
 
 def skills(args: argparse.Namespace) -> int:
@@ -38,6 +40,8 @@ def skills(args: argparse.Namespace) -> int:
                         print(f"warning: {warning}", file=sys.stderr)
                     shown = asdict(found)
                     shown["unchanged"] = same
+                    if args.embedding_model is not None:
+                        shown["embeddings"] = asyncio.run(_embed(store, args, found.snapshot))
                 case "pin":
                     shown = asdict(store.pin(args.project, args.source, USER, args.revision))
                 case "settings":
@@ -53,6 +57,30 @@ def skills(args: argparse.Namespace) -> int:
             return 1
     print(json.dumps(shown, indent=2))
     return 0
+
+
+async def _embed(store: SkillStore, args: argparse.Namespace, snapshot: str) -> dict[str, Any]:
+    """Embed the snapshot's skills that have no vector in the model's space (SK-29). A
+    failure leaves the import as it is, with a warning: runs embed what they lack, and
+    importing again embeds the skills."""
+    embedder = Embedder(args.model_url, args.embedding_model, args.api_key_file.read_text().strip())
+    try:
+        made = await ensure(store, embedder, snapshot)
+    except EmbeddingError as error:
+        print(f"warning: embedding the skills failed: {error}", file=sys.stderr)
+        return {"alias": args.embedding_model, "failed": str(error)}
+    finally:
+        await embedder.close()
+    if made is None:
+        return {"alias": args.embedding_model, "computed": 0, "reused": 0}
+    return {
+        "alias": args.embedding_model,
+        "model": made.space.model,
+        "dimensions": made.space.dimensions,
+        "computed": made.computed,
+        "reused": made.reused,
+        "cost": made.cost,
+    }
 
 
 def _settings(store: SkillStore, args: argparse.Namespace) -> SkillSettings:
@@ -100,6 +128,11 @@ def add_parser(commands: Any) -> None:
     imported.add_argument(
         "--path", help="the directory of the skills (default: skills/ if there, else the top)"
     )
+    imported.add_argument(
+        "--embedding-model", help="the gateway's embedding model alias, to embed the skills"
+    )
+    imported.add_argument("--model-url", help="--embedding-model: the gateway's base URL")
+    imported.add_argument("--api-key-file", type=Path, help="--embedding-model: its key")
     pinned = actions.add_parser(
         "pin", parents=[common], help="pin a source's latest import, or one, in a project"
     )

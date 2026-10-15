@@ -93,6 +93,7 @@ from .session_plans import PlanRef, SessionPlans
 from .skills import SkillStore, SkillTool
 from .skills.builtin import builtin_pack
 from .skills.discovery import SkillDiscovery
+from .skills.embeddings import SkillVectors
 from .tools import HARNESS_TOOL_NAMES, Toolbox, ToolOutcome
 from .worker_client import WorkerAPIError, WorkerClient
 
@@ -437,15 +438,19 @@ class Harness:
         mcp: McpAccess | None = None,
         delegated: Role | None = None,
         gateway: ModelGateway | None = None,
+        vectors: SkillVectors | None = None,
     ) -> None:
         """``checker`` is the configured math checker; without it, math checks report
         the renderer unavailable. A reviewer and a checker need stores. ``delegated`` is
         the model delegated runs call (PD-27, PD-28); MAIN's without it. ``gateway``
         serves the other aliases a brief may choose, and says which it lists (PD-30);
-        without it, delegated runs call ``delegated``'s alias only."""
+        without it, delegated runs call ``delegated``'s alias only. ``vectors`` makes the
+        skills' embeddings in the background, so that runs compare them by meaning too
+        once they exist (docs/specs/skills.md, SK-29)."""
         if stores is None and (reviewer is not None or checker is not None):
             raise ValueError("a reviewer and a math checker need the state directory's stores")
         self.client, self.main, self.stores = client, main, stores
+        self.vectors = vectors
         self.watcher, self.reviewer, self.checker = watcher, reviewer, checker
         self.settings = settings or Settings()
         self.clock = clock
@@ -834,6 +839,9 @@ class Harness:
         skills = await threaded(
             _skills, stores, context.project_id, role, alias, delegates=delegates
         )
+        if skills is not None and self.vectors is not None:
+            # Reads the vectors the store has; the gateway's work goes on in the background.
+            await skills.use(self.vectors, context.project_id, clock=self.clock)
         inventory = ArtifactInventory(stores.documents)
         review_store = ReviewStore(
             stores.documents, artifacts=inventory, defaults=self.settings.reviews()

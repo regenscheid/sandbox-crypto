@@ -19,22 +19,32 @@ evidence (SK-21).
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import math
 import posixpath
 import re
 from collections import Counter
-from collections.abc import Sequence
-from typing import Any, Final, cast
+from collections.abc import Awaitable, Sequence
+from typing import Any, Final, TypeVar, cast
 
+from sandbox_science.contracts.clock import SYSTEM_CLOCK, Clock
 from sandbox_science.orchestrator.aio import threaded
 from sandbox_science.orchestrator.model import ToolSpec
 
+from .embeddings import QUERY_CHARS, EmbeddingError, SkillVectors, cosine
 from .index import SkillsGiven, give, marker
 from .packs import served
 from .store import MAX_LOADED, Entry, SkillSet, SkillStore
 
+T = TypeVar("T")
+
+SEARCH_SECONDS: Final = 5.0
+"""How long a search waits for its text's embedding by default, as discovery does."""
+SIMILAR: Final = 0.45
+"""The cosine similarity at which a skill matches by meaning, until a pack's threshold is
+tuned (SK-34)."""
 MAX_READ: Final = 64 * 1024
 MAX_FOUND: Final = 8
 NAME: Final = "skills"
@@ -119,13 +129,85 @@ class SkillTool:
                 left.append(skill)
                 self.started.append({**item, "status": "over_budget"})
         self.given: SkillsGiven = give(skills, bodies, left, MAX_LOADED)
+        self.vectors: SkillVectors | None = None
+        """With an embedding model: search and discovery compare by meaning too (SK-29)."""
+        self.project: str | None = None
+        self.clock: Clock = SYSTEM_CLOCK
+        self.wait = SEARCH_SECONDS
+
+    async def use(
+        self,
+        vectors: SkillVectors,
+        project: str,
+        *,
+        clock: Clock = SYSTEM_CLOCK,
+        wait: float = SEARCH_SECONDS,
+    ) -> None:
+        """Compare by meaning once the skills' vectors exist: those the store has are read
+        now, and ``vectors`` makes the others in the background. The run never waits for
+        the gateway, and compares by words until then."""
+        self.vectors, self.project, self.clock, self.wait = vectors, project, clock, wait
+        snapshots = (entry.snapshot for entry in self.skills.entries)
+        await vectors.start(self.store, snapshots, project)
+
+    async def similarity(self, text: str) -> tuple[dict[str, float], str | None]:
+        """Each skill's cosine similarity with ``text``; or none, and why: ``pending``
+        while the vectors are made, or their failure. Raises ``EmbeddingError`` when the
+        gateway cannot embed ``text``, or answers in a space other than the vectors'."""
+        if self.vectors is None:
+            return {}, None
+        ready, why = self.vectors.ready({entry.snapshot for entry in self.skills.entries})
+        if not any(found for _, found in ready.values()):
+            return {}, why or "pending"
+        answer = await self.vectors.embedder.embed([text[:QUERY_CHARS]])
+        if self.project is not None:
+            await threaded(
+                self.store.add_embedding_call, self.project, answer.space.model, 1, answer.cost
+            )
+        usable = {s: found for s, (space, found) in ready.items() if space == answer.space}
+        if not usable:
+            spaces = ", ".join(sorted({str(tuple(space)) for space, _ in ready.values()}))
+            await self.vectors.moved(self.store, ready, answer.space)
+            raise EmbeddingError(
+                f"the gateway answered in {tuple(answer.space)}, not in {spaces} as the "
+                "skills' vectors; they are made again for the next run"
+            )
+        query = answer.vectors[0]
+        return {
+            entry.qualified: cosine(query, usable[entry.snapshot][entry.name])
+            for entry in self.skills.entries
+            if entry.name in usable.get(entry.snapshot, {})
+        }, None
+
+    async def bounded(self, work: Awaitable[T]) -> T:
+        """``work``'s result, or ``TimeoutError`` once ``wait`` seconds of the clock pass."""
+        task = asyncio.ensure_future(work)
+        timer = asyncio.ensure_future(self.clock.sleep(self.wait))
+        try:
+            await asyncio.wait((task, timer), return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            timer.cancel()
+        if not task.done():
+            task.cancel()
+            raise TimeoutError
+        return task.result()
 
     def summary(self, model: str | None) -> dict[str, Any] | None:
         """The skills loaded at the run's start, as load records naming the model that
-        first answered (SK-21, SK-38); ``None`` when there were none."""
-        if not self.started:
-            return None
-        return {"loads": [{**item, "model": model} for item in self.started]}
+        first answered (SK-21, SK-38), and, with an embedding model, whether the skills'
+        vectors were there by the run's end; ``None`` when there is neither."""
+        found: dict[str, Any] = {}
+        if self.started:
+            found["loads"] = [{**item, "model": model} for item in self.started]
+        if self.vectors is not None:
+            ready, why = self.vectors.ready({entry.snapshot for entry in self.skills.entries})
+            spaces = sorted({tuple(space) for space, vectors in ready.values() if vectors})
+            found["embeddings"] = {
+                "alias": self.vectors.embedder.alias,
+                "spaces": [{"model": m, "dimensions": d} for m, d in spaces],
+                **({"missing": why[:300]} if why is not None else {}),
+            }
+        return found or None
 
     async def call(
         self, args: dict[str, Any], *, call_id: str, model: str | None
@@ -137,7 +219,7 @@ class SkillTool:
             base["model"] = model
         try:
             if action == "search" and isinstance(args.get("query"), str):
-                text, record = self._search(args["query"])
+                text, record = await self._search(args["query"])
             elif action == "load" and _strings(args.get("names")):
                 text, record = await threaded(self._load, args["names"])
             elif action == "read" and _strings([args.get("skill"), args.get("path")]):
@@ -151,21 +233,33 @@ class SkillTool:
             return json.dumps(failure), {"skills": {**base, "status": refused.kind}}
         return text, {"skills": {**base, **record}}
 
-    def _search(self, query: str) -> tuple[str, dict[str, Any]]:
-        found = [(entry, matched) for entry, matched, _ in rank(self.skills.entries, words(query))][
-            :MAX_FOUND
-        ]
-        answer: dict[str, Any] = {
-            "searched": len(self.skills.entries),
-            "found": [
-                {"id": e.qualified, "description": e.description, "matched": matched}
-                for e, matched in found
-            ],
-        }
+    async def _search(self, query: str) -> tuple[str, dict[str, Any]]:
+        record: dict[str, Any] = {"status": "ok", "scoring": "lexical"}
+        similar: dict[str, float] = {}
+        if self.vectors is not None:
+            try:
+                similar, why = await self.bounded(self.similarity(query))
+            except TimeoutError:
+                why = "timed_out"
+            except EmbeddingError as error:
+                why = f"failed: {error}"
+            if similar:
+                record["scoring"] = "hybrid"
+            else:
+                record["embedding"] = (why or "none")[:300]
+        found = hybrid(self.skills.entries, query, similar)[:MAX_FOUND]
+        answer: dict[str, Any] = {"searched": len(self.skills.entries), "found": []}
+        for entry, matched, meaning in found:
+            item: dict[str, Any] = {"id": entry.qualified, "description": entry.description}
+            if matched:
+                item["matched"] = matched
+            if meaning is not None:
+                item["meaning"] = round(meaning, 2)
+            answer["found"].append(item)
         if not found:
-            answer["note"] = "no skill matched these words; this covers only this search"
-        ids = [entry.qualified for entry, _ in found]
-        return json.dumps(answer, ensure_ascii=False), {"status": "ok", "found": ids}
+            answer["note"] = "no skill matched; this covers only this search"
+        record["found"] = [entry.qualified for entry, _, _ in found]
+        return json.dumps(answer, ensure_ascii=False), record
 
     def _load(self, names: list[str]) -> tuple[str, dict[str, Any]]:
         """Each name's body, or why it is not loaded; a name that names no skill costs
@@ -298,6 +392,34 @@ def words(text: str) -> list[str]:
     without a plural's final s."""
     words = (word for word in _WORD.findall(text.lower()) if word not in _STOP)
     return [word[:-1] if len(word) > 3 and word.endswith("s") else word for word in words]
+
+
+def hybrid(
+    entries: Sequence[Entry], text: str, similar: dict[str, float]
+) -> list[tuple[Entry, list[str], float | None]]:
+    """The entries that share words with ``text`` or come close to it in meaning, best
+    first by reciprocal rank fusion of the two orders, with the words and the similarity."""
+    lexical = {
+        entry.qualified: (index, matched)
+        for index, (entry, matched, _) in enumerate(rank(entries, words(text)))
+    }
+    close = sorted((s for s in similar.items() if s[1] >= SIMILAR), key=lambda s: -s[1])
+    meaning = {skill: (index, value) for index, (skill, value) in enumerate(close)}
+    fused: list[tuple[float, int, Entry]] = []
+    for order, entry in enumerate(entries):
+        words_at, meaning_at = lexical.get(entry.qualified), meaning.get(entry.qualified)
+        if words_at is None and meaning_at is None:
+            continue
+        score = sum(1 / (61 + at[0]) for at in (words_at, meaning_at) if at is not None)
+        fused.append((-score, order, entry))
+    return [
+        (
+            entry,
+            lexical[entry.qualified][1] if entry.qualified in lexical else [],
+            meaning[entry.qualified][1] if entry.qualified in meaning else None,
+        )
+        for _, _, entry in sorted(fused)
+    ]
 
 
 def rank(entries: Sequence[Entry], query: list[str]) -> list[tuple[Entry, list[str], float]]:

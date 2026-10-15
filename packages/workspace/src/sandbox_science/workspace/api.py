@@ -128,7 +128,7 @@ class EnvironmentView(Contract):
 
 class RoleCost(Contract):
     """What one role's model calls cost: the main agent's runs, delegated runs, the
-    reviewer's or the job watcher's (lab 40, B5)."""
+    reviewer's, the job watcher's (lab 40, B5) or the skills' embeddings."""
 
     role: CostRole
     last_day: float | None

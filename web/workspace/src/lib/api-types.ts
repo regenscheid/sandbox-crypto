@@ -1148,9 +1148,9 @@ export interface RevisionSummaryPage {
   revisions: RevisionSummary[];
 }
 
-/** What one role's model calls cost: the main agent's runs, delegated runs, the reviewer's or the job watcher's (lab 40, B5). */
+/** What one role's model calls cost: the main agent's runs, delegated runs, the reviewer's, the job watcher's (lab 40, B5) or the skills' embeddings. */
 export interface RoleCost {
-  role: "main" | "delegated" | "reviewer" | "watcher";
+  role: "main" | "delegated" | "reviewer" | "watcher" | "embeddings";
   last_day: number | null;
   total: number;
 }

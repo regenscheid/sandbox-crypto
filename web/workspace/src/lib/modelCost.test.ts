@@ -11,12 +11,14 @@ it('splits the cost by role once more than one role spent', () => {
       { role: 'main', last_day: 0.4, total: 1 },
       { role: 'reviewer', last_day: 0.2, total: 0.45 },
       { role: 'watcher', last_day: null, total: 0.05 },
+      { role: 'embeddings', last_day: 0.01, total: 0.02 },
     ],
   };
   expect(costByRole(cost)).toEqual([
     'The main agent: $0.40 in the last 24 hours, $1.00 in all',
     'The reviewer: $0.20 in the last 24 hours, $0.45 in all',
     'The job watcher: $0 in the last 24 hours, $0.05 in all',
+    'Skill embeddings: $0.01 in the last 24 hours, $0.02 in all',
   ]);
 });
 
