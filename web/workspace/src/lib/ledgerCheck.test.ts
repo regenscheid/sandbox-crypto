@@ -17,6 +17,7 @@ import {
   evidenceText,
   fieldsText,
   noteProblem,
+  pdfText,
   recordCheck,
 } from './ledgerCheck';
 import { idle } from './submit';
@@ -88,13 +89,25 @@ const assumes = (fields: Partial<EntryLink> = {}): EntryLink => ({
 });
 
 describe('a check', () => {
-  it('is offered on a claim or result at its current revision only', () => {
+  it('is offered on a claim, result or reference at its current revision only', () => {
     expect(checkable(entry())).toBe(true);
     expect(checkable(entry({ type: 'result' }))).toBe(true);
+    expect(checkable(entry({ type: 'reference' }))).toBe(true);
     expect(checkable(entry({ revision: 2 }))).toBe(false);
-    for (const type of ['issue', 'assumption', 'decision', 'task', 'reference'] as const) {
+    expect(checkable(entry({ type: 'reference', revision: 2 }))).toBe(false);
+    for (const type of ['issue', 'assumption', 'decision', 'task'] as const) {
       expect(checkable(entry({ type })), type).toBe(false);
     }
+  });
+
+  it("names a reference's PDF whole, as the check vouches for it", () => {
+    const sha = 'ab'.repeat(32);
+    expect(pdfText({ pdf: { artifact_id: 'art-1', revision: 4, sha256: sha } })).toBe(
+      `artifact art-1, revision 4\nsha256 ${sha}`,
+    );
+    expect(pdfText({})).toBeNull();
+    expect(pdfText({ pdf: 'art-1' })).toBeNull();
+    expect(pdfText({ pdf: { artifact_id: 'art-1', revision: 4 } })).toBeNull();
   });
 
   it('names the revision read, and its note only when there is one', () => {
@@ -125,11 +138,23 @@ describe('what the user attests to, as they will be held to it', () => {
         return entry({ fields: { note: text } });
       case 'evidence scope':
         return entry({ evidence: [evidence({ scope: text })] });
+      case "reference's PDF":
+        return entry({
+          type: 'reference',
+          fields: { pdf: { artifact_id: text, revision: 1, sha256: 'ab'.repeat(32) } },
+        });
       default:
         return entry({ links: [assumes({ note: text })] });
     }
   };
-  const places = ['title', 'statement', 'fields', 'evidence scope', 'assumes note'];
+  const places = [
+    'title',
+    'statement',
+    'fields',
+    'evidence scope',
+    'assumes note',
+    "reference's PDF",
+  ];
   const cases = fixtures.cases.flatMap((c) =>
     places.map((where) => ({ ...c, where, hidden: c.hidden as [number, string][] })),
   );

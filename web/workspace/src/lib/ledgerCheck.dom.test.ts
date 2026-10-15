@@ -156,8 +156,69 @@ describe('the check panel', () => {
     expect(button(root, 'I checked this revision').disabled).toBe(false);
   });
 
-  it('is offered nowhere but a claim or result at its current revision', () => {
-    for (const shown of [entry({ type: 'issue' }), entry({ revision: 2 })]) {
+  it('on a reference shows the PDF it names, whole, and vouches for it', async () => {
+    const sha = '0123456789abcdef'.repeat(4);
+    const sent: { url: string; body: unknown }[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        sent.push({ url, body: JSON.parse(String(init?.body)) });
+        return reply(200, answer);
+      }),
+    );
+    const reference = entry({
+      handle: 'REF-1',
+      type: 'reference',
+      status: 'active',
+      revision: 2,
+      head: 2,
+      title: 'A paper',
+      fields: {
+        authors: ['A. Author'],
+        pdf: { artifact_id: 'art-1', revision: 4, sha256: sha },
+      },
+    });
+    const root = show(LedgerCheck, {
+      projectId: 'p1',
+      entry: reference,
+      changed: vi.fn().mockResolvedValue(undefined),
+    });
+    button(root, 'I checked this revision').click();
+    flushSync();
+    expect(root.textContent).toContain('Your check vouches for that PDF');
+    const exact = [...root.querySelectorAll('pre.exact')].map((pre) => pre.textContent);
+    expect(exact).toContain(`artifact art-1, revision 4\nsha256 ${sha}`);
+    expect(exact.some((text) => text?.includes('"authors"'))).toBe(true);
+    button(root, 'Record my check of r2').click();
+    await settle();
+    expect(sent).toEqual([
+      {
+        url: '/api/v0/projects/p1/ledger/entry-0123456789abcdef01234567/checks',
+        body: { revision: 2, operation_id: expect.any(String) },
+      },
+    ]);
+    expect(root.textContent).toContain(
+      'Your check of r2 is recorded. It vouches for the PDF that revision names.',
+    );
+  });
+
+  it('on a reference that names no PDF says it vouches for none', () => {
+    const root = show(LedgerCheck, {
+      projectId: 'p1',
+      entry: entry({ handle: 'REF-2', type: 'reference', fields: { authors: ['B'] } }),
+      changed: vi.fn().mockResolvedValue(undefined),
+    });
+    button(root, 'I checked this revision').click();
+    flushSync();
+    expect(root.textContent).toContain('It names no PDF: your check vouches for none.');
+  });
+
+  it('is offered nowhere but a claim, result or reference at its current revision', () => {
+    for (const shown of [
+      entry({ type: 'issue' }),
+      entry({ revision: 2 }),
+      entry({ type: 'reference', revision: 2 }),
+    ]) {
       const root = show(LedgerCheck, {
         projectId: 'p1',
         entry: shown,

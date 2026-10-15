@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 /**
- * The user's record that they checked a claim or a result at one revision (docs/specs/
- * ledger.md, LG-17; docs/LEDGER.md, "The gate"): an independent check of the user's,
- * which the gate counts for the main agent's establishing. The user attests to exactly
+ * The user's record that they checked a claim, a result or a reference at one revision
+ * (docs/specs/ledger.md, LG-16, LG-17; docs/LEDGER.md, "The gate"): an independent check
+ * of the user's, which the gate counts for the main agent's establishing, and which for a
+ * reference vouches for the PDF that revision names, by its SHA-256. The user attests to exactly
  * the text they read, so the view shows it as `ApprovalText` does, and the check names
  * the revision read: a newer one is a conflict, never a check of text the user did not see.
  */
@@ -13,9 +14,28 @@ import { evidenceKind, quoteWhere } from './ledgerEvidence';
 import { guardedWrite } from './mutation';
 import { submit, type Submitting } from './submit';
 
-/** Whether the user can record a check of the entry shown: a claim or result, at its current revision. */
+/**
+ * Whether the user can record a check of the entry shown: a claim, result or reference, at
+ * its current revision. A reference's check vouches for the PDF that revision names (LG-16).
+ */
 export function checkable(entry: Pick<EntryView, 'type' | 'revision' | 'head'>): boolean {
-  return (entry.type === 'claim' || entry.type === 'result') && entry.revision === entry.head;
+  return (
+    (entry.type === 'claim' || entry.type === 'result' || entry.type === 'reference') &&
+    entry.revision === entry.head
+  );
+}
+
+/**
+ * The PDF a reference's revision names, as the exact text the user vouches for by checking
+ * it: the artifact revision and the PDF's whole SHA-256; null when it names none, or names
+ * one the view cannot read.
+ */
+export function pdfText(fields: Record<string, unknown>): string | null {
+  const pdf = fields.pdf;
+  if (pdf === null || typeof pdf !== 'object') return null;
+  const { artifact_id, revision, sha256 } = pdf as Record<string, unknown>;
+  if (typeof artifact_id !== 'string' || typeof sha256 !== 'string') return null;
+  return `artifact ${artifact_id}, revision ${String(revision)}\nsha256 ${sha256}`;
 }
 
 /** An entry's fields as the exact text the user attests to; empty for none. */
