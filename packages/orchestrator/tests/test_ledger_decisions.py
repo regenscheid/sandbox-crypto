@@ -247,7 +247,7 @@ def test_a_disputed_result_keeps_what_it_was_recorded_on(ledger: Ledger) -> None
     while it is disputed, and records it again with measures nobody recorded."""
     change(ledger, *PUBLISHED, NEW["result"])
     change(ledger, status("R-1", 1, "disputed"), status("R-2", 1, "disputed"), op="dispute")
-    faster = {"fields": {"category": "key-recovery", "measures": {"time": 90, "memory": 80}}}
+    faster = {"fields": {"measures": {"time": 90, "memory": 80}}}
     for rewrite in ({"statement": "Time $2^{90}$."}, faster):
         with pytest.raises(DocumentError, match="R-1 is disputed: its statement, fields"):
             change(ledger, {"entry": "R-1", "expected": 2, **rewrite}, op=f"r-{len(rewrite)}")
