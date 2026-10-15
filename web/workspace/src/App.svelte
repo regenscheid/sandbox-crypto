@@ -56,6 +56,10 @@
       {#key `${route.project}/${route.session}`}
         <SessionView projectId={route.project} sessionId={route.session} />
       {/key}
+    {:else if route.view === 'review'}
+      {#key `${route.project}/${route.session}/${route.review}`}
+        <SessionView projectId={route.project} sessionId={route.session} reviewId={route.review} />
+      {/key}
     {:else if route.view === 'finding'}
       {#key `${route.project}/${route.session}/${route.finding}`}
         <FindingView

@@ -164,6 +164,19 @@ export class ReviewBrowser {
     await Promise.all([this.reviews.reload(), this.findings.reload(), this.checks.reload()]);
   }
 
+  /**
+   * Choose a review by its ID, as a link names it (a quote's citation check): its manifest
+   * names the review when it arrives, and the panel shows it then.
+   */
+  open(review: string): Promise<void> {
+    this.#review = review;
+    this.panel.selected = null;
+    this.records.clear();
+    this.text.list.clear();
+    this.evidence.clear();
+    return this.evidence.reload();
+  }
+
   /** Choose a review: its manifest and evidence, with its audit records ready to read. */
   select(review: Review): Promise<void> {
     this.#review = review.review_id;
