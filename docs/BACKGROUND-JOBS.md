@@ -62,6 +62,9 @@ monetary spend accounting.
 
 ## Notices and persistence
 
+With a state directory, a job's files are recorded as artifact revisions when a run
+first makes its completion notice, which says how many ([artifacts](ARTIFACTS.md#recording-the-files-calls-write)).
+
 The worker is authoritative for execution state. Job control records share
 `<state-dir>/control.sqlite3` with documents, in `job_` tables. They keep the
 originating run, its active lease, waits, watcher calls and acknowledged

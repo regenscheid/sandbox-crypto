@@ -335,8 +335,13 @@ before the result goes back to the model, it records the files the worker report
   Recording never fails a call: if it stops part way, the files recorded before stay,
   and the report says it stopped.
 
-Background jobs' files and delegated runs' declared results (RA-38) are recorded in
-later steps, and the GUI shows them with the artifact list (RA-37).
+A background job's files are recorded when a run first makes its completion notice:
+the recorder reads the job's whole result from the worker (its status leaves the file
+lists out) and records them as for a call, attributed to the operation that started
+the job and its execution; the notice carries the counts. A notice made again, after
+a run that failed, records them again, which keeps the first revisions. Delegated
+runs' declared results (RA-38) come with delegation, and the GUI shows the recorded
+files with the artifact list (RA-37).
 
 ## Tests and evidence reads
 
@@ -404,8 +409,8 @@ with synthetic state and no live model, worker or OpenShell VM.
 
 ## Not built
 
-- Recording background jobs' files and delegated runs' declared results, and the
-  GUI's view of recorded files (RA-37, RA-38).
+- Recording delegated runs' declared results, and the GUI's view of recorded files
+  (RA-37, RA-38).
 - Complete telemetry and snapshotting, link semantics, authenticated feed binding and
   control ingestion of the worker's observations.
 - Imports and MCP binary results, retention drop workflows, observed inputs and kernel

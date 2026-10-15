@@ -9,22 +9,25 @@ import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import pytest_asyncio
 
 from sandbox_science.contracts import ErrorKind, WriteFileRequest
 from sandbox_science.contracts.artifact_inventory import ArtifactRevision
+from sandbox_science.contracts.worker import TERMINAL_STATES
 from sandbox_science.orchestrator import recording as recording_module
 from sandbox_science.orchestrator.artifact_publisher import ArtifactPublisher
 from sandbox_science.orchestrator.artifacts import ArtifactInventory, ArtifactLimits
 from sandbox_science.orchestrator.documents import USER, DocumentStore
 from sandbox_science.orchestrator.file_settings import DEFAULT_IGNORE, ProjectFiles
+from sandbox_science.orchestrator.jobs import JobTools
 from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.recording import FileRecorder, RecordedFiles
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
+from sandbox_science.testing import eventually
 
 from .test_artifact_publication import CONTEXT, TOKEN
 from .test_artifact_publication import worker_url as worker_url
@@ -301,3 +304,27 @@ async def test_files_recorded_before_a_failure_stay(
     assert report["recorded"] == 1
     assert "RuntimeError" in report["failed"]
     assert [f["path"] for f in recording.recorder.files] == ["old.txt", "new.txt"]
+
+
+async def test_a_jobs_files_are_recorded_when_the_run_sees_it_end(recording: Recording) -> None:
+    client = recording.toolbox.client
+    jobs = JobTools(client, CONTEXT, run_id="run1")
+    jobs.recorder = recording.recorder
+    script = "mkdir -p out && echo 42 > out/n.txt"
+    await jobs.start(
+        {"script": script, "purpose": "write n", "expected_progress": "none"}, "op-job"
+    )
+    (job,) = (await client.jobs(CONTEXT, limit=10)).jobs
+
+    async def ended() -> bool:
+        execution = await client.get(job.execution_id, project_id="p1")
+        return execution.state in TERMINAL_STATES
+
+    await eventually(ended, timeout=30)
+    (notice,) = await jobs.notices()
+    assert cast(dict[str, Any], notice["recorded_files"])["recorded"] == 1
+    head = recording.heads()["sessions/s1/out/n.txt"]
+    assert (head.publication.tool_call, head.publication.execution_id) == (
+        "op-job", job.execution_id,
+    )  # fmt: skip
+    assert recording.inventory.content("p1", head.reference) == b"42\n"
