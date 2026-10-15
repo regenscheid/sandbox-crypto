@@ -8,6 +8,8 @@
  */
 import type {
   ArtifactListing,
+  FrontierAnswer,
+  FrontierCategories,
   LedgerEntry,
   LedgerGate,
   LedgerHistory,
@@ -528,7 +530,6 @@ export const api = {
           ? ''
           : `${revision === null ? '?' : '&'}incoming_after=${incomingAfter}`),
     ),
-  /** A page of an entry's revisions, newest first, before `before`. */
   /** The gate for an entry as it reads now, each clause with why, and the decisions that affect it. */
   ledgerGate: (project: string, entry: string) =>
     get<LedgerGate>(`/projects/${part(project)}/ledger/${part(entry)}/gate`),
@@ -554,11 +555,35 @@ export const api = {
       `/projects/${part(project)}/ledger/${part(entry)}/flags/reopened`,
       change,
     ),
+  /** A page of an entry's revisions, newest first, before `before`. */
   ledgerHistory: (project: string, entry: string, before: number | null = null) =>
     get<LedgerHistory>(
       `/projects/${part(project)}/ledger/${part(entry)}/history` +
         (before === null ? '' : `?before=${before}`),
     ),
+  /** A page of the project's frontier categories, in the order they were defined. */
+  frontierCategories: (project: string, after: string | null = null) =>
+    get<FrontierCategories>(
+      `/projects/${part(project)}/frontier` + (after === null ? '' : `?after=${part(after)}`),
+    ),
+  /**
+   * A category's frontier: a page of its groups from the `groupsAfter`-th on, with the
+   * proposed candidates made before result number `candidatesBefore`, or the newest.
+   */
+  frontier: (
+    project: string,
+    category: string,
+    groupsAfter: number | null = null,
+    candidatesBefore: number | null = null,
+  ) => {
+    const query = new URLSearchParams({
+      ...(groupsAfter === null ? {} : { groups_after: String(groupsAfter) }),
+      ...(candidatesBefore === null ? {} : { candidates_before: String(candidatesBefore) }),
+    }).toString();
+    return get<FrontierAnswer>(
+      `/projects/${part(project)}/frontier/${part(category)}` + (query ? `?${query}` : ''),
+    );
+  },
   /** The project memory's accepted entries in order, and the bound agents receive. */
   memory: (project: string) =>
     get<MemoryAnswer>(`/projects/${part(project)}/memory`, { maxBytes: MEMORY_MAX_BYTES }),

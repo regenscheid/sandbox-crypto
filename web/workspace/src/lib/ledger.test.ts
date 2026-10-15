@@ -137,7 +137,12 @@ describe('fields', () => {
       ),
     ).toEqual([
       { key: 'kind', name: 'Kind', value: 'negative result', href: null },
-      { key: 'category', name: 'Frontier category', value: 'key-recovery', href: null },
+      {
+        key: 'category',
+        name: 'Frontier category',
+        value: 'key-recovery',
+        href: '#/projects/p1/frontier/key-recovery',
+      },
       {
         key: 'conditions',
         name: 'Conditions',

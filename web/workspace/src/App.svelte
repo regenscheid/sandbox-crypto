@@ -6,6 +6,8 @@
   import HistoryView from './views/HistoryView.svelte';
   import PdfView from './views/PdfView.svelte';
   import FindingView from './views/FindingView.svelte';
+  import FrontierList from './views/FrontierList.svelte';
+  import FrontierView from './views/FrontierView.svelte';
   import LedgerBoard from './views/LedgerBoard.svelte';
   import LedgerEntryView from './views/LedgerEntryView.svelte';
   import MemoryPage from './views/MemoryPage.svelte';
@@ -90,6 +92,14 @@
           entryName={route.entry}
           revision={route.revision}
         />
+      {/key}
+    {:else if route.view === 'categories'}
+      {#key route.project}
+        <FrontierList projectId={route.project} />
+      {/key}
+    {:else if route.view === 'frontier'}
+      {#key `${route.project}/${route.category}`}
+        <FrontierView projectId={route.project} category={route.category} />
       {/key}
     {:else if route.view === 'pdf'}
       {#key `${route.project}/${route.artifact}/${route.revision}/${route.sha256}`}

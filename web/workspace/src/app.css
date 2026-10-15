@@ -214,6 +214,32 @@ ul.links {
   font-size: 0.9em;
 }
 
+/* A frontier's groups of conditions and their results, and its warnings. */
+.frontier-group {
+  border-top: 1px solid var(--border);
+  margin-top: 1rem;
+}
+
+.frontier-result {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.4rem 0.6rem;
+  margin-bottom: 0.5rem;
+  overflow-wrap: anywhere;
+}
+
+.frontier-result p,
+.frontier-result ul {
+  margin: 0.2rem 0;
+}
+
+.frontier-warning {
+  border-left: 3px solid var(--approximate);
+  padding: 0.2em 0.6em;
+  margin: 0.5em 0;
+  overflow-wrap: anywhere;
+}
+
 /* The PDF viewer's frame, from the preview origin. */
 .pdf-frame {
   display: block;

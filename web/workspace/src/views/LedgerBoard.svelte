@@ -4,7 +4,7 @@
      Read-only: agents change the ledger through their tools. -->
 <script lang="ts">
   import { ENTRY_TYPES, STATUSES, statusText, TYPE_NAMES, type EntryType } from '../lib/ledger';
-  import { issuesHref, projectHref } from '../lib/router';
+  import { frontierHref, issuesHref, projectHref } from '../lib/router';
   import LedgerColumn from './LedgerColumn.svelte';
 
   let { projectId }: { projectId: string } = $props();
@@ -24,6 +24,7 @@
   references. Agents change it through their tools; here it is read-only.
 </p>
 <p><a href={issuesHref(projectId)}>The issue list</a>: issues and what they concern.</p>
+<p><a href={frontierHref(projectId)}>The frontier</a>: the best known results of each category.</p>
 
 <div class="board-controls">
   <div role="group" aria-label="Entry type">

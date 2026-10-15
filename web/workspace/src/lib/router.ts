@@ -17,7 +17,9 @@
  * - `#/projects/<project>/ledger` the project's ledger as a board,
  *   `#/projects/<project>/ledger/issues` its issues and what they concern, and
  *   `#/projects/<project>/ledger/<entry>` one entry by its handle or ID, with
- *   `…/revisions/<number>` for an earlier revision.
+ *   `…/revisions/<number>` for an earlier revision;
+ * - `#/projects/<project>/frontier` the project's frontier categories, and
+ *   `#/projects/<project>/frontier/<category>` one category's frontier.
  */
 
 export type Route =
@@ -38,10 +40,15 @@ export type Route =
   | { view: 'ledger'; project: string }
   | { view: 'issues'; project: string }
   | { view: 'entry'; project: string; entry: string; revision: number | null }
+  | { view: 'categories'; project: string }
+  | { view: 'frontier'; project: string; category: string }
   | { view: 'missing' };
 
 /** A ledger entry named by its ID or its handle, as the server takes it. */
 export const ENTRY_NAME = /^(?:entry-[0-9a-f]{24}|(?:I|C|R|A|D|T|REF)-[1-9][0-9]{0,8})$/;
+
+/** A frontier category's name, as the server takes it. */
+export const CATEGORY_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 function decoded(part: string): string | null {
   try {
@@ -66,6 +73,13 @@ export function parseRoute(hash: string): Route {
   if (parts.length === 2) return { view: 'project', project };
   if (parts.length === 3 && parts[2] === 'memory') return { view: 'memory', project };
   if (parts[2] === 'ledger') return ledgerRoute(project, parts.slice(3));
+  if (parts[2] === 'frontier' && parts.length === 3) return { view: 'categories', project };
+  if (parts[2] === 'frontier' && parts.length === 4) {
+    const category = parts[3]!;
+    return CATEGORY_NAME.test(category)
+      ? { view: 'frontier', project, category }
+      : { view: 'missing' };
+  }
   const name = parts.length >= 4 ? decoded(parts[3]!) : null;
   if (name === null) return { view: 'missing' };
   if (parts[2] === 'sessions' && parts.length === 4) {
@@ -163,4 +177,13 @@ export function issuesHref(project: string): string {
 export function ledgerEntryHref(project: string, entry: string, revision?: number): string {
   const base = `${ledgerHref(project)}/${encodeURIComponent(entry)}`;
   return revision === undefined ? base : `${base}/revisions/${revision}`;
+}
+
+export function frontierHref(project: string): string {
+  return `${projectHref(project)}/frontier`;
+}
+
+/** One frontier category's frontier. */
+export function categoryHref(project: string, category: string): string {
+  return `${frontierHref(project)}/${encodeURIComponent(category)}`;
 }

@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 import { describe, expect, it } from 'vitest';
 import {
+  categoryHref,
   documentHref,
   findingHref,
+  frontierHref,
   historyHref,
   issuesHref,
   ledgerEntryHref,
@@ -90,6 +92,14 @@ describe('routes', () => {
     ['#/projects/p1/ledger/C-1/revisions/0', { view: 'missing' }],
     ['#/projects/p1/ledger/C-1/revisions', { view: 'missing' }],
     ['#/projects/p1/ledger/C-1/history', { view: 'missing' }],
+    ['#/projects/p1/frontier', { view: 'categories', project: 'p1' }],
+    [
+      '#/projects/p1/frontier/key-recovery_2.v1',
+      { view: 'frontier', project: 'p1', category: 'key-recovery_2.v1' },
+    ],
+    ['#/projects/p1/frontier/-x', { view: 'missing' }],
+    ['#/projects/p1/frontier/a%2Fb', { view: 'missing' }],
+    ['#/projects/p1/frontier/a/history', { view: 'missing' }],
   ])('%s', (hash, route) => {
     expect(parseRoute(hash)).toEqual(route);
   });
@@ -128,6 +138,12 @@ describe('routes', () => {
       finding: 'f#2',
     });
     expect(parseRoute(issuesHref('p 1'))).toEqual({ view: 'issues', project: 'p 1' });
+    expect(parseRoute(frontierHref('p 1'))).toEqual({ view: 'categories', project: 'p 1' });
+    expect(parseRoute(categoryHref('p 1', 'cost.v2'))).toEqual({
+      view: 'frontier',
+      project: 'p 1',
+      category: 'cost.v2',
+    });
     expect(parseRoute(ledgerEntryHref('p 1', 'T-4', 7))).toEqual({
       view: 'entry',
       project: 'p 1',

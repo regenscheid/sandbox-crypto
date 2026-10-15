@@ -9,7 +9,15 @@ import type { Author } from './api';
 import type { EntryLink, EntrySummary, EntryView } from './api-types';
 import { describeAuthor } from './authors';
 import { PagedList, type ListState } from './pagedList';
-import { documentHref, ENTRY_NAME, findingHref, ledgerEntryHref, pdfHref } from './router';
+import {
+  CATEGORY_NAME,
+  categoryHref,
+  documentHref,
+  ENTRY_NAME,
+  findingHref,
+  ledgerEntryHref,
+  pdfHref,
+} from './router';
 
 export type EntryType = EntrySummary['type'];
 export type LinkKind = EntryLink['kind'];
@@ -229,7 +237,7 @@ export interface FieldRow {
   key: string;
   name: string;
   value: string;
-  /** Where the value leads, when somewhere: a reference's PDF, in the viewer. */
+  /** Where the value leads, when somewhere: a reference's PDF, in the viewer, or a result's frontier. */
   href: string | null;
 }
 
@@ -241,6 +249,13 @@ function pdfField(project: string, value: unknown): string | null {
   if (!Number.isSafeInteger(revision) || (revision as number) < 1) return null;
   if (typeof sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(sha256)) return null;
   return pdfHref(project, artifact_id, revision as number, sha256);
+}
+
+/** A result's frontier category's frontier, when the field names one as the server takes it. */
+function categoryField(project: string, value: unknown): string | null {
+  return typeof value === 'string' && CATEGORY_NAME.test(value)
+    ? categoryHref(project, value)
+    : null;
 }
 
 /** The names of the fields the types give their entries (docs/LEDGER.md), in words. */
@@ -291,7 +306,12 @@ export function fieldRows(fields: Record<string, unknown>, project: string): Fie
     name: FIELD_NAMES[name] ?? statusText(name),
     // A claim's kind is a word of the spec's, such as `negative_result`.
     value: name === 'kind' ? statusText(valueText(fields[name])) : valueText(fields[name]),
-    href: name === 'pdf' ? pdfField(project, fields[name]) : null,
+    href:
+      name === 'pdf'
+        ? pdfField(project, fields[name])
+        : name === 'category'
+          ? categoryField(project, fields[name])
+          : null,
   }));
 }
 
