@@ -244,7 +244,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
   - [x] Server: documents agents create and agents' or captured code's patches, agents' comments, review text (statements, remedies, confirmations, response explanations and bodies), and every text an agent writes into a session plan
   - [ ] Server: ledger statements and fields (after lane S's flags, #296)
   - [x] GUI: applying a suggested patch, with a diff against the head
-  - [ ] GUI: Move to project and Restore this revision
+  - [x] GUI: Move to project and Restore this revision
   - [ ] GUI: a session plan's save, when it holds agent text
   - [ ] GUI: finding decisions (statement, remedy, explanation)
   - [ ] GUI: the editor's raw text, comment threads and chat: a banner and the link list when there is hidden content
