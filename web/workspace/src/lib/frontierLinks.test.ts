@@ -35,6 +35,7 @@ const result = (fields: Partial<Result> = {}): Result => ({
   origin: 'project',
   disputed: false,
   unverified: false,
+  confirmed_by: null,
   author: { kind: 'user', user: 'owner' },
   conditions: { attack: 'dual' },
   measures: { time: 160 },

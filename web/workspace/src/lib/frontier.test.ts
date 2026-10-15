@@ -56,6 +56,7 @@ const result = (fields: Partial<FrontierResult> = {}): FrontierResult => ({
   origin: 'project',
   disputed: false,
   unverified: false,
+  confirmed_by: null,
   author: { kind: 'user', user: 'owner' },
   conditions: { attack: 'primal' },
   measures: { time: 150, memory: 90 },
