@@ -16,7 +16,7 @@ import asyncio
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Annotated, Final
+from typing import Annotated, Final, Literal
 
 from aiohttp import web
 from pydantic import AwareDatetime, ConfigDict, Field, ValidationError
@@ -101,6 +101,7 @@ def add_routes(app: web.Application) -> None:
     app.router.add_get(PATH + "/{entry}/work", work_read)
     app.router.add_get(PATH + "/{entry}/citations", citations)
     app.router.add_post(PATH + "/{entry}/checks", check)
+    app.router.add_post(PATH + "/{entry}/assessments", assess)
     app.router.add_post(PATH + "/{entry}/flags", clear)
     app.router.add_post(PATH + "/{entry}/flags/reopened", reopen)
     app.router.add_post(PATH + "/{entry}/dominates/dropped", drop)
@@ -273,6 +274,46 @@ async def check(request: web.Request) -> web.Response:
         return result.model_dump(mode="json")
 
     return await documents.answer(request, checked, writer=True)
+
+
+class AssessRequest(Contract):
+    """The user's assessment of an obstruction claimed on an issue, at the revision read
+    (LG-7): the claim's work record, the verdict, and what the user read, as a note."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    claim: Annotated[str, Field(pattern=r"^work-[0-9a-f]{24}$")]
+    verdict: Literal["accepted", "rejected", "inconclusive"]
+    revision: Annotated[int, Field(ge=1, le=999999999)]
+    note: Annotated[str, Field(min_length=1, max_length=8192)]
+    operation_id: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")]
+
+
+async def assess(request: web.Request) -> web.Response:
+    """POST …/ledger/{entry}/assessments: the user accepts, rejects or cannot decide an
+    obstruction claimed on the issue, as it reads at ``revision``, the one the page read; a
+    later revision is a conflict (LG-7). Same-origin, the user's only."""
+    project, reference = identifier(request, "project"), _entry(request)
+    raw = await json_body(request, "ledger assessment JSON")
+    try:
+        value = AssessRequest.model_validate(raw)
+    except ValidationError:
+        raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid ledger assessment") from None
+
+    def assessed(store: DocumentStore) -> dict[str, object]:
+        result = Ledger(store).assess(
+            project,
+            reference,
+            value.claim,
+            value.verdict,
+            value.revision,
+            USER,
+            note=value.note,
+            operation_id=value.operation_id,
+        )
+        return result.model_dump(mode="json")
+
+    return await documents.answer(request, assessed, writer=True)
 
 
 class DropRequest(Contract):

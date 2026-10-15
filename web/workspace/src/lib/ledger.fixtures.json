@@ -60,9 +60,11 @@
     "concerns"
   ],
   "fields": [
+    "assessment",
     "authors",
     "category",
     "conditions",
+    "excluded_scope",
     "identifiers",
     "kind",
     "measures",

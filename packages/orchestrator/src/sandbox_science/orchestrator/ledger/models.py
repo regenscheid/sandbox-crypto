@@ -248,12 +248,24 @@ class EmptyFields(Contract):
     pass
 
 
+WorkID = Annotated[str, Field(pattern=r"^work-[0-9a-f]{24}$")]
+
+
+class DecisionFields(Contract):
+    """A decision's own fields. A decision that makes an issue ``obstructed`` names the
+    scope it excludes and the user's assessment that accepted the claimed obstruction
+    (LG-7, LG-F8); it cites its evidence as evidence links."""
+
+    excluded_scope: Note | None = None
+    assessment: WorkID | None = None
+
+
 FIELDS: Final[dict[str, type[Contract]]] = {
     "issue": EmptyFields,
     "claim": ClaimFields,
     "result": ResultFields,
     "assumption": EmptyFields,
-    "decision": EmptyFields,
+    "decision": DecisionFields,
     "task": EmptyFields,
     "reference": ReferenceFields,
 }

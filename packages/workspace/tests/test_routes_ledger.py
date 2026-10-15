@@ -259,6 +259,43 @@ async def test_an_entry_reads_its_work_records_a_page_at_a_time(
     await error_of(await client.get(BASE + "/I-9/work"), 404, "not_found")
 
 
+async def test_the_user_assesses_a_claimed_obstruction_through_the_workspace(
+    aiohttp_client: ClientFactory, seeded: Path, static_dir: Path
+) -> None:
+    """LG-7: the user's acceptance of an obstruction claimed on an issue, at the revision
+    read: same-origin, the user's, a conflict once the issue has moved on."""
+    documents = DocumentStore(store_path(seeded))
+    try:
+        claim = Ledger(documents).change(
+            "p1",
+            {"operation_id": "claim", "reason": "Claimed.",
+             "work": [{"key": "t", "entry": "I-1", "tried": "Swept.", "ending": "limit",
+                       "limit": "time"},
+                      {"entry": "I-1", "tried": "No factor base.",
+                       "ending": "obstruction_claimed", "references": [{"work": "new:t"}]}]},
+            MAIN,
+        ).work[1]  # fmt: skip
+    finally:
+        documents.close()
+    client = await workspace(aiohttp_client, seeded, static_dir)
+    url = BASE + "/I-1/assessments"
+    body = {"claim": claim, "verdict": "accepted", "revision": 1, "note": "Read it.",
+            "operation_id": "assess-1"}  # fmt: skip
+    response = await client.post(url, json=body, headers=origin(client))
+    assert response.status == 200, await response.text()
+    (made,) = (await response.json())["work"]
+    work = LedgerWork.model_validate(await (await client.get(BASE + "/I-1/work")).json()).work
+    assert (work.records[0].record_id, work.records[0].author["kind"]) == (made, "user")
+    stale = {**body, "revision": 9, "operation_id": "assess-2"}
+    await error_of(await client.post(url, json=stale, headers=origin(client)), 409, "conflict")
+    await error_of(
+        await client.post(url, json={**body, "verdict": "maybe"}, headers=origin(client)),
+        400,
+        "invalid_request",
+    )
+    assert (await client.post(url, json=body)).status == 403
+
+
 async def test_the_user_drops_a_dominates_link_through_the_workspace(
     aiohttp_client: ClientFactory, seeded: Path, static_dir: Path
 ) -> None:

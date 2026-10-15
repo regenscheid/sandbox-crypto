@@ -21,7 +21,7 @@ import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Final, cast
+from typing import Any, Final, NoReturn, cast
 
 from pydantic import BaseModel, ValidationError
 
@@ -943,12 +943,13 @@ class Ledger:
                 )
             )
         self._check_cycles(db, project, planned)
-        work = self._record_work(
+        work, rejected = self._record_work(
             db, project, mutation, author, keys, pinned, provenance, now.isoformat()
         )
         raised = flags.raise_flags(
             db, project, [self._changed(p) for p in planned], now.isoformat()
         )
+        raised += rejected
         if role == "main":
             for flag in raised:
                 if flag.entry_id in gated:
@@ -1017,12 +1018,13 @@ class Ledger:
         pinned: dict[evidence.Block, str],
         provenance: Json | None,
         now: str,
-    ) -> list[str]:
+    ) -> tuple[list[str], list[flags.Raised]]:
         """Append the change's work records (LG-6), after its entries are written, so
         that one may be on an entry the change creates: each on an issue, a claim or a
         result, at the revision the change leaves it, with its references pinned. Any
         role that changes the ledger records work (LG-13); a record changes no status."""
         recorded: list[str] = []
+        rejections: list[flags.Raised] = []
         named: dict[str, str] = {}
         for number, item in enumerate(mutation.work or (), 1):
             where = f"work {number}"
@@ -1114,7 +1116,29 @@ class Ledger:
                 datetime.fromisoformat(now),
             )
             recorded.append(record)
-        return recorded
+            if (
+                assessed is not None
+                and item.verdict != "accepted"
+                and author.kind == "user"
+                and _rests_on(db, row.entry_id, assessed)
+            ):
+                # The user no longer accepts the claim an obstruction rests on (LG-7).
+                found = flags.raise_one(
+                    db,
+                    project,
+                    row.entry_id,
+                    "evidence_changed",
+                    {
+                        "entry": row.entry_id,
+                        "handle": row.handle,
+                        "work": record,
+                        "verdict": item.verdict,
+                    },
+                    now,
+                )
+                if found is not None:
+                    rejections.append(found)
+        return recorded, rejections
 
     def _produced(
         self,
@@ -1613,7 +1637,7 @@ class Ledger:
         ``obstructed`` or ``refuted``, and a decision ``reversed``, only in a change that
         puts in effect a decision that affects it. The main agent's decision to establish
         a result needs the gate (LG-17), and one that makes an issue obstructed needs an
-        accepted assessment (LG-7, ``_accepted_obstruction``). An entry leaves
+        accepted assessment (LG-7, ``_check_obstruction``). An entry leaves
         ``refuted``, ``withdrawn`` or ``superseded`` only by such a decision too, which
         for the main agent's on a claim or result passes the gate, whatever status it
         brings the entry back to; and a claim or result that was once established or
@@ -1696,17 +1720,132 @@ class Ledger:
                 )
                 gate.establish(db, p.row.entry_id, p.row.handle, held, now, p.row.head)
                 gated.add(p.row.entry_id)
-            elif p.status == "obstructed" and not _accepted_obstruction(db, p.row.entry_id):
-                raise gate.refused(
-                    p.row.entry_id,
-                    "assessment",
-                    f"{p.row.handle} becomes obstructed by the main agent's decision only "
-                    "when an obstruction claimed on it (a work record ending "
-                    "obstruction_claimed) stands accepted: its latest assessment on the issue "
-                    "accepts it, recorded by the user. A delegation started to assess the "
-                    "claim will count too once delegations can be briefed to assess one",
-                )
+            elif p.status == "obstructed":
+                self._check_obstruction(db, p, deciding)
         return gated
+
+    def _check_obstruction(
+        self, db: sqlite3.Connection, p: _Planned, deciding: list[_Planned]
+    ) -> None:
+        """The main agent's decision makes or keeps an issue ``obstructed`` (LG-7, LG-F8)
+        only when it names the excluded scope, its evidence (an evidence link) and the
+        assessment that accepted the claimed obstruction: the user's, the latest of the
+        user's on that claim, both on the issue; and only for the content they were made
+        on: the issue's statement and fields at the claim's and the assessment's revisions
+        are those it has, and the change leaves them as they are. So a reworded issue, or
+        an obstructed one rewritten, needs a fresh acceptance (as #277 and #281 hold for
+        decided entries). A delegation started to assess the claim will count too once
+        delegations can be briefed to assess one."""
+        issue = p.row
+
+        def refuse(why: str) -> NoReturn:
+            raise gate.refused(
+                issue.entry_id,
+                "assessment",
+                f"{issue.handle} is obstructed by the main agent's decision only on the "
+                f"user's accepted assessment of an obstruction claimed on it: {why}",
+            )
+
+        naming = [
+            d
+            for d in deciding
+            if d is not p
+            and any(
+                link.kind == "affects" and link.target_id == issue.entry_id
+                for link in self._final_links(db, d)
+            )
+        ]
+        named = [
+            d
+            for d in naming
+            if d.fields.get("assessment")
+            and d.fields.get("excluded_scope")
+            and self._final_evidence(db, d)
+        ]
+        if not named:
+            refuse(
+                "the decision names the assessment (fields.assessment), the scope it "
+                "excludes (fields.excluded_scope) and its evidence (an evidence link)"
+            )
+        if p.created or "statement" in p.changed or "fields" in p.changed:
+            refuse("the change keeps the issue's statement and fields as they were assessed")
+        current = _content(db, issue.entry_id, issue.head)
+        for d in named:
+            found = db.execute(
+                "SELECT a.entry_id,a.verdict,json_extract(a.author,'$.kind'),"
+                "a.entry_revision,c.record_id,c.entry_id,c.ending,c.entry_revision "
+                "FROM ledger_work a JOIN ledger_work c ON c.record_id=a.assesses "
+                "WHERE a.record_id=? AND a.project=?",
+                (d.fields["assessment"], issue.project),
+            ).fetchone()
+            if found is None:
+                refuse(f"no assessment {d.fields['assessment']} of a claim on it")
+            on, verdict, kind, at, claim, claimed_on, ending, claimed_at = found
+            if (on, claimed_on, ending) != (issue.entry_id, issue.entry_id, "obstruction_claimed"):
+                refuse("the assessment it names is not of an obstruction claimed on it")
+            if (verdict, kind) != ("accepted", "user"):
+                refuse("the assessment it names is not the user's acceptance")
+            (latest,) = db.execute(
+                "SELECT verdict FROM ledger_work WHERE assesses=? "
+                "AND json_extract(author,'$.kind')='user' ORDER BY position DESC LIMIT 1",
+                (claim,),
+            ).fetchone()
+            if latest != "accepted":
+                refuse("the user's latest assessment of the claim does not accept it")
+            if not (
+                _content(db, issue.entry_id, at)
+                == current
+                == _content(db, issue.entry_id, claimed_at)
+            ):
+                refuse(
+                    "its statement or fields changed since the claim or its acceptance: a "
+                    "reworded issue needs a fresh acceptance"
+                )
+
+    def assess(
+        self,
+        project: str,
+        reference: str,
+        claim: str,
+        verdict: str,
+        revision: int,
+        author: Author,
+        *,
+        note: str,
+        operation_id: str,
+    ) -> MutationResult:
+        """The user's assessment of an obstruction claimed on ``reference`` (LG-7): a work
+        record ending ``assessment`` that accepts or rejects ``claim``, with the note as
+        what the user read, on the issue as it reads at ``revision``; a later revision is
+        a conflict. Only the user records one this way; agents use their change tool."""
+        if author.kind != "user":
+            raise _refused("only the user records an assessment this way")
+        self._project(project)
+        with self.control.read() as tx:
+            row = self._find(tx.sql, project, reference)
+        if row.head != revision:
+            raise DocumentError(
+                CONFLICT,
+                f"{row.handle} is at revision {row.head}, not {revision}; read it again",
+                {"entry": row.entry_id, "current": row.head},
+            )
+        return self.change(
+            project,
+            {
+                "operation_id": operation_id,
+                "reason": note,
+                "work": [
+                    {
+                        "entry": row.entry_id,
+                        "tried": note,
+                        "ending": "assessment",
+                        "assesses": claim,
+                        "verdict": verdict,
+                    }
+                ],
+            },
+            author,
+        )
 
     @staticmethod
     def _disputed_once_held(db: sqlite3.Connection, p: _Planned) -> bool:
@@ -2570,24 +2709,32 @@ def _agent_text(mutation: Mutation) -> Mutation:
     return mutation.model_copy(update={"reason": reason, "changes": changes, "work": work})
 
 
-def _accepted_obstruction(db: sqlite3.Connection, issue: str) -> bool:
-    """Whether an obstruction claimed on ``issue`` stands accepted (LG-7): a work record
-    on it ending ``obstruction_claimed`` whose latest assessment on the issue accepts it,
-    an assessment the user recorded. LG-7 also counts one from a delegation started to
-    assess the claim (its brief names it) and run by an agent other than the claimer's;
-    delegations are briefed only to check entries so far, so an agent's assessment counts
-    for nothing yet."""
-    latest: dict[str, tuple[str, str]] = {}
-    for claim, verdict, kind in db.execute(
-        "SELECT json_extract(a.detail,'$.assesses'),json_extract(a.detail,'$.verdict'),"
-        "json_extract(a.author,'$.kind') FROM ledger_work a JOIN ledger_work c "
-        "ON c.record_id=json_extract(a.detail,'$.assesses') WHERE a.entry_id=? "
-        "AND a.ending='assessment' AND c.entry_id=? AND c.ending='obstruction_claimed' "
-        "ORDER BY a.position DESC LIMIT 1000",
-        (issue, issue),
-    ):
-        latest.setdefault(claim, (verdict, kind))
-    return any(verdict == "accepted" and kind == "user" for verdict, kind in latest.values())
+def _content(db: sqlite3.Connection, entry: str, revision: int) -> tuple[Any, ...]:
+    """An entry's statement (its text revision) and fields at ``revision``."""
+    found = db.execute(
+        "SELECT statement,fields FROM ledger_revisions WHERE entry_id=? AND revision=?",
+        (entry, revision),
+    ).fetchone()
+    return tuple(found) if found is not None else ()
+
+
+def _rests_on(db: sqlite3.Connection, issue: str, claim: str) -> bool:
+    """Whether ``issue`` is obstructed by a decision in effect that names an assessment
+    of ``claim``."""
+    return (
+        db.execute(
+            "SELECT 1 FROM ledger_entries i JOIN ledger_revisions ir ON ir.entry_id=i.entry_id "
+            "AND ir.revision=i.head JOIN ledger_links l ON l.kind='affects' "
+            "AND l.target_id=i.entry_id JOIN ledger_entries d ON d.entry_id=l.entry_id "
+            "AND l.revision=d.head JOIN ledger_revisions dr ON dr.entry_id=d.entry_id "
+            "AND dr.revision=d.head JOIN ledger_work a "
+            "ON a.record_id=json_extract(dr.fields,'$.assessment') "
+            "WHERE i.entry_id=? AND ir.status='obstructed' AND d.type='decision' "
+            "AND dr.status='in_effect' AND a.assesses=? LIMIT 1",
+            (issue, claim),
+        ).fetchone()
+        is not None
+    )
 
 
 def _work_id(db: sqlite3.Connection, project: str, reference: str, named: dict[str, str]) -> str:

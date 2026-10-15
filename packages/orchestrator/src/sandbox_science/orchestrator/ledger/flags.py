@@ -197,6 +197,13 @@ def _rests_on(
         flag(entry, "spread", {"entry": target, "handle": handle}, open_flag[0])
 
 
+def raise_one(
+    db: sqlite3.Connection, project: str, entry: str, cause: str, source: Json, now: str
+) -> Raised | None:
+    """One flag on ``entry`` for ``cause`` from ``source``, unless one is open for them."""
+    return _flag(db, project, entry, cause, source, None, now)
+
+
 def key(cause: str, source: Json) -> str:
     """What makes a flag the same as another on its entry: its cause and source."""
     return f"{cause}:{source['entry']}" + (f":{source['revision']}" if "revision" in source else "")
