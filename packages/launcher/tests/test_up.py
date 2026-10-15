@@ -1,0 +1,246 @@
+# SPDX-License-Identifier: MIT
+"""``sandbox-science up``, ``down`` and ``status``, with stand-ins for the parts.
+
+The stand-ins (fake_part.py) listen where the real parts would and write each step to a
+journal, so the tests see the order of starts and stops. No OpenShell is involved.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import queue
+import signal
+import socket
+import stat
+import subprocess
+import sys
+import threading
+import time
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from sandbox_science.launcher.config import load_config
+from sandbox_science.launcher.instance import alive, read
+from sandbox_science.launcher.state import Layout
+
+pytestmark = pytest.mark.slow
+
+LOGIN_TOKEN = "fake-login-token-0123456789abcdef"
+STARTED = [
+    "sandbox-science-worker start",
+    "sandbox-science-worker policy add crypto",
+    "sandbox-science-harness project create crypto",
+    "sandbox-science-harness project revise crypto",
+    "sandbox-science-harness session open crypto main",
+    "sandbox-science-harness start",
+    "sandbox-science-workspace start",
+]
+
+
+def free_ports() -> tuple[int, int]:
+    """A port for the worker and one for the workspace, whose next port is free too."""
+    while True:
+        sockets = [socket.socket() for _ in range(2)]
+        for item in sockets:
+            item.bind(("127.0.0.1", 0))
+        worker, workspace = (item.getsockname()[1] for item in sockets)
+        for item in sockets:
+            item.close()
+        if workspace + 1 != worker and workspace < 65535:
+            return worker, workspace
+
+
+class Launcher:
+    """``sandbox-science`` as a process, its output read as it comes."""
+
+    def __init__(self, config: Path, env: dict[str, str], command: str = "up") -> None:
+        self.config = config
+        self.env = env
+        self.lines: queue.Queue[str] = queue.Queue()
+        self.seen: list[str] = []
+        self.process = subprocess.Popen(
+            [sys.executable, "-m", "sandbox_science.launcher", command, "--config", str(config)],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env,
+        )  # fmt: skip
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self) -> None:
+        assert self.process.stdout is not None
+        for line in self.process.stdout:
+            self.lines.put(line.rstrip("\n"))
+
+    def expect(self, text: str, timeout: float = 30) -> None:
+        deadline = time.monotonic() + timeout
+        while not any(text in line for line in self.seen):
+            try:
+                self.seen.append(self.lines.get(timeout=max(0.01, deadline - time.monotonic())))
+            except queue.Empty:
+                raise AssertionError(f"no {text!r} in:\n" + "\n".join(self.seen)) from None
+
+    def finish(self, timeout: float = 30) -> int:
+        status = self.process.wait(timeout)
+        time.sleep(0.1)
+        while not self.lines.empty():
+            self.seen.append(self.lines.get())
+        return status
+
+    @property
+    def output(self) -> str:
+        return "\n".join(self.seen)
+
+    def command(self, name: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, "-m", "sandbox_science.launcher", name, "--config", str(self.config)],
+            capture_output=True, text=True, env=self.env, timeout=60, check=False,
+        )  # fmt: skip
+
+
+@pytest.fixture
+def site(make_config: Any, fake_parts: Path, tmp_path: Path) -> Iterator[dict[str, Any]]:
+    worker, workspace = free_ports()
+    journal = tmp_path / "journal"
+    journal.touch()
+
+    def launch(parts: dict[str, str] | None = None, **changes: Any) -> Launcher:
+        config = make_config(
+            {
+                "bin_dir": str(fake_parts),
+                "start_timeout": 20,
+                "stop_timeout": changes.pop("stop_timeout", 5),
+                "worker": {"listen": f"127.0.0.1:{worker}"},
+                "workspace": {"listen": f"127.0.0.1:{workspace}"},
+                **changes,
+            }
+        )
+        env = {**os.environ, "FAKE_JOURNAL": str(journal), "FAKE_PARTS": json.dumps(parts or {})}
+        return Launcher(config, env)
+
+    started: list[Launcher] = []
+
+    def tracked(*args: Any, **kwargs: Any) -> Launcher:
+        launcher = launch(*args, **kwargs)
+        started.append(launcher)
+        return launcher
+
+    yield {"launch": tracked, "journal": journal}
+    for launcher in started:
+        if launcher.process.poll() is None:
+            launcher.process.send_signal(signal.SIGINT)
+            launcher.process.wait(30)
+
+
+def journal(path: Path) -> list[str]:
+    return path.read_text().splitlines()
+
+
+def test_up_runs_until_ctrl_c_and_then_stops_the_parts_in_reverse(site: dict[str, Any]) -> None:
+    launcher: Launcher = site["launch"]()
+    launcher.expect("Sandbox Science is running.")
+    launcher.expect("Stop:")
+    assert journal(site["journal"]) == STARTED
+    layout = Layout(load_config(launcher.config).state_dir)
+    # The login address is in a private file, and nowhere else the launcher writes.
+    assert LOGIN_TOKEN in layout.login.read_text()
+    assert stat.S_IMODE(layout.login.stat().st_mode) == 0o600
+    assert str(layout.login) in launcher.output
+    assert LOGIN_TOKEN not in launcher.output
+    assert not any(LOGIN_TOKEN in log.read_text() for log in layout.logs.iterdir())
+    shown = launcher.command("status")
+    assert shown.returncode == 0, shown.stdout + shown.stderr
+    for part in ("worker", "run-service", "workspace"):
+        assert f"  {part}: process" in shown.stdout
+    assert shown.stdout.count("answers") == 2
+    launcher.process.send_signal(signal.SIGINT)
+    assert launcher.finish() == 0
+    assert "Sandbox Science stopped" in launcher.output
+    assert journal(site["journal"]) == [
+        *STARTED,
+        "sandbox-science-workspace stop",
+        "sandbox-science-harness stop",
+        "sandbox-science-worker stop",
+    ]
+    assert not layout.login.exists()
+    assert not layout.record.exists()
+    assert launcher.command("status").returncode == 3
+
+
+def test_down_stops_it_and_a_second_up_is_refused(site: dict[str, Any]) -> None:
+    launcher: Launcher = site["launch"]()
+    launcher.expect("Sandbox Science is running.")
+    again = launcher.command("up")
+    assert again.returncode == 1
+    assert "already runs from" in again.stderr
+    stopped = launcher.command("down")
+    assert stopped.returncode == 0, stopped.stderr
+    assert "Sandbox Science stopped" in stopped.stdout
+    assert launcher.finish() == 0
+    assert journal(site["journal"])[-1] == "sandbox-science-worker stop"
+    assert "Sandbox Science is not running" in launcher.command("down").stdout
+
+
+@pytest.mark.parametrize(
+    ("parts", "message", "stops"),
+    [
+        (
+            {"sandbox-science-workspace": "exit-at-start"},
+            "the workspace stopped as it started, with status 4",
+            ["sandbox-science-harness stop", "sandbox-science-worker stop"],
+        ),
+        (
+            {"sandbox-science-harness": "exit-later"},
+            "the run service stopped by itself, with status 5",
+            ["sandbox-science-workspace stop", "sandbox-science-worker stop"],
+        ),
+        (
+            {"sandbox-science-worker": "grant-fails"},
+            "the policy grant failed, with status 2",
+            ["sandbox-science-worker stop"],
+        ),
+    ],
+)
+def test_a_part_that_fails_stops_the_rest_and_is_reported(
+    site: dict[str, Any], parts: dict[str, str], message: str, stops: list[str]
+) -> None:
+    launcher: Launcher = site["launch"](parts)
+    assert launcher.finish() == 1
+    assert message in launcher.output
+    if "exit-at-start" in parts.values():
+        assert "cannot start, as asked" in launcher.output  # the end of its log
+    if "grant-fails" in parts.values():
+        assert "the policy store is not there" in launcher.output
+    assert journal(site["journal"])[-len(stops) :] == stops
+
+
+def test_a_part_that_ignores_sigterm_is_killed_after_its_stop_timeout(
+    site: dict[str, Any],
+) -> None:
+    launcher: Launcher = site["launch"]({"sandbox-science-harness": "ignore-term"}, stop_timeout=1)
+    launcher.expect("Sandbox Science is running.")
+    launcher.process.send_signal(signal.SIGTERM)
+    assert launcher.finish() == 0
+    assert "the run service did not stop in time; killing it" in launcher.output
+    assert "sandbox-science-harness stop" not in journal(site["journal"])
+    assert journal(site["journal"])[-1] == "sandbox-science-worker stop"
+
+
+def test_parts_a_killed_launcher_leaves_are_stopped_by_down(site: dict[str, Any]) -> None:
+    launcher: Launcher = site["launch"]()
+    launcher.expect("Sandbox Science is running.")
+    layout = Layout(load_config(launcher.config).state_dir)
+    record = read(layout)
+    assert record is not None
+    assert [part.name for part in record.parts] == ["worker", "run-service", "workspace"]
+    launcher.process.kill()
+    launcher.finish()
+    assert all(alive(part) for part in record.parts)
+    shown = launcher.command("status")
+    assert shown.returncode == 3
+    assert "but the worker an earlier launcher started still runs" in shown.stdout
+    stopped = launcher.command("down")
+    assert "stopped the worker" in stopped.stdout
+    assert not any(alive(part) for part in record.parts)
+    assert not layout.record.exists()

@@ -9,6 +9,9 @@ dependencies = [
     "pydantic>=2.9",
 ]
 
+[project.scripts]
+sandbox-science = "sandbox_science.launcher.cli:main"
+
 [build-system]
 requires = ["hatchling>=1.25"]
 build-backend = "hatchling.build"

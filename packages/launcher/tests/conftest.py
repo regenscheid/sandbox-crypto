@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -80,6 +81,27 @@ def commands(tmp_path: Path) -> Path:
     for name in ("sandbox-science-worker", "sandbox-science-harness", "sandbox-science-workspace"):
         command = directory / name
         command.write_text("#!/bin/sh\nexit 0\n")
+        command.chmod(0o755)
+    return directory
+
+
+@pytest.fixture
+def fake_parts(tmp_path: Path) -> Path:
+    """A directory of the parts' commands as ``fake_part.py`` plays them.
+
+    Each is a Python script, as the real ones are, so its command line names it.
+    """
+    directory = tmp_path / "fake-commands"
+    directory.mkdir()
+    script = Path(__file__).with_name("fake_part.py")
+    for name in ("sandbox-science-worker", "sandbox-science-harness", "sandbox-science-workspace"):
+        command = directory / name
+        command.write_text(
+            f"#!{sys.executable}\n"
+            "import runpy, sys\n"
+            f"sys.argv = [{str(script)!r}, {name!r}, *sys.argv[1:]]\n"
+            f"runpy.run_path({str(script)!r}, run_name='__main__')\n"
+        )
         command.chmod(0o755)
     return directory
 

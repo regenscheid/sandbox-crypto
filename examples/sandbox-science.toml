@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: MIT
+# A local Sandbox Science on babbage: `uv run sandbox-science up --config examples/sandbox-science.toml`
+# (docs/QUICKSTART.md). Relative paths are against this file; ~ is your home directory.
+
+# What the launcher makes: tokens, settings, the worker's state, the control store, logs.
+state_dir = "~/.local/state/sandbox-science"
+
+[[projects]]
+id = "crypto"
+profile = "minimal"
+sessions = ["main"]
+
+[model]
+url = "https://litellm-api.npages.org/v1"
+name = "sandbox-orchestrator"
+# Only the run service reads this file; keep it mode 600.
+api_key_file = "~/.config/sandbox-science/secrets/litellm-harness.key"
+
+[worker]
+listen = "127.0.0.1:8100"
+pool_id = "babbage"
+# The project policy, granted to every project above.
+policy = "policy.yaml"
+
+[workspace]
+listen = "127.0.0.1:8200"
+# The PDF viewer's origin: another loopback address makes it another site.
+preview_listen = "127.0.0.2:8201"
+static = "../web/workspace/dist"
+
+# The worker's [openshell] table (docs/WORKER.md), for the lab .agents/labs/lab_up.sh brings up.
+[openshell]
+cli = "~/.local/opt/openshell-0.1.3/bin/openshell"
+python = "/opt/sandbox-science/bin/python"
+isolation_tier = 3
+package_cache = "http://host.openshell.internal:8090"
+
+[openshell.env]
+XDG_CONFIG_HOME = "~/.local/state/openshell-lab/config"
+XDG_STATE_HOME = "~/.local/state/openshell-lab/state"
+XDG_DATA_HOME = "~/.local/state/openshell-lab/data"
+OPENSHELL_LOCAL_TLS_DIR = "~/.local/state/openshell-lab/state/openshell/tls"
+OPENSHELL_TELEMETRY_ENABLED = "false"
+
+[openshell.environments]
+policy_store = "~/.local/state/openshell-lab/middleware/state"
+targets = "~/.local/state/openshell-lab/targets.yaml"
+ceiling = "~/.local/state/openshell-lab/middleware/pool-ceiling.yaml"
+# Stop a project's sandbox after an hour unused; its next use starts it again.
+suspend_after = 3600.0
+
+[openshell.environments.profiles]
+# The tags images/build.sh printed.
+minimal = "sandbox-science/minimal:02f85b3"
+crypto-base = "sandbox-science/crypto-base:02f85b3"
