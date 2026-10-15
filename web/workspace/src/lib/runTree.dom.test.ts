@@ -70,6 +70,7 @@ const delegation = (id: string, child: string, fields: Partial<Delegation> = {})
   models: [],
   read_entry: null,
   read_proofs: null,
+  files: null,
   ...fields,
 });
 

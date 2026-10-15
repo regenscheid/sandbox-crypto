@@ -24,7 +24,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final, Protocol
+from typing import Final, Protocol, cast
 
 from pydantic import JsonValue, TypeAdapter, ValidationError
 
@@ -86,7 +86,7 @@ from .projects import (
 )
 from .question_tool import QuestionTool
 from .questions import Questions
-from .recording import FileRecorder
+from .recording import FileRecorder, RecordedFiles
 from .runstate import RunState
 from .session_plans import SessionPlans
 from .tools import HARNESS_TOOL_NAMES, Toolbox, ToolOutcome
@@ -659,6 +659,7 @@ class Harness:
             tuple(dict.fromkeys(u.model for u in transcript.usage if u.model is not None))[:10],
             found.read if found is not None else None,
             found.read_proofs if found is not None else None,
+            _recorded(finished.hooks),
         )
 
     async def memory(self, admitted: Admitted) -> Snapshot | None:
@@ -871,6 +872,13 @@ class Harness:
             # A check reads and recomputes; it changes no entry, document or memory.
             check=admitted.request.target is not None,
         )
+
+
+def _recorded(hooks: Sequence[TurnHook]) -> dict[str, JsonValue] | None:
+    """The files a run's calls recorded, as its record keeps them (RA-36)."""
+    found = next((hook for hook in hooks if isinstance(hook, RecordedFiles)), None)
+    summary = found.summary() if found is not None else None
+    return cast(dict[str, JsonValue], summary) if isinstance(summary, dict) else None
 
 
 class _ChildSink:

@@ -134,6 +134,9 @@ class FileRecorder:
         self.files: list[dict[str, Any]] = []
         """Up to ``MAX_LISTED`` of the run's recorded files, for its record (RA-36)."""
         self.total = 0
+        self.gaps: Counter[str] = Counter()
+        """The calls' gaps, by reason: files left out, lists the worker cut short
+        (``incomplete``) and recordings that stopped part way (``failed``)."""
 
     async def record(
         self,
@@ -157,6 +160,10 @@ class FileRecorder:
         finally:
             self.total += len(recorded.files)
             self.files.extend(recorded.files[: max(0, MAX_LISTED - len(self.files))])
+            self.gaps.update(recorded.left_out)
+            self.gaps.update(
+                ["incomplete"] * recorded.incomplete + ["failed"] * bool(recorded.failed)
+            )
         return recorded
 
     async def _record(
@@ -343,9 +350,13 @@ class RecordedFiles(TurnHook):
         self.recorder = recorder
 
     def summary(self) -> object | None:
-        if not self.recorder.total:
+        recorder = self.recorder
+        if not recorder.total and not recorder.gaps:
             return None
-        return {"total": self.recorder.total, "files": list(self.recorder.files)}
+        found: dict[str, Any] = {"total": recorder.total, "files": list(recorder.files)}
+        if recorder.gaps:
+            found["gaps"] = dict(recorder.gaps)
+        return found
 
 
 def with_recorded(text: str, report: dict[str, Any]) -> str:
