@@ -310,7 +310,7 @@ function configured(documents: boolean): MarkdownIt {
     containerRule(md);
     recordPlaces(md);
   }
-  // Code shows bidirectional controls as code points, as tool calls do (text.ts).
+  // Code shows hidden characters as code points, as tool calls do (text.ts).
   md.core.ruler.push('visible_controls', (state) => {
     for (const token of state.tokens) {
       if (token.type === 'fence' || token.type === 'code_block') {

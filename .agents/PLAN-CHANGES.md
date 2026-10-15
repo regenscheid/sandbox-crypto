@@ -9,6 +9,10 @@ Decisions of the coordinator on the review of the ledger's gate (#276–#281), w
 - **What a check or review covered** ([ledger spec](../docs/specs/ledger.md), LG-17). A check or review counts for a later revision only if it keeps the statement, fields, `assumes` links and every evidence link that bears on the entry: `supports`, `derivation` and `contradicts` of a type that can count. LG-17 named the `derivation` targets alone, which let evidence of either sign added after a review pass as reviewed. Reviews and `refuted`, `withdrawn` or `superseded` entries are not evidence that counts, and any `proof` that counts needs the independent check.
 - **The user's check** (LG-17). The user's independent check counts only as the `independent_check` link the user added themselves, at the revision they checked; anything the user wrote no longer counts because an agent cites it. The workspace (a same-origin POST that carries the revision read) and the harness's `ledger check` command record it, so proved results can wait for the owner's check until delegation exists after M2.
 
+Decision of the coordinator on the review of the project memory (#283–#291):
+
+- **Hidden characters in text agents read**. Text the user approves and agents then read holds no character the user may not see: the server refuses, rather than strips, controls but the tab and the line feed, format characters, surrogates, private-use and unassigned code points, line and paragraph separators and every Default_Ignorable code point, written as they are or as character references (`check_agent_text`), and the GUI shows such text as its exact string, each hidden character as its code point (`ApprovalText`). The zero-width joiner and non-joiner and the left-to-right and right-to-left marks are refused too, for now: research text rarely needs them, and an agent that meets the refusal writes without them. **Reversible:** an allowlist can take them back. The project memory uses it first; documents, plans, findings and chat follow.
+
 ## 2026-10-14, later (PRs #165–#258)
 
 Decisions of the owner since the last sync (PRs #165–#258):
