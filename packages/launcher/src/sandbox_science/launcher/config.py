@@ -198,6 +198,9 @@ class WorkerConfig(_Strict):
 
 
 class RunServiceConfig(_Strict):
+    run_share: int | None = Field(default=None, ge=1, le=100)
+    """The percent of the project's daily MAIN budget one run may use; the run service's
+    default (50) when unset."""
     math_checks: ConfigPath | None = None
     """The math checker's build, ``web/workspace/dist-math`` after ``npm run build:math``:
     with it, the run service checks the documents' formulas; without it, every formula

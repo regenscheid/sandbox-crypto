@@ -154,6 +154,11 @@ class TurnHook:
     async def notices(self, point: Point, run: RunView) -> Sequence[Notice]:
         return ()
 
+    async def halt(self, run: RunView) -> str | None:
+        """Before each model call after the first, and before its notices: the reason the
+        run stops there instead, which becomes its ``stopped``, or ``None`` to go on."""
+        return None
+
     async def model_returned(self, run: RunView) -> None:
         """After each successful model call, once the loop has counted its deliveries and
         added the reply to the conversation."""

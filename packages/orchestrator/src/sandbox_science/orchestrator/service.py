@@ -40,7 +40,6 @@ import logging
 import secrets
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import timedelta
 from typing import Final, Literal
 
 from pydantic import JsonValue
@@ -63,6 +62,8 @@ from .tools import ToolOutcome
 _log = logging.getLogger(__name__)
 
 POLL_SECONDS: Final = 1.0
+RUN_SHARE: Final = 50
+"""The percent of the project's daily MAIN budget one run may use, by default (RS-6a)."""
 BEAT_SECONDS: Final = 10.0
 RETRY_SECONDS: Final = 30.0
 MAX_WAIT: Final = 900.0
@@ -71,8 +72,6 @@ MAX_FAILURES: Final = 5
 """Failed runs in a row after which a session's messages are held."""
 HISTORY_CHARS: Final = 100_000
 """The longest earlier conversation a run starts with: a quarter of its input (RS-10)."""
-WINDOW: Final = timedelta(hours=24)
-"""The model budget's window (RS-6a)."""
 REQUESTS_TASK: Final = "(The user's comments addressed to this session, as work requests.)"
 """The task a run started for work requests alone is recorded with, and that the
 session's later runs see in its place in the earlier conversation (RS-10)."""
@@ -302,8 +301,7 @@ class RunService:
                 return False
             ids = active.message_ids = [message.message_id for message in queued]
             active.request_ids = requests
-            since = self.clock.now() - WINDOW
-            if await threaded(runs.spent, project, since) >= await threaded(runs.budget, project):
+            if await threaded(runs.over_budget, project, self.clock.now()):
                 _log.warning("project %s has spent its model budget", project)
                 if queued:
                     await threaded(runs.refuse, project, session, ids, "budget")

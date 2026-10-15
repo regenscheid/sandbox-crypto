@@ -9,6 +9,10 @@ session's records (``runstate.py``), which its two hooks and its job waits share
   continue (RS-8). After the run's record is saved, the messages a model call saw are
   marked delivered (RS-9). A message, or a work request addressed to the session's
   main agent, also ends a job wait (``RunChat.arrived``).
+- ``ModelBudget`` keeps the project's MAIN budget during a run the service starts
+  (RS-6a): before each model call after the first, the run stops once the project has
+  spent its budget over the last 24 hours (``budget``), or once the run's own calls have
+  used its share of it (``run_budget``).
 - ``EventLog`` writes what the run does as events, as it happens (RS-13, RS-14), from
   the conversation and the run's records. It comes last among the hooks, so that the
   notices of a safe point are in the conversation when it writes them. Its last
@@ -40,7 +44,7 @@ from .control import ControlError
 from .control.errors import CONFLICT
 from .hooks import Closing, Effect, Notice, Point, Refusal, RunView, TurnHook
 from .projects import ModelUsage, RunRecord
-from .runstate import MAX_EVENT_BYTES, PAGE, ChatMessage, EventKind, RunState
+from .runstate import MAX_EVENT_BYTES, PAGE, ChatMessage, EventKind, RunState, cost
 from .tools import bound
 
 _log = logging.getLogger(__name__)
@@ -141,6 +145,27 @@ class RunChat:
             await self.write("waiting", {"job_ids": None, "mode": None})
         else:
             await self.write("waiting", {"job_ids": wait["job_ids"], "mode": wait["mode"]})
+
+
+class ModelBudget(TurnHook):
+    """The project's MAIN budget, kept at the run's safe points (RS-6a)."""
+
+    name = "budget"
+
+    def __init__(self, chat: RunChat, share: float) -> None:
+        """``share`` is the part of the project's budget one run may use, above 0 and at
+        most 1."""
+        self.chat, self.share = chat, share
+
+    async def halt(self, run: RunView) -> str | None:
+        state, project = self.chat.state, self.chat.context.project_id
+        # Its own calls are among the project's: their events are written as they return.
+        if await threaded(state.over_budget, project, self.chat.clock.now()):
+            return "budget"
+        used = sum(cost(usage) for usage in run.usage)
+        if used >= self.share * await threaded(state.budget, project):
+            return "run_budget"
+        return None
 
 
 class UserMessages(TurnHook):

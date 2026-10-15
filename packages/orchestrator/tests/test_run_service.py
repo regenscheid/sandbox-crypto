@@ -53,8 +53,10 @@ async def serving(
     lease_seconds: float = 60.0,
     retry: float = 0.2,
     clock: Clock = SYSTEM_CLOCK,
+    run_share: float = service_module.RUN_SHARE / 100,
 ) -> AsyncIterator[RunService]:
-    """The run service on the harness's state directory, worker and gateway."""
+    """The run service on the harness's state directory, worker and gateway, keeping the
+    model budget during its runs as ``serve`` does."""
     harness.gateway.script = list(script)
     projects = ProjectStore(harness.state)
     documents = DocumentStore(store_path(harness.state), producer="harness")
@@ -71,7 +73,7 @@ async def serving(
                 client,
                 Role(model, "main"),
                 stores=stores,
-                settings=Settings(min_isolation_tier=None),
+                settings=Settings(min_isolation_tier=None, run_share=run_share),
                 clock=clock,
             )
             service = RunService(core, poll=0.02, retry=retry, clock=clock)

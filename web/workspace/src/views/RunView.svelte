@@ -5,6 +5,7 @@
   import { duration, formatTime } from '../lib/format';
   import Markdown from '../lib/Markdown.svelte';
   import HiddenBanner from './HiddenBanner.svelte';
+  import { stoppedText } from '../lib/chat';
   import { entries, usageLine } from '../lib/transcript';
   import ToolCall from './ToolCall.svelte';
 
@@ -37,7 +38,11 @@
     {:else if run.stopped === 'answered'}
       with an answer
     {:else}
-      <span class="problem">without an answer ({run.stopped})</span>
+      <span class="problem">
+        {run.final_text === null ? 'without an answer' : 'with an answer'}. {stoppedText({
+          stopped: run.stopped,
+        })}
+      </span>
     {/if}
   </dd>
 </dl>
