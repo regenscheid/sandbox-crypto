@@ -91,6 +91,7 @@ from .recording import FileRecorder, RecordedFiles
 from .runstate import RunState
 from .session_plans import PlanRef, SessionPlans
 from .skills import SkillStore, SkillTool
+from .skills.builtin import builtin_pack
 from .tools import HARNESS_TOOL_NAMES, Toolbox, ToolOutcome
 from .worker_client import WorkerAPIError, WorkerClient
 
@@ -820,7 +821,11 @@ class Harness:
             alias=alias,
         )
         # The project's skills as the run starts: its set stays the same to the end (SK-5).
-        skills = await threaded(_skills, stores, context.project_id, role, alias)
+        # A check, and a run given no delegate tools, gets no skill that teaches them.
+        delegates = delegations is not None and admitted.request.target is None
+        skills = await threaded(
+            _skills, stores, context.project_id, role, alias, delegates=delegates
+        )
         inventory = ArtifactInventory(stores.documents)
         review_store = ReviewStore(
             stores.documents, artifacts=inventory, defaults=self.settings.reviews()
@@ -932,10 +937,15 @@ class Harness:
         )
 
 
-def _skills(stores: Stores, project: str, role: str, alias: str | None) -> SkillTool | None:
-    """The run's skills, or ``None`` when the project pins none."""
+def _skills(
+    stores: Stores, project: str, role: str, alias: str | None, *, delegates: bool
+) -> SkillTool | None:
+    """The run's skills, the built-in skills that ship pinned first (SK-40), or ``None``
+    when the project pins none; ``delegates`` says whether the run has the delegate
+    tools, without which the skills that teach them are left out."""
     store = SkillStore(stores.projects.control)
-    found = store.effective(project)
+    store.ensure(project, builtin_pack())
+    found = store.effective(project, role, delegates=delegates)
     return SkillTool(store, found, role=role, alias=alias) if found.entries else None
 
 

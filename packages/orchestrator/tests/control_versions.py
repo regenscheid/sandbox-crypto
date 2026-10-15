@@ -41,6 +41,9 @@ TEXT_MATH = migrations.BASELINE + 14
 """The version that moved the comment and explanation math queues and check links into
 ``text_math_sources`` and ``math_text_jobs``."""
 
+BUILTIN_SKILLS = migrations.BASELINE + 40
+"""The version that let an import be of the built-in skills and tied the name to them."""
+
 EMPTY_SHA = "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
 """The SHA-256 of ``{}``, the empty macro setting."""
 

@@ -4,8 +4,9 @@
 
 An import keeps a snapshot, written once and shared by imports of the same files, and a
 record with its report. A project pins one import of each source it uses, and a pin is
-refused when one of its skills has the name of a skill of another pinned source (SK-4).
-Only the user imports and pins.
+refused when one of its skills has the name of a skill of another pinned source (SK-4),
+unless the other is the built-in skills, which give way. The user imports and pins packs;
+the harness imports and pins the built-in skills it ships, as the platform (SK-40).
 """
 
 from __future__ import annotations
@@ -23,7 +24,9 @@ from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.control.errors import CONFLICT, INVALID_REQUEST, NOT_FOUND
 from sandbox_science.orchestrator.documents.models import Author
 
-from .packs import NAME, Snapshot, body, hidden, served
+from .builtin import BUILTIN, DELEGATING, PLATFORM, ROLES
+from .packs import NAME, Snapshot, body, hidden, served, snapshot
+from .sources import Fetched
 
 REPORT_ITEMS: Final = 200
 """Items a report lists of each kind; it counts the rest."""
@@ -61,6 +64,8 @@ class Pin:
     revision: int
     pinned: Imported
     skills: tuple[str, ...]
+    left_out: tuple[str, ...] = ()
+    """For the built-in skills, those a pinned pack's skill of the same name replaces."""
 
 
 @dataclass(frozen=True)
@@ -112,6 +117,8 @@ class SkillStore:
         one, from the same place at the same revision, and nothing was added."""
         _source(source)
         got = snapshot.fetched
+        if (source == BUILTIN) != (got.kind == BUILTIN):
+            raise ControlError(INVALID_REQUEST, f"{BUILTIN!r} names the built-in skills only")
         with self.control.write() as tx:
             db = tx.sql
             latest = next(iter(_imports(db, source)), None)
@@ -138,6 +145,21 @@ class SkillStore:
                 report["warnings"] = warnings[:REPORT_ITEMS]
             if latest is not None:
                 report["changes"] = {"since": latest.import_id, **_changes(db, latest, snapshot)}
+            if source == BUILTIN:
+                # Each project's built-in skills that a pinned pack's of the same name
+                # leaves out of its runs (SK-4).
+                names = {skill.name for skill in snapshot.skills}
+                left = {
+                    project: found
+                    for (project,) in db.execute(
+                        "SELECT DISTINCT project FROM project_skill_pins WHERE source!=? "
+                        "ORDER BY project",
+                        (BUILTIN,),
+                    ).fetchall()
+                    if (found := _displaced(db, project, names))
+                }
+                if left:
+                    report["left_out"] = left
             row = (*here[:3], got.ref, got.commit, got.archive_sha256, got.root)
             cursor = db.execute(
                 "INSERT INTO skill_imports(snapshot,kind,origin,ref,commit_id,archive_sha256,"
@@ -167,10 +189,15 @@ class SkillStore:
             matches = [
                 found
                 for found in _imports(db, source)
-                if revision is None
-                or any(
-                    name and name.startswith(revision)
-                    for name in (found.commit, found.archive_sha256, found.snapshot)
+                # The built-in source pins built-in imports only (a K1-era pack of that
+                # name was renamed by version 42).
+                if (found.kind == BUILTIN) == (source == BUILTIN)
+                and (
+                    revision is None
+                    or any(
+                        name and name.startswith(revision)
+                        for name in (found.commit, found.archive_sha256, found.snapshot)
+                    )
                 )
             ]
             if not matches:
@@ -181,12 +208,30 @@ class SkillStore:
                 )
             chosen = matches[0]
             names = set(_names(db, chosen.snapshot))
+            settings = _settings(db, project)
+            excluded = set(settings.excluded)
             for other, snapshot in db.execute(
                 "SELECT p.source,i.snapshot FROM project_skill_pins p JOIN skill_imports i "
                 "USING(import_id) WHERE p.project=? AND p.source!=?",
                 (project, source),
             ).fetchall():
-                if taken := sorted(names & set(_names(db, snapshot))):
+                taken = sorted(names & set(_names(db, snapshot)))
+                if source == BUILTIN:
+                    continue  # a built-in skill gives way to a pinned pack's (SK-4)
+                if other == BUILTIN:
+                    taken = [name for name in taken if f"{BUILTIN}/{name}" not in excluded]
+                    if taken:
+                        hint = " ".join(f"--exclude {BUILTIN}/{name}" for name in taken)
+                        then = sorted(excluded | {f"{BUILTIN}/{name}" for name in taken})
+                        raise ControlError(
+                            CONFLICT,
+                            f"{', '.join(taken)} already defined by the built-in skills: "
+                            f"exclude them first: skills settings --project {project} "
+                            f"--expected {settings.revision} {hint} (the project then "
+                            f"excludes {', '.join(then)})",
+                            {"source": BUILTIN, "names": taken},
+                        )
+                if taken:
                     raise ControlError(
                         CONFLICT,
                         f"{', '.join(taken)} already defined by {other}, which the project pins",
@@ -200,9 +245,18 @@ class SkillStore:
             )
             return _pins(db, project, source)[0]
 
-    def effective(self, project: str, *, excluded: Collection[str] | None = None) -> SkillSet:
+    def effective(
+        self,
+        project: str,
+        role: str | None = None,
+        *,
+        delegates: bool = True,
+        excluded: Collection[str] | None = None,
+    ) -> SkillSet:
         """The skills a run of ``project`` is given now, or, with ``excluded``, would be
-        given with those excluded instead of the settings'. Each description is served as
+        given with those excluded instead of the settings'. A run of ``role`` gets the
+        built-in skills ``ROLES`` gives it, with no role all of them, and a run that cannot
+        delegate (``delegates``) none that teach delegating. Each description is served as
         the bodies are (``served``)."""
         if self.control.missing:
             return SkillSet((), (), ())
@@ -215,7 +269,7 @@ class SkillStore:
             sources: list[str] = []
             for pin in _pins(db, project):
                 found = pin.pinned
-                revision = found.commit or found.archive_sha256 or found.snapshot
+                revision = found.commit or found.archive_sha256 or found.ref or found.snapshot
                 sources.append(f"{pin.source}@{revision}")
                 for name, description, body in db.execute(
                     "SELECT name,description,body_sha256 FROM skill_skills WHERE snapshot=? "
@@ -225,11 +279,34 @@ class SkillStore:
                     entry = Entry(
                         pin.source, name, served(description), body, found.snapshot, revision
                     )
-                    if entry.qualified not in settings.excluded:
-                        entries.append(entry)
+                    roles = ROLES.get(name, ("main",)) if pin.source == BUILTIN else None
+                    if entry.qualified in settings.excluded or (
+                        roles is not None
+                        and (
+                            (role is not None and role not in roles)
+                            or (not delegates and name in DELEGATING)
+                        )
+                    ):
+                        continue
+                    entries.append(entry)
+        packs = {entry.name for entry in entries if entry.source != BUILTIN}
+        entries = [e for e in entries if e.source != BUILTIN or e.name not in packs]
         given = {entry.qualified for entry in entries}
         always = tuple(skill for skill in settings.always if skill in given)
         return SkillSet(tuple(entries), tuple(sources), always)
+
+    def ensure(self, project: str, fetched: Fetched | None) -> None:
+        """Pin in ``project`` the built-in skills the harness ships (``fetched``), and
+        import them first when they changed (SK-40)."""
+        if fetched is None:
+            return
+        shipped = snapshot(fetched)
+        latest = next(iter(self.imports(BUILTIN)), None)
+        if latest is None or (latest.snapshot, latest.ref) != (shipped.sha256, fetched.ref):
+            latest, _ = self.add(BUILTIN, shipped, PLATFORM)
+        pinned = {pin.source: pin.pinned.import_id for pin in self.pins(project)}
+        if pinned.get(BUILTIN) != latest.import_id:
+            self.pin(project, BUILTIN, PLATFORM)
 
     def file(self, snapshot: str, path: str) -> bytes | None:
         """A snapshot's file, by its path in the snapshot; ``None`` if it has none."""
@@ -431,4 +508,28 @@ def _pins(db: sqlite3.Connection, project: str, source: str | None = None) -> li
     for name, revision, import_id in rows:
         imported = _imports(db, import_id=import_id)[0]
         pins.append(Pin(project, name, revision, imported, tuple(_names(db, imported.snapshot))))
+    if source is None:
+        pins = [
+            replace(pin, left_out=tuple(_displaced(db, project, set(pin.skills))))
+            if pin.source == BUILTIN
+            else pin
+            for pin in pins
+        ]
     return pins
+
+
+def _displaced(db: sqlite3.Connection, project: str, names: set[str]) -> list[str]:
+    """The built-in skills of ``names`` that a pinned pack's skill of the same name leaves
+    out of ``project``'s runs: neither of them excluded, as ``effective`` has it."""
+    excluded = set(_settings(db, project).excluded)
+    packs = {
+        name
+        for source, name in db.execute(
+            "SELECT p.source,s.name FROM project_skill_pins p JOIN skill_imports i "
+            "USING(import_id) JOIN skill_skills s ON s.snapshot=i.snapshot "
+            "WHERE p.project=? AND p.source!=?",
+            (project, BUILTIN),
+        ).fetchall()
+        if f"{source}/{name}" not in excluded
+    }
+    return sorted(name for name in names if name in packs and f"{BUILTIN}/{name}" not in excluded)

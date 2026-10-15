@@ -25,3 +25,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sandbox_science"]
+
+[tool.hatch.build.targets.wheel.force-include]
+# The built-in skills, which an installed harness reads as package data (skills/builtin.py).
+"../../skills/builtin" = "sandbox_science/orchestrator/skills/builtin_pack"
