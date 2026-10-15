@@ -394,9 +394,13 @@ def earlier_conversation(
     """The session's earlier main runs as conversation (RS-10): each one's task and the
     user's messages it delivered, then its answer, oldest first. A run that delivered
     nothing is left out, and so are delegated runs, whose outcomes reached their parents.
-    The newest that fit in ``budget`` characters are kept, and a line says how many were
-    left out."""
-    turns: list[list[Message]] = []
+
+    Within ``budget`` characters, the user's messages are kept as written and the agent's
+    answers give way first (lane K's triage, D3): the newest answers that fit are kept
+    whole, and each other answer is replaced by a line saying it was left out. When even
+    the user's messages do not fit, the oldest runs are left out whole, and a line says
+    how many."""
+    turns: list[tuple[str, str]] = []  # newest first: each run's question and answer
     used = left_out = 0
     for entry in reversed(projects.runs(project, session)):
         if entry.role != "main":
@@ -414,18 +418,43 @@ def earlier_conversation(
         if not question:
             continue
         answer = record.final_text or f"(The run ended without an answer: {record.stopped}.)"
-        if used + len(question) + len(answer) > budget:
+        least = len(question) + min(len(answer), len(_answer_left_out(answer)))
+        if used + least > budget:
             left_out = 1
             continue
-        used += len(question) + len(answer)
-        turns.append(
-            [{"role": "user", "content": question}, {"role": "assistant", "content": answer}]
-        )
+        used += least
+        turns.append((question, answer))
+    shown: list[tuple[str, str]] = []
+    for question, answer in turns:
+        short = _answer_left_out(answer)
+        more = len(answer) - min(len(answer), len(short))
+        if used + more <= budget:
+            used += more
+            shown.append((question, answer))
+        else:
+            shown.append((question, short))
     found: list[Message] = []
     if left_out:
-        found.append(
-            {"role": "user", "content": f"({left_out} earlier runs of this session are left out.)"}
+        runs_left = (
+            "oldest run of this session is left out, with the user's messages in it"
+            if left_out == 1
+            else f"{left_out} oldest runs of this session are left out, with the user's "
+            "messages in them"
         )
-    for turn in reversed(turns):
-        found.extend(turn)
+        found.append(
+            {
+                "role": "user",
+                "content": f"(The {runs_left}, to keep the earlier conversation within its size.)",
+            }
+        )
+    for question, answer in reversed(shown):
+        found += [{"role": "user", "content": question}, {"role": "assistant", "content": answer}]
     return found
+
+
+def _answer_left_out(answer: str) -> str:
+    """What stands for an earlier answer left out so that the user's messages fit (RS-10)."""
+    return (
+        f"(The agent's answer here, of {len(answer)} characters, is left out to keep the "
+        "user's messages within the earlier conversation's size.)"
+    )

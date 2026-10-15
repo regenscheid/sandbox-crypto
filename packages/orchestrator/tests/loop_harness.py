@@ -486,6 +486,7 @@ class Harness:
         reviewer: bool = False,
         options: Sequence[str] = (),
         delegated: Sequence[Reply] = (),
+        task: str = TASK,
     ) -> RunRecord:
         """One ``run`` through the CLI; the record as the project keeps it. Its delegated
         runs answer from ``delegated``, in the order they call the model."""
@@ -509,7 +510,7 @@ class Harness:
         if reviewer:
             argv += ["--reviewer-model", "reviewer"]
         argv += list(options)
-        assert await asyncio.to_thread(cli.main, [*argv, TASK]) == status
+        assert await asyncio.to_thread(cli.main, [*argv, task]) == status
         assert not self.gateway.script, "the run ended before the script did"
         assert not self.gateway.delegated, "the delegated runs ended before their script did"
         record = RunRecord.model_validate_json(transcript.read_text())
