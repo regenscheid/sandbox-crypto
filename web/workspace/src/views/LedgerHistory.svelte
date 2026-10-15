@@ -7,7 +7,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { api } from '../lib/api';
-  import type { ClearedFlag, EntryRevision } from '../lib/api-types';
+  import type { ClearedFlag, EntryFlag, EntryRevision } from '../lib/api-types';
   import { Earlier } from '../lib/earlier';
   import { formatTime } from '../lib/format';
   import { authorText, provenanceText, statusText } from '../lib/ledger';
@@ -16,8 +16,11 @@
     changeFlags,
     clearedText,
     flagSource,
+    LISTED,
     MAX_REASON,
+    openAgain,
     reasonProblem,
+    reopenedSummary,
   } from '../lib/ledgerFlags';
   import { emptyList } from '../lib/pagedList';
   import { ledgerEntryHref } from '../lib/router';
@@ -31,6 +34,7 @@
     shown,
     changes = 0,
     changed = async () => {},
+    open = [],
   }: {
     projectId: string;
     entryId: string;
@@ -39,6 +43,8 @@
     /** Counts the user's changes to the entry: after one, the first page is read again. */
     changes?: number;
     changed?: () => Promise<void>;
+    /** The entry's open flags, by which a cleared flag open again is known. */
+    open?: EntryFlag[];
   } = $props();
   const pages = $state(emptyList<EntryRevision[], number>());
   let cleared = $state<ClearedFlag[]>([]);
@@ -73,13 +79,23 @@
   let reason = $state('');
   let problem = $state<string | null>(null);
   const saving = $state(idle());
-  const chosen = $derived(cleared.filter((flag) => selected[flag.flag_id]).map((f) => f.flag_id));
+  /** Each cleared flag's open flag again, if it has one: it is not offered for reopening. */
+  const again = $derived(
+    Object.fromEntries(cleared.map((flag) => [flag.flag_id, openAgain(flag, open)])),
+  );
+  const chosen = $derived(
+    cleared
+      .filter((flag) => selected[flag.flag_id] && again[flag.flag_id] === null)
+      .map((f) => f.flag_id),
+  );
+  let summary = $state<string | null>(null);
 
   async function reopen(): Promise<void> {
     problem = reasonProblem(reason);
+    summary = null;
     if (problem !== null || chosen.length === 0) return;
     const change = { flags: chosen, reason };
-    const done = await changeFlags(
+    const answer = await changeFlags(
       saving,
       'reopen',
       projectId,
@@ -88,7 +104,8 @@
       (body) => api.reopenLedgerFlags(projectId, entryId, body),
       changed,
     );
-    if (done) {
+    if (answer !== null) {
+      summary = reopenedSummary(answer);
       reason = '';
       selected = {};
     }
@@ -126,18 +143,28 @@
     {#each cleared as flag (flag.flag_id)}
       {@const source = flagSource(projectId, flag.source)}
       <li>
-        <label>
-          <input type="checkbox" bind:checked={selected[flag.flag_id]} disabled={saving.busy} />
+        {#if again[flag.flag_id] === null}
+          <label>
+            <input type="checkbox" bind:checked={selected[flag.flag_id]} disabled={saving.busy} />
+            <strong>{CAUSE_WORDS[flag.cause]}</strong>:
+          </label>
+        {:else}
           <strong>{CAUSE_WORDS[flag.cause]}</strong>:
-        </label>
+        {/if}
         {#if source.href}<a href={source.href}>{source.text}</a>{:else}{source.text}{/if}
         <span class="muted">(raised on r{flag.revision}; {flag.flag_id})</span>
+        {#if again[flag.flag_id] !== null}
+          <span class="muted">Open again as {again[flag.flag_id]}.</span>
+        {/if}
         <p class="muted">
           {clearedText(flag, authorText(flag.cleared_by), formatTime(flag.cleared))}
         </p>
       </li>
     {/each}
   </ul>
+  {#if cleared.length >= LISTED}
+    <p class="muted">The latest {cleared.length} cleared flags are listed; earlier ones are not.</p>
+  {/if}
   <label class="reason"
     >Reason for reopening (required)
     <textarea bind:value={reason} maxlength={MAX_REASON} rows="3" disabled={saving.busy}
@@ -151,4 +178,5 @@
   {#if problem}<p class="problem" role="alert">{problem}</p>{/if}
   {#if saving.error}<ErrorMessage error={saving.error} />{/if}
 {/if}
+{#if summary}<p role="status">{summary}</p>{/if}
 {#if pages.error}<ErrorMessage error={pages.error} />{/if}

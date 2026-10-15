@@ -371,7 +371,7 @@ describe('the flags on an entry', () => {
     expect(found.hostile).toBe(false);
     for (const href of found.hrefs) expect(href.startsWith('#/projects/'), href).toBe(true);
     expect(html).toContain('120 open flags');
-    expect(html).toContain('The newest 3 are listed');
+    expect(html).toContain('The newest 3 of the 120 open flags are listed');
     expect(html).toContain('Clear all 120 open flags');
     expect(html).toContain('Reason for clearing (required)');
   });

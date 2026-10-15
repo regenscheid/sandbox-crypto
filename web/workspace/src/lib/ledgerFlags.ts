@@ -69,9 +69,14 @@ export function reasonProblem(reason: string): string | null {
   return null;
 }
 
-/** The user's clearing of open flags: those named, or else all of them. */
+/**
+ * The user's clearing of open flags, always by the IDs of the flags the user read: the
+ * server's form that clears every flag open when it arrives would also clear a flag
+ * raised after the page was read, or one beyond those listed, under a reason written for
+ * others. That form is the command line's only.
+ */
 export interface FlagClearing {
-  flags?: string[];
+  flags: string[];
   reason: string;
 }
 
@@ -84,8 +89,9 @@ export interface FlagReopening {
 /**
  * Send one clearing or reopening for an entry, then read the entry again; after a
  * failure, read it too, so a conflict or refusal shows beside the flags as they are now.
+ * The ledger's answer, or null when the change failed.
  */
-export function changeFlags<B extends FlagClearing | FlagReopening>(
+export async function changeFlags<B extends FlagClearing | FlagReopening>(
   saving: Submitting,
   kind: 'clear' | 'reopen',
   project: string,
@@ -93,15 +99,55 @@ export function changeFlags<B extends FlagClearing | FlagReopening>(
   change: B,
   send: (body: B & { operation_id: string }) => Promise<LedgerChangeAnswer>,
   reload: () => Promise<void>,
-): Promise<boolean> {
-  return submit(
+): Promise<LedgerChangeAnswer | null> {
+  let answer: LedgerChangeAnswer | null = null;
+  const done = await submit(
     saving,
     async () => {
-      await guardedWrite(`ledger-flags-${kind}`, `${project}:${entry}`, change, send);
+      answer = await guardedWrite(`ledger-flags-${kind}`, `${project}:${entry}`, change, send);
       await reload();
     },
     reload,
   );
+  return done ? answer : null;
+}
+
+/** What a clearing did, in words: how many flags it cleared, against how many were asked. */
+export function clearedSummary(
+  answer: Pick<LedgerChangeAnswer, 'cleared_total'>,
+  asked: number,
+): string {
+  const cleared = answer.cleared_total;
+  const said = cleared === 1 ? '1 flag' : `${cleared} flags`;
+  if (cleared === asked) return `Cleared ${said}.`;
+  return `Cleared ${said}, though ${asked} ${asked === 1 ? 'was' : 'were'} selected: read the flags again before going on.`;
+}
+
+/** What a reopening did, in words. */
+export function reopenedSummary(answer: Pick<LedgerChangeAnswer, 'flags_reopened'>): string {
+  const count = answer.flags_reopened.length;
+  return `Reopened ${count === 1 ? '1 flag' : `${count} flags`}, each as a new open flag.`;
+}
+
+/** The read lists this many open flags, and this many cleared ones, newest first. */
+export const LISTED = 50;
+
+/**
+ * The open flag, if any, that stands for a cleared one again: the flag that reopened it,
+ * or an open flag of the same cause and source, which the ledger keeps one of. A cleared
+ * flag with one is not offered for reopening.
+ */
+export function openAgain(
+  cleared: Pick<ClearedFlag, 'flag_id' | 'cause' | 'source'>,
+  open: readonly Pick<EntryFlag, 'flag_id' | 'cause' | 'source' | 'reopens'>[],
+): string | null {
+  const same = JSON.stringify(cleared.source);
+  const found = open.find(
+    (flag) =>
+      flag.reopens === cleared.flag_id ||
+      (flag.cause === cleared.cause && JSON.stringify(flag.source) === same),
+  );
+  return found ? found.flag_id : null;
 }
 
 /** Who cleared a flag, when and why, in words; `author` describes who. */

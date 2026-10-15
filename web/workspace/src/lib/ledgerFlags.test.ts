@@ -3,11 +3,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api, ApiError, type LedgerChangeAnswer } from './api';
 import {
   changeFlags,
+  clearedSummary,
   clearedText,
   flagDetails,
   flagSource,
+  openAgain,
   openFlagsText,
   reasonProblem,
+  reopenedSummary,
 } from './ledgerFlags';
 import { idle } from './submit';
 
@@ -82,7 +85,9 @@ describe("the user's clearing and reopening", () => {
     const send = vi.fn().mockResolvedValue(answer);
     const saving = idle();
     const change = { flags: ['flag-1'], reason: 'Still holds.' };
-    expect(await changeFlags(saving, 'clear', 'p1', 'entry-1', change, send, reload)).toBe(true);
+    expect(await changeFlags(saving, 'clear', 'p1', 'entry-1', change, send, reload)).toEqual(
+      answer,
+    );
     expect(send.mock.calls[0]?.[0]).toEqual({ ...change, operation_id: expect.any(String) });
     expect(reload).toHaveBeenCalledTimes(1);
     expect(saving).toEqual({ busy: false, error: null });
@@ -97,10 +102,10 @@ describe("the user's clearing and reopening", () => {
     ] as const) {
       const saving = idle();
       const refused = vi.fn().mockRejectedValue(new ApiError(status, kind, `refused ${status}`));
-      const change = { reason: `All of them, ${status}.` };
-      expect(await changeFlags(saving, 'clear', 'p1', 'entry-1', change, refused, reload)).toBe(
-        false,
-      );
+      const change = { flags: ['flag-1', 'flag-2'], reason: `Both, ${status}.` };
+      expect(
+        await changeFlags(saving, 'clear', 'p1', 'entry-1', change, refused, reload),
+      ).toBeNull();
       expect((saving.error as ApiError).status).toBe(status);
       await changeFlags(saving, 'clear', 'p1', 'entry-1', change, refused, reload);
       expect(refused.mock.calls[1]?.[0].operation_id).toBe(refused.mock.calls[0]?.[0].operation_id);
@@ -120,7 +125,11 @@ describe("the user's clearing and reopening", () => {
   it('post to the entry, its flags and its reopened flags', async () => {
     const fetch = vi.fn(async () => new Response(JSON.stringify(answer)));
     vi.stubGlobal('fetch', fetch);
-    await api.clearLedgerFlags('p/1', 'C-1', { reason: 'r', operation_id: 'o1' });
+    await api.clearLedgerFlags('p/1', 'C-1', {
+      flags: ['flag-1'],
+      reason: 'r',
+      operation_id: 'o1',
+    });
     await api.reopenLedgerFlags('p/1', 'C-1', {
       flags: ['flag-1'],
       reason: 'r',
@@ -132,6 +141,47 @@ describe("the user's clearing and reopening", () => {
       '/api/v0/projects/p%2F1/ledger/C-1/flags/reopened',
     ]);
     expect(calls.map(([, init]) => init.method)).toEqual(['POST', 'POST']);
-    expect(JSON.parse(String(calls[0]![1].body))).toEqual({ reason: 'r', operation_id: 'o1' });
+    expect(JSON.parse(String(calls[0]![1].body))).toEqual({
+      flags: ['flag-1'],
+      reason: 'r',
+      operation_id: 'o1',
+    });
+  });
+});
+
+describe('what a change did', () => {
+  it('says how many flags a clearing cleared, and when that is not how many were selected', () => {
+    expect(clearedSummary({ cleared_total: 1 }, 1)).toBe('Cleared 1 flag.');
+    expect(clearedSummary({ cleared_total: 3 }, 3)).toBe('Cleared 3 flags.');
+    expect(clearedSummary({ cleared_total: 2 }, 3)).toBe(
+      'Cleared 2 flags, though 3 were selected: read the flags again before going on.',
+    );
+  });
+
+  it('says how many flags a reopening opened again', () => {
+    expect(reopenedSummary({ flags_reopened: ['flag-9'] })).toBe(
+      'Reopened 1 flag, each as a new open flag.',
+    );
+  });
+});
+
+describe('a cleared flag', () => {
+  const cleared = { flag_id: 'flag-1', cause: 'spread' as const, source: { handle: 'A-1' } };
+
+  it('stands open again through the flag that reopened it, or one of its cause and source', () => {
+    expect(openAgain(cleared, [])).toBeNull();
+    expect(
+      openAgain(cleared, [{ flag_id: 'flag-2', cause: 'spread', source: {}, reopens: 'flag-1' }]),
+    ).toBe('flag-2');
+    expect(
+      openAgain(cleared, [
+        { flag_id: 'flag-3', cause: 'spread', source: { handle: 'A-1' }, reopens: null },
+      ]),
+    ).toBe('flag-3');
+    expect(
+      openAgain(cleared, [
+        { flag_id: 'flag-4', cause: 'dependency_status', source: { handle: 'A-1' }, reopens: null },
+      ]),
+    ).toBeNull();
   });
 });

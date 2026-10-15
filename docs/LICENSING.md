@@ -79,7 +79,7 @@ for embedded subcomponents.
 | Vite, @sveltejs/vite-plugin-svelte, rolldown | MIT | Build only: bundle the workspace app |
 | lightningcss | MPL-2.0 | Build only: Vite's CSS processing, unmodified |
 | TypeScript | Apache-2.0 | Development and CI only: type checks |
-| svelte-check, vitest, prettier, prettier-plugin-svelte | MIT | Development and CI only |
+| svelte-check, vitest, prettier, prettier-plugin-svelte, happy-dom | MIT (happy-dom's `entities`: BSD-2-Clause) | Development and CI only; happy-dom is the DOM the tests that mount a view run in |
 | The workspace app's other npm packages | MIT, except entities (BSD-2-Clause), argparse (PSF-2.0; markdown-it's command line only), aria-query, axobject-query, detect-libc and expect-type (Apache-2.0), picocolors (ISC) and source-map-js (BSD-3-Clause) | Dependencies of the above, pinned by `web/workspace/package-lock.json` and checked one by one in CI |
 | pydantic, pydantic-core, annotated-types, typing-inspection | MIT | Policy and API schemas (`packages/policy`) |
 | typing-extensions | PSF-2.0 | Required by pydantic; PSF-2.0 is permissive and GPL-compatible |

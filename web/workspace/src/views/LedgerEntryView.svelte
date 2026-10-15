@@ -45,6 +45,7 @@
     shown={entry.revision}
     {changes}
     {changed}
+    open={entry.flags}
   />
 {:else}
   <h1>{entryName}</h1>

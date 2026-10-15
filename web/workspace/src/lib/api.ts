@@ -532,7 +532,7 @@ export const api = {
   clearLedgerFlags: (
     project: string,
     entry: string,
-    change: { flags?: string[]; reason: string; operation_id: string },
+    change: { flags: string[]; reason: string; operation_id: string },
   ) => post<LedgerChangeAnswer>(`/projects/${part(project)}/ledger/${part(entry)}/flags`, change),
   /** The user's reopening of cleared flags on an entry, each as a new flag, with the reason. */
   reopenLedgerFlags: (
