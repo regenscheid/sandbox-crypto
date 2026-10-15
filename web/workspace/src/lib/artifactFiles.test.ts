@@ -94,8 +94,8 @@ describe('an artifact row', () => {
     expect(html).not.toContain('<b>');
     expect(html).toContain('<bdi>javascript:x">&lt;b>bold&lt;/b></bdi>');
     expect(html).not.toMatch(/href="javascript/);
-    const reversed = row({ ...entry, path: 'notes/‮fdp.exe' });
-    expect(reversed).toContain('<bdi>notes/‮fdp.exe</bdi>');
+    const reversed = row({ ...entry, path: 'notes/\u202efdp.exe' });
+    expect(reversed).toContain('<bdi>notes/\u202efdp.exe</bdi>');
   });
 
   it('links a kept PDF to the viewer, exactly, and nothing else', () => {
