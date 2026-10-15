@@ -66,7 +66,14 @@ async def _project_action(args: argparse.Namespace, store: ProjectStore) -> int:
             delegations = DelegationRecords(store.control)
             changes: dict[str, object] = {
                 name: value
-                for name in ("depth", "cap", "check_tokens", "check_turns")
+                for name in (
+                    "depth",
+                    "cap",
+                    "check_tokens",
+                    "check_turns",
+                    "task_tokens",
+                    "task_turns",
+                )
                 if (value := getattr(args, name)) is not None
             }
             if args.models is not None:  # empty: no choice
@@ -83,7 +90,8 @@ async def _project_action(args: argparse.Namespace, store: ProjectStore) -> int:
             print(
                 f"project {args.project}: delegation depth {found.depth} ({state}); at most "
                 f"{found.cap} delegated runs at once; a check gets {found.check_tokens} "
-                f"tokens and {found.check_turns} turns; a brief may choose the models: "
+                f"tokens and {found.check_turns} turns, a task {found.task_tokens} tokens and "
+                f"{found.task_turns} turns; a brief may choose the models: "
                 f"{models}; fallback: {found.fallback or 'none'}"
             )
         case "macros":
@@ -453,6 +461,10 @@ def add_parsers(commands: Any) -> None:
     projects.add_argument(
         "--check-turns", type=int, help="delegation: a check's turns, at most (12)"
     )
+    projects.add_argument(
+        "--task-tokens", type=int, help="delegation: a task's tokens, at most (200000)"
+    )
+    projects.add_argument("--task-turns", type=int, help="delegation: a task's turns, at most (20)")
     projects.add_argument(
         "--models",
         help="delegation: the model aliases a brief may choose, comma-separated; empty for "

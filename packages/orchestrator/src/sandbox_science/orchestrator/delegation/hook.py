@@ -40,7 +40,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Final, Protocol, cast
+from typing import Any, Final, Literal, Protocol, cast
 
 from pydantic import JsonValue
 
@@ -60,9 +60,9 @@ from sandbox_science.orchestrator.worker_client import WorkerAPIError, dump
 
 from .models import Choice, ModelChoice
 from .outcome import Target, proof_reads
-from .prompt import brief_text, check_task, evidence_line
+from .prompt import brief_text, check_task, evidence_line, task_text
 from .records import Delegation, DelegationRecords, DelegationSettings, Ended, Ending
-from .specs import CheckBrief, Named, WaitRequest, offered
+from .specs import CheckBrief, Named, TaskBrief, WaitRequest, brief_of, offered
 from .work import work_record
 
 _log = logging.getLogger(__name__)
@@ -88,10 +88,28 @@ class Child:
     max_turns: int
     tokens: int
     """The tokens its calls may use."""
-    target: Target
-    """The entry and revision it checks, which its result must name."""
+    target: Target | None
+    """For a check, the entry and revision it checks, which its result must name;
+    ``None`` for a task."""
     alias: str | None = None
     """The model alias it calls (PD-28, PD-30); ``None`` for the delegated role's."""
+
+
+@dataclass(frozen=True)
+class _Planned:
+    """A delegation as its brief gives it, before it starts."""
+
+    kind: Literal["check", "task"]
+    brief: dict[str, JsonValue]
+    """The brief as the delegation keeps it."""
+    text: str
+    """The child's first message."""
+    turns: int
+    tokens: int
+    target: Target | None
+    """For a check, its entry and revision; ``None`` for a task."""
+    shown: dict[str, JsonValue]
+    """What ``delegate``'s answer says of it."""
 
 
 @dataclass(frozen=True)
@@ -205,7 +223,7 @@ class Delegations(TurnHook):
     async def call(self, name: str, args: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         match name:
             case "delegate":
-                return await self._delegate(CheckBrief.model_validate(args))
+                return await self._delegate(brief_of(args))
             case "wait_delegations":
                 return await self._wait(WaitRequest.model_validate(args))
             case "delegation_status":
@@ -213,7 +231,7 @@ class Delegations(TurnHook):
             case _:
                 return await self._cancel_one(Named.model_validate(args).delegation_id)
 
-    async def _delegate(self, brief: CheckBrief) -> tuple[str, dict[str, Any]]:
+    async def _delegate(self, brief: CheckBrief | TaskBrief) -> tuple[str, dict[str, Any]]:
         cap = self.limits.cap
         if len(self._running()) >= cap:
             raise WorkerAPIError(
@@ -232,34 +250,18 @@ class Delegations(TurnHook):
                 ErrorKind.UNAVAILABLE, "limit_reached: the project reached its daily cost limit"
             )
         project, session = self.context.project_id, self.context.session_id
-        entry = await threaded(self.ledger.entry, project, brief.check.entry, brief.check.revision)
+        planned = await self._check(brief) if isinstance(brief, CheckBrief) else self._task(brief)
         delegation_id, run_id = new_id("dlg"), new_id("run")
-        tokens = self.limits.check_tokens
         started = self.clock.now().astimezone(UTC)
-        check: dict[str, JsonValue] = {
-            "entry": entry.entry_id,
-            "handle": entry.handle,
-            "revision": brief.check.revision,
-        }
-        # The platform writes the task and lists the entry's evidence: the parent adds
-        # only its note, which cannot stand as the task or as evidence (LG-17).
-        task = check_task(entry.handle, brief.check.revision)
-        inputs = [evidence_line(link) for link in entry.evidence]
-        turns = min(self.limits.check_turns, self.max_turns, self.turns_left)
-        written: dict[str, JsonValue] = {
-            "task": task,
-            "note": brief.note,
-            "inputs": list(inputs),
-            "check": check,
-            "limits": {"turns": turns, "tokens": tokens},  # as granted, for the tree (PD-42)
-        }
+        limits: dict[str, JsonValue] = {"turns": planned.turns, "tokens": planned.tokens}
+        written: dict[str, JsonValue] = {**planned.brief, "limits": limits}  # for the tree
         if choice is not None:
             written["model"] = choice.recorded()
         delegation = Delegation(
             delegation_id=delegation_id,
             parent=self.parent,
             run=run_name(started, run_id),
-            kind="check",
+            kind=planned.kind,
             brief=written,
             started_at=started,
         )
@@ -268,15 +270,10 @@ class Delegations(TurnHook):
             delegation_id,
             run_id,
             started,
-            brief_text(task, inputs, brief.note),
-            max_turns=turns,
-            tokens=tokens,
-            target=Target(
-                entry.entry_id,
-                entry.handle,
-                brief.check.revision,
-                proof_reads(entry.evidence),
-            ),
+            planned.text,
+            max_turns=planned.turns,
+            tokens=planned.tokens,
+            target=planned.target,
             alias=None if choice is None else choice.alias,
         )
         stop = asyncio.Event()
@@ -288,12 +285,48 @@ class Delegations(TurnHook):
             "delegation_id": delegation_id,
             "run": delegation.run,
             "state": "running",
-            "check": {"entry": entry.handle, "revision": brief.check.revision},
+            **planned.shown,
             "limits": {"turns": child.max_turns, "tokens": child.tokens},
         }
         if choice is not None:
             started_with["model"] = choice.recorded()
         return dump(started_with), {"delegation": started_with}
+
+    async def _check(self, brief: CheckBrief) -> _Planned:
+        """A check, which the platform writes: its task, and the entry's evidence as its
+        inputs; the parent adds only its note, which cannot stand as the task or as
+        evidence (LG-17)."""
+        project = self.context.project_id
+        entry = await threaded(self.ledger.entry, project, brief.check.entry, brief.check.revision)
+        check: dict[str, JsonValue] = {
+            "entry": entry.entry_id,
+            "handle": entry.handle,
+            "revision": brief.check.revision,
+        }
+        task = check_task(entry.handle, brief.check.revision)
+        inputs = [evidence_line(link) for link in entry.evidence]
+        return _Planned(
+            "check",
+            {"task": task, "note": brief.note, "inputs": list(inputs), "check": check},
+            brief_text(task, inputs, brief.note),
+            min(self.limits.check_turns, self.max_turns, self.turns_left),
+            self.limits.check_tokens,
+            Target(entry.entry_id, entry.handle, brief.check.revision, proof_reads(entry.evidence)),
+            {"check": {"entry": entry.handle, "revision": brief.check.revision}},
+        )
+
+    def _task(self, brief: TaskBrief) -> _Planned:
+        """A task, which the parent writes (PD-11), under a task's limits."""
+        head = brief.task if len(brief.task) <= SUMMARY_CHARS else brief.task[:SUMMARY_CHARS] + "…"
+        return _Planned(
+            "task",
+            {"task": brief.task, "context": brief.context, "inputs": list(brief.inputs)},
+            task_text(brief.task, brief.context, brief.inputs),
+            min(self.limits.task_turns, self.max_turns, self.turns_left),
+            self.limits.task_tokens,
+            None,
+            {"task": head},
+        )
 
     async def _model(self, asked: str | None) -> Choice | None:
         """The model the child calls (PD-28, PD-30); ``None`` for the harness's, when it
@@ -574,12 +607,13 @@ async def _ended(tasks: set[asyncio.Task[None]], when: str) -> None:
 
 
 def _named(delegation: Delegation) -> dict[str, object]:
+    found: dict[str, object] = {"delegation_id": delegation.delegation_id, "run": delegation.run}
+    if delegation.kind == "task":
+        task = str(delegation.brief.get("task") or "")
+        found["task"] = task if len(task) <= SUMMARY_CHARS else task[:SUMMARY_CHARS] + "…"
+        return found
     check = cast(dict[str, object], delegation.brief.get("check") or {})
-    return {
-        "delegation_id": delegation.delegation_id,
-        "run": delegation.run,
-        "check": {"entry": check.get("handle"), "revision": check.get("revision")},
-    }
+    return {**found, "check": {"entry": check.get("handle"), "revision": check.get("revision")}}
 
 
 def _ending(delegation: Delegation) -> dict[str, object]:
@@ -615,13 +649,18 @@ def outcome(delegation: Delegation) -> dict[str, object]:
 
 
 def summarized(delegation: Delegation) -> dict[str, object]:
-    """A delegation's outcome as a notice gives it: its verdict and status, or without a
-    result the head of its answer."""
+    """A delegation's outcome as a notice gives it: a check's verdict and status, a
+    task's status and the head of its summary, or without a result the head of its
+    answer."""
     found: dict[str, object] = _ending(delegation)
     if delegation.files is not None:
         found["files_recorded"] = delegation.files.get("total")
     if delegation.result is not None:
         result = delegation.result
+        if delegation.kind == "task":
+            summary = str(result.get("summary") or "")
+            head = summary if len(summary) <= SUMMARY_CHARS else summary[:SUMMARY_CHARS] + "…"
+            return {**found, "status": result.get("status"), "summary_head": head}
         return {**found, "verdict": result.get("verdict"), "status": result.get("status")}
     answer = delegation.report or ""
     head = answer if len(answer) <= SUMMARY_CHARS else answer[:SUMMARY_CHARS] + "…"

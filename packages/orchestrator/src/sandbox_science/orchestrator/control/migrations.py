@@ -2378,6 +2378,19 @@ BEGIN SELECT RAISE(ABORT, 'a delegation''s outcome is written once'); END""",
         schema.execute(statement)
 
 
+def _delegation_tasks(schema: Schema) -> None:
+    """Version 39: a delegation's kind is a ``check`` or a ``task``, a brief the parent
+    writes (plans-and-delegation spec, PD-11). The table is made again with the wider
+    CHECK, its columns, rows, indexes and triggers as they were."""
+    (create,) = schema.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='delegations'"
+    ).fetchone()
+    old = "CHECK (kind IN ('check'))"
+    if old not in create:
+        raise ControlError(INTERNAL, "the delegations table's kind is not as version 38 left it")
+    rebuild(schema, "delegations", create.replace(old, "CHECK (kind IN ('check', 'task'))", 1))
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -2416,6 +2429,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _cost_limits,
     _user_questions,
     _delegation_files,
+    _delegation_tasks,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

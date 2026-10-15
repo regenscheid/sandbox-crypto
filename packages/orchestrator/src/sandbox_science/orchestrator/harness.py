@@ -506,7 +506,13 @@ class Harness:
                         stop=stop,
                         max_turns=request.max_turns or self.settings.max_turns,
                         max_input_chars=self.settings.max_input_chars,
-                        system=SYSTEM_PROMPT if request.parent is None else delegated_prompt.CHECK,
+                        system=(
+                            SYSTEM_PROMPT
+                            if request.parent is None
+                            else delegated_prompt.CHECK
+                            if request.target is not None
+                            else delegated_prompt.TASK
+                        ),
                         on_tool=sink.tool,
                         research_template=admitted.request.research_template,
                         hooks=hooks,
@@ -565,7 +571,7 @@ class Harness:
                 run_id=admitted.run_id,
             )
             # Its result is read from its closing answer once every other hook has had its say.
-            outcome = Outcome(request.target)
+            outcome = Outcome(request.target, task=request.target is None)
             return (*limit, SessionHeld(chat), fence, outcome, EventLog(chat))
         settings = self.settings
         kept = (ModelBudget(chat, settings.run_share),) if settings.cost_limits else ()

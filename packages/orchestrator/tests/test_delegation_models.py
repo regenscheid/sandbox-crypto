@@ -140,8 +140,8 @@ async def test_a_delegation_runs_on_the_alias_its_brief_chose(delegating: Harnes
     assert model_tool(delegating) == {
         "type": "string",
         "enum": ["checker-b"],
-        "description": "Optional: the model alias the checker runs on, of those the project "
-        "allows; without it, the delegated role's",
+        "description": "Optional: the model alias the delegated run runs on, of those the "
+        "project allows; without it, the delegated role's",
     }
     began = answer(root, 0)
     assert began["model"] == {"alias": "checker-b"}

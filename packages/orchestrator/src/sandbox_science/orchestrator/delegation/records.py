@@ -75,6 +75,10 @@ class DelegationSettings(Contract):
     """A check's tokens, at most: reserved from its root's share of the model budget."""
     check_turns: int = Field(default=12, ge=1, le=30)
     """A check's turns, at most, and no more than its parent has left."""
+    task_tokens: int = Field(default=200_000, ge=50_000, le=400_000)
+    """A task's tokens, at most (PD-11; the coordinator, 2026-10-15)."""
+    task_turns: int = Field(default=20, ge=1, le=40)
+    """A task's turns, at most, and no more than its parent has left."""
     models: tuple[Alias, ...] = Field(default=(), max_length=MAX_MODELS)
     """The model aliases a brief may choose (PD-28); none, the default, allows no choice,
     and a brief that names none gets the delegated role's."""
@@ -98,7 +102,7 @@ class Delegation(Contract):
     """The parent run, by the name its record is kept under."""
     run: str
     """The delegated run, by the name its record is kept under."""
-    kind: Literal["check"]
+    kind: Literal["check", "task"]
     brief: dict[str, JsonValue]
     started_at: datetime
     ended: Ended | None = None
