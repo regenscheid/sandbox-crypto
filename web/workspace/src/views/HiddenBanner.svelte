@@ -4,15 +4,28 @@
      and, with `links` (beside a rendering), every link address, title and reference
      definition a rendering shows only on hover or not at all, and what else it hides:
      math that draws nothing, references to hidden characters, a code fence's words after
-     its language. Nothing when the text hides nothing. -->
+     its language. Nothing when the text hides nothing. With `quiet`, for a whole rendered
+     document: shown only when it hides something, a link's address being in plain view
+     on hover; it lists every link only for a short text, and otherwise only the links
+     with a title, which the rendering hides. -->
 <script lang="ts">
   import { linksIn, renderingHides } from '../lib/approval';
   import { hiddenPlaces, visible } from '../lib/text';
 
-  let { text, links = false }: { text: string; links?: boolean } = $props();
+  let {
+    text,
+    links = false,
+    quiet = false,
+  }: { text: string; links?: boolean; quiet?: boolean } = $props();
+  /** Longer than this, a quiet banner leaves out the links without a title. */
+  const SHORT = 4000;
   const places = $derived(hiddenPlaces(text));
-  const found = $derived(links ? linksIn(text) : []);
-  const hides = $derived(links ? renderingHides(text) : []);
+  const all = $derived(links || quiet ? linksIn(text) : []);
+  const titled = $derived(all.filter((link) => link.title !== ''));
+  const hides = $derived(links || quiet ? renderingHides(text) : []);
+  const hiding = $derived(places.length > 0 || hides.length > 0 || titled.length > 0);
+  const shown = $derived(quiet ? hiding : places.length > 0 || all.length > 0 || hides.length > 0);
+  const found = $derived(quiet && text.length > SHORT ? titled : all);
   const listed = $derived(places.slice(0, 8));
   const heading = $derived(
     `${places.length} ${places.length === 1 ? 'character' : 'characters'} you may not see ` +
@@ -20,7 +33,7 @@
   );
 </script>
 
-{#if places.length > 0 || found.length > 0 || hides.length > 0}
+{#if shown}
   <div role="status" class="hidden-banner">
     {#if places.length > 0}
       <p>{heading}</p>
@@ -36,13 +49,20 @@
     {#if hides.length > 0}
       <p>What the rendering hides:</p>
       <ul>
-        {#each hides as hidden, index (index)}<li>{hidden.what}, at line {hidden.line}</li>{/each}
+        {#each hides.slice(0, 8) as hidden, index (index)}<li>
+            {hidden.what}, at line {hidden.line}
+          </li>{/each}
+        {#if hides.length > 8}<li>and {hides.length - 8} more</li>{/if}
       </ul>
     {/if}
     {#if found.length > 0}
-      <p>Links, which a rendering shows only on hover or not at all:</p>
+      <p>
+        {found.length < all.length
+          ? 'Links with a title, which a rendering shows only on hover:'
+          : 'Links, which a rendering shows only on hover or not at all:'}
+      </p>
       <ul>
-        {#each found as link, index (index)}
+        {#each found.slice(0, 20) as link, index (index)}
           <li>
             {link.kind}
             <code>{visible(link.label)}</code>:
@@ -50,6 +70,7 @@
               <q>{visible(link.title)}</q>{/if}
           </li>
         {/each}
+        {#if found.length > 20}<li>and {found.length - 20} more</li>{/if}
       </ul>
     {/if}
   </div>
