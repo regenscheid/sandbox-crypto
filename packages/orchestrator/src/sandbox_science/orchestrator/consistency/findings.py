@@ -313,7 +313,12 @@ class Findings:
         payload: Json,
         *,
         reflag: bool = False,
+        notify: bool = True,
     ) -> Json:
+        """Move a finding to ``status``. An open review finding at or above the project's
+        interrupt severity is offered to its session's runs, unless ``notify`` is false: an
+        agent's own rebuttal leaves it open, and offering it back to the agent that wrote
+        it made a run answer it again and again until its turns ran out (lab 40)."""
         revision = found["revision"] + 1
         flags = found["reflags"] + int(reflag)
         db.execute(
@@ -356,7 +361,8 @@ class Findings:
             ReviewConfig.model_validate_json(configuration[0]) if configuration else ReviewConfig()
         ).interrupt_severity
         if (
-            found["origin"] == "review"
+            notify
+            and found["origin"] == "review"
             and status == "open"
             and SEVERITY_RANK[found["severity"]] <= SEVERITY_RANK[threshold]
         ):
@@ -738,7 +744,15 @@ class Findings:
                 "dismiss": "withdrawn",
                 "reopen": "open",
             }[value.action]
-            result = self.transition(db, found, status, actor, value.explanation, payload)
+            result = self.transition(
+                db,
+                found,
+                status,
+                actor,
+                value.explanation,
+                payload,
+                notify=author.kind != "agent",
+            )
             if prepared_body is not None:
                 response_commit(
                     db,

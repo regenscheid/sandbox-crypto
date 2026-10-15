@@ -154,6 +154,50 @@ def test_reflag_escalates_current_assessment_and_notice_without_downgrading(
     assert retained["history"][-1]["payload"]["assessment"]["severity"] == "note"
 
 
+def test_an_agents_own_rebuttal_is_not_offered_back_to_it(store) -> None:
+    """Lab 40: a rebuttal leaves a finding open at a new revision, and that revision was
+    offered to the session's runs as a new notice, so the agent that wrote it read the
+    finding and rebutted it again, seven times, until its run ran out of turns. A user's
+    response is still offered."""
+    from sandbox_science.orchestrator.consistency.notices import FindingNotices
+
+    reviews, _, _ = store
+    claim(reviews)
+    review = dispatch(reviews)
+    finding = raise_finding(reviews, review)
+    reviews.finish("p", "s", review, "owner", "findings", "One contradiction.")
+    notices = FindingNotices(reviews)
+    assert [n["revision"] for n in notices.pending("p", "s", "author-1", set())] == [1]
+    rebutted = Findings(reviews).respond(
+        "p",
+        "s",
+        {
+            "finding": finding["finding_id"],
+            "expected": 1,
+            "action": "rebut",
+            "explanation": "The output does record 16.",
+            "operation_id": "rebut",
+        },
+        MAIN,
+    )
+    assert (rebutted["status"], rebutted["revision"]) == ("open", 2)
+    assert notices.pending("p", "s", "author-1", set()) == []
+    assert notices.pending("p", "s", "author-2", set()) == []
+    Findings(reviews).respond(
+        "p",
+        "s",
+        {
+            "finding": finding["finding_id"],
+            "expected": 2,
+            "action": "rebut",
+            "explanation": "The user reads 16 too.",
+            "operation_id": "user-rebut",
+        },
+        USER,
+    )
+    assert [n["revision"] for n in notices.pending("p", "s", "author-2", set())] == [3]
+
+
 def test_document_snapshot_reads_exact_revision_after_head_changes(store) -> None:
     reviews, documents, _ = store
     doc = documents.create(
