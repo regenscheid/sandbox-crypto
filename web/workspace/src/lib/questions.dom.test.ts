@@ -196,9 +196,11 @@ describe('the chat panel', () => {
     expect(hint.querySelector('q')!.textContent).toBe('First?');
     expect(hint.textContent).toContain('the oldest of the 2 open questions');
     expect(button(root, 'Send as the answer')).toBeTruthy();
-    expect(root.textContent).toContain('Its run no longer holds the session');
     const cards = [...root.querySelectorAll('section.question')];
     expect(cards).toHaveLength(3);
+    // The stale run's question takes no answer: the server would refuse it (run_ended).
+    expect(cards[0]!.textContent).toContain('Its run no longer holds the session');
+    expect(cards[0]!.querySelectorAll('button')).toHaveLength(0);
     button(cards[1] as HTMLElement, 'Let the agent decide').click();
     await settle();
     expect(sent).toEqual([

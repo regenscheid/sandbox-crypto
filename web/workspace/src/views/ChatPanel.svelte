@@ -176,11 +176,9 @@
       {question}
       {now}
       byMessage={!closed && next?.question_id === question.question_id}
+      live={question.run === chat?.lease?.run}
       answer={(body) => answer(question, body)}
     />
-    {#if question.run !== chat?.lease?.run}<p class="muted">
-        Its run no longer holds the session: an answer may not reach it.
-      </p>{/if}
   {/each}
   {#if !closed}
     {#if next}<p role="status" class="hint">

@@ -3,8 +3,10 @@
      shows its age, the agent's text exactly (ApprovalText) and its options with every
      character a person may not see shown as its code point, and takes the answer: an
      option, several, the agent to decide, or a cancel; the user's own words go in the
-     message box. Closed, it says how, and why when no answer came. A question is not a
-     permission request: an answer grants nothing. -->
+     message box. An open question whose run no longer holds the session takes no answer:
+     the server refuses one (`run_ended`), since no one would read it. Closed, it says how,
+     and why when no answer came. A question is not a permission request: an answer grants
+     nothing. -->
 <script lang="ts">
   import type { Question } from '../lib/api-types';
   import { ageText, closedText, type AnswerBody } from '../lib/questions';
@@ -17,6 +19,7 @@
     question,
     now,
     byMessage = false,
+    live = true,
     answer,
   }: {
     question: Question;
@@ -24,6 +27,8 @@
     now: number;
     /** A message the user writes now answers this question. */
     byMessage?: boolean;
+    /** The run that asked holds the session, so an answer reaches it. */
+    live?: boolean;
     answer: (body: AnswerBody) => Promise<void>;
   } = $props();
   let chosen = $state<Record<string, boolean>>({});
@@ -50,7 +55,12 @@
     <h3>The agent asked you</h3>
   {/if}
   <ApprovalText text={question.text} label="The agent's question" preview />
-  {#if open && sent}
+  {#if open && !live}
+    <p class="muted">
+      Its run no longer holds the session, so it takes no answer; it closes when the run service
+      ends that run. Write to the agent as a message instead.
+    </p>
+  {:else if open && sent}
     <p role="status">Your answer is sent; the agent reads it in a moment.</p>
   {:else if open}
     {#if question.options.length > 0}
