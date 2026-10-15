@@ -103,7 +103,9 @@ class Recorded:
         report: dict[str, Any] = {
             "recorded": sum(1 for f in self.files if not f["deleted"]),
             "deleted": sum(1 for f in self.files if f["deleted"]),
-            "without_content": sum(1 for f in self.files if not f["content_retained"]),
+            "without_content": sum(
+                1 for f in self.files if not f["deleted"] and not f["content_retained"]
+            ),
         }
         if self.left_out:
             report["left_out"] = dict(self.left_out)
