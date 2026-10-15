@@ -60,6 +60,9 @@ from .model import ToolCall, ToolSpec
 from .plan_tools import SPECS as PLAN_SPECS
 from .plan_tools import Plans, PlanTools
 from .provision import PROVISION_SPECS, PROVISIONING, ProvisionTools
+from .question_tool import EFFECTS as QUESTION_EFFECTS
+from .question_tool import SPECS as QUESTION_SPECS
+from .question_tool import QuestionTool
 from .recording import FileRecorder, RecordedFiles, Written, with_recorded
 from .worker_client import WorkerAPIError, WorkerClient, dump
 
@@ -427,6 +430,7 @@ def _harness_tool_names() -> frozenset[str]:
         *LEDGER_SPECS,
         *MEMORY_SPECS,
         *delegation_specs.SPECS,
+        *QUESTION_SPECS,
     )
     return frozenset(spec.name for spec in specs) | {RESTART_KERNEL, MCP_TOOLS}
 
@@ -461,14 +465,16 @@ class Toolbox:
         recorder: FileRecorder | None = None,
         kernel_run: str | None = None,
         delegations: Delegations | None = None,
+        questions: QuestionTool | None = None,
         delegated: bool = False,
         check: bool = False,
     ) -> None:
         """For a ``delegated`` run, a call to a tool it is not offered, such as a review,
-        plan, delegate or connector tool, is refused with ``not_permitted_for_role``
-        (PD-16). A ``check`` run is offered only the reads of the documents, the ledger
-        and the memory, beside its compute and file tools: it changes no entry, document
-        or memory (PD-34, LG-13, as the coordinator tightened them on 2026-10-15)."""
+        plan, delegate, question or connector tool, is refused with
+        ``not_permitted_for_role`` (PD-16, PD-41). A ``check`` run is offered only the reads
+        of the documents, the ledger and the memory, beside its compute and file tools: it
+        changes no entry, document or memory (PD-34, LG-13, as the coordinator tightened
+        them on 2026-10-15)."""
         self.client = client
         self.context = context
         self.output_chars = output_chars
@@ -494,6 +500,9 @@ class Toolbox:
         if delegated and connectors is not None:
             # PD-16: a delegated run is offered no connector tool, and no index of them.
             raise ValueError("a delegated run gets no connector tools")
+        if delegated and questions is not None:
+            # PD-41: a delegated run that needs the user ends blocked instead.
+            raise ValueError("a delegated run cannot ask the user")
         self.provisioning = ProvisionTools(client, context, output_chars=output_chars)
         worker: dict[str, tuple[Effect, Handler]] = {
             "shell": ("effect", _plain(self._shell)),
@@ -609,6 +618,14 @@ class Toolbox:
                 delegations.specs,
                 lambda name, call: delegations.call(name, call.args),
                 delegation_specs.EFFECTS,
+            )
+        if questions is not None:
+            entries += _group(
+                questions.specs,
+                lambda _, call: questions.call(
+                    call.args, operation=call.operation, call_id=call.call.id
+                ),
+                QUESTION_EFFECTS,
             )
         self.connectors = connectors
         """The run's connector tools: indexed in ``mcp_tools``, and offered once loaded."""

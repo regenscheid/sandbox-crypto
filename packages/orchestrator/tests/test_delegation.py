@@ -347,7 +347,8 @@ async def test_a_parents_end_cancels_its_check_and_the_next_run_gets_the_outcome
 
 
 async def test_a_check_is_refused_the_tools_its_role_withholds(delegating: Harness) -> None:
-    """PD-16: no review, plan or delegate tools; a call to one is refused for its role."""
+    """PD-16, PD-41: no review, plan, delegate or question tools; a call to one is refused
+    for its role."""
     root = await delegating.run(
         "root",
         [Reply(calls=[CHECK]), wait(), Reply("Done.")],
@@ -360,14 +361,17 @@ async def test_a_check_is_refused_the_tools_its_role_withholds(delegating: Harne
                     call("e-print-mcp_search_eprint", query="Ed448"),  # a connector's
                     call("delegation_status", delegation_id="dlg-" + "0" * 24),
                     call("cancel_delegation", delegation_id="dlg-" + "0" * 24),
+                    call("ask_user", question="Which curve does C-1 mean?"),
                 ]
             ),
             Reply("Verdict: inconclusive"),
         ],
     )
     (child,) = children(delegating, root)
+    assert "ask_user" in tools(root)
+    assert "ask_user" not in tools(child)
     refused = results(child)
-    assert len(refused) == 6
+    assert len(refused) == 7
     for result in refused:
         error = json.loads(result)["error"]
         assert error["kind"] == "policy_denied"
