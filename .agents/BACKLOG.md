@@ -247,8 +247,9 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
   - [x] GUI: Move to project and Restore this revision
   - [x] GUI: a session plan's save, when it holds agent text
   - [x] GUI: finding decisions (statement, remedy, explanation)
-  - [ ] GUI: the editor's raw text, comment threads and chat: a banner and the link list when there is hidden content
+  - [x] GUI: the editor's raw text, comment threads and chat: a banner and the link list when there is hidden content
   - [ ] The ledger's accept action, when it is built, shows the entry through `ApprovalText`
+  - [ ] GUI, to decide: a banner beside the rendered document view and the ledger's entry view (a list of every link in a long document may be noise)
 - [ ] Previews of rich artifacts (HTML, SVG, notebook output, PDFs) on a separate origin in sandboxed frames (D54); the PDF viewer
   - [x] PDF viewer (E-08, [spec](../docs/specs/pdf-viewer.md)): the preview origin, capabilities and the artifact list route (#228); the PDF.js bundle with tier 1 parts only, its license manifest, and the page with page numbers and labels, zoom, selection and Copy anchor
   - [x] PDF viewer: the project's artifact list, the PDF view with the viewer's frame, and the anchor it receives and copies

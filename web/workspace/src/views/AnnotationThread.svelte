@@ -14,6 +14,7 @@
   import { documentHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
   import CommentBodyEditor from './CommentBodyEditor.svelte';
+  import HiddenBanner from './HiddenBanner.svelte';
   let {
     projectId,
     documentId,
@@ -129,7 +130,10 @@
           entry.created_at * 1000,
         ).toLocaleString()}
       </p>
-      {#if entry.body}<Markdown source={entry.body} {macros} />{/if}
+      {#if entry.body}<Markdown source={entry.body} {macros} /><HiddenBanner
+          text={entry.body}
+          links
+        />{/if}
       {#if entry.body_source}
         {#if entry.body_source.held}<p role="status">
             Body math checks held: {entry.body_source.held}
@@ -141,7 +145,10 @@
               >Current body revision {entry.body_source.revision} · {entry.body_source.author
                 ? describeAuthor(entry.body_source.author)
                 : 'legacy ownership unknown'}</summary
-            ><Markdown source={entry.body_source.body ?? ''} {macros} />
+            ><Markdown source={entry.body_source.body ?? ''} {macros} /><HiddenBanner
+              text={entry.body_source.body ?? ''}
+              links
+            />
           </details>
           {#if entry.author.kind === 'user'}<CommentBodyEditor
               {projectId}
@@ -205,6 +212,7 @@
           maxlength="8192"
           rows="4"></textarea></label
       >
+      <HiddenBanner text={draft.body} />
       <label
         >Address to main agent <select bind:value={draft.session}
           ><option value="">No work request</option

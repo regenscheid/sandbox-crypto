@@ -3,6 +3,8 @@
 <script lang="ts">
   import { chatEntries, type WatchedRun } from '../lib/chat';
   import Markdown from '../lib/Markdown.svelte';
+  import { visible, visibleOutput } from '../lib/text';
+  import HiddenBanner from './HiddenBanner.svelte';
   let { run }: { run: WatchedRun } = $props();
   const entries = $derived(chatEntries(run.events));
 </script>
@@ -13,20 +15,24 @@
       {#if entry.kind === 'user'}
         <h3>You</h3>
         <Markdown source={entry.text} />
+        <HiddenBanner text={entry.text} links />
       {:else if entry.kind === 'assistant'}
         <h3>Agent</h3>
-        {#if entry.text}<Markdown source={entry.text} />{/if}
+        {#if entry.text}<Markdown source={entry.text} /><HiddenBanner
+            text={entry.text}
+            links
+          />{/if}
         {#if entry.usage}<p class="muted">{entry.usage}</p>{/if}
         {#each entry.calls as call, index (index)}
           <details>
             <summary>Calls <code>{call.name}</code></summary>
-            <pre>{call.arguments}</pre>
+            <pre>{visible(call.arguments)}</pre>
           </details>
         {/each}
       {:else if entry.kind === 'tool'}
         <details>
           <summary><code>{entry.name}</code>: {entry.outcome}</summary>
-          <pre>{entry.result}</pre>
+          <pre>{visibleOutput(entry.result)}</pre>
         </details>
       {:else if entry.kind === 'note'}
         <p class:problem={entry.problem} class="muted">{entry.text}</p>
