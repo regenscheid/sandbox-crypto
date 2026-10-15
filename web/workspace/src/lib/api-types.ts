@@ -572,6 +572,13 @@ export interface LedgerListing {
   page: EntryPage;
 }
 
+/** A page of the work records on a ledger entry, newest first (LG-6). */
+export interface LedgerWork {
+  project_id: string;
+  observed_at: string;
+  work: WorkPage;
+}
+
 export interface LicenseObservation {
   declared: string | null;
   agpl: boolean | null;
@@ -1119,6 +1126,36 @@ export interface ViewerLink {
   url: string;
   expires_at: string;
   path: string;
+}
+
+/** An entry's work records, newest first, with where the next page begins. */
+export interface WorkPage {
+  entry_id: string;
+  handle: string;
+  records: WorkRecord[];
+  next_before: number | null;
+}
+
+/** A work record as it is kept (LG-6, LG-12): append-only, on an entry, at the revision the entry had when it was recorded. */
+export interface WorkRecord {
+  record_id: string;
+  position: number;
+  entry_id: string;
+  handle: string;
+  entry_revision: number;
+  tried: string;
+  ending: "limit" | "obstruction_claimed" | "produced" | "assessment";
+  limit: "time" | "tools" | "context" | "ideas" | null;
+  produced: string[];
+  assesses: string | null;
+  verdict: "accepted" | "rejected" | "inconclusive" | null;
+  references: Record<string, unknown>[];
+  part_of: string | null;
+  author: Record<string, unknown>;
+  reason: string;
+  operation_id: string;
+  provenance: Record<string, unknown> | null;
+  created: string;
 }
 
 /** The worker's observation plus the project it belongs to. */

@@ -52,6 +52,7 @@ from sandbox_science.workspace.ledger import (
     LedgerGate,
     LedgerHistory,
     LedgerListing,
+    LedgerWork,
 )
 from sandbox_science.workspace.memory import MemoryAnswer, MemoryHistory, MemoryProposals
 from sandbox_science.workspace.plan_edits import BodyChange, EditReceipt
@@ -84,6 +85,7 @@ MODELS: tuple[type[BaseModel], ...] = (
     LedgerEntry,
     LedgerCitations,
     LedgerHistory,
+    LedgerWork,
     LedgerGate,
     FrontierCategories,
     FrontierCategory,
