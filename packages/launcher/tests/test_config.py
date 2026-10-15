@@ -138,8 +138,8 @@ def test_the_labs_config_needs_nothing_added_by_hand(home: Path, tmp_path: Path)
     done = subprocess.run(
         [
             sys.executable, "-I", str(script), str(out), "--state-dir", str(tmp_path / "state"),
-            "--project", "lab41", "--mcp-proxy", "sandbox-science/mcp-proxy:test",
-            "--provider-env-file", str(owner),
+            "--project", "lab41", "--profile", "crypto-base", "--session", "a",
+            "--mcp-proxy", "sandbox-science/mcp-proxy:test", "--provider-env-file", str(owner),
         ],
         capture_output=True, text=True, check=False, env={**os.environ, "HOME": str(home)},
     )  # fmt: skip
@@ -159,6 +159,9 @@ def test_the_labs_config_needs_nothing_added_by_hand(home: Path, tmp_path: Path)
     )
     (project,) = config.projects
     assert project.id == "lab41"
+    # Lab 41: the project's profile and its one shared session, which the lab edited in.
+    assert project.profile == "crypto-base"
+    assert [(s.id, s.dedicated) for s in project.sessions] == [("a", False)]
 
 
 def test_the_examples_mcp_proxy_works_uncommented(home: Path, tmp_path: Path) -> None:

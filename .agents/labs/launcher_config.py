@@ -2,7 +2,7 @@
 """Write a lab's launcher config, outside the repository, from the example.
 
     uv run python -I .agents/labs/launcher_config.py OUT --state-dir DIR [--project ID] \\
-        [--mcp-proxy IMAGE [--provider-env-file FILE]]
+        [--profile PROFILE] [--session ID ...] [--mcp-proxy IMAGE [--provider-env-file FILE]]
 
 The tracked example names no real secret file: whoever writes a config also chooses the
 OpenShell CLI that gets the registered values. A lab with the MCP proxy names the owner's
@@ -10,9 +10,11 @@ file here, as the coordinator gives it, so only the lab's own config holds its p
 writes the path alone and never opens the file.
 
 OUT gets every setting of examples/sandbox-science.toml, with absolute paths, the state
-directory DIR and, if given, the project ID and the MCP proxy for crypto-research-mcp,
-with the tool index the example's commented [mcp_proxy] table gives it (``index`` and
-``about``), so that a lab adds nothing by hand (lab 40, B7).
+directory DIR and, if given, the project ID, its profile (such as crypto-base), its
+sessions (each ``--session`` one, in the project's environment, in place of the example's)
+and the MCP proxy for crypto-research-mcp, with the tool index the example's commented
+[mcp_proxy] table gives it (``index`` and ``about``), so that a lab adds nothing by hand
+(lab 40, B7; lab 41).
 It is written with mode 600, and refused inside a git checkout. With the MCP proxy, the
 policy is examples/policy.yaml with crypto-research-mcp's address in place of its
 placeholder, written as policy.yaml beside OUT: the proxy reaches the server it names.
@@ -75,6 +77,13 @@ def main() -> int:
     parser.add_argument("out", type=Path)
     parser.add_argument("--state-dir", type=Path, required=True)
     parser.add_argument("--project")
+    parser.add_argument("--profile", help="the project's profile, such as crypto-base")
+    parser.add_argument(
+        "--session",
+        action="append",
+        metavar="ID",
+        help="a session in the project's environment (repeat); in place of the example's",
+    )
     parser.add_argument("--mcp-proxy", metavar="IMAGE")
     parser.add_argument("--provider-env-file", type=Path)
     args = parser.parse_args()
@@ -85,9 +94,13 @@ def main() -> int:
         parser.error("--provider-env-file needs --mcp-proxy")
     data = load_config(EXAMPLE).model_dump(mode="json", exclude_none=True)
     data["state_dir"] = str(args.state_dir.expanduser().absolute())
+    (project,) = data["projects"]
     if args.project is not None:
-        (project,) = data["projects"]
         project["id"] = args.project
+    if args.profile is not None:
+        project["profile"] = args.profile
+    if args.session is not None:
+        project["sessions"] = [{"id": session, "dedicated": False} for session in args.session]
     if args.mcp_proxy is not None:
         proxy = {
             "image": args.mcp_proxy,
