@@ -2,6 +2,7 @@
 <script lang="ts">
   import { api } from '../lib/api';
   import { formatCost, formatTime } from '../lib/format';
+  import { costByRole } from '../lib/modelCost';
   import { documentHref, ledgerHref, memoryHref, sessionHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
   import ProjectFiles from './ProjectFiles.svelte';
@@ -38,6 +39,13 @@
         {formatCost(project.model_cost.last_day ?? 0)} in the last 24 hours, {formatCost(
           project.model_cost.total,
         )} in all, as the gateway reported it
+        {#if costByRole(project.model_cost).length}
+          <ul>
+            {#each costByRole(project.model_cost) as line (line)}
+              <li>{line}</li>
+            {/each}
+          </ul>
+        {/if}
       </dd>
     {/if}
   </dl>

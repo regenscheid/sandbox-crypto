@@ -8,7 +8,7 @@ import json
 import math
 import sqlite3
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +18,14 @@ from aiohttp.test_utils import TestClient
 
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator.control import migrations, store_path
-from sandbox_science.orchestrator.projects import ModelUsage, ProjectStore, RunRecord, SessionRecord
+from sandbox_science.orchestrator.jobstate import JobState
+from sandbox_science.orchestrator.projects import (
+    ModelUsage,
+    ProjectStore,
+    RunRecord,
+    SessionRecord,
+    run_name,
+)
 from sandbox_science.workspace import api
 from sandbox_science.workspace.app import create_app
 
@@ -117,7 +124,7 @@ async def test_a_projects_model_cost_is_what_the_gateway_reported(
     client: TestClient[Any, Any], state_dir: Path
 ) -> None:
     found = (await get(client, "/api/v0/projects/p1"))["project"]
-    assert found["model_cost"] == {"last_day": None, "total": None}  # nothing priced
+    assert found["model_cost"] == {"last_day": None, "total": None, "by_role": []}
     store = ProjectStore(state_dir)
     now = datetime.now(UTC)
     priced = store.run("p1", "a", FIRST_RUN).model_copy(
@@ -130,7 +137,40 @@ async def test_a_projects_model_cost_is_what_the_gateway_reported(
     )
     store.save_run(priced)
     found = (await get(client, "/api/v0/projects/p1"))["project"]
-    assert found["model_cost"] == {"last_day": 0.125, "total": 0.125}
+    main = {"role": "main", "last_day": 0.125, "total": 0.125}
+    assert found["model_cost"] == {"last_day": 0.125, "total": 0.125, "by_role": [main]}
+    # Lab 40, B5: each role's calls, by role: a delegated run's, and the job watcher's.
+    later = now + timedelta(seconds=1)
+    child = priced.model_copy(
+        update={
+            "run_id": "run-child",
+            "role": "delegated",
+            "parent": run_name(now, "run-priced"),
+            "delegation": "dlg-1",
+            "started_at": later,
+            "ended_at": later,
+            "usage": [ModelUsage(input_tokens=10, output_tokens=2, cost=0.25)],
+        }
+    )
+    store.save_run(child)
+    jobs = JobState(state_dir)
+    try:
+        context = ExecutionContext(project_id="p1", session_id="a", environment_id="e")
+        call = jobs.reserve(context, "run-priced", "exe-1", "watcher", {}, 60, 0)
+        assert call is not None
+        jobs.finish_call(call, "fine", "small", 10, 2, 0.5)
+    finally:
+        jobs.close()
+    found = (await get(client, "/api/v0/projects/p1"))["project"]
+    assert found["model_cost"] == {
+        "last_day": 0.875,
+        "total": 0.875,
+        "by_role": [
+            main,
+            {"role": "delegated", "last_day": 0.25, "total": 0.25},
+            {"role": "watcher", "last_day": 0.5, "total": 0.5},
+        ],
+    }
 
 
 async def test_one_session_with_its_runs_oldest_first(client: TestClient[Any, Any]) -> None:

@@ -251,3 +251,22 @@ def test_a_version_39_stores_reviewer_and_watcher_calls_get_no_cost(tmp_path: Pa
         assert db.execute("SELECT cost FROM job_watcher_calls").fetchall() == [(None,)]
         with pytest.raises(sqlite3.IntegrityError):
             db.execute("UPDATE job_watcher_calls SET cost=-1")
+
+
+def test_an_unsaved_runs_cost_is_its_started_roles(tmp_path: Path) -> None:
+    """A run without a record counts by the role its ``started`` event names (lab 40,
+    B5): a delegated run that died is no main run's spending."""
+    projects, state = store(tmp_path)
+    try:
+        now = datetime.now(UTC)
+        for run, role, cost in (("r-main", "main", 0.5), ("r-child", "delegated", 0.25)):
+            name = run_name(now, run)
+            state.append("p", "s", name, "started", {"role": role})
+            usage = {"model": "m", "input_tokens": 1, "output_tokens": 1, "cost": cost}
+            state.append("p", "s", name, "assistant", {"turn": 1, "usage": usage})
+        assert state.model_costs("p") == {"main": 0.5, "delegated": 0.25}
+        assert list(state.model_costs("p")) == ["main", "delegated"]
+        assert state.model_cost("p") == 0.75
+        assert state.model_costs("p", now + timedelta(hours=1)) == {}
+    finally:
+        projects.close()
