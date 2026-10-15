@@ -4,6 +4,10 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 ## 2026-10-15
 
+Decision of the owner:
+
+- **Old pack projects are not imported** ([ledger spec](../docs/specs/ledger.md), LG-37, LG-38, LG-F10). The deliberate import of a pack project's knowledge files and session ledgers is not planned, and the coordinator's decisions on its plan (work records first, evidence pinned to the snapshot, recognised identifiers only) lapse with it. LG-35, the pack's bindings writing results files when its skills run here, stays, with the skills. Work records (LG-6) go ahead on their own: delegation outcomes on issues (LG-F8) need them.
+
 Decision of the owner on the model budget: "I would expect budget to mostly be enforced upstream by LiteLLM", and "doing it as cost instead of tokens seems better, too."
 
 - **The gateway's budget** ([run service](../docs/specs/run-service.md), RS-6d). A call LiteLLM refuses because the key's, user's or team's budget is spent is not tried again, even as a 429: the run stops, `gateway_budget`, and the session's messages wait. Cost recording and an optional cost limit per project, in place of the default token budget, follow in their own changes.
