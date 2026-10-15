@@ -246,6 +246,8 @@ async def test_cli_cleanup_failure_keeps_partial_record_and_closes_model(
         reviewer_model=None,
         math_node=None,
         watcher_calls_per_hour=1,
+        review_token_budget=400000,
+        review_calls_per_hour=240,
         watcher_first_check=1,
         watcher_interval=1,
         task="Continue",

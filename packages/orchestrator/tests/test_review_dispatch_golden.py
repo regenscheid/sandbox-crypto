@@ -32,6 +32,20 @@ GOLDEN = {
 
 
 @pytest.fixture(autouse=True)
+def limits_the_digests_were_taken_with(store: Any) -> None:
+    """The review limits before lab 38 raised the defaults, which the run records hold:
+    what the snapshots pin is unchanged."""
+    reviews, _, _ = store
+    reviews.defaults = ReviewConfig(
+        max_turns=12,
+        time_seconds=120,
+        max_input_chars=150000,
+        token_budget=64000,
+        calls_per_hour=60,
+    )
+
+
+@pytest.fixture(autouse=True)
 def deterministic_ids(monkeypatch: pytest.MonkeyPatch) -> None:
     counter = itertools.count(1)
     monkeypatch.setattr(secrets, "token_hex", lambda n: f"{next(counter):0{2 * n}x}")

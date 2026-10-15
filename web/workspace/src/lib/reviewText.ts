@@ -22,7 +22,7 @@ const OUTCOMES: Readonly<Record<string, string>> = {
   passed: 'passed: no inconsistency found in the reviewed evidence (not a proof)',
   findings: 'reported findings',
   inconclusive: 'inconclusive: the main claims could not be evaluated',
-  capped: 'capped: it reached its budget or its finding cap; the findings it recorded stand',
+  capped: 'capped: a limit ended it, which its summary names; the findings it recorded stand',
   failed: 'failed: reviewer error',
   dropped: 'dropped: lost to a restart',
 };
@@ -77,20 +77,27 @@ export function coverageText(review: Review): string {
   const coverage = review.coverage_complete
     ? 'coverage complete within the available evidence'
     : 'coverage incomplete';
-  const cap = review.cap_reached
-    ? 'the finding cap was reached'
-    : 'the finding cap was not reached';
+  const cap = review.cap_reached ? 'a limit was reached' : 'no limit was reached';
   return `Covered ${scope}; ${coverage}; ${cap}.`;
 }
 
-/** Which model reviewed and what it used. */
+/** Which model reviewed, what it used, and of which limits (lab 38). */
 export function usageText(review: Review): string {
   const model = review.resolved_model ?? 'an unknown model';
   const alias = review.alias ? ` (alias ${review.alias})` : '';
+  const calls = `${review.calls} model ${review.calls === 1 ? 'call' : 'calls'}`;
+  const tokens = `${review.input_tokens} input and ${review.output_tokens} output tokens`;
+  const limits = review.config;
+  if (limits === undefined)
+    return (
+      `Reviewed by ${model}${alias} with rubric ${review.rubric}: ${calls}, ${tokens} ` +
+      `(${review.estimated_tokens} counted against its budget).`
+    );
   return (
-    `Reviewed by ${model}${alias} with rubric ${review.rubric}: ${review.calls} model ` +
-    `${review.calls === 1 ? 'call' : 'calls'}, ${review.input_tokens} input and ` +
-    `${review.output_tokens} output tokens (${review.estimated_tokens} reserved).`
+    `Reviewed by ${model}${alias} with rubric ${review.rubric}: ${calls} of at most ` +
+    `${limits.max_turns}, ${tokens}; ${review.estimated_tokens} of its ` +
+    `${limits.token_budget}-token budget counted, in at most ${limits.time_seconds} s. ` +
+    `The project's reviewer makes at most ${limits.calls_per_hour} calls an hour.`
   );
 }
 

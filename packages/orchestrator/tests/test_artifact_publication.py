@@ -365,6 +365,8 @@ async def test_cli_closes_borrowed_store_and_models_after_publisher_drain_cancel
         math_launcher=None,
         math_bundle=None,
         watcher_calls_per_hour=1,
+        review_token_budget=400000,
+        review_calls_per_hour=240,
         watcher_first_check=1,
         watcher_interval=1,
         task="test",

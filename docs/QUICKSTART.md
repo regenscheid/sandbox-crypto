@@ -24,7 +24,7 @@ Everything listens on loopback, so only your own computer can reach it. The step
 | --- | --- |
 | `state_dir` | Where the launcher keeps what it makes (see [the state directory](#the-state-directory)); `~/.local/state/sandbox-science` by default |
 | `[[projects]]` | Each project: its `id`, the `profile` its environments start from, and the `sessions` to open for chat (`["main"]` by default) |
-| `[model]` | The gateway's `url`, the main agent's model `name`, and `api_key_file`; an optional `reviewer` model is for reviews and the workspace's math repairs |
+| `[model]` | The gateway's `url`, the main agent's model `name`, and `api_key_file`; an optional `reviewer` model is for reviews and the workspace's math repairs, and optional `review_token_budget` and `review_calls_per_hour` set a review's token budget and the reviewer's hourly call cap ([consistency review](CONSISTENCY-REVIEW.md)) |
 | `[worker]` | Its `listen` address, its `pool_id`, and the project `policy` granted to every project |
 | `[run_service]` | Optional: its `pass_env` |
 | `[workspace]` | Its `listen` address, its `preview_listen` address for the PDF viewer (by default the next port), and `static`, the web app's build |

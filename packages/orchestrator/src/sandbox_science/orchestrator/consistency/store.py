@@ -47,6 +47,9 @@ from .rubric import RUBRIC_VERSION
 
 # Heterogeneous evidence is JSON validated by its producing boundary and bounded here.
 Json = dict[str, Any]
+MANIFEST_PAGE: Final = 50
+"""The most items one manifest page lists."""
+
 MAX_ITEM_BYTES: Final = 256 * 1024
 MAX_SNAPSHOT_BYTES: Final = 8 * 1024 * 1024
 MAX_SNAPSHOT_ITEMS: Final = 256
@@ -228,8 +231,12 @@ class ReviewStore:
         *,
         clock: Callable[[], float] = time.time,
         artifacts: ArtifactInventory | None = None,
+        defaults: ReviewConfig | None = None,
     ) -> None:
         self.documents, self.clock, self.artifacts = documents, clock, artifacts
+        self.defaults = defaults or ReviewConfig()
+        """The settings of a project that has none of its own: the deployment's, which the
+        run service takes from its options."""
         self.review_log = EventLog(documents.control, "review", documents.producer)
         self.finding_log = EventLog(documents.control, "finding", documents.producer)
         if artifacts is None and not documents.control.missing:
@@ -258,7 +265,7 @@ class ReviewStore:
                     "LIMIT 1",
                     (project,),
                 ).fetchone()
-        value = ReviewConfig.model_validate_json(row[0]) if row else ReviewConfig()
+        value = ReviewConfig.model_validate_json(row[0]) if row else self.defaults
         return value, digest(value.model_dump_json())
 
     def configure(self, project: str, session: str, config: ReviewConfig) -> str:
@@ -1298,6 +1305,34 @@ class ReviewStore:
             )
             return cursor.lastrowid
 
+    def refusal(self, project: str, session: str, review: str, estimated_tokens: int) -> str:
+        """Why ``reserve_call`` refused a call of ``estimated_tokens``: the limit, with what
+        the review and the project used of it, for its summary (lab 38)."""
+        found = self.run(project, session, review)
+        config = ReviewConfig.model_validate(found["config"])
+        with self.documents.control.read() as tx:
+            hourly = tx.sql.execute(
+                "SELECT count(*) FROM review_calls WHERE project=? AND created>?",
+                (project, self.clock() - 3600),
+            ).fetchone()[0]
+        used = max(found["estimated_tokens"], found["input_tokens"] + found["output_tokens"])
+        calls = f"after {found['calls']} {'call' if found['calls'] == 1 else 'calls'}"
+        if found["state"] != "running":
+            return f"The review was no longer running ({found['state']}) {calls}."
+        if hourly >= config.calls_per_hour:
+            return (
+                f"The project's reviewer call cap was reached: {hourly} of "
+                f"{config.calls_per_hour} calls in the last hour, {calls} of this review."
+            )
+        if found["calls"] >= config.max_turns:
+            return (
+                f"The review's call limit was reached: {config.max_turns} calls without an outcome."
+            )
+        return (
+            f"The review's token budget was reached: {used:,} of {config.token_budget:,} tokens "
+            f"used {calls}, and the next call needed about {estimated_tokens:,} more."
+        )
+
     def call_provenance(self, project: str, session: str, review: str, call: int) -> ProvenanceRead:
         """Read one scoped bounded pin, including readonly pre-migration history."""
         self.scope(project, session)
@@ -1368,16 +1403,24 @@ class ReviewStore:
                 ),
             )
             if updated.rowcount:
+                # What the call used replaces its estimate, so the budget counts the
+                # provider's usage rather than the estimates' overreach (lab 38).
+                estimate = db.execute(
+                    "SELECT estimated_tokens FROM review_calls WHERE seq=?", (call,)
+                ).fetchone()[0]
+                used = estimate if input_tokens is None else input_tokens + (output_tokens or 0)
                 db.execute(
                     (
                         "UPDATE review_runs SET input_tokens=input_tokens+?,"
-                        "output_tokens=output_tokens+?,resolved_model=coalesce(?,resolved_model)"
-                        " WHERE review_id=?"
+                        "output_tokens=output_tokens+?,resolved_model=coalesce(?,resolved_model),"
+                        "estimated_tokens=max(estimated_tokens-?,0)+? WHERE review_id=?"
                     ),
                     (
                         input_tokens or 0,
                         output_tokens or 0,
                         clipped(model, 256) if model else None,
+                        estimate,
+                        used,
                         review,
                     ),
                 )
@@ -1395,8 +1438,8 @@ class ReviewStore:
     ) -> Json:
         if type(after) is not int or after < 0 or after > 1000000:
             raise DocumentError(INVALID_REQUEST, "invalid manifest cursor")
-        if type(limit) is not int or not 1 <= limit <= 20:
-            raise DocumentError(INVALID_REQUEST, "manifest limit is 1 to 20")
+        if type(limit) is not int or not 1 <= limit <= MANIFEST_PAGE:
+            raise DocumentError(INVALID_REQUEST, f"manifest limit is 1 to {MANIFEST_PAGE}")
         found = self.run(project, session, review)
         with self.documents.control.read() as tx:
             db = tx.sql

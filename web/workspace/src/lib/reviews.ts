@@ -21,6 +21,14 @@ export interface Review {
   end_seq: number;
   config_revision: string;
   classifier: Json;
+  /** The limits the review ran under (lab 38). */
+  config?: ReviewLimits;
+}
+export interface ReviewLimits {
+  token_budget: number;
+  calls_per_hour: number;
+  max_turns: number;
+  time_seconds: number;
 }
 export interface Evidence {
   evidence: string;

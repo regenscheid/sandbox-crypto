@@ -181,3 +181,16 @@ def test_the_mcp_proxy_gets_its_files_and_the_run_service_its_flags(
     (commands / "sandbox-science-mcp-proxy").unlink()
     with pytest.raises(LauncherError, match="no sandbox-science-mcp-proxy in"):
         parts.check(config)
+
+
+def test_the_run_service_takes_the_review_limits_the_config_sets(
+    make_config: Any, commands: Path
+) -> None:
+    """Lab 38: the per-review token budget and the reviewer's hourly cap pass through."""
+    model = {"reviewer": "r", "review_token_budget": 800000, "review_calls_per_hour": 500}
+    config = load_config(make_config({"bin_dir": str(commands), "model": model}))
+    harness = parts.harness_argv(config, Layout(config.state_dir))
+    assert harness[harness.index("--review-token-budget") + 1] == "800000"
+    assert harness[harness.index("--review-calls-per-hour") + 1] == "500"
+    unset = load_config(make_config({"bin_dir": str(commands), "model": {"reviewer": "r"}}))
+    assert "--review-token-budget" not in parts.harness_argv(unset, Layout(unset.state_dir))

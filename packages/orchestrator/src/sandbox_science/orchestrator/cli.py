@@ -60,6 +60,7 @@ from sandbox_science.contracts import ErrorKind, Identifier
 from .chat import session_lease
 from .cli_documents import add_parsers, document, ledger, project, read_secret, session
 from .connectors import ProxyClient, check_proxy
+from .consistency.models import ReviewConfig
 from .documents import DocumentError, DocumentStore, store_path
 from .harness import (
     Finished,
@@ -291,6 +292,8 @@ def _harness(
             watcher_calls_per_hour=args.watcher_calls_per_hour,
             watcher_first_check=args.watcher_first_check,
             watcher_interval=args.watcher_interval,
+            review_token_budget=args.review_token_budget,
+            review_calls_per_hour=args.review_calls_per_hour,
         ),
         mcp=mcp,
     )
@@ -404,12 +407,34 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
     command.add_argument(
         "--reviewer-script", type=Path, help="scripted reviewer replies for validation"
     )
+    review = ReviewConfig()
+    command.add_argument(
+        "--review-token-budget",
+        type=int,
+        default=review.token_budget,
+        help="the tokens one consistency review may use over all its calls "
+        f"(default {review.token_budget:,})",
+    )
+    command.add_argument(
+        "--review-calls-per-hour",
+        type=int,
+        default=review.calls_per_hour,
+        help=f"the reviewer calls a project may make in an hour (default {review.calls_per_hour})",
+    )
 
 
 def _check_agent(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """Refuse arguments of ``run`` or ``serve`` that do not go together."""
     if args.watcher_calls_per_hour < 1:
         parser.error("--watcher-calls-per-hour must be positive")
+    try:
+        ReviewConfig(
+            token_budget=args.review_token_budget, calls_per_hour=args.review_calls_per_hour
+        )
+    except ValueError:
+        parser.error(
+            "--review-token-budget is 1,024 to 4,000,000, and --review-calls-per-hour 1 to 10,000"
+        )
     if any(
         not math.isfinite(value) or value <= 0
         for value in (args.watcher_first_check, args.watcher_interval)

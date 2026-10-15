@@ -1055,7 +1055,7 @@ async def test_final_provider_usage_over_budget_is_capped(store) -> None:
                 )
             return ModelTurn(
                 json.dumps({"outcome": "passed", "summary": "Checked", "cap_reached": False}),
-                input_tokens=100000,
+                input_tokens=ReviewConfig().token_budget,
                 output_tokens=100,
             )
 

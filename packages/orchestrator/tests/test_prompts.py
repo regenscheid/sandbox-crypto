@@ -322,6 +322,7 @@ async def test_the_cli_keeps_the_pins_without_credentials(tmp_path, monkeypatch,
         script=script, run_id="cli-run", worker="unused", token_file=None, allow_unisolated=True,
         state_dir=tmp_path, watcher_model=None, reviewer_model=None, math_node=None,
         watcher_calls_per_hour=1, watcher_first_check=1, watcher_interval=1,
+        review_token_budget=400000, review_calls_per_hour=240,
         task="A small factual reply", max_turns=1, max_input_chars=400_000, transcript=None,
         mcp_proxy=None, mcp_token_file=None, mcp_server=[],
     )  # fmt: skip

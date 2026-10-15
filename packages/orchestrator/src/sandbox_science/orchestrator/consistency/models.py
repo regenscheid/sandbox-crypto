@@ -57,12 +57,17 @@ class ReviewConfig(Contract):
     response_rounds: int = Field(default=2, ge=0, le=2, strict=True)
     max_reflags: int = Field(default=2, ge=1, le=2, strict=True)
     max_findings: int = Field(default=10, ge=1, le=10, strict=True)
-    max_turns: int = Field(default=12, ge=1, le=30, strict=True)
-    time_seconds: float = Field(default=120, ge=0.01, le=600, allow_inf_nan=False)
-    max_input_chars: int = Field(default=150000, ge=4096, le=500000, strict=True)
+    # A review of a normal session's window, by a large model such as the deployment's
+    # sandbox-orchestrator, reads twenty to fifty items in eight to twenty calls, each
+    # sending the whole conversation again (lab 38): the defaults let it finish.
+    max_turns: int = Field(default=24, ge=1, le=30, strict=True)
+    time_seconds: float = Field(default=300, ge=0.01, le=600, allow_inf_nan=False)
+    max_input_chars: int = Field(default=300000, ge=4096, le=500000, strict=True)
     max_output_chars: int = Field(default=16000, ge=1024, le=64000, strict=True)
-    token_budget: int = Field(default=64000, ge=1024, le=1000000, strict=True)
-    calls_per_hour: int = Field(default=60, ge=1, le=1000, strict=True)
+    token_budget: int = Field(default=400000, ge=1024, le=4000000, strict=True)
+    """The tokens one review may use, input and output over all its calls."""
+    calls_per_hour: int = Field(default=240, ge=1, le=10000, strict=True)
+    """The reviewer calls a project may make in an hour, over all its sessions."""
 
 
 class EvidenceAnchor(Contract):
