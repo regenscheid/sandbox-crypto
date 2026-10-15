@@ -48,6 +48,24 @@ class ToolsPin(Contract):
     sha256: Digest
 
 
+PinnedEntry = Annotated[str, Field(pattern=r"^mem-[1-9][0-9]{0,8}@[1-9][0-9]{0,8}$")]
+"""A project memory entry at a revision: ``mem-3@2``."""
+
+
+class MemoryPin(Contract):
+    """The project memory an agent was given (PM-6): the framing's version, the memory's
+    version, the entries given in order, how many the bound left out (PM-7), and the
+    section's UTF-8 byte count and SHA-256; with no entries, no section was given and
+    the size is 0."""
+
+    framing: Identifier
+    version: Size
+    entries: tuple[PinnedEntry, ...] = Field(max_length=100)
+    left_out: Size
+    bytes: Size
+    sha256: Digest
+
+
 class PromptPins(Contract):
     format: Literal["sandbox-prompt-pins-1"] = FORMAT
     role: Identifier
@@ -55,6 +73,9 @@ class PromptPins(Contract):
     tools: ToolsPin
     notices: tuple[PromptPin, ...] = ()
     """The notice framings installed when the run started; notices quote them."""
+    memory: MemoryPin | None = None
+    """The project memory the run was given; ``None`` for a run without the project's
+    stores, or older than the memory."""
 
 
 @dataclass(frozen=True)
@@ -96,7 +117,11 @@ def pin_tools(specs: Sequence[ToolSpec]) -> ToolsPin:
 
 
 def assemble(
-    role: str, sections: Sequence[Section], specs: Sequence[ToolSpec]
+    role: str,
+    sections: Sequence[Section],
+    specs: Sequence[ToolSpec],
+    *,
+    memory: MemoryPin | None = None,
 ) -> tuple[str, PromptPins]:
     """The system message and the pins a run record keeps for it."""
     if not sections:
@@ -108,5 +133,6 @@ def assemble(
         notices=tuple(
             pin(Section(framing.id, framing.version, framing.text)) for framing in FRAMINGS
         ),
+        memory=memory,
     )
     return SEPARATOR.join(section.text for section in sections), pins

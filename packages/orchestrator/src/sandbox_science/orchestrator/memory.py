@@ -320,6 +320,36 @@ class ProjectMemory:
                 waiting=waiting,
             )
 
+    def snapshot(
+        self, project: str, version: int | None = None
+    ) -> tuple[int, tuple[MemoryEntry, ...]]:
+        """The accepted entries at ``version`` of the memory (its current one by default),
+        in the order the Memory page showed them then (PM-8), and that version."""
+        _scope(project)
+        if version is not None and (type(version) is not int or version < 0):
+            raise DocumentError(INVALID_REQUEST, "a memory version is a count of changes")
+        if self.control.missing:
+            if version:
+                raise DocumentError(NOT_FOUND, f"the memory has no version {version}")
+            return 0, ()
+        with self.control.read() as tx:
+            db = tx.sql
+            current = _version(db, project)
+            if version is None or version == current:
+                return current, tuple(_live(db, project))
+            if version > current:
+                raise DocumentError(NOT_FOUND, f"the memory has no version {version}")
+            # Each entry at its last version up to then; a removal leaves it out.
+            rows = db.execute(
+                "SELECT v.entry_id,v.revision,v.text,v.created FROM memory_versions v "
+                "JOIN (SELECT entry_id,max(version) AS version FROM memory_versions "
+                "WHERE project=? AND version<=? GROUP BY entry_id) m "
+                "ON m.entry_id=v.entry_id AND m.version=v.version "
+                "WHERE v.project=? AND v.text IS NOT NULL ORDER BY v.position,v.entry_id",
+                (project, version, project),
+            ).fetchall()
+            return version, tuple(_entry(row) for row in rows)
+
     def proposals(self, project: str) -> tuple[MemoryProposal, ...]:
         """The proposals that wait for the user, oldest first."""
         _scope(project)
