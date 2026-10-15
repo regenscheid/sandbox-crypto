@@ -186,6 +186,8 @@ export interface DominatesLink {
   reason: string;
   author: Record<string, unknown>;
   revision: number;
+  target: string;
+  void: string | null;
 }
 
 /** The acknowledgement of one edit; the current plan is read separately. */
@@ -402,6 +404,7 @@ export interface FrontierView {
   truncated: boolean;
   next_candidates_before: number | null;
   lookalike: Record<string, string>[][];
+  void_links: DominatesLink[];
   agent_revised: CategoryRevised | null;
   unplaced_more: number;
 }

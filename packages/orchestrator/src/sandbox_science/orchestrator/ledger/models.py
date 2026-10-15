@@ -560,6 +560,11 @@ class DominatesLink(Contract):
     reason: str
     author: dict[str, Any]
     revision: int
+    target: str = ""
+    """The handle of the result it names."""
+    void: str | None = None
+    """Why it counts for nothing, when it does: the rule compares the two results now, or
+    it lies on a cycle of results that dominate one another."""
 
 
 class FrontierResult(Contract):
@@ -650,6 +655,9 @@ class FrontierView(Contract):
     """Sets of groups whose conditions differ only in characters that look alike (a
     partial table: Unicode dashes and slashes, Cyrillic and Greek letters that look Latin,
     other scripts' digits): the user's spellings, kept apart, and shown as a warning."""
+    void_links: list[DominatesLink] = Field(default_factory=list[DominatesLink])
+    """The dominates links between eligible results that count for nothing, with why: the
+    user drops one, or one of its cycle, to settle it (LG-22)."""
     agent_revised: CategoryRevised | None = None
     """The main agent's revision of the category, when the user has not revised it since."""
     unplaced_more: int = 0

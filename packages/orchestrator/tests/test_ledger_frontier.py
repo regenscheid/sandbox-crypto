@@ -687,6 +687,76 @@ def test_each_links_reason_and_author_show_and_the_user_drops_one(ledger: Ledger
     assert ledger.entry("p", "R-1").links == []
 
 
+def link(holder: str, target: str, expected: int, note: str = "By the paper.") -> Any:
+    return {"entry": holder, "expected": expected,
+            "links": [{"kind": "dominates", "entry": target, "note": note}]}  # fmt: skip
+
+
+def test_a_cycle_is_read_as_the_frontier_shows_results(ledger: Ledger) -> None:
+    """The verification's defect 3: the main agent disputes P1, rewriting its measures
+    worse as it does; the frontier still shows P1 as recorded, ahead of P3 by the rule,
+    but the cycle check read the rewrite, so P4 over P1 and P3 over P4 closed a cycle
+    in the frontier, where nothing in the group was best known."""
+    linked(ledger)
+    worse = published("P1", CLASSICAL, time=130, memory=70)["fields"]
+    change(ledger, {"entry": "R-1", "expected": 1, "status": "disputed", "fields": worse}, op="d")
+    change(ledger, link("R-3", "R-1", 1), op="x-y", author=USER)
+    with pytest.raises(DocumentError, match="R-2 dominating R-3 closes a cycle"):
+        change(ledger, link("R-2", "R-3", 1), op="z-x", author=USER)
+    group = best(ledger.frontier("p", "key-recovery"), CLASSICAL)
+    assert [(r.handle, r.dominated_by) for r in group.dominated] == [
+        ("R-2", ["R-1"]),
+        ("R-1", ["R-3"]),
+    ]
+
+
+def test_a_cycle_a_later_change_makes_voids_its_links_and_says_why(ledger: Ledger) -> None:
+    """The verification's defect 3, at read: with higher measures better, P3 is ahead of
+    P1, and P4 over P1 and P3 over P4 make no cycle; once the user makes lower better
+    again, P1 is ahead of P3 and the two links close one, so they count for nothing and
+    the frontier says so, rather than leave no result best known."""
+    linked(ledger)
+    higher = [{**m, "direction": "higher"} for m in KEY_RECOVERY["measures"]]
+    ledger.define_category(
+        "p", {**KEY_RECOVERY, "expected": 1, "measures": higher, "operation_id": "up"}, USER
+    )
+    change(ledger, link("R-3", "R-1", 1), op="x-y", author=USER)
+    change(ledger, link("R-2", "R-3", 1), op="z-x", author=USER)
+    ledger.define_category("p", {**KEY_RECOVERY, "expected": 2, "operation_id": "down"}, USER)
+    view = ledger.frontier("p", "key-recovery")
+    group = best(view, CLASSICAL)
+    assert ([r.handle for r in group.best], [r.handle for r in group.not_compared]) == (
+        ["R-1"],
+        ["R-3"],
+    )
+    assert [(k.handle, k.target, k.void) for k in view.void_links] == [
+        ("R-2", "R-3", frontier_module().CYCLE),
+        ("R-3", "R-1", frontier_module().CYCLE),
+    ]
+
+
+def frontier_module() -> Any:
+    from sandbox_science.orchestrator.ledger import frontier
+
+    return frontier
+
+
+def test_a_link_dropped_by_the_user_confirms_nothing(ledger: Ledger) -> None:
+    """The verification's defect 2: the user's dropping of a link an agent's published
+    result held verified the result."""
+    from .test_ledger import NEW
+
+    ledger.define_category("p", KEY_RECOVERY, MAIN)
+    change(ledger, NEW["reference"], op="ref")
+    change(ledger, published("P4", CLASSICAL, time="$2^n$", memory=70), op="p4", author=USER)
+    p1 = {**published("P1", CLASSICAL, time=120, memory=60),
+          "links": [{"kind": "dominates", "entry": "R-1", "note": "Faster."}]}  # fmt: skip
+    change(ledger, p1, op="p1")  # R-2, the agent's
+    ledger.drop_dominates("p", "R-2", "R-1", 1, USER, reason="Not shown.", operation_id="d")
+    group = best(ledger.frontier("p", "key-recovery"), CLASSICAL)
+    assert [(r.handle, r.unverified) for r in group.candidates] == [("R-2", True)]
+
+
 def test_an_agents_dominates_reason_holds_no_hidden_text(ledger: Ledger) -> None:
     """M4: #317's check of an agent's link notes holds for a dominates link's reason."""
     linked(ledger)

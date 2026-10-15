@@ -598,6 +598,16 @@ class LedgerTool:
             "unplaced": [r.handle for r in view.unplaced][:100],
             "truncated": view.truncated,
             **(
+                {
+                    "void_links": [
+                        {"holder": k.handle, "target": k.target, "void": _clip(k.void or "", 120)}
+                        for k in view.void_links[:20]
+                    ]
+                }
+                if view.void_links
+                else {}
+            ),
+            **(
                 {"candidates_before": view.next_candidates_before}
                 if view.next_candidates_before
                 else {}

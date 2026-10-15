@@ -734,6 +734,7 @@ class Ledger:
                     created=p.created,
                 )
             )
+        self._check_cycles(db, project, planned)
         raised = flags.raise_flags(
             db, project, [self._changed(p) for p in planned], now.isoformat()
         )
@@ -1470,53 +1471,32 @@ class Ledger:
                         f"the frontier compares {p.row.handle} and {handle} itself: their "
                         "conditions are equal and their measures numbers",
                     )
-                results, links = self._dominance(db, project, planned, category)
-                if frontier.closes_cycle(category, results, links, p.row.entry_id, link.target_id):
+
+    def _check_cycles(self, db: sqlite3.Connection, project: str, planned: list[_Planned]) -> None:
+        """Once a change is written, no ``dominates`` link it added lies on a cycle of
+        results that dominate one another, by links or by the rule (the review's M2), as
+        the frontier reads them: a disputed result as the revision before, and only the
+        results it holds eligible."""
+        added = {
+            (p.row.entry_id, link.target_id): p for p in planned for link in _added(p, "dominates")
+        }
+        if not added:
+            return
+        names = {p.fields.get("category") for p in added.values()} - {None}
+        for name in sorted(str(n) for n in names):
+            category = frontier.read(db, project, name)
+            if category is None:
+                continue
+            for link in frontier.view(db, project, category).void_links:
+                p = added.get((link.entry_id, _entry_id(db, project, link.target)))
+                if p is not None and link.void == frontier.CYCLE:
                     raise DocumentError(
                         INVALID_REQUEST,
-                        f"{p.row.handle} dominating {handle} closes a cycle: {handle} already "
-                        f"dominates {p.row.handle}, by dominates links or by the rule, through "
-                        "the results between",
+                        f"{link.handle} dominating {link.target} closes a cycle: "
+                        f"{link.target} already dominates {link.handle}, by dominates links "
+                        "or by the rule, through the results between, as the frontier "
+                        "reads them",
                     )
-
-    def _dominance(
-        self, db: sqlite3.Connection, project: str, planned: list[_Planned], category: Category
-    ) -> tuple[dict[str, Json], dict[str, list[str]]]:
-        """The eligible results of ``category`` by their fields, and the ``dominates``
-        links of the project's results, holders to targets, as the change leaves them."""
-        state = {
-            entry: (origin, status, json.loads(fields))
-            for entry, origin, status, fields in db.execute(
-                "SELECT e.entry_id,e.origin,r.status,r.fields FROM ledger_entries e "
-                "JOIN ledger_revisions r ON r.entry_id=e.entry_id AND r.revision=e.head "
-                "WHERE e.project=? AND e.type='result' AND json_extract(r.fields,'$.category')=?",
-                (project, category.category),
-            )
-        }
-        changed = {p.row.entry_id: p for p in planned if p.row.type == "result"}
-        state |= {e: (p.row.origin, p.status, p.fields) for e, p in changed.items()}
-        results = {
-            entry: fields
-            for entry, (origin, status, fields) in state.items()
-            if fields.get("category") == category.category
-            and frontier.is_eligible(db, entry, origin, status)
-        }
-        links: dict[str, list[str]] = {}
-        for holder, target in db.execute(
-            "SELECT x.entry_id,x.target_id FROM ledger_links x JOIN ledger_entries e "
-            "ON e.entry_id=x.entry_id AND x.revision=e.head WHERE e.project=? "
-            "AND x.kind='dominates' AND x.target='entry'",
-            (project,),
-        ):
-            if holder not in changed:
-                links.setdefault(holder, []).append(target)
-        for entry, p in changed.items():
-            links[entry] = [
-                link.target_id
-                for link in self._final_links(db, p)
-                if link.kind == "dominates" and link.target == "entry"
-            ]
-        return results, links
 
     def _check_links(self, db: sqlite3.Connection, planned: list[_Planned]) -> None:
         """What holds once the change commits (LG-5, LG-30). ``supersedes`` and
@@ -1912,6 +1892,16 @@ def _status(row: _Row, before: str, status: str) -> str:
     if status == "proposed" and row.origin == "published":
         raise DocumentError(INVALID_REQUEST, "a published entry is recorded, not proposed")
     return status
+
+
+def _entry_id(db: sqlite3.Connection, project: str, handle: str) -> str:
+    """The ID of the result ``handle`` names in ``project``."""
+    number = int(handle.removeprefix(f"{PREFIXES['result']}-"))
+    row = db.execute(
+        "SELECT entry_id FROM ledger_entries WHERE project=? AND type='result' AND number=?",
+        (project, number),
+    ).fetchone()
+    return "" if row is None else row[0]
 
 
 def _given(link: EntryLink) -> Json:
