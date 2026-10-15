@@ -10,9 +10,11 @@ sandbox-science status [--config sandbox-science.toml]
 ``up`` checks the config, makes what the parts need in the state directory, and starts
 the worker, then grants the project policy, makes the projects and opens their
 sessions, then starts the run service and the workspace, each once the one before is
-ready. It prints the GUI's address and how to log in, and runs until Ctrl-C or SIGTERM
-(or ``down``), when it stops the parts in reverse order. A part that stops by itself
-stops the rest. ``status`` exits 0 while an instance runs and 3 when none does.
+ready. It prints the GUI's address and how to log in, and runs until Ctrl-C, SIGTERM,
+SIGHUP or SIGQUIT (or ``down``), when it stops the parts in reverse order. A part that
+stops by itself stops the rest. ``status`` exits 0 while an instance runs as it should,
+3 when none runs, and 4 when something is wrong: a part stopped or silent, or left
+behind by a launcher that was killed.
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ import signal
 import socket
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -33,9 +35,12 @@ from . import instance, parts
 from .config import LauncherConfig, LauncherError, load_config
 from .instance import Record, RecordedPart
 from .state import Layout
-from .supervise import Part, StopRequested, Supervisor
+from .supervise import Part, Running, StopRequested, Supervisor, environment, start_time
 
 NOT_RUNNING = 3
+DEGRADED = 4
+STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT)
+"""Closing the terminal or the SSH session (SIGHUP) stops the parts too, in order."""
 LOGIN = re.compile(r"/login\?token=")
 
 
@@ -74,15 +79,57 @@ def up(config: LauncherConfig, path: Path) -> int:
     layout.make()
     held = instance.lock(layout)
     try:
-        for part in instance.stop_left_behind(layout, locked=True):
+        earlier = instance.read(layout)
+        record = _recorder(config, path, layout)
+        record([])  # this launcher's own record, before anything of the earlier one's goes
+        for part in instance.stop_left_behind(earlier):
             print(f"stopped the {part.name} (process {part.pid}) an earlier launcher left running")
         parts.prepare(config)
-        return asyncio.run(_up(config, path, layout))
+        return asyncio.run(_up(config, path, layout, record))
     finally:
         os.close(held)
 
 
-async def _up(config: LauncherConfig, path: Path, layout: Layout) -> int:
+def _recorder(
+    config: LauncherConfig, path: Path, layout: Layout
+) -> Callable[[list[Running]], None]:
+    """Keep the instance's record as its parts start and stop."""
+    started_at = datetime.now(UTC).isoformat(timespec="seconds")
+    pid = os.getpid()
+    started, boot = start_time(pid) or 0, instance.boot_id()
+
+    def record(running: list[Running]) -> None:
+        instance.write(
+            layout,
+            Record(
+                pid=pid,
+                started=started,
+                boot=boot,
+                started_at=started_at,
+                config=str(path),
+                gui=f"http://{config.workspace.listen}/",
+                parts=tuple(
+                    RecordedPart(
+                        r.part.name,
+                        r.process.pid,
+                        start_time(r.process.pid) or 0,
+                        r.part.argv[0],
+                        r.part.address,
+                    )
+                    for r in running
+                ),
+            ),
+        )
+
+    return record
+
+
+async def _up(
+    config: LauncherConfig,
+    path: Path,
+    layout: Layout,
+    record: Callable[[list[Running]], None],
+) -> int:
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
     asked = 0
@@ -94,27 +141,15 @@ async def _up(config: LauncherConfig, path: Path, layout: Layout) -> int:
             print("stopping; Ctrl-C again to stop at once", flush=True)
         stop.set()
 
-    for number in (signal.SIGINT, signal.SIGTERM):
+    for number in STOP_SIGNALS:
         loop.add_signal_handler(number, ask)
-    started_at = datetime.now(UTC).isoformat(timespec="seconds")
-
-    def record() -> None:
-        instance.write(
-            layout,
-            Record(
-                pid=os.getpid(),
-                started_at=started_at,
-                config=str(path),
-                gui=f"http://{config.workspace.listen}/",
-                parts=tuple(
-                    RecordedPart(r.part.name, r.process.pid, r.part.argv[0], r.part.address)
-                    for r in supervisor.running
-                ),
-            ),
-        )
-
-    supervisor = Supervisor(layout, stop, stop_timeout=config.stop_timeout, changed=record)
-    record()
+    supervisor = Supervisor(
+        layout,
+        stop,
+        stop_timeout=config.stop_timeout,
+        changed=lambda: record(supervisor.running),
+        env=environment(config.pass_env),
+    )
     status = 0
     try:
         await _start(config, layout, supervisor)
@@ -132,7 +167,7 @@ async def _up(config: LauncherConfig, path: Path, layout: Layout) -> int:
         await supervisor.stop(now=lambda: asked > 1)
         for leftover in (layout.login, layout.record):
             leftover.unlink(missing_ok=True)
-        for number in (signal.SIGINT, signal.SIGTERM):
+        for number in STOP_SIGNALS:
             loop.remove_signal_handler(number)
     print("Sandbox Science stopped", flush=True)
     return status
@@ -193,18 +228,20 @@ def _announce(config: LauncherConfig, path: Path, layout: Layout) -> None:
 
 def down(config: LauncherConfig) -> int:
     layout = Layout(config.state_dir)
+    held = instance.try_lock(layout) if layout.root.is_dir() else None
+    if held is not None:
+        try:
+            return _down_stopped(config, layout)
+        finally:
+            os.close(held)
     if not instance.running(layout):
-        stopped = instance.stop_left_behind(layout)
-        for part in stopped:
-            print(f"stopped the {part.name} (process {part.pid}) an earlier launcher left running")
-        if not stopped:
-            print("Sandbox Science is not running")
+        print("Sandbox Science is not running")
         return 0
     found = instance.read(layout)
-    if found is None:
+    if found is None or not instance.launcher_alive(found):
         raise LauncherError(
-            f"an instance holds {layout.lock} but has no record yet: try again, or press "
-            "Ctrl-C where it runs"
+            f"an instance holds {layout.lock}, but its record does not name it: try again, "
+            "or press Ctrl-C where it runs"
         )
     os.kill(found.pid, signal.SIGTERM)
     patience = config.stop_timeout * (len(found.parts) + 1) + 30
@@ -220,17 +257,29 @@ def down(config: LauncherConfig) -> int:
     return 0
 
 
+def _down_stopped(config: LauncherConfig, layout: Layout) -> int:
+    """``down`` with the lock held, so no ``up`` runs: clean up after one that was killed."""
+    stopped = instance.stop_left_behind(instance.read(layout))
+    for part in stopped:
+        print(f"stopped the {part.name} (process {part.pid}) an earlier launcher left running")
+    layout.record.unlink(missing_ok=True)
+    if not stopped:
+        print("Sandbox Science is not running")
+    return 0
+
+
 def status(config: LauncherConfig) -> int:
     layout = Layout(config.state_dir)
+    found = instance.read(layout)
     if not instance.running(layout):
         print("Sandbox Science is not running")
-        for part in instance.left_behind(layout):
+        left = instance.left_behind(found)
+        for part in left:
             print(
                 f"  but the {part.name} an earlier launcher started still runs (process "
                 f"{part.pid}): sandbox-science down stops it"
             )
-        return NOT_RUNNING
-    found = instance.read(layout)
+        return DEGRADED if left else NOT_RUNNING
     if found is None:
         print(f"Sandbox Science is starting, from {layout.root}")
         return 0
@@ -238,13 +287,16 @@ def status(config: LauncherConfig) -> int:
     print(f"  config: {found.config}")
     if found.gui is not None and layout.login.exists():
         print(f"  GUI:    {found.gui}, logging in with the address in {layout.login}")
+    healthy = True
     for part in found.parts:
-        state = "running" if instance.alive(part) else "stopped"
+        running = instance.alive(part, found)
+        answers = part.address is None or _answers(part.address)
+        healthy = healthy and running and answers
         reach = ""
         if part.address is not None:
-            reach = f", {part.address} " + ("answers" if _answers(part.address) else "is silent")
-        print(f"  {part.name}: process {part.pid}, {state}{reach}")
-    return 0
+            reach = f", {part.address} " + ("answers" if answers else "is silent")
+        print(f"  {part.name}: process {part.pid}, {'running' if running else 'stopped'}{reach}")
+    return 0 if healthy else DEGRADED
 
 
 def _answers(address: str) -> bool:

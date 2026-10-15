@@ -219,6 +219,11 @@ class LauncherConfig(_Strict):
     """Seconds each part has to become ready."""
     stop_timeout: float = Field(default=30.0, gt=0, le=600)
     """Seconds each part has to stop before it is killed."""
+    pass_env: tuple[
+        Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")], ...
+    ] = ()
+    """Environment variables the parts get besides the usual few (``PATH``, ``HOME``, the
+    locale and proxies): never the whole shell's, so an exported key reaches no part."""
     projects: tuple[ProjectConfig, ...] = Field(min_length=1)
     model: ModelConfig
     worker: WorkerConfig

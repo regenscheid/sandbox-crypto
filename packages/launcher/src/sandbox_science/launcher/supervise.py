@@ -7,8 +7,15 @@ of the part's session is left after its stop timeout. A part's output goes to it
 in the state directory, except lines that hold a secret (the workspace's login
 address), which go to a private file of their own instead.
 
-A part is ready when it prints its ready line, or once its address takes connections.
-One that stops before it is ready, or later by itself, stops the launcher.
+A part that listens must find its address free before it starts, and is ready when it
+prints its ready line and its address takes connections while it still runs. One that
+stops before it is ready, or later by itself, stops the launcher.
+
+Each part dies with the launcher (Linux's ``PR_SET_PDEATHSIG``, set by a small
+trampoline before the part's command runs), so a launcher killed outright leaves no part
+running unsupervised. A part gets only the environment variables ``ENVIRONMENT`` names
+and those the config passes on, never the whole shell's: an API key exported there does
+not reach the run service.
 """
 
 from __future__ import annotations
@@ -18,8 +25,10 @@ import contextlib
 import os
 import re
 import signal
+import socket
+import sys
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TextIO
@@ -30,6 +39,51 @@ from .state import Layout, write_private
 CHUNK = 65536
 TAIL_LINES = 12
 POLL = 0.2
+ENVIRONMENT = frozenset(
+    {
+        "PATH", "HOME", "USER", "LOGNAME", "LANG", "LANGUAGE", "TZ", "TMPDIR",
+        "XDG_RUNTIME_DIR", "SSL_CERT_FILE", "SSL_CERT_DIR",
+        "http_proxy", "https_proxy", "no_proxy", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+    }
+)  # fmt: skip
+"""The variables of the launcher's environment every part gets, with the ``LC_`` ones."""
+_TRAMPOLINE = (
+    "import ctypes, os, sys\n"
+    "ctypes.CDLL(None, use_errno=True).prctl(1, 15)  # PR_SET_PDEATHSIG, SIGTERM\n"
+    "if os.getppid() != int(sys.argv[1]):\n"
+    "    sys.exit(70)  # the launcher died before the signal was set\n"
+    "os.execv(sys.argv[2], sys.argv[2:])\n"
+)
+
+
+def environment(passed: Iterable[str] = ()) -> dict[str, str]:
+    """The launcher's environment as the parts get it: ``ENVIRONMENT``, ``LC_*`` and
+    ``passed``."""
+    wanted = ENVIRONMENT | set(passed)
+    return {
+        key: value for key, value in os.environ.items() if key in wanted or key.startswith("LC_")
+    }
+
+
+def start_time(pid: int) -> int | None:
+    """When the process started, in clock ticks since boot; None if it is gone."""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as stat:
+            return int(stat.read().rsplit(b")", 1)[1].split()[19])
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def free(address: str) -> bool:
+    """Whether nothing listens on ``address``, so a part may."""
+    host, _, port = address.rpartition(":")
+    with socket.socket() as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind((host, int(port)))
+        except OSError:
+            return False
+    return True
 
 
 class StopRequested(Exception):  # noqa: N818 - a request, not an error
@@ -98,8 +152,11 @@ class Supervisor:
         *,
         stop_timeout: float,
         changed: Callable[[], None] = lambda: None,
+        env: Mapping[str, str] | None = None,
     ) -> None:
         self.layout = layout
+        self.env = dict(environment() if env is None else env)
+        """What every part's environment starts from (``environment``)."""
         self.stop_requested = stop
         self.stop_timeout = stop_timeout
         self.changed = changed
@@ -108,6 +165,11 @@ class Supervisor:
 
     async def start(self, part: Part, timeout: float) -> Running:
         """Start ``part`` and wait until it is ready."""
+        if part.address is not None and not free(part.address):
+            raise LauncherError(
+                f"something else listens on {part.address}, where the {part.title} would: "
+                "stop it, or give the part another address"
+            )
         running = await self._spawn(part)
         self.running.append(running)
         self.changed()
@@ -121,11 +183,12 @@ class Supervisor:
         finally:
             for waiting in (ready, exited, stopped):
                 waiting.cancel()
-        if ready in done and not ready.cancelled() and ready.exception() is None:
+        alive = exited not in done and running.process.returncode is None
+        if alive and ready in done and not ready.cancelled() and ready.exception() is None:
             return running
         if stopped in done:
             raise StopRequested
-        if exited in done:
+        if exited in done or running.process.returncode is not None:
             if running.pump is not None:
                 await running.pump
             raise LauncherError(
@@ -140,7 +203,7 @@ class Supervisor:
     async def run(self, name: str, argv: list[str], cwd: Path, timeout: float) -> str:
         """Run a command to its end, its output in the launcher's log, and return it."""
         process = await asyncio.create_subprocess_exec(
-            *argv, cwd=cwd, stdin=asyncio.subprocess.DEVNULL,
+            *argv, cwd=cwd, env=self.env, stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
             start_new_session=True,
         )  # fmt: skip
@@ -215,7 +278,8 @@ class Supervisor:
         log = self.layout.log(part.name)
         os.close(_append(log))
         process = await asyncio.create_subprocess_exec(
-            *part.argv, cwd=part.cwd, env={**os.environ, **part.env},
+            sys.executable, "-I", "-c", _TRAMPOLINE, str(os.getpid()), *part.argv,
+            cwd=part.cwd, env={**self.env, **part.env},
             stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT, start_new_session=True,
         )  # fmt: skip
@@ -253,12 +317,14 @@ class Supervisor:
         if part.ready_line is not None:
             await running.ready.wait()
         if part.address is not None:
-            while not await reachable(part.address):
+            while not await reachable(part.address) or running.process.returncode is not None:
                 await asyncio.sleep(POLL)
 
 
 def end_session(session: int) -> None:
-    """End every process left in ``session``: SIGTERM, and SIGKILL after a moment."""
+    """End every process in the session a part leads: SIGTERM, then SIGKILL two seconds
+    later for what is left. A process that started a session of its own (``setsid``)
+    has left the part's, and is not found."""
     if not _end_session(session, signal.SIGTERM):
         return
     for _ in range(int(2 / POLL)):
@@ -268,12 +334,28 @@ def end_session(session: int) -> None:
     _end_session(session, signal.SIGKILL)
 
 
+def _members(session: int) -> list[int]:
+    """The processes in ``session``, by ``/proc``."""
+    found: list[int] = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/stat", "rb") as stat:
+                fields = stat.read().rsplit(b")", 1)[1].split()
+            # A zombie has ended already; only its parent's wait is left.
+            if fields[0] != b"Z" and int(fields[3]) == session:
+                found.append(int(entry))
+        except (OSError, IndexError, ValueError):
+            continue
+    return found
+
+
 def _end_session(session: int, signal_number: int) -> bool:
-    """Send ``signal_number`` to the process group ``session`` leads; whether one was there."""
-    try:
-        os.killpg(session, signal_number)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    """Send ``signal_number`` to every process in ``session``, whatever its process
+    group; whether any was there."""
+    members = _members(session)
+    for pid in members:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.kill(pid, signal_number)
+    return bool(members)

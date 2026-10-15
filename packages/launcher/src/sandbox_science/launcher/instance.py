@@ -2,16 +2,20 @@
 """The instance running from a state directory: its lock and its record.
 
 ``up`` holds ``launcher.lock`` for as long as it runs, so a second ``up`` on the same
-state directory is refused, and ``down`` and ``status`` know whether one runs. The
-record, ``launcher.json``, says which process that is and which parts it started, so
-``down`` can stop it and ``status`` can show it. A launcher killed outright leaves its
-parts running in their own sessions; the next ``up`` or ``down`` finds them by the
-record and stops them.
+state directory is refused, and ``down`` and ``status`` know whether one runs. ``down``
+takes the same lock before it cleans up after a launcher that is gone. The record,
+``launcher.json``, says which process the launcher is and which parts it started, so
+``down`` can stop it and ``status`` can show it.
+
+A process is known by its ID, its start time and the boot it started in (Linux's
+``boot_id``), never by its ID or command line alone: an ID comes round again, after a
+reboot or in time, and two state directories run the same commands. A part also leads
+its own session. ``down`` or ``up`` stops what a killed launcher left only when all of
+that still holds.
 """
 
 from __future__ import annotations
 
-import contextlib
 import fcntl
 import json
 import os
@@ -21,52 +25,61 @@ from typing import Any, cast
 
 from .config import LauncherError
 from .state import Layout, write_private
-from .supervise import end_session
+from .supervise import end_session, start_time
+
+
+def boot_id() -> str:
+    return Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
 
 
 @dataclass(frozen=True)
 class RecordedPart:
     name: str
     pid: int
+    started: int
+    """Its start time, in clock ticks since boot (``/proc/<pid>/stat``)."""
     command: str
-    """The part's command, the first of its arguments, to know it by in ``/proc``."""
+    """The first of its arguments, which its command line names."""
     address: str | None
 
 
 @dataclass(frozen=True)
 class Record:
     pid: int
+    started: int
+    boot: str
     started_at: str
     config: str
     gui: str | None
     parts: tuple[RecordedPart, ...]
 
     def dumps(self) -> str:
-        return json.dumps(
-            {
-                "pid": self.pid,
-                "started_at": self.started_at,
-                "config": self.config,
-                "gui": self.gui,
-                "parts": [asdict(part) for part in self.parts],
-            },
-            indent=2,
-        )
+        fields = asdict(self)
+        fields["parts"] = [asdict(part) for part in self.parts]
+        return json.dumps(fields, indent=2)
 
 
 def lock(layout: Layout) -> int:
-    """Take the state directory's lock for this ``up``; refused while another holds it."""
-    descriptor = os.open(layout.lock, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        os.close(descriptor)
+    """Take the state directory's lock; refused while an ``up`` holds it."""
+    descriptor = try_lock(layout)
+    if descriptor is None:
         found = read(layout)
         who = f" (process {found.pid})" if found is not None else ""
         raise LauncherError(
             f"Sandbox Science already runs from {layout.root}{who}: stop it with "
             "sandbox-science down"
-        ) from None
+        )
+    return descriptor
+
+
+def try_lock(layout: Layout) -> int | None:
+    """The state directory's lock, held; None while an ``up`` holds it."""
+    descriptor = os.open(layout.lock, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(descriptor)
+        return None
     return descriptor
 
 
@@ -94,6 +107,8 @@ def read(layout: Layout) -> Record | None:
         raw = cast(dict[str, Any], json.loads(layout.record.read_text(encoding="utf-8")))
         return Record(
             pid=int(raw["pid"]),
+            started=int(raw["started"]),
+            boot=str(raw["boot"]),
             started_at=str(raw["started_at"]),
             config=str(raw["config"]),
             gui=None if raw["gui"] is None else str(raw["gui"]),
@@ -101,6 +116,7 @@ def read(layout: Layout) -> Record | None:
                 RecordedPart(
                     name=str(part["name"]),
                     pid=int(part["pid"]),
+                    started=int(part["started"]),
                     command=str(part["command"]),
                     address=None if part["address"] is None else str(part["address"]),
                 )
@@ -111,32 +127,37 @@ def read(layout: Layout) -> Record | None:
         return None
 
 
-def alive(part: RecordedPart) -> bool:
-    """Whether the part's process still runs its command (a reused process ID does not)."""
+def launcher_alive(record: Record) -> bool:
+    """Whether the recorded launcher is still the process with that ID."""
+    return record.boot == boot_id() and start_time(record.pid) == record.started
+
+
+def alive(part: RecordedPart, record: Record) -> bool:
+    """Whether the part is still that process, leading its session and running its command."""
+    if record.boot != boot_id() or start_time(part.pid) != part.started:
+        return False
     try:
+        if os.getsid(part.pid) != part.pid:
+            return False
         arguments = Path(f"/proc/{part.pid}/cmdline").read_bytes().split(b"\0")
     except OSError:
         return False
     return part.command.encode() in arguments
 
 
-def left_behind(layout: Layout, *, locked: bool = False) -> list[RecordedPart]:
-    """Parts a launcher that did not stop cleanly left running; ``locked`` when this
-    process holds the lock, so the record is an earlier instance's."""
-    record = read(layout)
-    if record is None or (not locked and running(layout)):
+def left_behind(record: Record | None) -> list[RecordedPart]:
+    """The parts of a launcher that is gone which still run."""
+    if record is None or launcher_alive(record):
         return []
-    return [part for part in record.parts if alive(part)]
+    return [part for part in record.parts if alive(part, record)]
 
 
-def stop_left_behind(layout: Layout, *, locked: bool = False) -> list[RecordedPart]:
-    """Stop the parts a launcher killed outright left running, the last started first,
-    and forget its record."""
-    if not locked and running(layout):
-        return []
-    parts = left_behind(layout, locked=True)
+def stop_left_behind(record: Record | None) -> list[RecordedPart]:
+    """Stop the parts a launcher killed outright left running, the last started first.
+
+    The caller holds the state directory's lock, and keeps ``record`` from before it
+    wrote its own."""
+    parts = left_behind(record)
     for part in reversed(parts):
         end_session(part.pid)
-    with contextlib.suppress(FileNotFoundError):
-        layout.record.unlink()
     return parts

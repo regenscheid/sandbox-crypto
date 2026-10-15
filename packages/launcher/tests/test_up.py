@@ -17,15 +17,16 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from sandbox_science.launcher.config import load_config
-from sandbox_science.launcher.instance import alive, read
+from sandbox_science.launcher.instance import alive, boot_id, read
 from sandbox_science.launcher.state import Layout
+from sandbox_science.launcher.supervise import start_time
 
 pytestmark = pytest.mark.slow
 
@@ -105,19 +106,27 @@ def site(make_config: Any, fake_parts: Path, tmp_path: Path) -> Iterator[dict[st
     journal = tmp_path / "journal"
     journal.touch()
 
-    def launch(parts: dict[str, str] | None = None, **changes: Any) -> Launcher:
+    def launch(
+        parts: dict[str, str] | None = None, env: dict[str, str] | None = None, **changes: Any
+    ) -> Launcher:
         config = make_config(
             {
                 "bin_dir": str(fake_parts),
                 "start_timeout": 20,
                 "stop_timeout": changes.pop("stop_timeout", 5),
+                "pass_env": ["FAKE_JOURNAL", "FAKE_PARTS", *changes.pop("pass_env", [])],
                 "worker": {"listen": f"127.0.0.1:{worker}"},
                 "workspace": {"listen": f"127.0.0.1:{workspace}"},
                 **changes,
             }
         )
-        env = {**os.environ, "FAKE_JOURNAL": str(journal), "FAKE_PARTS": json.dumps(parts or {})}
-        return Launcher(config, env)
+        environment = {
+            **os.environ,
+            "FAKE_JOURNAL": str(journal),
+            "FAKE_PARTS": json.dumps(parts or {}),
+            **(env or {}),
+        }
+        return Launcher(config, environment)
 
     started: list[Launcher] = []
 
@@ -126,7 +135,7 @@ def site(make_config: Any, fake_parts: Path, tmp_path: Path) -> Iterator[dict[st
         started.append(launcher)
         return launcher
 
-    yield {"launch": tracked, "journal": journal}
+    yield {"launch": tracked, "journal": journal, "worker": worker}
     for launcher in started:
         if launcher.process.poll() is None:
             launcher.process.send_signal(signal.SIGINT)
@@ -137,8 +146,22 @@ def journal(path: Path) -> list[str]:
     return path.read_text().splitlines()
 
 
+def wait_for(condition: Callable[[], bool], what: str, timeout: float = 15) -> None:
+    deadline = time.monotonic() + timeout
+    while not condition():
+        assert time.monotonic() < deadline, what
+        time.sleep(0.1)
+
+
+STOPPED = [
+    "sandbox-science-workspace stop",
+    "sandbox-science-harness stop",
+    "sandbox-science-worker stop",
+]
+
+
 def test_up_runs_until_ctrl_c_and_then_stops_the_parts_in_reverse(site: dict[str, Any]) -> None:
-    launcher: Launcher = site["launch"]()
+    launcher = site["launch"]()
     launcher.expect("Sandbox Science is running.")
     launcher.expect("Stop:")
     assert journal(site["journal"]) == STARTED
@@ -157,19 +180,22 @@ def test_up_runs_until_ctrl_c_and_then_stops_the_parts_in_reverse(site: dict[str
     launcher.process.send_signal(signal.SIGINT)
     assert launcher.finish() == 0
     assert "Sandbox Science stopped" in launcher.output
-    assert journal(site["journal"]) == [
-        *STARTED,
-        "sandbox-science-workspace stop",
-        "sandbox-science-harness stop",
-        "sandbox-science-worker stop",
-    ]
+    assert journal(site["journal"]) == [*STARTED, *STOPPED]
     assert not layout.login.exists()
     assert not layout.record.exists()
     assert launcher.command("status").returncode == 3
 
 
+def test_closing_the_terminal_stops_the_parts_in_order(site: dict[str, Any]) -> None:
+    launcher = site["launch"]()
+    launcher.expect("Stop:")
+    launcher.process.send_signal(signal.SIGHUP)
+    assert launcher.finish() == 0
+    assert journal(site["journal"]) == [*STARTED, *STOPPED]
+
+
 def test_down_stops_it_and_a_second_up_is_refused(site: dict[str, Any]) -> None:
-    launcher: Launcher = site["launch"]()
+    launcher = site["launch"]()
     launcher.expect("Sandbox Science is running.")
     again = launcher.command("up")
     assert again.returncode == 1
@@ -180,6 +206,23 @@ def test_down_stops_it_and_a_second_up_is_refused(site: dict[str, Any]) -> None:
     assert launcher.finish() == 0
     assert journal(site["journal"])[-1] == "sandbox-science-worker stop"
     assert "Sandbox Science is not running" in launcher.command("down").stdout
+
+
+def test_down_signals_only_the_launcher_its_record_names(site: dict[str, Any]) -> None:
+    launcher = site["launch"]()
+    launcher.expect("Stop:")
+    layout = Layout(load_config(launcher.config).state_dir)
+    kept = layout.record.read_text()
+    forged = json.loads(kept)
+    forged["started"] += 1  # the same process ID, started at another time: not the launcher
+    layout.record.write_text(json.dumps(forged))
+    refused = launcher.command("down")
+    assert refused.returncode == 1
+    assert "its record does not name it" in refused.stderr
+    assert launcher.process.poll() is None
+    layout.record.write_text(kept)
+    assert launcher.command("down").returncode == 0
+    assert launcher.finish() == 0
 
 
 @pytest.mark.parametrize(
@@ -205,7 +248,7 @@ def test_down_stops_it_and_a_second_up_is_refused(site: dict[str, Any]) -> None:
 def test_a_part_that_fails_stops_the_rest_and_is_reported(
     site: dict[str, Any], parts: dict[str, str], message: str, stops: list[str]
 ) -> None:
-    launcher: Launcher = site["launch"](parts)
+    launcher = site["launch"](parts)
     assert launcher.finish() == 1
     assert message in launcher.output
     if "exit-at-start" in parts.values():
@@ -215,10 +258,31 @@ def test_a_part_that_fails_stops_the_rest_and_is_reported(
     assert journal(site["journal"])[-len(stops) :] == stops
 
 
+def test_an_address_something_else_holds_is_refused_before_starting(
+    site: dict[str, Any],
+) -> None:
+    with socket.socket() as squatter:
+        squatter.bind(("127.0.0.1", site["worker"]))
+        squatter.listen()
+        launcher = site["launch"]()
+        assert launcher.finish() == 1
+    assert f"something else listens on 127.0.0.1:{site['worker']}" in launcher.output
+    assert journal(site["journal"]) == []
+
+
+def test_parts_get_only_the_environment_they_are_given(site: dict[str, Any]) -> None:
+    launcher = site["launch"](
+        env={"LEAK_CHECK": "an exported key", "PASSED_ON": "1"}, pass_env=["PASSED_ON"]
+    )
+    launcher.expect("Stop:")
+    seen = [line for line in journal(site["journal"]) if " saw " in line]
+    assert seen == ["sandbox-science-harness saw PASSED_ON"]
+
+
 def test_a_part_that_ignores_sigterm_is_killed_after_its_stop_timeout(
     site: dict[str, Any],
 ) -> None:
-    launcher: Launcher = site["launch"]({"sandbox-science-harness": "ignore-term"}, stop_timeout=1)
+    launcher = site["launch"]({"sandbox-science-harness": "ignore-term"}, stop_timeout=1)
     launcher.expect("Sandbox Science is running.")
     launcher.process.send_signal(signal.SIGTERM)
     assert launcher.finish() == 0
@@ -227,20 +291,80 @@ def test_a_part_that_ignores_sigterm_is_killed_after_its_stop_timeout(
     assert journal(site["journal"])[-1] == "sandbox-science-worker stop"
 
 
-def test_parts_a_killed_launcher_leaves_are_stopped_by_down(site: dict[str, Any]) -> None:
-    launcher: Launcher = site["launch"]()
-    launcher.expect("Sandbox Science is running.")
+def test_a_child_in_another_process_group_goes_with_its_part(site: dict[str, Any]) -> None:
+    launcher = site["launch"]({"sandbox-science-workspace": "child-in-own-group"})
+    launcher.expect("Stop:")
+    (line,) = [line for line in journal(site["journal"]) if " child " in line]
+    child = int(line.rsplit(" ", 1)[1])
+    assert os.getpgid(child) == child  # not the part's group
+    launcher.process.send_signal(signal.SIGINT)
+    assert launcher.finish() == 0
+    wait_for(lambda: start_time(child) is None, "the child outlived its part")
+
+
+def test_parts_die_with_a_launcher_killed_outright(site: dict[str, Any]) -> None:
+    launcher = site["launch"]()
+    launcher.expect("Stop:")
+    launcher.process.kill()
+    launcher.finish()
+    wait_for(
+        lambda: all(line in journal(site["journal"]) for line in STOPPED),
+        "a part outlived the launcher",
+    )
+    assert launcher.command("status").returncode == 3
+
+
+def test_a_part_left_behind_is_shown_and_stopped_by_down(site: dict[str, Any]) -> None:
+    launcher = site["launch"]({"sandbox-science-harness": "ignore-term"})
+    launcher.expect("Stop:")
     layout = Layout(load_config(launcher.config).state_dir)
     record = read(layout)
     assert record is not None
     assert [part.name for part in record.parts] == ["worker", "run-service", "workspace"]
     launcher.process.kill()
     launcher.finish()
-    assert all(alive(part) for part in record.parts)
+    (harness,) = [part for part in record.parts if part.name == "run-service"]
+    wait_for(lambda: "sandbox-science-worker stop" in journal(site["journal"]), "worker")
+    assert alive(harness, record)  # it ignored the SIGTERM it got when the launcher died
     shown = launcher.command("status")
-    assert shown.returncode == 3
-    assert "but the worker an earlier launcher started still runs" in shown.stdout
+    assert shown.returncode == 4
+    assert "but the run-service an earlier launcher started still runs" in shown.stdout
     stopped = launcher.command("down")
-    assert "stopped the worker" in stopped.stdout
-    assert not any(alive(part) for part in record.parts)
+    assert "stopped the run-service" in stopped.stdout
+    assert not alive(harness, record)
     assert not layout.record.exists()
+
+
+def test_a_recorded_process_from_another_boot_or_time_is_left_alone(
+    site: dict[str, Any],
+) -> None:
+    stranger = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    try:
+        launcher = site["launch"]()  # for a config and a state directory
+        launcher.expect("Stop:")
+        launcher.process.send_signal(signal.SIGINT)
+        assert launcher.finish() == 0
+        layout = Layout(load_config(launcher.config).state_dir)
+        started = start_time(stranger.pid)
+        assert started is not None
+        for boot, when in (("another-boot", started), (boot_id(), started + 1)):
+            part = {"name": "worker", "pid": stranger.pid, "started": when, "command": "sleep",
+                    "address": None}  # fmt: skip
+            layout.record.write_text(
+                json.dumps(
+                    {
+                        "pid": 1,
+                        "started": 0,
+                        "boot": boot,
+                        "started_at": "then",
+                        "config": "x",
+                        "gui": None,
+                        "parts": [part],
+                    }
+                )
+            )
+            assert launcher.command("down").returncode == 0
+            assert stranger.poll() is None
+    finally:
+        stranger.kill()
+        stranger.wait()

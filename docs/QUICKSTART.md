@@ -13,7 +13,7 @@ Everything listens on loopback, so only your own computer can reach it. The step
 - **The research images**, built: `images/build.sh minimal`, and `images/build.sh crypto-base` if you want it ([images](IMAGES.md)). Each build prints the image's tag, for the config.
 - **The repository's Python environment**: `uv sync` in the checkout. It installs the `sandbox-science` command with the parts' own commands.
 - **The web app**, built: `cd web/workspace && npm ci --ignore-scripts && npm run build`.
-- **A model gateway and its key**: an OpenAI-compatible gateway, such as LiteLLM, and a file holding its key that only you can read (mode 600). The launcher only passes the file's path to the run service: it never reads the key, and never prints it.
+- **A model gateway and its key**: an OpenAI-compatible gateway, such as LiteLLM, and a file holding its key that only you can read (mode 600; the launcher refuses one others can read). The launcher only passes the file's path to the run service: it never reads the key, and never prints it.
 
 ## The config
 
@@ -29,6 +29,10 @@ Everything listens on loopback, so only your own computer can reach it. The step
 | `[openshell]` | The worker's own `[openshell]` table ([worker settings](WORKER.md)): the OpenShell CLI and the `env` it needs to reach the gateway, the sandboxes' Python, the isolation tier, the package cache, and `[openshell.environments]` with the profiles' image tags |
 
 `start_timeout` (300 s) and `stop_timeout` (30 s) bound how long each part may take to start and to stop. `bin_dir` says where the parts' commands are, by default beside the launcher's Python.
+
+The parts get only a few of your environment's variables: `PATH`, `HOME`, `USER`, `LOGNAME`, the locale (`LANG`, `LANGUAGE`, `LC_*`), `TZ`, `TMPDIR`, `XDG_RUNTIME_DIR`, the proxies and the CA settings (`SSL_CERT_FILE`, `SSL_CERT_DIR`). An API key you exported in your shell reaches no part. `pass_env` names any more that they need.
+
+The state directory must be yours and mode 700. If one is there already and open to other users, the launcher refuses it, rather than change it.
 
 Before you start, set the `profiles` to the tags `images/build.sh` printed. Set `api_key_file` to your key's file.
 
@@ -76,8 +80,8 @@ The message starts a run of the main agent. The first run of a project has the w
 
 ## Stopping
 
-Press Ctrl-C where `up` runs, or run `sandbox-science down --config …` from another terminal. The launcher stops the parts in reverse order: the workspace, the run service, then the worker.
-- It gives each part `stop_timeout` to stop after SIGTERM, then kills it and whatever it started. A second Ctrl-C stops them at once.
+Press Ctrl-C where `up` runs, or run `sandbox-science down --config …` from another terminal. Closing the terminal or the SSH session that runs `up` (SIGHUP) stops it the same way, as do SIGTERM and SIGQUIT. The launcher stops the parts in reverse order: the workspace, the run service, then the worker.
+- It gives each part `stop_timeout` to stop after SIGTERM, then kills what is left of the part's session. A second Ctrl-C stops them at once.
 - A part that stops by itself stops the others too, and `up` exits 1 with the end of that part's log.
 
 **What stays running:** the worker leaves its sandboxes running when it stops, by design. Their kernels and files are still there for the next `up`, which reattaches to them ([sandbox daemon and recovery](WORKER.md#sandbox-daemon-and-recovery)).
@@ -90,9 +94,9 @@ Press Ctrl-C where `up` runs, or run `sandbox-science down --config …` from an
 uv run sandbox-science status --config examples/sandbox-science.toml
 ```
 
-It shows each part's process, and whether its address answers. It exits 0 while Sandbox Science runs and 3 when it does not.
+It shows each part's process, and whether its address answers. It exits 0 while Sandbox Science runs as it should, 3 when it does not run, and 4 when something is wrong: a part stopped or silent, or one left running by a launcher that was killed.
 
-If the launcher itself was killed, its parts keep running. `status` lists them, and `down`, or the next `up`, stops them. The launcher knows them from the record it keeps in the state directory, so an `up` on the same state directory while one runs is refused.
+The parts die with the launcher, even when it is killed outright. One that ignores the SIGTERM it gets then keeps running: `status` lists it, and `down`, or the next `up`, stops it. The launcher knows a part from the record it keeps in the state directory, by its process ID, its start time and the boot it started in, so after a reboot, or with another state directory's parts, it stops nothing of anyone else's. An `up` on the same state directory while one runs is refused.
 
 ## The state directory
 
@@ -112,4 +116,5 @@ Everything in it is only for your user: the directories are mode 700 and the fil
 - **"cannot start"** lists everything missing at once: the web build, a file in `[openshell.environments]`, or a command.
 - **A part that does not start** is shown with the end of its log; the whole log is in `logs/`. The worker refuses to start, for example, when the package cache in `[openshell]` is not the one in the targets file, or when another worker uses its state directory.
 - **"already runs"**: another `up` uses the same state directory. Stop it with `down`, or give this config another `state_dir`.
+- **"something else listens on …"**: another program holds an address in the config. The launcher checks each address before it starts the part, so a part never talks to something else that answers there.
 - **The chat says the run service is not running**: look in `logs/run-service.log`. A message waits while the run service is stopped, and the next `up` delivers it.
