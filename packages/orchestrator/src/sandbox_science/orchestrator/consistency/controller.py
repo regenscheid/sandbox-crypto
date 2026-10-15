@@ -32,6 +32,7 @@ from sandbox_science.orchestrator.model import ChatModel, Message, ToolSpec
 from sandbox_science.orchestrator.notices import REVIEW_COUNTS, REVIEW_FINDINGS
 from sandbox_science.orchestrator.projects import recorded
 
+from .actions import action_of
 from .artifacts import ArtifactConsumer
 from .findings import Findings
 from .ledger import ingest_ledger
@@ -362,6 +363,22 @@ class ReviewController:
             complete=not record.get("lines_truncated"),
         )
 
+    async def _action(self, messages: Sequence[Message], call: Json | None) -> None:
+        """Record a tool call the run made that changes something, as an ``action``
+        observation that makes no review due: the window's ``actions`` item lists it."""
+        found = action_of(messages, call)
+        if found is None:
+            return
+        index = len(messages) - 1
+        await asyncio.to_thread(
+            self.store.observe,
+            *self.scope,
+            f"{self.instance}:action:{index}",
+            "action",
+            {"run": self.run_id, "invocation": self.instance, "message": index},
+            found,
+        )
+
     async def observe(
         self, messages: Sequence[Message], *, tool: Json | None = None, call: Json | None = None
     ) -> None:
@@ -387,6 +404,7 @@ class ReviewController:
         self.position = len(messages)
         if tool is not None:
             await self._source(messages, call)
+            await self._action(messages, call)
             raw_execution = tool.get("execution")
             if isinstance(raw_execution, dict):
                 execution = cast(Json, raw_execution)
