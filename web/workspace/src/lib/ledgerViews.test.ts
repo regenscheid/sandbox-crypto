@@ -124,6 +124,8 @@ describe('the ledger views', () => {
         'LedgerEvidence.svelte',
         'LedgerFindings.svelte',
         'LedgerFlags.svelte',
+        'LedgerGate.svelte',
+        'LedgerGatePanel.svelte',
         'LedgerHistory.svelte',
         'LedgerIncoming.svelte',
         'LedgerLinks.svelte',

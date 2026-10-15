@@ -9,6 +9,7 @@
 import type {
   ArtifactListing,
   LedgerEntry,
+  LedgerGate,
   LedgerHistory,
   LedgerListing,
   MemoryAnswer,
@@ -528,6 +529,9 @@ export const api = {
           : `${revision === null ? '?' : '&'}incoming_after=${incomingAfter}`),
     ),
   /** A page of an entry's revisions, newest first, before `before`. */
+  /** The gate for an entry as it reads now, each clause with why, and the decisions that affect it. */
+  ledgerGate: (project: string, entry: string) =>
+    get<LedgerGate>(`/projects/${part(project)}/ledger/${part(entry)}/gate`),
   /** The user's record that they checked an entry at the revision they read; a newer one is a conflict. */
   checkLedgerEntry: (
     project: string,

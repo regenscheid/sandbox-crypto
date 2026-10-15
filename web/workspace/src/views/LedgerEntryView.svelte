@@ -10,6 +10,7 @@
   import { ledgerHref, projectHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
   import LedgerEntryBody from './LedgerEntryBody.svelte';
+  import LedgerGate from './LedgerGate.svelte';
   import LedgerHistory from './LedgerHistory.svelte';
 
   let {
@@ -38,6 +39,7 @@
 {#if shown.value}
   {@const entry = shown.value.entry}
   <LedgerEntryBody {projectId} {entry} {changed} />
+  <LedgerGate {projectId} entryId={entry.entry_id} shown={entry.revision} {changes} />
   <LedgerHistory
     {projectId}
     entryId={entry.entry_id}
