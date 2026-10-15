@@ -37,7 +37,7 @@ from sandbox_science.orchestrator.connectors import (
 )
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolSpec
-from sandbox_science.orchestrator.prompts import pin_tools
+from sandbox_science.orchestrator.prompts import pin_tools, schema_json
 from sandbox_science.orchestrator.tools import HARNESS_TOOL_NAMES, Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerClient
 from sandbox_science.policy import HardFloor, PoolCeiling
@@ -261,6 +261,7 @@ async def test_a_run_calls_a_connector_tool_through_the_proxy(
     options = [
         "--mcp-proxy", proxied.url, "--mcp-token-file", str(token),
         "--mcp-project", PROJECT, "--mcp-server", "papers",
+        "--mcp-about", "papers=Research papers and their notes", "--mcp-index", "papers",
     ]  # fmt: skip
     record = await harness.run(
         "run-1",
@@ -270,6 +271,19 @@ async def test_a_run_calls_a_connector_tool_through_the_proxy(
     assert record.final_text == "Found it."
     (tool,) = record.tools
     assert (tool["tool"], tool["connector"]) == ("search", "papers")
+    # The first call carried the index, not the schemas; the second, the tool called.
+    first, later = (
+        [t["function"]["name"] for t in tools] for tools in harness.gateway.tools["main"]
+    )
+    assert "mcp_tools" in first
+    assert "search" not in first
+    assert "search" in later
+    (index,) = [t for t in harness.gateway.tools["main"][0] if t["function"]["name"] == "mcp_tools"]
+    assert (
+        "papers: Research papers and their notes\n  broken\n  crawl"
+        in index["function"]["description"]
+    )
+    assert record.summaries["connectors"] == {"listed": 8, "loaded": ["search"]}
     _, second = harness.gateway.main
     assert second[-1]["content"] == "search: ok"
     assert proxied.fake.tool_calls() == ["search"]
@@ -284,6 +298,10 @@ def test_the_proxy_options_go_together() -> None:
     base = [
         "run", "--worker", "http://127.0.0.1:1", "--token-file", "t", "--project", "p",
         "--session", "s", "--environment", "e", "--script", "x.json",
+    ]  # fmt: skip
+    connected = [
+        "--mcp-proxy", "http://127.0.0.1:2", "--mcp-token-file", "t", "--mcp-project", "p",
+        "--mcp-server", "papers",
     ]  # fmt: skip
     for extra in (
         ["--mcp-proxy", "http://127.0.0.1:2"],
@@ -301,6 +319,12 @@ def test_the_proxy_options_go_together() -> None:
             "--mcp-server",
             "Not_A_Name",
         ],
+        ["--mcp-about", "papers=Papers"],
+        ["--mcp-index", "papers"],
+        [*connected, "--mcp-about", "papers"],
+        [*connected, "--mcp-about", "Not_A_Name=Papers"],
+        [*connected, "--mcp-about", "papers=" + "x" * 201],
+        [*connected, "--mcp-index", "Not_A_Name"],
     ):
         with pytest.raises(SystemExit) as exited:
             cli.main([*base, *extra, "Go."])
@@ -647,3 +671,159 @@ async def test_arguments_json_cannot_hold_are_not_sent(
     assert record["error"] == "not_sent"
     assert "Nothing reached the server" in error_of(text)["message"]
     assert len(proxied.fake.seen) == calls
+
+
+class Offered(ScriptedModel):
+    """A scripted model that notes the tools each call carried."""
+
+    def __init__(self, script: list[dict[str, Any]]) -> None:
+        turns = ScriptedModel.from_json(script)._turns
+        super().__init__(turns)
+        self.offered: list[list[str]] = []
+        self.sizes: list[int] = []
+
+    async def complete(self, messages: Any, tools: Any) -> ModelTurn:
+        self.offered.append([spec.name for spec in tools])
+        self.sizes.append(len(schema_json(tools)))
+        return await super().complete(messages, tools)
+
+
+async def run_with(
+    proxied: Proxied, script: list[dict[str, Any]], **options: Any
+) -> tuple[Offered, Any]:
+    client = ProxyClient(proxied.url, TOKEN)
+    connectors = Connectors(client, ["papers"], session="s-1", **options)
+    try:
+        await connectors.load()
+        async with WorkerClient("http://127.0.0.1:9", "test-secret-worker") as worker:
+            toolbox = Toolbox(worker, CONTEXT, languages=("sage",), connectors=connectors)
+            model = Offered(script)
+            transcript = await run_task(model, toolbox, "Find papers.", run_id="r1")
+    finally:
+        await client.close()
+    return model, transcript
+
+
+async def test_the_model_gets_an_index_and_loads_tools_by_name(proxied: Proxied) -> None:
+    """Lab 39, B5: a model call carries the index, not every connector tool's schema;
+    a loaded tool joins the model's tools for the rest of the run, and the run's record
+    says which were loaded."""
+    model, transcript = await run_with(
+        proxied,
+        [
+            {"tool_calls": [{"name": "mcp_tools", "arguments": {"names": ["search", "nope"]}}]},
+            {"tool_calls": [{"name": "search", "arguments": {"query": "lattices"}}]},
+            {"text": "Found."},
+        ],
+    )
+    first, second, _ = model.offered
+    assert "mcp_tools" in first
+    assert not {"search", "image", "crawl"} & set(first)
+    assert set(second) - set(first) == {"search"}
+    assert model.sizes[1] > model.sizes[0]
+    loaded, called = transcript.tool_records
+    assert loaded["mcp_tools"] == {
+        "loaded": ["search"],
+        "unknown": ["nope"],
+        "note": "call a loaded tool by its name; your tools now include it",
+    }
+    assert called["connector"] == "papers"
+    assert proxied.fake.tool_calls() == ["search"]
+    listed = len(proxied.fake.tools) - 2  # not the denied admin_ tools
+    assert transcript.summaries["connectors"] == {"listed": listed, "loaded": ["search"]}
+
+
+async def test_a_query_loads_its_best_matches(proxied: Proxied) -> None:
+    model, transcript = await run_with(
+        proxied,
+        [
+            {"tool_calls": [{"name": "mcp_tools", "arguments": {"query": "notes search"}}]},
+            {"tool_calls": [{"name": "mcp_tools", "arguments": {"query": "nothing like it"}}]},
+            {"text": "Done."},
+        ],
+    )
+    found, none = transcript.tool_records
+    assert found["mcp_tools"]["loaded"][0] == "notes_search"
+    assert "search" in found["mcp_tools"]["loaded"]
+    assert none["mcp_tools"] == {
+        "loaded": [],
+        "note": "no tool matches the query; read the index and give names",
+    }
+    assert set(found["mcp_tools"]["loaded"]) <= set(model.offered[1])
+
+
+async def test_a_tool_called_before_it_is_loaded_is_loaded_and_called(proxied: Proxied) -> None:
+    model, transcript = await run_with(
+        proxied,
+        [
+            {"tool_calls": [{"name": "search", "arguments": {"query": "lattices"}}]},
+            {"tool_calls": [{"name": "mcp_tools", "arguments": {}}]},
+            {"text": "Done."},
+        ],
+    )
+    called, empty = transcript.tool_records
+    assert called["connector"] == "papers"
+    assert "search" in model.offered[1]
+    assert empty["error"] == "invalid_request"
+    assert transcript.summaries["connectors"]["loaded"] == ["search"]
+
+
+async def test_the_index_groups_a_portals_tools_by_their_server(proxied: Proxied) -> None:
+    tools = [
+        {"name": "e-print-mcp_search_eprint", "description": "Search IACR ePrint. Long text."},
+        {"name": "e-print-mcp_get_eprint", "description": "Fetch one paper's record"},
+        {"name": "firecrawl-mcp_firecrawl_search", "description": "Search the web; cost"},
+        {"name": "plain", "description": "x" * 300},
+    ]
+    proxied.fake.listing = lambda params: {"tools": tools}
+    client = ProxyClient(proxied.url, TOKEN)
+    about = {"e-print-mcp": "IACR ePrint papers", "firecrawl-mcp": "the open web"}
+    connectors = Connectors(client, ["papers"], session="s-1", about=about)
+    try:
+        await connectors.load()
+    finally:
+        await client.close()
+    assert connectors.index() == "\n".join(
+        [
+            "e-print-mcp: IACR ePrint papers",
+            "  e-print-mcp_get_eprint - Fetch one paper's record",
+            "  e-print-mcp_search_eprint - Search IACR ePrint.",
+            "firecrawl-mcp: the open web",
+            "  firecrawl-mcp_firecrawl_search - Search the web",
+            "papers:",
+            f"  plain - {'x' * 59}…",
+        ]
+    )
+    connectors.shown = frozenset({"e-print-mcp"})
+    assert "firecrawl-mcp: the open web (1 tools, not listed: find them with a query)" in (
+        connectors.index()
+    )
+    assert connectors.search("eprint paper")[0] == "e-print-mcp_get_eprint"
+
+
+async def test_lab_39s_index_costs_far_less_than_its_schemas(proxied: Proxied) -> None:
+    """Lab 39: MAIN carried crypto-research-mcp's 72 tool specs, 67,303 characters (about
+    17,000 tokens), at every call. The index of the same tools, but the denied portal
+    tools, with each tool's purpose at its longest, is the measure after."""
+    fixture = json.loads((Path(__file__).parent / "fixtures" / "lab39-mcp-tools.json").read_text())
+    tools = [
+        {**tool, "description": tool["description"] + " " + "More words. " * 40}
+        for tool in fixture["tools"]
+        if not tool["name"].startswith("portal_")
+    ]
+    connectors = await listed(proxied, tools)
+    assert len(connectors.tools) == 69
+
+    async def index_chars() -> int:
+        async with WorkerClient("http://127.0.0.1:9", "test-secret-worker") as worker:
+            toolbox = Toolbox(worker, CONTEXT, languages=("sage",), connectors=connectors)
+            (spec,) = [spec for spec in toolbox.specs if spec.name == "mcp_tools"]
+        return len(schema_json([spec]))
+
+    before, every = fixture["full_spec_chars"], await index_chars()
+    # Three servers listed tool by tool, the other four by their count alone.
+    connectors.shown = frozenset({"e-print-mcp", "nist-csrc-mcp", "paper-search-mcp"})
+    three = await index_chars()
+    assert every * 8 < before
+    assert three * 16 < before
+    print(f"lab 39: {before} characters before; after, {every} (every server), {three} (three)")

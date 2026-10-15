@@ -1,0 +1,294 @@
+{
+  "about": "The tools crypto-research-mcp listed through the MCP proxy in lab 39 (2026-10-15, the evidence file mcp-tools-live.txt), each with the one-line note packages/policy/tests/fixtures/crypto-research-mcp-tools.json keeps on what it does, standing in for the server's description. The lab measured the full specs offered to MAIN at 67,303 characters of names, descriptions and schemas.",
+  "full_spec_chars": 67303,
+  "tools": [
+    {
+      "name": "attack-catalog-mcp_find_applicable_attacks",
+      "description": "Read-only lexical-overlap lookup of reference leads in the catalog."
+    },
+    {
+      "name": "attack-catalog-mcp_get_attack",
+      "description": "Returns one attack record by catalog ID."
+    },
+    {
+      "name": "attack-catalog-mcp_get_catalog_info",
+      "description": "Describes the loaded snapshot, refresh limits and reading guides; informational only."
+    },
+    {
+      "name": "attack-catalog-mcp_get_filter_contract",
+      "description": "Explains filter semantics; documentation lookup."
+    },
+    {
+      "name": "attack-catalog-mcp_get_source",
+      "description": "Returns source metadata and digest; does not fetch or verify a paper."
+    },
+    {
+      "name": "attack-catalog-mcp_list_attacks_for_skill",
+      "description": "Paginated listing of attack references for a skill ID."
+    },
+    {
+      "name": "attack-catalog-mcp_list_taxonomy",
+      "description": "Lists taxonomy dimensions and terms."
+    },
+    {
+      "name": "attack-catalog-mcp_search_attacks",
+      "description": "Searches the loaded catalog snapshot with normalized filters."
+    },
+    {
+      "name": "attack-catalog-mcp_search_by_legacy_value_exact",
+      "description": "Exact literal match on a legacy field for debugging/export parity; read-only lookup."
+    },
+    {
+      "name": "e-print-mcp_corpus_stats",
+      "description": "Reports corpus size, year coverage and last harvest time."
+    },
+    {
+      "name": "e-print-mcp_eprint_file",
+      "description": "Signed URL for the original; a missing original is fetched into the server cache or queued for a fetcher."
+    },
+    {
+      "name": "e-print-mcp_eprint_fulltext",
+      "description": "Reads paper text from cache; first call downloads and caches the PDF or queues it (fetch defaults true)."
+    },
+    {
+      "name": "e-print-mcp_get_eprint",
+      "description": "Returns metadata and abstract for one ePrint paper."
+    },
+    {
+      "name": "e-print-mcp_recent_eprint",
+      "description": "Lists the newest ePrint submissions."
+    },
+    {
+      "name": "e-print-mcp_refresh_eprint",
+      "description": "Incrementally refreshes the whole local corpus and rebuilds its index; may be slow."
+    },
+    {
+      "name": "e-print-mcp_search_eprint",
+      "description": "Keyword/FTS search of the ePrint corpus; read-only."
+    },
+    {
+      "name": "firecrawl-mcp_firecrawl_agent",
+      "description": "Starts an async multi-source research job (minutes) and returns a job ID."
+    },
+    {
+      "name": "firecrawl-mcp_firecrawl_agent_status",
+      "description": "Polls progress or result of an existing agent job."
+    },
+    {
+      "name": "firecrawl-mcp_firecrawl_check_crawl_status",
+      "description": "Reads crawl job state; description says it does not start or modify the crawl."
+    },
+    {
+      "name": "firecrawl-mcp_firecrawl_crawl",
+      "description": "Starts a multi-page crawl job; webhooks and interactive actions exist unless safe mode is on."
+    },
+    {
+      "name": "firecrawl-mcp_firecrawl_developer_search",
+      "description": "Searches an index of GitHub issues, PRs, READMEs and docs; no cost or side effect stated."
+    },
+    {
+      "name": "firecrawl-mcp_firecrawl_extract",
+      "description": "Deprecated multi-URL extraction entry point (optional web search); cost and side effects not described."
+    },
+    {
+      "name": "firecrawl-mcp_firecrawl_feedback",
+      "description": "Submits quality feedback for a completed search, scrape, parse or map job."
+    },
+    {
+      "name": "firecrawl-mcp_firecrawl_interact",
+      "description": "Live browser session (click, fill fields, run code); form submission can have persistent external effects."
+    },
+    {
+      "name": "firecrawl-mcp_firecrawl_interact_stop",
+      "description": "Stops a live interact session and releases its resources."
+    },
+    {
+      "name": "firecrawl-mcp_firecrawl_map",
+      "description": "Lists indexed URLs for a site without fetching page content; no cost stated."
+    },
+    {
+      "name": "firecrawl-mcp_firecrawl_monitor_check",
+      "description": "Retrieves one existing monitor check and its page diffs; despite the name it does not run a check."
+    },
+    {
+      "name": "firecrawl-mcp_firecrawl_monitor_checks",
+      "description": "Lists historical checks for a monitor."
+    },
+    {
+      "name": "firecrawl-mcp_firecrawl_monitor_create",
+      "description": "Creates a recurring monitor that schedules future network checks and can email or call webhooks."
+    },
+    {
+      "name": "firecrawl-mcp_firecrawl_monitor_delete",
+      "description": ""
+    },
+    {
+      "name": "firecrawl-mcp_firecrawl_monitor_get",
+      "description": "Reads one monitor's config and state; description says it does not run or modify it."
+    },
+    {
+      "name": "firecrawl-mcp_firecrawl_monitor_list",
+      "description": "Lists the account's monitors."
+    },
+    {
+      "name": "firecrawl-mcp_firecrawl_monitor_run",
+      "description": "Queues an immediate monitor check, starting network work."
+    },
+    {
+      "name": "firecrawl-mcp_firecrawl_monitor_update",
+      "description": "Patches a monitor's schedule, targets, status, webhook or notifications."
+    },
+    {
+      "name": "firecrawl-mcp_firecrawl_parse",
+      "description": "Parses a server-local file via Firecrawl; hosted flow uploads it; cost and retention not stated."
+    },
+    {
+      "name": "firecrawl-mcp_firecrawl_research_inspect_paper",
+      "description": "Retrieves metadata for one paper ID."
+    },
+    {
+      "name": "firecrawl-mcp_firecrawl_research_read_paper",
+      "description": "Retrieves relevant passages from one indexed paper."
+    },
+    {
+      "name": "firecrawl-mcp_firecrawl_research_related_papers",
+      "description": "Finds citation-graph candidates for seed papers."
+    },
+    {
+      "name": "firecrawl-mcp_firecrawl_research_search_github",
+      "description": "Searches indexed public GitHub issues, PRs and READMEs."
+    },
+    {
+      "name": "firecrawl-mcp_firecrawl_research_search_papers",
+      "description": "Searches paper metadata and abstracts in the indexed corpus."
+    },
+    {
+      "name": "firecrawl-mcp_firecrawl_scrape",
+      "description": "Single-URL scrape; warns browser actions may change the live page when interactive actions are enabled."
+    },
+    {
+      "name": "firecrawl-mcp_firecrawl_search",
+      "description": "Search returning usage metadata; sibling feedback tool can refund 1 credit, so calls consume credits."
+    },
+    {
+      "name": "firecrawl-mcp_firecrawl_search_feedback",
+      "description": "Records feedback on a prior search; first feedback can refund 1 credit."
+    },
+    {
+      "name": "nist-csrc-mcp_nist_browse_catalogs",
+      "description": "Browses structured NIST catalogs and their children."
+    },
+    {
+      "name": "nist-csrc-mcp_nist_get_catalog_item",
+      "description": "Returns one catalog item with relations and mappings."
+    },
+    {
+      "name": "nist-csrc-mcp_nist_get_corpus_status",
+      "description": "Reports corpus coverage and nightly refresh status."
+    },
+    {
+      "name": "nist-csrc-mcp_nist_get_pdf",
+      "description": "Returns a signed URL, official NIST URL and SHA-256 for an already archived PDF."
+    },
+    {
+      "name": "nist-csrc-mcp_nist_get_publication",
+      "description": "Describes one publication edition and its links."
+    },
+    {
+      "name": "nist-csrc-mcp_nist_list_topics",
+      "description": "Lists CSRC topics with counts."
+    },
+    {
+      "name": "nist-csrc-mcp_nist_read",
+      "description": "Reads 1-10 pages of a publication as Markdown."
+    },
+    {
+      "name": "nist-csrc-mcp_nist_search",
+      "description": "Searches NIST publications, catalog items and passages."
+    },
+    {
+      "name": "paper-search-mcp_arxiv_search",
+      "description": "Searches arXiv preprints."
+    },
+    {
+      "name": "paper-search-mcp_crossref_search",
+      "description": "Searches the Crossref DOI registry."
+    },
+    {
+      "name": "paper-search-mcp_dblp_search",
+      "description": "Searches the DBLP bibliography."
+    },
+    {
+      "name": "paper-search-mcp_openalex_search",
+      "description": "Searches OpenAlex works."
+    },
+    {
+      "name": "paper-search-mcp_paper_citations",
+      "description": "Lists citing or referenced papers via OpenAlex."
+    },
+    {
+      "name": "paper-search-mcp_paper_details",
+      "description": "Returns full metadata for one paper from OpenAlex, Semantic Scholar, Crossref or arXiv."
+    },
+    {
+      "name": "paper-search-mcp_paper_search_health",
+      "description": "Reports configured sources and request counters."
+    },
+    {
+      "name": "paper-search-mcp_scholar_search",
+      "description": "Google Scholar via Serper; each call is billed (identical calls cached for an hour)."
+    },
+    {
+      "name": "paper-search-mcp_search_papers",
+      "description": "Multi-source search; default sources include Serper-backed Scholar, billed per call; own billing not stated."
+    },
+    {
+      "name": "paper-search-mcp_semantic_scholar_search",
+      "description": "Searches Semantic Scholar."
+    },
+    {
+      "name": "patent-search-mcp_patent_search",
+      "description": "Google Patents via Serper; each call is billed (identical calls cached for an hour)."
+    },
+    {
+      "name": "patent-search-mcp_patent_search_health",
+      "description": "Reports whether Serper is configured plus request/cache counters."
+    },
+    {
+      "name": "portal_list_servers",
+      "description": "Lists upstream MCP servers and their enabled status."
+    },
+    {
+      "name": "portal_toggle_servers",
+      "description": "Opens a flow where the user enables or disables upstream MCP servers; changes portal config."
+    },
+    {
+      "name": "portal_toggle_single_server",
+      "description": "Enables (warm-up, may need OAuth) or disables one upstream MCP server."
+    },
+    {
+      "name": "web-fetch-mcp_fetch_continue",
+      "description": "Reads the next chunk of an already cached page; no new upstream request."
+    },
+    {
+      "name": "web-fetch-mcp_fetch_links",
+      "description": "Fetches a page and returns its links."
+    },
+    {
+      "name": "web-fetch-mcp_fetch_page",
+      "description": "Alias of web_fetch; fetches page content."
+    },
+    {
+      "name": "web-fetch-mcp_web_capture",
+      "description": "Screenshots a page in Firefox and returns signed PNG links; scrolls but does not interact."
+    },
+    {
+      "name": "web-fetch-mcp_web_fetch",
+      "description": "Fetches a page via fallback engines (direct HTTP, Obscura, Firefox, Bright Data); billing not stated."
+    },
+    {
+      "name": "web-fetch-mcp_web_fetch_health",
+      "description": "Reports available fetch engines and server config."
+    }
+  ]
+}

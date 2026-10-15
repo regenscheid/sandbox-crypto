@@ -354,6 +354,7 @@ async def _run_task(
 ) -> Transcript:
     """Run the observed conversation; ``run_id`` prefixes every worker operation ID."""
     await _notices(hooks, "start", transcript)
+    revision = toolbox.revision
     for turn in range(transcript.max_turns):
         if turn and await _halted(hooks, transcript):
             return transcript
@@ -396,6 +397,10 @@ async def _run_task(
                 await hook.observe_tool(transcript, outcome.record)
             if on_tool is not None:
                 await on_tool(call.name, call.arguments, outcome)
+        if toolbox.revision != revision:
+            # Connector tools loaded: every later model call carries their schemas.
+            revision = toolbox.revision
+            transcript.tools_chars = len(schema_json(toolbox.specs))
     transcript.stopped = "turn_limit"
     return transcript
 
@@ -520,6 +525,8 @@ async def run_task(
                 for hook in hooks:
                     if (summary := hook.summary()) is not None:
                         transcript.summaries[hook.name] = summary
+                if toolbox.connectors is not None:
+                    transcript.summaries["connectors"] = toolbox.connectors.summary()
     except BaseException as error:
         if transcript is not None and user_cancelled(error, stop):
             return transcript  # it came as the run closed: the run's own outcome stands

@@ -273,7 +273,9 @@ def _harness(
             )
         proxy = ProxyClient(args.mcp_proxy, token)
         closing(stack, interruption, proxy.close)
-        mcp = McpAccess(proxy, tuple(args.mcp_server), args.mcp_project)
+        about = {name: text for name, _, text in (item.partition("=") for item in args.mcp_about)}
+        shown = tuple(args.mcp_index) if args.mcp_index else None
+        mcp = McpAccess(proxy, tuple(args.mcp_server), args.mcp_project, about, shown)
     return Harness(
         client,
         main,
@@ -404,6 +406,22 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
         help="an MCP server behind the proxy whose tools runs get; repeat for more",
     )
     command.add_argument(
+        "--mcp-about",
+        action="append",
+        default=[],
+        metavar="SERVER=TEXT",
+        help="what an MCP server is for, which the tool index says (behind a portal, the "
+        "server a tool's name starts with, such as e-print-mcp); repeat for more",
+    )
+    command.add_argument(
+        "--mcp-index",
+        action="append",
+        default=[],
+        metavar="SERVER",
+        help="a server whose tools the index lists one by one; the others are found with a "
+        "query. By default it lists every server's; repeat for more",
+    )
+    command.add_argument(
         "--reviewer-model", help="the consistency reviewer's model alias, which may be MAIN's"
     )
     command.add_argument(
@@ -475,6 +493,15 @@ def _check_agent(parser: argparse.ArgumentParser, args: argparse.Namespace) -> N
     for name in args.mcp_server:
         if not _SERVER.fullmatch(name):
             parser.error(f"--mcp-server {name!r} is not a server name of the project policy")
+    if (args.mcp_about or args.mcp_index) and args.mcp_proxy is None:
+        parser.error("--mcp-about and --mcp-index need --mcp-proxy")
+    for item in args.mcp_about:
+        name, equals, text = item.partition("=")
+        if not equals or not _SERVER.fullmatch(name) or not text.strip() or len(text) > 200:
+            parser.error(f"--mcp-about takes SERVER=TEXT, with at most 200 characters: {item!r}")
+    for name in args.mcp_index:
+        if not _SERVER.fullmatch(name):
+            parser.error(f"--mcp-index {name!r} is not a server name")
 
 
 def main(argv: list[str] | None = None) -> int:

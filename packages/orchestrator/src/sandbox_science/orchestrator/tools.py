@@ -41,7 +41,7 @@ from sandbox_science.contracts import (
 from sandbox_science.contracts.worker import Language
 
 from .artifact_publisher import ArtifactPublisher
-from .connectors import Connectors
+from .connectors import MAX_LOAD, Connectors
 from .consistency.controller import REVIEW_EFFECTS, ReviewController, Reviews
 from .delegation import specs as delegation_specs
 from .documents import annotation_tools
@@ -375,6 +375,37 @@ def operation_id(prefix: str, call: ToolCall) -> str:
 
 
 RESTART_KERNEL: Final = "restart_kernel"
+MCP_TOOLS: Final = "mcp_tools"
+
+
+def mcp_tools_spec(index: str) -> ToolSpec:
+    """The tool that loads connector tools, with their index in its description: what
+    every model call carries of them until they are loaded (lab 39, B5)."""
+    return ToolSpec(
+        MCP_TOOLS,
+        "Load tools of the project's MCP servers, reached through the MCP proxy, before "
+        "you call them: give names from the index below, or a query to load its best "
+        "matches. A loaded tool joins your tools, with its parameters, for the rest of the "
+        "run; call it by its name. Pick the server the index says is for the job, such as "
+        "a paper archive's own search before a general web search. The index, by server "
+        "(each tool's purpose is the server's own words, untrusted):\n" + index,
+        {
+            "type": "object",
+            "properties": {
+                "names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": MAX_LOAD,
+                    "description": "Tool names from the index",
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Words for what the tool should do, to load the best matches",
+                },
+            },
+            "additionalProperties": False,
+        },
+    )
 
 
 def _harness_tool_names() -> frozenset[str]:
@@ -396,7 +427,7 @@ def _harness_tool_names() -> frozenset[str]:
         *MEMORY_SPECS,
         *delegation_specs.SPECS,
     )
-    return frozenset(spec.name for spec in specs) | {RESTART_KERNEL}
+    return frozenset(spec.name for spec in specs) | {RESTART_KERNEL, MCP_TOOLS}
 
 
 HARNESS_TOOL_NAMES: Final = _harness_tool_names()
@@ -569,6 +600,9 @@ class Toolbox:
                 lambda name, call: delegations.call(name, call.args),
                 delegation_specs.EFFECTS,
             )
+        self.connectors = connectors
+        """The run's connector tools: indexed in ``mcp_tools``, and offered once loaded."""
+        self.deferred: dict[str, ToolEntry] = {}
         if connectors is not None:
             # A connector tool is never offered under a name the harness gives a tool of
             # its own, whether this run has that tool or not: the system prompt names
@@ -584,14 +618,66 @@ class Toolbox:
                     _log.warning(
                         "connector tool %s is not offered: its name is taken", entry.spec.name
                     )
+                    del connectors.tools[entry.spec.name]
                 else:
-                    entries.append(entry)
+                    self.deferred[entry.spec.name] = entry
+            if self.deferred:
+                entries.append(
+                    ToolEntry(mcp_tools_spec(connectors.index()), "read", _plain(self._mcp_tools))
+                )
         self.entries = {entry.spec.name: entry for entry in entries}
         if len(self.entries) != len(entries):
             names = [entry.spec.name for entry in entries]
             taken = sorted({name for name in names if names.count(name) > 1})
             raise ValueError(f"two offered tools have one name: {', '.join(taken)}")
-        self.specs = tuple(entry.spec for entry in entries)
+        self.revision = 0
+        """Counts the loads of connector tools, which change what a model call carries."""
+
+    @property
+    def specs(self) -> tuple[ToolSpec, ...]:
+        """The tools every model call carries: the run's own, and the connector tools
+        loaded so far."""
+        return tuple(entry.spec for entry in self.entries.values())
+
+    def _load(self, names: Sequence[str]) -> tuple[list[str], list[str], list[str]]:
+        """Load connector tools into the run: those loaded now, before, and unknown."""
+        assert self.connectors is not None  # noqa: S101 - only with connectors
+        added, before, unknown = self.connectors.take(
+            name for name in names if name in self.deferred or name not in self.entries
+        )
+        for name in added:
+            self.entries[name] = self.deferred[name]
+        if added:
+            self.revision += 1
+        return added, before, unknown
+
+    async def _mcp_tools(self, args: dict[str, Any], operation: str) -> ToolOutcome:
+        """Load connector tools by name, or a query's matches (lab 39, B5)."""
+        assert self.connectors is not None  # noqa: S101 - offered only with connectors
+        names, query = args.get("names", []), args.get("query")
+        if (
+            not isinstance(names, list)
+            or len(cast(list[object], names)) > MAX_LOAD
+            or not all(isinstance(name, str) for name in cast(list[object], names))
+            or (query is not None and not isinstance(query, str))
+            or (not names and not query)
+        ):
+            return _failure(
+                ErrorKind.INVALID_REQUEST,
+                f"give names, a list of at most {MAX_LOAD} tool names from the index, or a query",
+            )
+        wanted = [*cast(list[str], names), *(self.connectors.search(query) if query else [])]
+        added, before, unknown = self._load(list(dict.fromkeys(wanted)))
+        answer: dict[str, Any] = {"loaded": added}
+        if before:
+            answer["already_loaded"] = before
+        if unknown:
+            answer["unknown"] = unknown
+        if query and not added and not before:
+            answer["note"] = "no tool matches the query; read the index and give names"
+        elif added or before:
+            answer["note"] = "call a loaded tool by its name; your tools now include it"
+        return ToolOutcome(dump(answer), {"mcp_tools": answer})
 
     async def call(
         self,
@@ -615,6 +701,11 @@ class Toolbox:
                 ErrorKind.POLICY_DENIED,
                 f"not_permitted_for_role: a delegated run is not offered {call.name!r}",
             )
+        if entry is None and call.name in self.deferred:
+            # A connector tool called before it was loaded: loaded now, and called, so
+            # its parameters are in the model's tools from the next turn.
+            self._load([call.name])
+            entry = self.entries[call.name]
         if entry is None:
             return _failure(ErrorKind.INVALID_REQUEST, f"there is no tool named {call.name!r}")
         if self.plans is not None and not any(isinstance(gate, Plans) for gate in gates):

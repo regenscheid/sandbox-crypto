@@ -10,11 +10,16 @@ connectors are offered only to runs of that project.
 
 ``Connectors`` are one run's connector tools (the decisions of 2026-10-14):
 
-- listed at the run's start from each configured server, within a deadline, and
-  offered under the names the server lists, which for a portal such as
-  crypto-research-mcp carry its prefix. A name a model cannot call, one another
-  server's tool has, or one the harness gives its own tools (whether this run has them
-  or not) is left out and logged, and so is a server's tool past the per-server cap;
+- listed at the run's start from each configured server, within a deadline, under the
+  names the server lists, which for a portal such as crypto-research-mcp carry its
+  prefix. A name a model cannot call, one another server's tool has, or one the harness
+  gives its own tools (whether this run has them or not) is left out and logged, and
+  so is a server's tool past the per-server cap;
+- offered as an index (lab 39, B5): every tool's name and one-line purpose, grouped by
+  the server behind it, with the operator's word on what each server is for, in the
+  description of the harness's ``mcp_tools`` tool, which loads named tools, or a
+  query's matches, into the run's tools for the rest of the run. Every schema at every
+  call cost about 17,000 tokens for crypto-research-mcp's 72 tools;
 - each with the effect class ``effect``, since the policy marks no connector tool
   read-only, so the plan fence applies;
 - what a server says about a tool is untrusted. Its description loses control and
@@ -62,6 +67,14 @@ MAX_DESCRIPTION: Final = 2000
 MAX_SCHEMA_BYTES: Final = 16 * 1024
 MAX_VALUE_TEXT: Final = 1024
 """Characters of enum and const text one tool's schema keeps."""
+PURPOSE_CHARS: Final = 60
+"""Characters of a tool's one-line purpose in the index."""
+MAX_LOAD: Final = 16
+"""Tools one ``mcp_tools`` call loads by name."""
+MAX_MATCHES: Final = 5
+"""Tools one ``mcp_tools`` query loads."""
+MAX_ABOUT: Final = 200
+"""Characters of the operator's word on what a server is for."""
 MAX_PAGES: Final = 50
 MAX_TOOLS_PER_SERVER: Final = 128
 MAX_TOOLS: Final = 256
@@ -318,6 +331,28 @@ class ConnectorTool:
 
     server: str
     spec: ToolSpec
+    purpose: str = ""
+    """The first line of what the server says it does, bounded: the index shows it."""
+
+
+def group(server: str, name: str) -> str:
+    """The server a tool is indexed under: behind a portal, the server its name starts
+    with (``e-print-mcp`` of ``e-print-mcp_search_eprint``); else the configured one."""
+    head, separator, _ = name.partition("_")
+    return head if separator and "-" in head else server
+
+
+def purpose(description: object) -> str:
+    """A server's description of a tool cut to its first sentence or line, cleaned and
+    bounded, for the index."""
+    if not isinstance(description, str):
+        return ""
+    text = " ".join(clean(description).split())
+    for end in (". ", "; ", " - "):
+        if end in text:
+            text = text[: text.index(end) + (1 if end == ". " else 0)]
+            break
+    return text if len(text) <= PURPOSE_CHARS else text[: PURPOSE_CHARS - 1].rstrip() + "…"
 
 
 class Connectors:
@@ -330,10 +365,21 @@ class Connectors:
         *,
         session: str,
         list_seconds: float = LIST_SECONDS,
+        about: Mapping[str, str] | None = None,
+        shown: Sequence[str] | None = None,
     ) -> None:
         self.client, self.servers, self.session = client, tuple(servers), session
         self.list_seconds = list_seconds
         self.tools: dict[str, ConnectorTool] = {}
+        self.about = {
+            name: " ".join(clean(text).split())[:MAX_ABOUT] for name, text in (about or {}).items()
+        }
+        """The operator's word on what each server is for, by its index name."""
+        self.shown = None if shown is None else frozenset(shown)
+        """The servers whose tools the index lists one by one; ``None`` lists every
+        server's. The others' tools are found with a query."""
+        self.loaded: list[str] = []
+        """The tools loaded into the run, in order."""
 
     @property
     def specs(self) -> list[ToolSpec]:
@@ -371,7 +417,61 @@ class Connectors:
                 names.add(name)
                 offered += 1
                 size += cost
-                self.tools[name] = ConnectorTool(server, spec)
+                self.tools[name] = ConnectorTool(server, spec, purpose(tool.get("description")))
+
+    def index(self) -> str:
+        """The connector tools as the model first sees them: by server, each server with
+        the operator's word on what it is for, and each tool's name and purpose; a
+        server not ``shown`` with its count alone."""
+        by: dict[str, list[str]] = {}
+        for name, tool in self.tools.items():
+            by.setdefault(group(tool.server, name), []).append(name)
+        lines: list[str] = []
+        for server in sorted(by):
+            names = sorted(by[server])
+            about = self.about.get(server)
+            heading = f"{server}: {about}" if about else f"{server}:"
+            if self.shown is not None and server not in self.shown:
+                lines.append(f"{heading} ({len(names)} tools, not listed: find them with a query)")
+                continue
+            lines.append(heading)
+            for name in names:
+                said = self.tools[name].purpose
+                lines.append(f"  {name}{f' - {said}' if said else ''}")
+        return "\n".join(lines)
+
+    def search(self, query: str) -> list[str]:
+        """The tools that best match ``query``'s words, in their names, purposes or
+        servers, at most ``MAX_MATCHES``."""
+        words = [word for word in re.split(r"[^a-z0-9]+", query.lower()) if word]
+        scored: list[tuple[int, str]] = []
+        for name, tool in self.tools.items():
+            server = group(tool.server, name)
+            haystack = f"{name} {tool.purpose} {server} {self.about.get(server, '')}".lower()
+            score = sum(3 if word in name.lower() else 1 for word in words if word in haystack)
+            if score:
+                scored.append((-score, name))
+        return [name for _, name in sorted(scored)[:MAX_MATCHES]]
+
+    def take(self, names: Iterable[str]) -> tuple[list[str], list[str], list[str]]:
+        """Load ``names`` into the run: those loaded now, those loaded before, and those
+        no listed tool has."""
+        added: list[str] = []
+        before: list[str] = []
+        unknown: list[str] = []
+        for name in names:
+            if name not in self.tools:
+                unknown.append(name)
+            elif name in self.loaded:
+                before.append(name)
+            else:
+                self.loaded.append(name)
+                added.append(name)
+        return added, before, unknown
+
+    def summary(self) -> dict[str, Any]:
+        """What the run's record keeps: how many tools were listed, and which were loaded."""
+        return {"listed": len(self.tools), "loaded": list(self.loaded)}
 
     async def _list(self, server: str) -> list[dict[str, Any]]:
         tools: list[dict[str, Any]] = []

@@ -102,6 +102,10 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [ ] MCP proxy: export its event store's records from its VM to the monitor, and give approvals a way in other than `openshell sandbox exec`. A user unit that restarts `openshell forward service` is in `examples/systemd`; lab 17 checked it across a stop and start
 - [x] The orchestrator's sandbox policy admits the MCP proxy: `orchestrator.mcp_proxy` in the targets file (lab 13)
 - [x] The harness's MCP client (D-08): connector tools listed at a run's start through the MCP proxy and offered to MAIN as effects, refusals and `approval_required` as tool errors, `--mcp-proxy`, `--mcp-token-file` and `--mcp-server` on `run` and `serve`; the fake MCP server moved to `sandbox_science.testing.mcp`
+- [ ] Connector tools that fit a research budget (lab 39, B5; [MCP connectors](../docs/MCP-CONNECTORS.md#the-harnesss-client))
+  - [x] The proxy's listing leaves out the tools the policy denies
+  - [x] An index in `mcp_tools`, tools loaded on demand, `--mcp-about` and `--mcp-index`, and the loaded tools in the run's record
+  - [ ] The launcher's config passes what each server is for and the servers listed by default; the example config says it for crypto-research-mcp's servers
 - [x] `sandbox-science-mcp-proxy compile-policy` (D-08, decision 5 in part): the proxy sandbox's OpenShell policy from the project policy, the pool ceiling and the targets file, with an opt-in `--admit-escalated` that admits the tools the policy escalates by name, so that approvals take effect; the lab script is gone
 - [x] The rest of the proxy's sandbox as a product command: `sandbox-science up` with `[mcp_proxy]` creates the sandbox, uploads its files, binds the project and forwards the port (#272)
 - [ ] Approved tools compiled into the proxy sandbox's fence one by one instead of `--admit-escalated`
