@@ -5,8 +5,12 @@ import { render } from 'svelte/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Project } from './api';
 import EnvironmentPanel from '../views/EnvironmentPanel.svelte';
+import { ApiError } from './http';
+import { Poller, type PollState } from './poller';
 import {
   environmentChoices,
+  overviewPoll,
+  type ProvisionData,
   type ProvisionObservation,
   type OperationSummary,
   type OperationDetail,
@@ -219,6 +223,71 @@ describe('canonical read scopes and pinned DTOs', () => {
     p.environments.push({ environment_id: 'd', default: false, sessions: ['closed'] });
     expect(environmentChoices('p', p)).toHaveLength(2);
     expect(environmentChoices('foreign', p)).toEqual([]);
+  });
+});
+
+describe('an environment that is not made yet, and one that is gone', () => {
+  /** The project's shared environment with `runs` runs in its one session. */
+  const ranIn = (runs: number): Project => {
+    const p = project();
+    p.sessions[0]!.runs = runs;
+    return p;
+  };
+  const notFound = new ApiError(404, 'not_found', 'no retained provisioning observation');
+  const overviewOf = (runs: number) => overviewPoll(environmentChoices('p', ranIn(runs))[0]!);
+  const settled = (states: PollState<ProvisionData>[]) => states.filter((state) => !state.busy);
+
+  it('is known to have been made once any session using it has a run', () => {
+    expect(environmentChoices('p', ranIn(0))[0]!.ran).toBe(false);
+    expect(environmentChoices('p', ranIn(1))[0]!.ran).toBe(true);
+    // A run in a session of another environment says nothing about this one.
+    const p = ranIn(0);
+    p.sessions.push({ ...p.sessions[0]!, session_id: 'x', environment_id: 'd', runs: 4 });
+    p.environments.push({ environment_id: 'd', default: false, sessions: ['x'] });
+    expect(environmentChoices('p', p).map((choice) => choice.ran)).toEqual([false, true]);
+  });
+
+  it('keeps asking for one not made yet, and ends the poll for one that is gone', async () => {
+    vi.useFakeTimers();
+    for (const [runs, reads] of [
+      [0, 4],
+      [1, 1],
+    ] as const) {
+      const read = vi.fn().mockRejectedValue(notFound);
+      const states: PollState<ProvisionData>[] = [];
+      const poller = new Poller(read, (state) => states.push(state), overviewOf(runs));
+      poller.setVisible(true);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(read).toHaveBeenCalledTimes(reads);
+      expect(settled(states).at(-1)).toEqual({ phase: 'missing', data: null, busy: false });
+      poller.stop();
+    }
+  });
+
+  it('shows the environment once the first run makes it', async () => {
+    vi.useFakeTimers();
+    const read = vi.fn().mockRejectedValueOnce(notFound).mockResolvedValue(overview());
+    const states: PollState<ProvisionData>[] = [];
+    const poller = new Poller(read, (state) => states.push(state), overviewOf(0));
+    poller.setVisible(true);
+    await vi.advanceTimersByTimeAsync(3100);
+    expect(settled(states).at(-1)).toMatchObject({ phase: 'observed', data: overview() });
+    poller.stop();
+  });
+
+  it('tells them apart in words', () => {
+    const view = (runs: number) =>
+      render(EnvironmentPanel, {
+        props: {
+          projectId: 'p',
+          project: ranIn(runs),
+          initialView: { phase: 'missing', data: null, busy: false },
+        },
+      }).body.replace(/\s+/g, ' ');
+    expect(view(0)).toContain('has not been created yet');
+    expect(view(0)).not.toContain('no longer available');
+    expect(view(1)).toContain('no longer available');
+    expect(view(1)).not.toContain('not been created');
   });
 });
 

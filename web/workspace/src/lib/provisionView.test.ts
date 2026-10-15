@@ -17,6 +17,16 @@ describe('the Environments panel', () => {
     for (const phase of phases) expect(phaseLabel(phase)).not.toBe('');
     expect(phaseLabel('observed')).toBe('');
   });
+  it('says an environment never run in is not created yet, not that it is gone', () => {
+    expect(phaseLabel('missing')).toMatch(/no longer available/);
+    expect(phaseLabel('missing', true)).toMatch(/no longer available/);
+    expect(phaseLabel('missing', false)).toMatch(/has not been created yet/);
+    expect(phaseLabel('missing', false)).not.toMatch(/no longer/);
+    // Only a missing environment reads differently; every other phase says what it did.
+    for (const phase of ['loading', 'unavailable', 'changed'] as const)
+      expect(phaseLabel(phase, false)).toBe(phaseLabel(phase));
+    expect(phaseLabel('observed', false)).toBe('');
+  });
   it('names each held input, and an unknown one as such', () => {
     expect(holdReason('blob_missing')).toBe('The recorded lockfile is unavailable or evicted');
     expect(holdReason('something_new')).toBe('Unknown input');

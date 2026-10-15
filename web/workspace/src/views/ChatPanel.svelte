@@ -13,9 +13,9 @@
     forgetMessage,
     MAX_MESSAGE_BYTES,
     messageBytes,
-    messageState,
     pendingMessages,
     sendMessage,
+    startingText,
     thinking,
     type ChatView,
     type WatchedRun,
@@ -24,6 +24,7 @@
   import { initialPoll, Poller, type PollState } from '../lib/poller';
   import { idle, submit } from '../lib/submit';
   import ChatRun from './ChatRun.svelte';
+  import ChatWaiting from './ChatWaiting.svelte';
   import ErrorMessage from './ErrorMessage.svelte';
   import PollStatus from './PollStatus.svelte';
 
@@ -44,6 +45,7 @@
   // Messages not yet in a run's transcript: queued, held or refused.
   const waiting = $derived(chat ? pendingMessages(chat.messages, chat.runs) : []);
   const held = $derived(waiting.some((message) => message.state === 'held'));
+  const starting = $derived(chat ? startingText(chat, waiting) : null);
   const bytes = $derived(messageBytes(draft.text));
 
   $effect(() => {
@@ -131,16 +133,7 @@
       <ChatRun run={current} />
       {#if thinking(current)}<p role="status">The agent is thinking…</p>{/if}
     {/if}
-    {#if waiting.length}
-      <ul class="messages">
-        {#each waiting as message (message.message_id)}
-          <li>
-            <span class="muted">{messageState(message)}:</span>
-            <span class="text">{message.text}</span>
-          </li>
-        {/each}
-      </ul>
-    {/if}
+    <ChatWaiting messages={waiting} {starting} />
     {#if held}<button disabled={asking.busy} onclick={resume}>Resume held messages</button>{/if}
     {#if asking.error}<ErrorMessage error={asking.error} />{/if}
   {/if}
@@ -173,10 +166,6 @@
   .chat {
     border-top: 1px solid var(--border, #9996);
     margin-top: 1rem;
-  }
-  .text {
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
   }
   textarea {
     width: 100%;

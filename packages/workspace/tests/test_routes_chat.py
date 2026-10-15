@@ -3,17 +3,25 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from sandbox_science.contracts import EnvironmentState
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.runstate import RunState
+from sandbox_science.workspace.api import TIMEOUTS
 
 from .route_support import (
     ClientFactory,
+    FakeWorker,
+    ServerFactory,
     assert_security_headers,
+    environment_of,
     error_of,
+    fake_worker,
     origin,
+    refusing_port,
     workspace,
 )
 
@@ -147,3 +155,109 @@ async def test_resume_and_cancel_are_written_for_the_service(
         "invalid_request",
     )
     assert (await client.post(cancel, json={})).status == 403  # not from the page
+
+
+async def test_a_waiting_message_says_what_the_worker_is_making(
+    aiohttp_client: ClientFactory, aiohttp_server: ServerFactory, state_dir: Path, static_dir: Path
+) -> None:
+    # The first run of a project waits for its sandbox: no lease, no events, only a queued
+    # message, until the worker has made it. The listing says what the worker records.
+    state = runs(state_dir)
+    state.beat("a-service")
+    state.post("p1", "a", "m-1", "What is $p$?", author="user")
+    worker = FakeWorker()
+    worker.environment = EnvironmentState.CREATING
+    client = await workspace(
+        aiohttp_client, state_dir, static_dir, worker_url=await fake_worker(aiohttp_server, worker)
+    )
+    listed = await (await client.get(SESSION + "/messages")).json()
+    assert listed["environment"] == "creating"
+    assert [m["state"] for m in listed["messages"]] == ["queued"]
+    # Only the worker's record is read, for the session's own environment: nothing starts.
+    environment = environment_of(state_dir, "p1", "a")
+    assert worker.calls == [("GET", f"/v1/environments/{environment}", {})]
+    worker.environment = EnvironmentState.READY
+    listed = await (await client.get(SESSION + "/messages")).json()
+    assert listed["environment"] == "ready"
+
+
+async def test_the_environment_is_asked_only_while_a_message_waits_for_a_run(
+    aiohttp_client: ClientFactory, aiohttp_server: ServerFactory, state_dir: Path, static_dir: Path
+) -> None:
+    state = runs(state_dir)
+    worker = FakeWorker()
+    worker.environment = EnvironmentState.CREATING
+    client = await workspace(
+        aiohttp_client, state_dir, static_dir, worker_url=await fake_worker(aiohttp_server, worker)
+    )
+
+    async def asked() -> tuple[object, int]:
+        before = len(worker.calls)
+        listed = await (await client.get(SESSION + "/messages")).json()
+        return listed["environment"], len(worker.calls) - before
+
+    assert await asked() == (None, 0)  # nothing waits
+    state.post("p1", "a", "m-1", "Hi", author="user")
+    assert await asked() == (None, 0)  # no run service will start it
+    state.beat("a-service")
+    assert await asked() == ("creating", 1)
+    state.acquire("p1", "a", "run-x", "holder")
+    assert await asked() == (None, 0)  # a run holds the session: it has its events
+    state.release("p1", "a", "holder")
+    assert await asked() == ("creating", 1)
+    state.deliver("p1", "a", ["m-1"], "run-x")
+    state.post("p1", "a", "m-2", "Again", author="user")
+    state.hold("p1", "a", ["m-2"])
+    assert await asked() == (None, 0)  # delivered and held messages wait for no run
+
+
+async def test_a_worker_that_does_not_say_leaves_the_state_unknown(
+    aiohttp_client: ClientFactory, aiohttp_server: ServerFactory, state_dir: Path, static_dir: Path
+) -> None:
+    # The chat reads this at every poll, so the worker's trouble never becomes the chat's.
+    state = runs(state_dir)
+    state.beat("a-service")
+    state.post("p1", "a", "m-1", "Hi", author="user")
+
+    async def listed(client: Any) -> dict[str, Any]:
+        response = await client.get(SESSION + "/messages")
+        assert response.status == 200
+        return await response.json()
+
+    absent = FakeWorker()  # knows no such environment: not made yet
+    client = await workspace(
+        aiohttp_client, state_dir, static_dir, worker_url=await fake_worker(aiohttp_server, absent)
+    )
+    assert (await listed(client))["environment"] is None
+    assert len(absent.calls) == 1
+
+    refusing = FakeWorker()
+    refusing.refusal = (503, "unavailable")
+    client = await workspace(
+        aiohttp_client,
+        state_dir,
+        static_dir,
+        worker_url=await fake_worker(aiohttp_server, refusing),
+    )
+    assert (await listed(client))["environment"] is None
+
+    with refusing_port() as url:
+        client = await workspace(aiohttp_client, state_dir, static_dir, worker_url=url)
+        assert (await listed(client))["environment"] is None
+
+    slow = FakeWorker()
+    slow.environment = EnvironmentState.CREATING
+    slow.environment_delay = 5.0
+    client = await workspace(
+        aiohttp_client,
+        state_dir,
+        static_dir,
+        worker_url=await fake_worker(aiohttp_server, slow),
+        timeouts=replace(TIMEOUTS, environment=0.05),
+    )
+    answer = await listed(client)
+    assert answer["environment"] is None
+    assert [m["message_id"] for m in answer["messages"]] == ["m-1"]
+
+    client = await workspace(aiohttp_client, state_dir, static_dir)  # no worker configured
+    assert (await listed(client))["environment"] is None

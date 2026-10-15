@@ -24,6 +24,7 @@ import type {
   RevisionSummaryPage,
 } from './api-types';
 import { get, inScope } from './http';
+import type { PollOptions } from './poller';
 
 export interface EnvironmentScope {
   projectId: string;
@@ -33,6 +34,12 @@ export interface EnvironmentChoice {
   scope: EnvironmentScope;
   shared: boolean;
   sessions: string[];
+  /**
+   * Whether a session using it has a run. The worker makes an environment when a session
+   * first runs, so until then the project record names an environment that does not exist
+   * yet, and the worker's "not found" does not mean it is gone.
+   */
+  ran: boolean;
 }
 export type {
   LockfileDiffPage,
@@ -85,8 +92,20 @@ export function environmentChoices(projectId: string, project: Project): Environ
     scope: { projectId, environmentId: e.environment_id },
     shared: e.default,
     sessions: [...e.sessions],
+    ran: project.sessions.some((s) => s.runs > 0 && e.sessions.includes(s.session_id)),
   }));
 }
+
+/**
+ * How the overview of an environment is polled. One no session has run in is not created
+ * yet, and a "not found" for it only means wait: the panel says so and keeps asking, and
+ * shows the environment once a first run makes it. For any other, "not found" ends the
+ * poll, as it does for a record that is gone.
+ */
+export function overviewPoll(choice: EnvironmentChoice): PollOptions<ProvisionData> {
+  return choice.ran ? {} : { waitOn: { 404: 'missing' } };
+}
+
 export function differenceKey(v: LockfileDifference): string {
   return [v.ecosystem, v.location ?? '', v.name].join('\0');
 }

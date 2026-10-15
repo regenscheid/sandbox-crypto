@@ -12,7 +12,8 @@ from typing import Any
 import pytest
 import pytest_asyncio
 
-from sandbox_science.contracts import ExecutionContext, KernelStatusRequest
+from sandbox_science.contracts import ErrorKind, ExecutionContext, KernelStatusRequest
+from sandbox_science.contracts.worker import KERNEL_OBSERVATION_BUSY
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 from sandbox_science.worker import kernels as kernels_module
 from sandbox_science.worker.channel import ExecutorChannel, Message
@@ -228,12 +229,15 @@ async def test_global_and_per_environment_admission_owned_until_cancellation(
             )
         await asyncio.wait_for(started.wait(), 1)
         for name in ("env-0", "env1"):
-            with pytest.raises(WorkerError, match="capacity"):
+            with pytest.raises(WorkerError) as refused:
                 await getattr(manager, observe_method)(
                     KernelStatusRequest(
                         context=REQUEST.context.model_copy(update={"environment_id": name})
                     )
                 )
+            # The workspace recognizes this refusal by its message and answers it quietly.
+            assert refused.value.kind is ErrorKind.UNAVAILABLE
+            assert refused.value.message == KERNEL_OBSERVATION_BUSY
         assert len(view(manager).observations()) == kernels_module.MAX_KERNEL_OBSERVATIONS
     finally:
         for task in tasks:

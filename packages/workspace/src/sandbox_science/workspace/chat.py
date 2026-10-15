@@ -9,7 +9,10 @@ The workspace writes and reads the run service's records in the control store
   already written, so a retried write is safe.
 - ``GET …/sessions/{session}/messages?after=N`` lists the session's messages with their
   state, the run that holds the session, if one does, and whether the run service is
-  running (RS-3): without it, a message waits.
+  running (RS-3): without it, a message waits. While a message is queued, no run holds
+  the session and the service is running, the listing also says what the worker's record
+  of the session's environment is, since the first run of a project waits for its sandbox
+  to be made (``creating``), which takes a minute or more.
 - ``POST …/sessions/{session}/resume`` with ``{}`` queues the session's held messages
   again, those an interrupted or cancelled run saw (RS-12).
 - ``POST …/sessions/{session}/runs/{run}/cancel`` with ``{}`` asks the run service to
@@ -27,12 +30,21 @@ from typing import Final, Literal, cast
 from aiohttp import web
 from pydantic import TypeAdapter, ValidationError
 
-from sandbox_science.contracts import Contract, ErrorKind, Identifier
+from sandbox_science.contracts import Contract, EnvironmentState, ErrorKind, Identifier
 from sandbox_science.orchestrator.projects import ProjectError
 from sandbox_science.orchestrator.runstate import PAGE, ChatMessage, RunEvent, RunLease, RunState
+from sandbox_science.orchestrator.worker_client import WorkerAPIError
 
 from . import api
-from .context import CONTEXT, USER_ID, identifier, json_answer, json_body, session_record
+from .context import (
+    CONTEXT,
+    USER_ID,
+    WorkspaceContext,
+    identifier,
+    json_answer,
+    json_body,
+    session_record,
+)
 
 PATH: Final = "/api/v0/projects/{project}/sessions/{session}"
 _IDENTIFIER: Final = TypeAdapter[str](Identifier)
@@ -50,6 +62,10 @@ class MessageListing(Contract):
     run: RunLease | None
     service: bool
     """Whether the run service is running: without it, messages wait."""
+    environment: EnvironmentState | None = None
+    """The worker's record of the session's environment, read only while a message is
+    queued, no run holds the session and the service is running: what the message waits
+    on before its run starts. ``None`` otherwise, and when the worker does not say."""
 
 
 class Requested(Contract):
@@ -119,17 +135,40 @@ async def listed(request: web.Request) -> web.Response:
     after = _cursor(request, "after", 0, 2**62)
     context = request.app[CONTEXT]
 
-    def read() -> str:
-        session_record(context.projects, project, session)
+    def read() -> tuple[MessageListing, str]:
+        found = session_record(context.projects, project, session)
         state = RunState(context.documents)
         listing = MessageListing(
             messages=state.messages(project, session, after=after),
             run=state.lease(project, session),
             service=state.service_running(),
         )
-        return api.dumps(listing.model_dump(mode="json"))
+        return listing, found.environment_id
 
-    return json_answer(await asyncio.to_thread(read))
+    listing, environment = await asyncio.to_thread(read)
+    if (
+        listing.service
+        and listing.run is None
+        and any(message.state == "queued" for message in listing.messages)
+    ):
+        state = await _environment_state(context, environment)
+        listing = listing.model_copy(update={"environment": state})
+    return json_answer(api.dumps(listing.model_dump(mode="json")))
+
+
+async def _environment_state(
+    context: WorkspaceContext, environment: str
+) -> EnvironmentState | None:
+    """The worker's record of ``environment``, which only reads it: no sandbox is started.
+    The chat asks at every poll while a message waits, so a worker that does not answer in
+    a moment, or at all, leaves the state unknown and the chat unhurried."""
+    if context.worker is None:
+        return None
+    try:
+        async with asyncio.timeout(context.timeouts.environment):
+            return (await context.worker.environment(environment)).state
+    except (WorkerAPIError, TimeoutError):
+        return None
 
 
 async def events(request: web.Request) -> web.Response:

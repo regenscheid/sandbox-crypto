@@ -2,7 +2,7 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import { formatTime } from '../lib/format';
-  import { readKernels, type KernelObservation } from '../lib/kernels';
+  import { KERNEL_POLL, readKernels, type KernelObservation } from '../lib/kernels';
   import { initialPoll, Poller, type PollState } from '../lib/poller';
   let {
     projectId,
@@ -29,6 +29,7 @@
       (value) => {
         viewState = value;
       },
+      KERNEL_POLL,
     );
     return poller.watch();
   });

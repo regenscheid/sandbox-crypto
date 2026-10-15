@@ -8,6 +8,7 @@
   import { holdReason, pageBack, pageForward, phaseLabel } from '../lib/provisionView';
   import {
     environmentChoices,
+    overviewPoll,
     readProvision,
     differenceKey,
     packageKey,
@@ -193,6 +194,7 @@
           if (value.phase === 'signed_out') blocked = true;
         }
       },
+      overviewPoll(selected),
     );
     overviewOwner = owner;
     const off = onSignOut(() => owner.logout());
@@ -288,7 +290,9 @@
         ', ',
       ) || 'none recorded'}.
     </p>
-    {#if phaseLabel(view.phase)}<p role="status">{phaseLabel(view.phase)}</p>{/if}
+    {#if phaseLabel(view.phase, selected.ran)}<p role="status">
+        {phaseLabel(view.phase, selected.ran)}
+      </p>{/if}
     {#if overview}
       {#if view.phase !== 'observed'}<p>
           <strong>Previous observation; current state is unknown.</strong>

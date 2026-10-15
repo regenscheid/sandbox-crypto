@@ -18,8 +18,16 @@ const PHASE_LABELS: Readonly<Record<PollPhase, string>> = {
   signed_out: 'Observations stopped for sign-out. Reload after signing in.',
 };
 
-/** What the panel says for an observation's phase; nothing while observed. */
-export function phaseLabel(phase: PollPhase): string {
+const NOT_CREATED =
+  'This environment has not been created yet. It is made when a session first runs, and appears here then.';
+
+/**
+ * What the panel says for an observation's phase; nothing while observed. An environment
+ * that is not found and was never run in (`created` false) has not been made yet, which is
+ * not what "no longer available" says of one that is gone.
+ */
+export function phaseLabel(phase: PollPhase, created = true): string {
+  if (phase === 'missing' && !created) return NOT_CREATED;
   return Object.hasOwn(PHASE_LABELS, phase) ? PHASE_LABELS[phase] : '';
 }
 

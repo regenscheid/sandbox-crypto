@@ -148,6 +148,65 @@ describe('options', () => {
     expect(read).toHaveBeenCalledTimes(4);
     expect(states.at(-1)).toEqual({ phase: 'signed_out', data: null, busy: false });
   });
+  it('waitOn null: a status that means "not yet" leaves the view as it was, with no backoff', async () => {
+    vi.useFakeTimers();
+    const times: number[] = [];
+    const read = vi.fn(async (): Promise<Data> => {
+      times.push(Date.now());
+      if (times.length === 1 || times.length === 4) return { n: times.length };
+      throw new ApiError(429, 'unavailable', 'busy');
+    });
+    const { poller, states } = poll(read, { waitOn: { 429: null } });
+    poller.setVisible(true);
+    await vi.advanceTimersByTimeAsync(12_000);
+    // Refusals never slow the next read: it stays three seconds away.
+    expect(times.slice(1).map((at, i) => at - times[i]!)).toEqual([3000, 3000, 3000, 3000]);
+    expect(settled(states).map((s) => s.phase)).not.toContain('unavailable');
+    // The last read, a refusal after data, kept that data and its phase.
+    expect(settled(states).at(-1)).toEqual({ phase: 'observed', data: { n: 4 }, busy: false });
+  });
+  it('waitOn null: before the first answer the view is still loading, not unavailable', async () => {
+    vi.useFakeTimers();
+    const read = vi.fn().mockRejectedValue(new ApiError(429, 'unavailable', 'busy'));
+    const { poller, states } = poll(read, { waitOn: { 429: null } });
+    poller.setVisible(true);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(read.mock.calls.length).toBeGreaterThan(2);
+    expect(settled(states).at(-1)).toEqual({ phase: 'loading', data: null, busy: false });
+  });
+  it('waitOn phase: shows that phase and keeps asking, past an endOn for the status', async () => {
+    vi.useFakeTimers();
+    const read = vi
+      .fn()
+      .mockRejectedValueOnce(new ApiError(404, 'not_found', 'not yet'))
+      .mockRejectedValueOnce(new ApiError(404, 'not_found', 'not yet'))
+      .mockResolvedValue({ n: 1 });
+    const { poller, states } = poll(read, { waitOn: { 404: 'missing' } });
+    poller.setVisible(true);
+    await vi.advanceTimersByTimeAsync(3100);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(settled(states).at(-1)).toEqual({ phase: 'missing', data: null, busy: false });
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(settled(states).at(-1)).toEqual({ phase: 'observed', data: { n: 1 }, busy: false });
+  });
+  it('waitOn: does not mask a real failure, and a 401 still ends the poller', async () => {
+    vi.useFakeTimers();
+    const read = vi
+      .fn()
+      .mockRejectedValueOnce(new ApiError(503, 'unavailable', 'down'))
+      .mockRejectedValueOnce(new ApiError(429, 'unavailable', 'busy'))
+      .mockRejectedValue(new ApiError(401, 'policy_denied', 'signed out'));
+    const { poller, states } = poll(read, { waitOn: { 429: null, 401: 'loading' } });
+    poller.setVisible(true);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(settled(states).at(-1)?.phase).toBe('unavailable');
+    await vi.advanceTimersByTimeAsync(6000); // the 503 backed off; the refusal changes nothing
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(settled(states).at(-1)?.phase).toBe('unavailable');
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(states.at(-1)).toEqual({ phase: 'signed_out', data: null, busy: false });
+  });
   it('done: the final state is not busy', async () => {
     vi.useFakeTimers();
     const { poller, states } = poll(vi.fn().mockResolvedValue({ n: 1, closed: true }), {
