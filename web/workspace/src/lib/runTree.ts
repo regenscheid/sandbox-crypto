@@ -84,6 +84,14 @@ export interface BriefView {
   model: string;
   /** The limits granted. */
   limits: string;
+  /** A task's context, as its parent wrote it (PD-11). */
+  context: string;
+  /** The plan track a task works on, and its plan version (PD-9), in words. */
+  track: string;
+  /** The issue a task works on, by its handle (LG-F8). */
+  issue: string;
+  /** Whether a task may delegate tasks of its own (PD-15). */
+  delegates: boolean;
 }
 
 const record = (value: unknown): Record<string, unknown> =>
@@ -102,6 +110,9 @@ export function briefView(delegation: Pick<Delegation, 'brief'>): BriefView {
     model.fallback === true && typeof model.asked === 'string'
       ? `, the project's fallback for ${visible(model.asked)}`
       : '';
+  const track = record(brief.track);
+  const plan = record(track.plan);
+  const issue = record(brief.issue);
   return {
     task: typeof brief.task === 'string' ? visible(brief.task) : '',
     entry: handle === null ? null : { handle, revision },
@@ -109,6 +120,17 @@ export function briefView(delegation: Pick<Delegation, 'brief'>): BriefView {
     note: typeof brief.note === 'string' ? visible(brief.note) : '',
     model: alias ? `${alias}${asked}` : 'the delegated role’s',
     limits: limitsText(record(brief.limits)),
+    context: typeof brief.context === 'string' ? visible(brief.context) : '',
+    track:
+      typeof track.track_id === 'string'
+        ? `${visible(track.track_id)}${
+            typeof plan.plan_id === 'string' && Number.isSafeInteger(plan.version)
+              ? ` of plan ${visible(plan.plan_id)} version ${plan.version as number}`
+              : ''
+          }`
+        : '',
+    issue: typeof issue.handle === 'string' ? visible(issue.handle) : '',
+    delegates: brief.delegate === true,
   };
 }
 
@@ -131,10 +153,25 @@ export interface ResultView {
   obstacle: string;
   deviations: string[];
   openQuestions: string[];
+  /** A task's dropped lines of work, each with what ran out (LG-F8). */
+  dismissals: string[];
+  /** A task's claimed obstructions, each with its evidence (LG-F8). */
+  obstructions: string[];
+  /** The paths a task declared as its results (RA-38). */
+  resultFiles: string[];
 }
 
 const texts = (value: unknown): string[] => (Array.isArray(value) ? value.map(said) : []);
 const text = (value: unknown): string => (value === null || value === undefined ? '' : said(value));
+
+/** Each object of a list as its two fields in words, `first: second`. */
+const pairs = (value: unknown, first: string, second: string): string[] =>
+  Array.isArray(value)
+    ? value.map((item) => {
+        const fields = record(item);
+        return `${text(fields[first])}: ${text(fields[second])}`;
+      })
+    : [];
 
 /** The result's fields; null when the run returned none that validated. */
 export function resultView(delegation: Pick<Delegation, 'result'>): ResultView | null {
@@ -151,11 +188,18 @@ export function resultView(delegation: Pick<Delegation, 'result'>): ResultView |
     obstacle: text(result.obstacle),
     deviations: texts(result.deviations),
     openQuestions: texts(result.open_questions),
+    dismissals: pairs(result.dismissals, 'what', 'limit'),
+    obstructions: pairs(result.obstructions, 'claim', 'evidence'),
+    resultFiles: texts(result.result_files),
   };
 }
 
-/** What the platform observed of a check's reading, in words; empty when it says nothing. */
-export function readingText(delegation: Pick<Delegation, 'read_entry' | 'read_proofs'>): string {
+/** What the platform observed of a check's reading, in words; empty when it says nothing,
+ * as for a task, which has no entry to read. */
+export function readingText(
+  delegation: Pick<Delegation, 'kind' | 'read_entry' | 'read_proofs'>,
+): string {
+  if (delegation.kind === 'task') return '';
   const parts: string[] = [];
   if (delegation.read_entry !== null) {
     parts.push(

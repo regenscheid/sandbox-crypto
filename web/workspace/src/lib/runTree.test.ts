@@ -115,6 +115,10 @@ describe('the run tree', () => {
       note: 'Look hard at the second lemma.',
       model: "checker-b, the project's fallback for checker-a",
       limits: 'turns 12, tokens 40000',
+      context: '',
+      track: '',
+      issue: '',
+      delegates: false,
     });
     expect(briefView(delegation({ brief: {} }))).toMatchObject({
       task: '',
@@ -140,6 +144,73 @@ describe('the run tree', () => {
       "The platform observed that it read the entry at its revision and did not read each proof's target.",
     );
     expect(delegationsById([delegation()]).get('del-1')?.run).toBe('b');
+  });
+
+  it("reads a task's brief and result as a task's, with no verdict and no reading", () => {
+    // Lab 41: a lead on a track, which may delegate, and a task on an issue with a file.
+    const task = delegation({
+      kind: 'task',
+      brief: {
+        task: 'Complete the orders track.',
+        context: 'Curve25519 over GF(2^255-19).',
+        inputs: [],
+        track: { track_id: 'orders', plan: { plan_id: 'plan-1', version: 1 } },
+        issue: { entry: 'entry-9', handle: 'I-1' },
+        delegate: true,
+        limits: { turns: 20, tokens: 200000 },
+        model: { alias: 'sandbox-orchestrator' },
+      },
+      read_entry: false,
+      read_proofs: null,
+      result: {
+        status: 'partial',
+        summary: 'Computed l.',
+        obstacle: null,
+        deviations: [],
+        open_questions: [],
+        dismissals: [{ what: 'the twist', limit: 'time' }],
+        obstructions: [{ claim: 'No paper copy.', evidence: 'The download failed.' }],
+        result_files: ['results/ell.json'],
+      },
+    });
+    expect(briefView(task)).toMatchObject({
+      task: 'Complete the orders track.',
+      context: 'Curve25519 over GF(2^255-19).',
+      track: 'orders of plan plan-1 version 1',
+      issue: 'I-1',
+      delegates: true,
+      entry: null,
+    });
+    expect(resultView(task)).toMatchObject({
+      verdict: '',
+      status: 'partial',
+      dismissals: ['the twist: time'],
+      obstructions: ['No paper copy.: The download failed.'],
+      resultFiles: ['results/ell.json'],
+    });
+    expect(readingText(task)).toBe('');
+    const html = render(DelegationCard, {
+      props: { projectId: 'p1', sessionId: 's1', delegation: task },
+    }).body;
+    expect(html).toContain('Status: partial');
+    expect(html).not.toContain('Verdict');
+    expect(html).not.toContain('read the entry');
+    for (const shown of [
+      'Context from its parent',
+      "On the plan's track orders of plan plan-1 version 1",
+      'On the issue I-1',
+      'It may delegate tasks of its own.',
+      'the twist: time',
+      'Its declared result files',
+      'results/ell.json',
+    ]) {
+      expect(html).toContain(shown);
+    }
+    const check = render(DelegationCard, {
+      props: { projectId: 'p1', sessionId: 's1', delegation: delegation() },
+    }).body;
+    expect(check).toContain('Verdict: confirmed');
+    expect(check).not.toContain('It may delegate');
   });
 
   it('leads to a run by its name, and to the tree', () => {
@@ -221,7 +292,14 @@ describe('the run tree views', () => {
     expect(html).toContain("The parent's note, which is not evidence");
   });
 
-  const places = ["the parent's note", 'the summary', 'the refutation', 'the report'];
+  const places = [
+    "the parent's note",
+    'the summary',
+    'the refutation',
+    'the report',
+    "a task's context",
+    "a task's track",
+  ];
   const cases = fixtures.cases.flatMap((c) =>
     places.map((where) => ({ ...c, where, hidden: c.hidden as [number, string][] })),
   );
@@ -232,15 +310,19 @@ describe('the run tree views', () => {
       const shown =
         where === "the parent's note"
           ? delegation({ brief: { ...base.brief, note: text } })
-          : where === 'the report'
-            ? delegation({ report: text })
-            : delegation({
-                result: {
-                  ...base.result,
-                  verdict: 'refuted',
-                  ...(where === 'the summary' ? { summary: text } : { refutation: text }),
-                },
-              });
+          : where === "a task's context"
+            ? delegation({ kind: 'task', brief: { task: 'T.', context: text } })
+            : where === "a task's track"
+              ? delegation({ kind: 'task', brief: { task: 'T.', track: { track_id: text } } })
+              : where === 'the report'
+                ? delegation({ report: text })
+                : delegation({
+                    result: {
+                      ...base.result,
+                      verdict: 'refuted',
+                      ...(where === 'the summary' ? { summary: text } : { refutation: text }),
+                    },
+                  });
       const html = render(DelegationCard, {
         props: { projectId: 'p1', sessionId: 's1', delegation: shown },
       }).body;
