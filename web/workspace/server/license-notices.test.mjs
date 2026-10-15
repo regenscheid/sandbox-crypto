@@ -180,6 +180,21 @@ test('refuses unclassified copied assets and dependency stylesheets', () => {
   expect(collect).toThrow('Uncovered bundled stylesheet');
 });
 
+test("a stylesheet split out with a shared chunk takes its origins from the chunk's styles", () => {
+  const { app, bundle, collect } = fixture();
+  mkdirSync(resolve(app, 'src/views'), { recursive: true });
+  writeFileSync(resolve(app, 'src/views/Banner.svelte'), '<p>x</p>');
+  bundle['assets/shared.css'] = { type: 'asset', fileName: 'assets/shared.css', source: 'p {}', originalFileNames: [] };
+  expect(collect).toThrow('Asset has no license origins: assets/shared.css');
+  bundle['assets/shared.js'] = { type: 'chunk', fileName: 'assets/shared.js', code: 'export {};',
+    moduleIds: [resolve(app, 'src/views/Banner.svelte'), resolve(app, 'src/views/Banner.svelte') + '?svelte&type=style&lang.css'],
+    imports: [], dynamicImports: [], viteMetadata: { importedCss: new Set(['assets/shared.css']) } };
+  expect(collect).not.toThrow();
+  writeFileSync(resolve(app, 'node_modules/markdown-it/style.css'), 'body {}');
+  bundle['assets/shared.js'].moduleIds.push(resolve(app, 'node_modules/markdown-it/style.css'));
+  expect(collect).toThrow('Uncovered bundled stylesheet');
+});
+
 test('refuses modified emitted font bytes and changed primary font input', () => {
   const { app, bundle, collect } = fixture();
   const original = bundle['assets/font.woff2'].source;
