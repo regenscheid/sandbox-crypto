@@ -53,7 +53,7 @@ The launcher does these steps in order. It stops at the first that fails and say
 2. It makes the state directory and the tokens the parts need, and writes the worker's settings.
 3. It starts the worker, and waits for its address to take connections.
 4. It grants the project policy to every project.
-5. It makes each project in the control store, or moves an existing one to the policy, and opens its sessions, the dedicated ones in environments of their own.
+5. It makes each project in the control store, or moves an existing one to the policy, and opens its sessions, the dedicated ones in environments of their own. A project keeps the profile it was made with: a config that names another stops `up` here.
 6. It starts the run service, and then the workspace.
 
 When everything is up, it prints:

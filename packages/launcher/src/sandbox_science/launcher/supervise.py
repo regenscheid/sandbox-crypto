@@ -238,6 +238,22 @@ class Supervisor:
     ) -> str:
         """Run a command to its end, its output in the launcher's log, and return it;
         ``env`` adds to the parts' environment, as a part's own does."""
+        status, text = await self.outcome(name, argv, cwd, timeout, env)
+        if status != 0:
+            shown = "\n".join(f"    {line}" for line in text.splitlines()[-TAIL_LINES:])
+            raise LauncherError(f"{name} failed, with status {status}:\n{shown}")
+        return text
+
+    async def outcome(
+        self,
+        name: str,
+        argv: list[str],
+        cwd: Path,
+        timeout: float,
+        env: Mapping[str, str] | None = None,
+    ) -> tuple[int, str]:
+        """Run a command to its end, its output in the launcher's log: its exit status and
+        its output, whatever the status."""
         process = await asyncio.create_subprocess_exec(
             *argv, cwd=cwd, env={**self.env, **(env or {})}, stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
@@ -261,10 +277,7 @@ class Supervisor:
             raise StopRequested
         if talking not in done:
             raise LauncherError(f"{name} took longer than {timeout:g} s")
-        if process.returncode != 0:
-            shown = "\n".join(f"    {line}" for line in text.splitlines()[-TAIL_LINES:])
-            raise LauncherError(f"{name} failed, with status {process.returncode}:\n{shown}")
-        return text
+        return (-1 if process.returncode is None else process.returncode), text
 
     async def watch(self) -> str | None:
         """Wait until the launcher is asked to stop (None) or a part stops by itself."""

@@ -23,6 +23,7 @@ import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -174,11 +175,24 @@ def policy_argv(config: LauncherConfig, layout: Layout) -> list[str]:
     ]  # fmt: skip
 
 
-def project_argvs(config: LauncherConfig, layout: Layout, policy: str) -> list[list[str]]:
+def project_show_argv(config: LauncherConfig, layout: Layout, project: str) -> list[str]:
+    """The project's record in the control store, as JSON; it fails when there is none."""
+    harness = str(commands(config) / HARNESS)
+    return [harness, "project", "show", "--state-dir", str(layout.control), "--project", project]
+
+
+def project_argvs(
+    config: LauncherConfig,
+    layout: Layout,
+    policy: str,
+    existing: Mapping[str, str] | None = None,
+) -> list[list[str]]:
     """Make each project, on the policy just granted, and open its sessions.
 
-    Each is idempotent: ``project create`` leaves a project that exists as it is,
-    ``project revise`` moves it to the policy (its environments follow on their next
+    ``existing`` gives the profile of each project the control store has already. Only a
+    project it lacks is made, since ``project create`` refuses one that exists on another
+    policy, as after a change to the config's (lab 39); a project keeps its profile.
+    ``project revise`` moves each to the policy (its environments follow on their next
     use), and ``session open`` leaves an open session as it is.
     """
     harness = str(commands(config) / HARNESS)
@@ -186,9 +200,17 @@ def project_argvs(config: LauncherConfig, layout: Layout, policy: str) -> list[l
     argvs: list[list[str]] = []
     for project in config.projects:
         scope = [*state, "--project", project.id]
-        argvs.append(
-            [harness, "project", "create", *scope, "--profile", project.profile, "--policy", policy]
-        )
+        found = (existing or {}).get(project.id)
+        if found is None:
+            argvs.append(
+                [harness, "project", "create", *scope,
+                 "--profile", project.profile, "--policy", policy]
+            )  # fmt: skip
+        elif found != project.profile:
+            raise LauncherError(
+                f"the project {project.id} exists with the profile {found}, and the config "
+                f"says {project.profile}: a project keeps the profile it was made with"
+            )
         argvs.append([harness, "project", "revise", *scope, "--policy", policy])
         argvs.extend(
             [harness, "session", "open", *scope, "--session", session.id,
