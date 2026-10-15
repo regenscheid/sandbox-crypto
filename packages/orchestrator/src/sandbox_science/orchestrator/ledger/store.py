@@ -827,7 +827,6 @@ class Ledger:
                 continue
             if p.status == "established":
                 held = self._final_evidence(db, p)
-                checked = {link.checked for link in held if link.checked is not None}
                 latest = TEXTS.latest(db, p.row.entry_id)
                 assert latest is not None  # noqa: S101 - an existing entry has a statement
                 now = gate.material(
@@ -836,15 +835,7 @@ class Ledger:
                     self._final_links(db, p),
                     held,
                 )
-                gate.establish(
-                    db,
-                    p.row.entry_id,
-                    p.row.handle,
-                    held,
-                    now,
-                    gate.examined(db, p.row.entry_id, checked),
-                    p.row.head,
-                )
+                gate.establish(db, p.row.entry_id, p.row.handle, held, now, p.row.head)
             elif p.status == "obstructed":
                 raise gate.refused(
                     p.row.entry_id,
