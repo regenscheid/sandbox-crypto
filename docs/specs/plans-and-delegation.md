@@ -61,7 +61,9 @@ Terms:
 - PD-17. Every delegation ends with one outcome record that separates what the platform observed from what the child asserted (new):
   - `ended`, observed by the harness: `returned`, `failed`, `cancelled`, `limit_reached` or `interrupted`;
   - `result`, the child's structured result validated against the output schema. The default schema has a status (`complete`, `partial`, `blocked`), a summary, results as pinned references, deviations from the brief and open questions;
-  - the raw returned payload, stored unchanged, and any validation errors ([external skills](../EXTERNAL-SKILLS.md)).
+  - the raw returned payload, stored unchanged, and any validation errors ([external skills](../EXTERNAL-SKILLS.md));
+  - *added by the owner on 2026-10-14, not built:* `result_files`, the files the child names as its results, which the platform checks and records as pinned artifact revisions, and the parent receives as references ([research artifacts](research-artifacts.md#files-from-executions-and-delegated-runs), RA-38);
+  - *added by the owner on 2026-10-14, not built:* `files`, observed by the platform: the artifact revisions and tombstones the child's calls recorded, as pinned references, at most 200 with the total (RA-36).
 - PD-18. If the payload does not validate, the harness asks the child once to correct it. If it still does not validate, the result is recorded as missing with the raw payload kept; defaults are never filled in (external skills).
 - PD-19. Limits are not obstructions. A run stopped by a turn, time or cost limit ends `limit_reached` with its partial results kept. `blocked` is the child's own claim that something prevents the work, such as a missing capability, and it names the obstacle (external skills).
 - PD-20. The outcome reaches the parent as the delegation's result and is stored as received; the parent's later interpretation does not change it (external skills).
