@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,9 +15,14 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext, KernelInfo, KernelObservation
-from sandbox_science.contracts.worker import PROTOCOL_HEADER
+from sandbox_science.contracts.model import MAX_COUNTER
+from sandbox_science.contracts.worker import LANGUAGES, MAX_RUN_KERNELS, PROTOCOL_HEADER
 from sandbox_science.orchestrator.projects import ProjectStore
-from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
+from sandbox_science.orchestrator.worker_client import (
+    MAX_KERNEL_OBSERVATION_BYTES,
+    WorkerAPIError,
+    WorkerClient,
+)
 from sandbox_science.testing import fake_worker_app
 from sandbox_science.workspace import kernels
 from sandbox_science.workspace.api import TIMEOUTS, Timeouts
@@ -24,6 +30,7 @@ from sandbox_science.workspace.app import create_app
 
 TOKEN = "test-secret-kernel-workspace-login-0123456789"
 PATH = "/api/v0/projects/p1/sessions/a/kernels"
+PANEL = Path(__file__).resolve().parents[3] / "web" / "workspace" / "src" / "lib" / "kernels.ts"
 ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
 ServerFactory = Callable[..., Awaitable[TestServer]]
 
@@ -239,3 +246,39 @@ async def test_a_worker_of_another_version_is_named_with_the_upgrade_hint(
     assert error["kind"] == "unsupported"
     assert "version mismatch" in error["message"]
     assert "upgrade the orchestrator, workspace and worker together" in error["message"]
+
+
+def test_the_panel_reads_every_answer_the_route_can_send() -> None:
+    source = PANEL.read_text(encoding="utf-8")
+    found = re.search(r"KERNEL_OBSERVATION_MAX_BYTES = (\d+) \* 1024;", source)
+    assert found, "kernels.ts must set KERNEL_OBSERVATION_MAX_BYTES as a number of KiB"
+    limit = int(found[1]) * 1024
+    # The most the contract allows: 64 runs' kernels, a kernel a language, with every
+    # identifier at its longest and every count at its largest.
+    identifier = "a" * 128
+    runs = [f"{number:0128d}" for number in range(MAX_RUN_KERNELS + 1)]
+    fields: dict[str, Any] = {
+        "environment_id": identifier,
+        "session_id": identifier,
+        "current_revision": MAX_COUNTER,
+        "kernels": tuple(
+            KernelInfo(
+                kernel_id=identifier,
+                language=language,
+                generation=MAX_COUNTER,
+                run=run,
+                start_revision=MAX_COUNTER - 1,
+                current_revision=MAX_COUNTER,
+                revision_status="predates",
+            )
+            for run in runs
+            for language in LANGUAGES
+        ),
+        "observed_at": datetime.now(UTC),
+    }
+    from_worker = len(KernelObservation(**fields).model_dump_json())
+    answered = len(kernels.WorkspaceObservation(project_id=identifier, **fields).model_dump_json())
+    assert 12 * 1024 < from_worker <= MAX_KERNEL_OBSERVATION_BYTES
+    assert answered <= limit
+    # The worker client accepts that many bytes from the worker, and the route adds the project.
+    assert limit >= MAX_KERNEL_OBSERVATION_BYTES + (answered - from_worker)
