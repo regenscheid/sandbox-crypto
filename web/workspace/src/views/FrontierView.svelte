@@ -3,8 +3,9 @@
      then its results grouped by their conditions, a page of groups at a time, each group
      once even when pages overlap; the proposed candidates read in windows of the newest,
      older ones on request; the eligible results no group places; and the dominates links
-     that count for nothing. After the user drops a link, the frontier is read again from
-     its first group, and the page says what was dropped. -->
+     that count for nothing; then the history and the best known at a time the user picks.
+     After the user's change on the page, the frontier is read again from its first group,
+     and the page says what the change did. -->
 <script lang="ts">
   import { api } from '../lib/api';
   import type { FrontierGroup, FrontierView } from '../lib/api-types';
@@ -14,7 +15,9 @@
   import ErrorMessage from './ErrorMessage.svelte';
   import Category from './FrontierCategory.svelte';
   import Group from './FrontierGroup.svelte';
+  import History from './FrontierHistory.svelte';
   import Link from './FrontierLink.svelte';
+  import Past from './FrontierPast.svelte';
   import Result from './FrontierResult.svelte';
 
   let { projectId, category }: { projectId: string; category: string } = $props();
@@ -50,10 +53,13 @@
 
   /** What the user's last change did, in words. */
   let notice = $state<string | null>(null);
+  /** Counts the user's changes on the page, so the history reads its first page again. */
+  let changes = $state(0);
 
   /** After the user's drop of a link: say what it did, and read the frontier again. */
   async function done(text: string): Promise<void> {
     notice = text;
+    changes += 1;
     await list.reload();
   }
 
@@ -148,3 +154,6 @@
     {/each}
   </ul>
 {/if}
+
+<History {projectId} {category} {changes} />
+<Past {projectId} {category} />

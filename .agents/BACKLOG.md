@@ -227,7 +227,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
   - [x] The gate and the decisions on the entry view: each clause, whether it holds and why, and the decisions that affect the entry, in effect first (from #318's gate read)
   - [x] The frontier view: its categories, and a category's frontier with its groups a page at a time, the main agent's revision first, the look-alike warning, the unverified and disputed marks with who wrote each result, and the candidates in windows of the newest; the entry view's category field leads to it
   - [ ] Flags and work records in the issue list; indicators, the project-wide history and moving cards
-- [ ] Lane G: the frontier's history (`GET …/frontier/{category}/history`, and the best known at a time: `…/past?at=`); the store and routes are built
+- [x] Lane G: the frontier's history (`GET …/frontier/{category}/history`, each change's cause, reason and links, read on request and again after the user's change), and the best known at a time the user picks (`…/past?at=`)
 - [ ] Lane G: the form to define or revise a frontier category (`POST …/frontier`); the frontier view and its list of categories are built
 - [x] Lane G: on the frontier view, "Confirm…" on an unverified result: the result as it reads now, as exact text, and the user's check of the revision read (`POST …/ledger/{entry}/checks`), after which the frontier is read again
 - [x] Lane G: on the frontier view, each dominates link that takes a result, with its reason and author (`linked_by`), the void links with why, and a "Drop" action that shows the link's reason exactly and asks for the user's (`POST …/ledger/{entry}/dominates/dropped`, at the holder's revision read)

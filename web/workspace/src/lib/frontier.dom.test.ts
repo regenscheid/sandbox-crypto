@@ -127,7 +127,8 @@ function server(answers: Record<string, FrontierAnswer | number>): string[] {
   return queries;
 }
 
-const headings = (root: HTMLElement) => [...root.querySelectorAll('h2')].map((h) => h.textContent);
+const headings = (root: HTMLElement) =>
+  [...root.querySelectorAll('.frontier-group h2')].map((h) => h.textContent);
 const button = (root: HTMLElement, text: string) =>
   [...root.querySelectorAll('button')].find((b) => b.textContent === text);
 

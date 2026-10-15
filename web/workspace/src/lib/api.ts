@@ -10,6 +10,8 @@ import type {
   ArtifactListing,
   FrontierAnswer,
   FrontierCategories,
+  FrontierHistoryAnswer,
+  FrontierPastAnswer,
   LedgerEntry,
   LedgerGate,
   LedgerHistory,
@@ -594,6 +596,20 @@ export const api = {
       `/projects/${part(project)}/frontier/${part(category)}` + (query ? `?${query}` : ''),
     );
   },
+  /** A category's changes to its best known results, newest first, before change `before`. */
+  frontierHistory: (project: string, category: string, before: number | null = null) =>
+    get<FrontierHistoryAnswer>(
+      `/projects/${part(project)}/frontier/${part(category)}/history?` +
+        new URLSearchParams({
+          limit: '20',
+          ...(before === null ? {} : { before: String(before) }),
+        }),
+    ),
+  /** A category's best known results as they were at `at`, a time with its zone. */
+  frontierPast: (project: string, category: string, at: string) =>
+    get<FrontierPastAnswer>(
+      `/projects/${part(project)}/frontier/${part(category)}/past?` + new URLSearchParams({ at }),
+    ),
   /** The project memory's accepted entries in order, and the bound agents receive. */
   memory: (project: string) =>
     get<MemoryAnswer>(`/projects/${part(project)}/memory`, { maxBytes: MEMORY_MAX_BYTES }),
