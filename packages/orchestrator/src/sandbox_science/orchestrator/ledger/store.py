@@ -64,6 +64,9 @@ from .models import (
     EntrySummary,
     EntryView,
     EvidenceLink,
+    GateClause,
+    GateDecision,
+    GateView,
     LinkInput,
     Mutation,
     MutationResult,
@@ -324,6 +327,60 @@ class Ledger:
             revisions=revisions,
             next_before=revisions[-1].revision if len(rows) > limit else None,
             flags_cleared=[] if before is not None else cleared,
+        )
+
+    def gate(self, project: str, reference: str) -> GateView:
+        """The gate for ``reference`` as it reads now (LG-17): each clause as the main
+        agent's decision to establish it would meet it, with why, and the decisions that
+        affect it. A read: it changes nothing, and takes no write lock."""
+        self._project(project)
+        with self.control.read() as tx:
+            db = tx.sql
+            row = self._find(db, project, reference)
+            status, statement, fields = db.execute(
+                "SELECT status,statement,fields FROM ledger_revisions "
+                "WHERE entry_id=? AND revision=?",
+                (row.entry_id, row.head),
+            ).fetchone()
+            decisions = [
+                GateDecision(
+                    entry_id=found[0],
+                    handle=f"{PREFIXES['decision']}-{found[1]}",
+                    title=found[2],
+                    status=found[3],
+                    revision=found[4],
+                    author=json.loads(found[5]),
+                )
+                for found in db.execute(
+                    "SELECT e.entry_id,e.number,r.title,r.status,r.revision,r.author "
+                    f"{_CURRENT}JOIN ledger_revisions r ON r.entry_id=e.entry_id "
+                    "AND r.revision=e.head WHERE l.kind='affects' AND l.target='entry' "
+                    "AND l.target_id=? ORDER BY e.position DESC LIMIT 50",
+                    (row.entry_id,),
+                )
+            ]
+            applies = row.type in ("claim", "result") and row.origin == "project"
+            found_clauses: list[GateClause] = []
+            if applies:
+                held = evidence.stored(db, row.entry_id, row.head)
+                now = gate.material(
+                    json.loads(fields), statement, self._links(db, row.entry_id, row.head), held
+                )
+                found_clauses = [
+                    GateClause.model_validate({"clause": clause, "holds": holds, "reason": reason})
+                    for clause, holds, reason in gate.clauses(
+                        db, row.entry_id, row.handle, held, now, row.head
+                    )
+                ]
+        return GateView(
+            entry_id=row.entry_id,
+            handle=row.handle,
+            revision=row.head,
+            status=status,
+            applies=applies,
+            holds=applies and all(clause.holds for clause in found_clauses),
+            clauses=found_clauses,
+            decisions=decisions,
         )
 
     # Changes.

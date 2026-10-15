@@ -445,3 +445,40 @@ class MutationResult(Contract):
 
 SHOWN_FLAGGED: Final = 50
 """The flagged entries and cleared flags a change's result lists; it counts the rest."""
+
+
+class GateClause(Contract):
+    """One clause of the gate (LG-17): whether it holds for the entry as it reads, and why."""
+
+    clause: Literal["evidence", "independent_check", "computation", "review", "finding", "flags"]
+    holds: bool
+    reason: str
+
+
+class GateDecision(Contract):
+    """A decision whose current revision ``affects`` the entry (LG-4)."""
+
+    entry_id: str
+    handle: str
+    title: str
+    status: str
+    revision: int
+    author: dict[str, Any]
+
+
+class GateView(Contract):
+    """The gate for an entry as it reads now, as the main agent's decision to establish it
+    would meet it, read without changing anything (LG-17)."""
+
+    entry_id: str
+    handle: str
+    revision: int
+    status: str
+    applies: bool
+    """Whether the gate applies: only a project claim or result is established."""
+    holds: bool
+    """Whether every clause holds, so that the main agent could establish it now."""
+    clauses: list[GateClause]
+    """Every clause, in the order the gate reads them; none when it does not apply."""
+    decisions: list[GateDecision]
+    """The decisions that affect the entry, newest first, as many as 50."""

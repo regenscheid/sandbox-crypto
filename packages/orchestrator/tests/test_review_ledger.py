@@ -949,3 +949,58 @@ def test_a_fix_cites_a_revision_that_changes_what_the_finding_is_on(store) -> No
     change(reviews, restated, op="s")
     claimed = api.respond("p", "s", fix(finding, revision, ["C-1", 4]), MAIN)
     assert claimed["status"] == "claimed fixed"
+
+
+# The gate as a read, for the entry panel (LG-17).
+
+
+def gate_of(reviews: ReviewStore) -> dict[str, tuple[bool, str]]:
+    view = Ledger(reviews.documents).gate("p", "C-1")
+    return {c.clause: (c.holds, c.reason) for c in view.clauses}
+
+
+def test_the_gate_reads_each_clause_for_an_entry_without_changing_it(store) -> None:
+    from .test_consistency import raise_finding
+
+    reviews, _, _ = store
+    supported(reviews)
+    ledger = Ledger(reviews.documents)
+    view = ledger.gate("p", "C-1")
+    assert (view.applies, view.holds, view.revision, view.status) == (True, False, 2, "proposed")
+    assert [c.clause for c in view.clauses] == [
+        "evidence", "independent_check", "computation", "review", "finding", "flags",
+    ]  # fmt: skip
+    clauses = gate_of(reviews)
+    assert clauses["evidence"] == (True, "C-1 has 1 evidence links that count (source_claim)")
+    assert clauses["review"][0] is False
+    assert clauses["review"][1].startswith("no completed consistency review has covered C-1")
+    # Every clause is read, not only the first that does not hold.
+    assert [holds for holds, _ in clauses.values()] == [True, True, True, False, True, True]
+    ingest_ledger(reviews, "p", "s")
+    review = dispatch(reviews)
+    raise_finding(reviews, review, anchors=[latest(reviews, review)])
+    reviews.finish("p", "s", review, "owner", "findings", "One finding.")
+    clauses = gate_of(reviews)
+    assert clauses["review"][0] is True
+    assert clauses["finding"][0] is False
+    assert "unresolved fail finding" in clauses["finding"][1]
+    # The read changes nothing: the entry is at the revision it was.
+    assert ledger.entry("p", "C-1").revision == 2
+    # The decisions that affect it, with their status, revision and author.
+    proposed = {"type": "decision", "title": "Establish", "statement": "s",
+                "links": [{"kind": "affects", "entry": "C-1"}]}  # fmt: skip
+    change(reviews, proposed, op="proposed")
+    (decision,) = ledger.gate("p", "C-1").decisions
+    assert (decision.handle, decision.status, decision.revision, decision.author["role"]) == (
+        "D-1",
+        "proposed",
+        1,
+        "main",
+    )
+
+
+def test_the_gate_applies_only_to_a_project_claim_or_result(store) -> None:
+    reviews, _, _ = store
+    supported(reviews)
+    view = Ledger(reviews.documents).gate("p", "REF-1")
+    assert (view.applies, view.holds, view.clauses) == (False, False, [])

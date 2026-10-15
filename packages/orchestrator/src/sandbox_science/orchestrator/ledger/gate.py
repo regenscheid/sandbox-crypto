@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -145,18 +146,38 @@ def establish(
     """Refuse the main agent's decision to establish ``handle`` unless the gate holds;
     ``held`` is the evidence the change leaves it, ``now`` what its new revision holds,
     and ``before`` its revision before the change (links the change adds are the main
-    agent's)."""
+    agent's). The clauses are read in order, and the first that does not hold refuses."""
+    for clause, holds, reason in clauses(db, entry, handle, held, now, before):
+        if not holds:
+            raise refused(entry, clause, reason)
+
+
+def clauses(
+    db: sqlite3.Connection,
+    entry: str,
+    handle: str,
+    held: list[EvidenceLink],
+    now: Material,
+    before: int,
+) -> Iterator[tuple[str, bool, str]]:
+    """Each clause of the gate in order, read when asked for: its name, whether it holds,
+    and why."""
     counting = [link for link in held if counts(db, link)]
     if not counting:
-        raise refused(
-            entry,
+        yield (
             "evidence",
+            False,
             f"{handle} has no evidence that counts: a supports or derivation link whose "
             "type is neither synthetic nor unclassified, to anything but a review or a "
             "refuted, withdrawn or superseded entry",
         )
+    else:
+        types = ", ".join(dict.fromkeys(link.type for link in counting))
+        yield "evidence", True, f"{handle} has {len(counting)} evidence links that count ({types})"
     checked = {link.checked for link in held if link.checked is not None}
-    if any(link.type == "proof" for link in counting) and not any(
+    if not any(link.type == "proof" for link in counting):
+        yield "independent_check", True, "no evidence that counts is a proof, so no check is needed"
+    elif any(
         link.role == "independent_check"
         and link.type not in _NOT_COUNTING
         and link.checked is not None
@@ -165,9 +186,16 @@ def establish(
         and added_by_user(db, entry, link, before)
         for link in held
     ):
-        raise refused(
-            entry,
+        yield (
             "independent_check",
+            True,
+            "the user checked a revision with the statement, fields, assumptions and "
+            "evidence it holds",
+        )
+    else:
+        yield (
+            "independent_check",
+            False,
             f"{handle} rests on a proof and has no independent check that counts: one the "
             "user added themselves, at the revision they checked (the workspace's check, "
             "or the ledger check command), of a revision whose statement, fields, "
@@ -175,11 +203,19 @@ def establish(
             "built yet)",
         )
     if any(link.type in COMPUTATIONAL and link.target != "artifact" for link in counting):
-        raise refused(
-            entry,
+        yield (
             "computation",
+            False,
             f"{handle}'s computational evidence is not pinned to the artifact revision "
             "that holds the computation",
+        )
+    else:
+        yield (
+            "computation",
+            True,
+            "its computational evidence is pinned to artifact revisions"
+            if any(link.type in COMPUTATIONAL for link in counting)
+            else "it holds no computational evidence",
         )
     fails = failing(db, entry, now, before)
     confirmed = max(
@@ -190,22 +226,51 @@ def establish(
         ),
         default=None,
     )
-    if now not in examined(db, entry, set(reviewed(db, entry, after=confirmed))).values():
-        raise refused(
-            entry,
+    covering = examined(db, entry, set(reviewed(db, entry, after=confirmed)))
+    covered = sorted(revision for revision, material in covering.items() if material == now)
+    if not covered:
+        yield (
             "review",
+            False,
             f"no completed consistency review has covered {handle} as the change leaves "
             "it: a review whose coverage was complete, whose snapshot held, whole, a "
             "revision with the same statement, fields, assumptions and evidence, and "
             "which started after any fix confirmed of a fail finding raised on them",
         )
+    else:
+        yield (
+            "review",
+            True,
+            f"a completed review covered {handle} at revision {covered[-1]}, which holds the "
+            "same statement, fields, assumptions and evidence",
+        )
+    yield "finding", *_findings(db, entry, handle, now, fails)
+    flagged = db.execute(
+        "SELECT flag_id FROM ledger_flags WHERE entry_id=? AND cleared IS NULL "
+        "ORDER BY raised LIMIT 1",
+        (entry,),
+    ).fetchone()
+    if flagged is not None:
+        yield (
+            "flags",
+            False,
+            f"{handle} has an open flag, {flagged[0]}: clear it with a reason once the entry "
+            "still holds, or revise it",
+        )
+    else:
+        yield "flags", True, f"{handle} has no open flag"
+
+
+def _findings(
+    db: sqlite3.Connection, entry: str, handle: str, now: Material, fails: list[Failing]
+) -> tuple[bool, str]:
+    """The finding clause: whether it holds, and why."""
     for f in fails:
         if f.status in _RESOLVED and (not f.on_now or f.kept):
             continue
         if f.status in _RESOLVED or (f.status == "superseded" and f.on_now):
-            raise refused(
-                entry,
-                "finding",
+            return (
+                False,
                 f"{handle} has a fail finding, {f.finding}, raised on the statement, "
                 "fields, assumptions and evidence the change leaves it, and the entry "
                 "has left that material since: "
@@ -220,9 +285,8 @@ def establish(
             and now in examined(db, entry, set(reviewed(db, entry, after=f.superseded))).values()
         ):
             continue
-        raise refused(
-            entry,
-            "finding",
+        return (
+            False,
             f"{handle} has an unresolved fail finding, {f.finding}: fix or rebut it first"
             + (
                 "; it was superseded, and no review since has covered the entry as it is"
@@ -230,18 +294,7 @@ def establish(
                 else ""
             ),
         )
-    flagged = db.execute(
-        "SELECT flag_id FROM ledger_flags WHERE entry_id=? AND cleared IS NULL "
-        "ORDER BY raised LIMIT 1",
-        (entry,),
-    ).fetchone()
-    if flagged is not None:
-        raise refused(
-            entry,
-            "flags",
-            f"{handle} has an open flag, {flagged[0]}: clear it with a reason once the entry "
-            "still holds, or revise it",
-        )
+    return True, f"no fail finding on {handle} is unresolved"
 
 
 @dataclass(frozen=True)

@@ -290,6 +290,35 @@ export interface ExecutionContext {
   actor: string;
 }
 
+/** One clause of the gate (LG-17): whether it holds for the entry as it reads, and why. */
+export interface GateClause {
+  clause: "evidence" | "independent_check" | "computation" | "review" | "finding" | "flags";
+  holds: boolean;
+  reason: string;
+}
+
+/** A decision whose current revision ``affects`` the entry (LG-4). */
+export interface GateDecision {
+  entry_id: string;
+  handle: string;
+  title: string;
+  status: string;
+  revision: number;
+  author: Record<string, unknown>;
+}
+
+/** The gate for an entry as it reads now, as the main agent's decision to establish it would meet it, read without changing anything (LG-17). */
+export interface GateView {
+  entry_id: string;
+  handle: string;
+  revision: number;
+  status: string;
+  applies: boolean;
+  holds: boolean;
+  clauses: GateClause[];
+  decisions: GateDecision[];
+}
+
 /** An attributed goal assertion, distinct from terminal workflow accounting. */
 export interface GoalOutcome {
   status: "achieved" | "partially_achieved" | "not_achieved";
@@ -316,6 +345,13 @@ export interface LedgerEntry {
   project_id: string;
   observed_at: string;
   entry: EntryView;
+}
+
+/** The gate for one ledger entry as it reads now (LG-17). */
+export interface LedgerGate {
+  project_id: string;
+  observed_at: string;
+  gate: GateView;
 }
 
 /** A page of a ledger entry's revisions. */
