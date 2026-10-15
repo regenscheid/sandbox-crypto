@@ -39,10 +39,11 @@ connectors are offered only to runs of that project.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
-import unicodedata
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final, cast
@@ -50,6 +51,7 @@ from urllib.parse import urlsplit
 
 import aiohttp
 
+from .documents.agent_text import hidden_characters
 from .model import ToolSpec
 from .worker_client import dump
 
@@ -75,6 +77,15 @@ MAX_MATCHES: Final = 5
 """Tools one ``mcp_tools`` query loads."""
 MAX_ABOUT: Final = 200
 """Characters of the operator's word on what a server is for."""
+MAX_INDEX_CHARS: Final = 16_000
+"""Characters of the index's tool lines; past them, tools are found with a query."""
+MAX_GROUPS: Final = 32
+"""Servers behind one configured server that the index names."""
+MAX_LOADED_CHARS: Final = 100_000
+"""Characters of descriptions and schemas a run loads: past them, a load is refused,
+and the run goes on with the tools it has rather than ending at its context limit."""
+MAX_QUERY: Final = 200
+"""Characters of an ``mcp_tools`` query."""
 MAX_PAGES: Final = 50
 MAX_TOOLS_PER_SERVER: Final = 128
 MAX_TOOLS: Final = 256
@@ -316,13 +327,12 @@ def _result(status: int, body: object) -> dict[str, Any]:
 
 
 def clean(text: str) -> str:
-    """``text`` without control, format (invisible) and private-use characters, but for
-    line breaks and tabs."""
-    return "".join(
-        char
-        for char in text
-        if char in "\n\t" or unicodedata.category(char) not in ("Cc", "Cf", "Co", "Cs")
-    )
+    """``text`` a server wrote without any character a person may not see, stripped
+    rather than refused: controls but line breaks and tabs, format, private-use and
+    unassigned characters, line and paragraph separators, and every Default_Ignorable
+    code point (``agent_text.hidden_characters``, threat model A3)."""
+    hidden = {index for index, _ in hidden_characters(text)}
+    return "".join(char for index, char in enumerate(text) if index not in hidden)
 
 
 @dataclass(frozen=True)
@@ -334,12 +344,40 @@ class ConnectorTool:
     purpose: str = ""
     """The first line of what the server says it does, bounded: the index shows it."""
 
+    @property
+    def group(self) -> str:
+        """The index's key for the server the tool is under: behind a portal, the
+        configured server and the server the tool's name starts with, a prefix with a
+        hyphen (``crypto-research-mcp/e-print-mcp``); otherwise the configured server.
+        A server chooses its tools' names, so the key always says which configured
+        server it was."""
+        head, separator, _ = self.spec.name.partition("_")
+        return f"{self.server}/{head}" if separator and "-" in head else self.server
 
-def group(server: str, name: str) -> str:
-    """The server a tool is indexed under: behind a portal, the server its name starts
-    with (``e-print-mcp`` of ``e-print-mcp_search_eprint``); else the configured one."""
-    head, separator, _ = name.partition("_")
-    return head if separator and "-" in head else server
+    @property
+    def cost(self) -> int:
+        """Characters of its description and schema, as the listing's bound counts them."""
+        return len(self.spec.description) + len(json.dumps(self.spec.parameters))
+
+    @property
+    def sha256(self) -> str:
+        """The SHA-256 of the spec the model is given, which the run's record keeps."""
+        spec = {
+            "name": self.spec.name,
+            "description": self.spec.description,
+            "parameters": self.spec.parameters,
+        }
+        return hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()
+
+
+def heading(key: str) -> str:
+    """How the index names a server: ``e-print-mcp (via crypto-research-mcp)``."""
+    server, _, behind = key.partition("/")
+    return f"{behind} (via {server})" if behind else server
+
+
+def _tools(count: int) -> str:
+    return f"{count} tool{'' if count == 1 else 's'}"
 
 
 def purpose(description: object) -> str:
@@ -368,18 +406,24 @@ class Connectors:
         about: Mapping[str, str] | None = None,
         shown: Sequence[str] | None = None,
     ) -> None:
-        self.client, self.servers, self.session = client, tuple(servers), session
+        self.client, self.servers, self.session = client, tuple(dict.fromkeys(servers)), session
         self.list_seconds = list_seconds
         self.tools: dict[str, ConnectorTool] = {}
         self.about = {
             name: " ".join(clean(text).split())[:MAX_ABOUT] for name, text in (about or {}).items()
         }
-        """The operator's word on what each server is for, by its index name."""
+        """The operator's word on what each server is for, by its index key: a configured
+        server's name, or ``SERVER/BEHIND`` for one behind it (``ConnectorTool.group``)."""
         self.shown = None if shown is None else frozenset(shown)
-        """The servers whose tools the index lists one by one; ``None`` lists every
-        server's. The others' tools are found with a query."""
+        """The servers, by index key, whose tools the index lists one by one; ``None``
+        lists every server's. The others' tools are found with a query."""
+        self.counts: dict[str, int] = {}
+        """How many tools each configured server offers."""
+        self.refused: set[str] = set()
+        """Names more than one configured server listed: none of them is offered."""
         self.loaded: list[str] = []
         """The tools loaded into the run, in order."""
+        self.loaded_chars = 0
 
     @property
     def specs(self) -> list[ToolSpec]:
@@ -389,7 +433,7 @@ class Connectors:
         """List each server's tools. A server that cannot be listed in time offers none,
         and the run goes on without it; ``taken`` names tools the harness keeps."""
         names = set(taken)
-        size = 0
+        listings: dict[str, list[tuple[str, dict[str, Any]]]] = {}
         for server in self.servers:
             try:
                 async with asyncio.timeout(self.list_seconds):
@@ -397,47 +441,101 @@ class Connectors:
             except (ConnectorError, TimeoutError) as error:
                 _log.warning("the tools of MCP server %s are not offered: %s", server, error)
                 continue
-            offered = 0
+            kept: list[tuple[str, dict[str, Any]]] = []
+            seen: set[str] = set()
             for tool in listed:
                 name = tool.get("name")
-                if not isinstance(name, str) or not NAME.fullmatch(name) or name in names:
+                if not isinstance(name, str) or not NAME.fullmatch(name) or name in names | seen:
                     _log.warning("MCP server %s's tool %r is not offered: its name", server, name)
                     continue
+                seen.add(name)
+                kept.append((name, tool))
+            listings[server] = kept
+        # A name two configured servers list is neither's: one could stand in for the
+        # other's tool, whichever was listed first.
+        owners = Counter(name for kept in listings.values() for name, _ in kept)
+        size = 0
+        for server, kept in listings.items():
+            offered = 0
+            for name, tool in kept:
+                if owners[name] > 1:
+                    if name not in self.refused:
+                        _log.warning(
+                            "MCP servers %s each list the tool %s: none of them is offered",
+                            ", ".join(s for s in listings if name in dict(listings[s])),
+                            name,
+                        )
+                    self.refused.add(name)
+                    continue
                 spec = _spec(server, name, tool)
-                cost = len(spec.description) + len(json.dumps(spec.parameters))
+                offered_tool = ConnectorTool(server, spec, purpose(tool.get("description")))
                 if (
                     offered >= MAX_TOOLS_PER_SERVER
                     or len(self.tools) >= MAX_TOOLS
-                    or size + cost > MAX_SPEC_BYTES
+                    or size + offered_tool.cost > MAX_SPEC_BYTES
                 ):
                     _log.warning(
                         "MCP server %s's tool %s is not offered: too many tools", server, name
                     )
                     continue
-                names.add(name)
                 offered += 1
-                size += cost
-                self.tools[name] = ConnectorTool(server, spec, purpose(tool.get("description")))
+                size += offered_tool.cost
+                self.tools[name] = offered_tool
+            self.counts[server] = offered
+        for server in self.servers:
+            if not self.counts.setdefault(server, 0):
+                _log.warning(
+                    "MCP server %s offers no tools: none listed, or the policy denies all "
+                    "(check tool_prefix)",
+                    server,
+                )
+        keys = {tool.group for tool in self.tools.values()}
+        for key in sorted({*self.about, *(self.shown or ())} - keys):
+            _log.warning(
+                "the tool index has no server %s, which --mcp-about or --mcp-index names: "
+                "name a configured server, or SERVER/BEHIND for one behind a portal",
+                key,
+            )
 
     def index(self) -> str:
-        """The connector tools as the model first sees them: by server, each server with
-        the operator's word on what it is for, and each tool's name and purpose; a
-        server not ``shown`` with its count alone."""
+        """The connector tools as the model first sees them: by server, each named with
+        the configured server it is behind and with the operator's word on what it is
+        for, marked as the operator's, and each tool's name and purpose; a server not
+        ``shown`` with its count alone. At most ``MAX_GROUPS`` servers behind one
+        configured server, and ``MAX_INDEX_CHARS`` of tool lines: the rest are found with
+        a query."""
         by: dict[str, list[str]] = {}
         for name, tool in self.tools.items():
-            by.setdefault(group(tool.server, name), []).append(name)
+            by.setdefault(tool.group, []).append(name)
         lines: list[str] = []
-        for server in sorted(by):
-            names = sorted(by[server])
-            about = self.about.get(server)
-            heading = f"{server}: {about}" if about else f"{server}:"
-            if self.shown is not None and server not in self.shown:
-                lines.append(f"{heading} ({len(names)} tools, not listed: find them with a query)")
+        groups: Counter[str] = Counter()
+        unlisted_groups: Counter[str] = Counter()
+        unlisted = used = 0
+        for key in sorted(by):
+            server = key.partition("/")[0]
+            groups[server] += 1
+            if groups[server] > MAX_GROUPS:
+                unlisted_groups[server] += 1
                 continue
-            lines.append(heading)
+            names = sorted(by[key])
+            about = self.about.get(key)
+            line = heading(key) + (f" - operator: {about}" if about else "")
+            if self.shown is not None and key not in self.shown:
+                lines.append(f"{line} ({_tools(len(names))}, not listed: find them with a query)")
+                continue
+            lines.append(line)
             for name in names:
                 said = self.tools[name].purpose
-                lines.append(f"  {name}{f' - {said}' if said else ''}")
+                entry = f"  {name}{f' - {said}' if said else ''}"
+                if used + len(entry) > MAX_INDEX_CHARS:
+                    unlisted += 1
+                    continue
+                used += len(entry) + 1
+                lines.append(entry)
+        for server, count in sorted(unlisted_groups.items()):
+            lines.append(f"{count} more servers via {server}: find their tools with a query")
+        if unlisted:
+            lines.append(f"{_tools(unlisted)} more, not listed for room: find them with a query")
         return "\n".join(lines)
 
     def search(self, query: str) -> list[str]:
@@ -446,32 +544,46 @@ class Connectors:
         words = [word for word in re.split(r"[^a-z0-9]+", query.lower()) if word]
         scored: list[tuple[int, str]] = []
         for name, tool in self.tools.items():
-            server = group(tool.server, name)
-            haystack = f"{name} {tool.purpose} {server} {self.about.get(server, '')}".lower()
+            key = tool.group
+            haystack = f"{name} {tool.purpose} {key} {self.about.get(key, '')}".lower()
             score = sum(3 if word in name.lower() else 1 for word in words if word in haystack)
             if score:
                 scored.append((-score, name))
         return [name for _, name in sorted(scored)[:MAX_MATCHES]]
 
-    def take(self, names: Iterable[str]) -> tuple[list[str], list[str], list[str]]:
-        """Load ``names`` into the run: those loaded now, those loaded before, and those
-        no listed tool has."""
+    def take(self, names: Iterable[str]) -> tuple[list[str], list[str], list[str], list[str]]:
+        """Load ``names`` into the run: those loaded now, those loaded before, those no
+        listed tool has, and those past the run's ``MAX_LOADED_CHARS`` of schemas."""
         added: list[str] = []
         before: list[str] = []
         unknown: list[str] = []
+        over: list[str] = []
         for name in names:
-            if name not in self.tools:
+            tool = self.tools.get(name)
+            if tool is None:
                 unknown.append(name)
             elif name in self.loaded:
                 before.append(name)
+            elif self.loaded_chars + tool.cost > MAX_LOADED_CHARS:
+                over.append(name)
             else:
                 self.loaded.append(name)
+                self.loaded_chars += tool.cost
                 added.append(name)
-        return added, before, unknown
+        return added, before, unknown, over
 
     def summary(self) -> dict[str, Any]:
-        """What the run's record keeps: how many tools were listed, and which were loaded."""
-        return {"listed": len(self.tools), "loaded": list(self.loaded)}
+        """What the run's record keeps: the tools each configured server offered, the
+        names refused for being listed twice, and each tool loaded, in order, with the
+        SHA-256 of the spec the model was given."""
+        found: dict[str, Any] = {
+            "listed": len(self.tools),
+            "servers": dict(self.counts),
+            "loaded": [{"name": name, "sha256": self.tools[name].sha256} for name in self.loaded],
+        }
+        if self.refused:
+            found["refused"] = sorted(self.refused)
+        return found
 
     async def _list(self, server: str) -> list[dict[str, Any]]:
         tools: list[dict[str, Any]] = []

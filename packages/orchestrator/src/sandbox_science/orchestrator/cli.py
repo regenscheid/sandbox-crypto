@@ -409,17 +409,18 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
         "--mcp-about",
         action="append",
         default=[],
-        metavar="SERVER=TEXT",
-        help="what an MCP server is for, which the tool index says (behind a portal, the "
-        "server a tool's name starts with, such as e-print-mcp); repeat for more",
+        metavar="SERVER[/BEHIND]=TEXT",
+        help="what an MCP server is for, which the tool index says: a --mcp-server, or "
+        "SERVER/BEHIND for a server behind a portal, the one a tool's name starts with "
+        "(crypto-research-mcp/e-print-mcp); repeat for more",
     )
     command.add_argument(
         "--mcp-index",
         action="append",
         default=[],
-        metavar="SERVER",
-        help="a server whose tools the index lists one by one; the others are found with a "
-        "query. By default it lists every server's; repeat for more",
+        metavar="SERVER[/BEHIND]",
+        help="a server whose tools the index lists one by one, named as for --mcp-about; the "
+        "others are found with a query. By default it lists every server's; repeat for more",
     )
     command.add_argument(
         "--reviewer-model", help="the consistency reviewer's model alias, which may be MAIN's"
@@ -495,13 +496,23 @@ def _check_agent(parser: argparse.ArgumentParser, args: argparse.Namespace) -> N
             parser.error(f"--mcp-server {name!r} is not a server name of the project policy")
     if (args.mcp_about or args.mcp_index) and args.mcp_proxy is None:
         parser.error("--mcp-about and --mcp-index need --mcp-proxy")
+
+    # A key names a configured server, or SERVER/BEHIND for a server behind it: what an
+    # operator says about one server never reaches another's tools.
+    def configured(key: str) -> bool:
+        server, slash, behind = key.partition("/")
+        return server in args.mcp_server and (not slash or bool(_SERVER.fullmatch(behind)))
+
     for item in args.mcp_about:
-        name, equals, text = item.partition("=")
-        if not equals or not _SERVER.fullmatch(name) or not text.strip() or len(text) > 200:
-            parser.error(f"--mcp-about takes SERVER=TEXT, with at most 200 characters: {item!r}")
-    for name in args.mcp_index:
-        if not _SERVER.fullmatch(name):
-            parser.error(f"--mcp-index {name!r} is not a server name")
+        key, equals, text = item.partition("=")
+        if not equals or not configured(key) or not text.strip() or len(text) > 200:
+            parser.error(
+                "--mcp-about takes SERVER=TEXT or SERVER/BEHIND=TEXT, for a --mcp-server, "
+                f"with at most 200 characters: {item!r}"
+            )
+    for key in args.mcp_index:
+        if not configured(key):
+            parser.error(f"--mcp-index {key!r} is not a --mcp-server, or SERVER/BEHIND for one")
 
 
 def main(argv: list[str] | None = None) -> int:
