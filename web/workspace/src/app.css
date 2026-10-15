@@ -233,6 +233,12 @@ ul.links {
   margin: 0.2rem 0;
 }
 
+.frontier-drop {
+  border: 1px solid var(--border);
+  padding: 0.6rem;
+  margin: 0.5rem 0;
+}
+
 .frontier-warning {
   border-left: 3px solid var(--approximate);
   padding: 0.2em 0.6em;

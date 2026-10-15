@@ -12,7 +12,14 @@
     projectId,
     group,
     measures,
-  }: { projectId: string; group: FrontierGroup; measures: readonly CategoryMeasure[] } = $props();
+    done,
+  }: {
+    projectId: string;
+    group: FrontierGroup;
+    measures: readonly CategoryMeasure[];
+    /** After the user's drop of a link: what to say, and the frontier read again. */
+    done: (text: string) => Promise<void>;
+  } = $props();
   // Results come in the order they were made; candidates read newest first. The answer
   // lists the first 100 a group has in that order, the oldest of the window, until the
   // route lists the newest (lane S); `candidatesText` says which are listed.
@@ -21,7 +28,7 @@
 
 {#snippet results(kind: string, items: readonly FrontierResult[])}
   {#each items as result (result.entry_id)}
-    <Result {projectId} {result} {measures} />
+    <Result {projectId} {result} {measures} {done} />
   {/each}
   {#if kind !== 'candidates' && moreText(group, kind)}<p class="muted">
       {moreText(group, kind)}

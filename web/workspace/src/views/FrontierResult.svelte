@@ -1,9 +1,9 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- One result as the frontier shows it (docs/specs/ledger.md, LG-20, LG-23): its handle,
      leading to the entry at the revision shown, its title, status and marks, who wrote it,
-     its measures and indicators, the results it is dominated by or would dominate, and its
-     statement on request, rendered only once opened. All of it text, the statement through
-     the Markdown component. Only props, so a test renders it on the server. -->
+     its measures and indicators, what dominates it (by the rule, or by a link the user can
+     drop) or what it would dominate, and its statement on request, rendered only once
+     opened. All of it text, the statement through the Markdown component. -->
 <script lang="ts">
   import type { CategoryMeasure, FrontierResult } from '../lib/api-types';
   import {
@@ -15,15 +15,25 @@
   } from '../lib/frontier';
   import { statusText } from '../lib/ledger';
   import Markdown from '../lib/Markdown.svelte';
+  import { ruleDominators } from '../lib/frontierLinks';
   import { ENTRY_NAME, ledgerEntryHref } from '../lib/router';
+  import FrontierLink from './FrontierLink.svelte';
   import HiddenBanner from './HiddenBanner.svelte';
 
   let {
     projectId,
     result,
     measures,
-  }: { projectId: string; result: FrontierResult; measures: readonly CategoryMeasure[] } = $props();
+    done,
+  }: {
+    projectId: string;
+    result: FrontierResult;
+    measures: readonly CategoryMeasure[];
+    /** After the user's drop of a link: what to say, and the frontier read again. */
+    done: (text: string) => Promise<void>;
+  } = $props();
   let open = $state(false);
+  const rule = $derived(ruleDominators(result));
 </script>
 
 {#snippet entries(handles: readonly string[])}
@@ -55,7 +65,20 @@
   </ul>
   <p class="muted">{indicatorsText(result).join('. ')}.</p>
   {#if result.sources.length}<p>Cites {@render entries(result.sources)}</p>{/if}
-  {#if result.dominated_by.length}<p>Dominated by {@render entries(result.dominated_by)}</p>{/if}
+  {#if rule.length}
+    <p>
+      Dominated by the rule, at least as good on every measure and better on one: {@render entries(
+        rule,
+      )}
+    </p>
+  {/if}
+  {#if result.linked_by.length}
+    <ul class="links">
+      {#each result.linked_by as link (link.entry_id)}
+        <FrontierLink {projectId} {link} {done} />
+      {/each}
+    </ul>
+  {/if}
   {#if result.would_dominate.length}
     <p>Would dominate, once eligible: {@render entries(result.would_dominate)}</p>
   {/if}

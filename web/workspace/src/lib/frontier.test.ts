@@ -177,7 +177,12 @@ describe('the frontier in words', () => {
         'not listed.',
     );
     const html = render(FrontierGroup, {
-      props: { projectId: 'p1', group: listed, measures: category().measures },
+      props: {
+        projectId: 'p1',
+        group: listed,
+        measures: category().measures,
+        done: async () => {},
+      },
     }).body;
     expect(html).toContain('Only the oldest 100 of this window are listed');
     expect(html).not.toContain('And 30 more');
@@ -271,6 +276,7 @@ describe('the frontier views', () => {
           more: { candidates: 4 },
         }),
         measures: category().measures,
+        done: async () => {},
       },
     }).body;
     const found = inspect(html);
