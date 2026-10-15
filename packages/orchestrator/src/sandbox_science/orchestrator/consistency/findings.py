@@ -38,6 +38,9 @@ from .store import RECEIPTS, ReviewStore, digest, dump, identifier, stored_json,
 # Heterogeneous persisted JSON is validated at the mutation boundary.
 Json = dict[str, Any]
 RESOLVED = ("confirmed fixed", "withdrawn")
+
+_OFF_MATERIAL: Final = frozenset({"title", "status", "links"})
+"""The fields of a ledger entry that are not, or not wholly, what a decision rests on."""
 _REVIEWED = (
     "finding_id",
     "project",
@@ -755,28 +758,41 @@ class Findings:
     ) -> list[tuple[Json, tuple[Json, Json, bool]]]:
         """The changed ledger entry revisions a claimed fix cites, each pinned with the
         evidence a confirmation review reads: a revision of an entry the finding is
-        anchored to, later than the one it is anchored to."""
+        anchored to, later than the one it is anchored to, that changed what an anchor is
+        about (the anchored field, and what a decision rests on unless that field is off
+        it), as supersession reads an anchor."""
         from sandbox_science.orchestrator.ledger import Ledger
 
         from .ledger import entry_item
 
-        anchored: dict[str, int] = {}
+        anchored: dict[str, list[tuple[int, str | None]]] = {}
         for anchor in target["anchors"]:
             location = anchor["locator"]
             if "entry" in location and isinstance(location.get("revision"), int):
-                entry = location["entry"]
-                anchored[entry] = max(anchored.get(entry, 0), location["revision"])
+                anchored.setdefault(location["entry"], []).append(
+                    (location["revision"], anchor.get("field"))
+                )
         ledger = Ledger(self.store.documents)
         pins: list[tuple[Json, tuple[Json, Json, bool]]] = []
         for reference, revision in cited:
             view = ledger.entry(project, reference, revision)
             if view.entry_id not in anchored:
                 raise DocumentError(POLICY_DENIED, "changed entry is unrelated to this finding")
-            if revision <= anchored[view.entry_id]:
+            if revision <= max(number for number, _ in anchored[view.entry_id]):
                 raise DocumentError(
                     INVALID_REQUEST,
                     f"{view.handle} r{revision} is not later than the revision the finding "
                     "is anchored to",
+                )
+            if not any(
+                self._entry_changed(project, view.entry_id, number, field, revision, fix=True)
+                for number, field in anchored[view.entry_id]
+            ):
+                raise DocumentError(
+                    INVALID_REQUEST,
+                    f"{view.handle} r{revision} does not change what the finding is anchored "
+                    "to: the field it names, or the statement, fields, assumptions and "
+                    "evidence a decision rests on",
                 )
             pin = {"entry": view.entry_id, "handle": view.handle, "revision": revision}
             pins.append((pin, entry_item(view)))
@@ -1039,19 +1055,13 @@ class Findings:
         evidence that can count, LG-17), and it changed the anchored field when the
         anchor names one (CR-28 as amended); None otherwise. A new title, status or other
         links replace nothing."""
-        from sandbox_science.orchestrator.ledger import Ledger, gate
+        from sandbox_science.orchestrator.ledger import Ledger
 
-        ledger = Ledger(self.store.documents)
         location, field = anchor["locator"], anchor.get("field")
-        old = ledger.entry(project, location["entry"], location["revision"])
-        if old.head <= old.revision:
-            return None
-        new = ledger.entry(project, location["entry"])
-        with self.store.documents.control.read() as tx:
-            held = gate.examined(tx.sql, new.entry_id, {old.revision, new.revision})
-        if held[old.revision] == held[new.revision]:
-            return None
-        if field is not None and getattr(old, field) == getattr(new, field):
+        new = Ledger(self.store.documents).entry(project, location["entry"])
+        if new.revision <= location["revision"] or not self._entry_changed(
+            project, new.entry_id, location["revision"], field, new.revision, fix=False
+        ):
             return None
         return {
             "entry": new.entry_id,
@@ -1059,6 +1069,33 @@ class Findings:
             "revision": new.revision,
             "field": field,
         }
+
+    def _entry_changed(
+        self,
+        project: str,
+        entry: str,
+        anchored: int,
+        field: str | None,
+        revision: int,
+        *,
+        fix: bool,
+    ) -> bool:
+        """Whether ``revision`` of ``entry`` changed what an anchor on revision
+        ``anchored`` is about: the field it names, when it names one, and what a decision
+        rests on (its statement, fields, ``assumes`` links and evidence that bears on it,
+        LG-17). A fix of a finding on the title, status or links needs only that field
+        changed; supersession needs both, so a new title replaces nothing."""
+        from sandbox_science.orchestrator.ledger import Ledger, gate
+
+        ledger = Ledger(self.store.documents)
+        old, new = ledger.entry(project, entry, anchored), ledger.entry(project, entry, revision)
+        if field is not None and getattr(old, field) == getattr(new, field):
+            return False
+        if fix and field in _OFF_MATERIAL:
+            return True
+        with self.store.documents.control.read() as tx:
+            held = gate.examined(tx.sql, entry, {anchored, revision})
+        return held[anchored] != held[revision]
 
     def supersede(self, project: str, session: str) -> None:
         """Only replaced anchored blocks count; unrelated document edits do not."""

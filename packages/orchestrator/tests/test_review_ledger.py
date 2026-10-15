@@ -927,3 +927,25 @@ def test_a_fix_confirmed_by_the_revision_it_cites_does_not_hold_once_reverted(st
     now[0] += 1000
     review_passes(reviews)
     assert clause(reviews, "reverted", 4) == "finding"
+
+
+def test_a_fix_cites_a_revision_that_changes_what_the_finding_is_on(store) -> None:
+    """Probe P9 of the review of #296 (#290's code): a fix of a finding on C-1's
+    statement cited a title-only revision, and once confirmed, the gate took the finding
+    on the unchanged statement as resolved."""
+    from sandbox_science.orchestrator.consistency.findings import Findings
+    from sandbox_science.orchestrator.documents import DocumentError
+
+    reviews, _, _ = store
+    supported(reviews)
+    _, finding = finding_on(reviews, "statement")
+    change(reviews, {"entry": "C-1", "expected": 2, "title": "Fermat, restated"}, op="t")
+    api = Findings(reviews)
+    revision = api.get("p", "s", finding)["revision"]
+    with pytest.raises(DocumentError, match="does not change what the finding is anchored") as e:
+        api.respond("p", "s", fix(finding, revision, ["C-1", 3], op="cosmetic"), MAIN)
+    assert e.value.kind == "invalid_request"
+    restated = {"entry": "C-1", "expected": 3, "statement": "$a^{16} = 1$ in GF(17)."}
+    change(reviews, restated, op="s")
+    claimed = api.respond("p", "s", fix(finding, revision, ["C-1", 4]), MAIN)
+    assert claimed["status"] == "claimed fixed"
