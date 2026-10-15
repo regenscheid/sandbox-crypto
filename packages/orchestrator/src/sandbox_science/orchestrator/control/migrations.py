@@ -2294,6 +2294,56 @@ def _cost_limits(schema: Schema) -> None:
         schema.execute(statement)
 
 
+def _user_questions(schema: Schema) -> None:
+    """Version 37: questions a main run asks the user (plans-and-delegation spec, PD-23 to
+    PD-26): the question, its options and whether several may be chosen, written once by
+    the run that asked; then, once, how it closed: the user's answer, with the chat
+    message that gave it when the user answered by writing to the session, or why no run
+    can receive one. Questions are kept, and are not permission requests (PD-25)."""
+    for statement in (
+        f"""CREATE TABLE user_questions (
+    question_id TEXT PRIMARY KEY
+        CHECK (length(question_id) = 28 AND question_id GLOB 'qst-*'
+        AND substr(question_id, 5) NOT GLOB '*[^0-9a-f]*'),
+    project_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    run TEXT NOT NULL CHECK (length(CAST(run AS BLOB)) BETWEEN 1 AND 256),
+    tool_call TEXT NOT NULL CHECK (length(CAST(tool_call AS BLOB)) BETWEEN 1 AND 256),
+    operation TEXT NOT NULL CHECK (length(CAST(operation AS BLOB)) BETWEEN 1 AND 256),
+    text TEXT NOT NULL CHECK (length(text) BETWEEN 1 AND 4000),
+    options TEXT NOT NULL CHECK (json_valid(options) AND json_type(options) = 'array'
+        AND json_array_length(options) IN (0, 2, 3, 4) AND length(CAST(options AS BLOB)) <= 16384),
+    multiple INTEGER NOT NULL CHECK (multiple IN (0, 1)),
+    state TEXT NOT NULL CHECK (state IN ('open', 'answered', 'cancelled', 'interrupted')),
+    asked_at TEXT NOT NULL CHECK (length(asked_at) BETWEEN 1 AND 64),
+    answer TEXT CHECK (answer IS NULL OR (json_valid(answer) AND json_type(answer) = 'object'
+        AND length(CAST(answer AS BLOB)) <= 131072)),
+    closed_at TEXT CHECK (closed_at IS NULL OR length(closed_at) BETWEEN 1 AND 64),
+    reason TEXT CHECK (reason IS NULL OR length(CAST(reason AS BLOB)) BETWEEN 1 AND 1024),
+    message_id TEXT UNIQUE CHECK (message_id IS NULL OR ({_ID.format("message_id")})),
+    CHECK ((state = 'open') = (closed_at IS NULL)),
+    CHECK (message_id IS NULL OR state = 'answered'),
+    CHECK ((state = 'answered') <= (answer IS NOT NULL)),
+    CHECK (state NOT IN ('open', 'interrupted') OR answer IS NULL),
+    CHECK (multiple = 0 OR json_array_length(options) > 0),
+    UNIQUE (project_id, session_id, operation),
+    FOREIGN KEY (project_id, session_id) REFERENCES sessions (project_id, session_id)
+) STRICT""",
+        "CREATE INDEX user_questions_open ON user_questions (project_id, session_id, state)",
+        """CREATE TRIGGER user_questions_kept BEFORE UPDATE ON user_questions
+WHEN OLD.state != 'open' OR NEW.question_id IS NOT OLD.question_id
+OR NEW.project_id IS NOT OLD.project_id OR NEW.session_id IS NOT OLD.session_id
+OR NEW.run IS NOT OLD.run OR NEW.tool_call IS NOT OLD.tool_call
+OR NEW.operation IS NOT OLD.operation OR NEW.text IS NOT OLD.text
+OR NEW.options IS NOT OLD.options OR NEW.multiple IS NOT OLD.multiple
+OR NEW.asked_at IS NOT OLD.asked_at
+BEGIN SELECT RAISE(ABORT, 'a question is written once, and closed once'); END""",
+        """CREATE TRIGGER user_questions_no_delete BEFORE DELETE ON user_questions
+BEGIN SELECT RAISE(ABORT, 'questions are kept'); END""",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -2330,6 +2380,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _ledger_work,
     _skills,
     _cost_limits,
+    _user_questions,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

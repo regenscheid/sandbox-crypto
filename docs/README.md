@@ -40,6 +40,7 @@ Progress and history are not kept here: current state is in [STATUS](../.agents/
 | **Orchestrator** | |
 | [Session plans](SESSION-PLANS.md) | Session plans and progress in the control store |
 | [Plan editing](SESSION-PLAN-EDITING.md) | The USER plan-change route |
+| [Questions to the user](QUESTIONS.md) | The `ask_user` tool and the questions it keeps |
 | [MAIN prompt provenance](MAIN-PROMPT-PROVENANCE.md) | Content pins for the MAIN system prompt and tools |
 | [Reviewer prompt provenance](REVIEWER-PROMPT-PROVENANCE.md) | Rubric and tool pins on reviewer calls |
 | [Watcher prompt provenance](WATCHER-PROMPT-PROVENANCE.md) | Content pins on job watcher calls |

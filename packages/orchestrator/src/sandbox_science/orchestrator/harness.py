@@ -84,6 +84,8 @@ from .projects import (
     ensure_environment,
     run_name,
 )
+from .question_tool import QuestionTool
+from .questions import Questions
 from .recording import FileRecorder
 from .runstate import RunState
 from .session_plans import SessionPlans
@@ -489,6 +491,7 @@ class Harness:
                         lambda close: closing(stack, interruption, close),
                         memory,
                         delegations,
+                        stop,
                     )
                     hooks = toolbox.turn_hooks()
                     request = admitted.request
@@ -697,13 +700,15 @@ class Harness:
         on_close: Callable[[Callable[[], Awaitable[object]]], None],
         memory: Snapshot | None = None,
         delegations: Delegations | None = None,
+        stop: asyncio.Event | None = None,
     ) -> Toolbox:
-        """The run's tools; ``on_close`` takes what closes each part the run made, and
-        ``memory`` is the project memory the run was given, which its reviewer is too.
+        """The run's tools; ``on_close`` takes what closes each part the run made,
+        ``memory`` is the project memory the run was given, which its reviewer is too, and
+        ``stop`` is set when the user cancels the run.
 
         A delegated run gets its parent's tools without the review tools, the plan tools,
-        the delegate tools and connectors, and a check only the reads of the ledger, the
-        documents and the memory; it is not reviewed, and the user's messages do
+        the delegate tools, ``ask_user`` and connectors, and a check only the reads of the
+        ledger, the documents and the memory; it is not reviewed, and the user's messages do
         not end its job waits (PD-34)."""
         stores, settings = self.stores, self.settings
         alias = self.role(admitted.request).alias
@@ -814,6 +819,17 @@ class Harness:
                 run_id=run_id,
                 alias=alias,
             )
+        # A main run asks the user and waits in the call; a delegated run that needs
+        # the user ends blocked (PD-41).
+        questions = None
+        if not delegated:
+            questions = QuestionTool(
+                Questions(stores.documents.control, clock=self.clock),
+                context,
+                run=run_name(admitted.started_at, admitted.run_id),
+                stop=stop,
+                clock=self.clock,
+            )
         # A delegated run's cells run in kernels of its own, which stop when it ends
         # (PD-37); a main run uses the session's, and its kernel check closes those its
         # session's earlier runs left (PD-40) at its first observation of a connected
@@ -850,6 +866,7 @@ class Harness:
             kernel_run=kernel_run,
             recorder=recorder,
             delegations=delegations,
+            questions=questions,
             delegated=delegated,
             # A check reads and recomputes; it changes no entry, document or memory.
             check=admitted.request.target is not None,
