@@ -126,3 +126,24 @@ def test_the_runs_review_controller_reads_the_ledger_at_its_safe_points(store) -
     asyncio.run(controller.observe([]))
     assert [row[0].split(":")[0] for row in observations(reviews)] == ["ledger"]
     assert controller.ledger_complete
+
+
+def test_an_entry_too_large_for_an_item_keeps_its_parts_shortened_and_incomplete(store) -> None:
+    """The review of #279: the observation shortened notes and scopes instead of
+    dropping the fields, links and evidence, and says it is incomplete."""
+    reviews, _, _ = store
+    change(reviews, *([{"type": "task", "title": "T", "statement": "s"}] * 32), op="tasks")
+    change(reviews, *([{"type": "task", "title": "U", "statement": "s"}] * 32), op="more")
+    links = [
+        {"kind": "concerns", "entry": f"T-{n}", "note": "\U0001d53d" * 4096} for n in range(1, 65)
+    ]
+    change(reviews, {"type": "issue", "title": "I", "statement": "s", "links": links}, op="i")
+    ingest_ledger(reviews, "p", "s", drain=True)
+    with reviews.documents.control.read() as tx:
+        payload, complete = tx.sql.execute(
+            "SELECT payload,complete FROM review_feed WHERE kind='ledger' "
+            "AND json_extract(locator,'$.handle')='I-1'"
+        ).fetchone()
+    entry = json.loads(payload)
+    assert (complete, entry["shortened"], len(entry["links"])) == (0, True, 64)
+    assert all(len(link["note"]) <= 201 for link in entry["links"])

@@ -79,18 +79,39 @@ def ingest_ledger(store: ReviewStore, project: str, session: str, *, drain: bool
     return {"cursor": after, "target": target, "complete": after >= target}
 
 
+def _fitted(payload: Json) -> tuple[Json, bool]:
+    """The entry within one review item, and whether all of it is there. The fields,
+    statement and every link and evidence link are kept; when they do not fit, the
+    links' notes and the evidence's scopes are shortened, and the item says it is
+    incomplete, so that it covers nothing in the gate (LG-17)."""
+    if len(dump(payload).encode()) <= MAX_ITEM_BYTES:
+        return payload, True
+    for keep in (1000, 200, 0):
+        shortened = {
+            **payload,
+            "links": [_shortened(link, "note", keep) for link in payload["links"]],
+            "evidence": [_shortened(link, "scope", keep) for link in payload["evidence"]],
+            "shortened": True,
+        }
+        if len(dump(shortened).encode()) <= MAX_ITEM_BYTES:
+            return shortened, False
+    return {**payload, "fields": {}, "links": [], "evidence": [], "clipped": True}, False
+
+
+def _shortened(link: Json, key: str, keep: int) -> Json:
+    text = link.get(key)
+    if not isinstance(text, str) or len(text) <= keep:
+        return link
+    return {**link, key: text[:keep] + "…" if keep else None}
+
+
 def _observation(ledger: Ledger, project: str, entry: str, event: Json) -> Observation | None:
     """The observation of an agent's revision of ``entry``; None for the user's."""
     view = ledger.entry(project, entry, event["revision"])
     if view.author.get("kind") not in ("agent", "worker"):
         return None
     payload: Json = view.model_dump(mode="json", exclude={"incoming", "incoming_total", "head"})
-    complete = True
-    if len(dump(payload).encode()) > MAX_ITEM_BYTES:
-        # Fields, links and evidence are bounded but can together exceed an item; the
-        # statement is kept, and the observation says it is incomplete.
-        payload = {**payload, "fields": {}, "links": [], "evidence": [], "clipped": True}
-        complete = False
+    payload, complete = _fitted(payload)
     created = "changed" not in event
     changed = set(event.get("changed", ()))
     characters = (len(view.title) if created or "title" in changed else 0) + (
