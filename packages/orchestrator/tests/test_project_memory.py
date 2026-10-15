@@ -251,6 +251,30 @@ def test_the_user_moves_entries_which_keeps_their_revisions(memory: ProjectMemor
     assert [v.version for v in memory.history("p", "mem-3", before=5).versions] == [4, 3]
 
 
+def test_an_earlier_version_is_given_again_in_its_order(memory: ProjectMemory) -> None:
+    """PM-8: a run of a tree, or its reviewer, works from the version its root started
+    with, whatever changed since."""
+    for index, text in enumerate(["A.", "B.", "C."]):
+        user(memory, f"u{index}", action="add", text=text)
+    user(memory, "m1", action="move", entry="mem-3", expected=1, direction="up")
+    user(memory, "r1", action="remove", entry="mem-1", expected=1)
+    user(memory, "e1", action="edit", entry="mem-3", expected=2, text="C2.")
+    version, entries = memory.snapshot("p")
+    assert version == 6
+    assert entries == memory.memory("p").entries
+    assert [(e.entry_id, e.revision, e.text) for e in memory.snapshot("p", 3)[1]] == [
+        ("mem-1", 1, "A."),
+        ("mem-2", 1, "B."),
+        ("mem-3", 1, "C."),
+    ]
+    assert [e.text for e in memory.snapshot("p", 4)[1]] == ["A.", "C.", "B."]
+    assert [e.text for e in memory.snapshot("p", 5)[1]] == ["C.", "B."]
+    assert memory.snapshot("p", 0) == (0, ())
+    with pytest.raises(DocumentError) as later:
+        memory.snapshot("p", 7)
+    assert later.value.kind == "not_found"
+
+
 def test_an_agent_receives_whole_entries_up_to_the_bound(memory: ProjectMemory) -> None:
     """PM-7: the whole section, framing and markers included, stays within the bound;
     the entries' blocks get what the reserve leaves."""

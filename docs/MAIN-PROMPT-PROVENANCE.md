@@ -20,7 +20,11 @@ The system message is its sections' texts joined by a blank line, in order
    `main`, which says what the text is, not who supplied it.
 2. `stock`, with the selected template's version, when a research template is
    selected. A custom base cannot be combined with a template.
-3. `planning`, version `sandbox-main-plan-1`, when the plan tools are offered. Plan
+3. `memory`, with no version, when the run has the project's stores and the project
+   memory has entries: the framing `sandbox-memory-run-1` and the accepted entries
+   ([project memory](MEMORY.md)). Its text is not from the catalog, so the section pin
+   has no version; the `memory` pin below names the framing's.
+4. `planning`, version `sandbox-main-plan-1`, when the plan tools are offered. Plan
    tools offered without their hook, or the hook without the tools, refuse before any
    model call.
 
@@ -34,12 +38,16 @@ builds `PromptPins` (format `sandbox-prompt-pins-1`) once, before the first mode
   schemas as compact UTF-8 JSON (`name`, `description`, `parameters`) with each
   object's keys sorted and arrays and tools in their order;
 - `notices`: the ID, version, byte count and SHA-256 of every notice framing in
-  [`notices.py`](../packages/orchestrator/src/sandbox_science/orchestrator/notices.py).
+  [`notices.py`](../packages/orchestrator/src/sandbox_science/orchestrator/notices.py);
+- `memory`, for a run with the project's stores: the memory framing's version, the
+  memory's version, the entries given (`mem-N@R`, in order), how many the bound left
+  out, and the section's byte count and SHA-256 (0 bytes when no entries were given).
+  A record older than the memory has none.
 
 A version names exact text. `test_prompts.py` maps every installed version (the MAIN
-base, the planning guidance, the research templates, the notice framings, the watcher
-prompt and the reviewer rubric) to the SHA-256 of its text, so a text cannot change
-without a new version.
+base, the planning guidance, the research templates, the notice framings, the memory
+framing, the watcher prompt and the reviewer rubric) to the SHA-256 of its text, so a
+text cannot change without a new version.
 
 The pins are an observation, not a self-check (owner decision 3). They are not
 verified again before each model call, and `RunRecord` does not check them against

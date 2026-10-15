@@ -56,6 +56,7 @@ from .loop import MAX_INPUT_CHARS, Interruption, Transcript, run_task, user_canc
 from .mathchecks.controller import MathController
 from .mathchecks.jobs import Checker
 from .memory import ProjectMemory
+from .memory_prompt import MemoryGiven, for_run
 from .memory_tools import MemoryTool
 from .model import ChatModel, Message
 from .plan_tools import PlanTools
@@ -161,6 +162,9 @@ class RunRequest:
     """A delegated run's parent: the name its record will be kept under (PD-32)."""
     delegation: str | None = None
     """A delegated run's delegation. Nothing starts delegated runs yet."""
+    memory_version: int | None = None
+    """The project memory's version a run of a tree is given: the one its root run was
+    given (PM-8). Without it, a run is given the memory as it is when it starts."""
 
     def __post_init__(self) -> None:
         if (self.parent is None) != (self.delegation is None):
@@ -384,6 +388,7 @@ class Harness:
         try:
             async with AsyncExitStack() as stack:
                 with interruption.protect():
+                    memory = await self.memory(admitted)
                     chat = self.chat(admitted)
                     toolbox = await self._toolbox(
                         admitted, chat, lambda close: closing(stack, interruption, close)
@@ -405,6 +410,7 @@ class Harness:
                         on_tool=sink.tool,
                         research_template=admitted.request.research_template,
                         hooks=hooks,
+                        memory=memory,
                     )
         except BaseException as error:
             if transcript is not None and user_cancelled(error, stop):
@@ -425,6 +431,18 @@ class Harness:
             parent=admitted.request.parent,
             delegation=admitted.request.delegation,
         )
+
+    async def memory(self, admitted: Admitted) -> MemoryGiven | None:
+        """The project memory the run is given, read once as it starts and kept to its
+        end (PM-5, PM-8); ``None`` without stores."""
+        if self.stores is None:
+            return None
+        version, entries = await threaded(
+            ProjectMemory(self.stores.documents).snapshot,
+            admitted.context.project_id,
+            admitted.request.memory_version,
+        )
+        return for_run(version, entries)
 
     def chat(self, admitted: Admitted) -> RunChat | None:
         """The run's messages and events, with stores: the run is named as its record

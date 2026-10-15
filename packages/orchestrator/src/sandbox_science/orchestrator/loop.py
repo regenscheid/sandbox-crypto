@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, Final, Literal, TypeVar
 
 from .hooks import RESPONSE_ROUNDS, Notice, Point, TurnHook
+from .memory_prompt import MemoryGiven
 from .model import ChatModel, ContextLimitError, Message, ModelTurn
 from .plan_tools import GUIDANCE, GUIDANCE_VERSION, Plans
 from .plan_tools import NAMES as PLAN_NAMES
@@ -377,9 +378,12 @@ async def _run_task(
     return transcript
 
 
-def _sections(system: str, toolbox: Toolbox, template: str | None) -> list[Section]:
+def _sections(
+    system: str, toolbox: Toolbox, template: str | None, memory: MemoryGiven | None
+) -> list[Section]:
     """The MAIN system message's sections: the base, a research framing if one was
-    selected, and the planning guidance when plan tools are offered."""
+    selected, the project memory if it has entries (PM-6), and the planning guidance
+    when plan tools are offered."""
     builtin = system == SYSTEM_PROMPT
     sections = [
         Section("main", MAIN_VERSION, system) if builtin else Section("custom", None, system)
@@ -389,6 +393,8 @@ def _sections(system: str, toolbox: Toolbox, template: str | None) -> list[Secti
             raise ValueError("research templates require the builtin MAIN base")
         stock = select_template(template)
         sections.append(Section("stock", stock.version, stock.text))
+    if memory is not None and memory.section is not None:
+        sections.append(memory.section)
     if toolbox.plans is not None:
         sections.append(Section("planning", GUIDANCE_VERSION, GUIDANCE))
     return sections
@@ -418,6 +424,7 @@ async def run_task(
     research_template: str | None = None,
     on_tool: Callable[[str, str, ToolOutcome], Awaitable[None]] | None = None,
     hooks: Sequence[TurnHook] | None = None,
+    memory: MemoryGiven | None = None,
 ) -> Transcript:
     """Run a task, keeping an active originating-run lease while it waits or computes.
 
@@ -429,6 +436,7 @@ async def run_task(
     a ``task``, the run's first input is what its hooks offer before the first model
     call, such as the user's queued messages. A cancellation while ``stop`` is set is
     the user's: the run ends ``cancelled``, with what it observed, instead of raising.
+    ``memory`` is the project memory the run is given, which its record pins.
     """
     if max_input_chars < 1:
         raise ValueError("max_input_chars must be at least 1")
@@ -448,7 +456,10 @@ async def run_task(
                 ):
                     raise ValueError("MAIN planning capability assembly mismatch")
                 text, pins = assemble(
-                    "main", _sections(system, toolbox, research_template), toolbox.specs
+                    "main",
+                    _sections(system, toolbox, research_template, memory),
+                    toolbox.specs,
+                    memory=memory.pin if memory is not None else None,
                 )
                 transcript = Transcript(
                     max_turns=max_turns,
