@@ -68,15 +68,17 @@ minimal = "sandbox-science/minimal:02f85b3"
 crypto-base = "sandbox-science/crypto-base:02f85b3"
 
 # The MCP proxy, in an OpenShell sandbox of its own (docs/QUICKSTART.md): uncomment once
-# images/build.sh mcp-proxy has built its image. up registers the provider from the owner's
-# file when the gateway has none, as on each new lab gateway: babbage's default for now (the
-# owner, 2026-10-15). Without provider_env_file, create the provider by hand
+# images/build.sh mcp-proxy has built its image. With provider_env_file, up registers the
+# provider from the owner's file when the gateway has none, as on each new lab gateway:
+# babbage's default for now (the owner, 2026-10-15). The path below is a placeholder: no
+# file in the repository names the real one, which only a config outside it does, as the
+# lab's (.agents/labs/README.md). Without provider_env_file, create the provider by hand
 # (docs/MCP-CONNECTORS.md).
 # [mcp_proxy]
 # image = "sandbox-science/mcp-proxy:d27e41a"
 # providers = ["crypto-research-mcp"]
 # servers = ["crypto-research-mcp"]
-# provider_env_file = "~/.config/sandbox-science/secrets/cloudflare.env"
+# provider_env_file = "/path/to/the/owners/cloudflare.env"
 # provider_profile = "openshell/profiles/cloudflare-access.yaml"
 #
 # [mcp_proxy.credentials]

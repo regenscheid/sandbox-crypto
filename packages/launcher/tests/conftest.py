@@ -121,12 +121,27 @@ def fake_parts(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def fake_openshell(tmp_path: Path) -> Path:
-    """The OpenShell CLI as ``fake_openshell.py`` plays it."""
-    command = tmp_path / "fake-openshell"
+    """The OpenShell CLI as ``fake_openshell.py`` plays it, with the state and journal
+    of ``site`` unless the environment names others."""
+    return openshell_stand_in(
+        tmp_path / "fake-openshell",
+        FAKE_OPENSHELL=tmp_path / "openshell.json",
+        FAKE_JOURNAL=tmp_path / "journal",
+    )
+
+
+def openshell_stand_in(command: Path, **defaults: Path | str) -> Path:
+    """A command that runs ``fake_openshell.py`` with ``defaults`` in its environment,
+    where the environment has none of its own."""
     script = Path(__file__).with_name("fake_openshell.py")
+    settings = "".join(
+        f"os.environ.setdefault({name!r}, {str(value)!r})\n" for name, value in defaults.items()
+    )
+    command.parent.mkdir(parents=True, exist_ok=True)
     command.write_text(
         f"#!{sys.executable}\n"
-        "import runpy, sys\n"
+        "import os, runpy, sys\n"
+        f"{settings}"
         f"sys.argv = [{str(script)!r}, *sys.argv[1:]]\n"
         f"runpy.run_path({str(script)!r}, run_name='__main__')\n"
     )

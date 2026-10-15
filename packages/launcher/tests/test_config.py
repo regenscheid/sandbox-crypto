@@ -139,7 +139,7 @@ def test_the_examples_mcp_proxy_works_uncommented(home: Path, tmp_path: Path) ->
         "CF_ACCESS_CLIENT_SECRET"
     )
     # Only named: loading the config opens nothing there.
-    assert proxy.provider_env_file == home / ".config/sandbox-science/secrets/cloudflare.env"
+    assert proxy.provider_env_file == Path("/path/to/the/owners/cloudflare.env")
     assert proxy.provider_profile == tmp_path / "openshell/profiles/cloudflare-access.yaml"
 
 

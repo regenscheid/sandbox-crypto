@@ -7,7 +7,8 @@ With ``[mcp_proxy]`` in the config, ``up``:
    creates them, with the MCP servers' credentials. With ``provider_env_file``, it first
    registers ``crypto-research-mcp`` from the owner's file, when the provider is missing
    or ``--refresh-provider`` asks, by running access_provider.py: only that process,
-   and the one OpenShell command it gives them to, reads the values;
+   and the one OpenShell command it gives them to, reads the values, which OpenShell
+   then keeps in its encrypted store;
 2. compiles the sandbox's policy (``sandbox-science-mcp-proxy compile-policy``);
 3. creates the sandbox from the proxy's image, with the providers, and waits until
    it is ready;
@@ -39,8 +40,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import secrets
+import shutil
 import sys
 from pathlib import Path
 from typing import Any, cast
@@ -167,7 +170,9 @@ async def register_provider(
     config: LauncherConfig, layout: Layout, supervisor: Supervisor, *, refresh: bool
 ) -> None:
     """Register the Access provider from the owner's file when it is missing, or always
-    with ``refresh``, in a process of its own: the launcher never opens the file."""
+    with ``refresh``, in a process of its own: the launcher never opens the file. The
+    process gets the parts' usual environment and ``[openshell] env`` alone, and the
+    OpenShell CLI as an absolute path, found as running it would find it."""
     mcp = settings(config)
     if mcp.provider_env_file is None or mcp.provider_profile is None:
         if refresh:
@@ -176,17 +181,29 @@ async def register_provider(
     provider = access_provider.PROVIDER
     if not refresh and provider in await _providers(config):
         return
+    env = config.openshell.env
+    cli = _located(config.openshell.cli, {**environment(), **env}.get("PATH"))
+    if cli is None:
+        raise LauncherError(f"no OpenShell CLI {config.openshell.cli} to register {provider} with")
     print(f"registering the OpenShell provider {provider} from {mcp.provider_env_file}", flush=True)
     said = await supervisor.run(
         f"registering the provider {provider}",
         [sys.executable, "-I", "-m", access_provider.__name__, str(mcp.provider_env_file),
          "--profile", str(mcp.provider_profile), "--provider", provider,
-         "--openshell", config.openshell.cli],
+         "--openshell", cli],
         layout.mcp,
         config.start_timeout,
-        tooling(config),
+        env,
     )  # fmt: skip
     print(said.strip(), flush=True)
+
+
+def _located(cli: str, path: str | None) -> str | None:
+    """A path made absolute, or a name found on ``path``, as running it would find it."""
+    if os.sep in cli:
+        return os.path.abspath(cli)
+    found = shutil.which(cli, path=path)
+    return None if found is None else os.path.abspath(found)
 
 
 async def _providers(config: LauncherConfig) -> set[str]:

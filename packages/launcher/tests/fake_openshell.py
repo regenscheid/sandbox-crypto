@@ -12,13 +12,17 @@ does; with ``create-fails``, ``sandbox create`` fails and makes nothing; with
 ``provider create`` and ``update`` read their credentials from the environment, as
 ``--credential KEY`` does, and say the values on stdout and stderr, as a careless CLI
 could: the caller must not show them. With ``FAKE_OPENSHELL_CALLS``, each call's
-arguments and environment go there, a JSON line each.
+arguments, environment and core-file limit go there, a JSON line each.
+
+The registration helper refuses to run with ``FAKE_*`` set, so the wrappers that run
+this stand-in set what it needs themselves (``fake_openshell`` in conftest).
 """
 
 from __future__ import annotations
 
 import json
 import os
+import resource
 import signal
 import socket
 import sys
@@ -89,7 +93,8 @@ def forward(local: str) -> None:
 
 if calls := os.environ.get("FAKE_OPENSHELL_CALLS"):
     with Path(calls).open("a") as log:
-        log.write(json.dumps({"argv": args, "env": dict(os.environ)}) + "\n")
+        core = resource.getrlimit(resource.RLIMIT_CORE)
+        log.write(json.dumps({"argv": args, "env": dict(os.environ), "core": core}) + "\n")
 
 match args:
     case ["provider", "profile", "list", "-o", "json"]:

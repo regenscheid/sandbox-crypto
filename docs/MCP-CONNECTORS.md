@@ -296,21 +296,24 @@ The policy compiler binds the server's endpoint to that one provider (`credentia
    ```
 5. Attach the provider to the MCP proxy's sandbox (`--provider crypto-research-mcp` when it is created, [above](#running-it)), and put the URL of the server in the project policy's entry.
 
-**From the owner's file** (approved by the owner, 2026-10-15). Instead of typing the values in at steps 3 and 4, the owner keeps them in a file, `~/.config/sandbox-science/secrets/cloudflare.env` on babbage, which no agent opens. A helper registers the provider from it:
+**From the owner's file** (approved by the owner, 2026-10-15). Instead of typing the values in at steps 3 and 4, the owner keeps them in a file in the owner's secrets directory on babbage, which no agent opens. A helper registers the provider from it:
 
 ```bash
-uv run python -m sandbox_science.launcher.access_provider ~/.config/sandbox-science/secrets/cloudflare.env \
-  --profile examples/openshell/profiles/cloudflare-access.yaml --openshell ~/.local/opt/openshell-0.1.3/bin/openshell
+uv run python -I -m sandbox_science.launcher.access_provider /path/to/the/owners/cloudflare.env \
+  --profile examples/openshell/profiles/cloudflare-access.yaml --openshell "$HOME/.local/opt/openshell-0.1.3/bin/openshell"
 ```
 
-- **The file.** The helper refuses a file that is not a regular file, that is not the user's, or that its group or others may read or write.
+- **The file.** The helper refuses a file that is not a regular file, that is a symbolic link, that has more than one link, that is not the user's, or that its group or others may read or write. Its directory must be the user's, and its group and others may not write it. A symbolic link is refused by its path alone: name what it links to.
   - It holds `KEY=VALUE` lines, blank lines and `#` comments.
   - The keys are `CF-Access-Client-Id` and `CF-Access-Client-Secret`, or `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET`. Case doesn't matter, nor does `-` against `_`. A `:` may come before the `=`.
   - A value may have spaces and quotes around it. Other keys are ignored.
   - A file missing either value is refused, with the missing key named.
 - **What it does.** It runs `openshell provider profile lint` and `import` if the gateway has no `cloudflare-access` profile yet. Then it runs `openshell provider create`, as at step 4, or `provider update … --wait` if the provider exists.
-- **Where the values go.** Only to that one `create` or `update` command, through its environment. They never appear on a command line, in a log, in the helper's own environment or in its output. Nothing that command says is shown, since it could echo them.
-- **The default on babbage, for now** (the owner, 2026-10-15). `[mcp_proxy] provider_env_file` names the file. `sandbox-science up` then runs the helper itself, in a process of its own, whenever the gateway lacks the provider, as each new lab gateway does. `up --refresh-provider` registers the provider again, as after a rotation ([quickstart](QUICKSTART.md#the-mcp-proxy)). The launcher never opens the file. Steps 3 and 4 remain the alternative.
+- **What it checks first.** Whoever names the file also names the OpenShell CLI that gets the values, so the helper refuses:
+  - to run with a `FAKE_*` variable set, with which the tests' stand-ins record what they are given, or an `LD_*` one, which loads code into a program;
+  - an OpenShell CLI that is not an absolute path, is not a regular file the user or root owns, may be written by its group or others, or is inside a git checkout, such as this repository or one of its worktrees. `up` passes the CLI as running it would find it: a path made absolute, or a name found on `PATH`.
+- **Where the values go.** Only to that one `create` or `update` command, through its environment, and from it to OpenShell's own encrypted store, the gateway's database. OpenShell 0.1.3 takes a credential from a variable or from its command line only (its `--help`), so while that command runs, the user's other processes can read the values in its `/proc/<pid>/environ`. They never appear on a command line, in a log, in the helper's own environment or in its output. Nothing that command says is shown, since it could echo them. Neither the helper nor its children write a core file, and the helper cannot be traced or read through `/proc` by the user's other processes.
+- **The default on babbage, for now** (the owner, 2026-10-15). `[mcp_proxy] provider_env_file` names the file, in a config outside the repository: the tracked example has a placeholder, and a lab's config, written by the lab setup, is the only one that names the real file ([labs](../.agents/labs/README.md)). `sandbox-science up` then runs the helper itself, in a process of its own, whenever the gateway lacks the provider, as each new lab gateway does. `up --refresh-provider` registers the provider again, as after a rotation ([quickstart](QUICKSTART.md#the-mcp-proxy)). The launcher never opens the file. Steps 3 and 4 remain the alternative.
 
 **Rotation.** A new token goes in the same way with `openshell provider update crypto-research-mcp --credential CF_ACCESS_CLIENT_ID --credential CF_ACCESS_CLIENT_SECRET --wait`, or from the owner's file with `sandbox-science up --refresh-provider`. A running process keeps the placeholder of the credential's revision it started with, so the MCP proxy's sandbox is restarted after the update ([refresh](#oauth-flow-mcp-2025-11-25), the same rule). Revoking the token in Cloudflare stops access at once; deleting the provider (`openshell provider delete crypto-research-mcp`) stops the proxy from sending it.
 
