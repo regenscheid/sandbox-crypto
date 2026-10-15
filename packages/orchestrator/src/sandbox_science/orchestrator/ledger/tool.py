@@ -83,6 +83,46 @@ _LINK = {
     "required": ["kind"],
     "additionalProperties": False,
 }
+_EVIDENCE = {
+    "type": "object",
+    "description": (
+        "Evidence for the entry: its role, its type, a scope note saying what it covers, "
+        "and one pinned target: entry (with revision, its current one by default), "
+        "artifact with revision (and optionally its sha256), document with revision, "
+        "block and optionally math (a span), or review. An independent_check names the "
+        "revision of this entry it checked as checked. A published claim or result "
+        "cites its reference with a supports link of type source_claim"
+    ),
+    "properties": {
+        "role": {
+            "type": "string",
+            "enum": ["supports", "contradicts", "derivation", "independent_check"],
+        },
+        "type": {
+            "type": "string",
+            "enum": [
+                "proof",
+                "exact_computation",
+                "finite_test",
+                "numerical_experiment",
+                "source_claim",
+                "synthetic",
+            ],
+        },
+        "entry": {"type": "string"},
+        "artifact": {"type": "string"},
+        "document": {"type": "string"},
+        "review": {"type": "string"},
+        "revision": {"type": "integer"},
+        "block": {"type": "string"},
+        "math": {"type": "string"},
+        "sha256": {"type": "string"},
+        "checked": {"type": "integer"},
+        "scope": {"type": "string"},
+    },
+    "required": ["role", "type"],
+    "additionalProperties": False,
+}
 _CHANGE = {
     "type": "object",
     "description": (
@@ -93,7 +133,8 @@ _CHANGE = {
         "category, conditions and measures; a reference's identifiers (doi, eprint, "
         "arxiv, nist, isbn, url), authors, published, version or retrieved, and pdf "
         "(artifact_id, revision, and optionally its sha256). links replaces the "
-        "entry's outgoing links"
+        "entry's outgoing links; evidence adds evidence links, and evidence_removed "
+        "removes those with the IDs it names"
     ),
     "properties": {
         "entry": _ENTRY,
@@ -112,6 +153,8 @@ _CHANGE = {
         },
         "fields": {"type": "object"},
         "links": {"type": "array", "items": _LINK, "maxItems": 64},
+        "evidence": {"type": "array", "items": _EVIDENCE, "maxItems": 32},
+        "evidence_removed": {"type": "array", "items": {"type": "string"}, "maxItems": 32},
     },
     "additionalProperties": False,
 }
@@ -172,7 +215,8 @@ SPECS: Final = (
         "Each revision names the revision you read; if the entry changed since, read it "
         "again. A new entry starts in its first status (open, proposed, active, todo). "
         "An operation_id names one change in the project: retrying with it returns the "
-        "first result. A delegated agent creates entries but changes none.",
+        "first result. A delegated agent creates entries and adds evidence to "
+        "entries, and changes nothing else.",
         {
             "type": "object",
             "properties": {

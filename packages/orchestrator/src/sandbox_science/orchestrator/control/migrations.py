@@ -1582,6 +1582,52 @@ def _file_settings(schema: Schema) -> None:
     )
 
 
+def _ledger_evidence(schema: Schema) -> None:
+    """Version 22: the evidence links each ledger revision holds (docs/specs/ledger.md,
+    LG-8 to LG-11): each with its ID, kept from revision to revision, its role and type,
+    its pinned target (an entry, artifact or document revision, a block or math span,
+    or a review), the revision of the entry an independent check examined, its scope
+    note and the revision that added it. Written once, with the revision."""
+    for statement in (
+        """CREATE TABLE ledger_evidence (
+    entry_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 1 AND 128),
+    evidence_id TEXT NOT NULL
+        CHECK (length(evidence_id) = 33 AND evidence_id GLOB 'evidence-*'
+        AND substr(evidence_id, 10) NOT GLOB '*[^0-9a-f]*'),
+    role TEXT NOT NULL
+        CHECK (role IN ('supports', 'contradicts', 'derivation', 'independent_check')),
+    type TEXT NOT NULL CHECK (type IN ('proof', 'exact_computation', 'finite_test',
+        'numerical_experiment', 'source_claim', 'synthetic', 'unclassified')),
+    target TEXT NOT NULL CHECK (target IN ('entry', 'artifact', 'block', 'review')),
+    target_id TEXT NOT NULL CHECK (length(CAST(target_id AS BLOB)) BETWEEN 1 AND 128),
+    target_revision INTEGER
+        CHECK (target_revision IS NULL OR target_revision BETWEEN 1 AND 999999999),
+    block TEXT CHECK (block IS NULL OR length(CAST(block AS BLOB)) BETWEEN 1 AND 128),
+    span TEXT CHECK (span IS NULL OR length(CAST(span AS BLOB)) BETWEEN 1 AND 128),
+    sha256 TEXT CHECK (sha256 IS NULL OR (length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*')),
+    checked INTEGER CHECK (checked IS NULL OR checked BETWEEN 1 AND 999999999),
+    scope TEXT CHECK (scope IS NULL OR length(CAST(scope AS BLOB)) BETWEEN 1 AND 16384),
+    added INTEGER NOT NULL CHECK (added BETWEEN 1 AND revision),
+    CHECK ((role = 'independent_check') = (checked IS NOT NULL)),
+    CHECK ((target = 'block') = (block IS NOT NULL)),
+    CHECK (span IS NULL OR block IS NOT NULL),
+    CHECK ((target = 'review') = (target_revision IS NULL)),
+    CHECK ((target = 'artifact') = (sha256 IS NOT NULL)),
+    PRIMARY KEY (entry_id, revision, ordinal),
+    UNIQUE (entry_id, revision, evidence_id),
+    FOREIGN KEY (entry_id, revision) REFERENCES ledger_revisions(entry_id, revision)
+) STRICT""",
+        "CREATE INDEX ledger_evidence_targets ON ledger_evidence(target,target_id)",
+        """CREATE TRIGGER ledger_evidence_no_update BEFORE UPDATE ON ledger_evidence
+BEGIN SELECT RAISE(ABORT, 'ledger revisions are immutable'); END""",
+        """CREATE TRIGGER ledger_evidence_no_delete BEFORE DELETE ON ledger_evidence
+BEGIN SELECT RAISE(ABORT, 'ledger revisions are immutable'); END""",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -1603,6 +1649,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _statement_math,
     _artifact_usage,
     _file_settings,
+    _ledger_evidence,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

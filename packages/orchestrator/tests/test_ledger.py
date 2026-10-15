@@ -289,7 +289,7 @@ def test_a_new_entry_starts_in_its_first_status_with_its_fields(ledger: Ledger) 
             ({**NEW["task"], "status": "done"}, "a new task starts todo"),
             ({**NEW["claim"], "origin": None}, "claims and results, and only they"),
             ({**NEW["issue"], "origin": "project"}, "claims and results, and only they"),
-            ({**NEW["claim"], "origin": "published"}, "come with evidence links"),
+            ({**NEW["claim"], "origin": "published"}, "cites its reference"),
             ({**NEW["reference"], "fields": {"published": "2024"}}, "names a locator"),
             (
                 {**NEW["reference"], "fields": {"identifiers": {"doi": "10.1/x"}}},
