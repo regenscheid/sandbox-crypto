@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Literal, cast
 
@@ -13,6 +14,7 @@ from sandbox_science.contracts.artifact_inventory import (
     ArtifactEvent,
     ArtifactLink,
     ArtifactPublicationSource,
+    ArtifactRevision,
     ArtifactRevisionRef,
     ArtifactSnapshot,
 )
@@ -151,6 +153,48 @@ def project_artifact(
     locator = {"artifact": reference.model_dump(mode="json"), "run": source.run_id}
     artifact_text(locator, payload)
     return locator, payload, available == "text"
+
+
+MAX_CITED: Final = 8
+"""The most artifacts a claimed fix's texts bring into its confirmation by path."""
+_PATH: Final = re.compile(r"(?<![\w/.-])((?:[\w.-]+/)*[\w-][\w.-]*\.[A-Za-z0-9]{1,8})(?![\w/-])")
+"""A file path as text names one: directories, then a name with an extension."""
+
+
+def cited_artifacts(
+    store: ReviewStore, project: str, session: str, texts: list[str]
+) -> list[tuple[Json, Json]]:
+    """The artifacts ``texts`` name by their path, at their latest revision, copied as a
+    ledger entry's pins are (``pinned_artifact``), as many as ``MAX_CITED``: what a claimed
+    fix says about a file is checked against the file (lab 41). A path is read as the
+    project names it, or as the session's run names it from its working directory
+    (``sessions/<session>/…``, then ``shared/…``). A path no artifact has, or whose text
+    cannot be copied whole, brings nothing."""
+    inventory = store.artifacts
+    if inventory is None:
+        return []
+    paths = list(dict.fromkeys(m.group(1) for t in texts for m in _PATH.finditer(t[:65536])))
+    found: list[tuple[Json, Json]] = []
+    for named in paths[: 4 * MAX_CITED]:
+        if len(found) >= MAX_CITED:
+            break
+        latest: tuple[ArtifactRevision, ...] = ()
+        for path in (named, f"sessions/{session}/{named}", f"shared/{named}"):
+            try:
+                latest, _ = inventory.recent(project, at_path=path)
+            except DocumentError:
+                continue
+            if latest:
+                break
+        if not latest:
+            continue
+        reference = latest[0].reference
+        copied = pinned_artifact(
+            store, project, reference.artifact_id, reference.revision, reference.sha256
+        )
+        if copied is not None:
+            found.append(copied)
+    return found
 
 
 def pinned_artifact(

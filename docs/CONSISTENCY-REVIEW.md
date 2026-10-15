@@ -93,7 +93,14 @@ Confirmation snapshots explicitly grant the original finding evidence and respon
 anchors under their original evidence IDs, scoped to the same project/session. They
 also pin claimed-fix and user replacement revisions from durable transition payloads,
 even if the process crashed before optional feed observation. Those bytes count toward
-the snapshot bound. Confirmation coverage describes the exact finding/fix groups and
+the snapshot bound. So that a claimed fix is checked against what was done and what it
+names (lab 41), a confirmation also holds the `actions` item of what the session's runs
+did since the reviews that raised its findings ended, with each document revision's
+changed blocks, and, beside each claimed fix, the artifacts its explanation, payload
+and changed document revisions name by path (as the project names it, or as the run
+does from its working directory, `sessions/<session>/…` then `shared/…`), at their
+latest revision, copied whole as a ledger entry's pins are, at most 8 a fix, each
+naming the finding (`cited_by`). Confirmation coverage describes the exact finding/fix groups and
 their original and response evidence; unrelated pending author work cannot make that
 scope incomplete. Confirmations consume no author feed and preserve its retry window.
 A passed confirmation still requires a recorded checked claim. An omitted group remains
