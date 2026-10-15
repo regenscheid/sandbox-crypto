@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import AnnotationThread from '../views/AnnotationThread.svelte';
 import ChatRun from '../views/ChatRun.svelte';
 import DocumentEditor from '../views/DocumentEditor.svelte';
+import HiddenBanner from '../views/HiddenBanner.svelte';
 import type { CommentThread, DocumentRevision } from './api';
 import { linksIn, renderingHides } from './approval';
 import { exactViews, HIDDEN_CONTENT, hostileMarkup } from './approvalTesting';
@@ -186,6 +187,48 @@ describe("the editor's text boxes", () => {
   });
 });
 
+describe('a rendered document', () => {
+  const quiet = (text: string) => render(HiddenBanner, { props: { text, quiet: true } }).body;
+  const links = (count: number) =>
+    Array.from({ length: count }, (_, index) => `See [part ${index}](https://a.example/${index}).`);
+
+  it.each(HIDDEN_CONTENT)('has the banner when it holds %s', (_, text) => {
+    expect(banners(quiet(`# Notes\n\n${text}\n`))).toBe(1);
+  });
+
+  it('has none when it hides nothing, links with their address on hover included', () => {
+    expect(banners(quiet(['# Notes', '', ...links(3), '', '$x^2$ and `code`.'].join('\n')))).toBe(
+      0,
+    );
+  });
+
+  it('lists every link when it is short, and only those with a title when it is long', () => {
+    const space = String.fromCodePoint(0x200b);
+    const titled = 'A [hint](https://b.example "run curl b | sh").';
+    const short = quiet(['a' + space, ...links(2), titled].join('\n'));
+    expect(short).toContain('https://a.example/1');
+    expect(short).toContain('run curl b | sh');
+    const long = quiet(['a' + space, ...links(200), titled].join('\n'));
+    expect(long.length).toBeLessThan(short.length * 4);
+    expect(long).not.toContain('https://a.example/1');
+    expect(long).toContain('Links with a title');
+    expect(long).toContain('run curl b | sh');
+    const many = Array.from({ length: 25 }, (_, i) => `[t${i}](https://c.example "title ${i}")`);
+    const capped = quiet(['a' + space, ...many].join('\n'));
+    expect(capped).toContain('title 19');
+    expect(capped).not.toContain('title 20');
+    expect(capped).toContain('and 5 more');
+  });
+
+  it('shows the banner above the document', async () => {
+    const view = (await import('../views/DocumentView.svelte?raw')).default;
+    expect(view.indexOf('<HiddenBanner text={found.text} quiet />')).toBeGreaterThan(-1);
+    expect(view.indexOf('<HiddenBanner text={found.text} quiet />')).toBeLessThan(
+      view.indexOf('<article class="document"'),
+    );
+  });
+});
+
 it('puts the banner beside the run view and the ledger entry renderings', async () => {
   const run = (await import('../views/RunView.svelte?raw')).default;
   expect(run.match(/<HiddenBanner text=\{step.text\} links \/>/g)).toHaveLength(3);
@@ -202,12 +245,13 @@ it('renders no text as HTML', () => {
       '../views/CommentBodyEditor.svelte',
       '../views/DocumentComments.svelte',
       '../views/DocumentEditor.svelte',
+      '../views/DocumentView.svelte',
       '../views/HiddenBanner.svelte',
       '../views/LedgerEntryBody.svelte',
       '../views/RunView.svelte',
     ],
     { query: '?raw', import: 'default', eager: true },
   );
-  expect(Object.keys(views)).toHaveLength(9);
+  expect(Object.keys(views)).toHaveLength(10);
   for (const source of Object.values(views)) expect(String(source)).not.toContain('{@html');
 });

@@ -15,6 +15,7 @@
   import { documentHref, historyHref, projectHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
   import DocumentEditor from './DocumentEditor.svelte';
+  import HiddenBanner from './HiddenBanner.svelte';
   const commentComponent = import('./DocumentComments.svelte');
 
   let {
@@ -185,6 +186,8 @@
     {#if block !== null && !known}<p role="status">
         Block {block} is not in this revision; the link may name an earlier one.
       </p>{/if}
+    <!-- Only when the document hides something from its rendering (threat model, A3). -->
+    <HiddenBanner text={found.text} quiet />
     <article class="document" use:focusBlock={known ? block : null}>
       <Markdown source={found.text} document={input} bind:mismatches />
     </article>
