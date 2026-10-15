@@ -163,6 +163,35 @@ describe('the category form', () => {
     expect(calls).toEqual([]);
   });
 
+  it('suggests keys it takes, and says the rule beside them (lab 40, B8)', async () => {
+    const calls = server({ save: category() });
+    const root = show(FrontierCategoryForm, { projectId: 'p1', done: vi.fn(), oncancel: vi.fn() });
+    expect(root.textContent).toContain('Condition keys, such as attack_model or cost_model');
+    expect(root.textContent).not.toContain('attack model');
+    expect(root.textContent!.replace(/\s+/g, ' ')).toContain(
+      'a letter or digit first, then letters, digits, dots, dashes or underscores, without spaces',
+    );
+    fill(root, 'Name', 'key-recovery');
+    fill(root, 'Target', 't');
+    fill(root, 'Kind of result', 'k');
+    fill(root, 'Name', 'time', 1);
+    fill(root, 'Unit', 'bits');
+    fill(root, 'Your reason', 'r');
+    button(root, 'Add a condition key')!.click();
+    flushSync();
+    fill(root, 'Key', 'attack model');
+    button(root, 'Review…')!.click();
+    flushSync();
+    expect(root.textContent).toContain('A condition key is a letter or digit');
+    expect(exact(root)).toEqual([]);
+    // The key the suggestion names is one the form takes.
+    fill(root, 'Key', 'attack_model');
+    button(root, 'Review…')!.click();
+    flushSync();
+    expect(exact(root)[0]).toContain('Condition keys: attack_model');
+    expect(calls).toEqual([]);
+  });
+
   it('revises at the revision read, saying what the revision changes', async () => {
     const saved = category({ revision: 2, head: 2 });
     const calls = server({ save: saved });

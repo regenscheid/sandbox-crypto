@@ -10,7 +10,14 @@
   import type { WorkRecord } from '../lib/api-types';
   import { formatTime } from '../lib/format';
   import { authorText, provenanceText } from '../lib/ledger';
-  import { detailText, ENDING_WORDS, producedLinks, referenceView } from '../lib/ledgerWork';
+  import {
+    checkView,
+    detailText,
+    endingText,
+    producedLinks,
+    referenceView,
+  } from '../lib/ledgerWork';
+  import { CATEGORY_NAME, treeHref } from '../lib/router';
   import { visible } from '../lib/text';
 
   let {
@@ -26,21 +33,29 @@
     children?: Snippet;
   } = $props();
   const detail = $derived(detailText(record, read));
+  const check = $derived(checkView(record));
+  // The run tree of the session the check ran in, when the session is one the server names.
+  const tree = $derived(
+    check?.session && CATEGORY_NAME.test(check.session) ? treeHref(projectId, check.session) : null,
+  );
   const produced = $derived(producedLinks(projectId, record));
   const references = $derived(record.references.map((r) => referenceView(projectId, r, read)));
 </script>
 
 <li class="work">
   <p>
-    <strong class:claimed={record.ending === 'obstruction_claimed'}
-      >{ENDING_WORDS[record.ending] ?? visible(String(record.ending))}</strong
-    >
+    <strong class:claimed={record.ending === 'obstruction_claimed'}>{endingText(record)}</strong>
     <span class="muted"
       >on r{record.entry_revision}, {formatTime(record.created)}, by {authorText(record.author)}
       · <code>{record.record_id}</code></span
     >
   </p>
-  {#if detail}<p>{detail}</p>{/if}
+  {#if detail}
+    <p>
+      {detail}{#if tree}
+        <a href={tree}>The run tree</a> shows its brief and outcome.{/if}
+    </p>
+  {/if}
   <p class="label">What was tried</p>
   <p class="tried">{visible(record.tried)}</p>
   {#if produced.length}
