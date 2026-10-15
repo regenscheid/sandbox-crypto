@@ -644,6 +644,10 @@ class FrontierResult(Contract):
     revision shown reads: a candidate, not eligible (LG-16, LG-20 as amended)."""
     author: dict[str, Any] = Field(default_factory=dict[str, Any])
     """Who wrote the revision shown: its kind, and an agent's role."""
+    confirmed_by: str | None = None
+    """For a published result: ``citation check`` when the consistency reviewer found
+    every quote of the revision shown supported (CR-4), ``user`` when the user recorded,
+    wrote or checked it; none when unverified, and for a project result."""
     conditions: dict[str, str]
     measures: dict[str, float | str]
     evidence_types: list[str]

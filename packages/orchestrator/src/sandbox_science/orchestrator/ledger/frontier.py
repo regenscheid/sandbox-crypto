@@ -383,7 +383,8 @@ def _member(
     if fields.get("category") != name:
         return None
     eligible = disputed or status == _ELIGIBLE[origin]
-    unverified = eligible and origin == "published" and not _confirmed(db, entry, row[4])
+    confirmed = _confirmed(db, entry, row[4]) if eligible and origin == "published" else None
+    unverified = eligible and origin == "published" and confirmed is None
     eligible = eligible and not unverified
     candidate = not eligible and (
         unverified or (origin == "project" and status in ("proposed", "disputed"))
@@ -391,18 +392,46 @@ def _member(
     if not (eligible or candidate):
         return None
     shown = _result(db, row, fields, disputed=disputed, unverified=unverified, full=full)
+    if confirmed is not None:
+        shown = shown.model_copy(update={"confirmed_by": confirmed})
     return shown, eligible, candidate
 
 
-def _confirmed(db: sqlite3.Connection, entry: str, revision: int) -> bool:
-    """Whether the user confirmed published result ``entry`` as ``revision`` reads (LG-16
-    as amended). The user's latest revision of it must hold the same statement, fields,
-    assumptions and evidence, and the user must have written that material, by recording
-    the entry or by a revision that brought it in, or checked it (``ledger check``, or the
-    workspace's). A user's other edits, such as a title or a dropped link, confirm
-    nothing, and material an agent writes after the user's latest revision is not what
-    the user confirmed. The consistency reviewer's citation check (CR-4) is not built
-    yet."""
+def _confirmed(db: sqlite3.Connection, entry: str, revision: int) -> str | None:
+    """Who confirmed published result ``entry`` as ``revision`` reads (LG-16 as amended):
+    ``citation check`` when every quote the revision holds has a ``supported`` check of
+    the consistency reviewer, the latest of each, of the revision's statement, fields,
+    assumptions and evidence (CR-4); ``user`` when the user's latest revision holds that
+    material and the user wrote it, by recording the entry or by a revision that brought
+    it in, or checked it (``ledger check``, or the workspace's); None when neither did. A
+    user's other edits, such as a title or a dropped link, confirm nothing, and material
+    an agent writes after the user's latest revision is not what the user confirmed."""
+    if _cited(db, entry, revision):
+        return "citation check"
+    return "user" if _by_user(db, entry, revision) else None
+
+
+def _cited(db: sqlite3.Connection, entry: str, revision: int) -> bool:
+    """Whether every quote revision ``revision`` of ``entry`` holds, at least one, has a
+    ``supported`` citation check, its latest, of the revision's material (CR-4)."""
+    quotes = [link for link in evidence.stored(db, entry, revision) if link.target == "quote"]
+    material = gate.examined(db, entry, {revision}).get(revision)
+    if not quotes or material is None:
+        return False
+    digest = gate.fingerprint(material)
+    for link in quotes:
+        latest = db.execute(
+            "SELECT verdict FROM citation_checks WHERE entry_id=? AND evidence_id=? "
+            "AND material=? ORDER BY created DESC, rowid DESC LIMIT 1",
+            (entry, link.evidence_id, digest),
+        ).fetchone()
+        if latest is None or latest[0] != "supported":
+            return False
+    return True
+
+
+def _by_user(db: sqlite3.Connection, entry: str, revision: int) -> bool:
+    """Whether the user confirmed ``entry`` as ``revision`` reads, as ``_confirmed`` says."""
     latest = db.execute(
         "SELECT max(revision) FROM ledger_revisions WHERE entry_id=? "
         "AND json_extract(author,'$.kind')='user'",
