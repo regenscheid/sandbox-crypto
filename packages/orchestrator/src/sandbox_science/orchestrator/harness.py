@@ -761,6 +761,7 @@ class Harness:
                 alias=reviewer.alias if reviewer is not None else None,
                 author_alias=alias,
                 memory=for_reviewer(*memory) if memory is not None else None,
+                connectors=connectors.servers if connectors is not None else (),
             )
             on_close(reviews.close)
         artifacts = ArtifactPublisher(inventory, self.client, context, run_id=run_id, alias=alias)

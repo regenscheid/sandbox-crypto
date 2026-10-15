@@ -1240,7 +1240,10 @@ def _items(value: object) -> list[dict[str, Any]]:
 def format_pdf(kind: str, result: dict[str, Any]) -> str:
     """A PDF helper result as text for the model, with lines citable as ``p<page>:<line>``."""
     source = _mapping(result.get("source"))
-    head = f"{source.get('path')} (sha256 {str(source.get('sha256', ''))[:16]}…)"
+    # The full SHA-256: the platform matches a quote to the PDF it was read from (CR-4).
+    # The path escaped: a name with a line break plants no line of its own (CR-4 review).
+    path = str(source.get("path")).encode("unicode_escape").decode("ascii")
+    head = f"{path} (sha256 {source.get('sha256', '')})"
     lines: list[str] = []
     if kind == "info":
         pages = _items(result.get("pages"))

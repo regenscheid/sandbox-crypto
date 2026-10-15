@@ -307,7 +307,7 @@ class ReviewStore:
         project: str,
         session: str,
         key: str,
-        kind: Literal["transcript", "execution", "document", "artifact", "ledger"],
+        kind: Literal["transcript", "execution", "document", "artifact", "ledger", "source"],
         locator: Json,
         payload: Json,
         *,
@@ -765,14 +765,20 @@ class ReviewStore:
         db: sqlite3.Connection, project: str, session: str, window: _Window
     ) -> tuple[int, list[EvidenceItem]]:
         """The feed's next items after the watermark, as many as the snapshot's bytes
-        allow, and the last one's sequence number."""
+        allow, and the last one's sequence number. What a tool call read for a quote
+        (a raw ``source``) is not an item: the transcript holds the result the agent saw,
+        and only a source a quote cites comes in, pinned beside its entry (``quoted:``),
+        so a long read that no quote cites leaves the coverage whole (CR-4)."""
         items: list[EvidenceItem] = []
         size, end = 0, window.watermark
-        for seq, kind, locator, payload, sha, complete in db.execute(
-            "SELECT seq,kind,locator,payload,sha256,complete FROM review_feed "
+        for seq, key, kind, locator, payload, sha, complete in db.execute(
+            "SELECT seq,source_key,kind,locator,payload,sha256,complete FROM review_feed "
             "WHERE project=? AND session=? AND seq>? AND seq<=? ORDER BY seq LIMIT ?",
             (project, session, window.watermark, window.end, MAX_SNAPSHOT_ITEMS),
         ):
+            if kind == "source" and not str(key).startswith("quoted:"):
+                end = seq
+                continue
             item = EvidenceItem(kind, locator, payload, sha, complete)
             if items and size + item.size > MAX_SNAPSHOT_BYTES:
                 break
@@ -863,6 +869,7 @@ class ReviewStore:
                 from sandbox_science.orchestrator.ledger import EntryView, Ledger
 
                 from .ledger import entry_item, pinned_items
+                from .quotes import quoted_items
 
                 heads: set[str] = set()
                 for pin in claimed["entry_revisions"]:
@@ -894,6 +901,14 @@ class ReviewStore:
                             encoded = dump(projection)
                             items.append(
                                 EvidenceItem("artifact", dump(locator), encoded, digest(encoded), 1)
+                            )
+                        # And so do the recorded sources of its quotes (CR-4).
+                        with self.documents.control.read() as tx:
+                            quoted = quoted_items(tx.sql, project, session, each)
+                        for locator, record in quoted:
+                            encoded = dump(record)
+                            items.append(
+                                EvidenceItem("source", dump(locator), encoded, digest(encoded), 1)
                             )
             for raw in claimed.get("artifact_revisions", []) + claimed.get(
                 "artifact_replacements", []
