@@ -249,3 +249,96 @@ def test_a_confirmation_holds_the_fixs_actions_and_the_files_it_names(
     assert [(a["tool"], a["made"]) for a in found["actions"]] == [
         ("document_patch", ["document doc-1 r3"])
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_runs_review_sees_its_delegated_runs_work(store: Any, tmp_path: Path) -> None:
+    """Lab 41's B5: the main run's answer gave orders its delegated tasks computed, and
+    its review held only their returned summaries, so the correct results read as
+    unverified. Once a delegation ends, the run's review window holds the delegated run's
+    actions (naming the delegation), its outcome and its result files; a grandchild's
+    too; and the delegated runs of another run, none of them."""
+    import hashlib
+    from datetime import UTC, datetime, timedelta
+
+    from sandbox_science.orchestrator.delegation.records import (
+        Delegation,
+        DelegationRecords,
+        Ending,
+    )
+    from sandbox_science.orchestrator.projects import ProjectStore, RunRecord, run_name
+
+    _, documents, now = store
+    from sandbox_science.orchestrator.artifacts import ArtifactInventory
+
+    reviews = ReviewStore(documents, artifacts=ArtifactInventory(documents), clock=lambda: now[0])
+    artifact = published(documents, tmp_path, "results/ell.json", b'{"ell": 13}\n')
+    context = context_for(reviews)
+    start = datetime(2026, 10, 15, 12, tzinfo=UTC)
+    runs = ["author-1", "child-1", "grandchild-1", "other-1"]
+    names = {run: run_name(start + timedelta(seconds=n), run) for n, run in enumerate(runs)}
+    parents = {"child-1": "author-1", "grandchild-1": "child-1", "other-1": "elsewhere-1"}
+    publish = {
+        "tool": "publish",
+        "arguments": json.dumps({"path": "results/ell.json"}),
+        "effect": "effect",
+        "artifact": {"artifact_id": "worker-1"},
+        "artifact_inventory": {"revision": {"artifact_id": artifact, "revision": 1}},
+    }
+    read: dict[str, Any] = {"tool": "job_status", "arguments": "{}", "effect": "read"}
+    projects = ProjectStore(documents.path.parent)
+    records = DelegationRecords(documents)
+    try:
+        projects.save_run(
+            RunRecord(run_id="author-1", context=context, task="t", started_at=start,
+                      ended_at=start, stopped="answered", messages=[], tools=[])
+        )  # fmt: skip
+        for n, run in enumerate(["child-1", "grandchild-1", "other-1"], 1):
+            delegation = f"dlg-{n:024x}"
+            parent = names[parents[run]] if parents[run] != "elsewhere-1" else (
+                run_name(start, "elsewhere-1"))  # fmt: skip
+            records.start("p", "s", Delegation.model_validate(
+                {"delegation_id": delegation, "parent": parent, "run": names[run],
+                 "kind": "check", "brief": {"task": "Compute ell."},
+                 "started_at": (start + timedelta(seconds=n)).isoformat()}))  # fmt: skip
+            files: dict[str, Any] = {
+                "results": [{"path": "results/ell.json", "artifact_id": artifact, "revision": 1,
+                             "sha256": hashlib.sha256(b'{"ell": 13}\n').hexdigest(),
+                             "content_retained": True}],
+                "total": 1,
+            }  # fmt: skip
+            records.end("p", "s", delegation,
+                        Ending("returned", "answered", f"ell = 13 ({run})",
+                               result={"status": "complete", "summary": "ell = 13"},
+                               files=files if run == "child-1" else None))  # fmt: skip
+            if parents[run] in ("author-1", "child-1"):
+                projects.save_run(
+                    RunRecord(run_id=run, role="delegated", parent=names[parents[run]],
+                              delegation=delegation, context=context, task="t",
+                              started_at=start + timedelta(seconds=n),
+                              ended_at=start + timedelta(seconds=n), stopped="answered",
+                              messages=[], tools=[publish, read])
+                )  # fmt: skip
+    finally:
+        projects.close()
+    controller = ReviewController(
+        reviews, context_for(reviews), run_id="author-1", model=None, alias=None
+    )
+    await controller.safe_point([])
+    await controller.safe_point([])  # once each
+    review = dispatch(reviews)
+    items = reviews.manifest("p", "s", review, limit=50)["evidence"]
+    outcomes = sorted(i["locator"]["delegation"] for i in items if i["kind"] == "delegation")
+    assert outcomes == ["dlg-" + f"{1:024x}", "dlg-" + f"{2:024x}"]
+    (result,) = [i for i in items if i["kind"] == "artifact" and "delegated" in i["locator"]]
+    assert result["locator"]["delegated"]["delegation"] == "dlg-" + f"{1:024x}"
+    assert "13" in reviews.read_evidence("p", "s", review, result["evidence"])["text"]
+    (listed,) = [i for i in items if i["kind"] == "actions"]
+    found = json.loads(reviews.read_evidence("p", "s", review, listed["evidence"])["text"])
+    assert [(a["run"], a["tool"], a["made"]) for a in found["actions"]] == [
+        ("child-1", "publish", [f"artifact {artifact} r1"]),
+        ("grandchild-1", "publish", [f"artifact {artifact} r1"]),
+    ]
+    assert {a["delegation"] for a in found["actions"]} == {
+        "dlg-" + f"{1:024x}", "dlg-" + f"{2:024x}"
+    }  # fmt: skip

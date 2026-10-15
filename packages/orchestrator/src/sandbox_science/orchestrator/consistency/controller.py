@@ -34,6 +34,7 @@ from sandbox_science.orchestrator.projects import recorded
 
 from .actions import action_of
 from .artifacts import ArtifactConsumer
+from .delegated import observe_delegated
 from .findings import Findings
 from .ledger import ingest_ledger
 from .models import EvidenceAnchor, ReviewType
@@ -455,6 +456,8 @@ class ReviewController:
                     artifacts=1,
                     effects=True,
                 )
+        # What the run's delegated runs did, once each delegation ends (lab 41's B5).
+        await asyncio.to_thread(observe_delegated, self.store, *self.scope, self.run_id)
         ingestion = await asyncio.to_thread(self.store.ingest_documents, *self.scope)
         self.documents_complete = ingestion["complete"]
         self.ledger_complete = await self._ledger()

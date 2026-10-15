@@ -45,7 +45,15 @@ _REFUSED: Final = frozenset({"policy_denied", "conflict", "not_found", "invalid_
 def action_of(messages: Sequence[Message], call: Json | None) -> Json | None:
     """The action the tool call ``messages`` ends with, when the run executed it and its
     effect class is ``effect`` (``call``, its ``tool_records`` entry); None otherwise."""
-    if call is None or call.get("effect") != "effect" or not messages:
+    if not messages:
+        return None
+    return action_from(call, str(messages[-1].get("tool_call_id", "")))
+
+
+def action_from(call: Json | None, call_id: str) -> Json | None:
+    """The action of tool record ``call``, made under ``call_id``, when its effect class
+    is ``effect``: a run's own, or a delegated run's, read from its run record."""
+    if call is None or call.get("effect") != "effect":
         return None
     try:
         arguments: object = json.loads(str(call.get("arguments") or "{}"))
@@ -59,7 +67,7 @@ def action_of(messages: Sequence[Message], call: Json | None) -> Json | None:
     }
     return {
         "tool": str(call.get("tool", ""))[:128],
-        "call": str(messages[-1].get("tool_call_id", ""))[:128],
+        "call": call_id[:128],
         "target": target,
         "outcome": _outcome(call),
         "made": _made(call)[:20],
@@ -153,13 +161,21 @@ def actions_item(
     """One window's ``actions`` item: its locator, and its payload, which lists the
     actions by run in order, and each document revision's changed blocks, as many as fit
     one item; the transcript holds the calls themselves."""
-    listed = [{**payload, "run": locator.get("run")} for locator, payload in actions]
+    listed = [
+        {
+            **payload,
+            "run": locator.get("run"),
+            **({"delegation": locator["delegation"]} if locator.get("delegation") else {}),
+        }
+        for locator, payload in actions
+    ]
     payload: Json = {
         "about": (
             "Each run's tool calls in this window that change something, in order, as the "
-            "platform recorded them: the tool, its target, its outcome (ok, refused or "
-            "error) and what it made; and the blocks each document revision changed since "
-            "the revision before. A narrated action with no ok call here has no record."
+            "platform recorded them, a delegated run's naming its delegation: the tool, its "
+            "target, its outcome (ok, refused or error) and what it made; and the blocks "
+            "each document revision changed since the revision before. A narrated action "
+            "with no ok call here has no record."
         ),
         "actions": listed[:MAX_ACTIONS],
         "total": len(listed),
