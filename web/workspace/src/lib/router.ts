@@ -11,7 +11,8 @@
  * - `#/projects/<project>/documents/<document>/history` who changed what in it;
  * - `#/projects/<project>/artifacts/<artifact>/revisions/<number>/<sha256>` a published
  *   PDF in the viewer;
- * - `#/projects/<project>/ledger` the project's ledger as a board, and
+ * - `#/projects/<project>/ledger` the project's ledger as a board,
+ *   `#/projects/<project>/ledger/issues` its issues and what they concern, and
  *   `#/projects/<project>/ledger/<entry>` one entry by its handle or ID, with
  *   `…/revisions/<number>` for an earlier revision.
  */
@@ -30,6 +31,7 @@ export type Route =
   | { view: 'history'; project: string; document: string }
   | { view: 'pdf'; project: string; artifact: string; revision: number; sha256: string }
   | { view: 'ledger'; project: string }
+  | { view: 'issues'; project: string }
   | { view: 'entry'; project: string; entry: string; revision: number | null }
   | { view: 'missing' };
 
@@ -93,6 +95,7 @@ export function parseRoute(hash: string): Route {
 /** The board, or one entry: `<entry>` or `<entry>/revisions/<number>` after `ledger/`. */
 function ledgerRoute(project: string, rest: string[]): Route {
   if (rest.length === 0) return { view: 'ledger', project };
+  if (rest.length === 1 && rest[0] === 'issues') return { view: 'issues', project };
   const entry = rest[0]!;
   if (!ENTRY_NAME.test(entry)) return { view: 'missing' };
   if (rest.length === 1) return { view: 'entry', project, entry, revision: null };
@@ -132,6 +135,10 @@ export function pdfHref(project: string, artifact: string, revision: number, sha
 
 export function ledgerHref(project: string): string {
   return `${projectHref(project)}/ledger`;
+}
+
+export function issuesHref(project: string): string {
+  return `${ledgerHref(project)}/issues`;
 }
 
 /** An entry by its handle or ID; at `revision`, that revision. */

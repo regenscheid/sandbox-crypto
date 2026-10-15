@@ -13,6 +13,7 @@ import {
   linksByKind,
   linkTarget,
   matches,
+  provenanceText,
   STATUSES,
   statusText,
 } from './ledger';
@@ -216,4 +217,15 @@ describe("the views' tables agree with the ledger's models (ledger.fixtures.json
   test('the names of the fields the types give', () => {
     expect(Object.keys(FIELD_NAMES).sort()).toEqual(fixture.fields);
   });
+});
+
+test('an imported revision names its results file and line', () => {
+  expect(provenanceText(null)).toBe('');
+  expect(
+    provenanceText({ file: 'shared/results/ff.jsonl', sha256: 'ab'.repeat(32), line: 3 }),
+  ).toBe('imported from results file shared/results/ff.jsonl, line 3 (sha256 abababababab…)');
+  expect(provenanceText({ file: 'x.jsonl', line: 1 })).toBe(
+    'imported from results file x.jsonl, line 1',
+  );
+  expect(provenanceText({ source: 'pack' })).toBe('imported: {"source":"pack"}');
 });

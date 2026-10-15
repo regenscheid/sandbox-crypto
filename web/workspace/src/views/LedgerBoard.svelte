@@ -4,7 +4,7 @@
      Read-only: agents change the ledger through their tools. -->
 <script lang="ts">
   import { ENTRY_TYPES, STATUSES, statusText, TYPE_NAMES, type EntryType } from '../lib/ledger';
-  import { projectHref } from '../lib/router';
+  import { issuesHref, projectHref } from '../lib/router';
   import LedgerColumn from './LedgerColumn.svelte';
 
   let { projectId }: { projectId: string } = $props();
@@ -23,6 +23,7 @@
   The project's research state: its issues, claims and results, assumptions, decisions, tasks and
   references. Agents change it through their tools; here it is read-only.
 </p>
+<p><a href={issuesHref(projectId)}>The issue list</a>: issues and what they concern.</p>
 
 <div class="board-controls">
   <div role="group" aria-label="Entry type">

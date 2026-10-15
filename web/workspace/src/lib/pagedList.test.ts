@@ -110,6 +110,24 @@ describe('a list read a page at a time', () => {
     expect(brought).toEqual(['new']);
   });
 
+  it('restarts as another list: nothing of the one shown stays, even when the read fails', async () => {
+    const { asked, pending, read } = pages();
+    const state = emptyList<string, number>();
+    const list = new PagedList(state, read);
+    const first = list.reload();
+    pending[0]!.resolve({ items: ['open-1', 'open-2'], next: 7 });
+    await first;
+    const restarted = list.restart();
+    expect(state.items).toEqual([]);
+    expect(state.next).toBeNull();
+    pending[1]!.reject(new Error('no answer'));
+    await restarted;
+    expect(asked).toEqual([null, null]);
+    expect(state).toEqual({ items: [], next: null, loading: false, error: new Error('no answer') });
+    await list.more(); // no cursor of the old list is left to read
+    expect(asked).toEqual([null, null]);
+  });
+
   it('clears, dropping a page on its way', async () => {
     const { pending, read } = pages();
     const state = emptyList<string, number>();

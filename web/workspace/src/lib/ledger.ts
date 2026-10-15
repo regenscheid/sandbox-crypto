@@ -277,6 +277,20 @@ export function fieldRows(fields: Record<string, unknown>): FieldRow[] {
   }));
 }
 
+/**
+ * Where a revision came from, when not straight from a tool call: a results file the agent
+ * imported (LG-41), by its path and line, with the start of its SHA-256.
+ */
+export function provenanceText(provenance: Record<string, unknown> | null): string {
+  if (provenance === null) return '';
+  const { file, line, sha256 } = provenance;
+  if (typeof file === 'string' && typeof line === 'number') {
+    const digest = typeof sha256 === 'string' ? ` (sha256 ${sha256.slice(0, 12)}…)` : '';
+    return `imported from results file ${file}, line ${line}${digest}`;
+  }
+  return `imported: ${JSON.stringify(provenance)}`;
+}
+
 const AUTHOR_KINDS = new Set(['user', 'agent', 'worker', 'import', 'platform']);
 
 /** Who wrote a revision, in words; the record as stored when it is not one the view reads. */

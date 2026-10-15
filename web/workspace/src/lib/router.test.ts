@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   documentHref,
   historyHref,
+  issuesHref,
   ledgerEntryHref,
   ledgerHref,
   parseRoute,
@@ -61,6 +62,8 @@ describe('routes', () => {
     ['#/projects/p1/artifacts/art-1/revisions/2', { view: 'missing' }],
     ['#/projects/p1/ledger', { view: 'ledger', project: 'p1' }],
     ['#/projects/p1/ledger/', { view: 'ledger', project: 'p1' }],
+    ['#/projects/p1/ledger/issues', { view: 'issues', project: 'p1' }],
+    ['#/projects/p1/ledger/issues/2', { view: 'missing' }],
     ['#/projects/p1/ledger/C-12', { view: 'entry', project: 'p1', entry: 'C-12', revision: null }],
     [
       '#/projects/p1/ledger/REF-3/revisions/2',
@@ -105,6 +108,7 @@ describe('routes', () => {
       sha256: SHA,
     });
     expect(parseRoute(ledgerHref('p 1'))).toEqual({ view: 'ledger', project: 'p 1' });
+    expect(parseRoute(issuesHref('p 1'))).toEqual({ view: 'issues', project: 'p 1' });
     expect(parseRoute(ledgerEntryHref('p 1', 'T-4', 7))).toEqual({
       view: 'entry',
       project: 'p 1',

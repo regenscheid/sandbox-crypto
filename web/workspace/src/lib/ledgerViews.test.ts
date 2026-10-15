@@ -4,6 +4,7 @@
 // entry route composes its query.
 import { render } from 'svelte/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import IssueRow from '../views/IssueRow.svelte';
 import LedgerEntryBody from '../views/LedgerEntryBody.svelte';
 import LedgerLinks from '../views/LedgerLinks.svelte';
 import { api } from './api';
@@ -69,10 +70,13 @@ describe('the ledger views', () => {
     const names = Object.keys(views).map((path) => path.replace('../views/', ''));
     expect(names).toEqual(
       expect.arrayContaining([
+        'IssueList.svelte',
+        'IssueRow.svelte',
         'LedgerBoard.svelte',
         'LedgerColumn.svelte',
         'LedgerEntryBody.svelte',
         'LedgerEntryView.svelte',
+        'LedgerHistory.svelte',
         'LedgerIncoming.svelte',
         'LedgerLinks.svelte',
       ]),
@@ -127,6 +131,29 @@ describe('the ledger views', () => {
     expect(html).toContain('Links to it');
     expect(html).toContain('(450)');
     expect(html).toContain('More links to it');
+  });
+});
+
+describe('the issue list', () => {
+  it('shows a hostile issue as text, its handle leading into the workspace', () => {
+    const html = render(IssueRow, {
+      props: {
+        projectId: 'p1',
+        issue: {
+          entry_id: 'entry-0123456789abcdef01234567',
+          handle: 'I-1',
+          type: 'issue',
+          origin: null,
+          revision: 1,
+          title: HOSTILE,
+          status: 'open',
+          updated: HOSTILE,
+        },
+      },
+    }).body;
+    const found = inspect(html);
+    expect(found.hostile).toBe(false);
+    expect(found.hrefs).toEqual(['#/projects/p1/ledger/I-1']);
   });
 });
 

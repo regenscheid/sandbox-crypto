@@ -7,6 +7,7 @@
   import PdfView from './views/PdfView.svelte';
   import LedgerBoard from './views/LedgerBoard.svelte';
   import LedgerEntryView from './views/LedgerEntryView.svelte';
+  import IssueList from './views/IssueList.svelte';
   import ProjectList from './views/ProjectList.svelte';
   import ProjectView from './views/ProjectView.svelte';
   import SessionView from './views/SessionView.svelte';
@@ -63,6 +64,10 @@
     {:else if route.view === 'ledger'}
       {#key route.project}
         <LedgerBoard projectId={route.project} />
+      {/key}
+    {:else if route.view === 'issues'}
+      {#key route.project}
+        <IssueList projectId={route.project} />
       {/key}
     {:else if route.view === 'entry'}
       {#key `${route.project}/${route.entry}/${route.revision}`}
