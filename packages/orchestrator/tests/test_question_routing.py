@@ -20,6 +20,7 @@ from sandbox_science.orchestrator.projects import ProjectStore, run_name
 from sandbox_science.orchestrator.question_tool import CANCELLED
 from sandbox_science.orchestrator.questions import (
     INTERRUPTED,
+    RUN_ENDED,
     SESSION_CLOSED,
     Answer,
     Question,
@@ -112,6 +113,36 @@ def test_a_message_too_long_for_an_answer_is_refused_naming_its_question(
     assert error.value.message.startswith(f"the message answers question {question.question_id}")
     assert state.messages("p", "s") == []
     assert questions.get("p", "s", question.question_id).state == "open"
+    projects.close()
+
+
+def test_an_answer_is_taken_only_while_the_run_that_asked_holds_the_session(
+    tmp_path: Path,
+) -> None:
+    """An answer no run would read is refused, so it can be sent as a message instead."""
+    projects, context = opened(tmp_path)
+    state, questions = RunState(projects.control), Questions(projects.control)
+    question = asked(questions, context, "run-1", "op-1")
+    decide = Answer(kind="decide")
+
+    def refused() -> None:
+        with pytest.raises(ControlError) as error:
+            questions.answer("p", "s", question.question_id, decide, live_after=state.live_after())
+        assert (error.value.kind, error.value.message) == ("conflict", RUN_ENDED)
+        assert error.value.details == {"reason": "run_ended", "run": "run-1"}
+        assert questions.get("p", "s", question.question_id).state == "open"
+
+    refused()  # no run holds the session
+    past = FakeClock(datetime.now(UTC) - timedelta(minutes=5))
+    RunState(projects.control, clock=past).acquire("p", "s", "run-1", "a-dead-process")
+    refused()  # its lease expired
+    state.acquire("p", "s", "run-1", "holder")  # taken over, live
+    done = questions.answer("p", "s", question.question_id, decide, live_after=state.live_after())
+    assert done.state == "answered"
+    state.release("p", "s", "holder")
+    # The same answer again is the one given, whether the run still holds the session or not.
+    again = questions.answer("p", "s", question.question_id, decide, live_after=state.live_after())
+    assert again == done
     projects.close()
 
 

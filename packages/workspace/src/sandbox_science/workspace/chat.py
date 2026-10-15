@@ -27,7 +27,10 @@ The workspace writes and reads the run service's records in the control store
   user, open and closed, oldest first, with the run that holds the session (PD-26).
 - ``POST …/sessions/{session}/questions/{question}/answer`` with ``{"kind", "picked",
   "text"}`` answers an open question: options picked, the user's own words, the agent to
-  decide, or a cancel (PD-23). The same answer again is the answer already given.
+  decide, or a cancel (PD-23). The same answer again is the answer already given. An
+  answer to an open question whose run no longer holds the session is refused, a
+  conflict with the reason ``run_ended``: no one would read it, and it can be sent as a
+  chat message instead.
 """
 
 from __future__ import annotations
@@ -292,7 +295,10 @@ async def answer(request: web.Request) -> web.Response:
 
     def write() -> str:
         session_record(context.projects, project, session)
-        answered = Questions(context.writer).answer(project, session, question_id, given)
+        live_after = RunState(context.writer).live_after()
+        answered = Questions(context.writer).answer(
+            project, session, question_id, given, live_after=live_after
+        )
         return api.dumps(QuestionAnswer(question=answered).model_dump(mode="json"))
 
     return json_answer(await asyncio.to_thread(write))

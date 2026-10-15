@@ -96,6 +96,10 @@ _COLUMNS: Final = (
 INTERRUPTED: Final = "the run was interrupted"
 """Why the run service closes the questions of a run whose holder is gone."""
 SESSION_CLOSED: Final = "the session was closed"
+RUN_ENDED: Final = (
+    "the run that asked has ended, so this answer would be lost: send it as a chat message instead"
+)
+"""Why an answer to an open question whose run no longer holds the session is refused."""
 LISTED: Final = 50
 """The most questions a listing returns: a session's latest."""
 
@@ -239,9 +243,22 @@ class Questions:
             ).fetchall()
         return [_question(row) for row in reversed(rows)]
 
-    def answer(self, project: str, session: str, question_id: str, answer: Answer) -> Question:
+    def answer(
+        self,
+        project: str,
+        session: str,
+        question_id: str,
+        answer: Answer,
+        *,
+        live_after: float | None = None,
+    ) -> Question:
         """Close an open question with the user's answer. The same answer again is the
-        answer already given; another one, or one to a closed question, a conflict."""
+        answer already given; another one, or one to a closed question, a conflict.
+
+        With ``live_after``, an open question is answered only while the run that asked
+        holds the session, its lease renewed after that time: otherwise no one would read
+        the answer, and it is refused, a conflict with the reason ``run_ended``. The
+        question closes when the run service ends that run."""
         with self.control.write() as tx:
             db = tx.sql
             question = _get(db, project, session, question_id)
@@ -253,6 +270,10 @@ class Questions:
                     CONFLICT,
                     f"question {question_id} is {question.state}, not open",
                     {"state": question.state},
+                )
+            if live_after is not None and not _live(db, question, live_after):
+                raise ControlError(
+                    CONFLICT, RUN_ENDED, {"reason": "run_ended", "run": question.run}
                 )
             state = "cancelled" if given.kind == "cancel" else "answered"
             db.execute(
@@ -389,6 +410,17 @@ def _get(db: sqlite3.Connection, project: str, session: str, question_id: str) -
     if row is None:
         raise ControlError(NOT_FOUND, f"no question {question_id} in this session")
     return _question(row)
+
+
+def _live(db: sqlite3.Connection, question: Question, live_after: float) -> bool:
+    """Whether the run that asked holds the session, its lease renewed after
+    ``live_after``."""
+    found = db.execute(
+        "SELECT 1 FROM run_leases WHERE project_id = ? AND session_id = ? AND run = ? "
+        "AND renewed_at > ?",
+        (question.project, question.session, question.run, live_after),
+    ).fetchone()
+    return found is not None
 
 
 def _checked(question: Question, answer: Answer) -> Answer:

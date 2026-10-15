@@ -346,6 +346,15 @@ async def test_bad_answers_are_refused(
     missing = SESSION + "/questions/qst-" + "0" * 24 + "/answer"
     response = await client.post(missing, json={"kind": "decide"}, headers=origin(client))
     await error_of(response, 404, "not_found")
+    # No run holds the session: the answer would be lost, and the words can go as a message.
+    ended = await error_of(
+        await client.post(url, json={"kind": "decide"}, headers=origin(client)), 409, "conflict"
+    )
+    assert ended["details"] == {"reason": "run_ended", "run": "run-x"}
+    assert "send it as a chat message" in ended["message"]
+    message = {"message_id": "m-1", "text": "Ed448."}
+    response = await client.post(SESSION + "/messages", json=message, headers=origin(client))
+    assert (await response.json())["message"]["state"] == "queued"
     other = "/api/v0/projects/p1/sessions/nope/questions"
     await error_of(await client.get(other), 404, "not_found")
     assert (await client.post(url, json={"kind": "decide"})).status == 403  # not from the page

@@ -152,13 +152,7 @@ class RunState:
                 return _message(found)
             _session(db, project, session)
             answered = answer_by_message(
-                db,
-                project,
-                session,
-                message_id,
-                text,
-                now,
-                live_after=self._now().timestamp() - self.lease_seconds,
+                db, project, session, message_id, text, now, live_after=self.live_after()
             )
             if answered is not None:
                 return answered
@@ -286,6 +280,11 @@ class RunState:
         return [text for (text,) in rows]
 
     # --- The run lease ---------------------------------------------------------------
+
+    def live_after(self) -> float:
+        """The time, in wall-clock seconds, after which a lease's last renewal keeps it
+        live (RS-5)."""
+        return self._now().timestamp() - self.lease_seconds
 
     def acquire(self, project: str, session: str, run: str, holder: str) -> None:
         """Take the session's run lease for ``run``; ``busy`` while another run holds it.
