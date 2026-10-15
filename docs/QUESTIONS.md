@@ -21,7 +21,7 @@ The answer is the call's result, so it reaches the run and the call that asked, 
 | `answer` | Means |
 | --- | --- |
 | `picked` | The user picked the options in `picked`, in the question's order. |
-| `own_words` | The user answered in their own words, in `text`, kept as they wrote it. |
+| `own_words` | The user answered in their own words, in `text`: trimmed, and otherwise as they wrote it. |
 | `decide` | The user leaves it to the agent; a `note` asks it to decide and say what it chose and why. |
 | `cancelled` | The user cancelled the question; a `note` asks the agent not to ask it again unless something changes. |
 | `null` | The question closed without an answer; `state` and `note` say why. |
@@ -43,7 +43,7 @@ A delegated run is not offered `ask_user`, and a call to it is refused with `not
 - `ask` writes an open question for a run and its tool call. The same operation in the same session returns the question it asked; a different question under that operation is a conflict.
 - `get` reads one question of a session; another session's is not found.
 - `open` lists a session's open questions, oldest first, and `listed` its latest 50, open or closed.
-- `answer` closes an open question with the user's answer. A pick must name one of the question's options, or several when `multiple` is set, and nothing else; an answer in the user's own words is 1 to 16,000 characters and is kept as written, without the check for hidden characters; `decide` and `cancel` carry nothing. A cancel closes the question `cancelled` with the reason "the user cancelled it"; any other answer closes it `answered`. The same answer again returns the question; another answer, or one to a closed question, is a conflict.
+- `answer` closes an open question with the user's answer. A pick must name one of the question's options, or several when `multiple` is set, and nothing else; an answer in the user's own words is 1 to 16,000 characters, trimmed and otherwise kept as written, without the check for hidden characters; `decide` and `cancel` carry nothing. A cancel closes the question `cancelled` with the reason "the user cancelled it"; any other answer closes it `answered`. The same answer again returns the question; another answer, or one to a closed question, is a conflict.
 - `close` closes the open questions of a run, one question, or a whole session, `cancelled` or `interrupted`, with a reason, when no run can receive their answers.
 
 A question is written once and closed once: the table's triggers refuse any other change, and any delete.
@@ -65,6 +65,16 @@ A chat message can also be the answer. While the run that holds the session (its
 - **The session closes** (`session close`): its open questions close `cancelled`, "the session was closed". A run still waiting reads that as its result.
 - **The run's own close failed**, as when the store was busy as it was cancelled: at each look, about once a second, the run service closes every open question whose run holds no lease `interrupted`, "the run that asked ended without closing it". A run whose lease expired keeps its questions until the service ends it, as above.
 
-## Not built yet
+## The chat panel
 
-The chat panel that shows open questions with their age and takes the answers.
+The session's chat panel (`ChatQuestion.svelte`, `src/lib/questions.ts`) reads the session's open questions with each poll, every 1.5 s, and the latest 50 whole at the first poll and whenever the open ones change, so a question that closed shows how.
+
+- **Open questions** show above the message box, oldest first, each with:
+  - how long ago it was asked;
+  - the agent's text exactly, through `ApprovalText`, with a preview apart;
+  - its options, with every character a person may not see shown as its code point (`visible`): a button for each when one is chosen, or check boxes and "Answer with the N chosen" when several may be (ticked by their place, so a label such as `__proto__` is only a label);
+  - "Let the agent decide" and "Cancel the question".
+- **The message box hint.** While the run that holds the session waits for an answer, the box says "Your message will answer:" and the start of the oldest such question, and how many are open when there are several. The button then reads "Send as the answer", and the message holds at most the 16,000 characters an answer may. The question's card says the user's own words go in the message box. The message names the question the box showed (`question_id`, or null): when the server answers that the question changed (`question_changed`), as when a button or another tab answered it first, nothing was written, the error says so, and the draft stays for the user to read the chat again.
+- **Stale questions.** An open question whose run no longer holds the session shows no buttons: it takes no answer (the server refuses one, `run_ended`), and the card says to write to the agent as a message instead.
+- **After an answer.** Once an answer is sent, the card says so until the next read closes it.
+- **Closed questions** show below their run's transcript, saying how they closed: the options picked, the user's own words (and whether a message gave them), the decision left to the agent, the user's cancel, or the reason no answer came.
