@@ -26,7 +26,7 @@ from sandbox_science.orchestrator.control.errors import CONFLICT, INVALID_REQUES
 from sandbox_science.orchestrator.documents.models import Author
 
 from .builtin import BUILTIN, DELEGATING, PLATFORM, ROLES
-from .packs import NAME, Snapshot, body, hidden, served, snapshot
+from .packs import NAME, Snapshot, body, broken_links, hidden, served, snapshot
 from .sources import Fetched
 
 REPORT_ITEMS: Final = 200
@@ -83,6 +83,12 @@ class Entry:
     snapshot: str
     revision: str
     """The import's commit or archive digest."""
+    short: str | None = None
+    """The import's model pass's short description, for one too long for the index."""
+    topic: str | None = None
+    """The topic the pass put the skill in."""
+    entry: bool = False
+    """Whether the pass found that the skill routes work to its pack's others."""
 
     @property
     def qualified(self) -> str:
@@ -116,9 +122,17 @@ class SkillStore:
     def __init__(self, control: ControlStore) -> None:
         self.control = control
 
-    def add(self, source: str, snapshot: Snapshot, author: Author) -> tuple[Imported, bool]:
+    def add(
+        self,
+        source: str,
+        snapshot: Snapshot,
+        author: Author,
+        *,
+        derived: dict[str, Any] | None = None,
+    ) -> tuple[Imported, bool]:
         """Keep an import of ``source``; ``True`` when its latest import is already this
-        one, from the same place at the same revision, and nothing was added."""
+        one, from the same place at the same revision, and nothing was added. ``derived``
+        is what the import's model pass derived, for the report (SK-32)."""
         _source(source)
         got = snapshot.fetched
         if (source == BUILTIN) != (got.kind == BUILTIN):
@@ -139,6 +153,9 @@ class SkillStore:
             }
             if got.default_branch is not None:
                 report["default_branch"] = got.default_branch
+            if links := broken_links(got.files):
+                # Relative links that name no file of the snapshot (SK-32).
+                report["broken_links"] = _capped(links)
             if marked := hidden(got.files):
                 # Shown as code points wherever a run is given them (SK-14).
                 report["hidden_characters"] = _capped(marked)
@@ -149,6 +166,8 @@ class SkillStore:
                 report["warnings"] = warnings[:REPORT_ITEMS]
             if latest is not None:
                 report["changes"] = {"since": latest.import_id, **_changes(db, latest, snapshot)}
+            if derived is not None:
+                report["derived"] = derived
             if source == BUILTIN:
                 # Each project's built-in skills that a pinned pack's of the same name
                 # leaves out of its runs (SK-4).
@@ -280,13 +299,31 @@ class SkillStore:
                 found = pin.pinned
                 revision = _revision(found)
                 sources.append(f"{pin.source}@{revision}")
+                derived = _derived(db, found.snapshot)
+                topics = {
+                    skill: topic
+                    for topic, skills in cast(
+                        dict[str, list[str]], derived.get("topics", {})
+                    ).items()
+                    for skill in skills
+                }
+                shorts = cast(dict[str, str], derived.get("descriptions", {}))
+                entries_of = set(cast(list[str], derived.get("entry", [])))
                 for name, description, body in db.execute(
                     "SELECT name,description,body_sha256 FROM skill_skills WHERE snapshot=? "
                     "ORDER BY name",
                     (found.snapshot,),
                 ):
                     entry = Entry(
-                        pin.source, name, served(description), body, found.snapshot, revision
+                        pin.source,
+                        name,
+                        served(description),
+                        body,
+                        found.snapshot,
+                        revision,
+                        served(shorts[name]) if name in shorts else None,
+                        served(topics[name]) if name in topics else None,
+                        name in entries_of,
                     )
                     roles = ROLES.get(name, ("main",)) if pin.source == BUILTIN else None
                     if entry.qualified in settings.excluded or (
@@ -395,6 +432,51 @@ class SkillStore:
                 (project, datetime.now(UTC).timestamp(), model, texts, cost),
             )
 
+    def metadata(self, snapshot: str, alias: str, version: str) -> dict[str, Any] | None:
+        """What the pass of ``version`` by ``alias`` derived from ``snapshot``, with what
+        it dropped and the model that answered, or ``None`` if it never ran."""
+        with self.control.read() as tx:
+            row = tx.sql.execute(
+                "SELECT model,derived,dropped FROM skill_metadata WHERE snapshot=? AND alias=? "
+                "AND version=?",
+                (snapshot, alias, version),
+            ).fetchone()
+        if row is None:
+            return None
+        return {"model": row[0], "derived": json.loads(row[1]), "dropped": json.loads(row[2])}
+
+    def add_metadata(
+        self,
+        snapshot: str,
+        alias: str,
+        version: str,
+        model: str,
+        derived: dict[str, Any],
+        dropped: list[dict[str, Any]],
+    ) -> None:
+        """Keep what a pass derived, unless an earlier one of the same kept it."""
+        with self.control.write() as tx:
+            tx.sql.execute(
+                "INSERT INTO skill_metadata VALUES(?,?,?,?,?,?,?) "
+                "ON CONFLICT(snapshot,alias,version) DO NOTHING",
+                (snapshot, alias, version, model, json.dumps(derived), json.dumps(dropped), _now()),
+            )
+
+    def add_metadata_call(
+        self,
+        project: str | None,
+        snapshot: str,
+        model: str,
+        tokens: tuple[int | None, int | None],
+        cost: float | None,
+    ) -> None:
+        """Count one call of the pass, ``project``'s when the import names one (RS-6a)."""
+        with self.control.write() as tx:
+            tx.sql.execute(
+                "INSERT INTO skill_metadata_calls VALUES(?,?,?,?,?,?,?)",
+                (project, datetime.now(UTC).timestamp(), snapshot, model, *tokens, cost),
+            )
+
     def settings(self, project: str) -> SkillSettings:
         if self.control.missing:
             return SkillSettings(project, 0)
@@ -473,6 +555,15 @@ class SkillStore:
             return []
         with self.control.read() as tx:
             return _pins(tx.sql, project)
+
+
+def _derived(db: sqlite3.Connection, snapshot: str) -> dict[str, Any]:
+    """What the latest pass derived from ``snapshot``, or nothing."""
+    row = db.execute(
+        "SELECT derived FROM skill_metadata WHERE snapshot=? ORDER BY created DESC LIMIT 1",
+        (snapshot,),
+    ).fetchone()
+    return {} if row is None else cast(dict[str, Any], json.loads(row[0]))
 
 
 def pack(vector: list[float]) -> bytes:

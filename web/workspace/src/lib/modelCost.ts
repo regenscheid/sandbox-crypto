@@ -8,12 +8,13 @@ const ROLES: Record<RoleCost['role'], string> = {
   reviewer: 'The reviewer',
   watcher: 'The job watcher',
   embeddings: 'Skill embeddings',
+  metadata: 'Skill metadata',
 };
 
 /**
  * The project's model cost by role, a line for each role whose calls the gateway priced:
- * the main agent's runs, delegated runs, the reviewer, the job watcher (lab 40, B5) and
- * the skills' embeddings.
+ * the main agent's runs, delegated runs, the reviewer, the job watcher (lab 40, B5), the
+ * skills' embeddings and the import's model pass.
  * Nothing when a single role spent it all, which the total already says.
  */
 export function costByRole(cost: ModelCost): string[] {

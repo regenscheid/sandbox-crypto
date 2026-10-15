@@ -48,6 +48,8 @@ from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
 from sandbox_science.orchestrator.prompts import PromptPins, Section, assemble, pin_tools
 from sandbox_science.orchestrator.provision import PROVISION
 from sandbox_science.orchestrator.session_plans import SessionPlans
+from sandbox_science.orchestrator.skills.derive import PROMPT as PASS_PROMPT
+from sandbox_science.orchestrator.skills.derive import VERSION as PASS_VERSION
 from sandbox_science.orchestrator.skills.index import FRAMING as SKILLS_FRAMING
 from sandbox_science.orchestrator.skills.index import FRAMING_VERSION as SKILLS_VERSION
 from sandbox_science.orchestrator.stock_prompts import TEMPLATE_IDS, select_template
@@ -111,8 +113,9 @@ GOLDEN = {
     "sandbox-memory-watcher-1": (
         "7d0f75c8dfcd72a66c74e0a9d7bd76cb71df5286de234f82573034f717d53790"
     ),
-    "sandbox-notice-skills-1": ("d745da41c5c1b600e50efbbb9c08453ef6b05095ca31fdddabe0de66d41b424c"),
-    "sandbox-skills-index-1": ("f9bb4d209839c5fee8d0fb5f0a96470814714d9a457e86961644b1e814c93453"),
+    "sandbox-notice-skills-2": ("9e771dceecf872c8526f873d33685b01eebcd46f81f5b5e9b39727e7e4844e79"),
+    "sandbox-skills-index-2": ("2abca83f2c03b9e812a26b76b9611aa0ff099349f158569c3a05f7839a82646d"),
+    "sandbox-skills-pass-1": ("c1959f76747a1361f5e9ebe5b97c4b675c3fe45037c28e3dc1513a8fc56ff0b6"),
 }
 
 
@@ -128,6 +131,7 @@ def installed() -> dict[str, str]:
         CHECK_VERSION: CHECK_PROMPT,
         TASK_VERSION: TASK_PROMPT,
         SKILLS_VERSION: SKILLS_FRAMING,
+        PASS_VERSION: PASS_PROMPT,
     }
     texts |= {select_template(t).version: select_template(t).text for t in TEMPLATE_IDS}
     texts |= {framing.version: framing.text for framing in FRAMINGS}

@@ -611,10 +611,12 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--ref goes with --git")
         if (
             args.action == "import"
-            and args.embedding_model is not None
+            and (args.embedding_model is not None or args.metadata_model is not None)
             and (args.model_url is None or args.api_key_file is None)
         ):
-            parser.error("--embedding-model needs --model-url and --api-key-file")
+            parser.error(
+                "--embedding-model and --metadata-model need --model-url and --api-key-file"
+            )
         try:
             return skills(args)
         except (ProjectError, OSError) as exc:

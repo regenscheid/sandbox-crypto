@@ -98,12 +98,12 @@ OUTCOME_CORRECTION: Final = Framing(
 
 SKILLS: Final = Framing(
     "skills",
-    "sandbox-notice-skills-1",
+    "sandbox-notice-skills-2",
     "Skills that matched this message by its words or its meaning: candidates, not "
-    "requirements. The "
-    "names and descriptions are the packs' text. For a specific task one strong match is "
-    "usually enough; load one with the skills tool only if it fits the work. A skill shown "
-    "once is not shown again. ",
+    "requirements. The names and descriptions are the packs' text. For a specific task one "
+    "strong match is usually enough; load one with the skills tool only if it fits the "
+    "work. Entry skills, when listed, route work to their pack's other skills. A skill "
+    "shown once is not shown again. ",
 )
 """The discovery notice (docs/specs/skills.md, SK-36)."""
 

@@ -10,14 +10,15 @@ nothing. A skill is shown when it shares at least two of the message's words and
 at least half the best, or, once the run has its skills' vectors, when its meaning comes
 close (``tool.SIMILAR``); the message's embedding counts toward the wait. At most
 ``MAX_SHOWN`` are shown, by name and description, in a notice framed by
-``notices.SKILLS``. A skill the run was shown, in a notice a model call saw, or has
-loaded is not shown again; one in a notice the run dropped, as at a closing with no room
-for it, may be. Nothing is blocked and no load is forced (SK-36): the model decides. The
-run's record keeps each notice: its ID, which ``RunRecord.delivered`` names once a model
-call saw it, what it answered, the skills shown with their revisions, and how the
-scoring went, with why it was by words alone when an embedding model is set. Scoring by
-words runs in a thread, pure and quick: one that outlasts the wait ends on its own, and
-nothing waits for it; the embedding is cancelled.
+``notices.SKILLS``, with the entry skills of their packs that the import's pass found. A
+skill the run was shown, in a notice a model call saw, or has loaded is not shown again;
+one in a notice the run dropped, as at a closing with no room for it, may be. Nothing is
+blocked and no load is forced (SK-36): the model decides. The run's record keeps each
+notice: its ID, which ``RunRecord.delivered`` names once a model call saw it, what it
+answered, the skills shown with their revisions, and how the scoring went, with why it
+was by words alone when an embedding model is set. Scoring by words runs in a thread,
+pure and quick: one that outlasts the wait ends on its own, and nothing waits for it;
+the embedding is cancelled.
 """
 
 from __future__ import annotations
@@ -65,6 +66,12 @@ def matches(
         if (entry.qualified in by_words or meaning is not None) and entry.qualified not in skip
     ]
     return shown[:MAX_SHOWN]
+
+
+def _listed(entry: Entry) -> dict[str, str]:
+    """A skill as a notice lists it: its ID and the description the index gives it."""
+    shown = f"(derived) {entry.short}" if entry.short else entry.description
+    return {"id": entry.qualified, "description": shown}
 
 
 class SkillDiscovery(TurnHook):
@@ -139,13 +146,24 @@ class SkillDiscovery(TurnHook):
                 _log.exception("scoring the skills for discovery failed")
                 found, record["scoring"] = [], "failed"
         record["skills"] = [{"id": e.qualified, "revision": e.revision} for e in found]
+        # The entry skills of the packs shown, which route to their others (SK-35).
+        packs = {entry.source for entry in found}
+        routes = [
+            e
+            for e in self.tool.skills.entries
+            if e.entry and e.source in packs and e.qualified not in skip and e not in found
+        ]
+        if routes:
+            record["entry"] = [{"id": e.qualified, "revision": e.revision} for e in routes]
         self.records.append(record)
         if not found:
             return None
         notice = f"shown-{len(self.records)}"
         record["notice"] = notice
-        self.pending[notice] = tuple(entry.qualified for entry in found)
-        payload = {"skills": [{"id": e.qualified, "description": e.description} for e in found]}
+        self.pending[notice] = tuple(entry.qualified for entry in (*found, *routes))
+        payload: dict[str, object] = {"skills": [_listed(entry) for entry in found]}
+        if routes:
+            payload["entry"] = [_listed(entry) for entry in routes]
         return Notice(self.name, (notice,), SKILLS.text, payload)
 
     async def _bounded(self, work: Awaitable[T]) -> T:

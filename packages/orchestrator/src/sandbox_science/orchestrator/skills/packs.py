@@ -12,11 +12,15 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import posixpath
 import re
+import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any, Final, cast
 
 import yaml
+from markdown_it import MarkdownIt
+from markdown_it.token import Token
 
 from sandbox_science.orchestrator.documents.agent_text import (
     hidden_characters,
@@ -182,6 +186,52 @@ def hidden(files: tuple[PackFile, ...]) -> list[dict[str, Any]]:
             continue  # binary: read as such, never shown as text
         if count := len(hidden_characters(newlines(text))):  # a CR line end is no secret
             found.append({"path": file.path, "characters": count})
+    return found
+
+
+_LINKED: Final = (".md", ".markdown", ".txt")
+"""The files whose relative links the report checks: the Markdown a skill links from."""
+
+
+def broken_links(files: tuple[PackFile, ...]) -> list[dict[str, Any]]:
+    """Each relative link or image in the pack's Markdown that names no file of the
+    snapshot (SK-32), as written, with the file that has it; and the file the link would
+    find if case did not count, since a loader that matches case finds no other."""
+    paths = {file.path for file in files}
+    folded: dict[str, str] = {path.casefold(): path for path in sorted(paths)}
+    folders = {path.rsplit("/", i)[0] for path in paths for i in range(1, path.count("/") + 1)}
+    found: list[dict[str, Any]] = []
+    parser = MarkdownIt("commonmark")
+    for file in files:
+        if not file.path.lower().endswith(_LINKED):
+            continue
+        try:
+            text = file.content.decode()
+        except UnicodeDecodeError:
+            continue
+        for href in dict.fromkeys(_targets(parser.parse(newlines(text)))):
+            target = urllib.parse.unquote(href.partition("#")[0].partition("?")[0])
+            if not target or "://" in href or href.startswith(("#", "/", "mailto:")):
+                continue
+            where = posixpath.normpath(posixpath.join(posixpath.dirname(file.path), target))
+            if where in paths or where in folders:
+                continue
+            item = {"path": file.path, "link": href[:200]}
+            if (near := folded.get(where.casefold())) is not None:
+                item["differs_by_case_from"] = near
+            found.append(item)
+    return found
+
+
+def _targets(tokens: list[Token]) -> list[str]:
+    """The link and image targets of parsed Markdown, outside code."""
+    found: list[str] = []
+    for token in tokens:
+        for child in token.children or ():
+            if child.type == "link_open" and isinstance(href := child.attrs.get("href"), str):
+                found.append(href)
+            elif child.type == "image" and isinstance(src := child.attrs.get("src"), str):
+                found.append(src)
     return found
 
 
