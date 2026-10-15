@@ -41,9 +41,10 @@ from sandbox_science.orchestrator.notices import FRAMINGS
 from sandbox_science.orchestrator.plan_tools import GUIDANCE, GUIDANCE_VERSION, PlanTools
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
 from sandbox_science.orchestrator.prompts import PromptPins, Section, assemble, pin_tools
+from sandbox_science.orchestrator.provision import PROVISION
 from sandbox_science.orchestrator.session_plans import SessionPlans
 from sandbox_science.orchestrator.stock_prompts import TEMPLATE_IDS, select_template
-from sandbox_science.orchestrator.tools import Toolbox
+from sandbox_science.orchestrator.tools import ADMIT_HOSTS, PDF_SPECS, Toolbox, mcp_tools_spec
 from sandbox_science.orchestrator.watcher_prompt import PROMPT_VERSION
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 
@@ -53,11 +54,11 @@ HOSTILE = "Authorization: Bearer test-secret-prompt-not-a-credential"
 # Each installed version and the SHA-256 of its UTF-8 text. Changing a text means a new
 # version: add it here, and keep the old version's entry for its records.
 GOLDEN = {
-    "sandbox-main-3": "8e710bfbfddb81951f2222d9e605200dd2849bec46c5d2b69315178981049f98",
+    "sandbox-main-4": "8feb3111f03a0c1b5e048b2c1cda54b3920fc9493e552866375fe1cb3e9053fe",
     "sandbox-main-plan-1": "efb031b0fab2b9855dc3c9adcb869108dd835b725f878b977eec9ba118feb866",
     "sandbox-stock-intake-1": "e846770bc153995c6da1c87cca1913400d0008f3983361246d04d9b9a94f45ab",
-    "sandbox-stock-literature-1": (
-        "a08bf961f0df4e7f328cbc34eb999983a09d38da9a0f20e23fc1b05bb7e9e822"
+    "sandbox-stock-literature-2": (
+        "ccdebe03645b7ec025486235bfe08ccfebd37f0fbd84d2f28405be6b0aa7e565"
     ),
     "sandbox-stock-experiment-1": (
         "7a13ddca7cd62c11d9baf11c61a3c642ad89db29c2c25d0375c18aaa7b37ae40"
@@ -119,6 +120,26 @@ def installed() -> dict[str, str]:
     texts |= {select_template(t).version: select_template(t).text for t in TEMPLATE_IDS}
     texts |= {framing.version: framing.text for framing in FRAMINGS}
     return texts
+
+
+def test_a_refusal_is_a_decision_and_a_miss_is_not_absence() -> None:
+    """Lane K's triage, P1 and P2: the system message and the descriptions of the tools a
+    policy can refuse, or whose search can miss, say so where the model reads them."""
+    mcp_tools = mcp_tools_spec("(an index)")
+    (pdf_search,) = [spec for spec in PDF_SPECS if spec.name == "pdf_search"]
+    for text in (SYSTEM_PROMPT, ADMIT_HOSTS.description, PROVISION.description):
+        assert "the policy's decision" in text or "the user's policy deciding" in text
+    assert "a refused call is its decision" in mcp_tools.description
+    assert "never resubmit it unchanged" in SYSTEM_PROMPT
+    assert "retry once it is approved" in SYSTEM_PROMPT  # a pending approval is not a refusal
+    assert "No hit means only" in pdf_search.description
+    assert "not that nothing exists" in mcp_tools.description
+    assert "never conclude from a miss" in SYSTEM_PROMPT
+    # Lane W's saved output (#388): what a truncated result shows is a sample.
+    assert "from the saved file it names, never from the sample" in SYSTEM_PROMPT
+    assert "no evidence that the work or attack does not exist" in (
+        select_template("literature").text
+    )
 
 
 def test_each_installed_version_names_its_exact_text() -> None:

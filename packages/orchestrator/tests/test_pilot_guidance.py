@@ -163,7 +163,7 @@ async def test_general_pilot_is_offered_once_with_unchanged_tools_and_phase_orde
         assert transcript.tool_records == []
         pins = transcript.prompt_provenance
         assert isinstance(pins, PromptPins)
-        assert pins.sections[0].version == MAIN_VERSION == "sandbox-main-3"
+        assert pins.sections[0].version == MAIN_VERSION == "sandbox-main-4"
         assert pins.sections[0] == pin(Section("main", MAIN_VERSION, SYSTEM_PROMPT))
         assert ("stock" in [section.id for section in pins.sections]) == bool(selection)
     finally:
@@ -268,4 +268,4 @@ async def test_failed_run_retains_new_base_pin_without_answer_or_extra_delivery(
         == []
     )
     assert isinstance(record.prompt_provenance, PromptPins)
-    assert record.prompt_provenance.sections[0].version == "sandbox-main-3"
+    assert record.prompt_provenance.sections[0].version == "sandbox-main-4"

@@ -19,11 +19,11 @@ IDs are the version strings in the code.
 
 | Input | ID in code | Source | When it is sent |
 | --- | --- | --- | --- |
-| MAIN base system | `sandbox-main-3` (`loop.py` `MAIN_VERSION`) | [loop.py](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py) `SYSTEM_PROMPT` | Every MAIN run, unless the caller supplies a custom `system` |
+| MAIN base system | `sandbox-main-4` (`loop.py` `MAIN_VERSION`) | [loop.py](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py) `SYSTEM_PROMPT` | Every MAIN run, unless the caller supplies a custom `system` |
 | MAIN planning guidance | `sandbox-main-plan-1` | [plan_tools.py](../packages/orchestrator/src/sandbox_science/orchestrator/plan_tools.py) `GUIDANCE` | Appended when the six plan tools are offered (stateful MAIN runs) |
 | Delegated check system | `sandbox-delegated-check-4` (`delegation/prompt.py` `CHECK_VERSION`) | [delegation/prompt.py](../packages/orchestrator/src/sandbox_science/orchestrator/delegation/prompt.py) `CHECK_PROMPT`; its first user message is the brief the platform writes (`check_task`, `evidence_line`, `brief_text`): the task, the entry's evidence and the parent's note | Every delegated run, which checks one ledger entry ([plans and delegation](specs/plans-and-delegation.md), PD-13) |
 | Project memory framings | `sandbox-memory-run-1`, `sandbox-memory-reviewer-1`, `sandbox-memory-watcher-1` | [memory_prompt.py](../packages/orchestrator/src/sandbox_science/orchestrator/memory_prompt.py) `RUN_FRAMING`, `REVIEWER_FRAMING`, `WATCHER_FRAMING`, each followed by the accepted entries | With the project's stores, when the project memory has entries: every main and delegated run, every reviewer call (the reviewed run's memory) and every watcher check (the memory at the check) ([project memory](MEMORY.md)) |
-| Research templates | `sandbox-stock-intake-1`, `sandbox-stock-literature-1`, `sandbox-stock-experiment-1`, `sandbox-stock-proof-audit-1`, `sandbox-stock-report-1` | [stock_prompts.py](../packages/orchestrator/src/sandbox_science/orchestrator/stock_prompts.py) | Only with `--research-template` ([research framing](STOCK-RESEARCH-PROMPTS.md)) |
+| Research templates | `sandbox-stock-intake-1`, `sandbox-stock-literature-2`, `sandbox-stock-experiment-1`, `sandbox-stock-proof-audit-1`, `sandbox-stock-report-1` | [stock_prompts.py](../packages/orchestrator/src/sandbox_science/orchestrator/stock_prompts.py) | Only with `--research-template` ([research framing](STOCK-RESEARCH-PROMPTS.md)) |
 | MAIN prompt pins | `sandbox-prompt-pins-1` | [prompts.py](../packages/orchestrator/src/sandbox_science/orchestrator/prompts.py) `assemble`; `loop.py` `_sections` | Every MAIN run's record: section, tool and notice-framing pins ([MAIN provenance](MAIN-PROMPT-PROVENANCE.md)) |
 | Offered tool descriptions and schemas | Pinned by hash, not versioned | `tools.py` `SPECS`, `SAGE`, `PDF_SPECS`, `ADMIT_HOSTS` and `Toolbox` (`restart_kernel`); `jobs.py` `JOB_SPECS`; `provision.py` `PROVISION_SPECS`; `documents/tool.py` and `documents/annotation_tools.py` `SPECS`; `consistency/controller.py` `AUTHOR_SPECS`; `plan_tools.py` `SPECS`; `ledger/tool.py`, `memory_tools.py` and `delegation/specs.py` `SPECS`; connector tools, which their MCP servers list when a run starts (`connectors.py`) | Every model call, filtered by the worker's features and the run's capabilities |
 | Platform notices | `sandbox-notice-requests-1`, `-jobs-1`, `-jobs-attached-1`, `-plans-1`, `-review-findings-1`, `-review-counts-1`, `-math-1`, `-delegations-2`, `-delegations-attached-1`, `-delegations-running-2`, `-outcome-correction-1` | [notices.py](../packages/orchestrator/src/sandbox_science/orchestrator/notices.py) | User-role messages for document work requests, job completions, reviewer findings and counts, plan reread requirements, closing math findings, delegation outcomes, the delegated runs a closing answer waits for, and a delegated run's one correction of its result; job completions and delegation outcomes also ride on tool results |
@@ -181,11 +181,15 @@ authority or proof of provider behavior:
 
 - **MAIN** ([MAIN provenance](MAIN-PROMPT-PROVENANCE.md)). Pins made once per run
   and not checked again. `RunRecord.prompt_provenance` records each system section's
-  version, byte length and hash, the ordered tool pins and the notice framings. `sandbox-main-3`
+  version, byte length and hash, the ordered tool pins and the notice framings. `sandbox-main-4`
   labels exact built-in content, including identical caller text; it does not attest
   to who supplied it. Other custom text has no catalog version. Old `sandbox-main-1`
   and `sandbox-main-2` records keep their text and pins; `sandbox-main-3` adds ledger
-  entries and results files to the untrusted data the prompt names. Task and tool messages are not pinned; the
+  entries and results files to the untrusted data the prompt names; `sandbox-main-4` adds
+  that a refusal with a reason is the policy's decision, never resubmitted unchanged or
+  routed around, that a search with no hits bounds only that search, and that a result
+  marked as a sample is part of its output: counts, IDs, rows and all-or-none claims come
+  from the saved file. Task and tool messages are not pinned; the
   notice framings are.
 - **Research framing** ([research framing](STOCK-RESEARCH-PROMPTS.md)). A selected
   template is the section between the base and the planning guidance, pinned

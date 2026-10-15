@@ -17,7 +17,7 @@ with the configured model gateway. It creates no additional model call.
 | ID | Version | Original framing |
 | --- | --- | --- |
 | `intake` | `sandbox-stock-intake-1` | Establish goal, known inputs, useful evidence, assumptions and feasibility; ask only for a decision that blocks progress. |
-| `literature` | `sandbox-stock-literature-1` | Inspect available sources, distinguish source claims and deductions, compare methods and limits, and disclose inaccessible material. |
+| `literature` | `sandbox-stock-literature-2` | Inspect available sources, distinguish source claims and deductions, compare methods and limits, and disclose inaccessible material; state each search's source, query and date, and treat no hits as bounding only that search. |
 | `experiment` | `sandbox-stock-experiment-1` | State hypothesis, controls, inputs, stopping condition and expected evidence; preserve actual execution scope and partial/negative results. |
 | `proof-audit` | `sandbox-stock-proof-audit-1` | Separate assumptions and deductions from finite computation, examples and heuristics; distinguish gaps from counterexamples. |
 | `report` | `sandbox-stock-report-1` | Connect claims to inspected evidence and existing artifacts; separate conclusions, workflow status, uncertainty and remaining work. |

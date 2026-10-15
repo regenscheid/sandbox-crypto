@@ -77,7 +77,8 @@ PROVISION: Final = ToolSpec(
     "does not accept capabilities, pip or system packages, or upgrade-all. The result "
     "gives the outcome (already_satisfied, completed, awaiting_permission, denied, failed, "
     "needs_recovery), the environment's revisions before and after, the package changes, the "
-    "probe results and what to do next.",
+    "probe results and what to do next. A denied request is the policy's decision: do not "
+    "ask for it again unchanged, or install the same software another way.",
     {
         "type": "object",
         "properties": {
