@@ -21,6 +21,7 @@ from .control.errors import INVALID_REQUEST
 from .documents import USER
 from .projects import ProjectStore
 from .skills import SkillSettings, SkillStore, from_archive, from_git, snapshot
+from .skills.builtin import builtin_pack
 from .skills.embeddings import MAX_MODEL_BYTES, Embedder, EmbeddingError, Paid, ensure
 
 
@@ -30,6 +31,13 @@ def skills(args: argparse.Namespace) -> int:
         try:
             match args.action:
                 case "import":
+                    # The key is read before anything is fetched or kept: an import whose
+                    # embedding cannot even start leaves the store as it was.
+                    key = (
+                        args.api_key_file.read_text().strip()
+                        if args.embedding_model is not None
+                        else ""
+                    )
                     fetched = (
                         from_git(args.git, args.ref, args.path)
                         if args.git is not None
@@ -41,8 +49,11 @@ def skills(args: argparse.Namespace) -> int:
                     shown = asdict(found)
                     shown["unchanged"] = same
                     if args.embedding_model is not None:
-                        shown["embeddings"] = asyncio.run(_embed(store, args, found.snapshot))
+                        shown["embeddings"] = asyncio.run(_embed(store, args, key, found.snapshot))
                 case "pin":
+                    # The built-in skills the harness ships first, as a run's start pins
+                    # them: a collision with one is refused now, not after the first run.
+                    store.ensure(args.project, builtin_pack())
                     shown = asdict(store.pin(args.project, args.source, USER, args.revision))
                 case "settings":
                     shown = asdict(_settings(store, args))
@@ -59,11 +70,13 @@ def skills(args: argparse.Namespace) -> int:
     return 0
 
 
-async def _embed(store: SkillStore, args: argparse.Namespace, snapshot: str) -> dict[str, Any]:
+async def _embed(
+    store: SkillStore, args: argparse.Namespace, key: str, snapshot: str
+) -> dict[str, Any]:
     """Embed the snapshot's skills that have no vector in the model's space (SK-29). A
     failure leaves the import as it is, with a warning: runs embed what they lack, and
     importing again embeds the skills."""
-    embedder = Embedder(args.model_url, args.embedding_model, args.api_key_file.read_text().strip())
+    embedder = Embedder(args.model_url, args.embedding_model, key)
     paid: Paid = []
     try:
         made = await ensure(store, embedder, snapshot, paid=paid)

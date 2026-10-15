@@ -333,3 +333,39 @@ def test_a_pack_the_user_named_builtin_is_renamed_by_the_migration(
             "author,created) SELECT 'builtin',snapshot,'git',origin,NULL,commit_id,root,report,"
             "author,created FROM skill_imports WHERE kind='git'"
         )
+
+
+def test_a_pin_pins_the_built_in_skills_first(
+    shipped: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Review of #435, finding 4: a pack beside a built-in skill is refused when it is
+    first pinned, before the project's first run, as it is after it."""
+    state = tmp_path / "state"
+    ProjectStore(state).create(PROJECT, "minimal", "sha256:" + "a" * 64)
+    pack = _pack(tmp_path / "pack", "pdf-reading")
+    where = ["--state-dir", str(state)]
+    assert cli.main(["skills", "import", *where, "--name", "ss", "--git", str(pack)]) == 0
+    capsys.readouterr()
+    assert cli.main(["skills", "pin", *where, "--project", PROJECT, "--source", "ss"]) == 1
+    assert "already defined by the built-in skills" in capsys.readouterr().err
+    assert cli.main(["skills", "list", *where, "--project", PROJECT]) == 0
+    assert [pin["source"] for pin in json.loads(capsys.readouterr().out)] == ["builtin"]
+
+
+def test_an_import_that_cannot_read_its_key_keeps_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    state = tmp_path / "state"
+    pack = _pack(tmp_path / "pack", "alpha")
+    where = ["--state-dir", str(state)]
+    argv = [
+        "skills", "import", *where, "--name", "ss", "--git", str(pack),
+        "--embedding-model", "embed", "--model-url", "http://127.0.0.1:9",
+        "--api-key-file", str(tmp_path / "gone.key"),
+    ]  # fmt: skip
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+        assert cli.main(argv) == 1
+    capsys.readouterr()
+    assert cli.main(["skills", "list", *where, "--source", "ss"]) == 0
+    assert json.loads(capsys.readouterr().out) == []

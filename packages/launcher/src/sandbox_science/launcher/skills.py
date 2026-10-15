@@ -3,10 +3,11 @@
 docs/specs/skills.md, SK-28).
 
 ``up`` imports a pack the control store has no import of, and pins it in each project
-that names it and does not pin it yet; otherwise it fetches nothing and keeps the pin. A
-pack that cannot be imported or pinned, as when its repository cannot be reached or a
-skill of it has a built-in skill's name, is reported and left as it was: ``up`` goes on
-without it, and ``skills update`` exits 1.
+that names it and does not pin it yet; otherwise it fetches nothing and keeps the pin,
+saying at which revision each project pins it. A pack that cannot be imported is reported
+and left as it was; one that cannot be pinned in a project, as when a skill of it has the
+name of a skill the project has, is reported for that project, and the others still pin
+it. ``up`` goes on without them, and ``skills update`` exits 1.
 ``up --update-skills`` and ``sandbox-science skills update`` import each pack again from
 its ref, and move each project's pin to the import, saying what changed since the pin it
 left. Each step is a ``sandbox-science-harness skills`` command, run on the user's machine
@@ -17,8 +18,11 @@ through the gateway, given the key file's path, which the launcher never opens.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+import posixpath
+from collections.abc import Awaitable, Callable, Iterable
+from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urlsplit, urlunsplit
 
 from . import parts
 from .config import LauncherConfig, LauncherError, SkillPackConfig
@@ -82,23 +86,52 @@ async def keep(
     lines: list[str] = []
     failed: list[str] = []
     for name, pack in packs.items():
+        imports: list[dict[str, Any]] = []
         try:
             imports = cast(list[dict[str, Any]], await answer("list", "--source", name))
             if update or not imports:
                 found = cast(dict[str, Any], await answer(*import_argv(config, name, pack)))
                 lines.append(_imported(name, found, first=not imports))
             else:
-                kept = imports[0]
-                lines.append(f"skills: {name} kept at {_revision(kept)}{_differs(pack, kept)}")
-            for project in (p.id for p in config.projects if name in p.skills):
-                had = pinned[project].get(name)
-                if had is None or update:
-                    pin = await answer("pin", "--project", project, "--source", name)
-                    lines.append(_pinned(project, name, cast(dict[str, Any], pin), had))
-        except LauncherError as error:  # this pack's, left as it was; the others go on
+                found = imports[0]
+        except LauncherError as error:  # this pack's; the others go on
             failed.append(name)
-            lines.append(f"skills: {name} is left as it was: {error}")
+            lines.append(f"skills: {name} {await _after(answer, name, imports)}: {error}")
+            continue
+        note = "" if update else _differs(pack, found)
+        users = [p.id for p in config.projects if name in p.skills]
+        if not users and not update and imports:
+            lines.append(f"skills: {name} was imported before, at {_revision(found)}{note}")
+        for project in users:
+            had = pinned[project].get(name)
+            if had is not None and not update:
+                at = _revision(cast(dict[str, Any], had["pinned"]))
+                lines.append(f"skills: {project} keeps {name} at {at}{note}")
+                continue
+            try:
+                pin = await answer("pin", "--project", project, "--source", name)
+            except LauncherError as error:  # this project's: the others still pin it
+                failed.append(f"{name} in {project}")
+                lines.append(
+                    f"skills: {name} at {_revision(found)} is not pinned in {project}: {error}"
+                )
+                continue
+            lines.append(_pinned(project, name, cast(dict[str, Any], pin), had))
     return lines, failed
+
+
+async def _after(
+    answer: Callable[..., Awaitable[Any]], name: str, before: list[dict[str, Any]]
+) -> str:
+    """What a failed import left: the store as it was, or an import it kept before it
+    failed, which no pin moved to."""
+    try:
+        now = cast(list[dict[str, Any]], await answer("list", "--source", name))
+    except LauncherError:
+        return "may have been imported, and no pin moved"
+    if now and (not before or now[0].get("import_id") != before[0].get("import_id")):
+        return f"was imported at {_revision(now[0])}, and no pin moved to it"
+    return "is left as it was"
 
 
 def _harness(config: LauncherConfig, layout: Layout, action: str) -> list[str]:
@@ -144,11 +177,42 @@ def _pinned(project: str, name: str, pin: dict[str, Any], had: dict[str, Any] | 
 
 
 def _differs(pack: SkillPackConfig, found: dict[str, Any]) -> str:
-    """A note when the config names another kind or ref than the kept import's."""
+    """A note when the config names another kind, place, ref or directory than the kept
+    import's, as the import records them: a URL without its password, a repository's
+    resolved path, an archive's name."""
     kind = "git" if pack.git is not None else "archive"
-    if found.get("kind") == kind and found.get("ref") == pack.ref:
+    if pack.git is not None:
+        origin = _shown(pack.git) if _url(pack.git) else str(Path(pack.git).resolve())
+    else:
+        origin = Path(str(pack.archive)).name
+    root = None if pack.path is None else posixpath.normpath(pack.path.strip("/") or ".")
+    different = [
+        what
+        for what, same in (
+            ("source", found.get("kind") == kind and found.get("origin") == origin),
+            ("ref", found.get("ref") == pack.ref),
+            ("path", root is None or posixpath.normpath(found.get("root") or ".") == root),
+        )
+        if not same
+    ]
+    if not different:
         return ""
     return (
-        f" (the config names another {'ref' if found.get('kind') == kind else 'source'}: "
-        "sandbox-science skills update imports it)"
+        f" (the config names another {' and '.join(different)}: sandbox-science skills "
+        "update imports it)"
     )
+
+
+def _url(origin: str) -> bool:
+    return "://" in origin or ":" in origin.partition("/")[0]
+
+
+def _shown(origin: str) -> str:
+    """A URL as the harness records it: without its password, and without its user name
+    unless it is an SSH login."""
+    parts = urlsplit(origin)
+    if not parts.scheme or "@" not in parts.netloc:
+        return origin
+    host = parts.netloc.rpartition("@")[2]
+    user = parts.username if parts.scheme == "ssh" and parts.password is None else None
+    return urlunsplit(parts._replace(netloc=f"{user}@{host}" if user else host))
