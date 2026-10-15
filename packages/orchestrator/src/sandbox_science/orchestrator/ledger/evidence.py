@@ -102,6 +102,41 @@ def write(db: sqlite3.Connection, entry: str, revision: int, links: list[Evidenc
         )
 
 
+MAX_SCOPES: Final = 32768
+"""The scope notes of an entry revision's evidence, as UTF-8, are at most this many
+bytes, so the revision, its evidence and its links fit one review item."""
+
+
+def retained(
+    db: sqlite3.Connection, project: str, artifact: str, revision: int, given: str | None
+) -> str:
+    """The SHA-256 of an artifact revision of the project whose bytes the control store
+    keeps, as it captured them; a hash ``given`` must be it. A tombstone, or a revision
+    that keeps only the hash the sandbox reported, pins no content (RA-31 to RA-33)."""
+    found = db.execute(
+        "SELECT json_extract(record,'$.reference.sha256'),"
+        "coalesce(json_extract(record,'$.content_retained'),1),"
+        "coalesce(json_extract(record,'$.deleted'),0),"
+        "coalesce(json_extract(record,'$.hash_source'),'capture') "
+        "FROM artifact_revisions WHERE artifact=? AND number=? AND project=?",
+        (artifact, revision, project),
+    ).fetchone()
+    if found is None:
+        raise DocumentError(NOT_FOUND, f"no artifact {artifact} r{revision} in this project")
+    digest, kept, deleted, source = found
+    if deleted or not kept or source != "capture":
+        raise DocumentError(
+            INVALID_REQUEST,
+            f"artifact {artifact} r{revision} keeps no content the platform captured: "
+            + ("it records a deletion" if deleted else "only its hash and size are recorded"),
+        )
+    if given is not None and given != digest:
+        raise DocumentError(
+            CONFLICT, f"artifact {artifact} r{revision} has another SHA-256", {"sha256": digest}
+        )
+    return digest
+
+
 def asserted_only(kind: str, links: list[EvidenceLink]) -> bool | None:
     """For a claim or result, whether it holds no evidence links at all (LG-11)."""
     return None if kind not in ("claim", "result") else not links
@@ -202,22 +237,8 @@ def resolve(
     if item.artifact is not None:
         if item.revision is None or item.block is not None or item.math is not None:
             raise DocumentError(INVALID_REQUEST, "an artifact target names its revision")
-        found = db.execute(
-            "SELECT json_extract(record,'$.reference.sha256') FROM artifact_revisions "
-            "WHERE artifact=? AND number=? AND project=?",
-            (item.artifact, item.revision, project),
-        ).fetchone()
-        if found is None:
-            raise DocumentError(
-                NOT_FOUND, f"no artifact {item.artifact} r{item.revision} in this project"
-            )
-        if item.sha256 is not None and item.sha256 != found[0]:
-            raise DocumentError(
-                CONFLICT,
-                f"artifact {item.artifact} r{item.revision} has another SHA-256",
-                {"sha256": found[0]},
-            )
-        return link("artifact", item.artifact, revision=item.revision, sha256=found[0])
+        digest = retained(db, project, item.artifact, item.revision, item.sha256)
+        return link("artifact", item.artifact, revision=item.revision, sha256=digest)
     if item.document is not None:
         if item.revision is None or item.block is None or item.sha256 is not None:
             raise DocumentError(INVALID_REQUEST, "a document target names its revision and block")

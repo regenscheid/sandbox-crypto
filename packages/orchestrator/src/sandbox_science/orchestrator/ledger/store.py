@@ -711,6 +711,11 @@ class Ledger:
             raise DocumentError(INVALID_REQUEST, f"{p.row.handle} holds that evidence already")
         if len(result) > 128:
             raise DocumentError(INVALID_REQUEST, "an entry holds at most 128 evidence links")
+        if sum(len((link.scope or "").encode()) for link in result) > evidence.MAX_SCOPES:
+            raise DocumentError(
+                INVALID_REQUEST,
+                f"{p.row.handle}'s evidence scope notes exceed {evidence.MAX_SCOPES} bytes",
+            )
         p.evidence = result
         if not p.created:
             p.changed = [*p.changed, "evidence"]
@@ -1023,22 +1028,9 @@ def _check_pdf(db: sqlite3.Connection, project: str, fields: Json) -> Json:
     pdf = fields.get("pdf")
     if pdf is None:
         return fields
-    found = db.execute(
-        "SELECT json_extract(record,'$.reference.sha256') FROM artifact_revisions "
-        "WHERE artifact=? AND number=? AND project=?",
-        (pdf["artifact_id"], pdf["revision"], project),
-    ).fetchone()
-    if found is None:
-        raise DocumentError(
-            NOT_FOUND, f"no artifact {pdf['artifact_id']} r{pdf['revision']} in this project"
-        )
-    if pdf.get("sha256", found[0]) != found[0]:
-        raise DocumentError(
-            CONFLICT,
-            f"artifact {pdf['artifact_id']} r{pdf['revision']} has another SHA-256",
-            {"sha256": found[0]},
-        )
-    pdf["sha256"] = found[0]
+    pdf["sha256"] = evidence.retained(
+        db, project, pdf["artifact_id"], pdf["revision"], pdf.get("sha256")
+    )
     if len(_encoded(fields).encode()) > MAX_FIELDS:
         raise DocumentError(INVALID_REQUEST, f"reference fields exceed {MAX_FIELDS} bytes")
     return fields

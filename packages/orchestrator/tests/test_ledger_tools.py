@@ -581,3 +581,38 @@ async def test_a_delegated_run_adds_evidence_from_a_results_file(ledger: Ledger)
         ("independent_check", "C-2", 1)
     ]
     assert read["asserted_only"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_read_pages_evidence_within_the_budget(ledger: Ledger) -> None:
+    """Probe p7 of the review of #276: a delegated run's evidence made one read of
+    557,000 characters; evidence now comes in parts, its scopes shortened."""
+    claim = {"type": "claim", "origin": "project", "title": "K", "statement": "s"}
+    assumption = {"type": "assumption", "title": "a", "statement": "a"}
+    await use(tool(ledger), "ledger_change", reason="r", changes=[claim])
+    delegated = tool(ledger, role="delegated", run="d1")
+    for batch in range(4):
+        made = await use(
+            delegated, "ledger_change", f"a{batch}", reason="r", changes=[assumption] * 32
+        )
+        assert "entries" in made, made
+    for batch in range(4):
+        items = [
+            {"role": "supports", "type": "proof", "entry": f"A-{batch * 32 + n + 1}",
+             "scope": "\U0001d53d" * 64}
+            for n in range(32)
+        ]  # fmt: skip
+        change = {"entry": "C-1", "expected": batch + 1, "evidence": items}
+        made = await use(delegated, "ledger_change", f"e{batch}", reason="r", changes=[change])
+        assert "entries" in made, made
+    targets: list[str] = []
+    args: dict[str, Any] = {"entry": "C-1"}
+    for _ in range(100):
+        text = await raw(tool(ledger), "ledger_read", **args)
+        assert len(text) <= 20000, len(text)
+        part = json.loads(text)
+        targets += [e["handle"] for e in part["evidence"]]
+        if not part["more"]:
+            break
+        args = {"entry": "C-1", **part["more"]}
+    assert targets == [f"A-{n}" for n in range(1, 129)]

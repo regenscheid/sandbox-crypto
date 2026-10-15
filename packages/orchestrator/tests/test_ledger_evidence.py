@@ -20,21 +20,28 @@ from .test_ledger import DELEGATED, NEW, change, events
 from .test_ledger import ledger as ledger
 
 
-def publish(ledger: Ledger, tmp_path: Path, data: bytes = b"16\n") -> tuple[str, str]:
-    """An artifact revision of project p: its ID and SHA-256."""
-    from sandbox_science.contracts import ArtifactRef, ExecutionContext
+def source(tmp_path: Path) -> Any:
+    """Session s's run r1 publishing in project p."""
+    from sandbox_science.contracts import ExecutionContext
     from sandbox_science.contracts.artifact_inventory import ArtifactPublicationSource
-    from sandbox_science.orchestrator.artifacts import ArtifactInventory
 
     projects = ProjectStore(tmp_path, readonly=True)
     environment = projects.get("p").sessions["s"].environment_id
     projects.close()
-    source = ArtifactPublicationSource(
+    return ArtifactPublicationSource(
         context=ExecutionContext(project_id="p", session_id="s", environment_id=environment),
         run_id="r1",
         tool_call="publish",
         worker_endpoint_sha256="a" * 64,
     )
+
+
+def publish(ledger: Ledger, tmp_path: Path, data: bytes = b"16\n") -> tuple[str, str]:
+    """An artifact revision of project p: its ID and SHA-256."""
+    from sandbox_science.contracts import ArtifactRef
+    from sandbox_science.orchestrator.artifacts import ArtifactInventory
+
+    publisher = source(tmp_path)
     digest = hashlib.sha256(data).hexdigest()
     worker = ArtifactRef(
         artifact_id="worker-1",
@@ -47,9 +54,9 @@ def publish(ledger: Ledger, tmp_path: Path, data: bytes = b"16\n") -> tuple[str,
         produced_by="unproven-hint",
     )
     inventory = ArtifactInventory(ledger.documents)
-    inventory.begin(source, "publish-1", "ff.json", "application/json")
-    inventory.pin(source, "publish-1", "ff.json", "application/json", worker)
-    receipt = inventory.finish(source, "publish-1", "ff.json", "application/json", worker, data)
+    inventory.begin(publisher, "publish-1", "ff.json", "application/json")
+    inventory.pin(publisher, "publish-1", "ff.json", "application/json", worker)
+    receipt = inventory.finish(publisher, "publish-1", "ff.json", "application/json", worker, data)
     assert receipt.revision is not None
     return receipt.revision.artifact_id, digest
 
@@ -317,3 +324,56 @@ def test_entries_of_a_version_21_store_hold_no_evidence_after_the_migration(
         assert version == migrations.VERSION
     finally:
         documents.close()
+
+
+def test_evidence_and_a_pdf_pin_content_the_platform_captured(
+    ledger: Ledger, tmp_path: Path
+) -> None:
+    """A tombstone, or a revision that keeps only the hash the sandbox reported, pins no
+    content (RA-31 to RA-33): neither is evidence nor a reference's PDF."""
+    from sandbox_science.orchestrator.artifacts import ArtifactInventory
+
+    from .test_ledger import REFERENCE_FIELDS
+
+    artifact, _ = publish(ledger, tmp_path)
+    inventory = ArtifactInventory(ledger.documents)
+    hashed, _ = inventory.record_metadata(
+        source(tmp_path),
+        "big.bin",
+        sha256="b" * 64,
+        size=10**9,
+        media_type="application/octet-stream",
+        note="too_large",
+    )
+    deleted = inventory.record_deletion(source(tmp_path), "ff.json")
+    assert deleted is not None
+    assert deleted.artifact_id == artifact
+    change(ledger, NEW["claim"])
+    for n, (target, revision, message) in enumerate(
+        (
+            (hashed.artifact_id, hashed.revision, "only its hash and size"),
+            (artifact, deleted.revision, "records a deletion"),
+        )
+    ):
+        item = {"role": "supports", "type": "exact_computation", "artifact": target,
+                "revision": revision}  # fmt: skip
+        with pytest.raises(DocumentError, match=message) as refused:
+            change(ledger, evidence("C-1", 1, item), op=f"evidence-{n}")
+        assert refused.value.kind == "invalid_request"
+        pdf = {**REFERENCE_FIELDS, "pdf": {"artifact_id": target, "revision": revision}}
+        with pytest.raises(DocumentError, match=message):
+            change(ledger, {**NEW["reference"], "fields": pdf}, op=f"pdf-{n}")
+    # The revision before the deletion still pins its bytes.
+    kept = {"role": "supports", "type": "exact_computation", "artifact": artifact, "revision": 1}
+    change(ledger, evidence("C-1", 1, kept), op="kept")
+
+
+def test_an_entrys_scope_notes_are_bounded(ledger: Ledger) -> None:
+    change(ledger, NEW["claim"], *([NEW["assumption"]] * 9))
+    items = [
+        {"role": "supports", "type": "proof", "entry": f"A-{n}", "scope": "s" * 4096}
+        for n in range(1, 10)
+    ]
+    with pytest.raises(DocumentError, match="scope notes exceed 32768 bytes"):
+        change(ledger, evidence("C-1", 1, *items), op="long")
+    change(ledger, evidence("C-1", 1, *items[:8]), op="fits")
