@@ -8,6 +8,7 @@
   import FindingView from './views/FindingView.svelte';
   import LedgerBoard from './views/LedgerBoard.svelte';
   import LedgerEntryView from './views/LedgerEntryView.svelte';
+  import MemoryPage from './views/MemoryPage.svelte';
   import IssueList from './views/IssueList.svelte';
   import ProjectList from './views/ProjectList.svelte';
   import ProjectView from './views/ProjectView.svelte';
@@ -69,6 +70,10 @@
           revision={route.revision}
           block={route.block}
         />
+      {/key}
+    {:else if route.view === 'memory'}
+      {#key route.project}
+        <MemoryPage projectId={route.project} />
       {/key}
     {:else if route.view === 'ledger'}
       {#key route.project}

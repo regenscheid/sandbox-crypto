@@ -2,7 +2,7 @@
 <script lang="ts">
   import { api } from '../lib/api';
   import { formatTime } from '../lib/format';
-  import { documentHref, ledgerHref, sessionHref } from '../lib/router';
+  import { documentHref, ledgerHref, memoryHref, sessionHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
   import ProjectFiles from './ProjectFiles.svelte';
   import ProjectMacros from './ProjectMacros.svelte';
@@ -12,6 +12,7 @@
   let { projectId }: { projectId: string } = $props();
   const loading = $derived(api.project(projectId));
   const documents = $derived(api.documents(projectId));
+  const memory = $derived(api.memory(projectId));
 </script>
 
 <nav class="trail"><a href="#/">Projects</a> /</nav>
@@ -36,6 +37,19 @@
   <p>
     <a href={ledgerHref(projectId)}>The project's ledger</a>: its issues, claims and results, as a
     board.
+  </p>
+  <p>
+    <a href={memoryHref(projectId)}>The project memory</a>: notes on how to work here, which every
+    agent receives.
+    {#await memory then found}
+      {found.memory.entries.length} entries{#if found.memory.waiting > 0};
+        <strong
+          >{found.memory.waiting}
+          {found.memory.waiting === 1 ? 'proposal waits' : 'proposals wait'} for you</strong
+        >{/if}.
+    {:catch error}
+      <ErrorMessage {error} />
+    {/await}
   </p>
   <ProjectFiles {projectId} />
 

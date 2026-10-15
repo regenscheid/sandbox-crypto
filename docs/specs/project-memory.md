@@ -1,6 +1,6 @@
 # Project memory
 
-Date: 2026-10-14. **Status: Approved (2026-10-14, by the owner). Built ([project memory](../MEMORY.md)): the store, the proposals and the user's decisions over the workspace API, the agent tools, and the memory section of every role's system message with its pin (PM-1 to PM-3, PM-5 to PM-9, PM-11); the Memory page is not.** The owner decided: a built-in memory tool with its own small store, not a living document; agents only propose and the user decides; every agent role receives the accepted entries; the memory is never a file in any environment; no ledger `lesson` type; and the three questions below, as recommended.
+Date: 2026-10-14. **Status: Approved (2026-10-14, by the owner). Built ([project memory](../MEMORY.md)): the store, the proposals and the user's decisions over the workspace API, the agent tools, the memory section of every role's system message with its pin, and the GUI's Memory page (PM-1 to PM-11); memory across projects (PM-12) is later.** The owner decided: a built-in memory tool with its own small store, not a living document; agents only propose and the user decides; every agent role receives the accepted entries; the memory is never a file in any environment; no ledger `lesson` type; and the three questions below, as recommended.
 
 ## Scope
 

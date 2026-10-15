@@ -7,6 +7,7 @@ import {
   issuesHref,
   ledgerEntryHref,
   ledgerHref,
+  memoryHref,
   parseRoute,
   pdfHref,
   projectHref,
@@ -68,6 +69,9 @@ describe('routes', () => {
     [`#/projects/p1/artifacts/art-1/revisions/2/${SHA.toUpperCase()}`, { view: 'missing' }],
     ['#/projects/p1/artifacts/art-1/revisions/2/abc', { view: 'missing' }],
     ['#/projects/p1/artifacts/art-1/revisions/2', { view: 'missing' }],
+    ['#/projects/p1/memory', { view: 'memory', project: 'p1' }],
+    ['#/projects/p1/memory/', { view: 'memory', project: 'p1' }],
+    ['#/projects/p1/memory/mem-1', { view: 'missing' }],
     ['#/projects/p1/ledger', { view: 'ledger', project: 'p1' }],
     ['#/projects/p1/ledger/', { view: 'ledger', project: 'p1' }],
     ['#/projects/p1/ledger/issues', { view: 'issues', project: 'p1' }],
@@ -116,6 +120,7 @@ describe('routes', () => {
       sha256: SHA,
     });
     expect(parseRoute(ledgerHref('p 1'))).toEqual({ view: 'ledger', project: 'p 1' });
+    expect(parseRoute(memoryHref('p/1'))).toEqual({ view: 'memory', project: 'p/1' });
     expect(parseRoute(findingHref('p 1', 's/1', 'f#2'))).toEqual({
       view: 'finding',
       project: 'p 1',

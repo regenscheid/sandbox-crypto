@@ -1,0 +1,103 @@
+<!-- SPDX-License-Identifier: MIT -->
+<!-- One accepted entry of the project memory (docs/specs/project-memory.md, PM-4): its
+     text through the Markdown component, whether agents receive it, and the user's
+     changes, each naming the revision shown. Its history is one click away. -->
+<script lang="ts">
+  import type { MemoryEntry } from '../lib/api-types';
+  import Markdown from '../lib/Markdown.svelte';
+  import { formatTime } from '../lib/format';
+  import { type MemoryAction, textProblem } from '../lib/memory';
+  import MemoryHistory from './MemoryHistory.svelte';
+
+  let {
+    projectId,
+    entry,
+    first,
+    last,
+    given,
+    busy,
+    onchange,
+  }: {
+    projectId: string;
+    entry: MemoryEntry;
+    first: boolean;
+    last: boolean;
+    /** Whether agents receive this entry, within the bound (PM-7). */
+    given: boolean;
+    busy: boolean;
+    onchange: (change: MemoryAction) => Promise<boolean>;
+  } = $props();
+  /** The text being edited, and the revision it was opened at; null when not editing. */
+  let draft = $state<string | null>(null);
+  let base = $state(0);
+  let history = $state(false);
+  const problem = $derived(draft === null ? null : textProblem(draft));
+
+  function edit() {
+    draft = entry.text;
+    base = entry.revision;
+  }
+  async function save() {
+    if (draft === null || problem !== null) return;
+    const change = { action: 'edit' as const, entry: entry.entry_id, expected: base, text: draft };
+    if (await onchange(change)) draft = null;
+  }
+  function move(direction: 'up' | 'down') {
+    void onchange({ action: 'move', entry: entry.entry_id, expected: entry.revision, direction });
+  }
+  function remove() {
+    if (window.confirm(`Remove ${entry.entry_id}? Its history is kept.`)) {
+      void onchange({ action: 'remove', entry: entry.entry_id, expected: entry.revision });
+    }
+  }
+</script>
+
+<li class="entry" class:left={!given}>
+  <p class="head">
+    <code>{entry.entry_id}</code>
+    <span class="muted">revision {entry.revision}, {formatTime(entry.changed_at)}</span>
+    {#if !given}<strong>not given to agents: past the bound</strong>{/if}
+  </p>
+  {#if draft === null}
+    <Markdown source={entry.text} />
+    <button type="button" disabled={busy} onclick={edit}>Edit</button>
+    <button type="button" disabled={busy || first} onclick={() => move('up')}>Move up</button>
+    <button type="button" disabled={busy || last} onclick={() => move('down')}>Move down</button>
+    <button type="button" disabled={busy} onclick={remove}>Remove</button>
+  {:else}
+    <textarea aria-label={`The text of ${entry.entry_id}`} rows="5" bind:value={draft}></textarea>
+    {#if problem}<p role="alert">{problem}</p>{/if}
+    {#if base !== entry.revision}
+      <div role="note">
+        <p>
+          {entry.entry_id} changed while you edited it: it is now at revision {entry.revision}, and
+          your text is based on revision {base}. Its text now:
+        </p>
+        <Markdown source={entry.text} />
+        <button type="button" onclick={() => (base = entry.revision)}
+          >Keep my text, over revision {entry.revision}</button
+        >
+      </div>
+    {/if}
+    <button type="button" disabled={busy || problem !== null} onclick={save}>Save</button>
+    <button type="button" onclick={() => (draft = null)}>Cancel</button>
+  {/if}
+  <button type="button" onclick={() => (history = !history)}
+    >{history ? 'Hide the history' : 'History'}</button
+  >
+  {#if history}<MemoryHistory {projectId} entry={entry.entry_id} />{/if}
+</li>
+
+<style>
+  .entry {
+    margin-bottom: 1em;
+    overflow-wrap: anywhere;
+  }
+  .left {
+    opacity: 0.7;
+  }
+  textarea {
+    width: 100%;
+    box-sizing: border-box;
+  }
+</style>

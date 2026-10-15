@@ -4,6 +4,8 @@ decisions (docs/specs/project-memory.md, PM-4)."""
 
 from __future__ import annotations
 
+import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +13,20 @@ import pytest
 
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.documents.models import Author
-from sandbox_science.orchestrator.memory import ProjectMemory
+from sandbox_science.orchestrator.memory import (
+    MAX_ENTRIES,
+    MAX_REASON,
+    MAX_TEXT,
+    MAX_WAITING,
+    Memory,
+    MemoryEntry,
+    MemoryEntryHistory,
+    MemoryProposal,
+    MemoryVersion,
+    ProjectMemory,
+)
+from sandbox_science.workspace.api import dumps
+from sandbox_science.workspace.memory import MemoryAnswer, MemoryHistory, MemoryProposals
 
 from .test_reviews import client as client
 
@@ -104,3 +119,45 @@ async def test_bad_changes_are_refused(client) -> None:
         assert (await post(client, value)).status == 400, value
     missing = {"action": "decline", "proposal": "prop-9", "operation_id": "u1"}
     assert (await post(client, missing)).status == 404
+
+
+API = Path(__file__).parents[3] / "web" / "workspace" / "src" / "lib" / "api.ts"
+
+
+def test_the_client_reads_the_largest_memory_answers() -> None:
+    """Every answer fits the client's bound: 100 entries, 50 proposals each beside its
+    entry, or 50 versions, of 1,000 four-byte characters, each sent as two escapes, with
+    authors as long as the store keeps (4 KiB of three-byte characters)."""
+    found = re.search(r"MEMORY_MAX_BYTES = (\d+) \* 1024;", API.read_text())
+    assert found, "api.ts must set MEMORY_MAX_BYTES as a number of KiB"
+    bound = int(found[1]) * 1024
+    at = datetime(2026, 10, 14, 12, 0, 0, 123456, UTC)
+    text, reason = "\U0001f600" * MAX_TEXT, "\U0001f600" * MAX_REASON
+    author = Author(
+        kind="agent", session_id="s" * 128, run_id="r" * 128, role="delegated",
+        model="∀" * 600, alias="∀" * 600, tool_call="c" * 128,
+    )  # fmt: skip
+    assert len(author.model_dump_json(exclude_none=True).encode()) <= 4096
+    entry = MemoryEntry(entry_id="mem-999999999", revision=999999999, text=text, changed_at=at)
+    memory = Memory(
+        project="p" * 128, version=999999999, entries=(entry,) * MAX_ENTRIES,
+        characters=MAX_TEXT * MAX_ENTRIES, given=16, waiting=MAX_WAITING,
+    )  # fmt: skip
+    proposal = MemoryProposal(
+        proposal_id="prop-999999999", action="change", entry_id="mem-999999999",
+        base=999999999, text=text, reason=reason, proposer=author, proposed_at=at,
+        state="waiting", decided_at=None, current=entry,
+    )  # fmt: skip
+    version = MemoryVersion(
+        revision=999999999, version=999999999, change="edited", text=text, author=author,
+        at=at, proposal="prop-999999999", proposer=author, proposed_at=at, reason=reason,
+    )  # fmt: skip
+    history = MemoryEntryHistory(
+        entry_id="mem-999999999", removed=False, versions=(version,) * 50, next_before=1
+    )
+    for answer in (
+        MemoryAnswer(memory=memory, bound=16000),
+        MemoryProposals(proposals=(proposal,) * MAX_WAITING),
+        MemoryHistory(history=history),
+    ):
+        assert len(dumps(answer.model_dump(mode="json")).encode()) <= bound, type(answer)
