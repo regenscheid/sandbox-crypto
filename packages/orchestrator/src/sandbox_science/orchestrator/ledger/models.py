@@ -289,6 +289,10 @@ WorkLimit = Literal["time", "tools", "context", "ideas"]
 Verdict = Literal["accepted", "rejected", "inconclusive"]
 WORK_HOLDERS: Final = ("issue", "claim", "result")
 """The entry types work records are on (LG-6)."""
+MAX_NOTES: Final = 16384
+"""The most bytes of UTF-8 a work record's reference notes hold in all."""
+MAX_ENTRY_WORK: Final = 5000
+"""The most work records one entry holds."""
 
 
 class WorkReference(Contract):
@@ -351,6 +355,8 @@ class WorkInput(Contract):
             raise ValueError("an assessment that names the work it assesses gives its verdict")
         if self.ending == "obstruction_claimed" and not self.references:
             raise ValueError("a claimed obstruction cites its evidence in references")
+        if sum(len((r.note or "").encode()) for r in self.references) > MAX_NOTES:
+            raise ValueError(f"the references' notes are at most {MAX_NOTES} bytes in all")
         return self
 
 

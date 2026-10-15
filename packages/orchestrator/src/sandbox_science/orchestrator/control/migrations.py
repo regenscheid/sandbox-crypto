@@ -2156,7 +2156,8 @@ def _ledger_work(schema: Schema) -> None:
     ``obstruction_claimed`` with its evidence, ``produced`` with the entries, or
     ``assessment``, which may name the record it assesses and its verdict), its pinned
     references, and the record it is part of. ``position`` orders the project's records
-    as they were made."""
+    as they were made. Neither an update, a delete nor an insert over a record (``INSERT
+    OR REPLACE``) changes one."""
     for statement in (
         """CREATE TABLE ledger_work (
     record_id TEXT PRIMARY KEY CHECK (length(record_id) = 29 AND record_id GLOB 'work-*'
@@ -2173,6 +2174,8 @@ def _ledger_work(schema: Schema) -> None:
     refs TEXT NOT NULL CHECK (json_valid(refs) AND json_type(refs) = 'array'
         AND length(CAST(refs AS BLOB)) <= 65536),
     part_of TEXT REFERENCES ledger_work(record_id),
+    assesses TEXT REFERENCES ledger_work(record_id),
+    verdict TEXT CHECK (verdict IS NULL OR verdict IN ('accepted', 'rejected', 'inconclusive')),
     author TEXT NOT NULL CHECK (json_valid(author) AND length(CAST(author AS BLOB)) <= 8192),
     reason TEXT NOT NULL CHECK (length(CAST(reason AS BLOB)) BETWEEN 1 AND 16384),
     operation_id TEXT NOT NULL CHECK (length(CAST(operation_id AS BLOB)) BETWEEN 1 AND 128),
@@ -2182,10 +2185,17 @@ def _ledger_work(schema: Schema) -> None:
     CHECK ((ending = 'limit') = (coalesce(json_type(detail, '$.limit'), '') = 'text')),
     CHECK ((ending = 'produced')
         = (coalesce(json_array_length(detail, '$.produced'), 0) >= 1)),
-    CHECK (ending = 'assessment' OR json_type(detail, '$.assesses') IS NULL),
+    CHECK ((assesses IS NULL) = (verdict IS NULL)),
+    CHECK (ending = 'assessment' OR assesses IS NULL),
     CHECK (ending != 'obstruction_claimed' OR json_array_length(refs) >= 1)
 ) STRICT""",
         "CREATE INDEX ledger_work_entry ON ledger_work(entry_id, position)",
+        "CREATE INDEX ledger_work_assesses ON ledger_work(assesses, position) "
+        "WHERE assesses IS NOT NULL",
+        """CREATE TRIGGER ledger_work_no_replace BEFORE INSERT ON ledger_work
+WHEN EXISTS (SELECT 1 FROM ledger_work WHERE record_id = NEW.record_id
+    OR position = NEW.position)
+BEGIN SELECT RAISE(ABORT, 'work records are append-only'); END""",
         """CREATE TRIGGER ledger_work_no_update BEFORE UPDATE ON ledger_work
 BEGIN SELECT RAISE(ABORT, 'work records are append-only'); END""",
         """CREATE TRIGGER ledger_work_no_delete BEFORE DELETE ON ledger_work

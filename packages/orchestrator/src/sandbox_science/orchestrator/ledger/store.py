@@ -50,6 +50,7 @@ from .models import (
     FIELDS,
     LINKS,
     MAX_CLEARED,
+    MAX_ENTRY_WORK,
     PREFIXES,
     SET_ASIDE,
     SHOWN_CHECKS,
@@ -1032,13 +1033,26 @@ class Ledger:
                     f"{where} is on {row.handle}: work is recorded on an issue, a claim or a "
                     "result",
                 )
-            produced = [self._work_entry(db, project, e, keys) for e in item.produced or ()]
+            (held,) = db.execute(
+                "SELECT count(*) FROM ledger_work WHERE entry_id=?", (row.entry_id,)
+            ).fetchone()
+            if held >= MAX_ENTRY_WORK:
+                raise DocumentError(
+                    POLICY_DENIED,
+                    f"{row.handle} holds {MAX_ENTRY_WORK} work records, the most an entry "
+                    "holds: record further work on the entries it produced, or a new issue",
+                )
+            produced = [
+                self._produced(db, project, e, keys, row, item.references)
+                for e in item.produced or ()
+            ]
             part_of = None if item.part_of is None else _work_id(db, project, item.part_of, named)
             detail: Json = {}
             if item.limit is not None:
                 detail["limit"] = item.limit
             if produced:
                 detail["produced"] = [p.entry_id for p in produced]
+            assessed = None
             if item.assesses is not None:
                 assessed = _work_id(db, project, item.assesses, named)
                 (on,) = db.execute(
@@ -1050,7 +1064,6 @@ class Ledger:
                         f"{where} assesses work on another entry: record the assessment on "
                         "the entry the work it assesses is on",
                     )
-                detail.update(assesses=assessed, verdict=item.verdict)
             cited = [self._cited(db, project, ref, named, pinned) for ref in item.references]
             record = new_id("work")
             if item.key is not None:
@@ -1062,9 +1075,10 @@ class Ledger:
             ).fetchone()
             db.execute(
                 "INSERT INTO ledger_work(record_id,position,project,entry_id,entry_revision,"
-                "tried,ending,detail,refs,part_of,author,reason,operation_id,provenance,"
-                "created) VALUES(?,(SELECT coalesce(max(position),0)+1 FROM ledger_work),"
-                "?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "tried,ending,detail,refs,part_of,assesses,verdict,author,reason,"
+                "operation_id,provenance,created) VALUES(?,"
+                "(SELECT coalesce(max(position),0)+1 FROM ledger_work),"
+                "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     record,
                     project,
@@ -1072,9 +1086,11 @@ class Ledger:
                     head,
                     _normalized(item.tried),
                     item.ending,
-                    json.dumps(detail, sort_keys=True),
-                    json.dumps(cited, sort_keys=True),
+                    json.dumps(detail, sort_keys=True, ensure_ascii=False),
+                    json.dumps(cited, sort_keys=True, ensure_ascii=False),
                     part_of,
+                    assessed,
+                    item.verdict,
                     author.model_dump_json(exclude_none=True),
                     mutation.reason,
                     mutation.operation_id,
@@ -1099,6 +1115,47 @@ class Ledger:
             )
             recorded.append(record)
         return recorded
+
+    def _produced(
+        self,
+        db: sqlite3.Connection,
+        project: str,
+        reference: str,
+        keys: dict[str, _Row],
+        on: _Row,
+        cited: list[WorkReference],
+    ) -> _Row:
+        """An entry a work record says it produced (LG-6): one the same change creates,
+        or one the delegation the record cites created (its child run wrote the entry's
+        first revision); never the entry the record is on."""
+        found = self._work_entry(db, project, reference, keys)
+        if found.entry_id == on.entry_id:
+            raise DocumentError(
+                INVALID_REQUEST, f"a work record on {on.handle} names it as produced"
+            )
+        if reference.startswith("new:"):
+            return found
+        runs = [
+            run
+            for ref in cited
+            if ref.delegation is not None
+            for (run,) in db.execute(
+                "SELECT run FROM delegations WHERE delegation_id=? AND project_id=?",
+                (ref.delegation, project),
+            )
+        ]
+        first = db.execute(
+            "SELECT json_extract(author,'$.run_id') FROM ledger_revisions "
+            "WHERE entry_id=? AND revision=1",
+            (found.entry_id,),
+        ).fetchone()
+        if first is None or first[0] not in runs:
+            raise DocumentError(
+                INVALID_REQUEST,
+                f"{found.handle} is named as produced: a work record names the entries its "
+                "change creates (new:<key>), or those the delegation it cites created",
+            )
+        return found
 
     def _work_entry(
         self, db: sqlite3.Connection, project: str, reference: str, keys: dict[str, _Row]
@@ -1165,7 +1222,7 @@ class Ledger:
             row = self._find(db, project, reference)
             found = db.execute(
                 "SELECT record_id,position,entry_revision,tried,ending,detail,refs,part_of,"
-                "author,reason,operation_id,provenance,created FROM ledger_work "
+                "author,reason,operation_id,provenance,created,assesses,verdict FROM ledger_work "
                 "WHERE entry_id=? AND position<? ORDER BY position DESC LIMIT ?",
                 (row.entry_id, before or 2**62, limit + 1),
             ).fetchall()
@@ -1187,8 +1244,8 @@ class Ledger:
                     ending=r[4],
                     limit=(detail := json.loads(r[5])).get("limit"),
                     produced=[handle(e) for e in detail.get("produced", [])],
-                    assesses=detail.get("assesses"),
-                    verdict=detail.get("verdict"),
+                    assesses=r[13],
+                    verdict=r[14],
                     references=json.loads(r[6]),
                     part_of=r[7],
                     author=json.loads(r[8]),

@@ -822,8 +822,14 @@ class LedgerTool:
         return _dump({**shown, "next_before": history.next_before})
 
     def _work(self, page: WorkPage) -> str:
-        """An entry's work records within the budget, their long texts clipped."""
+        """An entry's work records within the budget, their long texts clipped. A record
+        that alone exceeds the budget is shortened, its notes first and then what was
+        tried, so that every page reads; the next page starts after the last shown."""
         shown: Json = {"entry_id": page.entry_id, "handle": page.handle, "records": []}
+
+        def size(value: Json) -> int:
+            return len(_dump({**shown, "records": [*shown["records"], value]})) + 40
+
         for record in page.records:
             value = record.model_dump(mode="json", exclude={"provenance"})
             value["tried"] = _clip(value["tried"], 2000)
@@ -831,10 +837,23 @@ class LedgerTool:
             for cited in value["references"]:
                 if "note" in cited:
                     cited["note"] = _clip(cited["note"], 500)
-            if len(_dump({**shown, "next_before": 2**62})) + len(_dump(value)) > self.budget:
-                return _dump({**shown, "next_before": shown["records"][-1]["position"]})
+            if size(value) > self.budget and shown["records"]:
+                break
+            for limit in (100, 0):
+                for cited in value["references"]:
+                    if size(value) > self.budget and "note" in cited:
+                        cited["note"] = _clip(cited["note"], limit) if limit else "…"
+            for limit in (500, 100):
+                if size(value) > self.budget:
+                    value["tried"] = _clip(value["tried"], limit)
+                    value["reason"] = _clip(value["reason"], limit)
+            if size(value) > self.budget:
+                value["references"] = value["references"][:1]
+                value["references_shown"] = 1
             shown["records"].append(value)
-        return _dump({**shown, "next_before": page.next_before})
+        whole = len(shown["records"]) == len(page.records)
+        more = page.next_before if whole else shown["records"][-1]["position"]
+        return _dump({**shown, "next_before": more})
 
     def _entry(self, view: EntryView, args: _Read) -> str:
         """The entry within the budget: its statement from ``statement_from``, as much as
@@ -953,6 +972,7 @@ class LedgerTool:
                 "operation_id": result.operation_id,
                 "replayed": result.replayed,
                 "handles": [entry.handle for entry in result.entries[:8]],
+                "work": result.work[:8],
             }
             for (line, _), result in zip(mutations[:SHOWN_LINES], results, strict=False)
         ]
@@ -964,6 +984,7 @@ class LedgerTool:
                 "recorded": sum(not result.replayed for result in results),
                 "replayed": sum(result.replayed for result in results),
                 "entries": sum(len(result.entries) for result in results),
+                "work": sum(len(result.work) for result in results),
                 "imported": shown,
                 "more_lines": max(0, len(results) - SHOWN_LINES),
             }
