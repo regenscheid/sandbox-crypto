@@ -1,6 +1,6 @@
 # Run service: GUI chat and live run events
 
-Date: 2026-10-14. **Status: Approved; not built.** The owner decided the outline (refactoring plan, decision 5): a small orchestrator run service, one active run per session, messages queued to the run's next safe point, a new run carries earlier tasks and final answers, and a message may start a run within the project's model budget. The questions below were decided on 2026-10-14 by the coordinator under the owner's autonomy mandate, each as recommended. Conventions in the [index](README.md).
+Date: 2026-10-14. **Status: Approved and built** (`sandbox-science-harness serve`, the workspace's chat routes and the session page's chat panel; [workspace](../WORKSPACE.md#chat)). Waking a session when a detached job ends is not built. The owner decided the outline (refactoring plan, decision 5): a small orchestrator run service, one active run per session, messages queued to the run's next safe point, a new run carries earlier tasks and final answers, and a message may start a run within the project's model budget. The questions below were decided on 2026-10-14 by the coordinator under the owner's autonomy mandate, each as recommended. Conventions in the [index](README.md).
 
 ## Scope
 
@@ -42,10 +42,10 @@ The browser's views are E-06 and E-07 in the refactoring plan. Waking a session 
 
   | Kind | `data` |
   | --- | --- |
-  | `started` | `project`, `session`, `run_id`, `message_ids` (the messages it answers), `prompt_provenance` (the pins) |
+  | `started` | `project`, `session`, `run_id`, `message_ids` (the messages it answers), `prompt_provenance` (the pins), and the run tree's `role`, `parent` and `delegation` (PD-32) |
   | `user` | `message_id` (null for a CLI task), `text` |
   | `model` | `turn`: a model call started (the GUI shows that the agent is thinking) |
-  | `assistant` | `turn`, `text`, `tool_calls`: `[{id, name, arguments}]`, `usage`: `{model, input_tokens, output_tokens}` as the record keeps it (RS-6a) |
+  | `assistant` | `turn`, `text`, `tool_calls`: `[{id, name, arguments}]`, `usage`: `{model, input_tokens, output_tokens, characters}` as the record keeps it (RS-6a) |
   | `tool` | `turn`, `call_id`, `name`, `result` (the text the model read, bounded), `outcome` (state, error kind and exit code when there is one) |
   | `notice` | `source`, `ids`: notices added to the conversation, such as jobs or reviews |
   | `waiting` | `job_ids`, `mode` while the agent waits on jobs; `null` when the wait ends |

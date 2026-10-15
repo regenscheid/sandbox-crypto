@@ -7,9 +7,9 @@ Confirmed: D64, and D66 and D67 with the design this page proposes. The MCP prox
 - `Authorization` and custom-header authentication should also be supported.
 - A secrets manager should keep raw credentials away from agents.
 
-**crypto-research-mcp uses a Cloudflare Access service token, not OAuth** (agreed by the owner, 2026-10-14). It is a `headers` server: its two header values reference two credentials of one OpenShell provider, which the owner creates. No secret passes through an agent, the harness or this repository ([below](#crypto-research-mcp-a-cloudflare-access-service-token)). The connector auth service and the OAuth flow stay the design for later OAuth servers, off M2's path, unless the server also needs its own OAuth bearer behind Access ([question 6](#the-harness-mcp-client-decisions-d-08)).
+**crypto-research-mcp uses a Cloudflare Access service token, not OAuth** (agreed by the owner, 2026-10-14). It is a `headers` server: its two header values reference two credentials of one OpenShell provider, which the owner creates. No secret passes through an agent, the harness or this repository ([below](#crypto-research-mcp-a-cloudflare-access-service-token)). The server is at `https://research-mcp-api.npages.org/mcp`, and the service token alone is enough: no OAuth bearer is needed behind Access ([checked on 2026-10-14](#what-the-server-offers)). The connector auth service and the OAuth flow stay the design for later OAuth servers, off M2's path.
 
-Sources: the [MCP authorization specification, 2025-11-25](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/docs/specification/2025-11-25/basic/authorization.mdx) and the OpenShell v0.1.3 [providers](https://github.com/NVIDIA/OpenShell/blob/v0.1.3/docs/how-it-works/providers/overview.mdx) and [profiles](https://github.com/NVIDIA/OpenShell/blob/v0.1.3/docs/how-it-works/providers/profiles.mdx) documentation. The MCP proxy is tested against a fake server, and it and its compiled policy were run under OpenShell on babbage (labs 2, 13, 15 and 17). The connector auth service, the OAuth flow and the checks for the spike below are not built or tested, and nothing has called crypto-research-mcp with the service token yet.
+Sources: the [MCP authorization specification, 2025-11-25](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/docs/specification/2025-11-25/basic/authorization.mdx) and the OpenShell v0.1.3 [providers](https://github.com/NVIDIA/OpenShell/blob/v0.1.3/docs/how-it-works/providers/overview.mdx) and [profiles](https://github.com/NVIDIA/OpenShell/blob/v0.1.3/docs/how-it-works/providers/profiles.mdx) documentation. The MCP proxy is tested against a fake server, and it and its compiled policy were run under OpenShell on babbage (labs 2, 13, 15 and 17). The connector auth service, the OAuth flow and the checks for the spike below are not built or tested. A direct `initialize` and tool listing with the service token worked on 2026-10-14; nothing has called crypto-research-mcp through the proxy yet.
 
 ## Goals
 
@@ -52,7 +52,7 @@ The per-caller proxy credential still matters: it stops other sandboxes and proj
 
 **Other duties:**
 
-- Rate and spend limits per project and server (for credit-consuming tools such as crawlers).
+- Rate limits per project and server are not built. Cost control belongs to the MCP services, not to this project: a service limits and bills its own use, and a tool is escalated for its effects, never for its cost (owner, 2026-10-14). Project-side cost controls are a low-priority backlog item.
 - Response size limits. Large or binary results (PDFs, images) become artifact references in project storage instead of base64 in model context, as the external skill pack requires.
 - Uniform handling of `403 insufficient_scope` (escalation, not automatic re-consent).
 - One audit stream of requests and responses for the contextual monitor.
@@ -234,13 +234,13 @@ Tested against the proxy and its fake server in one process (`packages/orchestra
 - Exporting the event store's records from the proxy's VM to the monitor, and a way for approvals to reach the proxy other than `openshell sandbox exec`.
 - The connector auth service: OAuth with DCR, refresh, the upstream-worker swap for external refresh, and `403 insufficient_scope` as an escalation. Until then an `oauth` server works only with a token put into its provider by hand. crypto-research-mcp does not need it.
 - Binary results as artifact references; they are withheld for now.
-- Rate and spend limits per project and server.
+- Rate limits per project and server. Cost control belongs to the MCP services; a project-side control is a low-priority backlog item.
 - MCP 2026-07-28, which the policy library knows: it has no sessions, carries metadata in every request, mirrors names in `Mcp-Method` and `Mcp-Name` headers and embeds server requests in results. The proxy refuses servers pinned to it, and the policy's list of protocol methods needs it too.
 - Passing server notifications (progress, logging, list changes) to callers, and resuming interrupted event streams.
 - Caller identity from the platform rather than per-sandbox tokens, since the middleware knows which sandbox sent a request, and `process`-level attribution.
 - Approved tools compiled into the proxy sandbox's fence one by one. Until then, `compile-policy --admit-escalated` admits at the fence the tools the policy escalates by name, but not the patterns whose deny entries would deny an exact-allowed tool, and the proxy alone holds each call for approval (backlog).
 - `Basic` credentials in `headers` servers: how OpenShell expects a placeholder inside one is unchecked.
-- A test against crypto-research-mcp, which needs the owner's service token in its provider ([below](#crypto-research-mcp-a-cloudflare-access-service-token)).
+- A call to crypto-research-mcp through the proxy, which needs the owner's service token in its provider ([below](#crypto-research-mcp-a-cloudflare-access-service-token)).
 
 ## Authentication modes
 
@@ -264,7 +264,7 @@ crypto-research-mcp sits behind Cloudflare Access. A request passes Access when 
 
 ```yaml
 crypto-research-mcp:
-  url: https://…/mcp                     # the Access-protected address of the server
+  url: https://research-mcp-api.npages.org/mcp   # the Access-protected address of the server
   revision: "2025-11-25"
   auth:
     mode: headers
@@ -298,18 +298,27 @@ The policy compiler binds the server's endpoint to that one provider (`credentia
 
 **Rotation.** A new token goes in the same way with `openshell provider update crypto-research-mcp --credential CF_ACCESS_CLIENT_ID --credential CF_ACCESS_CLIENT_SECRET --wait`. A running process keeps the placeholder of the credential's revision it started with, so the MCP proxy's sandbox is restarted after the update ([refresh](#oauth-flow-mcp-2025-11-25), the same rule). Revoking the token in Cloudflare stops access at once; deleting the provider (`openshell provider delete crypto-research-mcp`) stops the proxy from sending it.
 
-**Checked on babbage, 2026-10-14:** the `openshell provider create`, `update` and `profile` commands and flags above, from the installed 0.1.3's `--help`; no provider, profile or sandbox was created. The profile's fields follow OpenShell 0.1.3's profile documentation (`auth_style: header` with `header_name`); its `lint` needs the gateway and has not run. Not checked: a request through Access with a service token, which needs the owner's token.
+**Checked on babbage, 2026-10-14:** the `openshell provider create`, `update` and `profile` commands and flags above, from the installed 0.1.3's `--help`; no provider, profile or sandbox was created. The profile's fields follow OpenShell 0.1.3's profile documentation (`auth_style: header` with `header_name`); its `lint` needs the gateway and has not run. Not checked: a request through the proxy with the provider attached.
+
+### What the server offers
+
+Checked on 2026-10-14 with the owner's service token, outside the proxy:
+
+- **Access alone works.** An MCP `initialize` carrying `CF-Access-Client-Id` and `CF-Access-Client-Secret` got a normal answer (server `cloudflare-mcp-portal`, protocol 2025-11-25). Without a valid client ID the server answers 401 with an OAuth `WWW-Authenticate` challenge, so OAuth stays a possible second route, and nothing needs it.
+- **What the token sees.** After the owner added a Service Auth policy for each server, the token sees 72 tools from seven servers: `attack-catalog-mcp`, `e-print-mcp`, `firecrawl-mcp`, `nist-csrc-mcp`, `paper-search-mcp`, `patent-search-mcp` and `web-fetch-mcp`; and three portal tools (`portal_list_servers`, `portal_toggle_servers`, `portal_toggle_single_server`).
+- **Cost and escalation.** The services are self-hosted and effectively free, and cost control is theirs in any case. The policy escalates a tool for what it does (feedback, corpus refreshes, live browser sessions, monitors), not for what it costs. A project policy that allows all of the research servers' tools escalates none of them, and then `compile-policy --admit-escalated` is not needed for this server. The `portal_*` tools that change which servers are enabled stay denied to agents.
+- **The example policy.** `examples/policy.yaml` was checked against the 78 tools listed on 2026-10-10 (a test fixture pins each tool's outcome). A tool it does not name asks first, so a server revision that adds tools stays safe.
 
 ### The harness MCP client: decisions (D-08)
 
-The proxy side is built; the orchestrator calls no MCP server yet. Decided on 2026-10-14 by the coordinator under the owner's autonomy mandate, except question 6:
+The proxy side and the harness's client are built ([the harness's client](#the-harnesss-client)). Decided on 2026-10-14 by the coordinator under the owner's autonomy mandate; question 6 was answered by a check:
 
-1. **How agents see connector tools.** *Decided, as recommended:* the proxy's tools of each server the project's policy allows, listed at a run's start, offered to MAIN under their prefixed names, with the effect class `effect` unless the policy marks them read-only, so the plan fence applies.
+1. **How agents see connector tools.** *Decided, as recommended:* the tools each configured server lists through the proxy, listed at a run's start and offered to MAIN under their prefixed names, each with the effect class `effect`, so the plan fence applies. The proxy does not filter the list by policy, so a denied tool is offered and refused when it is called.
 2. **The orchestrator's proxy token.** *Decided, as recommended:* the orchestrator's token goes in a file only the harness reads, like the worker token, until callers are identified by the platform (backlog).
-3. **Escalated tools.** *Decided:* through the proxy's existing escalation path. An escalated call is refused with `approval_required` and recorded as a permission request; the operator answers with `sandbox-science-mcp-proxy pending` and `approve` or `deny` (owner decision 1: approvals through the CLI for M2), and the agent sees the refusal until then, as for any other escalation, and calls again. For an approval to take effect, the proxy sandbox's fence has to admit the tool: `compile-policy --admit-escalated`, opt-in and off by default, admits the tools the policy escalates by name, until approved tools are compiled into the fence one by one (above, backlog).
+3. **Escalated tools.** *Decided:* through the proxy's existing escalation path. An escalated call is refused with `approval_required` and recorded as a permission request; the operator answers with `sandbox-science-mcp-proxy pending` and `approve` or `deny` (owner decision 1: approvals through the CLI for M2), and the agent sees the refusal until then, as for any other escalation, and calls again. For an approval to take effect, the proxy sandbox's fence has to admit the tool: `compile-policy --admit-escalated`, opt-in and off by default, admits the tools the policy escalates by name, until approved tools are compiled into the fence one by one (above, backlog). A policy that escalates no tool of a server needs no such admission for it.
 4. **Results.** *Decided, as recommended:* text results bounded as tool results are now; binary results as artifact references once that is built.
 5. **A product command for the proxy's sandbox**, replacing the lab script and the manual steps above (D-08, step 3). *Decided, as recommended.*
-6. **Open (asked of the owner, 2026-10-14): whether crypto-research-mcp accepts Access alone.** If its origin trusts Cloudflare Access (for instance by the `Cf-Access-Jwt-Assertion` header Access adds), the service token is all it needs. If it also checks its own OAuth bearer behind Access, the service token covers Access only: the server entry then needs both the Access headers and an OAuth token, and the connector auth service, with the OAuth flow below, comes back onto M2's path.
+6. **Whether crypto-research-mcp accepts Access alone.** *Answered by a check on 2026-10-14:* it does. The service token is all it needs, so the connector auth service stays off M2's path ([what the server offers](#what-the-server-offers)).
 
 ## OAuth flow (MCP 2025-11-25)
 

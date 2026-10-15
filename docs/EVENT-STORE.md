@@ -146,7 +146,7 @@ To back up a running store, export it or use SQLite's backup; a copy of `events.
 
 ## Not yet done
 
-- **Other writers.** The behavior monitor and the orchestrator's own requests (D47) write nothing yet.
+- **Other writers.** The behavior monitor and the orchestrator's own model and fetch requests (D47) write nothing yet. The orchestrator's MCP calls are recorded by the MCP proxy, with the orchestrator as their caller.
 - **Checkpoints** go to the journal only where someone installs the timer; nothing sends them off the host. The MCP proxy's store, in its sandbox, has no timer; its records leave the sandbox only through `export`.
 - **Retention.** The store only grows. Rotating to a new file that starts from the old one's final checkpoint is a possible later step.
 - **Several hosts.** A store is one file on one host; the worker writes to the middleware's store through a shared filesystem, and components on other hosts would need a store service.

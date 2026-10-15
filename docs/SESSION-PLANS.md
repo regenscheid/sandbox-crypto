@@ -122,7 +122,8 @@ status alone into approval or execution authority.
 ## Bounded reads, retention and failures
 
 Public internal methods are `publish`, `revise`, `progress`, `set_status`, `summary`,
-`current`, `compact_current`, `version`, `history` and `events`. `summary` returns a small current
+`current`, `compact_current`, `version`, `history`, `events`, `pinned` (a handle that
+also refuses a session closed and opened again) and `has_records`. `summary` returns a small current
 reference, workflow/status/progress/event cursors, goal-outcome tag and last
 attributed event, without building the full current projection. It validates the
 latest event against its one bounded canonical mutation, including original
@@ -144,7 +145,7 @@ cursor.
 | Engineering bound | Value |
 | --- | --- |
 | Encoded body | 65,536 bytes, canonical ASCII JSON |
-| One retained record / SQL prefix | 81,920 bytes / bound plus one byte |
+| One retained record | 81,920 bytes, checked by the table when written |
 | One history/event page | At most 16 records and 262,144 record bytes |
 | Current projection response | 2 MiB; explicit refusal beyond it, use history pages |
 | Compact current projection | 256 KiB |
@@ -167,8 +168,9 @@ expiry or silent forgetting of unresolved history. A full or tightened quota
 refuses a new plan mutation atomically and leaves existing plans readable. It
 does not block unrelated document saves or mutate their operation namespaces.
 
-SQL projections clip record bytes before Python parsing, validate retained scope,
-identity and counters, and cap aggregate page/current materialization. Corrupt or
+Reads take records as the tables hold them (the tables check size and byte accounting
+when they are written), validate retained scope, identity and counters, and cap
+aggregate page/current materialization. Corrupt or
 unsupported retained state is refused rather than assigned a new cursor, actor or
 completion. Historical records have immutable update/delete triggers. SQLite
 I/O errors can still fail the whole transaction; the caller must report that

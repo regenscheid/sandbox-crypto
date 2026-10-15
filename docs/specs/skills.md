@@ -47,7 +47,7 @@ Terms:
 - SK-17. A skill can declare kernel helpers. When an agent run loads it while that run has a kernel of the helper's language, the harness runs the helper in that kernel as an execution whose origin is the skill revision, and again after a kernel restart, before the next cell (CScience injects such helpers automatically). If injection fails, the load result says so and the body is still returned (new).
 - SK-18. If a skill's requirements are unmet, its body still loads, with a notice listing them; its helper code is not staged or injected until a probe passes (new).
 - SK-19. Artifacts from executions that used helper code list the skill revision and helper file hashes in their lineage ([research artifacts](research-artifacts.md)).
-- SK-20. Helper code that needs platform functions (project knowledge, board records, artifact publication, questions) calls the versioned platform API from the worker. The worker service attributes each call to the execution that made it, at the levels described for the [MCP proxy](../MCP-CONNECTORS.md#mcp-proxy) (new). The same kernel can read granted project data and call the API; the pack measured a CScience limit where these needed two different kernels.
+- SK-20. *Withdrawn by the owner on 2026-10-14; the ID is not reused.* Helper code has no route to the platform API. Only agents act on the platform, through tool calls, as in Claude Code. A helper that produces results for the project writes them to files, and an agent decides whether to act on them, for example by importing a ledger results file ([ledger](ledger.md), LG-41). The 2026-10-11 draft, with calls from the worker attributed to the execution that made them, is not built.
 
 ### Load evidence
 
@@ -138,7 +138,7 @@ The fixtures use `ss-test-skills`, a test pack written by this project. `alpha` 
 2. Kernel helpers: inject them when the skill loads (proposed, as CScience does), or only on an explicit call?
 3. Catalog budget: how large, given the pack's 162 skills, and should large packs rely on search alone?
 4. Pack import: a worker-side git fetch into project storage (proposed, SK-2), a user upload, or both?
-5. Which platform API functions may worker code call (SK-20), and may a call from a shared project container act for one session, given that attribution there is only at container level?
+5. *Moot (2026-10-14):* worker code calls no platform API function (SK-20 is withdrawn).
 6. How does a pack declare the platform API versions it supports: a manifest file at the pack root, or front matter?
 7. Should invalid front matter exclude a skill (proposed, SK-6), or should it load without metadata, as Claude Code does?
 

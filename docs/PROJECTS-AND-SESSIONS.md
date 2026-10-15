@@ -85,7 +85,7 @@ it does not change environment packages or grant agents settings authority. Read
 it with `sandbox-science-harness project macros --state-dir state --project p1`.
 Writing requires `--macros-file`, exact `--expected` revision and a stable
 `--operation-id`; the project GUI offers the same guarded action. See
-[project macros](PROJECT-MACROS.md) for bounds, immutable historical/check pins,
+[project macros](PROJECT-MACROS.md) for bounds, recorded macro revisions,
 lazy active-run refresh and held ambiguous finding contexts.
 
 ```bash

@@ -46,9 +46,11 @@ Exhausted or completed confirmation targets do not starve later author-work revi
 `ReviewController(persistent=True, messages=asyncio.Queue())` supplies a host boundary
 for immediate new user input while the detached review continues. The host must retain
 the store/event loop and call `close()` at shutdown. Cancellation requeues an input
-already removed from the unbounded queue. The current CLI is a one-shot process: it
+already removed from the unbounded queue. `run` is a one-shot process: it
 cancels unfinished detached work on exit, records dropped/retry state, and cannot start
-an idle session or stream a held final answer into a separate live chat turn. No idle
+an idle session or stream a held final answer into a separate live chat turn. `serve`
+is long-lived, but it builds a reviewer controller for each run and closes it when the
+run ends. No idle
 scheduler or automatic wake capability is claimed. A second process encountering a live
 owner reports pending rather than taking its grant. The GUI reads current state on
 Refresh and shows the review state at each saved run boundary; it has no push transport.
@@ -230,5 +232,5 @@ These are the reviewer's tables in the control store's schema
 
 - Shell-written artifact inventory and revisions (CRF-6), rich outputs and file contents as evidence, and ledger-specific evidence.
 - Project spend accounting; the gateway's hard spend cap is the monetary boundary.
-- Automatic idle turns, a persistent chat host and a push view.
+- Automatic idle turns, a reviewer that outlives a run, and a push view.
 - Math checks of ledger fields and of reviewer, USER and platform prose (D82).

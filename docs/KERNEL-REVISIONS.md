@@ -56,8 +56,8 @@ lineage. Direct arbitrary writes to package records can bypass the managed lock.
 
 ## Disclosure and scope
 
-Ordinary shell, cell and background-job results include `running_kernels`, at most
-the two supported languages in that session, as observed at completion. Cell and
+Ordinary shell, cell and background-job results include `running_kernels`, the session's own kernels (one per language) and those of its
+delegated runs ([worker](WORKER.md#behavior-worth-knowing)), as observed at completion. Cell and
 restart tool summaries include the kernel revision fields. A retained ordinary
 tool result names kernels that predate the current revision and explains that
 loaded state is retained until an explicit restart. These summaries are visible to

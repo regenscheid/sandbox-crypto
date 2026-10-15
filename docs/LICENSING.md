@@ -68,7 +68,7 @@ for embedded subcomponents.
 | Claude Science runtime (CScience base) | Proprietary upstream distribution | **Not used** (D11). Behavior is reimplemented; no code, prompts, skill text, schemas or assets are copied (D56). |
 | User's own `cscience-crypto` wrapper code | The user's own | Reusable where it embeds no upstream code; `src/patches.mjs` embeds upstream fragments and is excluded. The workspace's math repairs and LaTeX delimiter rules are adapted from its `src/web/cscience-math.js` and `pkg/platform/lib/math-repair.mjs`, with their tests, which the user contributed under the MIT License; each ported file says so. Its patches to the upstream Web UI were not ported |
 | Anthropic client SDKs (Python, TypeScript) | MIT | Harness model access |
-| MCP Python SDK | MIT | Harness and connector tools |
+| MCP Python SDK | MIT | A candidate, not used: the MCP proxy (D75) and the harness's MCP client are written on aiohttp |
 | OpenCode | MIT | Harness reuse candidate |
 | Pydantic AI | MIT | Harness building-block candidate |
 | LiteLLM | MIT core (enterprise directory under separate terms) | **Model gateway (D61)**: run the proxy; use only MIT-licensed features |
@@ -88,9 +88,9 @@ for embedded subcomponents.
 | grpcio | Apache-2.0 | Policy middleware gRPC server |
 | protobuf | BSD-3-Clause | Policy middleware messages |
 | PyJWT | MIT | Policy middleware: verifies OpenShell extension tokens |
-| cryptography | Apache-2.0 OR BSD-3-Clause | Ed25519 verification for PyJWT |
+| cryptography | Apache-2.0 OR BSD-3-Clause | Ed25519 verification for PyJWT; the throwaway test CA of the test-support package (development only) |
 | cffi, pycparser | MIT-0; BSD-3-Clause | Required by cryptography. MIT-0 is MIT without the attribution condition |
-| aiohttp | Apache-2.0 AND MIT | HTTP servers and clients: the worker API, the harness's worker client, the workspace server, the package cache and the MCP proxy |
+| aiohttp | Apache-2.0 AND MIT | HTTP servers and clients: the worker API, the harness's worker client, the workspace server, the package cache, the MCP proxy and the harness's MCP client |
 | aiohappyeyeballs, aiosignal, attrs, frozenlist, multidict, propcache, yarl, idna | PSF-2.0; Apache-2.0; MIT; Apache-2.0; Apache-2.0; Apache-2.0; Apache-2.0; BSD-3-Clause | Required by aiohttp |
 | pytest, pluggy, iniconfig, pytest-timeout, ruff, pyright | MIT | Development and CI only |
 | types-PyYAML, types-grpcio, types-protobuf | Apache-2.0 | Development and CI only (type stubs) |

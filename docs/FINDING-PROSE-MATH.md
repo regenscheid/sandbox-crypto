@@ -42,11 +42,12 @@ a scoped read-only route. It adds no USER body-write route.
 
 ## Checks, confirmation and delivery
 
-A check pins the real finding/response source and exact body revision/hash,
-project setting revision/hash, original document anchors and resolved effective
-context, with no fabricated document revision. Original anchors survive body
-corrections. Each new body revision also retains its save-time project setting;
-legacy history without a proved pin stays unknown. Admission, load, current-result
+A check records the real finding/response source and exact body revision/hash and
+the project setting revision it used. Its original document anchors (the finding's
+anchors at the explanation's decision revision) and resolved effective context are
+derived when read, with no fabricated document revision. Original anchors survive body
+corrections. Each new body revision also records the project setting revision it was
+saved under; legacy history without one stays unknown. Admission, load, current-result
 projection and commit fence that canonical parent. Explanation check/evidence/queue views are
 session-private; ordinary document/comment check visibility stays project-wide.
 

@@ -13,8 +13,10 @@ without a state directory, with its existing `ArtifactRef` and behavior.
 control revision references. `ArtifactInventory` in the orchestrator owns logical
 IDs, immutable bytes/revisions and bounded event pages in `control.sqlite3`.
 `ArtifactPublisher` connects a trusted run/context and worker endpoint to that
-inventory. These are internal interfaces, with no HTTP route, GUI, scheduler or
-permission grant of their own.
+inventory. These are internal interfaces, with no scheduler or permission grant of
+their own. The workspace reads the inventory through two routes, the project's
+artifact list and a link that opens a published PDF in the
+[PDF viewer](WORKSPACE.md#the-pdf-viewers-origin).
 
 ## Identity, bytes and provenance
 
@@ -342,7 +344,8 @@ with synthetic state and no live model, worker or OpenShell VM.
 - Complete telemetry and snapshotting, deletion and link semantics, ignore patterns,
   authenticated feed binding and control ingestion of the worker's observations.
 - Imports and MCP binary results, deletions and tombstones, retention drop
-  workflows, observed inputs and kernel lineage, public read/download routes, ledger
-  integration, rich previews, and PDF parsing and anchors.
+  workflows, observed inputs and kernel lineage, read and download routes beyond the
+  artifact list and the PDF viewer, ledger integration, previews other than PDFs, and
+  annotations stored on PDFs.
 - The stronger writer proof that living-document files need (LD-49). Explicit
   publication does not prove an atomic source pass.

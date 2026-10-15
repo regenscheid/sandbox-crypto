@@ -49,9 +49,12 @@ silently merge. All existing package metadata is retained on the selected row;
 there is no invented producing-operation or revision-era file-set reconstruction.
 
 Conda license text is declared retained metadata; the flag uses the existing
-bounded AGPL heuristic. Missing license means unknown AGPL status. CP-18 and the
-current pip schema record no pip license, so both fields remain unknown; they
-are not borrowed from a similarly named Conda package or another operation.
+bounded AGPL heuristic. Missing license means unknown AGPL status. A pip
+entry's license is the declaration its snapshot recorded
+([pip license declarations](PIP-LOCKFILE-LICENSES.md)). An older entry, or one
+with a missing or ambiguous declaration, has none, and its license and AGPL flag
+stay unknown; no license is borrowed from a similarly named Conda package or
+another operation.
 These facts do not make a licensing decision, grant permission, establish a
 complete guest inventory, or supply a functional/scientific witness.
 

@@ -40,11 +40,11 @@ class Tool(TypedDict):
 
 # Deliberate choices in examples/policy.yaml that differ from a tool's class.
 ALLOWED_DESPITE_CLASS = {
-    # Per-call billed searches: cheap, and searching is the core research workflow.
-    "firecrawl-mcp_firecrawl_search",
-    "paper-search-mcp_scholar_search",
-    "paper-search-mcp_search_papers",
-    "patent-search-mcp_patent_search",
+    # Fetching and crawling pages: the services control their own cost, and these
+    # tools read the web for the project.
+    "firecrawl-mcp_firecrawl_crawl",
+    "firecrawl-mcp_firecrawl_parse",
+    "firecrawl-mcp_firecrawl_scrape",
     # Reads that fill the server's own document cache on first use.
     "e-print-mcp_eprint_file",
     "e-print-mcp_eprint_fulltext",
@@ -53,7 +53,8 @@ ALLOWED_DESPITE_CLASS = {
 }
 EXPECTED_BY_CLASS = {
     "READ": Action.ALLOW,
-    "SPEND": Action.ESCALATE,
+    # Cost is not a reason to ask: the MCP services limit and bill their own use.
+    "SPEND": Action.ALLOW,
     "WRITE": Action.ESCALATE,
     "CONFIG": Action.DENY,
 }

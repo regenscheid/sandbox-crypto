@@ -1,6 +1,6 @@
 # PDF viewer
 
-**Status.** Approved, 2026-10-14: the coordinator adopted the six recommendations below under the owner's autonomy mandate (refactoring plan, Phase 4 item 5, E-08). It applies D54 and the threat model's T6 to PDFs; the [PDF sources](pdf-sources.md) spec covers how the agent reads them and leaves the viewer to this one.
+**Status.** Approved, 2026-10-14, and built (#228, #234, #235; [workspace](../WORKSPACE.md#the-pdf-viewers-origin)); annotations stored on a PDF (RA-21) are not built. The coordinator adopted the six recommendations below under the owner's autonomy mandate (refactoring plan, Phase 4 item 5, E-08). It applies D54 and the threat model's T6 to PDFs; the [PDF sources](pdf-sources.md) spec covers how the agent reads them and leaves the viewer to this one.
 
 ## Scope
 

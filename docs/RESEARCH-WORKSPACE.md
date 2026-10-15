@@ -1,6 +1,6 @@
 # Research workspace: documents, ledger, mathematics, and sources
 
-Date: 2026-10-10. These are the initial requirements and proposed contracts. Some are built since: [living documents](LIVING-DOCUMENTS.md) with comments and math rendering in the [workspace](WORKSPACE.md), native Sage kernels and the worker's [PDF tools](WORKER.md#pdfs) ([PDF sources spec](specs/pdf-sources.md)). The ledger and board and the GUI's PDF viewer are not built ([ledger spec](specs/ledger.md)).
+Date: 2026-10-10. These are the initial requirements and proposed contracts. Some are built since: [living documents](LIVING-DOCUMENTS.md) with comments and math rendering in the [workspace](WORKSPACE.md), native Sage kernels and the worker's [PDF tools](WORKER.md#pdfs) ([PDF sources spec](specs/pdf-sources.md)). The GUI has a [PDF viewer](specs/pdf-viewer.md) for published PDFs, without thumbnails, an outline, search or stored annotations. The ledger is built in part ([ledger](LEDGER.md)); its board and views are not ([ledger spec](specs/ledger.md)).
 
 ## Project-wide research state
 

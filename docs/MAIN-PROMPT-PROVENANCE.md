@@ -43,8 +43,10 @@ without a new version.
 
 The pins are an observation, not a self-check (owner decision 3). They are not
 verified again before each model call, and `RunRecord` does not check them against
-its messages when it is read. Tool specifications are constants in code, outside
-anything a model can change.
+its messages when it is read. The harness's own tool specifications are constants in
+code, outside anything a model can change. A connector tool's name, description and
+schema come from its MCP server when the run starts, bounded and framed as the
+server's ([MCP connectors](MCP-CONNECTORS.md#the-harnesss-client)), and are in the tools pin.
 
 ## Record
 
@@ -52,8 +54,9 @@ anything a model can change.
 provenance) stays unknown. An older run's `sandbox-main-bundle-1` or
 `sandbox-main-bundle-2` provenance is kept as read, without being interpreted or
 checked. No alias, endpoint, credential, task text or error text is in the pins.
-Failed runs keep their pins with the rest of their record; cancellation and setup
-refusals keep no record.
+Failed runs keep their pins with the rest of their record, and so does a run the user
+cancels through the run service. An interrupted command-line run and setup refusals
+keep no record.
 
 ## Tests
 

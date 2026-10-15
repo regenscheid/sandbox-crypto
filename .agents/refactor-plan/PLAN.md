@@ -16,16 +16,18 @@ Each finding there has its evidence with `file:line`, a concrete proposal, effor
 
 ## Progress
 
-Findings done, by phase, with their PRs (main `96380a4`). Leftovers of a done finding are in [BACKLOG](../BACKLOG.md#repository); decisions that refined the plan on the way are in [PLAN-CHANGES](../PLAN-CHANGES.md).
+Findings done, by phase, with their PRs (main `959267c`). Leftovers of a done finding are in [BACKLOG](../BACKLOG.md#repository); decisions that refined the plan on the way are in [PLAN-CHANGES](../PLAN-CHANGES.md).
 
 - **Phase 0, done:** A-01, A-10 (#125); E-02's 503 (#124); C-01, C-10, C-11, C-15 (#133); A-03, C-05, D-10, B-11, C-18, F-07 and `reviews.py` removed (#129, #138); F-01 (#123); F-02 (#126); F-10 (#126); F-12 and CI guards (#128); E-16 (#127). Pulled forward from later phases: the reference docs synced with the code, with inventory and link checks, which covers C-17, F-08 and most of F-09 (#131, #135, #136, #140).
-- **Phase 1, done apart from F-03:** F-04 steps 1–3 and F-06 (#137, #139, #144); C-13 (#141); F-05 for the loop (#134), the workspace routes (#132) and the worker manager (#141); C-14 (#146); C-12 (#144). **Open:** F-03's tiers, after the kernel-start flake and the leaked test daemons are fixed.
-- **Phase 2, lane O:** A-02 (#143, #149, #150), A-11 (#151), A-12 (#149), A-04 (#156), A-05 (#158). **Open:** A-08 (#165), A-13 and A-14 (#166).
-- **Phase 2, lane S:** B-01 (#145), B-02 (#152, #159), A-07 (#160). **Next:** B-14, B-17/E-12, then B-10, B-05, B-03, B-12, B-15, B-06 to B-09.
-- **Phase 2, lane W:** C-04 (#153), C-03 stage 1 (#155). **Open:** C-03 stages 2 and 3 (#163, #164). **Next:** C-03's remaining stages, C-06 to C-09, C-02, C-16.
+- **Phase 1, done:** F-04 steps 1–3 and F-06 (#137, #139, #144); C-13 (#141); F-05 for the loop (#134), the workspace routes (#132) and the worker manager (#141); C-14 (#146); C-12 (#144); F-03 (#182, with the kernel-start fix #179, the leftover-process check #180 and the stall diagnostics #256). **Left:** F-04 step 4, the fast tier's remaining wall-clock waits, and recording the nightly repeat's flake rate.
+- **Phase 2, lane O, done:** A-02 (#143, #149, #150), A-11 (#151), A-12 (#149), A-04 (#156), A-05 (#158), A-08 (#165), A-13 and A-14 (#166).
+- **Phase 2, lane S, done apart from leftovers:** B-01 (#145), B-02 (#152, #159), A-07 (#160), B-14 (#168), B-17/E-12 (#176), B-10 in four parts (#177, #178, #181, #183), B-05 (#197), B-03 (#200), B-15 (#211), B-09 (#214), B-08 (#215), B-07 (#216), B-06 (#219), B-12 (#221). **Left:** B-10 for the findings tables and the prompt-provenance columns, and B-14's per-thread reads.
+- **Phase 2, lane W, done apart from leftovers:** C-04 (#153), C-03 in all its stages (#155, #163, #164, #185, #186, #191, #196, #201), C-06 (#212), C-07 (#217), C-08's first slice (#222), C-09 (#224), C-02 (#246), C-16 in five steps (#226, #229, #236, #239, #242), C-17 (#245). Bugs found by reviews on the way: #210, #238. **Left:** C-08 for the executor endpoints, recycles and kernels, versions for the worker's other databases, and the local launcher (in progress, #261).
 - **Phase 2, lane C, done:** D-01 (#148), D-02, D-07, D-11 (#161).
-- **Phase 2, lane G:** E-01, E-02 (#147), E-03 (#154), E-04 (#154, #157), E-13 (#157), E-05 (#162). **Next:** E-14, E-15, E-17, E-19, E-20.
-- **Phase 2's exit so far:** `_run_task` is 57 lines with no subsystem checks; no source file disables private-usage checks; the control store has one schema version (3); `manager.py` is 3,059 lines; the workspace has one handler pattern.
+- **Phase 2, lane G, done:** E-01, E-02 (#147), E-03 (#154), E-04 (#154, #157, #174), E-13 (#157, #174), E-05 (#162), E-17, E-19 (#167), E-14 (#170, #171, #172, #184), E-15 (#173, #187, #189, #199, #203, #204, #205, #208), E-20 (#175).
+- **Phase 2's exit:** `_run_task` is 55 lines with no subsystem checks; no source file disables private-usage checks, and the hygiene check refuses it; the control store has one schema version (18); `manager.py` is a 543-line facade; the workspace has one handler pattern. The characterization tests of each lane are unchanged.
+- **Phase 3, done:** B-04 (#240, #241, #243, #244, #247, #248), D-03 (#188), D-04 (#192), D-06 (#195), D-09 (#223), E-10 (#187, #189, #199, #203, #204, #205). **Left:** `Anchor` and `Mutation` in `contracts` (they wait for their first caller), D-05 and D-12 (Phase 5).
+- **Phase 4, started:** A-09 (#193); A-06, the run service (spec #194; #206, #207, #209); E-06 and E-07 in the browser (#213, #202); E-11 (#218, #220); E-08, the PDF viewer (#228, #234, #235); D-08, the harness's MCP client (#227, #231, #232); delegation's first steps, the run tree's parent link (#233) and kernels per run (#237), after its spec (#225); the ledger's backend in four steps (#252 to #255, after the spec decisions in #250); the specs for file recording and project memory (#251) and the worker's deleted-file report (#258, protocol 5). **In progress:** the ledger's views (#259, #260), the harness's file recorder, and project memory.
 
 ## The state of the code
 
@@ -262,12 +264,12 @@ The refactors in Phase 2 rewrite central objects whose tests reach into their pr
    - E-07: run events written as they happen and streamed to the GUI.
 2. **A real model:**
    - A-09: a context limit, token accounting and retries for gateway errors;
-   - then a first run through the owner's LiteLLM gateway, which needs the owner's virtual key.
+   - then a first run through the owner's LiteLLM gateway. The first live call worked on 2026-10-14 ([PLAN-CHANGES](../PLAN-CHANGES.md)); the alias `sandbox-orchestrator` serves every role until the owner sets one per role.
 3. **The ledger and board** on the Phase 3 pieces, with the views: `docs/specs/ledger.md` and its decided questions.
 4. **E-11:** user-grade review and finding views for the "user feedback → automatic review" step.
 5. **E-08:** the PDF viewer, on a second origin.
 6. **Approvals:** for M2 through the CLI on babbage (decision 1), with E-09 later.
-7. **Delegation, as in Claude Science** (the owner's intent, D81, PD-14). Children are frames in the same runtime: each delegated run is a role of the one tool loop, with its own prompt, tool table, hooks and budget (A-02). Its kernels come from the existing worker kernel path, keyed by session and run. The parent gets a delegate tool and a handback record, and plan steps name the delegate (as Claude Science's delegation tracks do). This comes after the loop's hooks; it is part of M2 only if the owner says so. The owner answered open question 3 on 2026-10-14 (to record in the spec when the editing token returns):
+7. **Delegation, as in Claude Science** (the owner's intent, D81, PD-14). Children are frames in the same runtime: each delegated run is a role of the one tool loop, with its own prompt, tool table, hooks and budget (A-02). Its kernels come from the existing worker kernel path, keyed by session and run. The parent gets a delegate tool and a handback record, and plan steps name the delegate (as Claude Science's delegation tracks do). This comes after the loop's hooks; it is part of M2 only if the owner says so. The owner answered open question 3 on 2026-10-14 (recorded in the [spec](../../docs/specs/plans-and-delegation.md), PD-15):
    - **Concurrency:** support at least 8–10 subagents at once in a session; 4–5 is the typical number.
    - **Nesting:** one additional level. The main agent's subagents may delegate once more, and that second level may not. Claude Science does not nest. Claude Code's current documentation allows three layers below the main conversation by default, adjustable, and at the limit it withholds the delegation tool so the deepest subagent works alone ([subagents](https://code.claude.com/docs/en/sub-agents), checked 2026-10-14). Its default concurrency is 20 subagents per session.
    - **Proposed rules for nesting:**
@@ -287,7 +289,7 @@ The refactors in Phase 2 rewrite central objects whose tests reach into their pr
 
    The archived code is reference for the records design and the tests.
 8. **The M2 exit lab on babbage**, a testing checkpoint (decision 1): two workbooks share the project container with distinct kernels, a third uses its own, and the path paper → Sage → document → user feedback → automatic review → board update runs with a real model.
-9. **MCP connectors, for real research** (D-08; decision 1): an MCP client in the harness through the project's proxy, the proxy's policy compiled by the platform instead of a lab script, and the connector auth service for crypto-research-mcp, which needs the owner's OAuth consent. With delegation (item 7), this is the first milestone for real use.
+9. **MCP connectors, for real research** (D-08; decision 1): an MCP client in the harness through the project's proxy (built, #231), the proxy's policy compiled by the platform instead of a lab script (`compile-policy`, #232), and the owner's Cloudflare Access service token for crypto-research-mcp, which is enough on its own: the connector auth service and OAuth are off the path (#227, [PLAN-CHANGES](../PLAN-CHANGES.md)). What is left is the owner registering the provider and a first call through the proxy. With delegation (item 7), this is the first milestone for real use.
 
 ### Phase 5: later, and opportunistic
 
@@ -295,6 +297,7 @@ The refactors in Phase 2 rewrite central objects whose tests reach into their pr
 - **F-11:** consolidate the lab scripts into a small type-checked library; the product test that loads a lab script stops doing so.
 - **E-21:** KaTeX in a Web Worker, which lets the main-thread mitigations shrink. **D-05:** `compile_sandbox` when it is next touched. **D-12:** worker–middleware file coupling, before M3.
 - **E-18:** a narrower worker token for the workspace. **B-13:** run the whole-document parser comparison in CI. **F-13:** license-check gaps.
+- **Domain packages out of the orchestrator** (the owner agreed on 2026-10-14; after the M2 exit lab). `orchestrator/control` and the domain packages (documents, mathchecks, consistency, ledger) move into packages of their own. The orchestrator keeps thin agent tool adapters, possibly gathered in `orchestrator/tools/`. The workspace depends on the domain packages directly instead of on the orchestrator, which ends the documented workspace-to-orchestrator exception. The layering test (`test_package_layers.py`) already pins the direction of the dependencies between them.
 
 ## Working rules from now on
 
