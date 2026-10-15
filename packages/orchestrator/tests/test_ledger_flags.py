@@ -123,7 +123,9 @@ def test_the_user_or_the_main_agent_clears_a_flag_with_a_reason(ledger: Ledger) 
     (flag,) = ledger.entry("p", "R-1").flags
     with pytest.raises(DocumentError, match="not_permitted_for_role"):
         ledger.change("p", clearing([flag.flag_id], "delegated"), DELEGATED)
-    with pytest.raises(DocumentError, match="names entries to change or flags to clear"):
+    with pytest.raises(
+        DocumentError, match="names entries to change, work to record, or flags to clear"
+    ):
         ledger.change("p", {"operation_id": "none", "reason": "r"}, MAIN)
     with pytest.raises(DocumentError) as missing:
         ledger.change("p", clearing(["flag-" + "0" * 24], "missing"), MAIN)

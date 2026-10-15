@@ -282,6 +282,78 @@ class EntryChange(Contract):
     """The IDs of evidence links to remove."""
 
 
+WorkEnding = Literal["limit", "obstruction_claimed", "produced", "assessment"]
+"""How a work record ends (LG-6): the time, tools, context or ideas ran out; an obstruction
+is claimed, with its evidence; it produced entries; or it assesses other work."""
+WorkLimit = Literal["time", "tools", "context", "ideas"]
+Verdict = Literal["accepted", "rejected", "inconclusive"]
+WORK_HOLDERS: Final = ("issue", "claim", "result")
+"""The entry types work records are on (LG-6)."""
+
+
+class WorkReference(Contract):
+    """What a work record cites, pinned, with an optional note: a delegation's outcome
+    (``delegation``), an artifact revision (``artifact`` and ``revision``, its SHA-256
+    optional), a document block (``document``, ``revision`` and ``block``) or another work
+    record (``work``: its ID, or ``new:<key>`` for one the same change records)."""
+
+    delegation: Identifier | None = None
+    artifact: Identifier | None = None
+    document: Identifier | None = None
+    revision: Annotated[int, Field(ge=1, le=999999999, strict=True)] | None = None
+    block: Identifier | None = None
+    sha256: Sha256 | None = None
+    work: Reference | None = None
+    note: Note | None = None
+
+    @model_validator(mode="after")
+    def _one_target(self) -> Self:
+        named = [self.delegation, self.artifact, self.document, self.work]
+        if sum(value is not None for value in named) != 1:
+            raise ValueError("a reference names one of delegation, artifact, document or work")
+        if (self.artifact is not None or self.document is not None) != (self.revision is not None):
+            raise ValueError("an artifact or document reference names its revision")
+        if (self.document is not None) != (self.block is not None):
+            raise ValueError("a document reference names its block")
+        if self.sha256 is not None and self.artifact is None:
+            raise ValueError("only an artifact reference names a SHA-256")
+        return self
+
+
+class WorkInput(Contract):
+    """A work record a change appends (LG-6): on the issue, claim or result ``entry``
+    (an ID, handle or ``new:<key>``), what was ``tried``, and how it ended. ``limit``
+    names what ran out; ``produced``, the entries it created; an ``assessment`` may name
+    the work record it ``assesses``, with its ``verdict``; an ``obstruction_claimed``
+    cites its evidence in ``references``. ``part_of`` names the record it belongs to,
+    such as a delegation outcome's; ``key`` names this one to the change's others."""
+
+    key: Identifier | None = None
+    entry: Reference
+    tried: Statement
+    ending: WorkEnding
+    limit: WorkLimit | None = None
+    produced: list[Reference] | None = Field(default=None, max_length=64)
+    assesses: Reference | None = None
+    verdict: Verdict | None = None
+    references: list[WorkReference] = Field(default_factory=list[WorkReference], max_length=16)
+    part_of: Reference | None = None
+
+    @model_validator(mode="after")
+    def _ending(self) -> Self:
+        if (self.ending == "limit") != (self.limit is not None):
+            raise ValueError("a work record that ends limit names what ran out, and only it")
+        if (self.ending == "produced") != bool(self.produced):
+            raise ValueError("a work record that ends produced names the entries, and only it")
+        if (self.assesses is not None or self.verdict is not None) and self.ending != "assessment":
+            raise ValueError("only an assessment names the work it assesses and its verdict")
+        if (self.assesses is None) != (self.verdict is None):
+            raise ValueError("an assessment that names the work it assesses gives its verdict")
+        if self.ending == "obstruction_claimed" and not self.references:
+            raise ValueError("a claimed obstruction cites its evidence in references")
+        return self
+
+
 FlagID = Annotated[str, Field(pattern=r"^flag-[0-9a-f]{24}$")]
 
 FlagCause = Literal[
@@ -314,11 +386,21 @@ class Mutation(Contract):
     """Entries whose open flags, or those of one cause, the change clears."""
     flags_reopened: list[FlagID] | None = Field(default=None, max_length=64)
     """Cleared flags the user opens again."""
+    work: list[WorkInput] | None = Field(default=None, max_length=32)
+    """Work records to append (LG-6), after the change's entries are written."""
 
     @model_validator(mode="after")
     def _changes_something(self) -> Self:
-        if not (self.changes or self.flags_cleared or self.flags_cleared_on or self.flags_reopened):
-            raise ValueError("a change names entries to change or flags to clear or reopen")
+        if not (
+            self.changes
+            or self.flags_cleared
+            or self.flags_cleared_on
+            or self.flags_reopened
+            or self.work
+        ):
+            raise ValueError(
+                "a change names entries to change, work to record, or flags to clear or reopen"
+            )
         return self
 
 
@@ -500,6 +582,44 @@ class MutationResult(Contract):
     """How many flags it cleared in all."""
     flags_reopened: list[str] = Field(default_factory=list[str])
     """The flags the user's change opened again, each a new flag."""
+    work: list[str] = Field(default_factory=list[str])
+    """The IDs of the work records the change appended, in its order."""
+
+
+class WorkRecord(Contract):
+    """A work record as it is kept (LG-6, LG-12): append-only, on an entry, at the
+    revision the entry had when it was recorded."""
+
+    record_id: str
+    position: int
+    """Its place among the project's work records, oldest first."""
+    entry_id: str
+    handle: str
+    entry_revision: int
+    tried: str
+    ending: WorkEnding
+    limit: WorkLimit | None = None
+    produced: list[str] = Field(default_factory=list[str])
+    """The handles of the entries it produced."""
+    assesses: str | None = None
+    verdict: Verdict | None = None
+    references: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]])
+    """Its references, pinned: an artifact's with its SHA-256, a document's by its ID."""
+    part_of: str | None = None
+    author: dict[str, Any]
+    reason: str
+    operation_id: str
+    provenance: dict[str, Any] | None = None
+    created: str
+
+
+class WorkPage(Contract):
+    """An entry's work records, newest first, with where the next page begins."""
+
+    entry_id: str
+    handle: str
+    records: list[WorkRecord]
+    next_before: int | None = None
 
 
 SHOWN_CHECKS: Final = 20

@@ -223,6 +223,7 @@ async def test_the_tool_table_offers_reads_as_reads_and_gates_changes(ledger: Le
         "ledger_list": "read",
         "ledger_read": "read",
         "ledger_history": "read",
+        "ledger_work": "read",
         "ledger_change": "effect",
         "ledger_import": "effect",
         "ledger_frontier": "read",

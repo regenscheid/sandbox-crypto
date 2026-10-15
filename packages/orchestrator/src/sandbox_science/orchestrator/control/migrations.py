@@ -2150,6 +2150,50 @@ BEGIN SELECT RAISE(ABORT, 'CHECK constraint failed: project_delegation'); END"""
         schema.execute(statement)
 
 
+def _ledger_work(schema: Schema) -> None:
+    """Version 34: work records (docs/specs/ledger.md, LG-6), append-only, on an issue, a
+    claim or a result: what was tried, by whom, how it ended (``limit`` with what ran out,
+    ``obstruction_claimed`` with its evidence, ``produced`` with the entries, or
+    ``assessment``, which may name the record it assesses and its verdict), its pinned
+    references, and the record it is part of. ``position`` orders the project's records
+    as they were made."""
+    for statement in (
+        """CREATE TABLE ledger_work (
+    record_id TEXT PRIMARY KEY CHECK (length(record_id) = 29 AND record_id GLOB 'work-*'
+        AND substr(record_id, 6) NOT GLOB '*[^0-9a-f]*'),
+    position INTEGER NOT NULL UNIQUE CHECK (position >= 1),
+    project TEXT NOT NULL CHECK (length(CAST(project AS BLOB)) BETWEEN 1 AND 128),
+    entry_id TEXT NOT NULL REFERENCES ledger_entries(entry_id),
+    entry_revision INTEGER NOT NULL CHECK (entry_revision BETWEEN 1 AND 999999999),
+    tried TEXT NOT NULL CHECK (length(CAST(tried AS BLOB)) BETWEEN 1 AND 32768),
+    ending TEXT NOT NULL
+        CHECK (ending IN ('limit', 'obstruction_claimed', 'produced', 'assessment')),
+    detail TEXT NOT NULL CHECK (json_valid(detail) AND json_type(detail) = 'object'
+        AND length(CAST(detail AS BLOB)) <= 16384),
+    refs TEXT NOT NULL CHECK (json_valid(refs) AND json_type(refs) = 'array'
+        AND length(CAST(refs AS BLOB)) <= 65536),
+    part_of TEXT REFERENCES ledger_work(record_id),
+    author TEXT NOT NULL CHECK (json_valid(author) AND length(CAST(author AS BLOB)) <= 8192),
+    reason TEXT NOT NULL CHECK (length(CAST(reason AS BLOB)) BETWEEN 1 AND 16384),
+    operation_id TEXT NOT NULL CHECK (length(CAST(operation_id AS BLOB)) BETWEEN 1 AND 128),
+    provenance TEXT CHECK (provenance IS NULL OR (json_valid(provenance)
+        AND json_type(provenance) = 'object' AND length(CAST(provenance AS BLOB)) <= 4096)),
+    created TEXT NOT NULL CHECK (length(created) BETWEEN 1 AND 64),
+    CHECK ((ending = 'limit') = (coalesce(json_type(detail, '$.limit'), '') = 'text')),
+    CHECK ((ending = 'produced')
+        = (coalesce(json_array_length(detail, '$.produced'), 0) >= 1)),
+    CHECK (ending = 'assessment' OR json_type(detail, '$.assesses') IS NULL),
+    CHECK (ending != 'obstruction_claimed' OR json_array_length(refs) >= 1)
+) STRICT""",
+        "CREATE INDEX ledger_work_entry ON ledger_work(entry_id, position)",
+        """CREATE TRIGGER ledger_work_no_update BEFORE UPDATE ON ledger_work
+BEGIN SELECT RAISE(ABORT, 'work records are append-only'); END""",
+        """CREATE TRIGGER ledger_work_no_delete BEFORE DELETE ON ledger_work
+BEGIN SELECT RAISE(ABORT, 'work records are append-only'); END""",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -2183,6 +2227,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _citation_checks,
     _delegation_reads,
     _delegation_limits,
+    _ledger_work,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""
