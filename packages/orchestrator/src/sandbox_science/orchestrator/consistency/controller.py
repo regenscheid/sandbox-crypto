@@ -390,6 +390,27 @@ class ReviewController:
             found,
         )
 
+    async def _execution(self, execution: Json) -> None:
+        """Record an execution in the state a tool call saw it: one item per state."""
+        payload, complete = execution_projection(execution)
+        effects = execution.get("started_at") is not None
+        self.effects = self.effects or effects
+        await asyncio.to_thread(
+            self.store.observe,
+            *self.scope,
+            f"execution:{execution['execution_id']}:{execution.get('state')}",
+            "execution",
+            {
+                "execution": execution["execution_id"],
+                "attempt": execution.get("attempt_id"),
+                "run": self.run_id,
+            },
+            payload,
+            complete=complete,
+            effects=effects,
+            cells=int(execution.get("kind") == "cell"),
+        )
+
     async def observe(
         self, messages: Sequence[Message], *, tool: Json | None = None, call: Json | None = None
     ) -> None:
@@ -417,26 +438,12 @@ class ReviewController:
             await self._source(messages, call)
             await self._action(messages, call)
             raw_execution = tool.get("execution")
-            if isinstance(raw_execution, dict):
-                execution = cast(Json, raw_execution)
-                payload, complete = execution_projection(execution)
-                effects = execution.get("started_at") is not None
-                self.effects = self.effects or effects
-                await asyncio.to_thread(
-                    self.store.observe,
-                    *self.scope,
-                    f"execution:{execution['execution_id']}:{execution.get('state')}",
-                    "execution",
-                    {
-                        "execution": execution["execution_id"],
-                        "attempt": execution.get("attempt_id"),
-                        "run": self.run_id,
-                    },
-                    payload,
-                    complete=complete,
-                    effects=effects,
-                    cells=int(execution.get("kind") == "cell"),
-                )
+            # A wait's ended jobs are executions in the state it saw them end (lab 41's B7).
+            raw_ended = tool.get("executions")
+            ended = cast(list[Any], raw_ended) if isinstance(raw_ended, list) else []
+            for raw in [raw_execution, *ended]:
+                if isinstance(raw, dict):
+                    await self._execution(cast(Json, raw))
             raw_artifact = tool.get("artifact")
             if isinstance(raw_artifact, dict) and self.artifact_consumer is None:
                 artifact = cast(Json, raw_artifact)

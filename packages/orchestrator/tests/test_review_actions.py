@@ -342,3 +342,34 @@ async def test_a_runs_review_sees_its_delegated_runs_work(store: Any, tmp_path: 
     assert {a["delegation"] for a in found["actions"]} == {
         "dlg-" + f"{1:024x}", "dlg-" + f"{2:024x}"
     }  # fmt: skip
+
+
+@pytest.mark.asyncio
+async def test_a_waited_jobs_end_reaches_the_review(store: Any) -> None:
+    """Lab 41's B7: a job's execution item stayed queued, since wait_jobs is a read and
+    its answer only summarised the end. A wait's record keeps the executions it saw end,
+    and each becomes an execution item in its ended state."""
+    reviews, _, _ = store
+    controller = ReviewController(
+        reviews, context_for(reviews), run_id="author-1", model=None, alias=None
+    )
+    started = {"execution_id": "exe-1", "kind": "job", "state": "queued",
+               "submitted_at": "2026-10-15T12:00:00Z"}  # fmt: skip
+    ended = {**started, "state": "succeeded", "started_at": "2026-10-15T12:00:01Z",
+             "ended_at": "2026-10-15T12:05:00Z"}  # fmt: skip
+    transcript: list[dict[str, Any]] = []
+    for number, (tool, record) in enumerate(
+        [("start_job", {"effect": "effect", "execution": started}),
+         ("wait_jobs", {"effect": "read", "wait": {"reason": "ended"}, "executions": [ended]})],
+        1,
+    ):  # fmt: skip
+        exchange, call = called(number, tool, {"job_ids": ["exe-1"]}, **record)
+        transcript += exchange
+        await controller.safe_point(transcript, tool=record, call=call)
+    review = dispatch(reviews)
+    states = [
+        json.loads(reviews.read_evidence("p", "s", review, i["evidence"])["text"])["state"]
+        for i in reviews.manifest("p", "s", review, limit=50)["evidence"]
+        if i["kind"] == "execution"
+    ]
+    assert states == ["queued", "succeeded"]

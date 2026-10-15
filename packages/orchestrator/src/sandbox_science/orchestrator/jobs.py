@@ -52,6 +52,8 @@ JOB_EFFECTS: Final[dict[str, Effect]] = {
     "cancel_job": "cancel",
 }
 """The job tools that change nothing a plan governs; ``start_job`` is an effect."""
+_ENDED: Final = "_ended_executions"
+"""Where the wait loop hands the ended executions to the wait's record."""
 OUTPUT_CHARS = 4096
 HEARTBEAT_SECONDS = 5.0
 WATCHER_TIMEOUT = 60.0
@@ -502,7 +504,13 @@ class JobTools:
                     value = await running
                 else:
                     value = {"reason": "user_message", "job_ids": list(request.job_ids)}
-            return dump(value), {"wait": value, "watcher_calls": list(self.checkins)}
+            # The ended executions are the record's, for the review (lab 41's B7), not
+            # the model's: its answer has their summaries.
+            executions = value.pop(_ENDED, [])
+            record: dict[str, Any] = {"wait": value, "watcher_calls": list(self.checkins)}
+            if executions:
+                record["executions"] = executions
+            return dump(value), record
         finally:
             cleanup = [task for task in (running, message) if task is not None]
             for task in cleanup:
@@ -529,6 +537,7 @@ class JobTools:
                 return {
                     "reason": "ended",
                     "jobs": [summary(status, self.clock.now()) for status in statuses],
+                    _ENDED: [status.execution.model_dump(mode="json") for status in ended],
                 }
             for status in statuses:
                 if status.execution.state in TERMINAL_STATES:
