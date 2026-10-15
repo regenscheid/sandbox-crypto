@@ -12,7 +12,9 @@ session's records (``runstate.py``), which its two hooks and its job waits share
 - ``ModelBudget`` keeps the project's MAIN budget during a run the service starts
   (RS-6a): before each model call after the first, the run stops once the project has
   spent its budget over the last 24 hours (``budget``), or once the run's own calls have
-  used its share of it (``run_budget``).
+  used its share of it, or a delegated run's its token limit (``run_budget``).
+- ``SessionHeld`` refuses a delegated run's calls that may change something once its
+  root run no longer holds the session; ``UserMessages`` does the same for the root.
 - ``EventLog`` writes what the run does as events, as it happens (RS-13, RS-14), from
   the conversation and the run's records. It comes last among the hooks, so that the
   notices of a safe point are in the conversation when it writes them. Its last
@@ -73,14 +75,17 @@ class RunChat:
         prefix: int = 2,
         parent: str | None = None,
         delegation: str | None = None,
+        holder: str | None = None,
         poll: float = POLL_SECONDS,
         clock: Clock = SYSTEM_CLOCK,
     ) -> None:
         """``run`` is the name the run's record will be kept under; ``task`` the task
         the run starts with, or ``None`` when its task is the queued ``message_ids``
         (RS-6). ``prefix`` counts the messages the conversation starts with: the system
-        message, the earlier conversation and the task."""
+        message, the earlier conversation and the task. ``holder`` is the run that holds
+        the session's lease for it: a delegated run's root (PD-32), or the run itself."""
         self.state, self.context, self.run, self.run_id = state, context, run, run_id
+        self.holder = holder or run
         self.task, self.message_ids, self.prefix = task, tuple(message_ids), prefix
         self.requests: Callable[[], bool] | None = None
         """Whether a work request waits that the run may be offered: the run's document
@@ -135,6 +140,7 @@ class RunChat:
                 kind,
                 _bounded(data),
                 holding=True,
+                holder=self.holder,
             )
         except Exception:
             _log.exception("the %s event of run %s could not be written", kind, self.run)
@@ -152,10 +158,14 @@ class ModelBudget(TurnHook):
 
     name = "budget"
 
-    def __init__(self, chat: RunChat, share: float) -> None:
+    def __init__(
+        self, chat: RunChat, share: float | None = None, *, tokens: int | None = None
+    ) -> None:
         """``share`` is the part of the project's budget one run may use, above 0 and at
-        most 1."""
-        self.chat, self.share = chat, share
+        most 1; ``tokens``, a delegated run's limit, takes its place."""
+        if (share is None) == (tokens is None):
+            raise ValueError("a run's budget is a share or a token limit")
+        self.chat, self.share, self.tokens = chat, share, tokens
 
     async def halt(self, run: RunView) -> str | None:
         state, project = self.chat.state, self.chat.context.project_id
@@ -163,9 +173,34 @@ class ModelBudget(TurnHook):
         if await threaded(state.over_budget, project, self.chat.clock.now()):
             return "budget"
         used = sum(cost(usage) for usage in run.usage)
-        if used >= self.share * await threaded(state.budget, project):
+        limit = self.tokens
+        if limit is None:
+            limit = cast(float, self.share) * await threaded(state.budget, project)
+        if used >= limit:
             return "run_budget"
         return None
+
+
+async def _held(chat: RunChat) -> bool:
+    """Whether the run's session is still held for it."""
+    context = chat.context
+    held = await threaded(chat.state.lease, context.project_id, context.session_id)
+    return held is not None and held.run == chat.holder
+
+
+class SessionHeld(TurnHook):
+    """A delegated run's calls that may change something, while its root holds the
+    session. The root that lost it stops, and cancels its children (PD-39)."""
+
+    name = "session"
+
+    def __init__(self, chat: RunChat) -> None:
+        self.chat = chat
+
+    async def gate(self, effect: Effect) -> Refusal | None:
+        if effect in ("read", "cancel") or await _held(self.chat):
+            return None
+        return Refusal(CONFLICT, f"run {self.chat.holder} no longer holds its session")
 
 
 class UserMessages(TurnHook):
@@ -207,14 +242,10 @@ class UserMessages(TurnHook):
         """Before a call that may change something, the run must still hold its session.
         One that lost it, as after a suspend, is refused the call, and stops before its
         next model call."""
-        if effect in ("read", "cancel"):
+        if effect in ("read", "cancel") or await _held(self.chat):
             return None
-        context = self.chat.context
-        held = await threaded(self.chat.state.lease, context.project_id, context.session_id)
-        if held is None or held.run != self.chat.run:
-            self.lost = True
-            return Refusal(CONFLICT, f"run {self.chat.run} no longer holds its session")
-        return None
+        self.lost = True
+        return Refusal(CONFLICT, f"run {self.chat.run} no longer holds its session")
 
     async def acknowledge(self, record: RunRecord) -> None:
         ids = record.delivered.get(SOURCE)

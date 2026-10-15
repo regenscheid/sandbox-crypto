@@ -19,7 +19,7 @@ import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
-from typing import Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 
 from pydantic import ValidationError
 
@@ -43,6 +43,7 @@ from sandbox_science.contracts.worker import Language
 from .artifact_publisher import ArtifactPublisher
 from .connectors import Connectors
 from .consistency.controller import REVIEW_EFFECTS, ReviewController, Reviews
+from .delegation import specs as delegation_specs
 from .documents import annotation_tools
 from .documents.errors import DocumentError
 from .documents.tool import DOCUMENT_EFFECTS, DocumentTool, WorkRequests, with_notices
@@ -61,6 +62,9 @@ from .plan_tools import Plans, PlanTools
 from .provision import PROVISION_SPECS, PROVISIONING, ProvisionTools
 from .recording import FileRecorder, RecordedFiles, Written, with_recorded
 from .worker_client import WorkerAPIError, WorkerClient, dump
+
+if TYPE_CHECKING:
+    from .delegation.hook import Delegations
 
 _log = logging.getLogger(__name__)
 
@@ -390,6 +394,7 @@ def _harness_tool_names() -> frozenset[str]:
         *PLAN_SPECS,
         *LEDGER_SPECS,
         *MEMORY_SPECS,
+        *delegation_specs.SPECS,
     )
     return frozenset(spec.name for spec in specs) | {RESTART_KERNEL}
 
@@ -423,7 +428,12 @@ class Toolbox:
         connectors: Connectors | None = None,
         recorder: FileRecorder | None = None,
         kernel_run: str | None = None,
+        delegations: Delegations | None = None,
+        delegated: bool = False,
     ) -> None:
+        """For a ``delegated`` run, a call to a tool it is not offered, such as a review,
+        plan, delegate or connector tool, is refused with ``not_permitted_for_role``
+        (PD-16)."""
         self.client = client
         self.context = context
         self.output_chars = output_chars
@@ -444,6 +454,8 @@ class Toolbox:
         self.kernel_run = kernel_run
         """A delegated run's own kernels: cells name it (PD-37); ``None`` uses the
         session's, which main runs share."""
+        self.delegations = delegations
+        self.delegated = delegated
         self.provisioning = ProvisionTools(client, context, output_chars=output_chars)
         worker: dict[str, tuple[Effect, Handler]] = {
             "shell": ("effect", _plain(self._shell)),
@@ -551,6 +563,12 @@ class Toolbox:
                 ),
                 MEMORY_EFFECTS,
             )
+        if delegations is not None:
+            entries += _group(
+                delegations.specs,
+                lambda name, call: delegations.call(name, call.args),
+                delegation_specs.EFFECTS,
+            )
         if connectors is not None:
             # A connector tool is never offered under a name the harness gives a tool of
             # its own, whether this run has that tool or not: the system prompt names
@@ -592,6 +610,11 @@ class Toolbox:
         documents the run has seen (LD-15).
         """
         entry = self.entries.get(call.name)
+        if entry is None and self.delegated:
+            return _failure(
+                ErrorKind.POLICY_DENIED,
+                f"not_permitted_for_role: a delegated run is not offered {call.name!r}",
+            )
         if entry is None:
             return _failure(ErrorKind.INVALID_REQUEST, f"there is no tool named {call.name!r}")
         if self.plans is not None and not any(isinstance(gate, Plans) for gate in gates):
@@ -642,6 +665,8 @@ class Toolbox:
             hooks.append(WorkRequests(self.documents))
         if self.jobs is not None:
             hooks.append(JobNotices(self.jobs, max_chars=self.output_chars // 4))
+        if self.delegations is not None:
+            hooks.append(self.delegations)
         if self.plans is not None:
             hooks.append(Plans(self.plans))
         if self.reviews is not None:
@@ -649,9 +674,15 @@ class Toolbox:
         if self.math_checks is not None:
             hooks.append(MathChecks(self.math_checks))
         if self.check_kernels:
+            # The sweep leaves the kernels of the run's own running children (PD-37).
+            keep = self.delegations.live if self.delegations is not None else set
             hooks.append(
                 KernelCheck(
-                    self.client, self.context, run=self.kernel_run, sweep=self.sweep_left_kernels
+                    self.client,
+                    self.context,
+                    run=self.kernel_run,
+                    sweep=self.sweep_left_kernels,
+                    keep=keep,
                 )
             )
         if self.recorder is not None:

@@ -16,6 +16,7 @@ import pytest
 from sandbox_science.contracts import ErrorKind, ExecutionContext
 from sandbox_science.orchestrator import cli, notices
 from sandbox_science.orchestrator.consistency.rubric import RUBRIC, RUBRIC_VERSION
+from sandbox_science.orchestrator.delegation.prompt import CHECK_PROMPT, CHECK_VERSION
 from sandbox_science.orchestrator.documents import DocumentStore, DocumentTool
 from sandbox_science.orchestrator.harness import save
 from sandbox_science.orchestrator.hooks import TurnHook
@@ -79,6 +80,16 @@ GOLDEN = {
     ),
     "sandbox-notice-math-1": "c65c1f751f7b2928f15f0d846b816e2287eeb3ddd63fa63ad083226fe0cf19c9",
     "sandbox-kernels-1": "a0211d3dbc39708fdf924610123e76f5cb70c5c25d888c29188d858b594733d9",
+    "sandbox-notice-delegations-1": (
+        "d378f8306bae1e3999382a4418a5cec0fff74378287a2b88d0f51ec132baf1a3"
+    ),
+    "sandbox-notice-delegations-attached-1": (
+        "c1be06fbad94b08b6eceb24ac20ed31ad2f77b7664c262cd06c623fe99c7407e"
+    ),
+    "sandbox-notice-delegations-running-1": (
+        "5070f934df9e602114dc0982511e869cafb4d6455e788c2df7cf58aebfcefd68"
+    ),
+    "sandbox-delegated-check-1": "f2f0d98c0594f576e931484791a84fc8db6d6031e8ae5328c4d6a87f83c59de3",
     "sandbox-job-watcher-1": "4b545fe81e35622bf1b894c435833d78fb122116f9364d429b21c6c3551e1ab1",
     "sandbox-consistency-2": "e5c5c248a9ba6109e984200bdfadf674c6c9b07cbef42d08a2586fece11cd874",
     "sandbox-memory-run-1": "b69cc482f75853487a499ac89b5701b148066e919842a9970e6e318b2bdce121",
@@ -100,6 +111,7 @@ def installed() -> dict[str, str]:
         RUN_VERSION: RUN_FRAMING,
         REVIEWER_VERSION: REVIEWER_FRAMING,
         WATCHER_VERSION: WATCHER_FRAMING,
+        CHECK_VERSION: CHECK_PROMPT,
     }
     texts |= {select_template(t).version: select_template(t).text for t in TEMPLATE_IDS}
     texts |= {framing.version: framing.text for framing in FRAMINGS}
