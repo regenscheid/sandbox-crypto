@@ -97,7 +97,7 @@ sandbox-science-harness skills pin --state-dir "$D" --project crypto --source cr
 
 - **Delegation** is off by default. `--depth 1` lets the main agent delegate checks and tasks, and `--depth 2` lets a task delegate once more. The same command sets the cap on runs at once and the children's limits ([projects and sessions](PROJECTS-AND-SESSIONS.md)). `[model] delegated` names the model they call.
 - **The cost limit** is off by default: a project has no limit of its own, and the gateway's budget is the cap. `--daily-cost-limit` sets what the project's runs may cost over 24 hours, as the gateway reports it, and `--no-cost-limit` removes it. `[model] daily_cost_limit` sets it for every project from the config.
-- **Skills** are imported from git or an archive and pinned to a project. Runs do not see them yet ([skills](SKILLS.md)).
+- **Skills** are imported from git or an archive and pinned to a project. Each run gets an index of the project's skills in its system message, and the `skills` tool to search, load and read them ([skills](SKILLS.md)).
 
 ## The MCP proxy
 

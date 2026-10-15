@@ -8,7 +8,8 @@ skill by qualified name with its description, within ``BUDGET`` characters: when
 whole does not fit, descriptions are cut at a word, shorter until they fit; then skills
 are listed by name, by source; then sources with their counts. The cut is deterministic,
 and the pin says which was made. The skills the project loads in full at every run's
-start follow, each between the same markers, headed by its ID, revision and SHA-256.
+start follow, each between the same markers, headed by its ID, revision and SHA-256; a
+line names those left out because they would pass the run's cap (SK-39).
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from typing import Final, Literal
 
 from sandbox_science.orchestrator.prompts import Section, SkillsPin, pin
 
-from .store import Entry, SkillSet
+from .store import MAX_LOADED, Entry, SkillSet
 
 FRAMING_VERSION: Final = "sandbox-skills-index-1"
 FRAMING: Final = (
@@ -50,8 +51,15 @@ class SkillsGiven:
     pin: SkillsPin | None
 
 
-def give(skills: SkillSet, bodies: Mapping[str, str], budget: int = BUDGET) -> SkillsGiven:
-    """The section that gives ``skills``, with ``bodies`` of the skills loaded at start."""
+def give(
+    skills: SkillSet,
+    bodies: Mapping[str, str],
+    left: Sequence[str] = (),
+    cap: int = MAX_LOADED,
+    budget: int = BUDGET,
+) -> SkillsGiven:
+    """The section that gives ``skills``, with ``bodies`` of the skills loaded at start;
+    ``left`` names those the project loads at the start that would pass ``cap``."""
     if not skills.entries:
         return SkillsGiven(None, None)
     lines, shortening = index(skills.entries, budget)
@@ -74,6 +82,11 @@ def give(skills: SkillSet, bodies: Mapping[str, str], budget: int = BUDGET) -> S
             entry = by_id[skill]
             head = f'id="{skill}" revision="{entry.revision}" sha256="{entry.body_sha256}"'
             parts.append(f"<skill-{code} {head}>\n{body}\n</skill-{code}>")
+    if left:
+        parts.append(
+            f"Not loaded at the start, as they would pass the run's {cap:,} characters of "
+            f"skill text: {', '.join(left)}."
+        )
     parts.append(f"End of the skills (code {code}).")
     section = Section("skills", None, "\n\n".join(parts))
     pinned = pin(section)

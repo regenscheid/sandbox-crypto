@@ -560,6 +560,10 @@ async def run_task(
                         transcript.summaries[hook.name] = summary
                 if toolbox.connectors is not None:
                     transcript.summaries["connectors"] = toolbox.connectors.summary()
+                if toolbox.skills is not None:
+                    first = transcript.usage[0].model if transcript.usage else None
+                    if (started := toolbox.skills.summary(first)) is not None:
+                        transcript.summaries["skills"] = started
     except BaseException as error:
         if transcript is not None and user_cancelled(error, stop):
             return transcript  # it came as the run closed: the run's own outcome stands

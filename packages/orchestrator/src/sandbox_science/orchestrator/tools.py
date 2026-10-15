@@ -661,6 +661,7 @@ class Toolbox:
                 skills.specs,
                 lambda _, call: skills.call(call.args, call_id=call.call.id, model=call.model),
                 {SKILL_SPEC.name: "read"},
+                whole=True,  # a body is never cut, as a notice riding on it would (_attach)
             )
         if questions is not None:
             entries += _group(

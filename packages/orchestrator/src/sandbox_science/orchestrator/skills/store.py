@@ -14,6 +14,7 @@ import hashlib
 import json
 import re
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Final, cast
@@ -22,10 +23,16 @@ from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.control.errors import CONFLICT, INVALID_REQUEST, NOT_FOUND
 from sandbox_science.orchestrator.documents.models import Author
 
-from .packs import NAME, Snapshot
+from .packs import NAME, Snapshot, body, hidden, served
 
 REPORT_ITEMS: Final = 200
 """Items a report lists of each kind; it counts the rest."""
+MAX_LOADED: Final = 100_000
+"""Characters of skill text one run is given, those loaded at its start included (SK-39)."""
+MAX_ALWAYS: Final = 20
+MAX_EXCLUDED: Final = 500
+SETTINGS_BYTES: Final = {"always": 16384, "excluded": 65536}
+"""The settings' lists as JSON, at most as the control store keeps them (version 41)."""
 _IMPORT: Final = (
     "SELECT import_id,source,snapshot,kind,origin,ref,commit_id,archive_sha256,root,report,"
     "created FROM skill_imports"
@@ -121,6 +128,9 @@ class SkillStore:
             }
             if got.default_branch is not None:
                 report["default_branch"] = got.default_branch
+            if marked := hidden(got.files):
+                # Shown as code points wherever a run is given them (SK-14).
+                report["hidden_characters"] = _capped(marked)
             warnings = list(got.warnings)
             if latest is not None and latest.origin != got.origin:
                 warnings.append(f"{source} was imported before from {latest.origin}")
@@ -225,6 +235,11 @@ class SkillStore:
             ).fetchone()
         return None if row is None else bytes(row[0])
 
+    def served_body(self, entry: Entry) -> str:
+        """A skill's body as a run is given it (``served``)."""
+        content = self.file(entry.snapshot, f"{entry.name}/SKILL.md") or b""
+        return served(body(content.decode(errors="replace")))
+
     def settings(self, project: str) -> SkillSettings:
         if self.control.missing:
             return SkillSettings(project, 0)
@@ -247,8 +262,28 @@ class SkillStore:
             source, _, name = skill.partition("/")
             if not (NAME.fullmatch(source) and NAME.fullmatch(name)):
                 raise ControlError(INVALID_REQUEST, f"{skill[:80]!r} is not a source/name ID")
-        if len(always) > 20 or len(excluded) > 500:
-            raise ControlError(INVALID_REQUEST, "at most 20 always loaded and 500 excluded")
+        if len(always) > MAX_ALWAYS or len(excluded) > MAX_EXCLUDED:
+            raise ControlError(
+                INVALID_REQUEST, f"at most {MAX_ALWAYS} always loaded and {MAX_EXCLUDED} excluded"
+            )
+        lists = {"always": list(dict.fromkeys(always)), "excluded": sorted(set(excluded))}
+        for key, items in lists.items():
+            if len(json.dumps(items).encode()) > SETTINGS_BYTES[key]:
+                raise ControlError(
+                    INVALID_REQUEST, f"the {key} list passes {SETTINGS_BYTES[key]:,} bytes"
+                )
+        given = {entry.qualified: entry for entry in self.effective(project).entries}
+        chars = sum(
+            len(self.served_body(entry))
+            for skill in lists["always"]
+            if skill not in lists["excluded"] and (entry := given.get(skill)) is not None
+        )
+        if chars > MAX_LOADED:
+            raise ControlError(
+                INVALID_REQUEST,
+                f"the skills loaded at every run's start come to {chars:,} characters, past "
+                f"the run's {MAX_LOADED:,}",
+            )
         with self.control.write() as tx:
             db = tx.sql
             if not db.execute("SELECT 1 FROM projects WHERE project_id=?", (project,)).fetchone():
@@ -265,8 +300,8 @@ class SkillStore:
                 (
                     project,
                     expected + 1,
-                    json.dumps(list(dict.fromkeys(always))),
-                    json.dumps(sorted(set(excluded))),
+                    json.dumps(lists["always"]),
+                    json.dumps(lists["excluded"]),
                     author.model_dump_json(),
                     _now(),
                 ),
@@ -301,7 +336,7 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _capped(items: tuple[dict[str, str], ...]) -> list[dict[str, str]]:
+def _capped(items: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     listed = [
         {**item, "path": item["path"][:200] + ("…" if len(item["path"]) > 200 else "")}
         for item in items[:REPORT_ITEMS]

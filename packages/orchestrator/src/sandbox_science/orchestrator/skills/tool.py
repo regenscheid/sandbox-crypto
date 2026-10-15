@@ -8,8 +8,11 @@ says which words matched. A load returns each body under its qualified ID, revis
 SHA-256, between markers no body contains; the same skill again gets a short note, and a
 run's loaded bodies, those given at its start included, stop at ``MAX_LOADED`` characters.
 A read returns a file of a skill's pack by a path relative to the skill, resolved inside
-the snapshot so that sibling links work, and refuses anything outside it. Each call's
-record names what it returned with its SHA-256: the run's load evidence (SK-21).
+the snapshot so that sibling links work, and refuses anything outside it or under a
+skill the run does not have; a skill's own ``SKILL.md`` read this way counts toward the
+same cap. Pack text is served with its hidden characters written as code points
+(``served``). Each call's record names what it returned with its SHA-256, and the run's
+summary the skills loaded at its start: the run's load evidence (SK-21).
 """
 
 from __future__ import annotations
@@ -27,11 +30,9 @@ from sandbox_science.orchestrator.aio import threaded
 from sandbox_science.orchestrator.model import ToolSpec
 
 from .index import SkillsGiven, give, marker
-from .packs import body
-from .store import Entry, SkillSet, SkillStore
+from .packs import served
+from .store import MAX_LOADED, Entry, SkillSet, SkillStore
 
-MAX_LOADED: Final = 100_000
-"""Characters of skill bodies one run is given (SK-39)."""
 MAX_READ: Final = 64 * 1024
 MAX_FOUND: Final = 8
 NAME: Final = "skills"
@@ -98,14 +99,31 @@ class SkillTool:
         self.loaded: dict[str, str] = {}
         """Each loaded skill's body SHA-256."""
         self.chars = 0
+        self.started: list[dict[str, Any]] = []
+        """The records of the skills loaded at the start, or left out past the cap."""
         bodies: dict[str, str] = {}
+        left: list[str] = []
         for skill in skills.always:
-            body = self._body(self.by_id[skill])
-            if self.chars + len(body) <= MAX_LOADED:
-                bodies[skill] = body
-                self.loaded[skill] = self.by_id[skill].body_sha256
-                self.chars += len(body)
-        self.given: SkillsGiven = give(skills, bodies)
+            entry = self.by_id[skill]
+            text = store.served_body(entry)
+            item = {"trigger": "start", "id": skill, "revision": entry.revision}
+            item |= {"role": role, "alias": alias}
+            if self.chars + len(text) <= MAX_LOADED:
+                bodies[skill] = text
+                self.loaded[skill] = entry.body_sha256
+                self.chars += len(text)
+                self.started.append({**item, "sha256": entry.body_sha256, "status": "loaded"})
+            else:
+                left.append(skill)
+                self.started.append({**item, "status": "over_budget"})
+        self.given: SkillsGiven = give(skills, bodies, left, MAX_LOADED)
+
+    def summary(self, model: str | None) -> dict[str, Any] | None:
+        """The skills loaded at the run's start, as load records naming the model that
+        first answered (SK-21, SK-38); ``None`` when there were none."""
+        if not self.started:
+            return None
+        return {"loads": [{**item, "model": model} for item in self.started]}
 
     async def call(
         self, args: dict[str, Any], *, call_id: str, model: str | None
@@ -147,16 +165,25 @@ class SkillTool:
         return json.dumps(answer, ensure_ascii=False), {"status": "ok", "found": ids}
 
     def _load(self, names: list[str]) -> tuple[str, dict[str, Any]]:
+        """Each name's body, or why it is not loaded; a name that names no skill costs
+        the call only that name, unless it is the only one."""
         parts: list[str] = []
         loads: list[dict[str, Any]] = []
         for name in dict.fromkeys(names):
-            entry = self._resolve(name)
+            try:
+                entry = self._resolve(name)
+            except _RefusedError as refused:
+                if len(names) == 1:
+                    raise
+                parts.append(f"{name[:200]!r} is not loaded: {refused.message}")
+                loads.append({"name": name[:200], "status": refused.kind})
+                continue
             item = {"id": entry.qualified, "revision": entry.revision}
             if self.loaded.get(entry.qualified) == entry.body_sha256:
                 parts.append(f"{entry.qualified} is already loaded; its text is earlier on.")
                 loads.append({**item, "status": "already_loaded"})
                 continue
-            body = self._body(entry)
+            body = self.store.served_body(entry)
             if self.chars + len(body) > MAX_LOADED:
                 parts.append(
                     f"{entry.qualified} is not loaded: it would pass the run's "
@@ -181,19 +208,35 @@ class SkillTool:
         outside = path.startswith("/") or "\\" in path or target.startswith("../")
         if outside or target in (".", ".."):
             raise _RefusedError("resource_outside_pack", f"{path[:200]!r} is outside the pack")
+        top = target.partition("/")[0]
+        own = f"{top}/SKILL.md"
+        if f"{entry.source}/{top}" not in self.by_id and self.store.file(entry.snapshot, own):
+            raise _RefusedError("not_in_set", f"{top} is not one of this run's skills")
         content = self.store.file(entry.snapshot, target)
         if content is None:
             raise _RefusedError("not_found", f"the pack has no file {target[:200]!r}")
-        shown = content[:MAX_READ]
-        digest = hashlib.sha256(shown).hexdigest()
         record = {"id": entry.qualified, "revision": entry.revision, "path": target}
-        record |= {"sha256": digest, "bytes": len(content), "status": "ok"}
         try:
-            text = shown.decode()
+            content.decode()  # text or binary, by the whole file
         except UnicodeDecodeError:
+            record |= {"bytes": len(content), "status": "ok", "binary": True}
             return json.dumps({"path": target, "bytes": len(content), "binary": True}), record
+        # A cut that splits a character drops its first bytes: the whole file is UTF-8.
+        shown = content[:MAX_READ].decode(errors="ignore")
+        text = served(shown)
+        if target == own:  # a skill's own text, as a load gives it, counts toward the cap
+            if self.chars + len(text) > MAX_LOADED:
+                raise _RefusedError(
+                    "over_budget",
+                    f"{target} would pass the run's {MAX_LOADED:,} characters of skill text",
+                )
+            self.chars += len(text)
+        digest = hashlib.sha256(shown.encode()).hexdigest()
+        record |= {"sha256": digest, "bytes": len(content), "status": "ok"}
         note = (
-            f"\n[first {MAX_READ:,} of {len(content):,} bytes]" if len(content) > MAX_READ else ""
+            f"\n[first {len(shown.encode()):,} of {len(content):,} bytes]"
+            if len(content) > MAX_READ
+            else ""
         )
         code = marker([], [text])
         return (
@@ -214,10 +257,6 @@ class SkillTool:
         raise _RefusedError(
             "not_found", f"no skill {name[:200]!r} in this run's set; search for it"
         )
-
-    def _body(self, entry: Entry) -> str:
-        content = self.store.file(entry.snapshot, f"{entry.name}/SKILL.md") or b""
-        return body(content.decode(errors="replace"))
 
 
 class _RefusedError(Exception):

@@ -18,7 +18,7 @@ from typing import Any, Final, cast
 
 import yaml
 
-from sandbox_science.orchestrator.documents.agent_text import hidden_characters
+from sandbox_science.orchestrator.documents.agent_text import hidden_characters, visible
 from sandbox_science.orchestrator.documents.frontmatter import NoAliases
 
 from .sources import Fetched, PackFile, Skipped
@@ -159,6 +159,26 @@ def body(text: str) -> str:
     """A ``SKILL.md``'s body, as its SHA-256 was taken: the text after its front matter."""
     found = _FRONT.match(text)
     return found[2] if found is not None else text
+
+
+def served(text: str) -> str:
+    """Pack text as a run is given it: each hidden character, and each that can pass for
+    other text, written as its code point (``visible``), so that none acts or passes
+    unseen in the model's context."""
+    return visible(text)
+
+
+def hidden(files: tuple[PackFile, ...]) -> list[dict[str, Any]]:
+    """The text files with hidden characters, and how many each has, for the report."""
+    found: list[dict[str, Any]] = []
+    for file in files:
+        try:
+            text = file.content.decode()
+        except UnicodeDecodeError:
+            continue  # binary: read as such, never shown as text
+        if count := len(hidden_characters(text)):
+            found.append({"path": file.path, "characters": count})
+    return found
 
 
 def snapshot_sha256(files: tuple[PackFile, ...]) -> str:

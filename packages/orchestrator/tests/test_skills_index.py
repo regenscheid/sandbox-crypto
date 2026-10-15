@@ -188,7 +188,8 @@ async def test_skills_loaded_at_start_count_toward_the_cap(
     load past the run's budget is refused."""
     _pin(harness.state, pack)
     _settings(harness.state, "--expected", "0", "--always", "ss/alpha")
-    monkeypatch.setattr(skills_tool, "MAX_LOADED", 40)
+    # beta's body alone fits, and alpha's with it does not.
+    monkeypatch.setattr(skills_tool, "MAX_LOADED", 70)
     record = await harness.run(
         "run-1", [Reply(calls=[call("skills", action="load", names=["beta"])]), Reply("Done.")]
     )
@@ -201,6 +202,41 @@ async def test_skills_loaded_at_start_count_toward_the_cap(
     assert pins.skills.always[0].startswith("ss/alpha@")
     (load,) = _skill_records(record)
     assert load["loads"][0]["status"] == "over_budget"
+    # The start's load is evidence too, with the model that first answered (SK-21, SK-38).
+    (started,) = cast(dict[str, Any], record.summaries["skills"])["loads"]
+    alpha = hashlib.sha256(b"SS-MARKER-ALPHA-1\n").hexdigest()
+    assert started == {
+        "trigger": "start",
+        "id": "ss/alpha",
+        "revision": _git(pack, "rev-parse", "HEAD"),
+        "role": "main",
+        "alias": "main",
+        "sha256": alpha,
+        "status": "loaded",
+        "model": "scripted-main",
+    }
+
+
+async def test_a_skill_past_the_cap_at_the_start_is_named_and_recorded(
+    harness: Harness, pack: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SK-39: a skill the project loads at the start that would pass the cap is left out,
+    with a line in the section and an ``over_budget`` record."""
+    _pin(harness.state, pack)
+    _settings(harness.state, "--expected", "0", "--always", "ss/beta", "--always", "ss/alpha")
+    monkeypatch.setattr(skills_tool, "MAX_LOADED", 70)
+    record = await harness.run("run-1", [Reply("Done.")])
+    system = _system(record)
+    assert "SS-MARKER-BETA-1" in system
+    assert "SS-MARKER-ALPHA-1" not in system
+    assert "Not loaded at the start, as they would pass the run's 70 characters" in system
+    assert "of skill text: ss/alpha." in system
+    started = cast(dict[str, Any], record.summaries["skills"])["loads"]
+    assert [(item["id"], item["status"]) for item in started] == [
+        ("ss/beta", "loaded"),
+        ("ss/alpha", "over_budget"),
+    ]
+    assert "sha256" not in started[1]
 
 
 async def test_an_excluded_skill_is_left_out(harness: Harness, pack: Path) -> None:
@@ -269,3 +305,17 @@ def test_settings_need_the_revision_read(
     shown = json.loads(capsys.readouterr().out)
     assert (shown["revision"], shown["always"], shown["excluded"]) == (2, [], ["ss/beta"])
     assert cli.main([*base, "--expected", "2", "--always", "not an id"]) == 1
+    capsys.readouterr()
+    # Without the revision a change is refused, naming it and the lists it would make.
+    assert cli.main([*base, "--exclude", "ss/gamma"]) == 1
+    said = capsys.readouterr().err
+    assert "give --expected 2" in said
+    assert "excluded then ['ss/beta', 'ss/gamma']" in said
+    # --exclude adds to the list, and --include takes from it.
+    assert cli.main([*base, "--expected", "2", "--exclude", "ss/gamma"]) == 0
+    assert json.loads(capsys.readouterr().out)["excluded"] == ["ss/beta", "ss/gamma"]
+    assert cli.main([*base, "--expected", "3", "--include", "ss/beta", "--always", "s/a"]) == 0
+    shown = json.loads(capsys.readouterr().out)
+    assert (shown["always"], shown["excluded"]) == (["s/a"], ["ss/gamma"])
+    assert cli.main([*base, "--expected", "4", "--not-always", "s/a"]) == 0
+    assert json.loads(capsys.readouterr().out)["always"] == []
