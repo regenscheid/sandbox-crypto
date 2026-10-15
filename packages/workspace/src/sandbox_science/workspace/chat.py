@@ -4,9 +4,14 @@
 The workspace writes and reads the run service's records in the control store
 (docs/specs/run-service.md, RS-2, RS-15); it starts no run itself. Routes:
 
-- ``POST …/sessions/{session}/messages`` with ``{"message_id", "text"}`` queues a message
-  for the session's run (RS-4). The same ID with the same text answers the message
-  already written, so a retried write is safe.
+- ``POST …/sessions/{session}/messages`` with ``{"message_id", "text", "question_id"}``
+  queues a message for the session's run (RS-4). The same ID with the same text answers
+  the message already written, so a retried write is safe. While the run that holds the
+  session waits for the user's answer to a question, the message answers the oldest such
+  question in the user's own words instead, and the answer names the question rather
+  than a message (PD-23). ``question_id`` is the question the page showed the message
+  would answer, or null (or left out) when it showed none: another is a conflict
+  (``question_changed``), and nothing is written.
 - ``GET …/sessions/{session}/messages?after=N`` lists the session's messages with their
   state, the run that holds the session, if one does, and whether the run service is
   running (RS-3): without it, a message waits. While a message is queued, no run holds
@@ -20,6 +25,15 @@ The workspace writes and reads the run service's records in the control store
 - ``GET …/sessions/{session}/runs/{run}/events?after=N&limit=M`` reads a run's events by
   cursor, with the run's state: ``active`` while it holds the session, ``ended`` once its
   ``stopped`` event is written, and ``interrupted`` otherwise (RS-12).
+- ``GET …/sessions/{session}/questions`` lists the session's latest questions to the
+  user, open and closed, oldest first, with the run that holds the session (PD-26);
+  with ``?state=open``, its open questions only.
+- ``POST …/sessions/{session}/questions/{question}/answer`` with ``{"kind", "picked",
+  "text"}`` answers an open question: options picked, the user's own words, the agent to
+  decide, or a cancel (PD-23). The same answer again is the answer already given. An
+  answer to an open question whose run no longer holds the session is refused, a
+  conflict with the reason ``run_ended``: no one would read it, and it can be sent as a
+  chat message instead.
 """
 
 from __future__ import annotations
@@ -32,6 +46,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.contracts import Contract, EnvironmentState, ErrorKind, Identifier
 from sandbox_science.orchestrator.projects import ProjectError
+from sandbox_science.orchestrator.questions import Answer, Question, Questions
 from sandbox_science.orchestrator.runstate import PAGE, ChatMessage, RunEvent, RunLease, RunState
 from sandbox_science.orchestrator.runtree import RunTrees
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
@@ -52,10 +67,25 @@ _IDENTIFIER: Final = TypeAdapter[str](Identifier)
 
 
 class MessageAnswer(Contract):
-    """A message as written, and the run that holds the session, if one does."""
+    """A message as written, or the question it answered, and the run that holds the
+    session, if one does."""
 
-    message: ChatMessage
+    message: ChatMessage | None
+    question: Question | None = None
+    """The question the message answered, instead of being queued."""
     run: RunLease | None
+
+
+class QuestionListing(Contract):
+    """A session's latest questions to the user, oldest first, and the run that holds
+    the session: a message the user writes answers its oldest open question."""
+
+    questions: list[Question]
+    run: RunLease | None
+
+
+class QuestionAnswer(Contract):
+    question: Question
 
 
 class MessageListing(Contract):
@@ -90,6 +120,8 @@ def add_routes(app: web.Application) -> None:
     app.router.add_get(PATH + "/runs/{run}/events", events)
     app.router.add_post(PATH + "/resume", resume)
     app.router.add_post(PATH + "/runs/{run}/cancel", cancel)
+    app.router.add_get(PATH + "/questions", questions)
+    app.router.add_post(PATH + "/questions/{question}/answer", answer)
 
 
 def _scope(request: web.Request) -> tuple[str, str]:
@@ -110,9 +142,17 @@ async def post(request: web.Request) -> web.Response:
     project, session = _scope(request)
     body = await json_body(request, "message")
     fields = cast(dict[str, object], body) if isinstance(body, dict) else {}
-    if set(fields) != {"message_id", "text"}:
-        raise ProjectError(ErrorKind.INVALID_REQUEST, "a message is {message_id, text}")
+    if not {"message_id", "text"} <= set(fields) <= {"message_id", "text", "question_id"}:
+        raise ProjectError(
+            ErrorKind.INVALID_REQUEST, "a message is {message_id, text, question_id}"
+        )
     message_id, text = fields["message_id"], fields["text"]
+    answers = fields.get("question_id")
+    if answers is not None:
+        try:
+            answers = _IDENTIFIER.validate_python(answers, strict=True)
+        except ValidationError:
+            raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid question_id") from None
     try:
         message_id = _IDENTIFIER.validate_python(message_id, strict=True)
     except ValidationError:
@@ -124,9 +164,15 @@ async def post(request: web.Request) -> web.Response:
     def write() -> str:
         session_record(context.projects, project, session)
         state = RunState(context.writer)
-        found = state.post(project, session, message_id, text, author=USER_ID or "user")
-        answer = MessageAnswer(message=found, run=state.lease(project, session))
-        return api.dumps(answer.model_dump(mode="json"))
+        found = state.say(
+            project, session, message_id, text, author=USER_ID or "user", answers=answers
+        )
+        written = MessageAnswer(
+            message=found if isinstance(found, ChatMessage) else None,
+            question=found if isinstance(found, Question) else None,
+            run=state.lease(project, session),
+        )
+        return api.dumps(written.model_dump(mode="json"))
 
     return json_answer(await asyncio.to_thread(write))
 
@@ -228,5 +274,50 @@ async def cancel(request: web.Request) -> web.Response:
         session_record(context.projects, project, session)
         RunState(context.writer).cancel(project, session, run)
         return api.dumps(Requested(requested=True).model_dump(mode="json"))
+
+    return json_answer(await asyncio.to_thread(write))
+
+
+async def questions(request: web.Request) -> web.Response:
+    project, session = _scope(request)
+    state = request.query.get("state")
+    if state not in (None, "open"):
+        raise ProjectError(ErrorKind.INVALID_REQUEST, "state is open, or left out")
+    context = request.app[CONTEXT]
+
+    def read() -> str:
+        session_record(context.projects, project, session)
+        store = Questions(context.documents)
+        listing = QuestionListing(
+            questions=store.open(project, session)
+            if state == "open"
+            else store.listed(project, session),
+            run=RunState(context.documents).lease(project, session),
+        )
+        return api.dumps(listing.model_dump(mode="json"))
+
+    return json_answer(await asyncio.to_thread(read))
+
+
+async def answer(request: web.Request) -> web.Response:
+    project, session = _scope(request)
+    question_id = identifier(request, "question")
+    body = await json_body(request, "answer")
+    try:
+        given = Answer.model_validate(body)
+    except ValidationError:
+        raise ProjectError(
+            ErrorKind.INVALID_REQUEST,
+            'an answer is {"kind", "picked", "text"}: kind picked, free, decide or cancel',
+        ) from None
+    context = request.app[CONTEXT]
+
+    def write() -> str:
+        session_record(context.projects, project, session)
+        live_after = RunState(context.writer).live_after()
+        answered = Questions(context.writer).answer(
+            project, session, question_id, given, live_after=live_after
+        )
+        return api.dumps(QuestionAnswer(question=answered).model_dump(mode="json"))
 
     return json_answer(await asyncio.to_thread(write))

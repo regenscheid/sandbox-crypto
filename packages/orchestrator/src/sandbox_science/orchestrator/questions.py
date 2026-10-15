@@ -32,6 +32,7 @@ from sandbox_science.contracts.model import Contract
 
 from .control import ControlError, ControlStore
 from .control.errors import CONFLICT, INVALID_REQUEST, NOT_FOUND
+from .documents import DocumentStore
 from .documents.agent_text import agent_text
 
 MAX_QUESTION: Final = 4000
@@ -83,18 +84,32 @@ class Question(Contract):
     reason: str | None = None
     """Why a question closed without an answer: the run was cancelled, the session
     closed, or the service restarted."""
+    message: str | None = None
+    """The chat message that answered it, when the user answered by writing to the
+    session."""
 
 
 _COLUMNS: Final = (
     "question_id, project_id, session_id, run, tool_call, text, options, multiple, state, "
-    "asked_at, answer, closed_at, reason"
+    "asked_at, answer, closed_at, reason, message_id"
 )
+INTERRUPTED: Final = "the run was interrupted"
+"""Why the run service closes the questions of a run whose holder is gone."""
+ORPHANED: Final = "the run that asked ended without closing it"
+"""Why the run service closes an open question whose run holds no lease."""
+SESSION_CLOSED: Final = "the session was closed"
+RUN_ENDED: Final = (
+    "the run that asked has ended, so this answer would be lost: send it as a chat message instead"
+)
+"""Why an answer to an open question whose run no longer holds the session is refused."""
+LISTED: Final = 50
+"""The most questions a listing returns: a session's latest."""
 
 
 def _question(row: tuple[object, ...]) -> Question:
     (
         question_id, project, session, run, tool_call, text, options, multiple, state,
-        asked_at, answer, closed_at, reason,
+        asked_at, answer, closed_at, reason, message,
     ) = row  # fmt: skip
     return Question(
         question_id=str(question_id),
@@ -110,14 +125,17 @@ def _question(row: tuple[object, ...]) -> Question:
         answer=None if answer is None else Answer.model_validate_json(str(answer)),
         closed_at=None if closed_at is None else datetime.fromisoformat(str(closed_at)),
         reason=None if reason is None else str(reason),
+        message=None if message is None else str(message),
     )
 
 
 class Questions:
-    """The questions of the control store, which its owner closes."""
+    """The questions in one control store, which its owner closes: the store itself, or
+    the one a document store opened."""
 
-    def __init__(self, control: ControlStore, *, clock: Clock = SYSTEM_CLOCK) -> None:
-        self.control, self.clock = control, clock
+    def __init__(self, store: ControlStore | DocumentStore, *, clock: Clock = SYSTEM_CLOCK) -> None:
+        self.control = store if isinstance(store, ControlStore) else store.control
+        self.clock = clock
 
     def _now(self) -> str:
         return self.clock.now().astimezone(UTC).isoformat()
@@ -217,9 +235,32 @@ class Questions:
             ).fetchall()
         return [_question(row) for row in rows]
 
-    def answer(self, project: str, session: str, question_id: str, answer: Answer) -> Question:
+    def listed(self, project: str, session: str) -> list[Question]:
+        """The session's latest questions, open or closed, oldest first."""
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                f"SELECT {_COLUMNS} FROM user_questions "  # noqa: S608 - fixed columns
+                "WHERE project_id = ? AND session_id = ? ORDER BY rowid DESC LIMIT ?",
+                (project, session, LISTED),
+            ).fetchall()
+        return [_question(row) for row in reversed(rows)]
+
+    def answer(
+        self,
+        project: str,
+        session: str,
+        question_id: str,
+        answer: Answer,
+        *,
+        live_after: float | None = None,
+    ) -> Question:
         """Close an open question with the user's answer. The same answer again is the
-        answer already given; another one, or one to a closed question, a conflict."""
+        answer already given; another one, or one to a closed question, a conflict.
+
+        With ``live_after``, an open question is answered only while the run that asked
+        holds the session, its lease renewed after that time: otherwise no one would read
+        the answer, and it is refused, a conflict with the reason ``run_ended``. The
+        question closes when the run service ends that run."""
         with self.control.write() as tx:
             db = tx.sql
             question = _get(db, project, session, question_id)
@@ -231,6 +272,10 @@ class Questions:
                     CONFLICT,
                     f"question {question_id} is {question.state}, not open",
                     {"state": question.state},
+                )
+            if live_after is not None and not _live(db, question, live_after):
+                raise ControlError(
+                    CONFLICT, RUN_ENDED, {"reason": "run_ended", "run": question.run}
                 )
             state = "cancelled" if given.kind == "cancel" else "answered"
             db.execute(
@@ -246,6 +291,34 @@ class Questions:
             )
             return _get(db, project, session, question_id)
 
+    def close_orphans(self) -> list[tuple[str, str, str]]:
+        """Close ``interrupted`` every open question whose run holds no lease, live or
+        expired: the run ended without closing it, as when its own close failed as it was
+        cancelled. A run whose lease expired keeps its questions until the run service
+        ends it, which closes them. The (project, session, question) closed."""
+        orphan = (
+            "state = 'open' AND NOT EXISTS (SELECT 1 FROM run_leases AS l WHERE "
+            "l.project_id = user_questions.project_id AND "
+            "l.session_id = user_questions.session_id AND l.run = user_questions.run)"
+        )
+        with self.control.read() as tx:
+            if tx.sql.execute(f"SELECT 1 FROM user_questions WHERE {orphan}").fetchone() is None:  # noqa: S608
+                return []  # a look, without a write, at each of the service's ticks
+        with self.control.write() as tx:
+            found = [
+                (str(project), str(session), str(question))
+                for question, project, session in tx.sql.execute(
+                    "SELECT question_id, project_id, session_id FROM user_questions "  # noqa: S608
+                    f"WHERE {orphan}"
+                )
+            ]
+            tx.sql.execute(
+                f"UPDATE user_questions SET state = 'interrupted', closed_at = ?, reason = ? "  # noqa: S608
+                f"WHERE {orphan}",
+                (self._now(), ORPHANED),
+            )
+            return found
+
     def close(
         self,
         project: str,
@@ -259,27 +332,116 @@ class Questions:
         """Close the open questions of ``run``, the ``question`` alone, or those of the
         whole session, when no run can receive their answers; the IDs closed."""
         with self.control.write() as tx:
-            db = tx.sql
-            where = "project_id = ? AND session_id = ? AND state = 'open'"
-            values: list[object] = [project, session]
-            if run is not None:
-                where += " AND run = ?"
-                values.append(run)
-            if question is not None:
-                where += " AND question_id = ?"
-                values.append(question)
-            ids = [
-                str(row[0])
-                for row in db.execute(
-                    f"SELECT question_id FROM user_questions WHERE {where}",  # noqa: S608
-                    values,
-                )
-            ]
-            db.execute(
-                f"UPDATE user_questions SET state = ?, closed_at = ?, reason = ? WHERE {where}",  # noqa: S608
-                [state, self._now(), reason, *values],
+            return close_open(
+                tx.sql,
+                project,
+                session,
+                self._now(),
+                run=run,
+                question=question,
+                state=state,
+                reason=reason,
             )
-            return ids
+
+
+def close_open(
+    db: sqlite3.Connection,
+    project: str,
+    session: str,
+    at: str,
+    *,
+    run: str | None = None,
+    question: str | None = None,
+    state: Literal["cancelled", "interrupted"],
+    reason: str,
+) -> list[str]:
+    """``Questions.close`` in the open change ``db``, at the time ``at``."""
+    where = "project_id = ? AND session_id = ? AND state = 'open'"
+    values: list[object] = [project, session]
+    if run is not None:
+        where += " AND run = ?"
+        values.append(run)
+    if question is not None:
+        where += " AND question_id = ?"
+        values.append(question)
+    ids = [
+        str(row[0])
+        for row in db.execute(
+            f"SELECT question_id FROM user_questions WHERE {where}",  # noqa: S608
+            values,
+        )
+    ]
+    db.execute(
+        f"UPDATE user_questions SET state = ?, closed_at = ?, reason = ? WHERE {where}",  # noqa: S608
+        [state, at, reason, *values],
+    )
+    return ids
+
+
+def answered_by(
+    db: sqlite3.Connection, project: str, session: str, message_id: str, text: str
+) -> Question | None:
+    """The question the chat message ``message_id`` answered, in the open change ``db``,
+    if one did: the same message again is that answer, and the same ID with other text,
+    or in another session, a conflict."""
+    row = db.execute(
+        f"SELECT {_COLUMNS} FROM user_questions WHERE message_id = ?",  # noqa: S608
+        (message_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    found = _question(row)
+    if (found.project, found.session) != (project, session) or (
+        found.answer is None or found.answer.text != text.strip()
+    ):
+        raise ControlError(CONFLICT, f"message {message_id!r} was written with other content")
+    return found
+
+
+def waiting(
+    db: sqlite3.Connection, project: str, session: str, *, live_after: float
+) -> Question | None:
+    """The question a message to the session answers now, in the open change ``db``: the
+    oldest open question of the run that holds the session, its lease renewed after
+    ``live_after``. ``None`` when that run waits for no answer, or no run holds it."""
+    row = db.execute(
+        f"SELECT {_COLUMNS} FROM user_questions WHERE question_id = ("  # noqa: S608
+        "SELECT q.question_id FROM user_questions AS q JOIN run_leases AS l "
+        "ON l.project_id = q.project_id AND l.session_id = q.session_id AND l.run = q.run "
+        "WHERE q.project_id = ? AND q.session_id = ? AND q.state = 'open' "
+        "AND l.renewed_at > ? ORDER BY q.rowid LIMIT 1)",
+        (project, session, live_after),
+    ).fetchone()
+    return None if row is None else _question(row)
+
+
+def answer_with(
+    db: sqlite3.Connection, question: Question, message_id: str, text: str, at: str
+) -> Question:
+    """Answer the open ``question`` in the user's own words with the chat message
+    ``message_id``, in the open change ``db``, at the time ``at``."""
+    try:
+        given = _checked(question, Answer(kind="free", text=text))
+    except ControlError as error:
+        raise ControlError(
+            error.kind,
+            f"the message answers question {question.question_id}: {error.message}",
+            {"question": question.question_id},
+        ) from None
+    db.execute(
+        "UPDATE user_questions SET state = 'answered', answer = ?, closed_at = ?, "
+        "message_id = ? WHERE question_id = ? AND state = 'open'",
+        (given.model_dump_json(exclude_defaults=True), at, message_id, question.question_id),
+    )
+    return _get(db, question.project, question.session, question.question_id)
+
+
+def by_message(db: sqlite3.Connection, message_id: str) -> bool:
+    """Whether the chat message ``message_id`` answered a question."""
+    found = db.execute(
+        "SELECT 1 FROM user_questions WHERE message_id = ?", (message_id,)
+    ).fetchone()
+    return found is not None
 
 
 def _get(db: sqlite3.Connection, project: str, session: str, question_id: str) -> Question:
@@ -291,6 +453,17 @@ def _get(db: sqlite3.Connection, project: str, session: str, question_id: str) -
     if row is None:
         raise ControlError(NOT_FOUND, f"no question {question_id} in this session")
     return _question(row)
+
+
+def _live(db: sqlite3.Connection, question: Question, live_after: float) -> bool:
+    """Whether the run that asked holds the session, its lease renewed after
+    ``live_after``."""
+    found = db.execute(
+        "SELECT 1 FROM run_leases WHERE project_id = ? AND session_id = ? AND run = ? "
+        "AND renewed_at > ?",
+        (question.project, question.session, question.run, live_after),
+    ).fetchone()
+    return found is not None
 
 
 def _checked(question: Question, answer: Answer) -> Answer:

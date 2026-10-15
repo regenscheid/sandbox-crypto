@@ -7,7 +7,9 @@ The run service's records (docs/specs/run-service.md):
   a run delivers it, and is marked ``delivered`` with that run only after the run's
   record is saved (RS-9). A message ID makes a retried write safe. A run marks the
   messages it offers, so what it saw is known without its events; a new message queues
-  the session's held messages again (RS-12).
+  the session's held messages again (RS-12). While the run that holds the session waits
+  for the user's answer to a question, the user's own message is that answer instead
+  (``say``; PD-23).
 - **The run lease** (RS-5). One run of a session at a time, from the command line or the
   service. A lease whose holder stops renewing it for ``lease_seconds`` has expired.
 - **Run events** (RS-13, RS-14). What a run did, appended as it happens, numbered from 1
@@ -33,6 +35,7 @@ from .control import ControlError, ControlStore
 from .control.errors import BUSY, CONFLICT, INVALID_REQUEST, NOT_FOUND
 from .documents import DocumentStore
 from .projects import ModelUsage, ProjectStore, run_name
+from .questions import Question, answer_with, answered_by, by_message, waiting
 
 LEASE_SECONDS: Final = 60.0
 """How long a run's lease outlives its last renewal (RS-5)."""
@@ -124,48 +127,66 @@ class RunState:
         self, project: str, session: str, message_id: str, text: str, *, author: str
     ) -> ChatMessage:
         """Queue a message for the session's run. The same ID with the same text is the
-        message already written; with other text, or for another session, a conflict."""
-        if not text.strip() or len(text.encode()) > MAX_MESSAGE_BYTES:
-            raise ControlError(
-                INVALID_REQUEST, f"a message is 1 to {MAX_MESSAGE_BYTES} bytes, not blank"
-            )
+        message already written; with other text, or for another session, a conflict. It
+        never answers a question to the user: the user's own messages from the chat are
+        written with ``say``, which nothing else writes with."""
+        _check_text(text)
         now = self._now().isoformat()
         with self.control.write() as tx:
             db = tx.sql
-            found = db.execute(
-                f"SELECT {_MESSAGE_COLUMNS}, project_id, session_id FROM session_messages "  # noqa: S608
-                "WHERE message_id = ?",
-                (message_id,),
-            ).fetchone()
+            found = _found(db, project, session, message_id, text)
             if found is not None:
-                if tuple(found[-2:]) != (project, session) or found[2] != text:
-                    raise ControlError(
-                        CONFLICT, f"message {message_id!r} was written with other content"
-                    )
-                return _message(found)
+                return found
             _session(db, project, session)
-            try:
-                cursor = db.execute(
-                    "INSERT INTO session_messages (message_id, project_id, session_id, text, "
-                    "author, created_at, state, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?)",
-                    (message_id, project, session, text, author, now, now),
+            if by_message(db, message_id):
+                raise ControlError(CONFLICT, f"message {message_id!r} answered a question")
+            return _queue(db, project, session, message_id, text, author, now)
+
+    def say(
+        self,
+        project: str,
+        session: str,
+        message_id: str,
+        text: str,
+        *,
+        author: str,
+        answers: str | None,
+    ) -> ChatMessage | Question:
+        """Write the user's own message from the chat. While the run that holds the
+        session waits for the user's answer, the message answers that run's oldest open
+        question in the user's own words and is not queued, and the question is returned,
+        answered (PD-23; a coordinator decision, reversible: the message could instead
+        wait for the run's next turn). Otherwise it is queued, as ``post`` queues it.
+
+        ``answers`` is the question the user was shown the message would answer, or
+        ``None`` when they were shown none. When it is not the question the message would
+        answer now, as when that question was answered or closed meanwhile, or another
+        opened, nothing is written: a conflict whose details name the question it would
+        answer now (``question_changed``). The same ID with the same text is the message,
+        or the answer, already written."""
+        _check_text(text)
+        now = self._now().isoformat()
+        with self.control.write() as tx:
+            db = tx.sql
+            found = _found(db, project, session, message_id, text)
+            if found is not None:
+                return found
+            earlier = answered_by(db, project, session, message_id, text)
+            if earlier is not None:
+                return earlier
+            _session(db, project, session)
+            question = waiting(db, project, session, live_after=self.live_after())
+            current = None if question is None else question.question_id
+            if current != answers:
+                raise ControlError(
+                    CONFLICT,
+                    "the question this message answers has changed: read the chat again "
+                    + (f"(it now answers {current})" if current else "(no question waits)"),
+                    {"reason": "question_changed", "question": current},
                 )
-            except sqlite3.IntegrityError as error:
-                raise ControlError(INVALID_REQUEST, f"the message is refused: {error}") from None
-            # Writing again is resuming: the session's held messages go with this one.
-            db.execute(
-                "UPDATE session_messages SET state = 'queued', updated_at = ? "
-                "WHERE project_id = ? AND session_id = ? AND state = 'held'",
-                (now, project, session),
-            )
-            return ChatMessage(
-                message_id=message_id,
-                number=cast(int, cursor.lastrowid),
-                text=text,
-                author=author,
-                created_at=datetime.fromisoformat(now),
-                state="queued",
-            )
+            if question is not None:
+                return answer_with(db, question, message_id, text, now)
+            return _queue(db, project, session, message_id, text, author, now)
 
     def messages(
         self,
@@ -268,6 +289,11 @@ class RunState:
         return [text for (text,) in rows]
 
     # --- The run lease ---------------------------------------------------------------
+
+    def live_after(self) -> float:
+        """The time, in wall-clock seconds, after which a lease's last renewal keeps it
+        live (RS-5)."""
+        return self._now().timestamp() - self.lease_seconds
 
     def acquire(self, project: str, session: str, run: str, holder: str) -> None:
         """Take the session's run lease for ``run``; ``busy`` while another run holds it.
@@ -544,6 +570,63 @@ class RunState:
             )
             for seq, at, kind, data in rows
         ]
+
+
+def _check_text(text: str) -> None:
+    if not text.strip() or len(text.encode()) > MAX_MESSAGE_BYTES:
+        raise ControlError(
+            INVALID_REQUEST, f"a message is 1 to {MAX_MESSAGE_BYTES} bytes, not blank"
+        )
+
+
+def _found(
+    db: sqlite3.Connection, project: str, session: str, message_id: str, text: str
+) -> ChatMessage | None:
+    """The message written under ``message_id`` already; with other text, or for
+    another session, a conflict."""
+    found = db.execute(
+        f"SELECT {_MESSAGE_COLUMNS}, project_id, session_id FROM session_messages "  # noqa: S608
+        "WHERE message_id = ?",
+        (message_id,),
+    ).fetchone()
+    if found is None:
+        return None
+    if tuple(found[-2:]) != (project, session) or found[2] != text:
+        raise ControlError(CONFLICT, f"message {message_id!r} was written with other content")
+    return _message(found)
+
+
+def _queue(
+    db: sqlite3.Connection,
+    project: str,
+    session: str,
+    message_id: str,
+    text: str,
+    author: str,
+    now: str,
+) -> ChatMessage:
+    try:
+        cursor = db.execute(
+            "INSERT INTO session_messages (message_id, project_id, session_id, text, "
+            "author, created_at, state, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?)",
+            (message_id, project, session, text, author, now, now),
+        )
+    except sqlite3.IntegrityError as error:
+        raise ControlError(INVALID_REQUEST, f"the message is refused: {error}") from None
+    # Writing again is resuming: the session's held messages go with this one.
+    db.execute(
+        "UPDATE session_messages SET state = 'queued', updated_at = ? "
+        "WHERE project_id = ? AND session_id = ? AND state = 'held'",
+        (now, project, session),
+    )
+    return ChatMessage(
+        message_id=message_id,
+        number=cast(int, cursor.lastrowid),
+        text=text,
+        author=author,
+        created_at=datetime.fromisoformat(now),
+        state="queued",
+    )
 
 
 def _session(db: sqlite3.Connection, project: str, session: str) -> None:

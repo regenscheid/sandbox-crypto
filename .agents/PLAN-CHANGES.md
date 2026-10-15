@@ -4,6 +4,11 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 ## 2026-10-15
 
+Decisions of the coordinator on questions to the user (PD-23 to PD-26), which the owner can reverse:
+
+- **A chat message answers the open question** ([questions to the user](../docs/QUESTIONS.md); [run service](../docs/specs/run-service.md), RS-4). While the run that holds the session waits for an answer, a message the user writes answers that run's oldest open question in the user's own words, instead of being queued; the chat box says which question it will answer. Queueing it for the run's next turn instead is a small change.
+- **No defaults or timeouts** ([plans and delegation](../docs/specs/plans-and-delegation.md), open question 6). A question waits for the user, and its run with it, holding the session and making no model call.
+
 Decisions of the coordinator on lane K's triage of the prompt research, which the owner can reverse:
 
 - **A check changes nothing** ([plans and delegation](../docs/specs/plans-and-delegation.md), PD-34; [ledger spec](../docs/specs/ledger.md), LG-13). A delegated run that checks a ledger entry is offered the ledger's, the documents' and the memory's reads only, with its compute and file tools: no `ledger_change`, `ledger_import` or `ledger_category`, no document edits or comments, no `memory_propose`. Its prompt told it so; now the platform holds it. General delegations will keep LG-13's authority.

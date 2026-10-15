@@ -510,7 +510,7 @@ describe('sending a message', () => {
     const send = async (body: { message_id: string; text: string }) => {
       sent.push(body);
       if (fail) throw new Error('no answer');
-      return { message: message(1, 'queued'), run: null };
+      return { message: message(1, 'queued'), question: null, run: null };
     };
     await expect(sendMessage('p1', 's1', 'Hello', send)).rejects.toThrow();
     fail = false;

@@ -494,6 +494,18 @@ class ProjectStore:
             now = datetime.now(UTC)
             closed = session.model_copy(update={"closed_at": now})
             self._put_session(tx.sql, project_id, closed, now)
+            # Its questions to the user can no longer be answered (PD-23). Imported here:
+            # the questions import the documents, which import this module.
+            from .questions import SESSION_CLOSED, close_open
+
+            close_open(
+                tx.sql,
+                project_id,
+                session_id,
+                now.isoformat(),
+                state="cancelled",
+                reason=SESSION_CLOSED,
+            )
             return closed
 
     def project_ids(self) -> list[str]:

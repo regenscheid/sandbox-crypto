@@ -10,6 +10,13 @@ export interface AdmissionSummary {
   recorded: boolean;
 }
 
+/** How the user closed a question. */
+export interface Answer {
+  kind: "picked" | "free" | "decide" | "cancel";
+  picked: string[];
+  text: string | null;
+}
+
 /** An artifact at its latest revision, and who made that revision. */
 export interface ArtifactEntry {
   artifact_id: string;
@@ -749,9 +756,10 @@ export interface MemoryVersion {
   reason: string | null;
 }
 
-/** A message as written, and the run that holds the session, if one does. */
+/** A message as written, or the question it answered, and the run that holds the session, if one does. */
 export interface MessageAnswer {
-  message: ChatMessage;
+  message: ChatMessage | null;
+  question: Question | null;
   run: RunLease | null;
 }
 
@@ -1007,6 +1015,40 @@ export interface ProvisionSummary {
   probes_total: number;
   executions_total: number;
   notes_total: number;
+}
+
+/** A question as the store keeps it. */
+export interface Question {
+  question_id: string;
+  project: string;
+  session: string;
+  run: string;
+  tool_call: string;
+  text: string;
+  options: QuestionOption[];
+  multiple: boolean;
+  state: "open" | "answered" | "cancelled" | "interrupted";
+  asked_at: string;
+  answer: Answer | null;
+  closed_at: string | null;
+  reason: string | null;
+  message: string | null;
+}
+
+export interface QuestionAnswer {
+  question: Question;
+}
+
+/** A session's latest questions to the user, oldest first, and the run that holds the session: a message the user writes answers its oldest open question. */
+export interface QuestionListing {
+  questions: Question[];
+  run: RunLease | null;
+}
+
+/** One choice a question offers: a short label, and what it means. */
+export interface QuestionOption {
+  label: string;
+  detail: string | null;
 }
 
 /** A quote of the revision shown, by its evidence ID, with its checks. */

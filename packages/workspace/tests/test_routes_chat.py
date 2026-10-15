@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sandbox_science.contracts import EnvironmentState
+from sandbox_science.contracts import EnvironmentState, ExecutionContext
 from sandbox_science.orchestrator.projects import ProjectStore
+from sandbox_science.orchestrator.questions import Questions
 from sandbox_science.orchestrator.runstate import RunState
+from sandbox_science.testing import FakeClock
 from sandbox_science.workspace.api import TIMEOUTS
 
 from .route_support import (
@@ -261,3 +264,169 @@ async def test_a_worker_that_does_not_say_leaves_the_state_unknown(
 
     client = await workspace(aiohttp_client, state_dir, static_dir)  # no worker configured
     assert (await listed(client))["environment"] is None
+
+
+# Questions to the user (PD-23 to PD-26).
+
+CURVES = [{"label": "Ed25519", "detail": "The common choice"}, {"label": "Ed448"}]
+
+
+def ask(state_dir: Path, run: str = "run-x", operation: str = "op-1") -> str:
+    store = ProjectStore(state_dir)
+    try:
+        context = ExecutionContext(
+            project_id="p1", session_id="a", environment_id=environment_of(state_dir, "p1", "a")
+        )
+        asked = Questions(store.control).ask(
+            context, run, "call-1", operation, "Which curve?", CURVES
+        )
+        return asked.question_id
+    finally:
+        store.close()
+
+
+async def test_the_sessions_questions_are_listed_and_answered(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    runs(state_dir).acquire("p1", "a", "run-x", "holder")
+    first, second = ask(state_dir), ask(state_dir, operation="op-2")
+    client = await workspace(aiohttp_client, state_dir, static_dir)
+    listing = await client.get(SESSION + "/questions")
+    assert listing.headers["Cache-Control"] == "no-store"
+    listed = await listing.json()
+    assert listed["run"]["run"] == "run-x"
+    assert [q["question_id"] for q in listed["questions"]] == [first, second]
+    shown = listed["questions"][0]
+    assert (shown["text"], shown["state"], shown["run"]) == ("Which curve?", "open", "run-x")
+    assert shown["options"] == [
+        {"label": "Ed25519", "detail": "The common choice"},
+        {"label": "Ed448", "detail": None},
+    ]
+    url = SESSION + f"/questions/{first}/answer"
+    body = {"kind": "picked", "picked": ["Ed448"]}
+    answered = await client.post(url, json=body, headers=origin(client))
+    assert answered.status == 200
+    question = (await answered.json())["question"]
+    assert (question["state"], question["answer"]) == (
+        "answered",
+        {"kind": "picked", "picked": ["Ed448"], "text": None},
+    )
+    again = await client.post(url, json=body, headers=origin(client))
+    assert (await again.json())["question"] == question  # a retry
+    await error_of(
+        await client.post(url, json={"kind": "decide"}, headers=origin(client)), 409, "conflict"
+    )
+    open_only = await (await client.get(SESSION + "/questions?state=open")).json()
+    assert [q["question_id"] for q in open_only["questions"]] == [second]
+    # A message the page sent showing no question is refused, and nothing is written.
+    unaware = {"message_id": "m-0", "text": "Hello."}
+    refused = await error_of(
+        await client.post(SESSION + "/messages", json=unaware, headers=origin(client)),
+        409,
+        "conflict",
+    )
+    assert refused["details"] == {"reason": "question_changed", "question": second}
+    # A message answers the open one left, in the user's own words.
+    message = {"message_id": "m-1", "text": "Ed25519 here.", "question_id": second}
+    response = await client.post(SESSION + "/messages", json=message, headers=origin(client))
+    written = await response.json()
+    assert written["message"] is None
+    assert written["question"]["question_id"] == second
+    assert written["question"]["answer"] == {"kind": "free", "picked": [], "text": "Ed25519 here."}
+    assert written["question"]["message"] == "m-1"
+    assert (await (await client.get(SESSION + "/messages")).json())["messages"] == []
+
+
+async def test_bad_answers_are_refused(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    question = ask(state_dir)
+    client = await workspace(aiohttp_client, state_dir, static_dir)
+    url = SESSION + f"/questions/{question}/answer"
+    bodies: list[Any] = [
+        {"kind": "maybe"},
+        {"kind": "picked", "picked": ["P-256"]},
+        {"kind": "picked", "picked": "Ed448"},
+        {"kind": "free", "text": 7},
+        {"kind": "free", "text": "  "},
+        {"kind": "decide", "why": "no"},
+        ["decide"],
+    ]
+    for body in bodies:
+        response = await client.post(url, json=body, headers=origin(client))
+        await error_of(response, 400, "invalid_request")
+    missing = SESSION + "/questions/qst-" + "0" * 24 + "/answer"
+    response = await client.post(missing, json={"kind": "decide"}, headers=origin(client))
+    await error_of(response, 404, "not_found")
+    # No run holds the session: the answer would be lost, and the words can go as a message.
+    ended = await error_of(
+        await client.post(url, json={"kind": "decide"}, headers=origin(client)), 409, "conflict"
+    )
+    assert ended["details"] == {"reason": "run_ended", "run": "run-x"}
+    assert "send it as a chat message" in ended["message"]
+    message = {"message_id": "m-1", "text": "Ed448."}
+    response = await client.post(SESSION + "/messages", json=message, headers=origin(client))
+    assert (await response.json())["message"]["state"] == "queued"
+    other = "/api/v0/projects/p1/sessions/nope/questions"
+    await error_of(await client.get(other), 404, "not_found")
+    await error_of(await client.get(SESSION + "/questions?state=closed"), 400, "invalid_request")
+    for message in (
+        {"message_id": "m-2", "text": "x", "question_id": "../q"},
+        {"message_id": "m-2", "text": "x", "question_id": 7},
+        {"message_id": "m-2", "text": "x", "question_id": None, "run": "r"},
+    ):
+        response = await client.post(SESSION + "/messages", json=message, headers=origin(client))
+        await error_of(response, 400, "invalid_request")
+    assert (await client.post(url, json={"kind": "decide"})).status == 403  # not from the page
+    store = ProjectStore(state_dir)
+    try:
+        assert Questions(store.control).get("p1", "a", question).state == "open"
+    finally:
+        store.close()
+
+
+async def test_questions_need_the_login_and_stay_in_their_session(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    runs(state_dir).acquire("p1", "a", "run-x", "holder")
+    question = ask(state_dir)
+    store = ProjectStore(state_dir)
+    try:
+        store.open_session("p1", "b", dedicated=False)
+    finally:
+        store.close()
+    anonymous = await workspace(aiohttp_client, state_dir, static_dir, login=False)
+    assert (await anonymous.get(SESSION + "/questions")).status == 401
+    url = SESSION + f"/questions/{question}/answer"
+    response = await anonymous.post(url, json={"kind": "decide"}, headers=origin(anonymous))
+    assert response.status == 401
+    client = await workspace(aiohttp_client, state_dir, static_dir)
+    other = "/api/v0/projects/p1/sessions/b"
+    assert (await (await client.get(other + "/questions")).json())["questions"] == []
+    response = await client.post(
+        other + f"/questions/{question}/answer", json={"kind": "decide"}, headers=origin(client)
+    )
+    await error_of(response, 404, "not_found")
+    # A message to the other session is an ordinary one: the question is not its.
+    message = {"message_id": "m-1", "text": "Hi"}
+    written = await client.post(other + "/messages", json=message, headers=origin(client))
+    assert (await written.json())["message"]["state"] == "queued"
+    store = ProjectStore(state_dir)
+    try:
+        assert Questions(store.control).get("p1", "a", question).state == "open"
+    finally:
+        store.close()
+
+
+async def test_a_lease_that_expired_holds_no_session_in_the_listing(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    """The page names the question a message answers from the listing's run: once the
+    lease expires, there is none, as the server routes no message to that run."""
+    past = FakeClock(datetime.now(UTC) - timedelta(minutes=5))
+    RunState(ProjectStore(state_dir).control, clock=past).acquire("p1", "a", "run-x", "h")
+    ask(state_dir)
+    client = await workspace(aiohttp_client, state_dir, static_dir)
+    listed = await (await client.get(SESSION + "/questions?state=open")).json()
+    assert listed["run"] is None
+    assert len(listed["questions"]) == 1
