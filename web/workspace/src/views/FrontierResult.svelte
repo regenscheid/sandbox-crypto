@@ -1,13 +1,15 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- One result as the frontier shows it (docs/specs/ledger.md, LG-20, LG-23): its handle,
      leading to the entry at the revision shown, its title, status and marks, who wrote it,
-     with the user's confirmation of an unverified one, its measures and indicators, what
-     dominates it (by the rule, or by a link the user can drop) or what it would dominate,
-     and its statement on request, rendered only once opened. All of it text, the
-     statement through the Markdown component. -->
+     with the user's confirmation of an unverified one, or who confirmed a published one
+     (the user or the citation check, CR-4), its measures and indicators, what dominates
+     it (by the rule, or by a link the user can drop) or what it would dominate, and its
+     statement on request, rendered only once opened. All of it text, the statement
+     through the Markdown component. -->
 <script lang="ts">
   import type { CategoryMeasure, FrontierResult } from '../lib/api-types';
   import {
+    confirmedText,
     disputedText,
     indicatorsText,
     measuresText,
@@ -75,6 +77,7 @@
     {/if}
   {:else}
     <p class="muted">Written by {writerText(result.author)}</p>
+    {#if confirmedText(result)}<p class="confirmed">{confirmedText(result)}</p>{/if}
   {/if}
   <ul class="measures">
     {#each measuresText(result, measures) as line, index (index)}<li>{line}</li>{/each}
