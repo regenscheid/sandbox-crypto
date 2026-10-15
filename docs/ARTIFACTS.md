@@ -252,16 +252,22 @@ are required. Defaults are:
 | Resource | Default |
 | --- | ---: |
 | One retained artifact revision | 8 MiB |
-| Retained revision bytes per project / global | 64 MiB / 256 MiB |
-| Retained revision count per project / global | 4,096 / 16,384 |
-| Operation count per project / global | 8,192 / 32,768 |
-| Global metadata budget | 64 MiB |
+| Retained revision bytes per project / global | 2 GiB / 8 GiB |
+| Revision count per project / global | 50,000 / 200,000 |
+| Operation count per project / global | 100,000 / 400,000 |
+| Global metadata budget | 1 GiB |
 | Intent / worker or receipt / event or revision metadata | 8 KiB / 16 KiB / 16 KiB |
 | Concurrent admitted publications | 8 |
 | Metadata/event page | 10 records |
 
-Each operation reserves 40 KiB of metadata capacity before the remote call.
-Reservations count unknown outcomes and zero-byte publications. Revision count
+The defaults are sized for recording every file executions write ([research
+artifacts](specs/research-artifacts.md), decision 9). Each unfinished operation
+reserves 40 KiB of metadata capacity before the remote call; a finished one counts
+what it stored. Reservations count unknown outcomes and zero-byte publications.
+The figures are kept per project and overall in `artifact_usage` by triggers on the
+artifact tables (control store version 20), so a budget check reads one row rather
+than every revision. `room()` tells a caller whether a new revision of a given size
+can keep its bytes, only its hash and size, or nothing (RA-31, RA-32). Revision count
 limits also count zero-byte files. Completion rechecks byte/count/metadata budgets,
 including tightened limits; preserving a previously reserved known worker outcome
 does not depend on new retention capacity. Full retention refuses new work rather
@@ -270,6 +276,27 @@ when they are written (schema version 7), and reads take rows as they are; only
 artifact content reads stay bounded by the caller's limit. Logical budgets do not claim to bound SQLite/WAL physical disk
 usage or total process RSS; operation retries, receipts and revision bytes consume
 their documented retention budgets. There is no purge or retention UI.
+
+## Revisions without bytes, tombstones and recorded files
+
+Besides published revisions, the inventory records (research artifacts, RA-31 to
+RA-34; not yet called by the harness):
+
+- a file's SHA-256 and size without its bytes, with `content_retained: false` and
+  `content_note` `too_large` or `quota` (`record_metadata`). Its content read refuses,
+  saying the bytes were not kept; the same hash and size as the head adds only a
+  reproduction;
+- a tombstone for a deleted file (`record_deletion`): a revision with `deleted: true`,
+  no bytes, and an `artifact.deleted` event; nothing when the path has no live
+  artifact. Earlier revisions stay readable, and content written again later is a new
+  revision rather than a reproduction of a deleted one.
+
+Their source can be `execution_record` (the worker reported the file written or
+deleted during an execution, which it names with the attempt's end) or
+`declared_result` beside `agent_publication`, with the run's role, its parent run and
+delegation for a delegated run. None claims the execution wrote the file. The
+consistency review sees a revision without bytes, or a tombstone, as `unavailable`
+evidence with that reason, and counts it as a change.
 
 ## Tests and evidence reads
 

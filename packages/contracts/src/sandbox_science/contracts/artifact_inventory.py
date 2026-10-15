@@ -80,9 +80,12 @@ class ArtifactLink(Contract):
 
 
 class ArtifactPublicationSource(Contract):
-    """Known publisher attribution; it makes no claim about the file's actual writer."""
+    """Known attribution of a revision: the agent run and call that published it
+    (``agent_publication``), during which the worker reported the file written or
+    deleted (``execution_record``, RA-34), or that declared it a result
+    (``declared_result``, RA-38). It makes no claim about the file's actual writer."""
 
-    kind: Literal["agent_publication"] = "agent_publication"
+    kind: Literal["agent_publication", "execution_record", "declared_result"] = "agent_publication"
     context: ExecutionContext
     run_id: Identifier
     tool_call: Annotated[str, Field(min_length=1, max_length=128)]
@@ -91,6 +94,16 @@ class ArtifactPublicationSource(Contract):
     worker_endpoint_sha256: Sha256
     observed_inputs: Literal["unknown"] = "unknown"
     producer: Literal["unknown"] = "unknown"
+    role: Literal["main", "delegated"] = "main"
+    """The role of the run (plans and delegation, PD-32)."""
+    parent_run: Annotated[str, Field(min_length=1, max_length=256)] | None = None
+    """For a delegated run: its parent's run name."""
+    delegation: Identifier | None = None
+    execution_id: Identifier | None = None
+    """For ``execution_record``: the execution whose result reported the file. The worker
+    saw it change while the execution ran; something running beside it may have changed it."""
+    attempt_state: Literal["succeeded", "failed", "timed_out", "cancelled", "lost"] | None = None
+    """That execution's end, so partial output of a failed attempt is visible (RA-11)."""
 
 
 class ArtifactRevision(Contract):
@@ -99,8 +112,28 @@ class ArtifactRevision(Contract):
     parent: Revision | None
     created_at: datetime
     publication: ArtifactPublicationSource
-    worker_snapshot: ArtifactSnapshot
+    worker_snapshot: ArtifactSnapshot | None = None
+    """The worker's copy the retained bytes came from; ``None`` when no bytes are kept."""
     worker_last_writer_hint: Identifier | None = None
+    content_retained: bool = True
+    """Whether the control store keeps the bytes. A revision without them keeps its hash
+    and size (RA-31, RA-32); the bytes stay only where the file is."""
+    content_note: Literal["too_large", "quota"] | None = None
+    """Why the bytes were not kept: larger than a revision may be, or the project's
+    retention budget was full."""
+    deleted: bool = False
+    """A tombstone: the file was deleted (RA-3, RA-33). Its reference names no content."""
+
+    @model_validator(mode="after")
+    def _content(self) -> Self:
+        if self.deleted:
+            if self.worker_snapshot is not None or self.content_retained or self.content_note:
+                raise ValueError("a tombstone keeps no content")
+        elif self.content_retained != (self.worker_snapshot is not None):
+            raise ValueError("retained bytes come from a worker snapshot")
+        elif self.content_retained == (self.content_note is not None):
+            raise ValueError("a revision without its bytes says why")
+        return self
 
 
 class ArtifactReceipt(Contract):
@@ -121,10 +154,11 @@ class ArtifactReceipt(Contract):
 class ArtifactEvent(Contract):
     seq: Revision
     project_id: Identifier
-    kind: Literal["artifact.revision_created", "artifact.reproduced"]
+    kind: Literal["artifact.revision_created", "artifact.reproduced", "artifact.deleted"]
     revision: ArtifactRevisionRef
     source: ArtifactPublicationSource
-    worker_snapshot: ArtifactSnapshot
+    worker_snapshot: ArtifactSnapshot | None = None
+    """``None`` for a revision whose bytes were not kept, and for a deletion."""
     created_at: datetime
 
 

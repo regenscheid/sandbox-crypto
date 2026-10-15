@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: MIT
 """Bounded immutable artifact inventory in the canonical control transaction.
 
-Only explicit harness publication is ingested. Source paths and worker last-writer
-hints never prove a producing execution or observed input. Rich bytes are stored and
-hashed, never parsed. Unresolved publication intents are retained rather than replayed.
+Revisions come from explicit publication and from the files executions report
+(research artifacts, RA-27 to RA-39): with their bytes, with only their hash and size
+when the bytes are too large or the budget is full, or as tombstones. Source paths and
+worker last-writer hints never prove a producing execution or observed input. Rich
+bytes are stored and hashed, never parsed. Unresolved publication intents are retained
+rather than replayed.
 """
 
 from __future__ import annotations
@@ -39,23 +42,26 @@ from .documents.store import DocumentStore
 _IDENTIFIER = TypeAdapter[str](Identifier)
 _MAX_RECORD: Final = 16 * 1024
 _MAX_REQUEST: Final = 8 * 1024
+_EMPTY: Final = hashlib.sha256(b"").hexdigest()
+_GiB: Final = 1024**3
+Room = Literal["content", "metadata", "full"]
+"""What the budget leaves for a new revision: its bytes, only its hash and size, or nothing."""
 
 
 class ArtifactLimits(Contract):
-    """Logical retention quotas; full retention refuses new work rather than evicting."""
+    """Logical retention quotas; full retention refuses new work rather than evicting.
+    Sized for every file executions write (research artifacts, decision 9)."""
 
     artifact_bytes: int = Field(
         default=MAX_ARTIFACT_BYTES, strict=True, ge=1, le=MAX_ARTIFACT_BYTES
     )
-    project_bytes: int = Field(default=64 * 1024 * 1024, strict=True, ge=1, le=256 * 1024 * 1024)
-    total_bytes: int = Field(default=256 * 1024 * 1024, strict=True, ge=1, le=1024**3)
-    project_revisions: int = Field(default=4096, strict=True, ge=1, le=100_000)
-    total_revisions: int = Field(default=16_384, strict=True, ge=1, le=1_000_000)
-    project_operations: int = Field(default=8192, strict=True, ge=1, le=100_000)
-    total_operations: int = Field(default=32_768, strict=True, ge=1, le=1_000_000)
-    metadata_bytes: int = Field(
-        default=64 * 1024 * 1024, strict=True, ge=1024, le=256 * 1024 * 1024
-    )
+    project_bytes: int = Field(default=2 * _GiB, strict=True, ge=1, le=64 * _GiB)
+    total_bytes: int = Field(default=8 * _GiB, strict=True, ge=1, le=256 * _GiB)
+    project_revisions: int = Field(default=50_000, strict=True, ge=1, le=10_000_000)
+    total_revisions: int = Field(default=200_000, strict=True, ge=1, le=10_000_000)
+    project_operations: int = Field(default=100_000, strict=True, ge=1, le=10_000_000)
+    total_operations: int = Field(default=400_000, strict=True, ge=1, le=10_000_000)
+    metadata_bytes: int = Field(default=_GiB, strict=True, ge=1024, le=16 * _GiB)
 
 
 @dataclass(frozen=True)
@@ -83,41 +89,55 @@ class ArtifactInventory:
     def _scope(self, project: str) -> None:
         _IDENTIFIER.validate_python(project)
 
+    def _usage(self, db: sqlite3.Connection, scope: str | None) -> tuple[int, int, int, int]:
+        """Revisions, retained bytes, operations and metadata bytes, of one project or
+        (``None``) of all, as the control store keeps them (its version 20)."""
+        row = db.execute(
+            "SELECT revisions,bytes,operations,metadata FROM artifact_usage WHERE project=?",
+            (scope or "",),
+        ).fetchone()
+        return (0, 0, 0, 0) if row is None else (row[0], row[1], row[2], row[3])
+
     def _budget(self, db: sqlite3.Connection, project: str) -> None:
         limits = self.limits
         for scope, byte_limit, revision_limit, operation_limit in (
             (None, limits.total_bytes, limits.total_revisions, limits.total_operations),
             (project, limits.project_bytes, limits.project_revisions, limits.project_operations),
         ):
-            count, size, largest, negative = db.execute(
-                "SELECT count(*),coalesce(sum(length(data)),0),coalesce(max(length(data)),0),"
-                "coalesce(min(size),0) FROM artifact_revisions WHERE ? IS NULL OR project=?",
-                (scope, scope),
-            ).fetchone()
-            (operations,) = db.execute(
-                "SELECT count(*) FROM artifact_operations WHERE ? IS NULL OR project=?",
-                (scope, scope),
-            ).fetchone()
-            if (
-                count > revision_limit
-                or size > byte_limit
-                or largest > limits.artifact_bytes
-                or negative < 0
-                or operations > operation_limit
-            ):
+            count, size, operations, _ = self._usage(db, scope)
+            if count > revision_limit or size > byte_limit or operations > operation_limit:
                 raise DocumentError(
                     INVALID_REQUEST, "artifact retention quota is full or has tightened"
                 )
-        (metadata,) = db.execute(
-            "SELECT (SELECT coalesce(sum(length(cast(record AS BLOB))),0) FROM artifact_revisions)"
-            "+(SELECT count(*) FROM artifact_operations)*?"
-            "+(SELECT coalesce(sum(length(cast(record AS BLOB))),0) FROM artifact_events)"
-            "+(SELECT coalesce(sum(length(cast(path AS BLOB))+length(id)+length(project)),0) "
-            "FROM artifact_objects)",
-            (_MAX_REQUEST + 2 * _MAX_RECORD,),
-        ).fetchone()
-        if metadata > limits.metadata_bytes:
+        if self._usage(db, None)[3] > limits.metadata_bytes:
             raise DocumentError(INVALID_REQUEST, "artifact metadata retention quota is full")
+
+    def room(self, project: str, size: int) -> Room:
+        """Whether a new revision of ``size`` bytes can keep them (``content``), only its
+        hash and size (``metadata``), or cannot be recorded (``full``) (RA-31, RA-32)."""
+        self._scope(project)
+        limits = self.limits
+        with self.documents.control.read() as tx:
+            db = tx.sql
+            spare = (
+                self._usage(db, None)[3] + 2 * _MAX_RECORD + _MAX_REQUEST <= limits.metadata_bytes
+            )
+            room: Room = "content" if size <= limits.artifact_bytes else "metadata"
+            for scope, byte_limit, revision_limit, operation_limit in (
+                (None, limits.total_bytes, limits.total_revisions, limits.total_operations),
+                (
+                    project,
+                    limits.project_bytes,
+                    limits.project_revisions,
+                    limits.project_operations,
+                ),
+            ):
+                count, held, operations, _ = self._usage(db, scope)
+                if count >= revision_limit or not spare:
+                    return "full"
+                if held + size > byte_limit or operations >= operation_limit:
+                    room = "metadata"
+            return room
 
     def publication_request(
         self, source: ArtifactPublicationSource, path: str, media_type: str | None
@@ -159,11 +179,7 @@ class ArtifactInventory:
             assert receipt is not None  # noqa: S101 - validated above
             request = json.loads(row[4])
             path = request["path"]
-            logical_path = (
-                path
-                if path.startswith("shared/")
-                else f"sessions/{source.context.session_id}/{path}"
-            )
+            logical_path = _logical(path, source.context.session_id)
             revision = (
                 self._revision(
                     db,
@@ -296,7 +312,7 @@ class ArtifactInventory:
             raise DocumentError(
                 INVALID_REQUEST, "artifact bytes exceed quota or fail exact size/hash verification"
             )
-        logical_path = path if path.startswith("shared/") else f"sessions/{session}/{path}"
+        logical_path = _logical(path, session)
         with self.documents.control.write() as tx:
             db = tx.sql
             found = self.find_operation(db, source, operation, digest)
@@ -312,68 +328,18 @@ class ArtifactInventory:
                     CONFLICT, "artifact transfer no longer matches its pinned worker outcome"
                 )
             self._budget(db, project)
-            row = db.execute(
-                "SELECT id,head FROM artifact_objects WHERE project=? AND path=?",
-                (project, logical_path),
-            ).fetchone()
-            artifact, head = (new_id("artifact"), 0) if row is None else row
-            previous = self._revision(db, project, artifact, head) if head else None
-            reproduced = previous is not None and (
-                previous.reference.sha256,
-                previous.reference.size,
-            ) == (snapshot.sha256, snapshot.size)
-            now = datetime.now(UTC)
-            if reproduced:
-                assert previous is not None  # noqa: S101 - reproduced requires previous
-                reference = previous.reference
-            else:
-                reference = ArtifactRevisionRef(
-                    artifact_id=artifact,
-                    project_id=project,
-                    revision=head + 1,
-                    sha256=snapshot.sha256,
-                    size=snapshot.size,
-                    media_type=snapshot.media_type,
-                )
-                revision = ArtifactRevision(
-                    reference=reference,
-                    path=logical_path,
-                    parent=head or None,
-                    created_at=now,
-                    publication=source,
-                    worker_snapshot=snapshot,
-                    worker_last_writer_hint=snapshot.produced_by,
-                )
-                if row is None:
-                    db.execute(
-                        "INSERT INTO artifact_objects VALUES (?,?,?,?)",
-                        (artifact, project, logical_path, head + 1),
-                    )
-                else:
-                    db.execute(
-                        "UPDATE artifact_objects SET head=? WHERE id=? AND project=? AND head=?",
-                        (head + 1, artifact, project, head),
-                    )
-                db.execute(
-                    "INSERT INTO artifact_revisions VALUES (?,?,?,?,?,?)",
-                    (artifact, head + 1, project, snapshot.size, _json(revision), data),
-                )
-            (sequence,) = db.execute(
-                "SELECT coalesce(max(seq),0)+1 FROM artifact_events"
-            ).fetchone()
-            event = ArtifactEvent(
-                seq=sequence,
-                project_id=project,
-                kind="artifact.reproduced" if reproduced else "artifact.revision_created",
-                revision=reference,
-                source=source,
-                worker_snapshot=snapshot,
-                created_at=now,
+            appended = self._append(
+                db,
+                source,
+                logical_path,
+                sha256=snapshot.sha256,
+                size=snapshot.size,
+                media_type=snapshot.media_type,
+                snapshot=snapshot,
+                data=data,
             )
-            db.execute(
-                "INSERT INTO artifact_events(seq,project,record) VALUES (?,?,?)",
-                (event.seq, project, _json(event)),
-            )
+            assert appended is not None  # noqa: S101 - only a deletion appends nothing
+            reference, reproduced = appended
             receipt = ArtifactReceipt(
                 state="recorded",
                 operation_id=operation,
@@ -388,6 +354,143 @@ class ArtifactInventory:
             )
             self._budget(db, project)
             return receipt
+
+    def _append(
+        self,
+        db: sqlite3.Connection,
+        source: ArtifactPublicationSource,
+        logical_path: str,
+        *,
+        sha256: str,
+        size: int,
+        media_type: str,
+        snapshot: ArtifactSnapshot | None = None,
+        data: bytes = b"",
+        note: Literal["too_large", "quota"] | None = None,
+        deleted: bool = False,
+    ) -> tuple[ArtifactRevisionRef, bool] | None:
+        """Append a revision and its event, or only a reproduction event when the head
+        holds the same content. A deletion of a missing or deleted artifact appends
+        nothing (``None``)."""
+        project = source.context.project_id
+        row = db.execute(
+            "SELECT id,head FROM artifact_objects WHERE project=? AND path=?",
+            (project, logical_path),
+        ).fetchone()
+        artifact, head = (new_id("artifact"), 0) if row is None else row
+        previous = self._revision(db, project, artifact, head) if head else None
+        if deleted and (previous is None or previous.deleted):
+            return None
+        reproduced = (
+            not deleted
+            and previous is not None
+            and not previous.deleted
+            and (previous.reference.sha256, previous.reference.size) == (sha256, size)
+        )
+        now = datetime.now(UTC)
+        if reproduced:
+            assert previous is not None  # noqa: S101 - reproduced requires previous
+            reference = previous.reference
+            kind = "artifact.reproduced"
+        else:
+            reference = ArtifactRevisionRef(
+                artifact_id=artifact,
+                project_id=project,
+                revision=head + 1,
+                sha256=sha256,
+                size=size,
+                media_type=media_type,
+            )
+            revision = ArtifactRevision(
+                reference=reference,
+                path=logical_path,
+                parent=head or None,
+                created_at=now,
+                publication=source,
+                worker_snapshot=snapshot,
+                worker_last_writer_hint=snapshot.produced_by if snapshot else None,
+                content_retained=snapshot is not None,
+                content_note=note,
+                deleted=deleted,
+            )
+            if row is None:
+                db.execute(
+                    "INSERT INTO artifact_objects VALUES (?,?,?,?)",
+                    (artifact, project, logical_path, head + 1),
+                )
+            else:
+                db.execute(
+                    "UPDATE artifact_objects SET head=? WHERE id=? AND project=? AND head=?",
+                    (head + 1, artifact, project, head),
+                )
+            db.execute(
+                "INSERT INTO artifact_revisions VALUES (?,?,?,?,?,?)",
+                (artifact, head + 1, project, size, _json(revision), data),
+            )
+            kind = "artifact.deleted" if deleted else "artifact.revision_created"
+        (sequence,) = db.execute("SELECT coalesce(max(seq),0)+1 FROM artifact_events").fetchone()
+        event = ArtifactEvent(
+            seq=sequence,
+            project_id=project,
+            kind=kind,
+            revision=reference,
+            source=source,
+            worker_snapshot=snapshot,
+            created_at=now,
+        )
+        db.execute(
+            "INSERT INTO artifact_events(seq,project,record) VALUES (?,?,?)",
+            (event.seq, project, _json(event)),
+        )
+        return reference, reproduced
+
+    def _recording(self, source: ArtifactPublicationSource, path: str) -> str:
+        artifact_path(path)
+        if source.context.actor.casefold() == "user":
+            raise DocumentError(INVALID_REQUEST, "an agent's record cannot impersonate USER")
+        return _logical(path, source.context.session_id)
+
+    def record_metadata(
+        self,
+        source: ArtifactPublicationSource,
+        path: str,
+        *,
+        sha256: str,
+        size: int,
+        media_type: str,
+        note: Literal["too_large", "quota"],
+    ) -> tuple[ArtifactRevisionRef, bool]:
+        """Record a file's hash and size without its bytes (RA-31, RA-32); the same
+        hash and size as the head only adds a reproduction."""
+        logical_path = self._recording(source, path)
+        with self.documents.control.write() as tx:
+            self._budget(tx.sql, source.context.project_id)
+            appended = self._append(
+                tx.sql, source, logical_path, sha256=sha256, size=size,
+                media_type=media_type, note=note,
+            )  # fmt: skip
+            assert appended is not None  # noqa: S101 - only a deletion appends nothing
+            self._budget(tx.sql, source.context.project_id)
+            return appended
+
+    def record_deletion(
+        self, source: ArtifactPublicationSource, path: str
+    ) -> ArtifactRevisionRef | None:
+        """A tombstone for a deleted file (RA-33); ``None`` when no live artifact is there."""
+        logical_path = self._recording(source, path)
+        with self.documents.control.write() as tx:
+            row = tx.sql.execute(
+                "SELECT head FROM artifact_objects WHERE project=? AND path=?",
+                (source.context.project_id, logical_path),
+            ).fetchone()
+            if row is None:
+                return None
+            self._budget(tx.sql, source.context.project_id)
+            appended = self._append(
+                tx.sql, source, logical_path, sha256=_EMPTY, size=0,
+                media_type="application/octet-stream", deleted=True,
+            )  # fmt: skip
+            return appended[0] if appended else None
 
     def _revision(
         self, db: sqlite3.Connection, project: str, artifact: str, revision: int
@@ -438,8 +541,6 @@ class ArtifactInventory:
         bound = self.limits.artifact_bytes if max_bytes is None else max_bytes
         if type(bound) is not int or not 0 <= bound <= self.limits.artifact_bytes:
             raise DocumentError(INVALID_REQUEST, "invalid artifact content bound")
-        if reference.size > bound:
-            raise DocumentError(INVALID_REQUEST, "artifact content exceeds consumer bound")
         if project != reference.project_id:
             raise DocumentError(NOT_FOUND, "no such artifact in project")
         if self.documents.control.missing:
@@ -449,6 +550,15 @@ class ArtifactInventory:
             revision = self._revision(db, project, reference.artifact_id, reference.revision)
             if revision.reference != reference:
                 raise DocumentError(CONFLICT, "artifact revision reference differs")
+            if not revision.content_retained:
+                raise DocumentError(
+                    NOT_FOUND,
+                    "the file was deleted"
+                    if revision.deleted
+                    else f"the revision's bytes were not kept ({revision.content_note})",
+                )
+            if reference.size > bound:
+                raise DocumentError(INVALID_REQUEST, "artifact content exceeds consumer bound")
             row = db.execute(
                 "SELECT CASE WHEN length(data)=0 THEN x'' ELSE substr(data,1,?) END "
                 "FROM artifact_revisions "
@@ -518,3 +628,8 @@ class ArtifactInventory:
             ):
                 raise DocumentError(INTERNAL, "stored artifact event identity differs")
             return ArtifactEventPage(entries=events, next_after=events[-1].seq if events else after)
+
+
+def _logical(path: str, session: str) -> str:
+    """The artifact path of a workspace path: ``shared/…`` as it is, any other in its session."""
+    return path if path.startswith("shared/") else f"sessions/{session}/{path}"

@@ -31,7 +31,7 @@ In the code, `sandbox_science.orchestrator.control` owns the connection. `Contro
 | `math_observations` | Each checked formula's result, append-only |
 | `math_block_owners` | The revision and author that last changed each block, for attributing math findings |
 | `math_finding_state`, `math_notices`, `math_ignored` | The current mechanical finding for each formula, its closing notices with their claim and delivery, and findings staged as left unaddressed by a run |
-| `artifact_objects`, `artifact_revisions`, `artifact_operations`, `artifact_events` | Published artifacts, their immutable revisions with their bytes, the publication operations and the inventory's events ([artifacts](ARTIFACTS.md)) |
+| `artifact_objects`, `artifact_revisions`, `artifact_operations`, `artifact_events`, `artifact_usage` | Artifacts, their immutable revisions with their bytes (or only their hash and size, or a tombstone), the publication operations, the inventory's events, and its retention figures per project and overall, kept by triggers (version 20) ([artifacts](ARTIFACTS.md)) |
 | `session_plan_records`, `session_plan_projections` | Session plans' append-only versions, progress and status changes, and the current plan and heads derived from them ([session plans](SESSION-PLANS.md)) |
 | `job_runs`, `job_origins`, `job_acknowledged`, `job_waits`, `job_watcher_calls` | Background jobs' run leases, originating runs, acknowledged completions, active waits and watcher calls ([background jobs](BACKGROUND-JOBS.md)) |
 
