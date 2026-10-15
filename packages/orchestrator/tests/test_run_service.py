@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import itertools
+import json
 import logging
 import signal
 import sys
@@ -194,6 +195,25 @@ async def test_a_later_message_starts_a_run_with_the_earlier_conversation(
     ]
     assert conversation[-1] == {"role": "user", "content": "Second question."}
     assert not any("tool_calls" in m or m["role"] == "tool" for m in conversation)
+    # Lab 41: the review controller observes the second run's own messages, not the
+    # earlier conversation it starts with, which the first run's window already holds.
+    documents = DocumentStore(store_path(harness.state), producer="test")
+    try:
+        with documents.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT locator, payload FROM review_feed WHERE kind='transcript' ORDER BY seq"
+            ).fetchall()
+    finally:
+        documents.close()
+    observed: dict[str, list[str]] = {}
+    for locator, payload in rows:
+        message = json.loads(json.loads(payload)["content"])
+        observed.setdefault(json.loads(locator)["run"], []).append(message["content"])
+    first_run, second_run = observed
+    assert "First question." in observed[first_run]
+    assert "Second question." in observed[second_run]
+    assert "First question." not in observed[second_run]
+    assert "First answer." not in observed[second_run]
 
 
 async def test_a_session_another_run_holds_waits(harness: Harness) -> None:

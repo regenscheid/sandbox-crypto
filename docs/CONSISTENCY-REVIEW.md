@@ -19,7 +19,10 @@ cannot read through a reviewer grant, spend budget, raise a finding or finalize 
 With `--state-dir`, the harness observes its transcript, canonical execution projections,
 agent-authored document revisions, the session's agents' ledger revisions and the flags
 their changes raise or clear ([ledger](LEDGER.md))
-and durable explicit-publication artifact events. The reviewer uses
+and durable explicit-publication artifact events. A run's transcript starts after the
+session's earlier conversation that its prompt begins with ([run service](specs/run-service.md),
+RS-10): each earlier run's messages are in that run's own window, and an earlier answer is
+not this run's narration, which the window's actions could not show (lab 41). The reviewer uses
 `--reviewer-model ALIAS` with the existing model gateway, or `--reviewer-script FILE`
 plus that alias for synthetic validation. The alias may be MAIN's: the reviewer still has
 its own calls, limits, budget and records. The adapter limits each answer to 2,048 tokens

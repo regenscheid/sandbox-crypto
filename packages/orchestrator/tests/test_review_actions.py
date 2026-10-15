@@ -131,6 +131,45 @@ async def test_a_reviews_snapshot_lists_the_windows_actions_and_changed_blocks(
     assert (second_revision["changed"], second_revision["since"]) == ([second], 1)
 
 
+@pytest.mark.asyncio
+async def test_the_earlier_conversation_is_not_this_windows_narration(store: Any) -> None:
+    """Lab 41: each run's prompt begins with the session's earlier conversation, whose
+    answers say what earlier runs did. Observed again, they came into each later window
+    as fresh narration, with no record in its actions, and the reviewer raised
+    missing_action findings on edits that had been made. Only the run's own messages are
+    observed."""
+    reviews, _, _ = store
+    earlier = [
+        {"role": "user", "content": "Fix the order in the notes."},
+        {"role": "assistant", "content": "Updated the notes: the order is 19."},
+    ]
+    controller = ReviewController(
+        reviews, context_for(reviews), run_id="author-1", model=None, alias=None, earlier=2
+    )
+    transcript: list[dict[str, Any]] = [
+        {"role": "system", "content": "You are a research assistant."},
+        *earlier,
+        {"role": "user", "content": "What is the order now?"},
+        {"role": "assistant", "content": "It is 19, as the notes say."},
+    ]
+    await controller.terminal(transcript, "It is 19, as the notes say.")
+    review = dispatch(reviews)
+    items = reviews.manifest("p", "s", review, limit=50)["evidence"]
+    # Each transcript item holds the message as the run sent it, as JSON.
+    said = [
+        json.loads(
+            json.loads(reviews.read_evidence("p", "s", review, i["evidence"])["text"])["content"]
+        )["content"]
+        for i in items
+        if i["kind"] == "transcript"
+    ]
+    assert said == ["What is the order now?", "It is 19, as the notes say."]
+    assert {i["locator"]["message"] for i in items if i["kind"] == "transcript"} == {3, 4}
+    with pytest.raises(ValueError, match="earlier counts messages"):
+        ReviewController(reviews, context_for(reviews), run_id="a", model=None, alias=None,
+                         earlier=-1)  # fmt: skip
+
+
 def test_a_review_without_actions_or_documents_has_no_actions_item(store: Any) -> None:
     from .test_consistency import claim
 
