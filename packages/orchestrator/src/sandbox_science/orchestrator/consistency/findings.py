@@ -67,6 +67,13 @@ _ASSESSMENT: Final = ("review_id", "severity", "category", "statement", "anchors
 """The fields of a reviewer's assessment of a finding."""
 
 
+def _first_error(error: ValidationError) -> str:
+    """Where a response first breaks its schema, and how, without the value given."""
+    first = error.errors(include_input=False, include_url=False)[0]
+    where = ".".join(str(part) for part in first["loc"])
+    return f"{where}: {first['msg']}"[:300]
+
+
 def _status_for(value: FindingInput, run: Json, anchors: list[Json]) -> str:
     """``inconclusive`` when the finding rests on missing or incomplete evidence."""
     incomplete = (
@@ -617,8 +624,10 @@ class Findings:
         self.store.scope(project, session)
         try:
             value = FindingResponse.model_validate(raw)
-        except ValidationError:
-            raise DocumentError(INVALID_REQUEST, "invalid finding response") from None
+        except ValidationError as error:
+            raise DocumentError(
+                INVALID_REQUEST, f"invalid finding response: {_first_error(error)}"
+            ) from None
         text(value.explanation)
         if author.kind != "user" and not (
             author.kind == "agent" and author.role == "main" and author.session_id == session

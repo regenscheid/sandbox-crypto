@@ -32,7 +32,7 @@ from sandbox_science.orchestrator.projects import recorded
 from .artifacts import ArtifactConsumer
 from .findings import Findings
 from .ledger import ingest_ledger
-from .models import ReviewType
+from .models import EvidenceAnchor, ReviewType
 from .notices import FindingNotices
 from .rubric import CLASSIFIER_VERSION
 from .runner import ReviewerRunner, schema
@@ -83,8 +83,24 @@ AUTHOR_SPECS = (
             "expected": {"type": "integer"},
             "action": {"enum": ["fix", "rebut"]},
             "explanation": {"type": "string"},
-            "evidence": {"type": "array", "items": {"type": "object"}},
-            "revisions": {"type": "array", "items": {"type": "array"}},
+            "evidence": {
+                "type": "array",
+                "maxItems": 8,
+                "description": "Pinned review evidence, by its evidence ID (review_finding_read "
+                "lists the finding's), optionally narrowed to a block, formula or lines",
+                "items": EvidenceAnchor.model_json_schema(),
+            },
+            "revisions": {
+                "type": "array",
+                "maxItems": 16,
+                "description": "Changed document revisions: [document ID, revision]",
+                "items": {
+                    "type": "array",
+                    "items": {"type": ["string", "integer"]},
+                    "minItems": 2,
+                    "maxItems": 2,
+                },
+            },
             "artifact_revisions": {
                 "type": "array",
                 "maxItems": 16,
