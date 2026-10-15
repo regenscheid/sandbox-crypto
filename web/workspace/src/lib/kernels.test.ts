@@ -3,6 +3,8 @@ import { render } from 'svelte/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   KERNEL_OBSERVATION_MAX_BYTES,
+  KERNEL_POLL,
+  KERNELS_BUSY,
   readKernels,
   kernelPanelScope,
   type KernelObservation,
@@ -131,6 +133,94 @@ describe('kernel panel reading an answer that is too large', () => {
     expect(text).toContain('Kernel observations unavailable');
     expect(text).toContain('current kernel state is unknown');
     expect(text).not.toContain('No kernels were observed');
+  });
+});
+
+describe('kernel panel meeting a busy worker lane', () => {
+  /** The route's answer when the worker's lane is taken (kernels.py). */
+  const busy = () =>
+    new Response(
+      JSON.stringify({ error: { kind: 'unavailable', message: 'kernel observation is busy' } }),
+      { status: KERNELS_BUSY },
+    );
+
+  it('keeps the last observation as it was, with nothing marked unknown', async () => {
+    vi.useFakeTimers();
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(response())
+      .mockImplementationOnce(() => Promise.resolve(busy()))
+      .mockImplementation(() => Promise.resolve(response()));
+    vi.stubGlobal('fetch', fetch);
+    const states: PollState<KernelObservation>[] = [];
+    const poller = new Poller(
+      (signal) => readKernels(scope, signal),
+      (state) => states.push(state),
+      KERNEL_POLL,
+    );
+    poller.setVisible(true);
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(3000); // the second read, refused as busy
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const settled = states.filter((state) => !state.busy);
+    expect(settled.map((state) => state.phase)).not.toContain('unavailable');
+    expect(settled.at(-1)).toEqual({ phase: 'observed', data: observed(), busy: false });
+    const shown = render(KernelPanel, { props: { ...scope, initialState: settled.at(-1)! } }).body;
+    expect(shown).not.toContain('unavailable');
+    expect(shown).not.toContain('Previous observation');
+    // The next read comes at the usual interval, not a backed-off one.
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(fetch).toHaveBeenCalledTimes(3);
+    poller.stop();
+    vi.useRealTimers();
+  });
+
+  it('is still observing, not unavailable, when the first read is the one refused', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(() => Promise.resolve(busy())),
+    );
+    const states: PollState<KernelObservation>[] = [];
+    const poller = new Poller(
+      (signal) => readKernels(scope, signal),
+      (state) => states.push(state),
+      KERNEL_POLL,
+    );
+    poller.setVisible(true);
+    await vi.advanceTimersByTimeAsync(7000);
+    expect(states.filter((state) => !state.busy).at(-1)).toEqual({
+      phase: 'loading',
+      data: null,
+      busy: false,
+    });
+    poller.stop();
+    vi.useRealTimers();
+  });
+
+  it('still reports any other failure as unavailable', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(() =>
+        Promise.resolve(
+          new Response(JSON.stringify({ error: { kind: 'unavailable', message: 'down' } }), {
+            status: 503,
+          }),
+        ),
+      ),
+    );
+    const states: PollState<KernelObservation>[] = [];
+    const poller = new Poller(
+      (signal) => readKernels(scope, signal),
+      (state) => states.push(state),
+      KERNEL_POLL,
+    );
+    poller.setVisible(true);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(states.at(-1)?.phase).toBe('unavailable');
+    poller.stop();
+    vi.useRealTimers();
   });
 });
 

@@ -33,7 +33,11 @@ from sandbox_science.contracts import (
     SessionClosed,
     SessionCloseRequest,
 )
-from sandbox_science.contracts.worker import LANGUAGES, MAX_SESSION_KERNELS
+from sandbox_science.contracts.worker import (
+    KERNEL_OBSERVATION_BUSY,
+    LANGUAGES,
+    MAX_SESSION_KERNELS,
+)
 
 from .channel import ExecutorChannel
 from .connections import Connection, EnvironmentConnections
@@ -370,7 +374,7 @@ class KernelRegistry:
             environment_id in self._observations
             or len(self._observations) >= MAX_KERNEL_OBSERVATIONS
         ):
-            raise WorkerError(ErrorKind.UNAVAILABLE, "kernel observation capacity is busy")
+            raise WorkerError(ErrorKind.UNAVAILABLE, KERNEL_OBSERVATION_BUSY)
         if type(channel.hello.get(protocol)) is not int or channel.hello.get(protocol) != 1:
             raise WorkerError(ErrorKind.UNSUPPORTED, "legacy executor lacks scoped kernel status")
         incarnation = channel.incarnation

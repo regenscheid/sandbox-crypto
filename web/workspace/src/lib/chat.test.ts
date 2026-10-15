@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
+import { render } from 'svelte/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { EventPage, MessageListing } from './api-types';
+import ChatWaiting from '../views/ChatWaiting.svelte';
+import type { EnvironmentState, EventPage, MessageListing } from './api-types';
 import { ApiError } from './http';
 import {
   ChatFeed,
@@ -15,6 +17,7 @@ import {
   PAGE,
   pendingMessages,
   sendMessage,
+  startingText,
   stoppedText,
   tokensText,
   thinking,
@@ -58,6 +61,7 @@ function server() {
     messages: [] as ChatMessage[],
     lease: null as string | null,
     service: true,
+    environment: null as EnvironmentState | null,
     events: new Map<string, RunEvent[]>(),
     runState: new Map<string, EventPage['state']>(),
   };
@@ -69,6 +73,7 @@ function server() {
         messages: state.messages.filter((item) => item.number > after).slice(0, PAGE),
         run: state.lease ? { run: state.lease, started_at: '', renewed_at: '' } : null,
         service: state.service,
+        environment: state.environment,
       };
     },
     events: async (run: string, after: number): Promise<EventPage> => {
@@ -97,6 +102,34 @@ describe("a session's chat, polled", () => {
     expect(view.messages.map((item) => item.state)).toEqual(['delivered', 'delivered', 'refused']);
     await feed.read();
     expect(asked.at(-2)).toBe('messages 3'); // all settled: only newer ones
+  });
+
+  it("carries the worker's word on the environment while a message waits for its run", async () => {
+    const { state, feed } = server();
+    state.messages = [message(1, 'queued')];
+    state.environment = 'creating';
+    expect((await feed.read()).environment).toBe('creating');
+    state.environment = null; // the server asks no more once a run holds the session
+    state.lease = 'r1';
+    expect((await feed.read()).environment).toBeNull();
+  });
+
+  it('keeps the environment the first page gave, when a later page has none', async () => {
+    const pages = [
+      {
+        messages: Array.from({ length: PAGE }, (_, i) => message(i + 1, 'queued')),
+        env: 'creating',
+      },
+      { messages: [message(PAGE + 1, 'queued')], env: null },
+    ] as const;
+    const feed = new ChatFeed({
+      messages: async (after) => {
+        const page = after === 0 ? pages[0] : pages[1];
+        return { messages: [...page.messages], run: null, service: true, environment: page.env };
+      },
+      events: async () => ({ state: 'active', events: [] }),
+    });
+    expect((await feed.read()).environment).toBe('creating');
   });
 
   it('reads past a full page of messages', async () => {
@@ -405,6 +438,27 @@ describe('the transcript of a run', () => {
     expect(pendingMessages([held], [run])).toEqual([held]); // a held one stays, with Resume
   });
 
+  it('says what a queued message waits on only while the sandbox is being made', () => {
+    const queued = [message(1, 'queued')];
+    const idle = { lease: null, environment: null } as const;
+    expect(startingText({ ...idle, environment: 'creating' }, queued)).toMatch(
+      /^Starting the environment/,
+    );
+    // Nothing is said when the worker does not say, or for a state that takes no time.
+    expect(startingText(idle, queued)).toBeNull();
+    for (const environment of ['ready', 'stopped', 'deleted'] as const)
+      expect(startingText({ ...idle, environment }, queued)).toBeNull();
+    // Nor when no message waits for a run (held and refused ones do not), or a run has begun.
+    const settled = [
+      message(2, 'held', 'r0'),
+      message(3, 'refused'),
+      message(4, 'delivered', 'r0'),
+    ];
+    expect(startingText({ ...idle, environment: 'creating' }, settled)).toBeNull();
+    const lease = { run: 'r1', started_at: '', renewed_at: '' };
+    expect(startingText({ lease, environment: 'creating' }, queued)).toBeNull();
+  });
+
   it("says what each message's state means", () => {
     expect(messageState(message(1, 'delivered', 'r1'))).toBe('Delivered to r1');
     expect(messageState({ ...message(1, 'refused'), reason: 'budget' })).toBe(
@@ -471,14 +525,45 @@ describe('sending a message', () => {
 
 describe('the chat panel', () => {
   it('renders no text as HTML: the Markdown component is its only renderer', () => {
-    const views = import.meta.glob(['../views/ChatPanel.svelte', '../views/ChatRun.svelte'], {
-      query: '?raw',
-      import: 'default',
-      eager: true,
-    });
+    const views = import.meta.glob(
+      ['../views/ChatPanel.svelte', '../views/ChatRun.svelte', '../views/ChatWaiting.svelte'],
+      { query: '?raw', import: 'default', eager: true },
+    );
     const source = Object.values(views).map(String).join('\n');
-    expect(Object.keys(views)).toHaveLength(2);
+    expect(Object.keys(views)).toHaveLength(3);
     expect(source).toContain('<Markdown');
     expect(source).not.toContain('{@html');
+  });
+});
+
+describe('the messages waiting for a run', () => {
+  const hostile = '<img src=x onerror=alert(1)>';
+  const html = (messages: ChatMessage[], starting?: string | null) =>
+    render(ChatWaiting, { props: { messages, starting } }).body;
+
+  it('says the environment is starting, beside the queued message', () => {
+    const queued = { ...message(1, 'queued'), text: 'What is $2^{64} \\bmod p$?' };
+    const body = html([queued], startingText({ lease: null, environment: 'creating' }, [queued]));
+    expect(body).toContain('role="status"');
+    expect(body).toContain('Starting the environment');
+    expect(body).toContain('Queued:');
+    expect(body).toContain('What is $2^{64}');
+  });
+
+  it('says nothing more than the state of each message when the server has no news', () => {
+    const body = html([message(1, 'queued')], null);
+    expect(body).toContain('Queued:');
+    expect(body).not.toContain('role="status"');
+    expect(html([])).toBe(html([], null)); // no list for no messages
+    expect(html([])).not.toContain('<ul');
+  });
+
+  it('shows a message and the reason it was held as text, never as markup', () => {
+    const body = html([
+      { ...message(1, 'queued'), text: hostile },
+      { ...message(2, 'held', 'r0'), reason: hostile },
+    ]);
+    expect(body).not.toContain('<img');
+    expect(body.match(/&lt;img src=x onerror=alert\(1\)/g)).toHaveLength(2); // the text and the reason
   });
 });

@@ -7,6 +7,7 @@
  */
 import type {
   ChatMessage,
+  EnvironmentState,
   EventPage,
   MessageAnswer,
   MessageListing,
@@ -91,6 +92,12 @@ export interface ChatView {
   lease: RunLease | null;
   /** Whether the run service is running; without it, messages wait. */
   service: boolean;
+  /**
+   * The worker's record of the session's environment, which the server reads only while a
+   * message waits with no run holding the session: what the message waits on. Null when
+   * it is not asked, or the worker does not say.
+   */
+  environment: EnvironmentState | null;
   /** The runs shown, oldest first; the last is the current one (RS-16). */
   runs: WatchedRun[];
 }
@@ -131,6 +138,7 @@ export class ChatFeed {
   #grace = new Map<string, number>();
   #lease: RunLease | null = null;
   #service = false;
+  #environment: EnvironmentState | null = null;
   /** Read held messages again: a resume, or a new message, queues them. */
   #recheck = false;
   #polls = 0;
@@ -147,14 +155,18 @@ export class ChatFeed {
     if (++this.#polls % HELD_EVERY === 0) this.#recheck = true;
     let after = this.#messageCursor();
     this.#recheck = false;
+    // The server answers the environment for the page that holds a queued message.
+    let environment: EnvironmentState | null = null;
     for (let page = 0; page < PAGES_PER_READ; page++) {
       const listing = await this.reads.messages(after, signal);
       this.#lease = listing.run;
       this.#service = listing.service;
+      environment ??= listing.environment;
       for (const message of listing.messages) this.#messages.set(message.message_id, message);
       if (listing.messages.length < PAGE) break;
       after = listing.messages.at(-1)!.number;
     }
+    this.#environment = environment;
     this.#follow();
     for (const run of this.#runs.values()) {
       if (this.#finished.has(run.run)) continue;
@@ -229,7 +241,13 @@ export class ChatFeed {
   #view(): ChatView {
     const messages = [...this.#messages.values()].sort((a, b) => a.number - b.number);
     const runs = [...this.#runs.values()].map((run) => ({ ...run, events: [...run.events] }));
-    return { messages, lease: this.#lease, service: this.#service, runs };
+    return {
+      messages,
+      lease: this.#lease,
+      service: this.#service,
+      environment: this.#environment,
+      runs,
+    };
   }
 }
 
@@ -388,6 +406,21 @@ export function pendingMessages(
       message.state !== 'delivered' &&
       !(message.state === 'queued' && shown.has(message.message_id)),
   );
+}
+
+/**
+ * What a queued message waits on, when the server can say. A project's first run waits for
+ * its sandbox to be made, a minute or more, with no run to show yet, so "Queued" alone would
+ * look like nothing happened. Null when no message waits for a run, one holds the session, or
+ * the environment is in no state that takes time.
+ */
+export function startingText(
+  view: Pick<ChatView, 'lease' | 'environment'>,
+  waiting: readonly ChatMessage[],
+): string | null {
+  if (view.lease !== null || view.environment !== 'creating') return null;
+  if (!waiting.some((message) => message.state === 'queued')) return null;
+  return 'Starting the environment… The first run in a project waits while its sandbox is made, which can take a minute or more.';
 }
 
 /** What a message's state says. */

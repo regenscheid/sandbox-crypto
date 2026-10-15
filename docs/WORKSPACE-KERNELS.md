@@ -29,7 +29,10 @@ All success and API error responses use `Cache-Control: no-store`.
 | Absent project/session, or session already recorded closed | 404 |
 | Invalid path identifier, body or query arguments | 400 |
 | Operator worker connection absent, or observer unsupported | 422 |
+| The worker's observation lane for the environment is taken (another observation of it is running) | 429, `unavailable`, not logged |
 | Observer unavailable, invalid response, deadline, or a damaged project record | 503 |
+
+The worker reads one environment's kernels for one caller at a time and refuses a second at once (`KERNEL_OBSERVATION_BUSY`). The panel's poll and a run's check before a turn can meet, which is expected now and then and passes by itself. The route answers it 429 and logs nothing, and the panel keeps what it shows, without marking the state unknown, and asks again at its usual interval. Any other worker failure is a 503 and a logged warning.
 
 The existing app-owner login, Host checks and browser cookie rules still apply.
 This adds no per-user project ACL, worker permission, lifecycle action or model

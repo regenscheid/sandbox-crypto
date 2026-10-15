@@ -81,7 +81,7 @@ Open the GUI at the address the launcher printed. With `127.0.0.1`, the PDF view
 2. The session page has a chat panel. It says whether the run service is running.
 3. Write a message, for example: "Which Python does the sandbox have? Print it with a shell command."
 
-The message starts a run of the main agent. The first run of a project has the worker create its environment, an OpenShell sandbox from the project's profile, which takes a minute or two. The panel shows the agent's turns and tool calls as they come, then its answer. [Chat](WORKSPACE.md#chat) has the details: budgets, cancelling and resuming.
+The message starts a run of the main agent. The first run of a project has the worker create its environment, an OpenShell sandbox from the project's profile, which takes a minute or two; the panel says "Starting the environment…" meanwhile. It then shows the agent's turns and tool calls as they come, then its answer. [Chat](WORKSPACE.md#chat) has the details: budgets, cancelling and resuming.
 
 ## The MCP proxy
 

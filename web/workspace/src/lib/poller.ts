@@ -3,7 +3,9 @@
  * One polling loop for the panels that refresh what a page shows: kernels, plans, jobs,
  * provisioning and a session's runs. A poller reads only while its page is visible, never
  * overlaps its own reads, gives up on a read at its deadline, backs off after failures,
- * and stops for good on sign-out (401) or a missing scope (404).
+ * and stops for good on sign-out (401) or a missing scope (404). A panel whose scope may
+ * not exist yet, or whose read may be refused as busy, lists those answers in `waitOn`:
+ * they are no failure, and the poller reads again at its interval.
  */
 import { ApiError } from './http';
 import { onSignOut } from './session';
@@ -40,6 +42,13 @@ export interface PollOptions<T> {
    * failure is retried. The default suits a read of one scope's own record.
    */
   endOn?: Partial<Record<number, PollPhase>>;
+  /**
+   * The statuses that only mean "not yet", each with the phase to show meanwhile; `null`
+   * leaves the phase and data as they are. They are not failures: there is no backoff, and
+   * the next read comes at the usual interval. A status listed here wins over `endOn`
+   * (except 401, which always ends the page's session).
+   */
+  waitOn?: Partial<Record<number, PollPhase | null>>;
 }
 
 export const POLL_INTERVAL_MS = 3000;
@@ -148,6 +157,12 @@ export class Poller<T> {
       if (this.current(epoch)) {
         const status = error instanceof ApiError ? error.status : 0;
         // A 401 always ends the page's session, whatever the poller's own endings.
+        const waiting = status === 401 ? undefined : this.options.waitOn?.[status];
+        if (waiting !== undefined) {
+          // Not a failure: the phase may change, nothing backs off, and the next read is due.
+          if (waiting !== null) this.emit(waiting);
+          return;
+        }
         const ending = status === 401 ? 'signed_out' : (this.options.endOn ?? ENDING)[status];
         if (ending !== undefined) {
           this.busy = false;

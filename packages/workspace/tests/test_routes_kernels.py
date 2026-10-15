@@ -8,6 +8,8 @@ keeps it: the observation's shape, the status codes, no-store and the guards.
 from __future__ import annotations
 
 import asyncio
+import logging
+import re
 from pathlib import Path
 
 import pytest
@@ -26,6 +28,7 @@ from .route_support import (
 )
 
 PATH = "/api/v0/projects/{project}/sessions/{session}/kernels"
+PANEL = Path(__file__).resolve().parents[3] / "web" / "workspace" / "src" / "lib" / "kernels.ts"
 
 
 def kernels(project: str = "p1", session: str = "a") -> str:
@@ -190,6 +193,50 @@ async def test_worker_refusals_map_to_unsupported_or_unavailable(
     response = await client.get(kernels())
     await error_of(response, status, kind)
     assert_no_leak(await response.text(), url.removeprefix("http://"))
+
+
+async def test_a_busy_worker_lane_is_a_quiet_429_the_panel_waits_out(
+    aiohttp_client: ClientFactory,
+    aiohttp_server: ServerFactory,
+    state_dir: Path,
+    static_dir: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The worker reads one environment's kernels for one caller at a time: the panel's poll
+    # and a run's check before a turn can meet. That is no failure, so nothing is logged.
+    worker = FakeWorker()
+    worker.busy = True
+    url = await fake_worker(aiohttp_server, worker)
+    client = await workspace(aiohttp_client, state_dir, static_dir, worker_url=url)
+    with caplog.at_level(logging.DEBUG):
+        response = await client.get(kernels())
+    error = await error_of(response, 429, "unavailable")
+    assert "busy" in error["message"]
+    assert_no_leak(await response.text(), url.removeprefix("http://"))
+    assert_security_headers(response.headers)
+    assert [record for record in caplog.records if record.levelno >= logging.WARNING] == []
+    # The page waits for exactly this status (kernels.ts, KERNELS_BUSY).
+    found = re.search(r"KERNELS_BUSY = (\d+);", PANEL.read_text(encoding="utf-8"))
+    assert found, "kernels.ts must set KERNELS_BUSY as a number"
+    assert response.status == int(found[1])
+    worker.busy = False
+    assert (await client.get(kernels())).status == 200
+
+
+async def test_any_other_unavailable_worker_is_still_logged(
+    aiohttp_client: ClientFactory,
+    aiohttp_server: ServerFactory,
+    state_dir: Path,
+    static_dir: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    worker = FakeWorker()
+    worker.refusal = (503, "unavailable")
+    url = await fake_worker(aiohttp_server, worker)
+    client = await workspace(aiohttp_client, state_dir, static_dir, worker_url=url)
+    with caplog.at_level(logging.WARNING):
+        await error_of(await client.get(kernels()), 503, "unavailable")
+    assert [record for record in caplog.records if record.levelno >= logging.WARNING]
 
 
 async def test_damaged_project_record_is_unavailable(

@@ -56,6 +56,9 @@ class Timeouts:
     """One provisioning observation from the worker."""
     worker_comparison: float = 9.0
     """One comparison or package page from the worker, within its eight-second budget."""
+    environment: float = 2.0
+    """The worker's record of an environment, which the chat reads at every poll while a
+    message waits for its run: it never holds the chat up for long."""
 
 
 TIMEOUTS: Final = Timeouts()

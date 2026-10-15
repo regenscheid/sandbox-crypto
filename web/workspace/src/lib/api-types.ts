@@ -182,6 +182,8 @@ export interface EntryView {
   reason: string;
 }
 
+export type EnvironmentState = "creating" | "ready" | "stopped" | "deleted";
+
 export interface EnvironmentView {
   environment_id: string;
   default: boolean;
@@ -327,6 +329,7 @@ export interface MessageListing {
   messages: ChatMessage[];
   run: RunLease | null;
   service: boolean;
+  environment: EnvironmentState | null;
 }
 
 /** A Python distribution that pip or uv installed beside the Conda packages. */

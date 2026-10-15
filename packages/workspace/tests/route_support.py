@@ -8,6 +8,7 @@ worker API, so the workspace's real ``WorkerClient`` talks to it over loopback.
 
 from __future__ import annotations
 
+import asyncio
 import socket
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
@@ -19,6 +20,8 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from sandbox_science.contracts import (
+    EnvironmentInfo,
+    EnvironmentState,
     Execution,
     ExecutionContext,
     ExecutionState,
@@ -30,10 +33,12 @@ from sandbox_science.contracts import (
     KernelStatusRequest,
     StreamOutput,
 )
+from sandbox_science.contracts.worker import KERNEL_OBSERVATION_BUSY
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerClient
 from sandbox_science.testing import fake_worker_app
+from sandbox_science.workspace.api import TIMEOUTS, Timeouts
 from sandbox_science.workspace.app import create_app
 
 TOKEN = "test-secret-route-characterization-login-0123456789"
@@ -41,6 +46,7 @@ WORKER_TOKEN = "test-secret-route-characterization-worker"
 WORKER_SECRET = "test-secret-worker-detail-never-forwarded"
 """Put in every refusal the fake worker sends, to check what the workspace forwards."""
 PIN = "a" * 64
+PIN_POLICY = "sha256:" + "c" * 64
 OTHER_PIN = "b" * 64
 
 ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
@@ -129,12 +135,18 @@ class FakeWorker:
             ),
         )
         self.observed: list[ExecutionContext] = []
+        self.busy = False
+        """Refuse each kernel observation as the worker does while its lane is taken."""
+        self.environment: EnvironmentState | None = None
+        """The state the worker records for any environment; none: it knows no such one."""
+        self.environment_delay = 0.0
         self.jobs: dict[str, Execution] = {}
         self.cancelled: list[str] = []
 
     def application(self) -> web.Application:
         app = fake_worker_app(middlewares=[self._record])
         app.router.add_post("/v1/kernels/observe", self._observe)
+        app.router.add_get("/v1/environments/{environment}", self._environment)
         app.router.add_get("/v1/jobs", self._jobs)
         app.router.add_get("/v1/jobs/{job}", self._job)
         app.router.add_post("/v1/executions/{job}/cancel", self._cancel)
@@ -158,9 +170,34 @@ class FakeWorker:
             )
         return await handler(request)
 
+    async def _environment(self, request: web.Request) -> web.Response:
+        await asyncio.sleep(self.environment_delay)
+        if self.environment is None:
+            return web.json_response(
+                {"error": {"kind": "not_found", "message": "no such environment"}}, status=404
+            )
+        now = datetime.now(UTC)
+        info = EnvironmentInfo(
+            environment_id=request.match_info["environment"],
+            project_id="p1",
+            profile="minimal",
+            image="minimal:test",
+            sandbox="sandbox-test",
+            policy=PIN_POLICY,
+            state=self.environment,
+            created_at=now,
+            updated_at=now,
+        )
+        return web.Response(text=info.model_dump_json(), content_type="application/json")
+
     async def _observe(self, request: web.Request) -> web.Response:
         context = KernelStatusRequest.model_validate_json(await request.read()).context
         self.observed.append(context)
+        if self.busy:
+            return web.json_response(
+                {"error": {"kind": "unavailable", "message": KERNEL_OBSERVATION_BUSY}},
+                status=503,
+            )
         observed = KernelObservation(
             environment_id=context.environment_id,
             session_id=context.session_id,
@@ -450,6 +487,7 @@ async def workspace(
     worker_url: str | None = None,
     login: bool = True,
     job_state: bool = False,
+    timeouts: Timeouts = TIMEOUTS,
 ) -> TestClient[Any, Any]:
     """The workspace app under test, optionally connected to a worker and logged in."""
     worker = WorkerClient(worker_url, WORKER_TOKEN) if worker_url is not None else None
@@ -460,6 +498,7 @@ async def workspace(
             login_token=TOKEN,
             job_worker=worker,
             job_state=JobState(state_dir) if job_state else None,
+            timeouts=timeouts,
         )
     )
     if login:

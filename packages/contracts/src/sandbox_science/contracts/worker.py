@@ -74,6 +74,11 @@ MAX_RUN_KERNELS: Final = 63
 MAX_SESSION_KERNELS: Final = (1 + MAX_RUN_KERNELS) * len(LANGUAGES)
 """The most kernels a session's listing holds: its own, one per language, and its runs'
 (plans-and-delegation spec, PD-37)."""
+KERNEL_OBSERVATION_BUSY: Final = "kernel observation capacity is busy"
+"""The worker's refusal (``unavailable``) of a passive kernel observation while another one
+reads the same environment: only one runs at a time, and none waits. It is expected when
+two callers poll at once, such as the workspace's kernel panel and a run's check before a
+turn, so a caller that can look again later treats it as no failure."""
 
 
 def _no_nul(text: str, what: str) -> None:
