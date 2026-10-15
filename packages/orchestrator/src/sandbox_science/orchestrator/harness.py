@@ -54,6 +54,7 @@ from .delegation.hook import Child, ChildEnd, Delegations
 from .delegation.models import ModelChoice
 from .delegation.outcome import Outcome, Target, result_of
 from .delegation.records import DelegationRecords
+from .delegation.tracks import TrackTools, grant
 from .documents import DocumentError, DocumentStore, DocumentTool
 from .file_settings import ProjectFiles
 from .hooks import TurnHook
@@ -88,7 +89,7 @@ from .question_tool import QuestionTool
 from .questions import Questions
 from .recording import FileRecorder, RecordedFiles
 from .runstate import RunState
-from .session_plans import SessionPlans
+from .session_plans import PlanRef, SessionPlans
 from .tools import HARNESS_TOOL_NAMES, Toolbox, ToolOutcome
 from .worker_client import WorkerAPIError, WorkerClient
 
@@ -227,6 +228,8 @@ class RunRequest:
     alias: str | None = None
     """For a delegated run, the model alias its delegation chose (PD-28, PD-30);
     ``None`` for the delegated role's."""
+    track: tuple[PlanRef, str] | None = None
+    """For a task on a track, the plan version it works under and the track (PD-9)."""
 
     @property
     def queued(self) -> bool:
@@ -569,6 +572,7 @@ class Harness:
                 self.stores.projects,
                 admitted.context,
                 run_id=admitted.run_id,
+                granted=request.track[0] if request.track is not None else None,
             )
             # Its result is read from its closing answer once every other hook has had its say.
             outcome = Outcome(request.target, task=request.target is None)
@@ -612,6 +616,7 @@ class Harness:
                 limits,
                 self.gateway.aliases if self.gateway is not None else None,
             ),
+            track_grant=functools.partial(_track_grant, SessionPlans(stores.documents), context),
             clock=clock,
         )
 
@@ -635,6 +640,7 @@ class Harness:
             tokens=child.tokens,
             target=child.target,
             alias=child.alias,
+            track=child.track,
         )
         admitted = dataclasses.replace(
             parent, request=request, run_id=child.run_id, started_at=child.started_at
@@ -666,6 +672,7 @@ class Harness:
             found.read if found is not None else None,
             found.read_proofs if found is not None else None,
             _recorded(finished.hooks),
+            tuple(found.created) if found is not None else (),
         )
 
     async def memory(self, admitted: Admitted) -> Snapshot | None:
@@ -841,6 +848,19 @@ class Harness:
         # (PD-37); a main run uses the session's, and its kernel check closes those its
         # session's earlier runs left (PD-40) at its first observation of a connected
         # executor.
+        # A task on a track records its progress on that track's steps only (PD-9).
+        tracks = None
+        if (track := admitted.request.track) is not None:
+            tracks = await threaded(
+                TrackTools,
+                SessionPlans(stores.documents),
+                stores.projects,
+                context,
+                run_id=run_id,
+                alias=alias,
+                granted=track[0],
+                track=track[1],
+            )
         kernel_run = admitted.run_id if admitted.request.parent is not None else None
         client = self.client
         if kernel_run is not None:
@@ -877,7 +897,13 @@ class Harness:
             delegated=delegated,
             # A check reads and recomputes; it changes no entry, document or memory.
             check=admitted.request.target is not None,
+            tracks=tracks,
         )
+
+
+async def _track_grant(plans: SessionPlans, context: ExecutionContext, track: str) -> PlanRef:
+    """The plan version a task on ``track`` works under (PD-9)."""
+    return await threaded(grant, plans, context, track)
 
 
 def _recorded(hooks: Sequence[TurnHook]) -> dict[str, JsonValue] | None:

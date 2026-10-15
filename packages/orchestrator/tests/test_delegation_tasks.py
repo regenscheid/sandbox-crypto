@@ -41,6 +41,8 @@ DONE: dict[str, Any] = {
     "deviations": [],
     "open_questions": [],
 }
+KEPT: dict[str, Any] = {**DONE, "obstacle": None, "dismissals": [], "obstructions": []}
+"""``DONE`` as the outcome keeps it."""
 
 
 async def test_a_task_runs_with_its_own_prompt_brief_and_limits(delegating: Harness) -> None:
@@ -65,7 +67,7 @@ async def test_a_task_runs_with_its_own_prompt_brief_and_limits(delegating: Harn
     (delegation_id,) = started(root)
     found = delegation(delegating, delegation_id)
     assert (found.kind, found.ended) == ("task", "returned")
-    assert found.result == {**DONE, "obstacle": None}
+    assert found.result == KEPT
     assert found.brief["context"] == "We need the table for C-1's proof."
     waited = json.loads(results(root)[1])["delegations"][0]
     assert (waited["task"], waited["result"]["status"]) == (TASK[1]["task"], "complete")
@@ -144,6 +146,11 @@ async def test_a_task_brief_is_checked_as_agent_text(
         (json.dumps({**DONE, "obstacle": "None."}), "names its obstacle"),
         (json.dumps({**DONE, "verdict": "confirmed"}), "verdict: Extra inputs"),
         ("Done.", "result: Invalid JSON"),
+        (
+            json.dumps({**DONE, "dismissals": [{"what": "The general case", "limit": "money"}]}),
+            "dismissals.0.limit",
+        ),
+        (json.dumps({**DONE, "obstructions": [{"claim": "No proof."}]}), "obstructions.0.evidence"),
     ],
 )
 def test_a_task_result_is_checked_against_its_schema(answer: str, error: str) -> None:
@@ -162,7 +169,7 @@ async def test_a_task_that_answers_badly_is_corrected_once(delegating: Harness) 
     assert isinstance(outcome, dict)
     assert outcome["errors"]
     (delegation_id,) = started(root)
-    assert delegation(delegating, delegation_id).result == {**DONE, "obstacle": None}
+    assert delegation(delegating, delegation_id).result == KEPT
 
 
 async def test_a_task_is_no_check_for_the_gate(delegating: Harness) -> None:

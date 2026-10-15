@@ -4,8 +4,9 @@
 A delegated run gets no plan tools, so it cannot read the plan again as its parent can.
 Its calls that may change something are refused while the session's plan is a draft,
 once the user has changed the plan since the run started, or once the session was
-closed or opened again. The first refusal is kept, and the delegation's outcome reports
-it, so the parent learns why the check stopped.
+closed or opened again. A task's progress on its track is refused once the plan is no
+longer the version it started under (PD-9). The first refusal is kept, and the
+delegation's outcome reports it, so the parent learns why the run stopped.
 """
 
 from __future__ import annotations
@@ -17,7 +18,12 @@ from sandbox_science.orchestrator.aio import threaded
 from sandbox_science.orchestrator.documents.errors import CONFLICT, POLICY_DENIED
 from sandbox_science.orchestrator.hooks import Effect, Refusal, TurnHook
 from sandbox_science.orchestrator.projects import ProjectStore, SessionSnapshot
-from sandbox_science.orchestrator.session_plans import PlanAuthority, PlanScope, SessionPlans
+from sandbox_science.orchestrator.session_plans import (
+    PlanAuthority,
+    PlanRef,
+    PlanScope,
+    SessionPlans,
+)
 
 PAGES: Final = 8
 """Pages of plan events a check reads, 16 each; past them the fence holds."""
@@ -35,8 +41,10 @@ class ChildFence(TurnHook):
         context: ExecutionContext,
         *,
         run_id: str,
+        granted: PlanRef | None = None,
     ) -> None:
-        """Reads the session and its plan as the run starts; call it in a thread."""
+        """Reads the session and its plan as the run starts; call it in a thread.
+        ``granted`` is a task's plan version on its track, which its progress needs."""
         self.plans, self.projects, self.context = plans, projects, context
         scope = PlanScope(project_id=context.project_id, session_id=context.session_id)
         # It only reads: agent attribution without a grant is the main role's.
@@ -49,17 +57,35 @@ class ChildFence(TurnHook):
         """The plan events read so far, none of them the user's."""
         self.refused: str | None = None
         """Why the fence first refused a call, if it did."""
+        self.granted = granted
 
     async def gate(self, effect: Effect) -> Refusal | None:
-        if effect in ("read", "cancel", "plan", "proposal"):
+        if effect in ("read", "cancel", "proposal"):
             return None
-        refusal = await threaded(self._check)
+        if effect == "plan":
+            if self.granted is None:
+                return None
+            refusal = await threaded(self._progress)
+        else:
+            refusal = await threaded(self._check)
         if refusal is not None and self.refused is None:
             self.refused = refusal.message
         return refusal
 
     def summary(self) -> object | None:
         return None if self.refused is None else {"refused": self.refused}
+
+    def _progress(self) -> Refusal | None:
+        """A task's progress on its track needs the plan version it started under."""
+        summary = self.plans.summary(self.authority)
+        if summary is None or summary.head != self.granted:
+            return Refusal(
+                CONFLICT,
+                "plan_changed: the session's plan was revised since this delegation started; "
+                "its progress on the track is refused, and the parent can delegate the track "
+                "again",
+            )
+        return None
 
     def _check(self) -> Refusal | None:
         context = self.context

@@ -56,6 +56,7 @@ from sandbox_science.orchestrator.notices import (
     DELEGATIONS_RUNNING,
 )
 from sandbox_science.orchestrator.projects import RunRecord, run_name
+from sandbox_science.orchestrator.session_plans import PlanRef
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, dump
 
 from .models import Choice, ModelChoice
@@ -93,6 +94,8 @@ class Child:
     ``None`` for a task."""
     alias: str | None = None
     """The model alias it calls (PD-28, PD-30); ``None`` for the delegated role's."""
+    track: tuple[PlanRef, str] | None = None
+    """For a task on a track, the plan version it works under and the track (PD-9)."""
 
 
 @dataclass(frozen=True)
@@ -110,6 +113,7 @@ class _Planned:
     """For a check, its entry and revision; ``None`` for a task."""
     shown: dict[str, JsonValue]
     """What ``delegate``'s answer says of it."""
+    track: tuple[PlanRef, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -132,6 +136,8 @@ class ChildEnd:
     """Whether it read the target of each of the entry's proofs at its pinned revision."""
     files: dict[str, JsonValue] | None = None
     """The files its calls recorded, as its record keeps them (RA-36)."""
+    created: tuple[str, ...] = ()
+    """The ledger entries its changes created, by ID (LG-6's ``produced``)."""
 
 
 class ChildRunner(Protocol):
@@ -185,6 +191,7 @@ class Delegations(TurnHook):
         over_budget: Callable[[], Awaitable[bool]] | None = None,
         limits: DelegationSettings | None = None,
         models: ModelChoice | None = None,
+        track_grant: Callable[[str], Awaitable[PlanRef]] | None = None,
         max_chars: int = 5000,
         output_chars: int = 20000,
         clock: Clock = SYSTEM_CLOCK,
@@ -202,6 +209,9 @@ class Delegations(TurnHook):
         """The project's cap and a check's tokens and turns (PD-38)."""
         self.models = models
         """The model each child calls (PD-28, PD-30); without it, the harness's."""
+        self.track_grant = track_grant
+        """The plan version a task on a track works under (PD-9); without it, a task
+        names no track."""
         choices = self.limits.models if models is not None else ()
         self.specs: tuple[ToolSpec, ...] = offered(choices) if offer else ()
         self.turns_left = max_turns
@@ -250,7 +260,7 @@ class Delegations(TurnHook):
                 ErrorKind.UNAVAILABLE, "limit_reached: the project reached its daily cost limit"
             )
         project, session = self.context.project_id, self.context.session_id
-        planned = await self._check(brief) if isinstance(brief, CheckBrief) else self._task(brief)
+        planned = await (self._check(brief) if isinstance(brief, CheckBrief) else self._task(brief))
         delegation_id, run_id = new_id("dlg"), new_id("run")
         started = self.clock.now().astimezone(UTC)
         limits: dict[str, JsonValue] = {"turns": planned.turns, "tokens": planned.tokens}
@@ -275,6 +285,7 @@ class Delegations(TurnHook):
             tokens=planned.tokens,
             target=planned.target,
             alias=None if choice is None else choice.alias,
+            track=planned.track,
         )
         stop = asyncio.Event()
         task = asyncio.create_task(self._run(child, stop), name=f"delegation {delegation_id}")
@@ -315,17 +326,55 @@ class Delegations(TurnHook):
             {"check": {"entry": entry.handle, "revision": brief.check.revision}},
         )
 
-    def _task(self, brief: TaskBrief) -> _Planned:
-        """A task, which the parent writes (PD-11), under a task's limits."""
+    async def _task(self, brief: TaskBrief) -> _Planned:
+        """A task, which the parent writes (PD-11), under a task's limits: on a track of
+        the session's active plan, which no other running task has (PD-9, PD-12), and on
+        an issue, which its outcome is recorded on (LG-F8)."""
         head = brief.task if len(brief.task) <= SUMMARY_CHARS else brief.task[:SUMMARY_CHARS] + "…"
+        written: dict[str, JsonValue] = {
+            "task": brief.task,
+            "context": brief.context,
+            "inputs": list(brief.inputs),
+        }
+        shown: dict[str, JsonValue] = {"task": head}
+        track = None
+        if brief.track is not None:
+            if self.track_grant is None:
+                raise WorkerAPIError(ErrorKind.UNAVAILABLE, "this run's tasks take no track")
+            busy = [
+                r.delegation.delegation_id
+                for r in self._running()
+                if _track(r.delegation) == brief.track
+            ]
+            if busy:
+                raise WorkerAPIError(
+                    ErrorKind.CONFLICT,
+                    f"track_busy: delegation {busy[0]} works on track {brief.track!r}; a track "
+                    "has one running task at most",
+                )
+            granted = await self.track_grant(brief.track)
+            track = (granted, brief.track)
+            written["track"] = {"track_id": brief.track, "plan": granted.model_dump(mode="json")}
+            shown["track"] = brief.track
+        issue = None
+        if brief.issue is not None:
+            found = await threaded(self.ledger.entry, self.context.project_id, brief.issue)
+            if found.type != "issue":
+                raise WorkerAPIError(
+                    ErrorKind.INVALID_REQUEST, f"{found.handle} is a {found.type}, not an issue"
+                )
+            issue = found.handle
+            written["issue"] = {"entry": found.entry_id, "handle": found.handle}
+            shown["issue"] = found.handle
         return _Planned(
             "task",
-            {"task": brief.task, "context": brief.context, "inputs": list(brief.inputs)},
-            task_text(brief.task, brief.context, brief.inputs),
+            written,
+            task_text(brief.task, brief.context, brief.inputs, track=brief.track, issue=issue),
             min(self.limits.task_turns, self.max_turns, self.turns_left),
             self.limits.task_tokens,
             None,
-            {"task": head},
+            shown,
+            track,
         )
 
     async def _model(self, asked: str | None) -> Choice | None:
@@ -342,6 +391,7 @@ class Delegations(TurnHook):
     async def _run(self, child: Child, stop: asyncio.Event) -> None:
         """Run a child to its end, then write its outcome, however it ended."""
         ending = Ending("failed", "error")
+        created: tuple[str, ...] = ()
         try:
             end = await self.runner(child, stop)
             ending = Ending(
@@ -357,6 +407,7 @@ class Delegations(TurnHook):
                 end.read_proofs,
                 end.files,
             )
+            created = end.created
         except asyncio.CancelledError:
             # Cancelled outside its loop, before it started or while it was saved.
             if (current := asyncio.current_task()) is not None:
@@ -364,9 +415,9 @@ class Delegations(TurnHook):
             ending = Ending("cancelled", "cancelled")
         except Exception:
             _log.exception("delegated run %s failed", child.run_id)
-        await self._end(child.delegation_id, ending)
+        await self._end(child.delegation_id, ending, created)
 
-    async def _end(self, delegation_id: str, ending: Ending) -> None:
+    async def _end(self, delegation_id: str, ending: Ending, created: tuple[str, ...] = ()) -> None:
         """Write an outcome, trying again on failure, then record it as work on the entry
         it checked (LG-F8); one never written is ended at the session's next main run
         (``DelegationRecords.abandon``)."""
@@ -381,13 +432,13 @@ class Delegations(TurnHook):
                 if attempt + 1 < WRITES:
                     await self.clock.sleep(0.5 * 2**attempt)
                 continue
-            await self._worked(kept)
+            await self._worked(kept, created)
             return
 
-    async def _worked(self, delegation: Delegation) -> None:
+    async def _worked(self, delegation: Delegation, created: tuple[str, ...] = ()) -> None:
         """Record an ended delegation's outcome as work on its entry; a record that
         cannot be written leaves the outcome as it is."""
-        found = work_record(delegation, self.context.session_id)
+        found = work_record(delegation, self.context.session_id, created)
         if found is None:
             return
         mutation, author = found
@@ -604,6 +655,12 @@ class Delegations(TurnHook):
 
 async def _ended(tasks: set[asyncio.Task[None]], when: str) -> None:
     await asyncio.wait(tasks, return_when=when)
+
+
+def _track(delegation: Delegation) -> str | None:
+    found = delegation.brief.get("track")
+    track = cast(dict[str, object], found).get("track_id") if isinstance(found, dict) else None
+    return track if isinstance(track, str) else None
 
 
 def _named(delegation: Delegation) -> dict[str, object]:

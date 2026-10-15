@@ -42,7 +42,7 @@ from sandbox_science.orchestrator.documents.errors import (
 from sandbox_science.orchestrator.documents.models import Author
 from sandbox_science.orchestrator.documents.normalize import normalize
 from sandbox_science.orchestrator.documents.project_macros import head as macro_head
-from sandbox_science.orchestrator.projects import ProjectError, recorded
+from sandbox_science.orchestrator.projects import ProjectError, recorded, run_id_of
 
 from . import evidence, flags, frontier, gate
 from .models import (
@@ -1159,15 +1159,19 @@ class Ledger:
             )
         if reference.startswith("new:"):
             return found
-        runs = [
-            run
+        # A delegation names its child by the run's record name, its start time and its
+        # ID; an entry's author names the run by its ID.
+        runs = {
+            found
             for ref in cited
             if ref.delegation is not None
             for (run,) in db.execute(
                 "SELECT run FROM delegations WHERE delegation_id=? AND project_id=?",
                 (ref.delegation, project),
             )
-        ]
+            for found in (run, run_id_of(run))
+            if found is not None
+        }
         first = db.execute(
             "SELECT json_extract(author,'$.run_id') FROM ledger_revisions "
             "WHERE entry_id=? AND revision=1",

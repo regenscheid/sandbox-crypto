@@ -4,6 +4,12 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 ## 2026-10-15
 
+Decisions of the coordinator on delegated tasks' tracks and issues (6b-2), which the owner can reverse:
+
+- **A task's outcome on its issue** ([ledger spec](../docs/specs/ledger.md), LG-6, LG-F8). It ends `produced` when the child created entries, `limit` when it was partial, blocked or stopped (what ran out), and `limit` with `ideas` when it completed and created nothing: `assessment` stays for critiques of other work, and a finished investigation that found nothing leaves the issue open (LG-7).
+- **A claimed obstruction's evidence** is the delegation itself, cited with the child's evidence as the note.
+- **A revised plan refuses a task's progress** ([plans and delegation](../docs/specs/plans-and-delegation.md), PD-9): its grant is the plan version it started under, and its outcome says the plan changed, so the parent delegates the track again.
+
 Decisions of the coordinator on questions to the user (PD-23 to PD-26), which the owner can reverse:
 
 - **A chat message answers the open question** ([questions to the user](../docs/QUESTIONS.md); [run service](../docs/specs/run-service.md), RS-4). While the run that holds the session waits for an answer, a message the user writes answers that run's oldest open question in the user's own words, instead of being queued; the chat box says which question it will answer. Queueing it for the run's next turn instead is a small change.
