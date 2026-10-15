@@ -259,3 +259,97 @@ def test_a_version_22_stores_findings_are_found_by_their_entries(store, tmp_path
         assert [(f.finding_id, f.field) for f in view.findings] == [(finding, "statement")]
     finally:
         migrated.close()
+
+
+# The gate's review clause (LG-17).
+
+
+def establish(reviews: ReviewStore, op: str, expected: int) -> None:
+    decision = {
+        "type": "decision",
+        "status": "in_effect",
+        "title": "Establish",
+        "statement": "s",
+        "links": [{"kind": "affects", "entry": "C-1"}],
+    }
+    change(
+        reviews, decision, {"entry": "C-1", "expected": expected, "status": "established"}, op=op
+    )
+
+
+def clause(reviews: ReviewStore, op: str, expected: int) -> str:
+    from sandbox_science.orchestrator.documents import DocumentError
+
+    with pytest.raises(DocumentError, match="gate_not_met") as refused:
+        establish(reviews, op, expected)
+    return str(refused.value.details["clause"])
+
+
+def review_passes(reviews: ReviewStore) -> None:
+    ingest_ledger(reviews, "p", "s")
+    review = dispatch(reviews)
+    reviews.finish("p", "s", review, "owner", "passed", "Checked.")
+
+
+def supported(reviews: ReviewStore) -> None:
+    """C-1 at revision 2 with evidence that counts and needs no check: what a source
+    states, cited from a reference."""
+    reference = {
+        "type": "reference",
+        "title": "A paper",
+        "statement": "A. Author, *A paper*, ePrint 2024/123.",
+        "fields": {"identifiers": {"eprint": "2024/123"}, "published": "2024-02-01"},
+    }
+    change(reviews, CLAIM, reference, op="made")
+    evidence = [{"role": "supports", "type": "source_claim", "entry": "REF-1"}]
+    change(reviews, {"entry": "C-1", "expected": 1, "evidence": evidence}, op="supported")
+
+
+def test_the_main_agent_establishes_once_a_completed_review_covered_the_entry(store) -> None:
+    reviews, _, now = store
+    supported(reviews)
+    assert clause(reviews, "unreviewed", 2) == "review"
+    ingest_ledger(reviews, "p", "s")
+    review = dispatch(reviews)
+    assert clause(reviews, "running", 2) == "review"
+    reviews.finish("p", "s", review, "owner", "passed", "Checked.")
+    # A later statement is not what the review covered.
+    change(reviews, {"entry": "C-1", "expected": 2, "statement": "$a^{16} = 1$, p = 17."}, op="s")
+    assert clause(reviews, "changed", 3) == "review"
+    now[0] += 1000
+    review_passes(reviews)
+    establish(reviews, "covered", 3)
+    assert Ledger(reviews.documents).entry("p", "C-1").status == "established"
+
+
+def test_an_unresolved_fail_finding_on_the_entry_holds_the_gate(store) -> None:
+    from sandbox_science.orchestrator.consistency.findings import Findings
+
+    reviews, _, _ = store
+    supported(reviews)
+    _, finding = finding_on(reviews, "statement")
+    assert clause(reviews, "finding", 2) == "finding"
+    revision = Findings(reviews).get("p", "s", finding)["revision"]
+    Findings(reviews).respond(
+        "p",
+        "s",
+        {
+            "finding": finding,
+            "expected": revision,
+            "action": "dismiss",
+            "explanation": "The statement is right.",
+            "operation_id": "dismiss",
+        },
+        USER,
+    )
+    establish(reviews, "withdrawn", 2)
+    assert Ledger(reviews.documents).entry("p", "C-1").status == "established"
+
+
+def test_a_failed_review_covers_nothing(store) -> None:
+    reviews, _, _ = store
+    supported(reviews)
+    ingest_ledger(reviews, "p", "s")
+    review = dispatch(reviews)
+    reviews.finish("p", "s", review, "owner", "failed", "The reviewer failed.")
+    assert clause(reviews, "failed", 2) == "review"

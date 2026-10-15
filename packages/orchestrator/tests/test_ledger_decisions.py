@@ -126,8 +126,8 @@ def gate(ledger: Ledger, op: str, expected: int = 1) -> DocumentError:
 def test_the_gate_names_the_clause_the_main_agents_decision_does_not_meet(
     ledger: Ledger,
 ) -> None:
-    """LG-F3 as far as it can run: each refusal names its clause, a check the main agent
-    produced does not count, and the review clause cannot hold yet."""
+    """LG-F3 up to the review: each refusal names its clause, and a check the main agent
+    produced does not count."""
     documents = ledger.documents
     doc = documents.create("p", name="ff", title="FF", text="# F\n\nProof.\n", author=MAIN)
     block = documents.mapped("p", doc.document_id, 1).block_ids[1]
@@ -161,7 +161,7 @@ def test_the_gate_names_the_clause_the_main_agents_decision_does_not_meet(
     change(ledger, {"entry": "C-1", "expected": 5, "evidence": [checked]}, op="e-5", author=USER)
     refused = gate(ledger, "unreviewed", 6)
     assert refused.details["clause"] == "review"
-    assert "the reviewer does not read ledger entries yet" in refused.message
+    assert "no completed consistency review has covered C-1" in refused.message
     # A check of a revision whose statement the change replaces no longer counts.
     with pytest.raises(DocumentError, match="gate_not_met") as stale:
         change(
