@@ -418,13 +418,13 @@ describe('the transcript of a run', () => {
     );
     expect(stoppedText({ stopped: 'constructor' })).toBe('The run stopped (constructor).');
     expect(stoppedText({ stopped: 'budget' })).toBe(
-      'The run stopped: the project has spent its model budget for the last 24 hours. What waits for the session waits for the budget.',
+      'The run stopped: the project reached its daily cost limit. What waits for the session waits until the limit allows another run.',
     );
     expect(stoppedText({ stopped: 'gateway_budget' })).toBe(
       'The run stopped: the model gateway refused the call because its spending budget is used up. What waits for the session waits until the gateway allows calls again.',
     );
     expect(stoppedText({ stopped: 'run_budget' })).toBe(
-      "The run stopped: it used its share of the project's daily model budget.",
+      "The run stopped at its own limit: its part of the project's daily cost limit, or a delegated run's tokens.",
     );
     const [stopped] = chatEntries([event(1, 'stopped', { stopped: 'interrupted' })]);
     expect(stopped).toMatchObject({ problem: true });
@@ -474,7 +474,7 @@ describe('the transcript of a run', () => {
   it("says what each message's state means", () => {
     expect(messageState(message(1, 'delivered', 'r1'))).toBe('Delivered to r1');
     expect(messageState({ ...message(1, 'refused'), reason: 'budget' })).toBe(
-      "Refused: the project's model budget is spent",
+      'Refused: the project reached its daily cost limit',
     );
     expect(messageState(message(1, 'held', 'r1'))).toBe(
       'Held: its run was cancelled or interrupted before answering it. Resume, or write again, to queue it once more',

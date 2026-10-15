@@ -164,15 +164,18 @@ class Settings:
     """The tokens one consistency review may use, over all its calls."""
     review_calls_per_hour: int = ReviewConfig().calls_per_hour
     """The reviewer calls a project may make in an hour."""
+    cost_limits: bool = False
+    """With stores, whether each main run keeps its project's daily cost limit, if the
+    project has one, at its safe points, as the run service's runs do (RS-6c)."""
     run_share: float | None = None
-    """With stores, the part of the project's MAIN budget one run may use, above 0 and at
-    most 1: each run then stops at a safe point once its own calls have used it, or once
-    the project has spent its budget (RS-6a). ``None``, as for ``run`` on the command
-    line, keeps no budget during a run."""
+    """With ``cost_limits``, the part of a project's daily cost limit one run may use,
+    above 0 and at most 1; ``None``, as by default, for no part of its own."""
 
     def __post_init__(self) -> None:
         if self.run_share is not None and not 0 < self.run_share <= 1:
             raise ValueError("run_share is above 0 and at most 1")
+        if self.run_share is not None and not self.cost_limits:
+            raise ValueError("run_share is a part of the cost limits, which are not kept")
 
     def reviews(self) -> ReviewConfig:
         """The review settings of a project that has none of its own."""
@@ -538,7 +541,7 @@ class Harness:
         if request.tokens is not None:
             found["tokens"] = request.tokens
         elif self.settings.run_share is not None and self.stores is not None:
-            found["run_share"] = self.settings.run_share
+            found["run_share"] = self.settings.run_share  # of the daily cost limit
         return found
 
     async def _chat_hooks(self, admitted: Admitted, chat: RunChat) -> tuple[TurnHook, ...]:
@@ -561,8 +564,8 @@ class Harness:
             # Its result is read from its closing answer once every other hook has had its say.
             outcome = Outcome(request.target)
             return (*limit, SessionHeld(chat), fence, outcome, EventLog(chat))
-        share = self.settings.run_share
-        kept = () if share is None else (ModelBudget(chat, share),)
+        settings = self.settings
+        kept = (ModelBudget(chat, settings.run_share),) if settings.cost_limits else ()
         return (*kept, UserMessages(chat), EventLog(chat))
 
     async def _delegations(
@@ -580,7 +583,7 @@ class Harness:
         limits = await threaded(records.settings, context.project_id)
 
         async def over_budget() -> bool:
-            return await threaded(stores.runs.over_budget, context.project_id, clock.now())
+            return await threaded(stores.runs.over_cost_limit, context.project_id, clock.now())
 
         # Every run of the tree is given the memory its root was (PM-8).
         version = memory[0] if memory is not None else None

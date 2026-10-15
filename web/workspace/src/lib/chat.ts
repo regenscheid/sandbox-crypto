@@ -279,8 +279,9 @@ const STOPPED: Record<string, string> = {
   turn_limit: 'The run stopped at its turn limit.',
   context_limit: 'The run stopped at its context limit.',
   budget:
-    'The run stopped: the project has spent its model budget for the last 24 hours. What waits for the session waits for the budget.',
-  run_budget: "The run stopped: it used its share of the project's daily model budget.",
+    'The run stopped: the project reached its daily cost limit. What waits for the session waits until the limit allows another run.',
+  run_budget:
+    "The run stopped at its own limit: its part of the project's daily cost limit, or a delegated run's tokens.",
   gateway_budget:
     'The run stopped: the model gateway refused the call because its spending budget is used up. What waits for the session waits until the gateway allows calls again.',
   user_message: 'The run ended its wait for a message.',
@@ -444,7 +445,7 @@ export function messageState(message: ChatMessage): string {
     }
     case 'refused':
       return message.reason === 'budget'
-        ? "Refused: the project's model budget is spent"
+        ? 'Refused: the project reached its daily cost limit'
         : `Refused${message.reason ? `: ${message.reason}` : ''}`;
   }
 }

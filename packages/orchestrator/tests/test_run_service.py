@@ -64,11 +64,11 @@ async def serving(
     lease_seconds: float = 60.0,
     retry: float = 0.2,
     clock: Clock = SYSTEM_CLOCK,
-    run_share: float = service_module.RUN_SHARE / 100,
+    run_share: float | None = None,
     serve: bool = True,
 ) -> AsyncIterator[RunService]:
     """The run service on the harness's state directory, worker and gateway, keeping the
-    model budget during its runs as ``serve`` does."""
+    projects' cost limits during its runs as ``serve`` does."""
     harness.gateway.script = list(script)
     projects = ProjectStore(harness.state)
     documents = DocumentStore(store_path(harness.state), producer="harness")
@@ -85,7 +85,7 @@ async def serving(
                 client,
                 Role(model, "main"),
                 stores=stores,
-                settings=Settings(min_isolation_tier=None, run_share=run_share),
+                settings=Settings(min_isolation_tier=None, cost_limits=True, run_share=run_share),
                 clock=clock,
             )
             service = RunService(core, poll=0.02, retry=retry, clock=clock)
@@ -273,15 +273,16 @@ async def test_an_interrupted_run_ends_and_its_messages_wait_for_resume(
     }
 
 
-async def test_a_spent_budget_refuses_the_message(harness: Harness) -> None:
-    runs(harness).set_budget(PROJECT, 0)
+async def test_a_reached_cost_limit_refuses_the_message(harness: Harness) -> None:
+    await harness.run("run-1", [Reply("A priced answer.", cost="0.75")])
+    runs(harness).set_cost_limit(PROJECT, 0.5)
     post(harness, "m-1", "Expensive question.")
     async with serving(harness, Reply("Never sent.")):
         await eventually(lambda: states(harness) == {"m-1": "refused"})
     (message,) = runs(harness).messages(PROJECT, SESSION)
     assert message.reason == "budget"
-    assert harness.gateway.main == []
-    assert names(harness) == []
+    assert len(harness.gateway.main) == 1  # the earlier run's call alone
+    assert len(names(harness)) == 1
 
 
 async def test_the_projects_cost_counts_what_the_gateway_priced(harness: Harness) -> None:
@@ -294,25 +295,6 @@ async def test_the_projects_cost_counts_what_the_gateway_priced(harness: Harness
     assert state.model_cost(PROJECT) == 0.75
     assert state.model_cost(PROJECT, datetime.now(UTC) - timedelta(hours=1)) == 0.75
     assert state.model_cost(PROJECT, datetime(3000, 1, 1, tzinfo=UTC)) is None
-    assert state.spent(PROJECT, datetime.now(UTC) - timedelta(hours=1)) > 0  # tokens still
-
-
-async def test_spending_counts_saved_and_interrupted_runs(harness: Harness) -> None:
-    record = await harness.run("run-1", [Reply("Answer.")])
-    state = runs(harness)
-    since = datetime.now(UTC) - timedelta(hours=1)
-    (usage,) = record.usage
-    assert usage.input_tokens is not None
-    assert usage.output_tokens is not None
-    saved = usage.input_tokens + usage.output_tokens
-    assert state.spent(PROJECT, since) == saved
-    run = "29991231T000000000000Z-interrupted"  # an interrupted run: events, no record
-    state.append(
-        PROJECT, SESSION, run, "assistant", {"usage": {"input_tokens": 10, "output_tokens": 5}}
-    )
-    state.append(PROJECT, SESSION, run, "assistant", {"usage": {"characters": 400}})
-    assert state.spent(PROJECT, since) == saved + 15 + 100
-    assert state.spent(PROJECT, datetime(3000, 1, 1, tzinfo=UTC)) == 0  # out of the window
 
 
 async def test_the_earlier_conversation_keeps_the_newest_runs_that_fit(harness: Harness) -> None:

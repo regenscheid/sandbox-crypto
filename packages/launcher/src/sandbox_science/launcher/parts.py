@@ -212,6 +212,8 @@ def project_argvs(
                 f"says {project.profile}: a project keeps the profile it was made with"
             )
         argvs.append([harness, "project", "revise", *scope, "--policy", policy])
+        if (limit := config.model.daily_cost_limit) is not None:
+            argvs.append([harness, "project", "budget", *scope, "--daily-cost-limit", f"{limit:g}"])
         argvs.extend(
             [harness, "session", "open", *scope, "--session", session.id,
              *(["--dedicated"] if session.dedicated else [])]

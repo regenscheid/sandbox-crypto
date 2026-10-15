@@ -65,7 +65,6 @@ from .tools import ToolOutcome
 _log = logging.getLogger(__name__)
 
 POLL_SECONDS: Final = 1.0
-RUN_SHARE: Final = 50
 """The percent of the project's daily MAIN budget one run may use, by default (RS-6a)."""
 BEAT_SECONDS: Final = 10.0
 RETRY_SECONDS: Final = 30.0
@@ -317,7 +316,7 @@ class RunService:
                 return False
             ids = active.message_ids = [message.message_id for message in queued]
             active.request_ids = requests
-            if await threaded(runs.over_budget, project, self.clock.now()):
+            if await threaded(runs.over_cost_limit, project, self.clock.now()):
                 _log.warning("project %s has spent its model budget", project)
                 if queued:
                     await threaded(runs.refuse, project, session, ids, "budget")

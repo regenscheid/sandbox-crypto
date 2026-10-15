@@ -170,8 +170,9 @@ class Delegations(TurnHook):
     ) -> None:
         """``offer`` says whether the run gets the tools; ``max_turns`` bounds a child's
         turns; ``wake`` returns once the user writes to the session, which ends a wait;
-        ``over_budget`` says whether the project spent its model budget. Nothing is
-        reserved for a child: it is bounded by its own tokens and turns (PD-38). Notices
+        ``over_budget`` says whether the project reached its daily cost limit, if it has
+        one. Nothing is reserved for a child: it is bounded by its own tokens and turns
+        (PD-38). Notices
         together take at most ``max_chars``, and a wait's result at most ``output_chars``."""
         self.records, self.ledger, self.context = records, ledger, context
         self.parent, self.runner, self.max_turns = parent, runner, max_turns
@@ -225,7 +226,7 @@ class Delegations(TurnHook):
         choice = await self._model(brief.model)
         if self.over_budget is not None and await self.over_budget():
             raise WorkerAPIError(
-                ErrorKind.UNAVAILABLE, "limit_reached: the project has spent its model budget"
+                ErrorKind.UNAVAILABLE, "limit_reached: the project reached its daily cost limit"
             )
         project, session = self.context.project_id, self.context.session_id
         entry = await threaded(self.ledger.entry, project, brief.check.entry, brief.check.revision)

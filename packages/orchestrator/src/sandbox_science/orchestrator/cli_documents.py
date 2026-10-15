@@ -52,9 +52,13 @@ async def _project_action(args: argparse.Namespace, store: ProjectStore) -> int:
 
             store.get(args.project)
             runs = RunState(store.control)
-            if args.main_tokens is not None:
-                runs.set_budget(args.project, args.main_tokens)
-            print(f"project {args.project}: {runs.budget(args.project)} MAIN tokens a day")
+            if args.no_cost_limit:
+                runs.set_cost_limit(args.project, None)
+            elif args.daily_cost_limit is not None:
+                runs.set_cost_limit(args.project, args.daily_cost_limit)
+            limit = runs.cost_limit(args.project)
+            said = "no daily cost limit" if limit is None else f"a daily cost limit of {limit:g}"
+            print(f"project {args.project}: {said}, in the gateway's currency")
         case "delegation":
             from .delegation.records import DelegationRecords
 
@@ -425,10 +429,14 @@ def add_parsers(commands: Any) -> None:
     )
     projects.add_argument("--no-ignore", action="store_true", help="files: no ignore patterns")
     projects.add_argument(
-        "--main-tokens",
-        type=int,
-        help="budget: the MAIN tokens the run service may spend over a rolling 24 hours; "
-        "omitted to read",
+        "--daily-cost-limit",
+        type=float,
+        metavar="AMOUNT",
+        help="budget: what the project's runs may cost over a rolling 24 hours, in the "
+        "gateway's currency (normally USD), as the gateway reports it; omitted to read",
+    )
+    projects.add_argument(
+        "--no-cost-limit", action="store_true", help="budget: remove the daily cost limit"
     )
     projects.add_argument(
         "--depth",

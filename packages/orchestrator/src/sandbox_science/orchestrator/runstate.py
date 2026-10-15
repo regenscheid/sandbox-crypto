@@ -38,10 +38,10 @@ LEASE_SECONDS: Final = 60.0
 """How long a run's lease outlives its last renewal (RS-5)."""
 SERVICE_SECONDS: Final = 30.0
 """How old the run service's heartbeat may be while it runs (RS-3)."""
-MAIN_TOKENS: Final = 2_000_000
 WINDOW: Final = timedelta(hours=24)
-"""The model budget's window (RS-6a)."""
-"""A project's default model budget: MAIN tokens over a rolling 24 hours (RS-6a)."""
+"""The daily cost limit's window (RS-6a)."""
+MAX_COST: Final = 1_000_000_000
+"""The largest daily cost limit, in the gateway's currency."""
 MAX_MESSAGE_BYTES: Final = 65536
 MAX_EVENT_BYTES: Final = 65536
 PAGE: Final = 200
@@ -393,50 +393,48 @@ class RunState:
             found = tx.sql.execute("SELECT renewed_at FROM service_heartbeat").fetchone()
         return found is not None and self._now().timestamp() - found[0] < SERVICE_SECONDS
 
-    def budget(self, project: str) -> int:
-        """The project's MAIN tokens over a rolling 24 hours (RS-6a)."""
+    def cost_limit(self, project: str) -> float | None:
+        """The project's daily cost limit, in the gateway's currency (RS-6a); ``None``,
+        as by default, for none."""
         with self.control.read() as tx:
             found = tx.sql.execute(
-                "SELECT main_tokens FROM project_budgets WHERE project_id = ?", (project,)
+                "SELECT daily_cost FROM project_cost_limits WHERE project_id = ?", (project,)
             ).fetchone()
-        return MAIN_TOKENS if found is None else int(found[0])
+        return None if found is None else float(found[0])
 
-    def set_budget(self, project: str, tokens: int) -> None:
+    def set_cost_limit(self, project: str, limit: float | None) -> None:
+        """Set the project's daily cost limit, or remove it with ``None``."""
+        if limit is not None and not 0 <= limit <= MAX_COST:
+            raise ControlError(INVALID_REQUEST, f"a daily cost limit is 0 to {MAX_COST}")
         with self.control.write() as tx:
             if (
                 tx.sql.execute("SELECT 1 FROM projects WHERE project_id = ?", (project,)).fetchone()
                 is None
             ):
                 raise ControlError(NOT_FOUND, f"no project {project!r}")
-            try:
-                tx.sql.execute(
-                    "INSERT OR REPLACE INTO project_budgets VALUES (?, ?, ?)",
-                    (project, tokens, self._now().isoformat()),
-                )
-            except sqlite3.IntegrityError:
-                raise ControlError(INVALID_REQUEST, "a budget is 0 to 10^12 tokens") from None
+            if limit is None:
+                tx.sql.execute("DELETE FROM project_cost_limits WHERE project_id = ?", (project,))
+                return
+            tx.sql.execute(
+                "INSERT OR REPLACE INTO project_cost_limits VALUES (?, ?, ?)",
+                (project, float(limit), self._now().isoformat()),
+            )
 
-    def over_budget(self, project: str, now: datetime) -> bool:
-        """Whether the project has spent its MAIN budget over the window to ``now``."""
-        return self.spent(project, now - WINDOW) >= self.budget(project)
-
-    def spent(self, project: str, since: datetime) -> int:
-        """MAIN's tokens in the project's runs that started at ``since`` or later: saved
-        records' ``usage``, and interrupted runs' ``assistant`` events. A call without
-        token counts spends a quarter of its characters."""
-        cost = (
-            "CASE WHEN json_extract(u, '$.input_tokens') IS NOT NULL "
-            "AND json_extract(u, '$.output_tokens') IS NOT NULL "
-            "THEN json_extract(u, '$.input_tokens') + json_extract(u, '$.output_tokens') "
-            "ELSE coalesce(json_extract(u, '$.characters'), 0) / 4 END"
-        )
-        total, _ = self._usage(project, since, cost)
-        return int(total)
+    def over_cost_limit(self, project: str, now: datetime) -> bool:
+        """Whether the project has a daily cost limit and its calls in the window to
+        ``now`` reached it, as the gateway reported their costs: a limit is not kept
+        where the gateway reports none."""
+        limit = self.cost_limit(project)
+        if limit is None:
+            return False
+        spent = self.model_cost(project, now - WINDOW)
+        return spent is not None and spent >= limit
 
     def model_cost(self, project: str, since: datetime | None = None) -> float | None:
         """What MAIN's calls in the project's runs that started at ``since`` or later
-        cost, as the gateway reported it, counted as ``spent`` counts tokens; every run
-        without ``since``. ``None`` when the gateway reported no call's cost."""
+        cost, as the gateway reported it: saved records' ``usage``, and the ``assistant``
+        events of runs without a record; every run without ``since``. ``None`` when the
+        gateway reported no call's cost."""
         total, priced = self._usage(project, since, "json_extract(u, '$.cost')")
         return float(total) if priced else None
 
@@ -633,9 +631,9 @@ def head_and_tail(text: str | None, keep: int = 4000) -> str | None:
     return f"{text[:keep]}\n[…]\n{text[-keep:]}"
 
 
-def cost(usage: ModelUsage) -> int:
-    """One call's spending, as ``RunState.spent`` counts it (RS-6a): its tokens, or a
-    quarter of its characters when the gateway gave no token counts."""
+def call_tokens(usage: ModelUsage) -> int:
+    """One call's tokens, as a delegated run's limit counts them (PD-38), or a quarter of
+    its characters when the gateway gave no token counts."""
     if usage.input_tokens is not None and usage.output_tokens is not None:
         return usage.input_tokens + usage.output_tokens
     return (usage.characters or 0) // 4
