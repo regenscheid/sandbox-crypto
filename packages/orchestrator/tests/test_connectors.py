@@ -763,24 +763,66 @@ async def test_the_model_gets_an_index_and_loads_tools_by_name(proxied: Proxied)
     )
 
 
-async def test_a_query_loads_its_best_matches(proxied: Proxied) -> None:
+async def test_a_query_lists_its_matches_and_loads_none(proxied: Proxied) -> None:
+    """Lab 40, B4: a query that loaded its best matches loaded ten unrelated schemas for
+    a search with no match, which every later call carried. A query lists the tools that
+    match it well, with their purposes; the model loads what it wants by name."""
     model, transcript = await run_with(
         proxied,
         [
             {"tool_calls": [{"name": "mcp_tools", "arguments": {"query": "notes search"}}]},
-            {"tool_calls": [{"name": "mcp_tools", "arguments": {"query": "nothing like it"}}]},
+            {"tool_calls": [{"name": "mcp_tools", "arguments": {"query": "ledger change"}}]},
+            {
+                "tool_calls": [
+                    {
+                        "name": "mcp_tools",
+                        "arguments": {"names": ["ledger_change", "notes_search"]},
+                    }
+                ]
+            },
             {"text": "Done."},
         ],
     )
-    found, none = transcript.tool_records
-    assert found["mcp_tools"]["loaded"][0] == "notes_search"
-    assert "search" in found["mcp_tools"]["loaded"]
-    assert none["mcp_tools"] == {
-        "loaded": [],
-        "note": "no tool matches the query; read the index and give names",
-        "sha256": {},
-    }
-    assert set(found["mcp_tools"]["loaded"]) <= set(model.offered[1])
+    found, none, named = transcript.tool_records
+    assert found["mcp_tools"]["loaded"] == []
+    assert found["mcp_tools"]["matches"] == [
+        {"name": "notes_search", "server": "papers", "purpose": "", "loaded": False}
+    ]
+    assert found["mcp_tools"]["note"] == "a query loads nothing: load the tools you need with names"
+    assert none["mcp_tools"]["matches"] == []
+    assert none["mcp_tools"]["note"].startswith("no connector tool matches the query well")
+    assert "ledger_*" in none["mcp_tools"]["note"]
+    assert named["mcp_tools"]["loaded"] == ["notes_search"]
+    assert named["mcp_tools"]["harness_tools"] == ["ledger_change"]
+    assert "unknown" not in named["mcp_tools"]
+    assert "need no loading" in named["mcp_tools"]["note"]
+    # Nothing was carried until the model loaded it by name.
+    assert "notes_search" not in model.offered[1] + model.offered[2]
+    assert "notes_search" in model.offered[3]
+    assert [t["name"] for t in transcript.summaries["connectors"]["loaded"]] == ["notes_search"]
+
+
+async def test_a_query_finds_only_what_matches_it_well(proxied: Proxied) -> None:
+    """Lab 40's run 4 looked for the ledger's tools through mcp_tools: a word shared by
+    chance found ten attack-catalog and Firecrawl tools. A short query needs each of its
+    words, a longer one two thirds of them, one in a tool's name or purpose."""
+    tools = [
+        {"name": "e-print-mcp_search_eprint", "description": "Search IACR ePrint papers"},
+        {"name": "e-print-mcp_get_eprint", "description": "Fetch one paper's record"},
+        {"name": "attack-catalog-mcp_get_attack", "description": "One attack and its changes"},
+        {"name": "firecrawl-mcp_firecrawl_monitor_check", "description": "Check a change"},
+        {"name": "firecrawl-mcp_firecrawl_search", "description": "Search the web"},
+    ]
+    connectors = await listed(proxied, tools)
+    assert connectors.search("ledger change") == []
+    assert connectors.search("ledger_change ledger_frontier") == []
+    assert connectors.search("the tools to search eprint") == ["e-print-mcp_search_eprint"]
+    assert connectors.search("search") == [
+        "e-print-mcp_search_eprint",
+        "firecrawl-mcp_firecrawl_search",
+    ]
+    assert connectors.search("search the web") == ["firecrawl-mcp_firecrawl_search"]
+    assert connectors.search("of the a") == []
 
 
 async def test_a_tool_called_before_it_is_loaded_is_loaded_and_called(proxied: Proxied) -> None:
@@ -1019,7 +1061,10 @@ async def test_mcp_tools_refuses_a_long_query_and_reports_a_harness_name(
     )
     long, named = transcript.tool_records
     assert long["error"] == "invalid_request"
-    assert (named["mcp_tools"]["loaded"], named["mcp_tools"]["unknown"]) == (["search"], ["python"])
+    assert (named["mcp_tools"]["loaded"], named["mcp_tools"]["harness_tools"]) == (
+        ["search"],
+        ["python"],
+    )
 
 
 async def test_a_load_past_the_runs_budget_is_refused_and_the_run_goes_on(

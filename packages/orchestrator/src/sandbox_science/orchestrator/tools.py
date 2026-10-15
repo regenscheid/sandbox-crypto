@@ -400,10 +400,13 @@ def mcp_tools_spec(index: str) -> ToolSpec:
     every model call carries of them until they are loaded (lab 39, B5)."""
     return ToolSpec(
         MCP_TOOLS,
-        "Load tools of the project's MCP servers, reached through the MCP proxy, before "
-        "you call them: give names from the index below, or a query to load its best "
-        "matches. A loaded tool joins your tools, with its parameters, for the rest of the "
-        "run; call it by its name. Pick the server the index says is for the job, such as "
+        "Load tools of the project's MCP servers by name, from the index below, before you "
+        "call them. A loaded tool joins your tools, with its parameters, for the rest of the "
+        "run; call it by its name. It runs on its server through the platform, not in your "
+        "sandbox: it needs no shell and no admit_hosts. A query lists the tools that match it "
+        "and loads none. Your other tools, such as ledger_*, document_* and plan_*, are the "
+        "harness's own, need no loading and are not in the index. Pick the server the index "
+        "says is for the job, such as "
         "a paper archive's own search before a general web search. The policy decides each "
         "call: a refused call is its decision, not to be repeated unchanged or made through "
         "another tool or server. A search that finds nothing found nothing for that query in "
@@ -421,7 +424,8 @@ def mcp_tools_spec(index: str) -> ToolSpec:
                 "query": {
                     "type": "string",
                     "maxLength": MAX_QUERY,
-                    "description": "Words for what the tool should do, to load the best matches",
+                    "description": "Words for what the tool should do, to list the tools "
+                    "that match; it loads none",
                 },
             },
             "additionalProperties": False,
@@ -717,7 +721,8 @@ class Toolbox:
         return added, before, unknown, over
 
     async def _mcp_tools(self, args: dict[str, Any], operation: str) -> ToolOutcome:
-        """Load connector tools by name, or a query's matches (lab 39, B5)."""
+        """Load connector tools by name (lab 39, B5), and list a query's matches, which
+        it does not load (lab 40, B4)."""
         assert self.connectors is not None  # noqa: S101 - offered only with connectors
         names, query = args.get("names", []), args.get("query")
         if (
@@ -732,23 +737,50 @@ class Toolbox:
                 f"give names, a list of at most {MAX_LOAD} tool names from the index, or a "
                 f"query of at most {MAX_QUERY} characters",
             )
-        wanted = [*cast(list[str], names), *(self.connectors.search(query) if query else [])]
-        added, before, unknown, over = self._load(list(dict.fromkeys(wanted)))
+        connectors = self.connectors
+        added, before, unknown, over = self._load(list(dict.fromkeys(cast(list[str], names))))
         answer: dict[str, Any] = {"loaded": added}
+        notes: list[str] = []
         if before:
             answer["already_loaded"] = before
-        if unknown:
+        harness = [name for name in unknown if name in HARNESS_TOOL_NAMES]
+        if unknown := [name for name in unknown if name not in harness]:
             answer["unknown"] = unknown
+        if harness:
+            answer["harness_tools"] = harness
+            notes.append(
+                "these are the harness's own tools, not connector tools: they need no "
+                "loading, so call them by name when you have them"
+            )
         if over:
             answer["not_loaded"] = over
-            answer["note"] = (
+            notes.append(
                 f"loading these would pass the run's {MAX_LOADED_CHARS:,} characters of "
                 "loaded tool schemas: work with the tools loaded"
             )
-        elif query and not added and not before:
-            answer["note"] = "no tool matches the query; read the index and give names"
         elif added or before:
-            answer["note"] = "call a loaded tool by its name; your tools now include it"
+            notes.append("call a loaded tool by its name; your tools now include it")
+        if query:
+            found = connectors.search(query)
+            answer["matches"] = [
+                {
+                    "name": name,
+                    "server": connectors.tools[name].group,
+                    "purpose": connectors.tools[name].purpose,
+                    "loaded": name in connectors.loaded,
+                }
+                for name in found
+            ]
+            notes.append(
+                "a query loads nothing: load the tools you need with names"
+                if found
+                else "no connector tool matches the query well. Connector tools reach outside "
+                "services, such as paper archives and web search; the harness's own tools, "
+                "such as ledger_*, document_* and plan_*, are not connector tools and need "
+                "no loading"
+            )
+        if notes:
+            answer["note"] = "; ".join(notes)
         record = {
             **answer,
             "sha256": {name: self.connectors.tools[name].sha256 for name in added},
