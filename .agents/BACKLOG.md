@@ -218,6 +218,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
   - [x] The GUI's board (entries of a type by status, with filters) and entry view (statement with math, fields, links in and out with their navigation, revisions), read-only
   - [x] The GUI's issue list (issues by status, with what they concern and what answers them) and an entry's history (on `lib/earlier.ts`)
   - [x] Links to a review finding, in its session, and to a reference's PDF, in the viewer by its hash (#270's session and SHA-256)
+  - [x] An entry's evidence (role, type, scope, pinned target with its link, the revision that added it; "asserted only" on the entry and its card) and the review findings anchored to it, each leading to the finding in its session
   - [ ] Flags and work records in the issue list; indicators, the frontier, the project-wide history and moving cards
 - [ ] Lane G: an entry's open flags (cause, source, the reviews that held the flagged revision) with a "Clear" action that asks for the reason (`POST …/ledger/{entry}/flags`, one flag, a cause or all), the cleared flags in the entry's history with a "Reopen" action (`POST …/flags/reopened`), and the count beside a status in lists (`open_flags`); the store, routes and `ledger clear`/`ledger reopen` commands are built
 - [ ] Lane G: a "Checked" button on a ledger entry, which posts the user's check of the revision on screen (`POST …/ledger/{entry}/checks`, with a note); the store, route and `ledger check` command are built

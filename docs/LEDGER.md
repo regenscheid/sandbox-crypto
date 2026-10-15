@@ -84,7 +84,7 @@ A flag stays until the user or the main agent clears it with a reason; a delegat
 
 - The gate's pending clauses (see the table above); the project setting that reserves decisions to the user (LG-13); evidence pinned to executions, PDF anchors and delegation outcomes (LG-8).
 - `dominates` links and the frontier (LG-18 to LG-24); flags from document blocks and math spans, from blocks bound to entries (LD-34) and from newer artifact revisions (LG-28); work records (LG-6).
-- The GUI's frontier and project-wide history views, its indicators beside a status (open findings and flags), moving cards; the pack's import and the export (LG-34 to LG-39); naming the execution that wrote a results file. The board, the issue list and the entry view with its history are built ([workspace](WORKSPACE.md#views)).
+- The GUI's frontier and project-wide history views, its indicators beside a status (open findings and flags), moving cards; the pack's import and the export (LG-34 to LG-39); naming the execution that wrote a results file. The board, the issue list and the entry view with its evidence, the findings anchored to it and its history are built ([workspace](WORKSPACE.md#views)).
 
 ## Tables
 

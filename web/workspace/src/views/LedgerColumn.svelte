@@ -37,6 +37,7 @@
     <article class="card">
       <a href={ledgerEntryHref(projectId, entry.handle)}>{entry.handle}</a>
       {#if entry.origin === 'published'}<span class="muted">published</span>{/if}
+      {#if entry.asserted_only}<span class="muted">asserted only</span>{/if}
       <p>{entry.title}</p>
       <p class="muted">r{entry.revision} · {formatTime(entry.updated)}</p>
     </article>
