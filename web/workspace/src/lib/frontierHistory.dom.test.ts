@@ -130,7 +130,7 @@ const past: FrontierPastAnswer = {
     at: '2026-10-01T00:00:00+00:00',
     groups: [
       {
-        conditions: { attack: 'dual' },
+        conditions: { attack: 'du\u200Bal' },
         best: [{ entry_id: HOLDER, handle: 'R-3', revision: 1 }],
         more: 2,
       },
@@ -280,7 +280,8 @@ describe("a frontier's history and its past", () => {
     expect(reads.at(-1)).toBe(
       `GET /frontier/key-recovery/past?${new URLSearchParams({ at }).toString()}`,
     );
-    expect(root.textContent).toContain('attack: dual: R-3 r1 and 2 more');
+    // A character a person may not see shows as its code point.
+    expect(root.textContent).toContain('attack: du⟦U+200B⟧al: R-3 r1 and 2 more');
     const links = [...root.querySelectorAll('a')].map((a) => a.getAttribute('href'));
     expect(links).toContain('#/projects/p1/ledger/R-3/revisions/1');
   });

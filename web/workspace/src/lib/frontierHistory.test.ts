@@ -93,6 +93,11 @@ describe('a change to the best known, in words', () => {
       '#/projects/p1/ledger/R-1',
     ]);
     expect(html).toContain(' and 3 more');
+    const hidden = render(FrontierChange, {
+      props: { projectId: 'p1', change: change({ conditions: { attack: 'dual\u202Ehybrid' } }) },
+    }).body;
+    expect(hidden).toContain('attack: dual⟦U+202E⟧hybrid');
+    expect(hidden).not.toContain('\u202E');
     expect(html).toContain('Its reason:');
   });
 });
