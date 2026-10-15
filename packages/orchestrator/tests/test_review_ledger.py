@@ -154,13 +154,24 @@ def test_an_entry_too_large_for_an_item_keeps_its_parts_shortened_and_incomplete
 # Findings on entries (LG-25, CR-17, CR-28 as amended).
 
 
+def latest(reviews: ReviewStore, review: str, handle: str = "C-1") -> dict[str, Any]:
+    """An anchor on the latest revision of ``handle`` the review's snapshot holds."""
+    items = [
+        item
+        for item in reviews.manifest("p", "s", review, limit=20)["evidence"]
+        if item["kind"] == "ledger" and item["locator"]["handle"] == handle
+    ]
+    return {"evidence": max(items, key=lambda item: item["locator"]["revision"])["evidence"]}
+
+
 def finding_on(reviews: ReviewStore, field: str | None) -> tuple[str, str]:
-    """A fail finding on C-1's revision 1, at ``field``; the review and the finding."""
+    """A fail finding on C-1 as the review saw it last, at ``field``; the review and the
+    finding."""
     from .test_consistency import raise_finding
 
     ingest_ledger(reviews, "p", "s")
     review = dispatch(reviews)
-    pinned = anchor(reviews, review, "ledger")
+    pinned = latest(reviews, review)
     found = raise_finding(reviews, review, anchors=[{**pinned, "field": field}])
     reviews.finish("p", "s", review, "owner", "findings", "One finding.")
     return review, found["finding_id"]
@@ -353,3 +364,144 @@ def test_a_failed_review_covers_nothing(store) -> None:
     review = dispatch(reviews)
     reviews.finish("p", "s", review, "owner", "failed", "The reviewer failed.")
     assert clause(reviews, "failed", 2) == "review"
+
+
+# The review of #276-#281: each probe must now fail to make an agent's work look
+# verified.
+
+DELEGATED = Author(kind="agent", session_id="s", run_id="d-1", role="delegated")
+
+
+def with_decision(reviews: ReviewStore, op: str, entry_change: dict[str, Any]) -> None:
+    decision = {
+        "type": "decision",
+        "status": "in_effect",
+        "title": "Establish",
+        "statement": "s",
+        "links": [{"kind": "affects", "entry": "C-1"}],
+    }
+    change(reviews, decision, entry_change, op=op)
+
+
+def refused_clause(reviews: ReviewStore, op: str, entry_change: dict[str, Any]) -> str:
+    from sandbox_science.orchestrator.documents import DocumentError
+
+    with pytest.raises(DocumentError, match="gate_not_met") as refused:
+        with_decision(reviews, op, entry_change)
+    return str(refused.value.details["clause"])
+
+
+def test_p1_evidence_added_with_the_decision_is_not_what_the_review_covered(store) -> None:
+    reviews, _, _ = store
+    reference = {
+        "type": "reference",
+        "title": "A paper",
+        "statement": "A. Author, *A paper*.",
+        "fields": {"identifiers": {"eprint": "2024/123"}, "published": "2024-02-01"},
+    }
+    change(reviews, CLAIM, {"type": "assumption", "title": "a", "statement": "a"}, reference,
+           op="made")  # fmt: skip
+    review_passes(reviews)
+    proof = {"role": "supports", "type": "proof", "entry": "A-1"}
+    established = {"entry": "C-1", "expected": 1, "status": "established"}
+    assert refused_clause(reviews, "proof", {**established, "evidence": [proof]}) == (
+        "independent_check"
+    )
+    cited = {"role": "supports", "type": "source_claim", "entry": "REF-1"}
+    assert refused_clause(reviews, "cited", {**established, "evidence": [cited]}) == "review"
+    assert Ledger(reviews.documents).entry("p", "C-1").status == "proposed"
+
+
+def test_p2_a_title_edit_does_not_dissolve_a_fail_finding(store) -> None:
+    reviews, _, _ = store
+    supported(reviews)
+    _, finding = finding_on(reviews, None)
+    change(reviews, {"entry": "C-1", "expected": 2, "title": "Renamed"}, op="retitle")
+    assert not superseded(reviews, finding)
+    assert clause(reviews, "est", 3) == "finding"
+
+
+def test_p2b_a_superseded_fail_finding_holds_until_a_later_review_covered_the_entry(
+    store,
+) -> None:
+    reviews, _, now = store
+    supported(reviews)
+    _, finding = finding_on(reviews, "evidence")
+    second = {
+        "type": "reference",
+        "title": "Another paper",
+        "statement": "B. Author, *Another paper*.",
+        "fields": {"identifiers": {"eprint": "2024/456"}, "published": "2024-03-01"},
+    }
+    change(reviews, second, op="b", author=DELEGATED)
+    more = {"role": "supports", "type": "source_claim", "entry": "REF-2", "scope": "Lemma 2."}
+    change(reviews, {"entry": "C-1", "expected": 2, "evidence": [more]}, op="more",
+           author=DELEGATED)  # fmt: skip
+    # A review covers the new revision before the finding is superseded: it does not
+    # resolve the finding, since it started before the supersession.
+    now[0] += 1000
+    review_passes(reviews)
+    now[0] += 1000
+    assert superseded(reviews, finding)
+    assert clause(reviews, "est", 3) == "finding"
+    # A review that started after the supersession, and covered C-1 as it is, does.
+    change(reviews, {"entry": "C-1", "expected": 3, "title": "Fermat for 17"}, op="t")
+    now[0] += 1000
+    review_passes(reviews)
+    establish(reviews, "est-2", 4)
+    assert Ledger(reviews.documents).entry("p", "C-1").status == "established"
+
+
+def test_p5_a_review_with_partial_coverage_or_a_shortened_entry_covers_nothing(store) -> None:
+    reviews, _, now = store
+    supported(reviews)
+    change(reviews, *([CLAIM] * 32), op="c1")
+    change(reviews, *([CLAIM] * 32), op="c2")
+    links = [
+        {"kind": "builds_on", "entry": f"C-{n}", "note": "\U0001d53d" * 4096} for n in range(2, 66)
+    ]
+    change(reviews, {"entry": "C-1", "expected": 2, "title": "Built", "links": links}, op="l")
+    ingest_ledger(reviews, "p", "s", drain=True)
+    review = dispatch(reviews)
+    from .test_consistency import raise_finding
+
+    raise_finding(reviews, review, severity="note", anchors=[anchor(reviews, review, "ledger")])
+    reviews.finish("p", "s", review, "owner", "findings", "One note.")
+    assert clause(reviews, "shortened", 3) == "review"
+    # Nor does a review whose coverage was incomplete, though its items are whole.
+    change(reviews, {"entry": "C-1", "expected": 3, "links": []}, op="unlinked")
+    ingest_ledger(reviews, "p", "s", drain=True)
+    now[0] += 1000
+    partial = reviews.dispatch(
+        "p", "s", "checkpoint", author_run="author-1", owner="owner", alias="reviewer",
+        coverage_complete=False,
+    )  # fmt: skip
+    assert partial is not None
+    reviews.finish("p", "s", partial, "owner", "findings", "Partial.")
+    assert clause(reviews, "partial", 4) == "review"
+
+
+def test_changing_an_evidence_links_role_is_not_what_the_review_covered(store) -> None:
+    """A review covered C-1 citing its reference as contradicting it; the agent then
+    makes the same citation support it. The material is the counting links with their
+    roles, so the review no longer covers C-1."""
+    reviews, _, _ = store
+    reference = {
+        "type": "reference",
+        "title": "A paper",
+        "statement": "A. Author, *A paper*.",
+        "fields": {"identifiers": {"eprint": "2024/123"}, "published": "2024-02-01"},
+    }
+    change(reviews, CLAIM, reference, op="made")
+    against = {"role": "contradicts", "type": "source_claim", "entry": "REF-1"}
+    change(reviews, {"entry": "C-1", "expected": 1, "evidence": [against]}, op="against")
+    review_passes(reviews)
+    (held,) = Ledger(reviews.documents).entry("p", "C-1").evidence
+    turned = {
+        "entry": "C-1",
+        "expected": 2,
+        "evidence": [{**against, "role": "supports"}],
+        "evidence_removed": [held.evidence_id],
+    }
+    change(reviews, turned, op="turned")
+    assert clause(reviews, "turned-gate", 3) == "review"

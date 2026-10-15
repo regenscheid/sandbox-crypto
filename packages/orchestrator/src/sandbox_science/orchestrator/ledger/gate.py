@@ -13,11 +13,13 @@ refusal names the first clause that does not (``gate_not_met``):
    ``independent_check`` the user added themselves, at the revision they checked, whose
    material the change keeps;
 3. ``computation``: computational evidence pinned to an artifact revision;
-4. ``review``: a completed checkpoint or terminal review (``passed`` or ``findings``) had
-   in its snapshot a revision of the entry whose statement, fields, ``assumes`` links and
-   derivation targets the change keeps;
+4. ``review``: a completed checkpoint or terminal review (``passed`` or ``findings``)
+   whose coverage was complete had in its snapshot, whole, a revision of the entry whose
+   material the change keeps;
 5. ``finding``: no ``fail`` finding anchored to the entry is unresolved: open, claimed
-   fixed or unaddressed (a confirmed, withdrawn or superseded one is not);
+   fixed or unaddressed, or superseded until a completed review that started after the
+   supersession covered the entry's material as the change leaves it (a confirmed or
+   withdrawn one is resolved);
 6. ``flags``: no open flag on the entry.
 
 Some clauses cannot hold in full yet, and the limits are deliberate: checks by
@@ -166,44 +168,56 @@ def establish(
             f"{handle}'s computational evidence is not pinned to the artifact revision "
             "that holds the computation",
         )
-    if now not in examined(db, entry, reviewed(db, entry)).values():
+    if now not in examined(db, entry, set(reviewed(db, entry))).values():
         raise refused(
             entry,
             "review",
             f"no completed consistency review has covered {handle} as the change leaves "
-            "it: a review whose snapshot held a revision with the same statement, fields, "
-            "assumptions and derivation",
+            "it: a review whose coverage was complete, and whose snapshot held, whole, a "
+            "revision with the same statement, fields, assumptions and evidence",
         )
-    unresolved = db.execute(
-        "SELECT f.finding_id FROM review_findings f, json_each(f.anchors) a "
-        "WHERE json_extract(a.value,'$.locator.entry')=? AND f.severity='fail' "
-        "AND f.status NOT IN ('confirmed fixed','withdrawn','superseded') "
-        "ORDER BY f.created LIMIT 1",
+    for finding, status, superseded in db.execute(
+        "SELECT f.finding_id,f.status,(SELECT max(t.created) FROM review_transitions t "
+        "WHERE t.finding_id=f.finding_id AND t.status='superseded') "
+        "FROM review_finding_entries x JOIN review_findings f USING(finding_id) "
+        "WHERE x.entry_id=? AND f.severity='fail' "
+        "AND f.status NOT IN ('confirmed fixed','withdrawn') ORDER BY f.created",
         (entry,),
-    ).fetchone()
-    if unresolved is not None:
+    ):
+        if (
+            status == "superseded"
+            and now in examined(db, entry, set(reviewed(db, entry, after=superseded))).values()
+        ):
+            continue
         raise refused(
             entry,
             "finding",
-            f"{handle} has an unresolved fail finding, {unresolved[0]}: fix or rebut it first",
+            f"{handle} has an unresolved fail finding, {finding}: fix or rebut it first"
+            + (
+                "; it was superseded, and no review since has covered the entry as it is"
+                if status == "superseded"
+                else ""
+            ),
         )
     # Clause 6, flags: none are raised until flags are built (LG-28).
 
 
-def reviewed(db: sqlite3.Connection, entry: str) -> set[int]:
-    """The revisions of ``entry`` a completed checkpoint or terminal review held in its
-    snapshot."""
-    return {
+def reviewed(db: sqlite3.Connection, entry: str, *, after: float | None = None) -> list[int]:
+    """The revisions of ``entry`` a completed checkpoint or terminal review whose coverage
+    was complete held, whole, in its snapshot; only reviews started after ``after``, when
+    given."""
+    return [
         revision
         for (revision,) in db.execute(
             "SELECT DISTINCT json_extract(e.locator,'$.revision') FROM review_evidence e "
             "JOIN review_runs r USING(review_id) WHERE e.kind='ledger' "
-            "AND json_extract(e.locator,'$.entry')=? AND r.state IN ('passed','findings') "
-            "AND r.kind IN ('checkpoint','terminal')",
-            (entry,),
+            "AND json_extract(e.locator,'$.entry')=? AND e.complete=1 "
+            "AND r.state IN ('passed','findings') AND r.kind IN ('checkpoint','terminal') "
+            "AND r.coverage_complete=1 AND (? IS NULL OR r.created>?)",
+            (entry, after, after),
         )
         if isinstance(revision, int)
-    }
+    ]
 
 
 def added_by_user(db: sqlite3.Connection, entry: str, link: EvidenceLink, before: int) -> bool:
