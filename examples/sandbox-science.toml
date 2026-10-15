@@ -75,7 +75,8 @@ crypto-base = "sandbox-science/crypto-base:02f85b3"
 # lab's (.agents/labs/README.md). Without provider_env_file, create the provider by hand
 # (docs/MCP-CONNECTORS.md). index and [mcp_proxy.about] shape the index of the servers'
 # tools the main agent gets (lab 39, B5): the servers behind the portal it lists tool by
-# tool, the others by their count, found with a query; and what each server is for.
+# tool, the others by their count, found with a query; and what each server is for, which
+# it marks as the operator's. A key is SERVER/BEHIND: the portal, and the server behind it.
 # [mcp_proxy]
 # image = "sandbox-science/mcp-proxy:d27e41a"
 # providers = ["crypto-research-mcp"]
@@ -83,17 +84,17 @@ crypto-base = "sandbox-science/crypto-base:02f85b3"
 # provider_env_file = "/path/to/the/owners/cloudflare.env"
 # provider_profile = "openshell/profiles/cloudflare-access.yaml"
 #
-# index = ["attack-catalog-mcp", "e-print-mcp", "nist-csrc-mcp", "paper-search-mcp", "web-fetch-mcp"]
+# index = ["crypto-research-mcp/attack-catalog-mcp", "crypto-research-mcp/e-print-mcp", "crypto-research-mcp/nist-csrc-mcp", "crypto-research-mcp/paper-search-mcp", "crypto-research-mcp/web-fetch-mcp"]
 #
 # [mcp_proxy.credentials]
 # "crypto-research-mcp.CF_ACCESS_CLIENT_ID" = "CF_ACCESS_CLIENT_ID"
 # "crypto-research-mcp.CF_ACCESS_CLIENT_SECRET" = "CF_ACCESS_CLIENT_SECRET"
 #
 # [mcp_proxy.about]
-# attack-catalog-mcp = "a catalog of cryptanalytic attacks: which apply to a scheme, and their sources"
-# e-print-mcp = "the IACR Cryptology ePrint Archive: search its papers, records, full text and PDFs"
-# firecrawl-mcp = "the open web: search, scrape and crawl pages; for papers, use a paper archive first"
-# nist-csrc-mcp = "NIST CSRC publications (FIPS, SP 800, IR): search, read and their PDFs"
-# paper-search-mcp = "papers across arXiv, DBLP, Crossref, OpenAlex and Semantic Scholar, with citations"
-# patent-search-mcp = "patents: search"
-# web-fetch-mcp = "fetch a web page, or its links, as text"
+# "crypto-research-mcp/attack-catalog-mcp" = "a catalog of cryptanalytic attacks: which apply to a scheme, and their sources"
+# "crypto-research-mcp/e-print-mcp" = "the IACR Cryptology ePrint Archive: search its papers, records, full text and PDFs"
+# "crypto-research-mcp/firecrawl-mcp" = "the open web: search, scrape and crawl pages; for papers, use a paper archive first"
+# "crypto-research-mcp/nist-csrc-mcp" = "NIST CSRC publications (FIPS, SP 800, IR): search, read and their PDFs"
+# "crypto-research-mcp/paper-search-mcp" = "papers across arXiv, DBLP, Crossref, OpenAlex and Semantic Scholar, with citations"
+# "crypto-research-mcp/patent-search-mcp" = "patents: search"
+# "crypto-research-mcp/web-fetch-mcp" = "fetch a web page, or its links, as text"

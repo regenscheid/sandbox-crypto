@@ -99,8 +99,8 @@ credentials = { "crypto-research-mcp.CF_ACCESS_CLIENT_ID" = "CF_ACCESS_CLIENT_ID
 # listen = "127.0.0.1:18080"                       # where the run service reaches it
 # provider_env_file = "/path/to/the/owners/cloudflare.env"                # registers crypto-research-mcp from it
 # provider_profile = "examples/openshell/profiles/cloudflare-access.yaml"    # needed with provider_env_file
-# index = ["e-print-mcp", "nist-csrc-mcp"]         # servers the tool index lists tool by tool; by default all
-# about = { "e-print-mcp" = "the IACR Cryptology ePrint Archive: search its papers, records, full text and PDFs" }
+# index = ["crypto-research-mcp/e-print-mcp"]      # servers the tool index lists tool by tool; by default all
+# about = { "crypto-research-mcp/e-print-mcp" = "the IACR Cryptology ePrint Archive: search its papers, records, full text and PDFs" }
 ```
 
 - **The providers** hold the servers' credentials. You create them yourself ([what the owner does](MCP-CONNECTORS.md#crypto-research-mcp-a-cloudflare-access-service-token)), or `up` registers `crypto-research-mcp` from `provider_env_file`. The launcher never sees the credentials. If a provider is still missing, `up` refuses before it starts anything.
@@ -109,7 +109,7 @@ credentials = { "crypto-research-mcp.CF_ACCESS_CLIENT_ID" = "CF_ACCESS_CLIENT_ID
   - The registration runs in a process of its own (`sandbox_science.launcher.access_provider`), with the parts' usual environment and `[openshell] env` alone. The launcher never opens the file, and the values reach only the OpenShell command that registers them, and OpenShell's own encrypted store ([from the owner's file](MCP-CONNECTORS.md#crypto-research-mcp-a-cloudflare-access-service-token)).
   - `up --refresh-provider` registers it again even if it exists, as after a rotation.
   - It needs `provider_profile`, the provider's OpenShell profile, which `up` imports when the gateway has none.
-- **`about` and `index`** shape the index of the servers' tools that the main agent gets instead of every tool's schema at every call ([an index, and tools loaded on demand](MCP-CONNECTORS.md#the-harnesss-client)). `about` says what each server is for, at most 200 characters, so the agent picks the right one; behind a portal such as crypto-research-mcp, a server is the one a tool's name starts with, such as `e-print-mcp`. `index` names the servers whose tools are listed one by one; the agent finds the others' with a query. The example config says both for crypto-research-mcp.
+- **`about` and `index`** shape the index of the servers' tools that the main agent gets instead of every tool's schema at every call ([an index, and tools loaded on demand](MCP-CONNECTORS.md#the-harnesss-client)). `about` says what each server is for, at most 200 characters and not blank, so the agent picks the right one; the index marks it as the operator's. A key is one of `servers`, or `SERVER/BEHIND` for a server behind a portal, the one a tool's name starts with, such as `crypto-research-mcp/e-print-mcp`, so one server's words never reach another's tools. `index` names the servers whose tools are listed one by one, at least one when given; the agent finds the others' with a query. The example config says both for crypto-research-mcp.
 - **`credentials`** is the proxy's `[credentials]` table: which environment variable holds each provider credential that a server's headers name ([running it](MCP-CONNECTORS.md#running-it)).
 - **What `up` does** is the [steps in running it](MCP-CONNECTORS.md#running-it):
   1. It compiles the sandbox's policy.
