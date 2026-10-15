@@ -33,6 +33,7 @@ from pydantic import TypeAdapter, ValidationError
 from sandbox_science.contracts import Contract, EnvironmentState, ErrorKind, Identifier
 from sandbox_science.orchestrator.projects import ProjectError
 from sandbox_science.orchestrator.runstate import PAGE, ChatMessage, RunEvent, RunLease, RunState
+from sandbox_science.orchestrator.runtree import RunTrees
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 
 from . import api
@@ -184,12 +185,9 @@ async def events(request: web.Request) -> web.Response:
         if not state.known(project, session, run):
             raise ProjectError(ErrorKind.NOT_FOUND, f"session {session!r} has no run {run!r}")
         found = state.events(project, session, run, after=after, limit=limit)
-        lease = state.lease(project, session)
-        status: Literal["active", "ended", "interrupted"] = "interrupted"
-        if state.ended(project, session, run):
-            status = "ended"
-        elif lease is not None and lease.run == run:
-            status = "active"
+        # A delegated run holds no lease: it is active while its root holds the session.
+        now = RunTrees(context.documents).state(project, session, run)
+        status: Literal["active", "ended", "interrupted"] = "active" if now == "running" else now
         return api.dumps(EventPage(state=status, events=found).model_dump(mode="json"))
 
     return json_answer(await asyncio.to_thread(read))

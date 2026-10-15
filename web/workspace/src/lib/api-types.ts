@@ -192,6 +192,28 @@ export interface DamagedProject {
   error: string;
 }
 
+/** A delegation: its parent and child runs, its brief and, once ended, its outcome. */
+export interface Delegation {
+  delegation_id: string;
+  parent: string;
+  run: string;
+  kind: "check";
+  brief: Record<string, JsonValue>;
+  started_at: string;
+  ended: "returned" | "failed" | "cancelled" | "limit_reached" | "interrupted" | null;
+  stopped: string | null;
+  report: string | null;
+  ended_at: string | null;
+  refused: string | null;
+  acknowledged: string | null;
+  result: Record<string, JsonValue> | null;
+  errors: string[];
+  alias: string | null;
+  models: string[];
+  read_entry: boolean | null;
+  read_proofs: boolean | null;
+}
+
 /** A ``dominates`` link that takes a result from the best known or from those not compared (LG-22): the result that holds it, its reason, and who recorded it in which revision of the holder. */
 export interface DominatesLink {
   entry_id: string;
@@ -1099,6 +1121,13 @@ export interface RunLease {
   renewed_at: string;
 }
 
+/** A session's runs, oldest first, and its delegations, the latest ``TREE`` of them oldest first, with how many there are. */
+export interface RunTree {
+  runs: TreeRun[];
+  delegations: Delegation[];
+  delegations_total: number;
+}
+
 export interface SessionDetail {
   project_id: string;
   session: SessionView;
@@ -1112,6 +1141,21 @@ export interface SessionView {
   dedicated: boolean;
   opened_at: string;
   closed_at: string | null;
+}
+
+/** One run of the session's tree. */
+export interface TreeRun {
+  name: string;
+  run_id: string;
+  role: "main" | "delegated";
+  parent: string | null;
+  delegation: string | null;
+  started_at: string;
+  state: "running" | "ended" | "interrupted";
+  stopped: string | null;
+  kept: boolean;
+  alias: string | null;
+  limits: Record<string, JsonValue> | null;
 }
 
 /** The viewer's URL for one PDF revision, and when it stops opening it. */
