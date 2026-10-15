@@ -15,6 +15,7 @@ change removes it. Execution targets are not built yet and are refused.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from dataclasses import dataclass
@@ -25,6 +26,7 @@ from sandbox_science.orchestrator.documents.errors import (
     CONFLICT,
     INVALID_REQUEST,
     NOT_FOUND,
+    POLICY_DENIED,
     DocumentError,
 )
 
@@ -50,6 +52,15 @@ class Holder:
     type: str
     before: int
     """Its revision before the change; 0 for an entry the change creates."""
+
+
+@dataclass(frozen=True)
+class Linker:
+    """Who makes the change that adds a link: the role LG-13 gives its author (``user``,
+    ``main`` or ``delegated``), and an agent's session."""
+
+    role: str
+    session: str | None
 
 
 @dataclass(frozen=True)
@@ -184,6 +195,7 @@ def resolve(
     item: EvidenceInput,
     entry: EntryTarget | None,
     blocks: dict[Block, str],
+    linker: Linker,
 ) -> EvidenceLink:
     """``item`` as the link the new revision of ``holder`` adds, its target checked to
     exist in the project at the revision it pins."""
@@ -255,7 +267,8 @@ def resolve(
         )
 
     if item.delegation is not None:
-        return link("delegation", item.delegation, locator=_checked_by(db, project, holder, item))
+        locator = _checked_by(db, project, holder, item, linker)
+        return link("delegation", item.delegation, locator=locator)
     if item.quote is not None and entry is not None:
         if item.block is not None or item.math is not None or item.sha256 is not None:
             raise DocumentError(
@@ -305,10 +318,12 @@ def resolve(
 
 
 def _checked_by(
-    db: sqlite3.Connection, project: str, holder: Holder, item: EvidenceInput
+    db: sqlite3.Connection, project: str, holder: Holder, item: EvidenceInput, linker: Linker
 ) -> dict[str, object]:
     """The outcome of the delegation ``item`` names, as its link records it: a check of
-    ``holder`` at the revision ``item`` says it examined, which has ended."""
+    ``holder`` at the revision ``item`` says it examined, which has ended, linked by the
+    user or by a main run of the delegation's session. The locator names the brief by
+    its SHA-256 and shows the parent's note, if any (LG-17)."""
     if item.role != "independent_check":
         raise DocumentError(
             INVALID_REQUEST, "a delegation's outcome is evidence only as an independent_check"
@@ -319,14 +334,21 @@ def _checked_by(
     ):
         raise DocumentError(INVALID_REQUEST, "a delegation target names only the delegation")
     found = db.execute(
-        "SELECT kind,brief,ended,run,alias,models,result FROM delegations "
-        "WHERE delegation_id=? AND project_id=?",
+        "SELECT kind,brief,ended,run,alias,models,result,session_id,read_entry,read_proofs "
+        "FROM delegations WHERE delegation_id=? AND project_id=?",
         (item.delegation, project),
     ).fetchone()
     if found is None:
         raise DocumentError(NOT_FOUND, f"no delegation {item.delegation} in this project")
-    kind, brief, ended, run, alias, models, result = found
-    check: dict[str, Any] = json.loads(brief).get("check") or {}
+    kind, brief, ended, run, alias, models, result, session, read, proofs = found
+    if linker.role != "user" and (linker.role != "main" or linker.session != session):
+        raise DocumentError(
+            POLICY_DENIED,
+            f"delegation {item.delegation}'s outcome is linked by the user or by a main run "
+            "of its session",
+        )
+    written: dict[str, Any] = json.loads(brief)
+    check: dict[str, Any] = written.get("check") or {}
     if kind != "check" or (check.get("entry"), check.get("revision")) != (
         holder.entry_id,
         item.checked,
@@ -339,6 +361,7 @@ def _checked_by(
     if ended is None:
         raise DocumentError(CONFLICT, f"delegation {item.delegation} has not ended")
     outcome: dict[str, Any] = json.loads(result) if result is not None else {}
+    note = written.get("note") or None
     return {
         "run": run,
         "alias": alias,
@@ -346,4 +369,8 @@ def _checked_by(
         "ended": ended,
         "verdict": outcome.get("verdict"),
         "status": outcome.get("status"),
+        "read_entry": None if read is None else bool(read),
+        "read_proofs": None if proofs is None else bool(proofs),
+        "brief_sha256": hashlib.sha256(str(brief).encode()).hexdigest(),
+        **({"note": note} if isinstance(note, str) else {}),
     }

@@ -1,26 +1,32 @@
 # SPDX-License-Identifier: MIT
 """A delegation's check as a proved result's independent check (docs/specs/ledger.md,
 LG-8, LG-13, LG-17; plans-and-delegation spec, PD-13, PD-17): the outcome of a check of
-the entry at a revision is an evidence target, and the gate counts it only when the
-check returned ``confirmed`` and ``complete``, met no plan fence, read the entry at that
-revision, and was not run by the run that added the proof."""
+the entry at a revision is an evidence target, which the user or a main run of its
+session links, and the gate counts it only when the check returned ``confirmed`` and
+``complete``, met no plan fence, read the entry at that revision and its proofs' targets
+at theirs, and was not run by the run that added the proof; and while no check of the
+same material disagreed."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 
 import pytest
 
+from sandbox_science.orchestrator.delegation.outcome import Outcome, Target, proof_reads
 from sandbox_science.orchestrator.delegation.records import (
     Delegation,
     DelegationRecords,
     Ending,
 )
-from sandbox_science.orchestrator.documents import DocumentError
+from sandbox_science.orchestrator.documents import USER, DocumentError
 from sandbox_science.orchestrator.documents.models import Author
-from sandbox_science.orchestrator.ledger import Ledger
-from sandbox_science.orchestrator.ledger.models import GateClause
+from sandbox_science.orchestrator.ledger import Ledger, gate
+from sandbox_science.orchestrator.ledger.models import EvidenceLink, GateClause
+from sandbox_science.orchestrator.loop import Transcript
+from sandbox_science.orchestrator.projects import ProjectStore
 
 from .loop_harness import PROJECT, Harness, Reply, call
 from .loop_harness import gateway as gateway
@@ -28,8 +34,9 @@ from .loop_harness import harness as harness
 from .loop_harness import worker as worker
 from .test_delegation import RESULT, results, started, wait
 from .test_delegation import delegating as delegating
-from .test_ledger import MAIN, NEW, change
+from .test_ledger import DELEGATED, MAIN, NEW, change
 from .test_ledger import ledger as ledger
+from .test_ledger_frontier import CLASSICAL, KEY_RECOVERY, best, published
 
 ROOT = "20261015T120000000000Z-run-root"
 CHECKER = "20261015T120001000000Z-run-checker"
@@ -50,11 +57,12 @@ def checked(
     entry_id: str,
     *,
     revision: int = 2,
-    run: str = CHECKER,
+    run: str = "",
     project: str = "p",
     session: str = "s",
     n: int = 1,
     ended: Any = "returned",
+    note: str = "",
     **outcome: Any,
 ) -> str:
     """A delegation that checked ``entry_id`` at ``revision`` and ended as given."""
@@ -63,23 +71,33 @@ def checked(
         {
             "delegation_id": f"dlg-{n:024x}",
             "parent": ROOT,
-            "run": run,
+            "run": run or (CHECKER if n == 1 else f"20261015T1200{n:02d}000000Z-run-checker-{n}"),
             "kind": "check",
-            "brief": {"task": "Check.", "check": {"entry": entry_id, "revision": revision}},
-            "started_at": "2026-10-15T12:00:01+00:00",
+            "brief": brief(entry_id, revision, note),
+            "started_at": f"2026-10-15T12:00:{n:02d}+00:00",
         }
     )
     records.start(project, session, made)
     if ended is not None:
         found: dict[str, Any] = {
-            "result": CONFIRMED,
+            "result": {**CONFIRMED, "revision": revision},
             "read_entry": True,
+            "read_proofs": True,
             "alias": "main",
             "models": ("scripted-main",),
             **outcome,
         }
         records.end(project, session, made.delegation_id, Ending(ended, "answered", "{}", **found))
     return made.delegation_id
+
+
+def brief(entry_id: str, revision: int, note: str = "") -> dict[str, Any]:
+    check = {"entry": entry_id, "handle": "C-1", "revision": revision}
+    return {"task": "Check.", "note": note, "inputs": [], "check": check}
+
+
+def disagreeing(verdict: str = "refuted", status: str = "complete") -> dict[str, Any]:
+    return {"result": {**CONFIRMED, "verdict": verdict, "status": status}}
 
 
 def link(delegation_id: str, checked: int = 2, **more: Any) -> dict[str, Any]:
@@ -106,6 +124,7 @@ def test_a_confirmed_check_counts_as_the_independent_check(ledger: Ledger) -> No
     assert delegation in found.reason
     (stored,) = [e for e in ledger.entry("p", "C-1").evidence if e.target == "delegation"]
     assert (stored.target_id, stored.checked, stored.revision) == (delegation, 2, None)
+    written = json.dumps(brief(entry, 2), ensure_ascii=False, separators=(",", ":"))
     assert stored.locator == {
         "run": CHECKER,
         "alias": "main",
@@ -113,7 +132,27 @@ def test_a_confirmed_check_counts_as_the_independent_check(ledger: Ledger) -> No
         "ended": "returned",
         "verdict": "confirmed",
         "status": "complete",
+        "read_entry": True,
+        "read_proofs": True,
+        "brief_sha256": hashlib.sha256(written.encode()).hexdigest(),
     }
+
+
+def test_the_link_names_the_brief_and_shows_the_requesters_note(ledger: Ledger) -> None:
+    """The parent's note is all of the brief it writes: the link and the gate's reason
+    show it, and the brief's SHA-256 names what the checker was given."""
+    entry = proved(ledger)
+    note = "The lemma's proof is in the ledger."
+    delegation = checked(ledger, entry, note=note)
+    change(ledger, {"entry": "C-1", "expected": 2, "evidence": [link(delegation)]}, op="check")
+    (stored,) = [e for e in ledger.entry("p", "C-1").evidence if e.target == "delegation"]
+    assert stored.locator is not None
+    assert stored.locator["note"] == note
+    written = json.dumps(brief(entry, 2, note), ensure_ascii=False, separators=(",", ":"))
+    assert stored.locator["brief_sha256"] == hashlib.sha256(written.encode()).hexdigest()
+    found = clause(ledger)
+    assert found.holds
+    assert found.reason.endswith(f"the requester's note: {note}")
 
 
 @pytest.mark.parametrize(
@@ -125,12 +164,14 @@ def test_a_confirmed_check_counts_as_the_independent_check(ledger: Ledger) -> No
         ({}, {"revision": 2}, "names only the delegation"),
         ({"ended": None}, {}, "has not ended"),
         ({"project": "q", "session": "t"}, {}, "no delegation"),
+        ({"session": "s2"}, {}, "linked by the user or by a main run of its session"),
     ],
 )
 def test_a_delegation_link_names_an_ended_check_of_this_entry_and_revision(
     ledger: Ledger, make: dict[str, Any], item: dict[str, Any], error: str
 ) -> None:
     entry = proved(ledger)
+    second_session(ledger)
     delegation = checked(ledger, entry, **make)
     with pytest.raises(DocumentError, match=error):
         change(
@@ -138,6 +179,53 @@ def test_a_delegation_link_names_an_ended_check_of_this_entry_and_revision(
             {"entry": "C-1", "expected": 2, "evidence": [link(delegation, **item)]},
             op="link",
         )
+
+
+def second_session(ledger: Ledger) -> None:
+    projects = ProjectStore(ledger.documents.path.parent)
+    try:
+        projects.open_session("p", "s2", dedicated=False)
+    finally:
+        projects.close()
+
+
+@pytest.mark.parametrize(
+    ("author", "linked"),
+    [
+        (USER, True),
+        (MAIN, True),
+        (Author(kind="agent", session_id="s2", run_id="r3", role="main"), False),
+        (DELEGATED, False),
+    ],
+)
+def test_the_user_or_a_main_run_of_its_session_links_a_delegation(
+    ledger: Ledger, author: Author, linked: bool
+) -> None:
+    """A delegated run links no check, and a main run only its own session's."""
+    entry = proved(ledger)
+    second_session(ledger)
+    delegation = checked(ledger, entry)
+    item = {"entry": "C-1", "expected": 2, "evidence": [link(delegation)]}
+    if linked:
+        change(ledger, item, op="link", author=author)
+        assert clause(ledger).holds
+        return
+    with pytest.raises(DocumentError, match="linked by the user or by a main run") as refused:
+        change(ledger, item, op="link", author=author)
+    assert refused.value.kind == "policy_denied"
+
+
+def test_a_check_of_another_entry_is_not_this_ones(ledger: Ledger) -> None:
+    proved(ledger)
+    lemma = ledger.entry("p", "C-2").entry_id
+    delegation = checked(ledger, lemma, revision=1)
+    for checked_revision in (1, 2):
+        with pytest.raises(DocumentError, match="did not check C-1"):
+            change(
+                ledger,
+                {"entry": "C-1", "expected": 2, "evidence": [link(delegation, checked_revision)]},
+                op=f"link-{checked_revision}",
+            )
 
 
 def test_an_unknown_delegation_is_no_evidence(ledger: Ledger) -> None:
@@ -159,6 +247,8 @@ def test_an_unknown_delegation_is_no_evidence(ledger: Ledger) -> None:
         {"result": None},
         {"refused": "the session's plan is a draft, which allows no effects"},
         {"read_entry": False},
+        {"read_proofs": False},
+        {"read_proofs": None},  # an outcome written before reads of proofs were kept
         {"ended": "cancelled"},
         {"ended": "limit_reached"},
     ],
@@ -172,12 +262,18 @@ def test_a_check_counts_only_when_it_confirmed_a_complete_unfenced_read(
     assert not clause(ledger).holds
 
 
-def test_the_run_that_added_the_proof_cannot_check_it(ledger: Ledger) -> None:
+def test_the_gate_refuses_a_checker_that_added_the_proof(ledger: Ledger) -> None:
+    """A predicate test, on records made directly: the platform cannot make this, since a
+    check's brief names a revision that exists before its run starts, and a proof its run
+    added later changes the material it checked."""
     author = Author(kind="agent", session_id="s", run_id="run-checker", role="delegated")
     entry = proved(ledger, author)
     delegation = checked(ledger, entry)
     change(ledger, {"entry": "C-1", "expected": 2, "evidence": [link(delegation)]}, op="check")
     assert not clause(ledger).holds
+    other = checked(ledger, entry, run="20261015T120002000000Z-run-other", n=2)
+    change(ledger, {"entry": "C-1", "expected": 3, "evidence": [link(other)]}, op="other")
+    assert clause(ledger).holds
 
 
 def test_a_check_no_longer_counts_once_the_statement_changes(ledger: Ledger) -> None:
@@ -189,52 +285,239 @@ def test_a_check_no_longer_counts_once_the_statement_changes(ledger: Ledger) -> 
     assert not clause(ledger).holds
 
 
-async def test_a_main_run_checks_its_proof_by_delegation(delegating: Harness) -> None:
-    """The owner's first milestone: the main agent delegates a check of C-1 at the
-    revision that holds its proof; a fresh child reads it, confirms it, and the main
-    agent records the outcome as C-1's independent check, which the gate counts."""
-    documents = delegating.documents()
+# --- Checks that disagree ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("verdict", "status", "blocks"),
+    [
+        ("refuted", "complete", True),
+        ("refuted", "partial", True),
+        ("inconclusive", "complete", True),
+        ("inconclusive", "partial", False),
+        ("inconclusive", "blocked", False),
+    ],
+)
+def test_a_check_that_disagreed_on_the_same_material_blocks_the_others(
+    ledger: Ledger, verdict: str, status: str, blocks: bool
+) -> None:
+    """Retrying until a check confirms gains nothing: one refuted it, another confirmed,
+    and the confirmation is linked. The refutation need not be linked."""
+    entry = proved(ledger)
+    against = checked(ledger, entry, n=1, **disagreeing(verdict, status))
+    confirmed = checked(ledger, entry, n=2)
+    change(ledger, {"entry": "C-1", "expected": 2, "evidence": [link(confirmed)]}, op="check")
+    found = clause(ledger)
+    assert found.holds is not blocks
+    if blocks:
+        assert against in found.reason
+        assert "only the user's check" in found.reason
+
+
+def test_a_change_that_leaves_the_material_keeps_a_disagreement(ledger: Ledger) -> None:
+    """A confirmed check at revision 2, a new title, and a refutation at revision 4."""
+    entry = proved(ledger)
+    confirmed = checked(ledger, entry, n=1)
+    change(ledger, {"entry": "C-1", "expected": 2, "evidence": [link(confirmed)]}, op="check")
+    change(ledger, {"entry": "C-1", "expected": 3, "title": "Fermat, again"}, op="title")
+    assert clause(ledger).holds  # a title is not what the check examined
+    checked(ledger, entry, revision=4, n=2, **disagreeing())
+    assert not clause(ledger).holds
+
+
+def test_evidence_against_the_entry_does_not_launder_a_refutation(ledger: Ledger) -> None:
+    """Evidence that contradicts the entry is added, a check refutes it, and the evidence
+    is removed: the material is again what the earlier confirmation examined, and the
+    refutation still holds, since the entry claims and rests on what it did."""
+    entry = proved(ledger)
+    confirmed = checked(ledger, entry, n=1)
+    against = {"role": "contradicts", "type": "finite_test", "entry": "C-2"}
+    change(ledger, {"entry": "C-1", "expected": 2, "evidence": [against]}, op="against")
+    (held,) = [e for e in ledger.entry("p", "C-1").evidence if e.role == "contradicts"]
+    refuted = checked(ledger, entry, revision=3, n=2, **disagreeing())
+    gone = {"entry": "C-1", "expected": 3, "evidence_removed": [held.evidence_id]}
+    change(ledger, gone, op="gone")
+    change(ledger, {"entry": "C-1", "expected": 4, "evidence": [link(confirmed)]}, op="check")
+    found = clause(ledger)
+    assert not found.holds
+    assert refuted in found.reason
+
+
+def test_a_refutation_of_other_material_does_not_block(ledger: Ledger) -> None:
+    """The entry was refuted, then its statement was fixed: a check of the fixed entry
+    counts."""
+    entry = proved(ledger)
+    checked(ledger, entry, n=1, **disagreeing())
+    change(ledger, {"entry": "C-1", "expected": 2, "statement": "Fixed."}, op="fix")
+    confirmed = checked(ledger, entry, revision=3, n=2)
+    change(ledger, {"entry": "C-1", "expected": 3, "evidence": [link(confirmed, 3)]}, op="check")
+    assert clause(ledger).holds
+
+
+def test_the_users_check_counts_whatever_a_delegation_said(ledger: Ledger) -> None:
+    entry = proved(ledger)
+    checked(ledger, entry, n=1, **disagreeing())
+    ledger.check("p", "C-1", 2, USER, operation_id="checked")
+    found = clause(ledger)
+    assert found.holds
+    assert "the user checked" in found.reason
+
+
+def test_a_delegation_the_user_linked_is_not_their_own_check(ledger: Ledger) -> None:
+    """The frontier reads a published result the main agent recorded as unverified until
+    the user confirms it; a delegation's check the user linked does not."""
+    ledger.define_category("p", KEY_RECOVERY, MAIN)
+    change(ledger, NEW["reference"], op="ref")
+    change(ledger, published("P1", CLASSICAL, time=120, memory=60), op="p1")
+    entry = ledger.entry("p", "R-1").entry_id
+    delegation = checked(ledger, entry, revision=1)
+    item = {"entry": "R-1", "expected": 1, "evidence": [link(delegation, 1)]}
+    change(ledger, item, op="link", author=USER)
+    group = best(ledger.frontier("p", "key-recovery"), CLASSICAL)
+    assert [(r.handle, r.unverified) for r in group.candidates] == [("R-1", True)]
+
+
+# --- What the checker read ----------------------------------------------------------------
+
+
+def evidence(**fields: Any) -> EvidenceLink:
+    return EvidenceLink.model_validate(
+        {
+            "evidence_id": "evidence-" + "0" * 24,
+            "role": "derivation",
+            "type": "proof",
+            "added": 1,
+            **fields,
+        }
+    )
+
+
+async def test_a_check_reads_each_proofs_target_at_its_pinned_revision() -> None:
+    """An entry and a document at the revisions their links pin, and an artifact's file
+    by its SHA-256; a proof's other evidence, and other revisions, need no read."""
+    sha = "ab" * 32
+    links = [
+        evidence(target="entry", target_id="entry-1", revision=2),
+        evidence(target="block", target_id="doc-1", revision=3, block="b1"),
+        evidence(target="artifact", target_id="artifact-1", revision=1, sha256=sha),
+        evidence(target="entry", target_id="entry-2", revision=1, type="finite_test"),
+        evidence(target="review", target_id="review-1", role="supports"),
+    ]
+    proofs = proof_reads(links)
+    assert proofs == {("entry", "entry-1", 2), ("document", "doc-1", 3), ("file", sha)}
+    outcome = Outcome(Target("entry-9", "C-9", 1, proofs))
+    run = Transcript(messages=[{"role": "tool", "content": "{}"}])
+    assert outcome.read_proofs is False
+    await outcome.observe_tool(run, {"read": {"document": "doc-1", "revision": 2}})
+    await outcome.observe_tool(run, {"read": {"path": "p.lean", "sha256": "cd" * 32}})
+    await outcome.observe_tool(run, {"read": {"path": "p.lean", "sha256": sha}, "error": {}})
+    assert outcome.read_proofs is False
+    await outcome.observe_tool(run, {"read": {"document": "doc-1", "revision": 3}})
+    await outcome.observe_tool(run, {"read": {"path": "p.lean", "sha256": sha}})
+    read = json.dumps({"entry_id": "entry-1", "revision": 2})
+    await outcome.observe_tool(
+        Transcript(messages=[{"role": "tool", "content": read}]), {"ledger": "ledger_read"}
+    )
+    assert outcome.read_proofs is True
+    assert Outcome().read_proofs is None
+    assert gate.supporting(links[0])
+
+
+async def test_a_check_that_skipped_a_proofs_target_does_not_count(delegating: Harness) -> None:
+    """The child read C-1 at revision 2, not the lemma its proof rests on."""
+    lemma_and_proof(delegating)
+    check = call("delegate", check={"entry": "C-1", "revision": 2})
+
+    def record(messages: list[dict[str, Any]]) -> list[tuple[str, dict[str, Any]]]:
+        return [linked(started_in(messages))]
+
+    root = await delegating.run(
+        "root",
+        [Reply(calls=[check]), wait(), Reply(calls_from=record), Reply("Recorded.")],
+        delegated=[
+            Reply(calls=[call("ledger_read", entry="C-1", revision=2)]),
+            Reply(json.dumps({**RESULT, "revision": 2})),
+        ],
+    )
+    (delegation_id,) = started(root)
+    outcome = json.loads(results(root)[1])["delegations"][0]
+    assert (outcome["read_entry"], outcome["read_proofs"]) == (True, False)
+    found = gate_clause(delegating)
+    assert not found.holds
+    assert delegation_id not in found.reason
+
+
+def lemma_and_proof(harness: Harness) -> str:
+    """C-1 at revision 2, which rests on the proof that is lemma C-2 at revision 1."""
+    documents = harness.documents()
     try:
         ledger = Ledger(documents)
         lemma = {**NEW["claim"], "title": "Lemma", "statement": "A lemma."}
         change(ledger, lemma, op="lemma")
         proof = {"role": "derivation", "type": "proof", "entry": "C-2"}
         change(ledger, {"entry": "C-1", "expected": 1, "evidence": [proof]}, op="proof")
+        return ledger.entry(PROJECT, "C-1").entry_id
     finally:
         documents.close()
-    check = call(
-        "delegate", task="Check the proof from scratch.", check={"entry": "C-1", "revision": 2}
+
+
+def started_in(messages: list[dict[str, Any]]) -> str:
+    started_with = [json.loads(str(m["content"])) for m in messages if m["role"] == "tool"]
+    return str(started_with[0]["delegation_id"])
+
+
+def linked(delegation_id: str) -> tuple[str, dict[str, Any]]:
+    return call(
+        "ledger_change",
+        reason="A fresh-context check confirmed it.",
+        changes=[{"entry": "C-1", "expected": 2, "evidence": [link(delegation_id)]}],
     )
 
-    def record(messages: list[dict[str, Any]]) -> list[tuple[str, dict[str, Any]]]:
-        started_with = [json.loads(str(m["content"])) for m in messages if m["role"] == "tool"]
-        delegation_id = str(started_with[0]["delegation_id"])
-        return [
-            call(
-                "ledger_change",
-                reason="A fresh-context check confirmed it.",
-                changes=[{"entry": "C-1", "expected": 2, "evidence": [link(delegation_id)]}],
-            )
-        ]
 
-    root = await delegating.run(
-        "root",
-        [Reply(calls=[check]), wait(), Reply(calls_from=record), Reply("C-1 is checked.")],
-        delegated=[
-            Reply(calls=[call("ledger_read", entry="C-1", revision=2)]),
-            Reply(json.dumps({**RESULT, "revision": 2})),
-        ],
-    )
-    recorded = json.loads(results(root)[2])
-    assert "error" not in recorded, recorded
-    documents = delegating.documents()
+def gate_clause(harness: Harness) -> GateClause:
+    documents = harness.documents()
     try:
-        found = next(
+        return next(
             c
             for c in Ledger(documents).gate(PROJECT, "C-1").clauses
             if c.clause == "independent_check"
         )
     finally:
         documents.close()
+
+
+async def test_a_main_run_checks_its_proof_by_delegation(delegating: Harness) -> None:
+    """The owner's first milestone: the main agent delegates a check of C-1 at the
+    revision that holds its proof; a fresh child reads it and the lemma the proof rests
+    on, confirms it, and the main agent records the outcome as C-1's independent check,
+    which the gate counts."""
+    lemma_and_proof(delegating)
+    check = call("delegate", check={"entry": "C-1", "revision": 2}, note="Mind the lemma.")
+
+    def record(messages: list[dict[str, Any]]) -> list[tuple[str, dict[str, Any]]]:
+        return [linked(started_in(messages))]
+
+    root = await delegating.run(
+        "root",
+        [Reply(calls=[check]), wait(), Reply(calls_from=record), Reply("C-1 is checked.")],
+        delegated=[
+            Reply(
+                calls=[
+                    call("ledger_read", entry="C-1", revision=2),
+                    call("ledger_read", entry="C-2", revision=1),
+                ]
+            ),
+            Reply(json.dumps({**RESULT, "revision": 2})),
+        ],
+    )
+    first = delegating.gateway.children[0]
+    brief = str(first[1]["content"])
+    assert brief.startswith("Task: Check whether ledger entry C-1 holds at revision 2, ")
+    assert "- derivation (proof): entry C-2 r1 (ledger_read)" in brief
+    assert brief.endswith("The requester's note, not evidence: Mind the lemma.")
+    recorded = json.loads(results(root)[2])
+    assert "error" not in recorded, recorded
+    found = gate_clause(delegating)
     assert found.holds, found.reason
     assert started(root)[0] in found.reason
+    assert found.reason.endswith("the requester's note: Mind the lemma.")

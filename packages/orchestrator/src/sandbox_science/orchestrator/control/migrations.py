@@ -2099,6 +2099,36 @@ BEGIN SELECT RAISE(ABORT, 'citation checks are written once'); END""",
         schema.execute(statement)
 
 
+def _delegation_reads(schema: Schema) -> None:
+    """Version 32: a check's outcome gains whether the child read each target of the
+    entry's proofs at the revision its link pins (``read_proofs``; LG-17), written once
+    with the rest of the outcome. The column has no CHECK, which ``ALTER TABLE`` would
+    have every row pass: triggers check it as a row is written."""
+    reads = "(NEW.read_proofs IS NULL OR (NEW.ended IS NOT NULL AND NEW.read_proofs IN (0, 1)))"
+    for statement in (
+        "ALTER TABLE delegations ADD COLUMN read_proofs INTEGER",
+        f"""CREATE TRIGGER delegations_reads_insert BEFORE INSERT ON delegations
+WHEN NOT {reads} BEGIN SELECT RAISE(ABORT, 'CHECK constraint failed: delegations'); END""",
+        f"""CREATE TRIGGER delegations_reads_update BEFORE UPDATE ON delegations
+WHEN NOT {reads} BEGIN SELECT RAISE(ABORT, 'CHECK constraint failed: delegations'); END""",
+        "DROP TRIGGER delegations_kept",
+        """CREATE TRIGGER delegations_kept BEFORE UPDATE ON delegations
+WHEN NEW.delegation_id IS NOT OLD.delegation_id OR NEW.project_id IS NOT OLD.project_id
+OR NEW.session_id IS NOT OLD.session_id OR NEW.parent IS NOT OLD.parent
+OR NEW.run IS NOT OLD.run OR NEW.kind IS NOT OLD.kind OR NEW.brief IS NOT OLD.brief
+OR NEW.started_at IS NOT OLD.started_at OR (OLD.ended IS NOT NULL AND (
+NEW.ended IS NOT OLD.ended OR NEW.stopped IS NOT OLD.stopped
+OR NEW.report IS NOT OLD.report OR NEW.ended_at IS NOT OLD.ended_at
+OR NEW.refused IS NOT OLD.refused OR NEW.result IS NOT OLD.result
+OR NEW.errors IS NOT OLD.errors OR NEW.alias IS NOT OLD.alias
+OR NEW.models IS NOT OLD.models OR NEW.read_entry IS NOT OLD.read_entry
+OR NEW.read_proofs IS NOT OLD.read_proofs))
+OR (OLD.acknowledged IS NOT NULL AND NEW.acknowledged IS NOT OLD.acknowledged)
+BEGIN SELECT RAISE(ABORT, 'a delegation''s outcome is written once'); END""",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -2130,6 +2160,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _delegation_results,
     _evidence_targets,
     _citation_checks,
+    _delegation_reads,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

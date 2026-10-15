@@ -67,7 +67,7 @@ export function evidenceTarget(project: string, link: EvidenceLink): LinkTarget 
     case 'review':
       return { text: `review ${link.target_id}`, href: null };
     case 'delegation':
-      return { text: `delegation ${link.target_id}${pinned}`, href: null };
+      return { text: `delegation ${link.target_id}${checkedBy(link.locator)}`, href: null };
     case 'quote': {
       const name = link.handle ?? link.target_id;
       const where = quoteWhere(link.locator);
@@ -79,6 +79,21 @@ export function evidenceTarget(project: string, link: EvidenceLink): LinkTarget 
       };
     }
   }
+}
+
+/**
+ * What a delegation's check returned, as its link records it: its verdict and status, and
+ * the note its parent gave the checker, which is the requester's note, not evidence (LG-17).
+ */
+export function checkedBy(locator: Record<string, unknown> | null): string {
+  if (locator === null) return '';
+  const said = [locator.verdict, locator.status].filter((v) => typeof v === 'string');
+  const outcome = said.length > 0 ? ` (${said.join(', ')})` : ` (${String(locator.ended)})`;
+  const note =
+    typeof locator.note === 'string'
+      ? `; the requester's note, not evidence: “${locator.note}”`
+      : '';
+  return `${outcome}${note}`;
 }
 
 /** Where a quote is in its source: a PDF's page and lines, or an ePrint and its date stamp. */

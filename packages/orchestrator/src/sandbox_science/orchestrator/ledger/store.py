@@ -847,7 +847,8 @@ class Ledger:
                 ]
                 if not p.created and p.links != p.previous:
                     p.changed = [*p.changed, "links"]
-            self._evidence(db, project, p, keys, heads, pinned)
+            linker = evidence.Linker(role, author.session_id)
+            self._evidence(db, project, p, keys, heads, pinned, linker)
             if not p.created and not p.changed:
                 raise DocumentError(
                     INVALID_REQUEST, f"the change to {p.row.handle} changes nothing"
@@ -1234,6 +1235,7 @@ class Ledger:
         keys: dict[str, _Row],
         heads: dict[str, int],
         pinned: dict[evidence.Block, str],
+        linker: evidence.Linker,
     ) -> None:
         """The evidence the change leaves the entry: what it held, without the links the
         change removes, with those it adds (LG-8)."""
@@ -1260,7 +1262,7 @@ class Ledger:
                 target = evidence.EntryTarget(
                     row.entry_id, row.handle, row.type, heads.get(row.entry_id, row.head)
                 )
-            added.append(evidence.resolve(db, project, holder, item, target, pinned))
+            added.append(evidence.resolve(db, project, holder, item, target, pinned, linker))
         result = [link for link in held if link.evidence_id not in removed] + added
         if len({evidence.key(link) for link in result}) != len(result):
             raise DocumentError(INVALID_REQUEST, f"{p.row.handle} holds that evidence already")

@@ -2,23 +2,25 @@
 """The delegate tools as the model sees them (plans-and-delegation spec, PD-33).
 
 The first brief is narrow: a check of one ledger entry at one revision, which a run
-with a fresh context does (LG-17).
+with a fresh context does (LG-17). The platform writes a check's task and lists the
+entry's evidence as its inputs; the parent adds at most a short note, which the child
+reads as the requester's note, not evidence (coordinator, 2026-10-15).
 """
 
 from __future__ import annotations
 
 from typing import Annotated, Final, Literal
 
-from pydantic import Field
+from pydantic import BeforeValidator, Field
 
 from sandbox_science.contracts import Identifier
 from sandbox_science.contracts.model import Contract
+from sandbox_science.orchestrator.documents.agent_text import agent_text
+from sandbox_science.orchestrator.documents.errors import DocumentError
 from sandbox_science.orchestrator.hooks import Effect
 from sandbox_science.orchestrator.model import ToolSpec
 
-MAX_TEXT: Final = 8000
-MAX_INPUTS: Final = 20
-MAX_INPUT: Final = 512
+MAX_NOTE: Final = 500
 MAX_WAITED: Final = 10
 
 
@@ -27,16 +29,23 @@ class CheckTarget(Contract):
     revision: int = Field(ge=1, le=999_999_999)
 
 
-class CheckBrief(Contract):
-    """What ``delegate`` takes: the task, what the child needs to know, its inputs, and
-    the entry and revision it checks."""
+def _note(value: object) -> object:
+    """A note as the brief keeps it: trimmed, and holding no character the user may not
+    see, since the checker, the evidence and the workspace show it."""
+    if not isinstance(value, str) or not (kept := value.strip()):
+        return value.strip() if isinstance(value, str) else value
+    try:
+        return agent_text(kept, "the note")
+    except DocumentError as error:
+        raise ValueError(error.message) from None
 
-    task: str = Field(min_length=1, max_length=MAX_TEXT)
-    context: str = Field(default="", max_length=MAX_TEXT)
-    inputs: tuple[Annotated[str, Field(min_length=1, max_length=MAX_INPUT)], ...] = Field(
-        default=(), max_length=MAX_INPUTS
-    )
+
+class CheckBrief(Contract):
+    """What ``delegate`` takes: the entry and revision to check, and the parent's note.
+    A brief carries no task or inputs of the parent's, which could carry the verdict."""
+
     check: CheckTarget
+    note: Annotated[str, BeforeValidator(_note), Field(max_length=MAX_NOTE)] = ""
 
 
 class WaitRequest(Contract):
@@ -50,32 +59,26 @@ class Named(Contract):
     delegation_id: Identifier
 
 
-_TEXT = {"type": "string", "maxLength": MAX_TEXT}
 SPECS: Final = (
     ToolSpec(
         "delegate",
         "Start a delegated run that independently checks one ledger entry at one "
-        "revision, such as a proved result before you establish it. The delegated run "
-        "starts with a fresh context: it sees only this brief, not your conversation, "
-        "and has kernels of its own, so hand over state through files. It runs while you "
-        "go on; this returns its delegation_id at once. Its report reaches you as a "
-        "delegation notice, or as the result of wait_delegations. You cannot give your "
-        "final answer while it runs. Its result is its claim: a verdict, a status and a "
-        "summary; the outcome says how the platform saw it end. A check that returned "
-        "confirmed counts as the entry's independent check once you add it as evidence: "
-        "role independent_check, delegation its ID, checked the revision it checked.",
+        "revision, such as a proved result before you establish it. The platform writes "
+        "its task: check whether the entry holds at that revision, from its statement, "
+        "fields and evidence; it lists the entry's evidence as the inputs, and starts the "
+        "checker with a fresh context: it sees none of your conversation, and has kernels "
+        "of its own. Your note, if any, reaches it as the requester's note, not evidence. "
+        "It runs while you go on; this returns its delegation_id at once. Its report "
+        "reaches you as a delegation notice, or as the result of wait_delegations. You "
+        "cannot give your final answer while it runs. Its result is its claim: a verdict, "
+        "a status and a summary; the outcome says how the platform saw it end. A check "
+        "that returned confirmed counts as the entry's independent check once you add it "
+        "as evidence: role independent_check, delegation its ID, checked the revision it "
+        "checked; one of the same material that refuted it, or completed inconclusive, "
+        "keeps any from counting.",
         {
             "type": "object",
             "properties": {
-                "task": {**_TEXT, "description": "What to check and how"},
-                "context": {**_TEXT, "description": "What the checker needs to know"},
-                "inputs": {
-                    "type": "array",
-                    "items": {"type": "string", "minLength": 1, "maxLength": MAX_INPUT},
-                    "maxItems": MAX_INPUTS,
-                    "description": "Paths in the session workspace or shared/, documents "
-                    "and ledger entries it should read",
-                },
                 "check": {
                     "type": "object",
                     "properties": {
@@ -85,8 +88,14 @@ SPECS: Final = (
                     "required": ["entry", "revision"],
                     "additionalProperties": False,
                 },
+                "note": {
+                    "type": "string",
+                    "maxLength": MAX_NOTE,
+                    "description": "Optional: what the checker should know, such as where "
+                    "a file is; never the verdict you expect",
+                },
             },
-            "required": ["task", "check"],
+            "required": ["check"],
             "additionalProperties": False,
         },
     ),

@@ -631,6 +631,7 @@ class Harness:
             self.main.alias,
             tuple(dict.fromkeys(u.model for u in transcript.usage if u.model is not None))[:10],
             found.read if found is not None else None,
+            found.read_proofs if found is not None else None,
             sum(cost(usage) for usage in transcript.usage),
         )
 
