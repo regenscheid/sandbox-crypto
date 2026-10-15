@@ -26,8 +26,10 @@
   import { chatDrafts } from '../lib/drafts';
   import { initialPoll, Poller, type PollState } from '../lib/poller';
   import {
+    answerChars,
     answering,
     hintText,
+    MAX_ANSWER_CHARS,
     openQuestions,
     questionsApi,
     type AnswerBody,
@@ -66,6 +68,9 @@
   const waitingOn = $derived(open.filter((question) => question.run === chat?.lease?.run).length);
   // Read again with each poll, so the questions' ages move on.
   const now = $derived(chat ? Date.now() : 0);
+  /** A message that answers a question holds no more than an answer may. */
+  const chars = $derived(next ? answerChars(draft.text) : 0);
+  const tooLong = $derived(bytes > MAX_MESSAGE_BYTES || chars > MAX_ANSWER_CHARS);
 
   $effect(() => {
     const project = projectId,
@@ -74,7 +79,7 @@
     const reading = new ChatFeed({
       messages: (after, signal) => chatApi.messages(project, session, after, signal),
       events: (run, after, signal) => chatApi.events(project, session, run, after, signal),
-      questions: (signal) => questionsApi.list(project, session, signal),
+      questions: (open, signal) => questionsApi.list(project, session, open, signal),
     });
     feed = reading;
     const poller = new Poller(
@@ -102,8 +107,11 @@
   }
   async function send() {
     const text = draft.text;
+    // The question the box said the message answers: a different one now refuses it, and
+    // the draft stays for the user to read the chat again.
+    const answers = next?.question_id ?? null;
     const sent = await submit(sending, async () => {
-      await sendMessage(projectId, sessionId, text);
+      await sendMessage(projectId, sessionId, text, undefined, answers);
     });
     failed = sent ? null : text;
     if (sent) {
@@ -197,9 +205,12 @@
           'en-US',
         )}.
       </p>{/if}
-    <button
-      disabled={sending.busy || !draft.text.trim() || bytes > MAX_MESSAGE_BYTES}
-      onclick={send}>{next ? 'Send as the answer' : 'Send'}</button
+    {#if chars > MAX_ANSWER_CHARS}<p role="alert">
+        As an answer, the message is {chars.toLocaleString('en-US')} characters; an answer holds at most
+        {MAX_ANSWER_CHARS.toLocaleString('en-US')}.
+      </p>{/if}
+    <button disabled={sending.busy || !draft.text.trim() || tooLong} onclick={send}
+      >{next ? 'Send as the answer' : 'Send'}</button
     >
     {#if sending.error}<ErrorMessage error={sending.error} />{/if}
     {#if !persisted}<p role="alert">

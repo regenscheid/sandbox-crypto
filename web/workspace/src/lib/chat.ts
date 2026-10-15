@@ -35,7 +35,7 @@ const at = (project: string, session: string) =>
 export const chatApi = {
   messages: (project: string, session: string, after: number, signal?: AbortSignal) =>
     get<MessageListing>(`${at(project, session)}/messages?after=${after}`, { signal }),
-  post: (project: string, session: string, message: { message_id: string; text: string }) =>
+  post: (project: string, session: string, message: OutgoingMessage) =>
     post<MessageAnswer>(`${at(project, session)}/messages`, message),
   events: (project: string, session: string, run: string, after: number, signal?: AbortSignal) =>
     get<EventPage>(
@@ -57,12 +57,23 @@ export function sendMessage(
   project: string,
   session: string,
   text: string,
-  send: (message: { message_id: string; text: string }) => Promise<MessageAnswer> = (message) =>
+  send: (message: OutgoingMessage) => Promise<MessageAnswer> = (message) =>
     chatApi.post(project, session, message),
+  answers: string | null = null,
 ): Promise<MessageAnswer> {
   return guardedWrite('chat-message', `${project}:${session}`, { text }, (change) =>
-    send({ message_id: change.operation_id, text: change.text }),
+    send({ message_id: change.operation_id, text: change.text, question_id: answers }),
   );
+}
+
+/**
+ * A message as the page sends it: `question_id` is the question the page showed it would
+ * answer, or null when it showed none; the server refuses it when that is not so now.
+ */
+export interface OutgoingMessage {
+  message_id: string;
+  text: string;
+  question_id: string | null;
 }
 
 /**
@@ -111,8 +122,9 @@ export interface ChatView {
 export interface ChatReads {
   messages(after: number, signal?: AbortSignal): Promise<MessageListing>;
   events(run: string, after: number, signal?: AbortSignal): Promise<EventPage>;
-  /** The session's questions to the user; without it, the view has none. */
-  questions?(signal?: AbortSignal): Promise<QuestionListing>;
+  /** The session's latest questions to the user, or with `open` its open ones only;
+   * without it, the view has none. */
+  questions?(open: boolean, signal?: AbortSignal): Promise<QuestionListing>;
 }
 
 /** The most runs the panel shows; earlier ones are in the session's run list. */
@@ -147,6 +159,8 @@ export class ChatFeed {
   #service = false;
   #environment: EnvironmentState | null = null;
   #questions: Question[] = [];
+  /** The open questions at the last whole read, by ID; null before the first. */
+  #openSeen: string | null = null;
   /** Read held messages again: a resume, or a new message, queues them. */
   #recheck = false;
   #polls = 0;
@@ -175,8 +189,7 @@ export class ChatFeed {
       after = listing.messages.at(-1)!.number;
     }
     this.#environment = environment;
-    // Read whole each poll: a session keeps few, and any may close.
-    if (this.reads.questions) this.#questions = (await this.reads.questions(signal)).questions;
+    if (this.reads.questions) await this.#readQuestions(this.reads.questions, signal);
     this.#follow();
     for (const run of this.#runs.values()) {
       if (this.#finished.has(run.run)) continue;
@@ -199,6 +212,32 @@ export class ChatFeed {
       }
     }
     return this.#view();
+  }
+
+  /**
+   * The open questions each poll; the latest whole, closed ones too, only at the first
+   * read and when the open ones changed, as when one closed, so a closed question shows
+   * how it closed.
+   */
+  async #readQuestions(
+    read: NonNullable<ChatReads['questions']>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const ids = (questions: Question[]) =>
+      questions
+        .filter((question) => question.state === 'open')
+        .map((question) => question.question_id)
+        .join(' ');
+    const open = (await read(true, signal)).questions;
+    if (this.#openSeen !== null && ids(open) === this.#openSeen) {
+      const fresh = new Map(open.map((question) => [question.question_id, question]));
+      this.#questions = this.#questions.map(
+        (question) => fresh.get(question.question_id) ?? question,
+      );
+      return;
+    }
+    this.#questions = (await read(false, signal)).questions;
+    this.#openSeen = ids(this.#questions);
   }
 
   /** Whether a run caught up with will write more: not once ended, nor some polls after it

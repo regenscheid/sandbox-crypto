@@ -24,8 +24,9 @@ const at = (project: string, session: string) =>
   `/projects/${part(project)}/sessions/${part(session)}/questions`;
 
 export const questionsApi = {
-  list: (project: string, session: string, signal?: AbortSignal) =>
-    get<QuestionListing>(at(project, session), { signal }),
+  /** The session's latest questions, or with `open`, its open ones only. */
+  list: (project: string, session: string, open: boolean, signal?: AbortSignal) =>
+    get<QuestionListing>(`${at(project, session)}${open ? '?state=open' : ''}`, { signal }),
   answer: (project: string, session: string, question: string, body: AnswerBody) =>
     post<QuestionAnswer>(`${at(project, session)}/${part(question)}/answer`, body),
 };
@@ -38,7 +39,10 @@ export function openQuestions(questions: readonly Question[]): Question[] {
 /**
  * The question a message to the session answers now: the oldest open question of the run
  * that holds the session. Null when that run waits for no answer, or no run holds the
- * session: a message then waits in the queue as any other.
+ * session: a message then waits in the queue as any other. `lease` is the listing's run,
+ * which the server gives only while its lease is live (`RunState.lease`), so an expired
+ * lease names no question; and the message names the question shown, which the server
+ * checks (`question_changed`), so a stale view answers nothing by mistake.
  */
 export function answering(questions: readonly Question[], lease: RunLease | null): Question | null {
   if (lease === null) return null;
@@ -63,6 +67,14 @@ export function ageText(asked: string, now: number): string {
     }
   }
   return 'just now';
+}
+
+/** The most characters of an answer in the user's own words, as the server counts them. */
+export const MAX_ANSWER_CHARS = 16_000;
+
+/** An answer's size as the server counts it: code points, without the white space around. */
+export function answerChars(text: string): number {
+  return [...text.trim()].length;
 }
 
 /** The most characters of a question the message box's hint shows. */

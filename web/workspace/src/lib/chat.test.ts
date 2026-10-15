@@ -515,8 +515,9 @@ describe('sending a message', () => {
     await expect(sendMessage('p1', 's1', 'Hello', send)).rejects.toThrow();
     fail = false;
     await sendMessage('p1', 's1', 'Hello', send);
-    const [first, second] = sent as { message_id: string; text: string }[];
-    expect(Object.keys(first!).sort()).toEqual(['message_id', 'text']);
+    const [first, second] = sent as { message_id: string; text: string; question_id: unknown }[];
+    expect(Object.keys(first!).sort()).toEqual(['message_id', 'question_id', 'text']);
+    expect(first!.question_id).toBeNull(); // no question shown
     expect(second).toEqual(first);
     await sendMessage('p1', 's1', 'Hello', send);
     expect((sent[2] as { message_id: string }).message_id).not.toBe(first!.message_id);

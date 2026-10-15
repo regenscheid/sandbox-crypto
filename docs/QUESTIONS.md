@@ -67,14 +67,14 @@ A chat message can also be the answer. While the run that holds the session (its
 
 ## The chat panel
 
-The session's chat panel (`ChatQuestion.svelte`, `src/lib/questions.ts`) reads the session's questions with each poll, every 1.5 s.
+The session's chat panel (`ChatQuestion.svelte`, `src/lib/questions.ts`) reads the session's open questions with each poll, every 1.5 s, and the latest 50 whole at the first poll and whenever the open ones change, so a question that closed shows how.
 
 - **Open questions** show above the message box, oldest first, each with:
   - how long ago it was asked;
   - the agent's text exactly, through `ApprovalText`, with a preview apart;
-  - its options, with every character a person may not see shown as its code point (`visible`): a button for each when one is chosen, or check boxes and "Answer with the N chosen" when several may be;
+  - its options, with every character a person may not see shown as its code point (`visible`): a button for each when one is chosen, or check boxes and "Answer with the N chosen" when several may be (ticked by their place, so a label such as `__proto__` is only a label);
   - "Let the agent decide" and "Cancel the question".
-- **The message box hint.** While the run that holds the session waits for an answer, the box says "Your message will answer:" and the start of the oldest such question, and how many are open when there are several. The button then reads "Send as the answer". The question's card says the user's own words go in the message box.
+- **The message box hint.** While the run that holds the session waits for an answer, the box says "Your message will answer:" and the start of the oldest such question, and how many are open when there are several. The button then reads "Send as the answer", and the message holds at most the 16,000 characters an answer may. The question's card says the user's own words go in the message box. The message names the question the box showed (`question_id`, or null): when the server answers that the question changed (`question_changed`), as when a button or another tab answered it first, nothing was written, the error says so, and the draft stays for the user to read the chat again.
 - **Stale questions.** An open question whose run no longer holds the session shows no buttons: it takes no answer (the server refuses one, `run_ended`), and the card says to write to the agent as a message instead.
 - **After an answer.** Once an answer is sent, the card says so until the next read closes it.
 - **Closed questions** show below their run's transcript, saying how they closed: the options picked, the user's own words (and whether a message gave them), the decision left to the agent, the user's cancel, or the reason no answer came.

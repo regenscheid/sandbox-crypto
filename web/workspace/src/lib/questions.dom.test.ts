@@ -139,6 +139,25 @@ describe('an open question', () => {
   });
 });
 
+describe("options named as an object's own properties", () => {
+  it('start unticked, and send the labels ticked', async () => {
+    const labels = ['toString', '__proto__', 'constructor', 'hasOwnProperty'];
+    const { root, sent } = card({
+      multiple: true,
+      options: labels.map((label) => ({ label, detail: null })),
+    });
+    const boxes = [...root.querySelectorAll<HTMLInputElement>('input[type=checkbox]')];
+    expect(boxes.map((box) => box.checked)).toEqual([false, false, false, false]);
+    expect(button(root, 'Answer with the 0 chosen').disabled).toBe(true);
+    boxes[1]!.checked = true;
+    boxes[1]!.dispatchEvent(new Event('change', { bubbles: true }));
+    flushSync();
+    button(root, 'Answer with the 1 chosen').click();
+    await settle();
+    expect(sent).toEqual([{ kind: 'picked', picked: ['__proto__'] }]);
+  });
+});
+
 describe('a closed question', () => {
   it('says how it closed, with the reason when no answer came', () => {
     const interrupted = card({
@@ -162,16 +181,20 @@ describe('a closed question', () => {
 });
 
 describe('the chat panel', () => {
-  function serve(questions: Question[], lease: string | null) {
+  function serve(questions: Question[], lease: string | null, refuse: unknown = null) {
     const sent: { url: string; body: unknown }[] = [];
     const fetch = vi.fn(async (url: string, init?: RequestInit) => {
       if (init?.method === 'POST') {
         sent.push({ url, body: JSON.parse(String(init.body)) });
+        if (refuse !== null) return new Response(JSON.stringify(refuse), { status: 409 });
         return new Response(JSON.stringify({ question: questions[0] }));
       }
       const run = lease ? { run: lease, started_at: ASKED, renewed_at: ASKED } : null;
       if (url.includes('/questions')) {
-        const listing: QuestionListing = { questions, run };
+        const shown = url.includes('state=open')
+          ? questions.filter((question) => question.state === 'open')
+          : questions;
+        const listing: QuestionListing = { questions: shown, run };
         return new Response(JSON.stringify(listing));
       }
       if (url.includes('/messages')) {
@@ -217,5 +240,52 @@ describe('the chat panel', () => {
     await settle();
     expect(root.querySelector('.hint')).toBeNull();
     expect(button(root, 'Send')).toBeTruthy();
+  });
+
+  function typeMessage(root: HTMLElement, text: string): void {
+    const box = root.querySelector('textarea')!;
+    box.value = text;
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+  }
+
+  it('sends the question it showed, and keeps the draft when that question changed', async () => {
+    const shown = question({ text: 'First?' });
+    const changed = {
+      error: {
+        kind: 'conflict',
+        message: 'the question this message answers has changed: read the chat again',
+        details: { reason: 'question_changed', question: null },
+      },
+    };
+    const sent = serve([shown], 'run-1', changed);
+    const root = show(ChatPanel, { projectId: 'p1', sessionId: 's2', closed: false });
+    await settle();
+    typeMessage(root, 'Ed448, please.');
+    button(root, 'Send as the answer').click();
+    await settle();
+    expect(sent).toEqual([
+      {
+        url: '/api/v0/projects/p1/sessions/s2/messages',
+        body: {
+          message_id: expect.any(String),
+          text: 'Ed448, please.',
+          question_id: shown.question_id,
+        },
+      },
+    ]);
+    expect(root.textContent).toContain('the question this message answers has changed');
+    expect(root.querySelector('textarea')!.value).toBe('Ed448, please.');
+  });
+
+  it('holds an answer to the 16,000 characters an answer may have', async () => {
+    serve([question()], 'run-1');
+    const root = show(ChatPanel, { projectId: 'p1', sessionId: 's3', closed: false });
+    await settle();
+    typeMessage(root, 'é'.repeat(16_000));
+    expect(button(root, 'Send as the answer').disabled).toBe(false);
+    typeMessage(root, 'é'.repeat(16_001));
+    expect(button(root, 'Send as the answer').disabled).toBe(true);
+    expect(root.textContent).toContain('an answer holds at most');
   });
 });

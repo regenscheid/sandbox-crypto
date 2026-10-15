@@ -31,18 +31,19 @@
     live?: boolean;
     answer: (body: AnswerBody) => Promise<void>;
   } = $props();
-  let chosen = $state<Record<string, boolean>>({});
+  /** The options ticked, by their place: a label such as `__proto__` is no key. */
+  let chosen = $state<boolean[]>([]);
   /** An answer was sent: the question closes at the next read. */
   let sent = $state(false);
   const sending = $state(idle());
   const open = $derived(question.state === 'open');
   const picked = $derived(
-    question.options.map((option) => option.label).filter((label) => chosen[label]),
+    question.options.filter((_, index) => chosen[index] === true).map((option) => option.label),
   );
 
   async function send(body: AnswerBody): Promise<void> {
     if (await submit(sending, () => answer(body))) {
-      chosen = {};
+      chosen = [];
       sent = true;
     }
   }
@@ -65,15 +66,11 @@
   {:else if open}
     {#if question.options.length > 0}
       <ul class="options">
-        {#each question.options as option (option.label)}
+        {#each question.options as option, index (index)}
           <li>
             {#if question.multiple}
               <label>
-                <input
-                  type="checkbox"
-                  bind:checked={chosen[option.label]}
-                  disabled={sending.busy}
-                />
+                <input type="checkbox" bind:checked={chosen[index]} disabled={sending.busy} />
                 {visible(option.label)}
               </label>
             {:else}

@@ -103,8 +103,9 @@ describe('a question in words', () => {
 });
 
 describe('the chat feed', () => {
-  it("reads the session's questions with each poll, when it can", async () => {
-    let listed = [question()];
+  it('polls the open questions, and reads the latest whole only when they change', async () => {
+    let listed = [question({ question_id: 'q0', state: 'answered' }), question()];
+    const asked: string[] = [];
     const reads = {
       messages: async () => ({
         messages: [],
@@ -116,11 +117,18 @@ describe('the chat feed', () => {
     };
     const feed = new ChatFeed({
       ...reads,
-      questions: async () => ({ questions: listed, run: null }),
+      questions: async (open: boolean) => {
+        asked.push(open ? 'open' : 'whole');
+        return { questions: open ? openQuestions(listed) : listed, run: null };
+      },
     });
     expect((await feed.read()).questions).toEqual(listed);
-    listed = [question({ state: 'answered' })];
-    expect((await feed.read()).questions[0]!.state).toBe('answered');
+    expect((await feed.read()).questions).toEqual(listed);
+    expect(asked).toEqual(['open', 'whole', 'open']); // nothing changed: the open ones only
+    listed = [listed[0]!, question({ state: 'answered' })];
+    const view = await feed.read(); // the open one closed: the whole, to show how
+    expect(asked.slice(3)).toEqual(['open', 'whole']);
+    expect(view.questions.map((q) => q.state)).toEqual(['answered', 'answered']);
     expect((await new ChatFeed(reads).read()).questions).toEqual([]);
   });
 });
