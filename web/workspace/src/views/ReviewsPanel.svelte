@@ -51,7 +51,14 @@
   {#if panel.requestError}<ErrorMessage error={panel.requestError} />{/if}
   <ReviewList {panel} {browser} {busy} />
   {#if panel.reviews.error}<ErrorMessage error={panel.reviews.error} />{/if}
-  {#if panel.selected}<ReviewDetail {panel} {browser} review={panel.selected} {busy} />{/if}
+  {#if panel.selected}<ReviewDetail
+      {panel}
+      {browser}
+      review={panel.selected}
+      {busy}
+      {projectId}
+      {sessionId}
+    />{/if}
   <MathChecks {panel} {browser} />
   <FindingList {projectId} {sessionId} {panel} {browser} {busy} />
 </section>

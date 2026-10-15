@@ -49,7 +49,9 @@
 <div class="delegation">
   <p>
     <strong>Delegation <code>{visible(delegation.delegation_id)}</code></strong>, a
-    {visible(delegation.kind)}, started {formatTime(delegation.started_at)}
+    {visible(delegation.kind)}{#if delegation.started_at}, started {formatTime(
+        delegation.started_at,
+      )}{/if}
   </p>
   <details>
     <summary>Its brief, read-only</summary>

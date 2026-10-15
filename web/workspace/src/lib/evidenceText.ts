@@ -42,6 +42,11 @@ export class EvidenceText {
     return this.list.reload();
   }
 
+  /** The evidence whose text is shown; empty before any is. */
+  shown(): string {
+    return this.#reading.evidence;
+  }
+
   /** The text read so far. */
   text(): string {
     return this.state.items.join('');
