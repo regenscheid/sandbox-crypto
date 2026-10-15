@@ -434,15 +434,15 @@ async def test_a_user_plan_edit_mid_run_needs_a_reread_or_stops_for_the_user(
     assert shape(second) == [*shape(first), ANSWER, plans("draft", True)]
     assert shape(stopped.messages) == [*shape(second), ANSWER]
     # The unread USER plan wins over the answer: no stale final answer is presented.
-    assert (stopped.stopped, stopped.final_text, stopped.failure) == ("user_message", None, None)
+    assert (stopped.stopped, stopped.final_text, stopped.failure) == ("plan_unread", None, None)
 
     record = await harness.run(
         "run-2", [Reply("Ignoring the plan."), Reply(calls=[call("plan_read")]), Reply("Read.")]
     )
     first, second, third = harness.gateway.main
     assert shape(first) == [SYSTEM, TASK_MESSAGE, plans("draft", True)]
-    # The first closing gets one response turn, without a new plan notice.
-    assert shape(second) == [*shape(first), ANSWER]
+    # The first closing gets one response turn, with a notice that says why.
+    assert shape(second) == [*shape(first), ANSWER, plans("draft", True)]
     assert shape(third) == [*shape(second), calls("plan_read"), RESULT]
     # A-02 may change this: the closing plan notice after the read is recorded only.
     assert shape(record.messages) == [*shape(third), ANSWER, plans("draft", False)]

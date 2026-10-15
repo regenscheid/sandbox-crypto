@@ -301,7 +301,7 @@ With `--state-dir`, the harness keeps every run that reaches the tool loop, incl
 | `context` | Project, session, environment and policy revision |
 | `task` | The task as given |
 | `started_at`, `ended_at` | When the run started and ended, in UTC |
-| `stopped` | `answered`, `turn_limit`, `context_limit` (the conversation grew past the run's budget, or the gateway said it exceeds the model's context), `user_message`, `cancelled` (the user cancelled it in the GUI), or `error` |
+| `stopped` | `answered`, `turn_limit`, `context_limit` (the conversation grew past the run's budget, or the gateway said it exceeds the model's context), `user_message` (a message came while the run's review held its answer), `plan_unread` (the session plan held the answer back: it has open steps the run did not read after they changed), `cancelled` (the user cancelled it in the GUI), or `error` |
 | `failure` | Optional fixed phase: `model`, `tool`, `harness` or `cleanup`; older records omit it |
 | `final_text` | The answer, or null for a failed run |
 | `delivered` | For each notice source (`requests`, `jobs`, `reviews`, `math`, `delegations`), the IDs a successful model call saw; acknowledged after the run is saved. Older records' `job_notice_ids`, `work_request_ids`, `review_notice_ids` and `math_notice_ids` read as these |

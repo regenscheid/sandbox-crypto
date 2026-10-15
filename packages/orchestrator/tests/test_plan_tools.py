@@ -562,7 +562,7 @@ async def test_user_edit_during_closing_await_is_not_presented_as_current_answer
         run_id="main-run",
         max_turns=1,
     )
-    assert result.stopped == "user_message"
+    assert result.stopped == "plan_unread"
     assert result.final_text is None
     assert "USER closing refinement" in f.core.current(f.user).version.body.goal
 
@@ -853,7 +853,7 @@ async def test_repeated_unread_user_edits_do_not_create_unbounded_response_round
     model = Model()
     result = await run_task(model, tools(f), "Continue", run_id="main-run", max_turns=30)
     assert model.calls == 2
-    assert result.stopped == "user_message"
+    assert result.stopped == "plan_unread"
     assert result.final_text is None
     assert f.core.summary(f.user).head.version == 3
 
@@ -926,3 +926,35 @@ async def test_plan_tools_aba_after_the_precheck_is_refused_in_the_transaction(
     assert refused.value.kind == "policy_denied"
     assert fixture.adapter.invalid
     assert fixture.core.summary(fixture.user) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "statuses", [("completed", "blocked"), ("skipped", "completed"), ("blocked", "blocked")]
+)
+async def test_a_plan_with_no_open_step_holds_no_answer_back(fixture, statuses):
+    """Lab 41, B2: every run starts with the plan unread, and a plan whose steps were all
+    done or blocked still discarded the answer of a run asked to answer without tools."""
+    f = fixture
+    receipt = f.core.publish(f.user, "plan", PlanBody.model_validate(body(count=2)), "Plan")
+    for index, status in enumerate(statuses):
+        f.core.progress(f.user, f"p-{index}", receipt.ref, f"step-{index}", 0, status, "Done")
+    model = ScriptedModel([ModelTurn("The user's words, quoted.")])
+    result = await run_task(model, tools(f), "Quote me, without tools", run_id="main-run")
+    assert (result.stopped, result.final_text) == ("answered", "The user's words, quoted.")
+
+
+@pytest.mark.asyncio
+async def test_a_held_answer_says_why_and_the_run_stops_as_plan_unread(fixture):
+    """Lab 41, B2: the retry came with no notice, as the plan's state notice had not
+    changed, and the run stopped as user_message."""
+    f = fixture
+    receipt = f.core.publish(f.user, "plan", PlanBody.model_validate(body(count=2)), "Plan")
+    f.core.progress(f.user, "p-0", receipt.ref, "step-0", 0, "completed", "Done")
+    model = ScriptedModel([ModelTurn("First answer"), ModelTurn("Second answer")])
+    result = await run_task(model, tools(f), "Answer", run_id="main-run", max_turns=5)
+    assert (result.stopped, result.final_text) == ("plan_unread", None)
+    held = model.requests[1][-1]["content"]
+    payload = json.loads(held[held.index("{") :])
+    assert payload["answer_held"].startswith("Your answer was not taken")
+    assert (payload["open_steps"], payload["reread_required"]) == (["step-1"], True)
