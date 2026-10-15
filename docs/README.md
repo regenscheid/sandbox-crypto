@@ -49,6 +49,7 @@ Progress and history are not kept here: current state is in [STATUS](../.agents/
 | [Living documents](LIVING-DOCUMENTS.md) | The document store: parser, block IDs, revisions, patches, comments and work requests |
 | [Table parser parity](TABLE-PARSER-PARITY.md) | Unicode table parsing shared by the server and the browser |
 | [Project macros](PROJECT-MACROS.md) | The project's math macro setting and front matter |
+| [Project ledger](LEDGER.md) | The ledger's entries, revisions, links and mutations as built |
 | [Math checks](MATH-CHECKS.md) | Durable math checks of document revisions, and the isolated renderer |
 | [Comment math](COMMENT-MATH.md) | Math checks of comment and reply bodies |
 | [Finding prose math](FINDING-PROSE-MATH.md) | Math checks of MAIN fix and rebut explanations |
