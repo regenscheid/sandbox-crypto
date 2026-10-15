@@ -1,0 +1,174 @@
+# SPDX-License-Identifier: MIT
+"""Each part's settings and command line, from the config.
+
+The worker gets a settings file; the run service and the workspace take flags. Each
+token a part needs is a file in the state directory (state.py), and the worker's
+settings hold the digests of the two clients' tokens:
+
+| Token | Read by | Checked by |
+| --- | --- | --- |
+| ``worker`` | nobody: the worker's own pool token, which acts for every project | the worker |
+| ``harness-worker`` | the run service, for the projects in the config | the worker |
+| ``workspace-worker`` | the workspace, for the same projects | the worker |
+
+The run service and the workspace share the control store and need no token between
+them; the browser logs in to the workspace with the address the workspace makes at
+each start.
+"""
+
+from __future__ import annotations
+
+import shutil
+import sys
+from pathlib import Path
+from typing import Any
+
+from . import toml
+from .config import LauncherConfig, LauncherError
+from .state import Layout, ensure_token, write_private
+
+WORKER = "sandbox-science-worker"
+HARNESS = "sandbox-science-harness"
+WORKSPACE = "sandbox-science-workspace"
+CLIENTS = ("harness", "workspace")
+"""The worker's clients, each with a token limited to the config's projects."""
+
+
+def commands(config: LauncherConfig) -> Path:
+    """Where the parts' commands are: ``bin_dir``, or beside this Python."""
+    return config.bin_dir if config.bin_dir is not None else Path(sys.executable).parent
+
+
+def check(config: LauncherConfig) -> None:
+    """Refuse what would only fail later: a missing file, build or command."""
+    environments = config.openshell.environments
+    problems = [
+        f"no {what} at {path}"
+        for what, path in (
+            ("model key file", config.model.api_key_file),
+            ("project policy", config.worker.policy),
+            ("targets file", environments.targets),
+            ("pool ceiling", environments.ceiling),
+        )
+        if not path.is_file()
+    ]
+    if not environments.policy_store.is_dir():
+        problems.append(f"no policy store at {environments.policy_store}")
+    if not (config.workspace.static / "index.html").is_file():
+        problems.append(
+            f"no web app build at {config.workspace.static}: in web/workspace, run "
+            "npm ci --ignore-scripts && npm run build"
+        )
+    if shutil.which(config.openshell.cli) is None:
+        problems.append(f"no OpenShell CLI {config.openshell.cli}")
+    problems.extend(
+        f"no {name} in {commands(config)}"
+        for name in (WORKER, HARNESS, WORKSPACE)
+        if shutil.which(name, path=str(commands(config))) is None
+    )
+    if problems:
+        raise LauncherError("cannot start:\n" + "\n".join(f"  {problem}" for problem in problems))
+
+
+def prepare(config: LauncherConfig) -> Layout:
+    """Make the state directory, the tokens and the worker's settings."""
+    layout = Layout(config.state_dir)
+    layout.make()
+    ensure_token(layout.token("worker"))
+    digests = {name: ensure_token(layout.token(f"{name}-worker")) for name in CLIENTS}
+    write_private(layout.worker_settings, toml.dumps(worker_settings(config, layout, digests)))
+    return layout
+
+
+def worker_settings(
+    config: LauncherConfig, layout: Layout, digests: dict[str, str]
+) -> dict[str, Any]:
+    """The worker's settings (docs/WORKER.md), with every path absolute."""
+    projects = [project.id for project in config.projects]
+    return {
+        "listen": config.worker.listen,
+        "token_file": str(layout.token("worker")),
+        "state_dir": str(layout.worker_state),
+        "pool_id": config.worker.pool_id,
+        "openshell": config.openshell.model_dump(mode="json", exclude_none=True),
+        "clients": [
+            {"name": name, "token_sha256": digests[name], "projects": projects} for name in CLIENTS
+        ],
+    }
+
+
+def worker_url(config: LauncherConfig) -> str:
+    return f"http://{config.worker.listen}"
+
+
+def worker_argv(config: LauncherConfig, layout: Layout) -> list[str]:
+    return [
+        str(commands(config) / WORKER), "serve",
+        "--settings", str(layout.worker_settings),
+        "--log-level", config.worker.log_level,
+    ]  # fmt: skip
+
+
+def policy_argv(config: LauncherConfig, layout: Layout) -> list[str]:
+    """Store the project policy and grant it to every project; it prints its digest."""
+    granted = [option for project in config.projects for option in ("--project", project.id)]
+    return [
+        str(commands(config) / WORKER), "policy", "add",
+        "--settings", str(layout.worker_settings), *granted, str(config.worker.policy),
+    ]  # fmt: skip
+
+
+def project_argvs(config: LauncherConfig, layout: Layout, policy: str) -> list[list[str]]:
+    """Make each project, on the policy just granted, and open its sessions.
+
+    Each is idempotent: ``project create`` leaves a project that exists as it is,
+    ``project revise`` moves it to the policy (its environments follow on their next
+    use), and ``session open`` leaves an open session as it is.
+    """
+    harness = str(commands(config) / HARNESS)
+    state = ["--state-dir", str(layout.control)]
+    argvs: list[list[str]] = []
+    for project in config.projects:
+        scope = [*state, "--project", project.id]
+        argvs.append(
+            [harness, "project", "create", *scope, "--profile", project.profile, "--policy", policy]
+        )
+        argvs.append([harness, "project", "revise", *scope, "--policy", policy])
+        argvs.extend(
+            [harness, "session", "open", *scope, "--session", session]
+            for session in project.sessions
+        )
+    return argvs
+
+
+def harness_argv(config: LauncherConfig, layout: Layout) -> list[str]:
+    """The run service: it starts the runs the workspace's chat asks for."""
+    model = config.model
+    reviewer = ["--reviewer-model", model.reviewer] if model.reviewer else []
+    return [
+        str(commands(config) / HARNESS), "serve",
+        "--state-dir", str(layout.control),
+        "--worker", worker_url(config),
+        "--token-file", str(layout.token("harness-worker")),
+        "--model-url", model.url, "--model", model.name,
+        "--api-key-file", str(model.api_key_file), *reviewer,
+    ]  # fmt: skip
+
+
+def workspace_argv(config: LauncherConfig, layout: Layout) -> list[str]:
+    """The workspace server and its PDF viewer's origin."""
+    model, workspace = config.model, config.workspace
+    repairs = (
+        ["--model-url", model.url, "--reviewer-model", model.reviewer,
+         "--api-key-file", str(model.api_key_file)]
+        if model.reviewer
+        else []
+    )  # fmt: skip
+    return [
+        str(commands(config) / WORKSPACE), "serve",
+        "--state-dir", str(layout.control),
+        "--static", str(workspace.static),
+        "--listen", workspace.listen, "--preview-listen", workspace.preview(),
+        "--worker", worker_url(config),
+        "--worker-token-file", str(layout.token("workspace-worker")), *repairs,
+    ]  # fmt: skip
