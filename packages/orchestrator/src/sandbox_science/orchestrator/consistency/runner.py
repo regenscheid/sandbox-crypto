@@ -14,6 +14,7 @@ from pydantic import Field, ValidationError
 from sandbox_science.contracts.model import Contract
 from sandbox_science.orchestrator.aio import threaded
 from sandbox_science.orchestrator.documents.errors import DocumentError
+from sandbox_science.orchestrator.memory_prompt import MemoryGiven
 from sandbox_science.orchestrator.model import ChatModel, Message, ModelError, ToolCall, ToolSpec
 
 from .findings import Findings
@@ -136,9 +137,13 @@ class ReviewerRunner:
         review: str,
         owner: str,
         model: ChatModel | None,
+        *,
+        memory: MemoryGiven | None = None,
     ) -> None:
         self.store, self.project, self.session = store, project, session
         self.review, self.owner, self.model = review, owner, model
+        self.memory = memory
+        """The project memory, given after the rubric (PM-6)."""
         self.findings = Findings(store)
         self.record = store.run(project, session, review)
         self.config = ReviewConfig.model_validate(self.record["config"])
@@ -284,9 +289,9 @@ class ReviewerRunner:
         assert self.model is not None  # noqa: S101
         if self.record["rubric"] != RUBRIC_VERSION:
             raise ValueError("the reserved review rubric differs from the installed rubric")
-        bundle = assemble_reviewer(RUBRIC, RUBRIC_VERSION, SPECS)
+        bundle = assemble_reviewer(RUBRIC, RUBRIC_VERSION, SPECS, self.memory)
         messages: list[Message] = [
-            {"role": "system", "content": bundle.provenance.rubric_text},
+            {"role": "system", "content": bundle.system},
             {
                 "role": "user",
                 "content": dump(

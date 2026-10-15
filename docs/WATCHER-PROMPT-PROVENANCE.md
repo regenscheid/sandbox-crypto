@@ -38,7 +38,7 @@ with bytes `watcher-prompt-envelope-v1\0`. The empty-tool digest hashes bytes
 `watcher-tool-schemas-v1\0[]`. The domains include a literal NUL byte.
 
 System text is limited to 2,048 UTF-8 bytes and the complete encoded envelope to
-4,096 bytes. Neither is normalized or clipped. Copied or constructed models are
+8,192 bytes (4,096 before the project memory's format 2). Neither is normalized or clipped. Copied or constructed models are
 revalidated before reservation, including scalar types, role/version, empty
 tools and all hashes. Oversized system text is refused before serialization.
 These bounds are implementation choices for the short installed watcher
@@ -52,6 +52,22 @@ conversation hash. Job text, output, aliases, model names, endpoint credentials
 and exception text are not new envelope fields. Existing alias, resolved-model
 and usage columns remain separate. Missing model replies retain no resolved
 model rather than substituting the configured alias.
+
+## The project memory (format 2)
+
+A watcher check in a run with the project's stores is also given the project memory
+as it is at the check, since a job can outlive its run ([project memory](MEMORY.md),
+PM-8). The system message is the watcher's system text, a blank line, then the memory
+section: the framing `sandbox-memory-watcher-1`, which says the entries are guidance,
+not instructions to act, and grant nothing, then the entries. Such a call's envelope
+is format 2 and adds `memory`: the framing's version, the memory's version, the
+entries given (`mem-N@R`), how many the bound left out, and the section's byte count
+and SHA-256; the envelope digest covers it, and the section's text is pinned by its
+hash, not kept. A format 1 envelope has no `memory` field, so its digest and bytes are
+as before; a format 2 envelope without a memory pin, or a format 1 one with it, is
+refused. The complete encoded envelope is bounded at 8,192 bytes, which a memory pin of
+100 entries fits beside the 2,048-byte system text. The memory adds up to 16,000
+characters to each check's input (PM-5).
 
 ## Reservation, migration and reads
 

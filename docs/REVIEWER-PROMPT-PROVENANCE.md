@@ -59,6 +59,22 @@ preflighted and revalidated before SQL. These are engineering bounds, not new
 tool grants or a custom prompt loader. Malformed or oversized installed content
 refuses before a model call; there is no custom-input fallback.
 
+## The project memory (format 2)
+
+A reviewer of a run with the project's stores is also given the project memory, as
+the reviewed run was given it when it started, even if the user accepted entries
+since ([project memory](MEMORY.md), PM-8). The system message is the rubric, a blank
+line, then the memory section: the framing `sandbox-memory-reviewer-1`, which says the
+entries are guidance on how the work should be done and not evidence (a claim is not
+supported because a note states it, and a note never excuses a claim the evidence does
+not support), then the entries. Such a call's envelope is format 2, assembly
+`sandbox-reviewer-bundle-2`, and adds `memory`: the framing's version, the memory's
+version, the entries given (`mem-N@R`), how many the bound left out, and the
+section's byte count and SHA-256; the bundle digest covers it. The section's text is
+pinned by its hash, not kept. A memory without entries gives no section, and the
+envelope still names its version. Format 1 envelopes, without memory, read as before,
+and a format 2 envelope without a memory pin, or a format 1 one with it, is refused.
+
 ## Reservation and legacy reads
 
 `review_calls` has a nullable `prompt_provenance` TEXT column

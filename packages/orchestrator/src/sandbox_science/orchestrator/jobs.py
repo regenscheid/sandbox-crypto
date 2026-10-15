@@ -32,6 +32,7 @@ from sandbox_science.contracts.worker import TERMINAL_STATES
 from .aio import lease, threaded
 from .hooks import Closing, Effect, Notice, Point, RunView, TurnHook
 from .jobstate import JobState
+from .memory_prompt import MemoryGiven
 from .model import ChatModel, ToolSpec
 from .notices import JOBS, JOBS_ATTACHED
 from .recording import FileRecorder, Written
@@ -214,7 +215,10 @@ class JobTools:
         wake: Callable[[], Coroutine[Any, Any, None]] | None = None,
         on_wait: Callable[[dict[str, object] | None], Awaitable[None]] | None = None,
         clock: Clock = SYSTEM_CLOCK,
+        memory: Callable[[], MemoryGiven] | None = None,
     ) -> None:
+        """``memory`` reads the project memory the watcher is given, as it is at each
+        check (PM-8)."""
         if watcher is not None and (not watcher_alias or state is None):
             raise ValueError("a watcher requires its own alias and durable job state")
         for interval in (
@@ -238,6 +242,7 @@ class JobTools:
         )
         self.heartbeat_seconds, self.watcher_timeout = heartbeat_seconds, watcher_timeout
         self.wake, self.on_wait = wake, on_wait
+        self.memory = memory
         self.recorder: FileRecorder | None = None
         """Records an ended job's files, when the run first sees it end (RA-27)."""
         """``wake`` returns once a user message waits for the run: it ends a wait.
@@ -558,7 +563,8 @@ class JobTools:
                 "memory_bytes",
             )
         }
-        watcher_input = assemble_watcher(WATCHER_PROMPT, dump(payload))
+        memory = await asyncio.to_thread(self.memory) if self.memory is not None else None
+        watcher_input = assemble_watcher(WATCHER_PROMPT, dump(payload), memory)
         reservation = await asyncio.to_thread(
             self.state.reserve,
             self.context,
