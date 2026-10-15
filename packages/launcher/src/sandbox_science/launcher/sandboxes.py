@@ -13,7 +13,12 @@ running, and the launcher says so.
 
 The launcher keeps the last list it got in ``sandboxes.json``. It refreshes the list
 while it runs, so that ``status`` can name the sandboxes when the worker is down, and
-ask OpenShell whether each one runs.
+ask OpenShell whether each one runs; ``status`` itself never writes it. Every
+environment listed is asked to suspend, even one listed as suspended: the worker
+records ``stopped`` before the stop runs, and answers from the sandbox's real phase.
+
+The client sends and checks the worker API's protocol version, as the harness's does
+(docs/COMPATIBILITY.md).
 """
 
 from __future__ import annotations
@@ -27,6 +32,8 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
+
+from sandbox_science.contracts.worker import PROTOCOL_HEADER, PROTOCOL_VERSION
 
 from .config import LauncherConfig, LauncherError
 from .mcp import OpenShell
@@ -66,9 +73,18 @@ class WorkerApi:
                 self.url + path,
                 method=method,
                 data=b"" if method == "POST" else None,
-                headers={"Authorization": f"Bearer {token}"},
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    PROTOCOL_HEADER: str(PROTOCOL_VERSION),
+                },
             )
             with self._opener.open(request, timeout=timeout) as response:
+                spoken = response.headers.get(PROTOCOL_HEADER)
+                if spoken != str(PROTOCOL_VERSION):
+                    raise LauncherError(
+                        f"version mismatch: the worker reports protocol {spoken!r}, the "
+                        f"launcher speaks protocol {PROTOCOL_VERSION}; upgrade them together"
+                    )
                 return cast(dict[str, Any], json.loads(response.read()))
         except urllib.error.HTTPError as error:
             try:
@@ -128,20 +144,28 @@ async def keep_listing(api: WorkerApi, layout: Layout) -> None:
 
 
 async def suspend_all(api: WorkerApi, layout: Layout) -> tuple[list[Sandbox], list[Sandbox]]:
-    """Suspend every sandbox that runs; the ones suspended, and the ones that may still run."""
+    """Ask every listed sandbox to suspend; those it suspended that were running, and those
+    that may still run."""
     listed = await api.sandboxes()
-    running = [sandbox for sandbox in listed if sandbox.state != "suspended"]
 
-    async def one(sandbox: Sandbox) -> tuple[bool, Sandbox]:
+    async def one(sandbox: Sandbox) -> tuple[bool, Sandbox, Sandbox]:
         try:
-            return await api.suspend(sandbox.environment)
+            done, found = await api.suspend(sandbox.environment)
         except LauncherError:
-            return False, sandbox
+            return False, sandbox, sandbox
+        return done, sandbox, found
 
-    outcomes = await asyncio.gather(*(one(sandbox) for sandbox in running))
-    suspended = [replace(found, state="suspended") for done, found in outcomes if done]
-    still = [found for done, found in outcomes if not done]
-    after = {sandbox.environment: sandbox for sandbox in [*listed, *suspended, *still]}
+    outcomes = await asyncio.gather(*(one(sandbox) for sandbox in listed))
+    suspended = [
+        replace(found, state="suspended")
+        for done, before, found in outcomes
+        if done and before.state != "suspended"
+    ]
+    still = [replace(found, state="running") for done, _, found in outcomes if not done]
+    after = {
+        found.environment: replace(found, state="suspended" if done else "running")
+        for done, _, found in outcomes
+    }
     remember(layout, list(after.values()))
     return suspended, still
 
@@ -173,8 +197,10 @@ class Outcome:
     kept: bool = False
     """``down --keep-sandboxes``."""
     suspended: list[Sandbox] = field(default_factory=list[Sandbox])
-    running: list[Sandbox] | None = field(default_factory=list[Sandbox])
-    """Those that may still run; None when the worker could not say."""
+    running: list[Sandbox] | None = None
+    """Those that may still run; None when that is not known."""
+    reason: str | None = None
+    """Why it is not known."""
 
     def dumps(self) -> str:
         running = None if self.running is None else [asdict(item) for item in self.running]
@@ -184,6 +210,7 @@ class Outcome:
                 "kept": self.kept,
                 "suspended": [asdict(item) for item in self.suspended],
                 "running": running,
+                "reason": self.reason,
             }
         )
 
@@ -197,6 +224,7 @@ class Outcome:
                 kept=bool(raw["kept"]),
                 suspended=[Sandbox(**item) for item in raw["suspended"]],
                 running=None if running is None else [Sandbox(**item) for item in running],
+                reason=None if raw.get("reason") is None else str(raw["reason"]),
             )
         except (OSError, ValueError, KeyError, TypeError):
             return None
@@ -206,8 +234,10 @@ class Outcome:
         if self.suspended:
             print(f"suspended the research sandboxes {describe(self.suspended)}", flush=True)
         if self.running is None:
+            why = self.reason or "nothing listed them"
             print(
-                "the research sandboxes may still be running: the worker could not list them",
+                f"the research sandboxes were not checked, and may still be running ({why}): "
+                "sandbox-science status shows them, and sandbox-science down stops them",
                 flush=True,
             )
         elif self.running and self.kept:
@@ -227,19 +257,32 @@ class Outcome:
         return 1 if self.tried and (self.running is None or self.running) else 0
 
 
-async def at_stop(api: WorkerApi, layout: Layout, outcome: Outcome) -> None:
-    """Before the worker stops: suspend the sandboxes on an explicit stop, else list them."""
+async def at_stop(
+    api: WorkerApi, layout: Layout, outcome: Outcome, hurry: asyncio.Event | None = None
+) -> None:
+    """Before the worker stops: suspend the sandboxes on an explicit stop, else list them.
+    ``hurry`` set (a second Ctrl-C) stops waiting for the suspension."""
     if outcome.tried:
         print("suspending the research sandboxes", flush=True)
+        work = asyncio.ensure_future(suspend_all(api, layout))
+        waits: set[asyncio.Future[Any]] = {work}
+        if hurry is not None:
+            waits.add(asyncio.ensure_future(hurry.wait()))
+        done, pending = await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
+        for waiting in pending:
+            waiting.cancel()
+        if work not in done:
+            outcome.reason = "the launcher stopped waiting for the suspension"
+            return
         try:
-            outcome.suspended, outcome.running = await suspend_all(api, layout)
-        except LauncherError:
-            outcome.running = None
+            outcome.suspended, outcome.running = work.result()
+        except LauncherError as exc:
+            outcome.reason = str(exc)
         return
     try:
         listed = await api.sandboxes()
-    except LauncherError:
-        outcome.running = None
+    except LauncherError as exc:
+        outcome.reason = str(exc)
         return
     remember(layout, listed)
     outcome.running = [sandbox for sandbox in listed if sandbox.state != "suspended"]
@@ -251,8 +294,7 @@ def lines(
     """``status``'s lines, from the worker's list when it gave one, else from OpenShell's
     word on the last list the launcher kept; and whether one may be running."""
     if listed is not None:
-        remember(layout, listed)
-        found = listed
+        found = listed  # status writes nothing: up's own list stays as up keeps it
         source = "as the worker says"
     else:
         known = remembered(layout)

@@ -83,6 +83,7 @@ from .lockfile_diffs import LockfileDiffs, Pair
 from .manager import ExecutionManager
 from .provisioner import MAX_WAIT, RESERVED_OPERATION, Provisioner
 from .settings import ClientSettings, token_digest
+from .suspend import busy
 from .timeouts import seconds
 
 _log = logging.getLogger(__name__)
@@ -611,17 +612,20 @@ async def list_environments(request: web.Request) -> web.Response:
 async def suspend_environment(request: web.Request) -> web.Response:
     """Stop the environment's sandbox now, as idle suspension would (W3).
 
-    The same rule holds as for an idle environment: one in use keeps running, and its
-    next use starts a stopped one again, with its files and installed tools.
+    The same rule holds as for an idle environment: one in use keeps running, its
+    kernels' CPU sampled twice a second apart included (``suspend.busy``), and its next
+    use starts a stopped one again, with its files and installed tools. ``suspended`` is
+    OpenShell's word on the sandbox, not the worker's record (``Environments.stop_now``).
     """
     environments = _environments(request)
     environment_id = _environment(request, environments)
-    state = environments.get(environment_id).state
-    suspended = state is EnvironmentState.STOPPED
-    if state is EnvironmentState.READY:
-        suspended = await environments.suspend(
-            environment_id, request.app[MANAGER].clock.monotonic()
-        )
+    manager = request.app[MANAGER]
+    if environments.get(environment_id).state is EnvironmentState.READY and await busy(
+        manager, environment_id, manager.clock
+    ):
+        suspended = False
+    else:
+        suspended = await environments.stop_now(environment_id, manager.clock.monotonic())
     return _json(SuspendResult(environment=environments.get(environment_id), suspended=suspended))
 
 

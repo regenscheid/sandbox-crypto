@@ -100,7 +100,7 @@ def up(config: LauncherConfig, path: Path) -> int:
 
 
 def _recorder(
-    config: LauncherConfig, path: Path, layout: Layout
+    config: LauncherConfig, path: Path, layout: Layout, purpose: str = "up"
 ) -> Callable[[list[Running]], None]:
     """Keep the instance's record as its parts start and stop."""
     started_at = datetime.now(UTC).isoformat(timespec="seconds")
@@ -127,6 +127,7 @@ def _recorder(
                     )
                     for r in running
                 ),
+                purpose=purpose,
             ),
         )
 
@@ -143,6 +144,8 @@ async def _up(
     stop = asyncio.Event()
     asked = 0
     outcome = sandboxes.Outcome()
+    hurry = asyncio.Event()
+    """A second Ctrl-C: stop waiting, for the parts and for the suspension."""
 
     def ask(keep: bool) -> None:
         nonlocal asked
@@ -150,6 +153,8 @@ async def _up(
         if asked == 1:
             outcome.tried, outcome.kept = not keep, keep
             print("stopping; Ctrl-C again to stop at once", flush=True)
+        else:
+            hurry.set()
         stop.set()
 
     for number in STOP_SIGNALS:
@@ -165,7 +170,7 @@ async def _up(
     )
     status = 0
     try:
-        await _start(config, layout, supervisor, outcome)
+        await _start(config, layout, supervisor, outcome, hurry)
         _announce(config, path, layout)
         reason = await supervisor.watch()
         if reason is not None:
@@ -177,7 +182,7 @@ async def _up(
         print(f"error: {exc}", file=sys.stderr, flush=True)
         status = 1
     finally:
-        await supervisor.stop(now=lambda: asked > 1)
+        await supervisor.stop(now=hurry.is_set)
         for leftover in (layout.login, layout.record):
             leftover.unlink(missing_ok=True)
         for number in (*STOP_SIGNALS, signal.SIGUSR1):
@@ -198,7 +203,11 @@ def _worker(config: LauncherConfig, layout: Layout) -> Part:
 
 
 async def _start(
-    config: LauncherConfig, layout: Layout, supervisor: Supervisor, outcome: sandboxes.Outcome
+    config: LauncherConfig,
+    layout: Layout,
+    supervisor: Supervisor,
+    outcome: sandboxes.Outcome,
+    hurry: asyncio.Event,
 ) -> None:
     timeout = config.start_timeout
     if config.mcp_proxy is not None:
@@ -212,7 +221,7 @@ async def _start(
 
     async def research_sandboxes() -> None:
         listing.cancel()
-        await sandboxes.at_stop(api, layout, outcome)
+        await sandboxes.at_stop(api, layout, outcome, hurry)
 
     supervisor.on_stop("look after the research sandboxes", research_sandboxes)
     granted = await supervisor.run(
@@ -284,8 +293,15 @@ def down(config: LauncherConfig, path: Path, *, keep: bool) -> int:
             f"an instance holds {layout.lock}, but its record does not name it: try again, "
             "or press Ctrl-C where it runs"
         )
-    layout.stopped.unlink(missing_ok=True)
-    os.kill(found.pid, signal.SIGUSR1 if keep else signal.SIGTERM)
+    if found.purpose == "down":
+        print(
+            f"a sandbox-science down (process {found.pid}) is suspending the research "
+            "sandboxes: waiting for it",
+            flush=True,
+        )
+    else:
+        layout.stopped.unlink(missing_ok=True)
+        os.kill(found.pid, signal.SIGUSR1 if keep else signal.SIGTERM)
     patience = config.stop_timeout * (len(found.parts) + 1) + sandboxes.SUSPEND_TIMEOUT + 30
     deadline = time.monotonic() + patience
     while instance.running(layout):
@@ -316,29 +332,49 @@ def _down_stopped(config: LauncherConfig, path: Path, layout: Layout, *, keep: b
     if not stopped and made is None:
         print("Sandbox Science is not running")
     known = sandboxes.remembered(layout)
-    if keep or known is None or not known[1]:
-        return 0
-    try:
-        now = asyncio.run(sandboxes.checked(config, known[1]))
-    except LauncherError:
-        now = known[1]  # OpenShell could not say: they may run
-    running = [item for item in now if item.state not in ("suspended", "gone")]
-    if not running:
-        return 0
-    print(
-        f"starting the worker to suspend the research sandboxes {sandboxes.describe(running)}",
-        flush=True,
-    )
+    if keep or known is None:
+        return 0  # kept on request, or no worker of this state directory ever listed any
+    if sandboxes.Outcome.read(layout.stopped) is None:
+        # The last stop said nothing of them (a launcher killed outright): the list may
+        # be half a minute old, so the worker lists them again.
+        print("starting the worker to list and suspend the research sandboxes", flush=True)
+    else:
+        try:
+            now = asyncio.run(sandboxes.checked(config, known[1]))
+        except LauncherError:
+            now = known[1]  # OpenShell could not say: they may run
+        running = [item for item in now if item.state not in ("suspended", "gone")]
+        if not running:
+            return 0
+        print(
+            "starting the worker to suspend the research sandboxes " + sandboxes.describe(running),
+            flush=True,
+        )
     parts.prepare(config)
     return asyncio.run(_suspend_with_worker(config, path, layout))
 
 
 async def _suspend_with_worker(config: LauncherConfig, path: Path, layout: Layout) -> int:
-    """Start the worker alone, suspend the research sandboxes through it, and stop it."""
-    record = _recorder(config, path, layout)
+    """Start the worker alone, suspend the research sandboxes through it, and stop it.
+
+    Its record says it is ``down``'s, so another ``down`` waits for it rather than
+    signal it, and ``status`` says so. A stop signal (Ctrl-C, SIGTERM, SIGHUP, SIGQUIT
+    or SIGUSR1) stops waiting for the suspension, and stops the worker in order.
+    """
+    loop = asyncio.get_running_loop()
+    hurry = asyncio.Event()
+
+    def ask() -> None:
+        if not hurry.is_set():
+            print("stopping; no longer waiting for the suspension", flush=True)
+        hurry.set()
+
+    for number in (*STOP_SIGNALS, signal.SIGUSR1):
+        loop.add_signal_handler(number, ask)
+    record = _recorder(config, path, layout, purpose="down")
     supervisor = Supervisor(
         layout,
-        asyncio.Event(),
+        hurry,
         stop_timeout=config.stop_timeout,
         changed=lambda: record(supervisor.running),
         env=environment(),
@@ -347,13 +383,18 @@ async def _suspend_with_worker(config: LauncherConfig, path: Path, layout: Layou
     try:
         await supervisor.start(_worker(config, layout), config.start_timeout)
         api = sandboxes.WorkerApi(parts.worker_url(config), layout.token("launcher-worker"))
-        await sandboxes.at_stop(api, layout, outcome)
+        await sandboxes.at_stop(api, layout, outcome, hurry)
+    except StopRequested:
+        outcome.reason = "stopped before the worker was ready"
     except LauncherError as exc:
         print(f"error: {exc}", file=sys.stderr, flush=True)
-        outcome.running = None
+        outcome.reason = str(exc)
     finally:
         await supervisor.stop()
         layout.record.unlink(missing_ok=True)
+        for number in (*STOP_SIGNALS, signal.SIGUSR1):
+            loop.remove_signal_handler(number)
+    write_private(layout.stopped, outcome.dumps() + "\n")
     return outcome.report()
 
 
@@ -381,6 +422,12 @@ def status(config: LauncherConfig) -> int:
     if found is None:
         print(f"Sandbox Science is starting, from {layout.root}")
         return 0
+    if found.purpose == "down":
+        print(
+            f"Sandbox Science is stopping: sandbox-science down (process {found.pid}) runs "
+            "the worker alone to suspend the research sandboxes"
+        )
+        return DEGRADED
     print(f"Sandbox Science is running (process {found.pid}, since {found.started_at})")
     print(f"  config: {found.config}")
     if found.gui is not None and layout.login.exists():

@@ -1644,10 +1644,14 @@ version = "0.1.0"
 source = { editable = "packages/launcher" }
 dependencies = [
     { name = "pydantic" },
+    { name = "sandbox-science-contracts" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pydantic", specifier = ">=2.9" }]
+requires-dist = [
+    { name = "pydantic", specifier = ">=2.9" },
+    { name = "sandbox-science-contracts", editable = "packages/contracts" },
+]
 
 [[package]]
 name = "sandbox-science-mcp-proxy"

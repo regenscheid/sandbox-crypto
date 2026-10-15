@@ -247,7 +247,12 @@ def site(make_config: ConfigMaker, fake_parts: Path, tmp_path: Path) -> Iterator
         started.append(launcher)
         return launcher
 
-    yield {"launch": tracked, "journal": journal, "worker": worker}
+    def spawn(config: Path, env: dict[str, str], command: str) -> Launcher:
+        launcher = Launcher(config, env, command)
+        started.append(launcher)
+        return launcher
+
+    yield {"launch": tracked, "spawn": spawn, "journal": journal, "worker": worker}
     for launcher in started:
         if launcher.process.poll() is None:
             launcher.process.send_signal(signal.SIGINT)

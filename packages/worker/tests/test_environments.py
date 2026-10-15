@@ -44,6 +44,7 @@ from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerCli
 from sandbox_science.policy import HardFloor
 from sandbox_science.testing import FakeClock
 from sandbox_science.worker import environments as environments_module
+from sandbox_science.worker import suspend as suspend_module
 from sandbox_science.worker.admission import (
     MAX_DRAFTS,
     MAX_ENDPOINTS,
@@ -1677,6 +1678,46 @@ async def test_a_client_lists_and_suspends_only_its_projects_environments(api: A
     _, after = await api.call("GET", "/v1/environments", TOKEN)
     states = {item["environment_id"]: item["state"] for item in after["environments"]}
     assert states == {"env-a": "stopped", "env-b": "ready"}
+
+
+async def test_a_stop_that_failed_is_tried_again_and_answered_by_the_phase(api: Api) -> None:
+    assert (await api.call("POST", "/v1/environments", A_TOKEN, api.environment("env-a")))[0] == 201
+    api.setup.fake.update(fail_stop=True)
+    status, first = await api.call("POST", "/v1/environments/env-a/suspend", A_TOKEN)
+    # The record says stopped before the stop runs; OpenShell says the sandbox is not.
+    assert (status, first["suspended"]) == (200, False)
+    assert first["environment"]["state"] == "stopped"
+    assert len(api.setup.fake.calls("sandbox", "stop")) == 2  # the stop, then once more
+    api.setup.fake.update(fail_stop=False)
+    _, second = await api.call("POST", "/v1/environments/env-a/suspend", A_TOKEN)
+    assert second["suspended"] is True
+    assert len(api.setup.fake.calls("sandbox", "stop")) == 3
+    _, third = await api.call("POST", "/v1/environments/env-a/suspend", A_TOKEN)
+    assert third["suspended"] is True
+    assert len(api.setup.fake.calls("sandbox", "stop")) == 3  # stopped: not again
+
+
+async def test_kernels_computing_keep_an_environment_up_on_request(
+    api: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert (await api.call("POST", "/v1/environments", A_TOKEN, api.environment("env-a")))[0] == 201
+    monkeypatch.setattr(suspend_module, "SAMPLE_GAP", 0.05)
+    samples: list[float] = []
+
+    async def activity(self: ExecutionManager, environment_id: str) -> Activity:
+        return Activity(
+            last_used=None, running=0, cpu_seconds=samples.pop(0), kernels=1, executor="exe-1"
+        )
+
+    monkeypatch.setattr(ExecutionManager, "activity", activity)
+    samples.extend([1.0, 2.0])  # a thread a cell left computing: a core's worth
+    status, result = await api.call("POST", "/v1/environments/env-a/suspend", A_TOKEN)
+    assert (status, result["suspended"]) == (200, False)
+    assert result["environment"]["state"] == "ready"
+    assert api.setup.fake.calls("sandbox", "stop") == []
+    samples.extend([5.0, 5.0])  # idle kernels
+    _, idle = await api.call("POST", "/v1/environments/env-a/suspend", A_TOKEN)
+    assert idle["suspended"] is True
 
 
 async def test_an_environment_in_use_is_not_suspended_on_request(api: Api) -> None:

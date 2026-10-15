@@ -114,6 +114,6 @@ class SuspendResult(Contract):
 
     environment: EnvironmentInfo
     suspended: bool
-    """Whether its sandbox is stopped now: by this request, or already. False while it is in
-    use (running jobs, a publication or a request in flight keep it running), while it is
-    being created, or when its stop failed."""
+    """Whether OpenShell says its sandbox is stopped now: by this request, or already. False
+    while it is in use (running jobs, a publication, a request in flight or kernels
+    computing keep it running), while it is being created, or when its stop failed."""

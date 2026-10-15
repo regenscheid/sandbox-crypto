@@ -12,10 +12,14 @@ Every step goes in the file ``FAKE_JOURNAL`` names, one line each, and ``FAKE_PA
 - ``child-in-own-group``: it starts a child in a process group of its own.
 - ``child-stays``: it starts a child in its own session, which outlives it.
 - ``suspend-busy``: the worker suspends nothing, as for sandboxes in use.
+- ``suspend-slow``: the worker takes 20 s to answer a suspension.
+- ``old-protocol``: the worker speaks protocol 4.
 
 The worker answers ``GET /v1/environments`` and ``POST /v1/environments/{id}/suspend``
 for its clients' projects, from the environments in the OpenShell stand-in's file
-(``FAKE_OPENSHELL``); a suspension stops the sandbox there too.
+(``FAKE_OPENSHELL``); a suspension stops the sandbox there too. As the worker does, it
+answers from the sandbox's phase: one recorded stopped whose sandbox is still Ready is
+stopped again.
 
 The run service and the workspace note ``LEAK_CHECK`` and ``PASSED_ON`` when they see
 them.
@@ -80,6 +84,7 @@ def worker_api(settings: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         def answer(self, status: int, body: object) -> None:
             data = json.dumps(body).encode()
             self.send_response(status)
+            self.send_header("X-Worker-Protocol", "4" if behaviour == "old-protocol" else "5")
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
@@ -106,6 +111,8 @@ def worker_api(settings: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             match = re.fullmatch(r"/v1/environments/([^/]+)/suspend", self.path)
             if match is None:
                 return self.refuse(404, "not_found")
+            if behaviour == "suspend-slow":
+                time.sleep(20)
             with lock:
                 state = openshell_state()
                 environment = next(
@@ -119,10 +126,11 @@ def worker_api(settings: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 )
                 if environment is None:
                     return self.refuse(404, "not_found")
-                suspended = environment["state"] == "stopped"
+                sandbox = state["sandboxes"][environment["sandbox"]]
+                suspended = sandbox["phase"] == "Stopped"
                 if not suspended and behaviour != "suspend-busy":
                     environment["state"] = "stopped"
-                    state["sandboxes"][environment["sandbox"]]["phase"] = "Stopped"
+                    sandbox["phase"] = "Stopped"
                     Path(os.environ["FAKE_OPENSHELL"]).write_text(json.dumps(state))
                     note(f"suspend {environment['environment_id']}")
                     suspended = True

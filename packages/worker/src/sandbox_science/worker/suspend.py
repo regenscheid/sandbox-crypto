@@ -42,6 +42,32 @@ BUSY_SHARE: Final = 0.02
 """CPU seconds per second, summed over an environment's kernels, that count as use."""
 CONCURRENCY: Final = 8
 """Environments sampled at once."""
+SAMPLE_GAP: Final = 1.0
+"""Seconds between the two samples of an environment asked to suspend now (``busy``)."""
+
+
+async def busy(manager: ExecutionManager, environment_id: str, clock: Clock) -> bool:
+    """Whether an environment asked to suspend now is in use, by idle suspension's measure.
+
+    Work the worker runs there, or its kernels' CPU over two samples ``SAMPLE_GAP`` apart
+    above ``BUSY_SHARE``, so that a cell that left a computation running in a thread
+    keeps its environment up. An executor that cannot say, or two samples that cannot be
+    compared, count as in use.
+    """
+    first = await manager.activity(environment_id)
+    started = clock.monotonic()
+    if first is None or first.running:
+        return True
+    if first.cpu_seconds is None:
+        return False  # no executor: no research code runs there
+    await clock.sleep(SAMPLE_GAP)
+    second = await manager.activity(environment_id)
+    if second is None or second.running or second.cpu_seconds is None:
+        return second is None or bool(second.running)
+    if second.executor != first.executor or second.cpu_seconds < first.cpu_seconds:
+        return True
+    elapsed = max(clock.monotonic() - started, 1e-6)
+    return second.cpu_seconds - first.cpu_seconds > BUSY_SHARE * elapsed
 
 
 class Suspender:

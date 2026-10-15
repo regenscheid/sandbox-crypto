@@ -120,9 +120,15 @@ Press Ctrl-C where `up` runs, or run `sandbox-science down --config …` from an
 **The research sandboxes:** these are the sandboxes the worker made for the config's projects. A stop you ask for (Ctrl-C, `down`, SIGTERM, SIGHUP or SIGQUIT) suspends them before the worker stops, through the worker's own suspension, the one `suspend_after` uses ([idle suspension](WORKER.md#idle-suspension)).
 - **What a suspension keeps.** A suspended sandbox keeps its files and installed packages; its kernels end. The next use, after the next `up`, starts it again.
 - **What it never touches.** Another project's sandbox, or one the worker did not make, is never suspended. The launcher asks the worker with a token limited to the config's projects.
-- **A sandbox in use keeps running.** One running a background job, for example, is not suspended. `down` names each sandbox that may still be running and exits 1, and the services are stopped all the same. So does a suspension that fails or takes more than three minutes.
+- **A sandbox in use keeps running.** One running a background job, or with a kernel still computing (its CPU sampled twice, a second apart), is not suspended. `down` names each sandbox that may still be running and exits 1, and the services are stopped all the same.
+  - The same happens when a suspension fails or takes more than three minutes.
+  - A second Ctrl-C stops waiting for the suspension: the launcher says the sandboxes were not checked, and `down` later finishes the job.
+  - Each sandbox the worker lists is asked, even one it records as suspended, and the answer is OpenShell's phase. A stop that failed earlier is therefore tried again.
 - **Keeping them running.** `down --keep-sandboxes` stops the services and leaves the sandboxes running, as they were. Their kernels are still there for the next `up`, which reattaches to them ([sandbox daemon and recovery](WORKER.md#sandbox-daemon-and-recovery)).
-- **After a part died.** When a part stopped by itself and took the rest down, the sandboxes are not suspended. The launcher says which ones still run, and `sandbox-science down` suspends them. With the services stopped, `down` starts the worker alone for that, and stops it again.
+- **After a part died.** When a part stopped by itself and took the rest down, the sandboxes are not suspended. The launcher says which ones still run, and `sandbox-science down` suspends them.
+- **`down` with the services stopped.** `down` starts the worker alone to suspend the sandboxes, and stops it again. It does this when OpenShell says one still runs, or, after a launcher that was killed, always, since the last list may be stale.
+  - While it runs, `status` says so and exits 4, and another `down` waits for it.
+  - A stop signal makes it stop waiting, stop the worker and say what may still run.
 - With `suspend_after` in `[openshell.environments]`, as in the example, the worker also suspends a sandbox nobody has used for that long, while Sandbox Science runs.
 - To delete the sandboxes, use the OpenShell CLI (`openshell sandbox list`, `openshell sandbox delete`).
 
