@@ -31,6 +31,7 @@ LOGIN_TOKEN = "fake-login-token-0123456789abcdef"
 STARTED = [
     "sandbox-science-worker start",
     "sandbox-science-worker policy add crypto",
+    "sandbox-science-harness project show crypto",
     "sandbox-science-harness project create crypto",
     "sandbox-science-harness project revise crypto",
     "sandbox-science-harness session open crypto main",
@@ -103,6 +104,25 @@ def test_down_stops_it_and_a_second_up_is_refused(site: dict[str, Any]) -> None:
     assert launcher.finish() == 0
     assert journal(site["journal"])[-1] == "sandbox-science-worker stop"
     assert "Sandbox Science is not running" in launcher.command("down").stdout
+
+
+def test_a_second_up_moves_the_existing_project_to_the_policy(site: dict[str, Any]) -> None:
+    """Lab 39: ``project create`` refuses a project that exists on another policy, so
+    a project the control store has is only revised, as after a change to the policy."""
+    first = site["launch"]()
+    first.expect("Sandbox Science is running.")
+    assert first.command("down").returncode == 0
+    assert first.finish() == 0
+    started = len(journal(site["journal"]))
+    second = site["launch"]()
+    second.expect("Sandbox Science is running.")
+    projects = [line for line in journal(site["journal"])[started:] if " project " in line]
+    assert projects == [
+        "sandbox-science-harness project show crypto",
+        "sandbox-science-harness project revise crypto",
+    ]
+    assert second.command("down").returncode == 0
+    assert second.finish() == 0
 
 
 def test_down_signals_only_the_launcher_its_record_names(site: dict[str, Any]) -> None:

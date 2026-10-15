@@ -24,13 +24,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import re
 import signal
 import socket
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -244,7 +245,8 @@ async def _start(
     if digest is None:
         raise LauncherError(f"the policy grant named no policy; see {layout.log('launcher')}")
     harness_env = passed(config.run_service.pass_env)
-    for argv in parts.project_argvs(config, layout, digest.group()):
+    existing = await _existing(config, layout, supervisor, timeout, harness_env)
+    for argv in parts.project_argvs(config, layout, digest.group(), existing):
         await supervisor.run(" ".join(argv[1:3]), argv, layout.control, timeout, harness_env)
     if config.mcp_proxy is not None:
         await mcp.start(config, layout, supervisor, parts.commands(config))
@@ -269,6 +271,31 @@ async def _start(
         env=passed(config.workspace.pass_env),
     )
     await supervisor.start(workspace, timeout)
+
+
+async def _existing(
+    config: LauncherConfig,
+    layout: Layout,
+    supervisor: Supervisor,
+    timeout: float,
+    env: Mapping[str, str],
+) -> dict[str, str]:
+    """The config's projects the control store has already, with their profiles: ``project
+    show`` answers a project's record, and fails for one that is not there."""
+    found: dict[str, str] = {}
+    for project in config.projects:
+        argv = parts.project_show_argv(config, layout, project.id)
+        status, text = await supervisor.outcome("project show", argv, layout.control, timeout, env)
+        if status != 0:
+            continue
+        try:
+            found[project.id] = str(json.loads(text)["profile"])
+        except (ValueError, KeyError, TypeError):
+            raise LauncherError(
+                f"project show {project.id} did not answer the project's record; see "
+                f"{layout.log('launcher')}"
+            ) from None
+    return found
 
 
 def _announce(config: LauncherConfig, path: Path, layout: Layout) -> None:

@@ -89,6 +89,11 @@ def test_command_lines_name_files_never_secrets(make_config: Any, commands: Path
         ["session", "open"],
     ]
     assert projects[2][-2:] == ["--session", "main"]
+    # A project the control store has is not made again, only moved to the policy.
+    again = parts.project_argvs(config, layout, "sha256:" + "b" * 64, {"crypto": "minimal"})
+    assert [argv[1:3] for argv in again] == [["project", "revise"], ["session", "open"]]
+    with pytest.raises(LauncherError, match="keeps the profile it was made with"):
+        parts.project_argvs(config, layout, "sha256:" + "b" * 64, {"crypto": "crypto-base"})
 
 
 def test_check_names_everything_missing_and_never_reads_the_key(

@@ -196,9 +196,24 @@ match (name, args[:2]):
     case ("sandbox-science-worker", ["serve", *_]):
         settings = tomllib.loads(Path(option("--settings")).read_text())
         serve(settings["listen"], ["worker API on " + settings["listen"]], api=worker_api(settings))
+    case ("sandbox-science-harness", ["project", "show"]):
+        # The projects made so far, beside the journal: a project not made is not there.
+        note(f"project show {option('--project')}")
+        made = Path(os.environ["FAKE_JOURNAL"] + ".projects")
+        known = json.loads(made.read_text()) if made.exists() else {}
+        if option("--project") not in known:
+            print(f"error: no project {option('--project')!r}", flush=True)
+            sys.exit(1)
+        print(
+            json.dumps({"project_id": option("--project"), "profile": known[option("--project")]})
+        )
     case ("sandbox-science-harness", ["project" | "session" as what, action]):
         session = f" {option('--session')}" if what == "session" else ""
         note(f"{what} {action} {option('--project')}{session}")
+        if (what, action) == ("project", "create"):
+            made = Path(os.environ["FAKE_JOURNAL"] + ".projects")
+            known = json.loads(made.read_text()) if made.exists() else {}
+            made.write_text(json.dumps({**known, option("--project"): option("--profile")}))
     case ("sandbox-science-harness", ["serve", *_]):
         for seen in ("LEAK_CHECK", "PASSED_ON"):
             if seen in os.environ:
