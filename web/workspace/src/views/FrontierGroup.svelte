@@ -30,7 +30,7 @@
   {#if group.best.length || group.more.best}
     {@render results('best', group.best)}
   {:else}
-    <p class="muted">None: no eligible result here has every measure as a number.</p>
+    <p class="muted">None.</p>
   {/if}
   {#if group.not_compared.length || group.more.not_compared}
     <h3>Not compared</h3>
