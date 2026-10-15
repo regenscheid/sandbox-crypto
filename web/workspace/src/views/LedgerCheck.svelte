@@ -1,6 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
-<!-- "I checked this revision" (docs/specs/ledger.md, LG-17): on a claim or result at its
-     current revision, the user records that they checked it themselves. Opening the panel
+<!-- "I checked this revision" (docs/specs/ledger.md, LG-16, LG-17): on a claim, result or
+     reference at its current revision, the user records that they checked it themselves;
+     a reference's check vouches for the PDF that revision names. Opening the panel
      takes a copy of the revision shown; the panel shows that copy, everything the check
      pins, as exact text (ApprovalText), and the check names its revision, so a newer one is
      a conflict. When the entry shown moves on, the panel says so and offers no
@@ -70,7 +71,11 @@
         }}>I checked this revision…</button
       >
     </p>
-    {#if recorded !== null}<p role="status">Your check of r{recorded} is recorded.</p>{/if}
+    {#if recorded !== null}<p role="status">
+        Your check of r{recorded} is recorded.{entry.type === 'reference'
+          ? ' It vouches for the PDF that revision names.'
+          : ''}
+      </p>{/if}
     {#if checkFailure(saving.error)}
       <p class="problem" role="alert">{checkFailure(saving.error)}</p>
     {:else if saving.error}
@@ -78,11 +83,21 @@
     {/if}
   {:else}
     <div class="check">
-      <p>
-        You record that you checked revision {reading.revision} of {reading.handle} yourself: an independent
-        check of yours, which the gate counts when the main agent establishes it, as long as its statement,
-        fields, assumptions and the evidence that bears on it stay as they are. Read what you attest to:
-      </p>
+      {#if reading.type === 'reference'}
+        <p>
+          You record that you checked revision {reading.revision} of {reading.handle} yourself: its citation,
+          and the PDF it names, by the PDF's SHA-256. Your check vouches for that PDF, so the consistency
+          reviewer's check of a quote from it can confirm the results that quote it. Read what you attest
+          to:
+        </p>
+      {:else}
+        <p>
+          You record that you checked revision {reading.revision} of {reading.handle} yourself: an independent
+          check of yours, which the gate counts when the main agent establishes it, as long as its statement,
+          fields, assumptions and the evidence that bears on it stay as they are. Read what you attest
+          to:
+        </p>
+      {/if}
       {#if moved}
         <p class="problem" role="alert">
           The entry has moved on to r{entry.revision} since you opened this. What is below is r{reading.revision},
