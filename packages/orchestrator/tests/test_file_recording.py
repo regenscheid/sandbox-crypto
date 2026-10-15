@@ -115,6 +115,8 @@ async def test_deletions_and_rewrites(recording: Recording) -> None:
     )
     report = again.record["recorded_files"]
     assert (report["deleted"], report["recorded"]) == (1, 1)
+    # Only c.bin, recorded by its hash: a tombstone has no content to keep or leave out.
+    assert report["without_content"] == 1
     heads = recording.heads()
     assert heads["sessions/s1/a.txt"].deleted
     assert heads["sessions/s1/a.txt"].reference.revision == 2
