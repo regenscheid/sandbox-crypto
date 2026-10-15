@@ -7,12 +7,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import LedgerCheckText from '../views/LedgerCheckText.svelte';
 import LedgerEntryBody from '../views/LedgerEntryBody.svelte';
 import { api, ApiError, type LedgerChangeAnswer } from './api';
-import type { EntryView } from './api-types';
+import type { EntryLink, EntryView, EvidenceLink } from './api-types';
 import fixtures from './hidden.fixtures.json';
 import {
   checkable,
   checkFailure,
+  assumesText,
   checkRecord,
+  evidenceText,
   fieldsText,
   noteProblem,
   recordCheck,
@@ -55,6 +57,35 @@ const entry = (fields: Partial<EntryView> = {}): EntryView => ({
   ...fields,
 });
 
+const evidence = (fields: Partial<EvidenceLink> = {}): EvidenceLink => ({
+  evidence_id: 'ev-1',
+  role: 'supports',
+  type: 'exact_computation',
+  target: 'artifact',
+  target_id: 'artifact-9',
+  revision: 2,
+  block: null,
+  span: null,
+  sha256: 'ab'.repeat(32),
+  checked: null,
+  scope: null,
+  added: 1,
+  handle: null,
+  ...fields,
+});
+
+const assumes = (fields: Partial<EntryLink> = {}): EntryLink => ({
+  kind: 'assumes',
+  target: 'entry',
+  target_id: 'entry-0a',
+  revision: 2,
+  block: null,
+  note: null,
+  handle: 'A-1',
+  session: null,
+  ...fields,
+});
+
 describe('a check', () => {
   it('is offered on a claim or result at its current revision only', () => {
     expect(checkable(entry())).toBe(true);
@@ -82,14 +113,37 @@ describe('a check', () => {
 });
 
 describe('what the user attests to, as they will be held to it', () => {
-  it.each(fixtures.cases)(
-    '$name: every hidden character shows as its code point',
-    ({ text, hidden }) => {
-      const html = render(LedgerCheckText, {
-        props: { entry: entry({ title: text, statement: text, fields: { note: text } }) },
-      }).body;
-      for (const [, code] of hidden as [number, string][]) expect(html).toContain(`⟦${code}⟧`);
-      if ((hidden as unknown[]).length > 0) expect(html).toContain('you may not see or tell apart');
+  /** An entry whose one place named holds `text`, and nothing hidden anywhere else. */
+  const holding = (where: string, text: string): EntryView => {
+    switch (where) {
+      case 'title':
+        return entry({ title: text });
+      case 'statement':
+        return entry({ statement: text });
+      case 'fields':
+        return entry({ fields: { note: text } });
+      case 'evidence scope':
+        return entry({ evidence: [evidence({ scope: text })] });
+      default:
+        return entry({ links: [assumes({ note: text })] });
+    }
+  };
+  const places = ['title', 'statement', 'fields', 'evidence scope', 'assumes note'];
+  const cases = fixtures.cases.flatMap((c) =>
+    places.map((where) => ({ ...c, where, hidden: c.hidden as [number, string][] })),
+  );
+
+  it.each(cases)(
+    '$name, in its $where: every hidden character shows as its code point',
+    ({ text, hidden, where }) => {
+      const html = render(LedgerCheckText, { props: { entry: holding(where, text) } }).body;
+      for (const [, code] of hidden) {
+        const character = String.fromCodePoint(parseInt(code.slice(2), 16));
+        // JSON writes a control character in the fields as an escape, which is visible text.
+        const escaped = where === 'fields' && JSON.stringify(character).length > 3;
+        if (escaped) expect(html).not.toContain(character);
+        else expect(html).toContain(`⟦${code}⟧`);
+      }
     },
   );
 
@@ -161,5 +215,55 @@ describe("the user's check, sent", () => {
     expect(url).toBe('/api/v0/projects/p%2F1/ledger/C-1/checks');
     expect(init.method).toBe('POST');
     expect(JSON.parse(String(init.body))).toEqual({ revision: 3, operation_id: 'o1' });
+  });
+});
+
+describe('the text of what a check pins', () => {
+  it('names every evidence link with its role, type, whole target and scope note', () => {
+    expect(
+      evidenceText([
+        evidence({ scope: '$p = 17$ only' }),
+        evidence({
+          role: 'independent_check',
+          type: 'proof',
+          target: 'entry',
+          target_id: 'entry-0b',
+          handle: 'C-1',
+          checked: 3,
+          sha256: null,
+        }),
+        evidence({ target: 'block', target_id: 'doc-1', block: 'b4', span: 'm1', sha256: null }),
+        evidence({ target: 'review', target_id: 'rev-1', revision: null, sha256: null }),
+      ]),
+    ).toBe(
+      [
+        `1. Supports, exact computation: artifact artifact-9 r2, sha256 ${'ab'.repeat(32)}\nScope: $p = 17$ only`,
+        '2. Independent check, proof, of revision 3: entry C-1 (entry-0b) r2',
+        '3. Supports, exact computation: document doc-1 r2, block b4, math span m1',
+        '4. Supports, exact computation: review rev-1',
+      ].join('\n\n'),
+    );
+    expect(evidenceText([])).toBe('');
+  });
+
+  it('names every assumes link, uncapped, and no other kind', () => {
+    const many = Array.from({ length: 80 }, (_, n) => assumes({ handle: `A-${n + 1}` }));
+    const text = assumesText([...many, assumes({ kind: 'builds_on', handle: 'C-9' })]);
+    expect(text.split('\n')).toHaveLength(80);
+    expect(text).toContain('Assumes A-80 r2');
+    expect(text).not.toContain('C-9');
+    expect(assumesText([assumes({ note: 'only for 17' })])).toBe('Assumes A-1 r2: only for 17');
+  });
+
+  it('shows every evidence link and assumption in the confirmation, uncapped', () => {
+    const links = Array.from({ length: 70 }, (_, n) =>
+      evidence({ evidence_id: `ev-${n}`, scope: `scope ${n}` }),
+    );
+    const html = render(LedgerCheckText, {
+      props: { entry: entry({ evidence: links, links: [assumes({})] }) },
+    }).body;
+    expect(html).toContain('all 70 links');
+    expect(html).toContain('scope 69');
+    expect(html).toContain('Assumes A-1 r2');
   });
 });

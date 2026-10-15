@@ -8,7 +8,8 @@
  */
 import type { LedgerChangeAnswer } from './api';
 import { ApiError } from './api';
-import type { EntryView } from './api-types';
+import type { EntryLink, EntryView, EvidenceLink } from './api-types';
+import { evidenceKind } from './ledgerEvidence';
 import { guardedWrite } from './mutation';
 import { submit, type Submitting } from './submit';
 
@@ -20,6 +21,51 @@ export function checkable(entry: Pick<EntryView, 'type' | 'revision' | 'head'>):
 /** An entry's fields as the exact text the user attests to; empty for none. */
 export function fieldsText(fields: Record<string, unknown>): string {
   return Object.keys(fields).length === 0 ? '' : JSON.stringify(fields, null, 2);
+}
+
+/** An evidence link's pinned target, exactly: its full SHA-256, block and math span. */
+function exactTarget(link: EvidenceLink): string {
+  const at = link.revision === null ? '' : ` r${link.revision}`;
+  switch (link.target) {
+    case 'entry':
+      return `entry ${link.handle ?? link.target_id} (${link.target_id})${at}`;
+    case 'artifact':
+      return `artifact ${link.target_id}${at}${link.sha256 === null ? '' : `, sha256 ${link.sha256}`}`;
+    case 'block':
+      return (
+        `document ${link.target_id}${at}, block ${link.block ?? '?'}` +
+        (link.span === null ? '' : `, math span ${link.span}`)
+      );
+    case 'review':
+      return `review ${link.target_id}`;
+  }
+}
+
+/**
+ * Every evidence link the revision holds, as the exact text the user attests to: its
+ * role and type, its pinned target in full and its scope note as written; empty for none.
+ */
+export function evidenceText(links: readonly EvidenceLink[]): string {
+  return links
+    .map(
+      (link, index) =>
+        `${index + 1}. ${evidenceKind(link)}: ${exactTarget(link)}` +
+        (link.scope === null ? '' : `\nScope: ${link.scope}`),
+    )
+    .join('\n\n');
+}
+
+/** Every `assumes` link the revision holds, as exact text, with its note; empty for none. */
+export function assumesText(links: readonly EntryLink[]): string {
+  return links
+    .filter((link) => link.kind === 'assumes')
+    .map(
+      (link) =>
+        `Assumes ${link.handle ?? link.target_id}` +
+        (link.revision === null ? '' : ` r${link.revision}`) +
+        (link.note === null ? '' : `: ${link.note}`),
+    )
+    .join('\n');
 }
 
 /** The longest note the server takes. */
