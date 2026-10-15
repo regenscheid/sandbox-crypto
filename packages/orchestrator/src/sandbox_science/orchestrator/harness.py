@@ -824,7 +824,7 @@ class Harness:
         questions = None
         if not delegated:
             questions = QuestionTool(
-                Questions(stores.documents.control, clock=self.clock),
+                Questions(stores.documents, clock=self.clock),
                 context,
                 run=run_name(admitted.started_at, admitted.run_id),
                 stop=stop,

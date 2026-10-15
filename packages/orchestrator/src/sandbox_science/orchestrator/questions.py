@@ -32,6 +32,7 @@ from sandbox_science.contracts.model import Contract
 
 from .control import ControlError, ControlStore
 from .control.errors import CONFLICT, INVALID_REQUEST, NOT_FOUND
+from .documents import DocumentStore
 from .documents.agent_text import agent_text
 
 MAX_QUESTION: Final = 4000
@@ -83,18 +84,26 @@ class Question(Contract):
     reason: str | None = None
     """Why a question closed without an answer: the run was cancelled, the session
     closed, or the service restarted."""
+    message: str | None = None
+    """The chat message that answered it, when the user answered by writing to the
+    session."""
 
 
 _COLUMNS: Final = (
     "question_id, project_id, session_id, run, tool_call, text, options, multiple, state, "
-    "asked_at, answer, closed_at, reason"
+    "asked_at, answer, closed_at, reason, message_id"
 )
+INTERRUPTED: Final = "the run was interrupted"
+"""Why the run service closes the questions of a run whose holder is gone."""
+SESSION_CLOSED: Final = "the session was closed"
+LISTED: Final = 50
+"""The most questions a listing returns: a session's latest."""
 
 
 def _question(row: tuple[object, ...]) -> Question:
     (
         question_id, project, session, run, tool_call, text, options, multiple, state,
-        asked_at, answer, closed_at, reason,
+        asked_at, answer, closed_at, reason, message,
     ) = row  # fmt: skip
     return Question(
         question_id=str(question_id),
@@ -110,14 +119,17 @@ def _question(row: tuple[object, ...]) -> Question:
         answer=None if answer is None else Answer.model_validate_json(str(answer)),
         closed_at=None if closed_at is None else datetime.fromisoformat(str(closed_at)),
         reason=None if reason is None else str(reason),
+        message=None if message is None else str(message),
     )
 
 
 class Questions:
-    """The questions of the control store, which its owner closes."""
+    """The questions in one control store, which its owner closes: the store itself, or
+    the one a document store opened."""
 
-    def __init__(self, control: ControlStore, *, clock: Clock = SYSTEM_CLOCK) -> None:
-        self.control, self.clock = control, clock
+    def __init__(self, store: ControlStore | DocumentStore, *, clock: Clock = SYSTEM_CLOCK) -> None:
+        self.control = store if isinstance(store, ControlStore) else store.control
+        self.clock = clock
 
     def _now(self) -> str:
         return self.clock.now().astimezone(UTC).isoformat()
@@ -217,6 +229,16 @@ class Questions:
             ).fetchall()
         return [_question(row) for row in rows]
 
+    def listed(self, project: str, session: str) -> list[Question]:
+        """The session's latest questions, open or closed, oldest first."""
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                f"SELECT {_COLUMNS} FROM user_questions "  # noqa: S608 - fixed columns
+                "WHERE project_id = ? AND session_id = ? ORDER BY rowid DESC LIMIT ?",
+                (project, session, LISTED),
+            ).fetchall()
+        return [_question(row) for row in reversed(rows)]
+
     def answer(self, project: str, session: str, question_id: str, answer: Answer) -> Question:
         """Close an open question with the user's answer. The same answer again is the
         answer already given; another one, or one to a closed question, a conflict."""
@@ -259,27 +281,103 @@ class Questions:
         """Close the open questions of ``run``, the ``question`` alone, or those of the
         whole session, when no run can receive their answers; the IDs closed."""
         with self.control.write() as tx:
-            db = tx.sql
-            where = "project_id = ? AND session_id = ? AND state = 'open'"
-            values: list[object] = [project, session]
-            if run is not None:
-                where += " AND run = ?"
-                values.append(run)
-            if question is not None:
-                where += " AND question_id = ?"
-                values.append(question)
-            ids = [
-                str(row[0])
-                for row in db.execute(
-                    f"SELECT question_id FROM user_questions WHERE {where}",  # noqa: S608
-                    values,
-                )
-            ]
-            db.execute(
-                f"UPDATE user_questions SET state = ?, closed_at = ?, reason = ? WHERE {where}",  # noqa: S608
-                [state, self._now(), reason, *values],
+            return close_open(
+                tx.sql,
+                project,
+                session,
+                self._now(),
+                run=run,
+                question=question,
+                state=state,
+                reason=reason,
             )
-            return ids
+
+
+def close_open(
+    db: sqlite3.Connection,
+    project: str,
+    session: str,
+    at: str,
+    *,
+    run: str | None = None,
+    question: str | None = None,
+    state: Literal["cancelled", "interrupted"],
+    reason: str,
+) -> list[str]:
+    """``Questions.close`` in the open change ``db``, at the time ``at``."""
+    where = "project_id = ? AND session_id = ? AND state = 'open'"
+    values: list[object] = [project, session]
+    if run is not None:
+        where += " AND run = ?"
+        values.append(run)
+    if question is not None:
+        where += " AND question_id = ?"
+        values.append(question)
+    ids = [
+        str(row[0])
+        for row in db.execute(
+            f"SELECT question_id FROM user_questions WHERE {where}",  # noqa: S608
+            values,
+        )
+    ]
+    db.execute(
+        f"UPDATE user_questions SET state = ?, closed_at = ?, reason = ? WHERE {where}",  # noqa: S608
+        [state, at, reason, *values],
+    )
+    return ids
+
+
+def answer_by_message(
+    db: sqlite3.Connection,
+    project: str,
+    session: str,
+    message_id: str,
+    text: str,
+    at: str,
+    *,
+    live_after: float,
+) -> Question | None:
+    """The question a chat message answers, in the open change ``db``: the one it
+    answered already, or else the oldest open question of the run that holds the session
+    (its lease renewed after ``live_after``), which it answers now in the user's own
+    words. ``None`` when no run that holds the session waits for an answer: the message
+    is then an ordinary one."""
+    row = db.execute(
+        f"SELECT {_COLUMNS} FROM user_questions WHERE message_id = ?",  # noqa: S608
+        (message_id,),
+    ).fetchone()
+    if row is not None:
+        found = _question(row)
+        if (found.project, found.session) != (project, session) or (
+            found.answer is None or found.answer.text != text.strip()
+        ):
+            raise ControlError(CONFLICT, f"message {message_id!r} was written with other content")
+        return found
+    row = db.execute(
+        f"SELECT {_COLUMNS} FROM user_questions WHERE question_id = ("  # noqa: S608
+        "SELECT q.question_id FROM user_questions AS q JOIN run_leases AS l "
+        "ON l.project_id = q.project_id AND l.session_id = q.session_id AND l.run = q.run "
+        "WHERE q.project_id = ? AND q.session_id = ? AND q.state = 'open' "
+        "AND l.renewed_at > ? ORDER BY q.rowid LIMIT 1)",
+        (project, session, live_after),
+    ).fetchone()
+    if row is None:
+        return None
+    question = _question(row)
+    try:
+        given = _checked(question, Answer(kind="free", text=text))
+    except ControlError as error:
+        raise ControlError(
+            error.kind,
+            f"the message answers question {question.question_id}: {error.message}",
+            {"question": question.question_id},
+        ) from None
+    db.execute(
+        "UPDATE user_questions SET state = 'answered', answer = ?, closed_at = ?, "
+        "message_id = ? WHERE question_id = ? AND state = 'open'",
+        (given.model_dump_json(exclude_defaults=True), at, message_id, question.question_id),
+    )
+    return _get(db, project, session, question.question_id)
 
 
 def _get(db: sqlite3.Connection, project: str, session: str, question_id: str) -> Question:

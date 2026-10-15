@@ -38,7 +38,14 @@ from sandbox_science.orchestrator.memory import MemoryChange
 from sandbox_science.orchestrator.runtree import RunTree
 from sandbox_science.workspace.api import ProjectAnswer, ProjectListing, SessionDetail
 from sandbox_science.workspace.artifacts import ArtifactListing, ViewerLink
-from sandbox_science.workspace.chat import EventPage, MessageAnswer, MessageListing, Requested
+from sandbox_science.workspace.chat import (
+    EventPage,
+    MessageAnswer,
+    MessageListing,
+    QuestionAnswer,
+    QuestionListing,
+    Requested,
+)
 from sandbox_science.workspace.frontier import (
     FrontierAnswer,
     FrontierCategories,
@@ -80,6 +87,8 @@ MODELS: tuple[type[BaseModel], ...] = (
     MessageAnswer,
     MessageListing,
     EventPage,
+    QuestionListing,
+    QuestionAnswer,
     Requested,
     ArtifactListing,
     ViewerLink,

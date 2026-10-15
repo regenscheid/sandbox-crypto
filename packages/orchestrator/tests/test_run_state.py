@@ -12,7 +12,7 @@ import pytest
 from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator.control import ControlError, migrations, store_path
 from sandbox_science.orchestrator.projects import ProjectStore, run_name
-from sandbox_science.orchestrator.runstate import RunState
+from sandbox_science.orchestrator.runstate import ChatMessage, RunState
 from sandbox_science.testing import FakeClock
 
 from .control_versions import at_version
@@ -30,6 +30,7 @@ def store(tmp_path: Path, clock: FakeClock | None = None) -> tuple[ProjectStore,
 def test_a_message_is_queued_once_and_marked_delivered(tmp_path: Path) -> None:
     projects, state = store(tmp_path)
     first = state.post("p", "s", "m-1", "What is $x$?", author="user")
+    assert isinstance(first, ChatMessage)  # no question waits for an answer
     assert state.post("p", "s", "m-1", "What is $x$?", author="user") == first
     with pytest.raises(ControlError) as conflict:
         state.post("p", "s", "m-1", "Something else", author="user")

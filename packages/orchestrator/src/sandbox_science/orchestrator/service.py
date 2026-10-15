@@ -12,7 +12,8 @@ until it is stopped (RS-1). The service and the workspace share the control stor
   event, ``interrupted``, and the messages it was offered are held until the user
   resumes or writes again (RS-12). Its delegations still running end ``interrupted``,
   and each of its children's runs gets its ``stopped`` event, from its record if it
-  saved one (PD-40);
+  saved one (PD-40). Its questions to the user still open close ``interrupted``: no
+  run is left to receive their answers (PD-23);
 - starts a run for each session that has queued messages and no run (RS-6), within the
   project's model budget (RS-6a). The run's conversation begins with the session's
   earlier tasks and answers (RS-10), then the messages queued once it holds the lease;
@@ -59,6 +60,7 @@ from .harness import Harness, RunRequest, admit, save
 from .hooks import TurnHook
 from .model import GATEWAY_BUDGET, Message
 from .projects import ProjectError, ProjectStore, run_name
+from .questions import INTERRUPTED, Questions
 from .runstate import RunState, head_and_tail
 from .tools import ToolOutcome
 
@@ -126,6 +128,7 @@ class RunService:
         self.failures: dict[tuple[str, str], int] = {}
         self.annotations = Annotations(harness.stores.documents)
         self.delegations = DelegationRecords(harness.stores.documents, clock=clock)
+        self.questions = Questions(harness.stores.documents, clock=clock)
         self.held: dict[tuple[str, str], set[str]] = {}
         """Work requests that start no run, as held messages do not (RS-9, RS-11, RS-12):
         the session's next run is offered them with the others."""
@@ -191,14 +194,26 @@ class RunService:
         """End a run whose holder is gone (RS-12): from its record if it was saved,
         otherwise as ``interrupted``, with the messages it was offered held, or, for a
         run that stopped itself (``hold`` false), left queued for the next run (RS-9).
-        Its tree ends with it, whatever fails before (PD-40)."""
+        Its tree ends with it, and its open questions close, whatever fails before
+        (PD-40, PD-23)."""
         try:
             await self._root_ended(project, session, run, hold=hold)
         finally:
-            for delegation_id, _ in await threaded(
-                self.delegations.abandon, project, session, parent=run
-            ):
-                _log.warning("delegation %s of run %s was interrupted", delegation_id, run)
+            try:
+                for delegation_id, _ in await threaded(
+                    self.delegations.abandon, project, session, parent=run
+                ):
+                    _log.warning("delegation %s of run %s was interrupted", delegation_id, run)
+            finally:
+                for question in await threaded(
+                    self.questions.close,
+                    project,
+                    session,
+                    run=run,
+                    state="interrupted",
+                    reason=INTERRUPTED,
+                ):
+                    _log.warning("question %s of run %s was interrupted", question, run)
 
     async def _root_ended(self, project: str, session: str, run: str, *, hold: bool) -> None:
         runs = self.runs

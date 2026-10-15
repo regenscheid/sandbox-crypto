@@ -7,8 +7,9 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from sandbox_science.contracts import EnvironmentState
+from sandbox_science.contracts import EnvironmentState, ExecutionContext
 from sandbox_science.orchestrator.projects import ProjectStore
+from sandbox_science.orchestrator.questions import Questions
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.workspace.api import TIMEOUTS
 
@@ -261,3 +262,95 @@ async def test_a_worker_that_does_not_say_leaves_the_state_unknown(
 
     client = await workspace(aiohttp_client, state_dir, static_dir)  # no worker configured
     assert (await listed(client))["environment"] is None
+
+
+# Questions to the user (PD-23 to PD-26).
+
+CURVES = [{"label": "Ed25519", "detail": "The common choice"}, {"label": "Ed448"}]
+
+
+def ask(state_dir: Path, run: str = "run-x", operation: str = "op-1") -> str:
+    store = ProjectStore(state_dir)
+    try:
+        context = ExecutionContext(
+            project_id="p1", session_id="a", environment_id=environment_of(state_dir, "p1", "a")
+        )
+        asked = Questions(store.control).ask(
+            context, run, "call-1", operation, "Which curve?", CURVES
+        )
+        return asked.question_id
+    finally:
+        store.close()
+
+
+async def test_the_sessions_questions_are_listed_and_answered(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    runs(state_dir).acquire("p1", "a", "run-x", "holder")
+    first, second = ask(state_dir), ask(state_dir, operation="op-2")
+    client = await workspace(aiohttp_client, state_dir, static_dir)
+    listing = await client.get(SESSION + "/questions")
+    assert listing.headers["Cache-Control"] == "no-store"
+    listed = await listing.json()
+    assert listed["run"]["run"] == "run-x"
+    assert [q["question_id"] for q in listed["questions"]] == [first, second]
+    shown = listed["questions"][0]
+    assert (shown["text"], shown["state"], shown["run"]) == ("Which curve?", "open", "run-x")
+    assert shown["options"] == [
+        {"label": "Ed25519", "detail": "The common choice"},
+        {"label": "Ed448", "detail": None},
+    ]
+    url = SESSION + f"/questions/{first}/answer"
+    body = {"kind": "picked", "picked": ["Ed448"]}
+    answered = await client.post(url, json=body, headers=origin(client))
+    assert answered.status == 200
+    question = (await answered.json())["question"]
+    assert (question["state"], question["answer"]) == (
+        "answered",
+        {"kind": "picked", "picked": ["Ed448"], "text": None},
+    )
+    again = await client.post(url, json=body, headers=origin(client))
+    assert (await again.json())["question"] == question  # a retry
+    await error_of(
+        await client.post(url, json={"kind": "decide"}, headers=origin(client)), 409, "conflict"
+    )
+    # A message answers the open one left, in the user's own words.
+    message = {"message_id": "m-1", "text": "Ed25519 here."}
+    response = await client.post(SESSION + "/messages", json=message, headers=origin(client))
+    written = await response.json()
+    assert written["message"] is None
+    assert written["question"]["question_id"] == second
+    assert written["question"]["answer"] == {"kind": "free", "picked": [], "text": "Ed25519 here."}
+    assert written["question"]["message"] == "m-1"
+    assert (await (await client.get(SESSION + "/messages")).json())["messages"] == []
+
+
+async def test_bad_answers_are_refused(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    question = ask(state_dir)
+    client = await workspace(aiohttp_client, state_dir, static_dir)
+    url = SESSION + f"/questions/{question}/answer"
+    bodies: list[Any] = [
+        {"kind": "maybe"},
+        {"kind": "picked", "picked": ["P-256"]},
+        {"kind": "picked", "picked": "Ed448"},
+        {"kind": "free", "text": 7},
+        {"kind": "free", "text": "  "},
+        {"kind": "decide", "why": "no"},
+        ["decide"],
+    ]
+    for body in bodies:
+        response = await client.post(url, json=body, headers=origin(client))
+        await error_of(response, 400, "invalid_request")
+    missing = SESSION + "/questions/qst-" + "0" * 24 + "/answer"
+    response = await client.post(missing, json={"kind": "decide"}, headers=origin(client))
+    await error_of(response, 404, "not_found")
+    other = "/api/v0/projects/p1/sessions/nope/questions"
+    await error_of(await client.get(other), 404, "not_found")
+    assert (await client.post(url, json={"kind": "decide"})).status == 403  # not from the page
+    store = ProjectStore(state_dir)
+    try:
+        assert Questions(store.control).get("p1", "a", question).state == "open"
+    finally:
+        store.close()

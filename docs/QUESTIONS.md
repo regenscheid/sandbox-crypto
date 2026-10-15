@@ -42,12 +42,28 @@ A delegated run is not offered `ask_user`, and a call to it is refused with `not
 
 - `ask` writes an open question for a run and its tool call. The same operation in the same session returns the question it asked; a different question under that operation is a conflict.
 - `get` reads one question of a session; another session's is not found.
-- `open` lists a session's open questions, oldest first.
+- `open` lists a session's open questions, oldest first, and `listed` its latest 50, open or closed.
 - `answer` closes an open question with the user's answer. A pick must name one of the question's options, or several when `multiple` is set, and nothing else; an answer in the user's own words is 1 to 16,000 characters and is kept as written, without the check for hidden characters; `decide` and `cancel` carry nothing. A cancel closes the question `cancelled` with the reason "the user cancelled it"; any other answer closes it `answered`. The same answer again returns the question; another answer, or one to a closed question, is a conflict.
 - `close` closes the open questions of a run, one question, or a whole session, `cancelled` or `interrupted`, with a reason, when no run can receive their answers.
 
 A question is written once and closed once: the table's triggers refuse any other change, and any delete.
 
+## Answering
+
+The workspace answers through two routes ([workspace](WORKSPACE.md#api-v0)):
+
+- `GET …/sessions/{session}/questions` lists the session's latest questions with the run that holds the session.
+- `POST …/sessions/{session}/questions/{question}/answer` with `{"kind", "picked", "text"}` answers one: `picked` names the options, `free` carries the text, and `decide` and `cancel` carry nothing.
+
+A chat message can also be the answer. While the run that holds the session (its lease is live) waits for an answer, a message the user writes to the session answers the oldest open question of that run, in the user's own words, instead of being queued (`RunState.post`, in one transaction). The question keeps the message's ID, and the message route's answer names the question instead of a message, so a retried write gets the same question back. A message longer than an answer may be (16,000 characters) is refused, naming the question. A question whose run no longer holds the session takes no message: the message is queued as any other, and the question closes when the service ends the run. This is a coordinator decision, which the owner can reverse: the message could instead wait in the queue for the run's next turn.
+
+## When no run can receive the answer
+
+- **The user cancels the run** (RS-11): the waiting call closes its question `cancelled`, "the run was cancelled".
+- **The run stops otherwise**, as when the run service stops: the call closes it `interrupted`, "the run stopped before it was answered".
+- **The run's process dies**: the run service ends the run when its lease expires (RS-12) and closes its open questions `interrupted`, "the run was interrupted".
+- **The session closes** (`session close`): its open questions close `cancelled`, "the session was closed". A run still waiting reads that as its result.
+
 ## Not built yet
 
-The run service closing a run's questions when the run is cancelled, when the service restarts (`interrupted`) and when the session closes; a chat message sent while a question is open answering the oldest one; the workspace routes; and the chat panel that shows open questions with their age and takes the answers.
+The chat panel that shows open questions with their age and takes the answers.

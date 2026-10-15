@@ -7,7 +7,8 @@ The run service's records (docs/specs/run-service.md):
   a run delivers it, and is marked ``delivered`` with that run only after the run's
   record is saved (RS-9). A message ID makes a retried write safe. A run marks the
   messages it offers, so what it saw is known without its events; a new message queues
-  the session's held messages again (RS-12).
+  the session's held messages again (RS-12). While the run that holds the session waits
+  for the user's answer to a question, a message is that answer instead (PD-23).
 - **The run lease** (RS-5). One run of a session at a time, from the command line or the
   service. A lease whose holder stops renewing it for ``lease_seconds`` has expired.
 - **Run events** (RS-13, RS-14). What a run did, appended as it happens, numbered from 1
@@ -33,6 +34,7 @@ from .control import ControlError, ControlStore
 from .control.errors import BUSY, CONFLICT, INVALID_REQUEST, NOT_FOUND
 from .documents import DocumentStore
 from .projects import ModelUsage, ProjectStore, run_name
+from .questions import Question, answer_by_message
 
 LEASE_SECONDS: Final = 60.0
 """How long a run's lease outlives its last renewal (RS-5)."""
@@ -122,9 +124,14 @@ class RunState:
 
     def post(
         self, project: str, session: str, message_id: str, text: str, *, author: str
-    ) -> ChatMessage:
+    ) -> ChatMessage | Question:
         """Queue a message for the session's run. The same ID with the same text is the
-        message already written; with other text, or for another session, a conflict."""
+        message already written; with other text, or for another session, a conflict.
+
+        While the run that holds the session waits for the user's answer to a question,
+        the message is not queued: it answers the oldest such question in the user's own
+        words, and the question is returned, answered (a coordinator decision, reversible:
+        the message could instead wait for the run's next turn)."""
         if not text.strip() or len(text.encode()) > MAX_MESSAGE_BYTES:
             raise ControlError(
                 INVALID_REQUEST, f"a message is 1 to {MAX_MESSAGE_BYTES} bytes, not blank"
@@ -144,6 +151,17 @@ class RunState:
                     )
                 return _message(found)
             _session(db, project, session)
+            answered = answer_by_message(
+                db,
+                project,
+                session,
+                message_id,
+                text,
+                now,
+                live_after=self._now().timestamp() - self.lease_seconds,
+            )
+            if answered is not None:
+                return answered
             try:
                 cursor = db.execute(
                     "INSERT INTO session_messages (message_id, project_id, session_id, text, "
