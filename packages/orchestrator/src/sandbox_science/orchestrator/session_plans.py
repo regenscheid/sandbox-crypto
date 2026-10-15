@@ -16,7 +16,7 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Annotated, Literal, Self, TypeVar
+from typing import Annotated, Literal, Self, TypeVar, cast
 
 from pydantic import (
     AwareDatetime,
@@ -30,6 +30,7 @@ from pydantic import (
 
 from sandbox_science.contracts import Contract, Identifier, new_id
 
+from .documents.agent_text import check_agent_text
 from .documents.errors import (
     CONFLICT,
     INTERNAL,
@@ -85,6 +86,20 @@ class PlanScope(PlanModel):
 class PlanRef(PlanModel):
     plan_id: Identifier
     version: Positive
+
+
+def _agent_fields(value: object, where: str) -> None:
+    """Refuse a plan change an agent makes whose text holds a character the user may not
+    see (threat model, A3): the user reads, edits and saves what an agent planned, and the
+    plan's text reaches agents again. Each field is named by its place."""
+    if isinstance(value, str):
+        check_agent_text(value, where)
+    elif isinstance(value, dict):
+        for key, item in cast(dict[str, object], value).items():
+            _agent_fields(item, f"{where}.{key}")
+    elif isinstance(value, list | tuple):
+        for index, item in enumerate(cast(list[object], value)):
+            _agent_fields(item, f"{where}[{index}]")
 
 
 class PlanAuthority(PlanModel):
@@ -777,6 +792,8 @@ class SessionPlans:
     ) -> tuple[str, str, PlanReceipt | None]:
         # Canonical JSON tuples prevent user/run/operation delimiter ambiguity.
         operation = _checked_operation(operation)
+        if authority.role != "user":
+            _agent_fields(payload, "the plan")
         identifier = _digest([*authority.namespace, operation])
         digest = _digest(
             {"authority": authority.model_dump(mode="json"), "action": action, "request": payload}

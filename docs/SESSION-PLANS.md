@@ -20,6 +20,8 @@ tools do so.
 
 ## Authority and identity
 
+Every text an agent writes into a plan, its body's fields, a progress note, a status reason or an outcome, holds no character the user may not see (`check_agent_text`, threat model A3), since the user reads and saves what an agent planned and agents read it again. A refusal names the field. The user's own plan text is kept as written.
+
 Every method takes a separate trusted `PlanAuthority`, scoped to one project and
 session. A USER requires its authenticated user identity. MAIN requires a trusted
 run identity and may retain configured model alias, actual resolved model and tool

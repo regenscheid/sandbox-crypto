@@ -668,11 +668,32 @@ def test_summary_checks_one_canonical_mutation_without_building_current(store, p
 
 
 def test_exact_text_and_reason_preserved_without_rendering(plans):
-    raw = '# Goal\r\n"quote" \\command $x$ <script>data</script>'
+    raw = '# Goal\n"quote" \\command $x$ <script>data</script>'
     receipt = plans.publish(actor(), "raw", body(goal=raw), "  Exact reason  ")
     version = plans.version(actor(), receipt.ref)
     assert version.body.goal == raw
     assert version.reason == "  Exact reason  "
+
+
+def test_the_user_keeps_any_text_but_an_agent_writes_none_hidden(plans):
+    """Threat model A3: what an agent plans, the user reads and adopts by saving, and
+    agents read again, so an agent's plan text holds no character the user may not see;
+    the user's own text is kept as written."""
+    raw = "# Goal\r\nthe user's own text, with a carriage return"
+    receipt = plans.publish(actor("user"), "user-raw", body(goal=raw), "Mine")
+    assert plans.version(actor("user"), receipt.ref).body.goal == raw
+    for field in (
+        {"goal": "run" + chr(0x200B) + "it"},
+        {"goal": "a" + chr(0x0D) + "b"},
+        {"feasibility": "evil &#x202E;gnp.exe"},
+    ):
+        with pytest.raises(DocumentError) as refused:
+            plans.revise(actor(), "agent-hidden", receipt.ref, body(**field), "Revised")
+        assert "may not see" in refused.value.message
+        assert "the plan.body." in refused.value.message
+    with pytest.raises(DocumentError) as reason:
+        plans.revise(actor(), "agent-reason", receipt.ref, body(), "why" + chr(0x2066))
+    assert "the plan.reason" in reason.value.message
 
 
 @pytest.mark.parametrize("reason", [" ", "x" * 4097, "bad\0reason", "bad\udcff"])

@@ -25,6 +25,7 @@ from sandbox_science.orchestrator.artifacts import ArtifactInventory
 from sandbox_science.orchestrator.control import EventLog, Receipts
 from sandbox_science.orchestrator.control.feeds import FeedCursor
 from sandbox_science.orchestrator.documents import DocumentStore
+from sandbox_science.orchestrator.documents.agent_text import check_agent_text
 from sandbox_science.orchestrator.documents.blocks import check_text
 from sandbox_science.orchestrator.documents.errors import (
     CONFLICT,
@@ -181,6 +182,14 @@ def text(value: str, limit: int = 8192) -> str:
     check_text(value)
     if not value or len(value) > limit or len(value.encode()) > limit * 4:
         raise DocumentError(INVALID_REQUEST, "review text exceeds its bound")
+    return value
+
+
+def agent_text(value: str, what: str, limit: int = 8192) -> str:
+    """Review text an agent wrote, which the user decides on and agents read again: within
+    its bound, and with no character the user may not see (threat model, A3)."""
+    text(value, limit)
+    check_agent_text(value, what)
     return value
 
 

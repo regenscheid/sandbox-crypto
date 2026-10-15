@@ -33,7 +33,7 @@ from .models import (
     FindingResponse,
     ReviewConfig,
 )
-from .store import RECEIPTS, ReviewStore, digest, dump, identifier, stored_json, text
+from .store import RECEIPTS, ReviewStore, agent_text, digest, dump, identifier, stored_json, text
 
 # Heterogeneous persisted JSON is validated at the mutation boundary.
 Json = dict[str, Any]
@@ -383,8 +383,8 @@ class Findings:
             value = FindingInput.model_validate(raw)
         except ValidationError:
             raise DocumentError(INVALID_REQUEST, "invalid finding") from None
-        text(value.statement)
-        text(value.remedy) if value.remedy else None
+        agent_text(value.statement, "the statement")
+        agent_text(value.remedy, "the remedy") if value.remedy else None
         anchors = [self.validate_anchor(project, session, review, a) for a in value.anchors]
         # Semantic identity excludes snapshot-local IDs, so the same pinned revision
         # reviewed in another window re-flags rather than duplicating a finding.
@@ -632,6 +632,8 @@ class Findings:
                 INVALID_REQUEST, f"invalid finding response: {_first_error(error)}"
             ) from None
         text(value.explanation)
+        if author.kind == "agent":
+            agent_text(value.explanation, "the explanation")
         if author.kind != "user" and not (
             author.kind == "agent" and author.role == "main" and author.session_id == session
         ):
@@ -812,7 +814,7 @@ class Findings:
             value = ConfirmationInput.model_validate(raw)
         except ValidationError:
             raise DocumentError(INVALID_REQUEST, "invalid confirmation decision") from None
-        text(value.explanation)
+        agent_text(value.explanation, "the explanation")
         anchors = [self.validate_anchor(project, session, review, a) for a in value.anchors]
         actor = f"review:{review}"
         fingerprint = digest(dump(value.model_dump(mode="json")))

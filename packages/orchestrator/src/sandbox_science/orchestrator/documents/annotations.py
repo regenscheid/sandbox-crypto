@@ -21,6 +21,7 @@ from sandbox_science.orchestrator.control.notices import LeasedNotices, NoticeTa
 from sandbox_science.orchestrator.projects import ProjectError, recorded
 
 from . import comment_bodies
+from .agent_text import check_agent_text
 from .blocks import check_text
 from .errors import CONFLICT, INVALID_REQUEST, NOT_FOUND, POLICY_DENIED, DocumentError
 from .identity import Mapped, compare, increasing
@@ -587,6 +588,8 @@ class Annotations:
             raise DocumentError(INVALID_REQUEST, "comment author provenance exceeds its bound")
         body = _body(value)
         check_text(body)
+        if author.kind == "agent":
+            check_agent_text(body, "the comment")  # threat model, A3
         if any(ord(char) < 32 and char not in "\n\r\t" for char in body):
             raise DocumentError(
                 INVALID_REQUEST, "comment text contains an unsupported control character"

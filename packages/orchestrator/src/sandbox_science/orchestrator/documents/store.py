@@ -40,6 +40,7 @@ from sandbox_science.orchestrator.control import (
     Receipts,
 )
 
+from .agent_text import check_agent_text
 from .blocks import BYTE_ORDER_MARK, Budget, check_text, normalize_newlines, parse
 from .checks import warnings
 from .engine import (
@@ -279,6 +280,17 @@ def _name(name: str) -> str:
             "starting with a letter or digit",
         )
     return stem
+
+
+def _agent_operations(operations: list[Operation]) -> None:
+    """Refuse an agent's patch whose new text holds a character the user may not see,
+    as it is or as a character reference (threat model, A3); the text it leaves alone, the
+    user's included, is not its to answer for."""
+    for number, operation in enumerate(operations, 1):
+        for name in ("markdown", "tex", "with_"):
+            value = getattr(operation, name, None)
+            if isinstance(value, str):
+                check_agent_text(value, f"operation {number}'s text")
 
 
 def _operations(raw: object) -> list[Operation]:
@@ -580,6 +592,10 @@ class DocumentStore:
             raise DocumentError(INVALID_REQUEST, f"a title has 1 to {MAX_TITLE} characters")
         text = normalize_newlines(text).removeprefix(BYTE_ORDER_MARK)
         check_text(text)
+        if author.kind == "agent":
+            # What an agent writes, the user reads before adopting it (threat model, A3).
+            check_agent_text(title, "the title")
+            check_agent_text(text, "the document's text")
         why = _reason(reason)
         request = {"create": stem, "title": title, "session": session_id, "text": text}
         # Parsed before the write lock is taken, so other changes do not wait for it.
@@ -757,6 +773,8 @@ class DocumentStore:
                 "operation_id is up to 128 letters, digits, '.', '_', ':' and '-'",
             )
         parsed = _operations(operations)
+        if author.kind != "user":
+            _agent_operations(parsed)
         raw = [operation.model_dump(mode="json", by_alias=True) for operation in parsed]
         why = _reason(reason)
         request = {"patch": reference, "base": base, "operations": raw, "reason": why}
