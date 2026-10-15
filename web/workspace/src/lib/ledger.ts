@@ -8,6 +8,7 @@
 import type { Author } from './api';
 import type { EntryLink, EntrySummary, EntryView } from './api-types';
 import { describeAuthor } from './authors';
+import { PagedList, type ListState } from './pagedList';
 import { documentHref, ENTRY_NAME, ledgerEntryHref } from './router';
 
 export type EntryType = EntrySummary['type'];
@@ -162,13 +163,71 @@ export function incomingPage(
   };
 }
 
-/** One of an entry's own fields, as a row: its name and its value in words. */
+/**
+ * The links to an entry, read a page at a time from an offset, with their count as the
+ * last page read gave it. The first page is the one the entry came with.
+ */
+export interface IncomingState extends ListState<EntryLink, number> {
+  total: number;
+}
+
+export function incomingState(
+  entry: Pick<EntryView, 'incoming' | 'incoming_total'>,
+): IncomingState {
+  const first = incomingPage(entry, 0);
+  return { ...first, loading: false, error: null, total: entry.incoming_total };
+}
+
+/** The list that reads the pages after the first, each from the links read so far. */
+export function incomingLinks(
+  state: IncomingState,
+  read: (after: number) => Promise<Pick<EntryView, 'incoming' | 'incoming_total'>>,
+): PagedList<EntryLink, number> {
+  return new PagedList(state, async (after) => {
+    const found = await read(after ?? 0);
+    return {
+      ...incomingPage(found, after ?? 0),
+      shown: () => {
+        state.total = found.incoming_total;
+      },
+    };
+  });
+}
+
+/**
+ * Each link once, the first time it was read: offset pages can repeat a link when entries
+ * change between reads. A link is its kind, the entry that holds it and the revision it pins.
+ */
+export function uniqueLinks(links: readonly EntryLink[]): EntryLink[] {
+  const seen = new Set<string>();
+  return links.filter((link) => {
+    const key = `${link.kind}\u0000${link.target_id}\u0000${link.revision ?? ''}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/**
+ * What a column's filter found, in words, when one is set: it searches only the entries
+ * read so far, so it says how many those are, and that more may match when more remain.
+ */
+export function filterText(matched: number, loaded: number, more: boolean): string {
+  return `${matched} of ${loaded} loaded match${more ? '; more may match among those not read yet' : ''}`;
+}
+
+/**
+ * One of an entry's own fields, as a row: its name as stored (`key`), its name in words and
+ * its value in words.
+ */
 export interface FieldRow {
+  key: string;
   name: string;
   value: string;
 }
 
-const FIELD_NAMES: Record<string, string> = {
+/** The names of the fields the types give their entries (docs/LEDGER.md), in words. */
+export const FIELD_NAMES: Record<string, string> = {
   kind: 'Kind',
   category: 'Frontier category',
   conditions: 'Conditions',
@@ -211,6 +270,7 @@ export function fieldRows(fields: Record<string, unknown>): FieldRow[] {
       .sort(),
   ];
   return names.map((name) => ({
+    key: name,
     name: FIELD_NAMES[name] ?? statusText(name),
     // A claim's kind is a word of the spec's, such as `negative_result`.
     value: name === 'kind' ? statusText(valueText(fields[name])) : valueText(fields[name]),

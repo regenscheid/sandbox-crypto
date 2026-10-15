@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: MIT
 import { describe, expect, test } from 'vitest';
 import type { EntryLink } from './api-types';
+import fixture from './ledger.fixtures.json';
 import {
   authorText,
   ENTRY_TYPES,
+  FIELD_NAMES,
   fieldRows,
+  filterText,
+  LINK_WORDS,
   incomingPage,
   linksByKind,
   linkTarget,
@@ -123,10 +127,10 @@ describe('fields', () => {
         category: 'key-recovery',
       }),
     ).toEqual([
-      { name: 'Kind', value: 'negative result' },
-      { name: 'Frontier category', value: 'key-recovery' },
-      { name: 'Conditions', value: 'model: classical; success_at: 1/2' },
-      { name: 'Measures', value: 'time: 120; memory: 2^{0.29n}' },
+      { key: 'kind', name: 'Kind', value: 'negative result' },
+      { key: 'category', name: 'Frontier category', value: 'key-recovery' },
+      { key: 'conditions', name: 'Conditions', value: 'model: classical; success_at: 1/2' },
+      { key: 'measures', name: 'Measures', value: 'time: 120; memory: 2^{0.29n}' },
     ]);
   });
 
@@ -139,17 +143,17 @@ describe('fields', () => {
         retrieved: '2026-10-14',
       }),
     ).toEqual([
-      { name: 'Identifiers', value: 'eprint: 2024/123' },
-      { name: 'Authors', value: 'A. Author; B. Author' },
-      { name: 'Retrieved', value: '2026-10-14' },
-      { name: 'PDF', value: 'artifact artifact-1 r2' },
+      { key: 'identifiers', name: 'Identifiers', value: 'eprint: 2024/123' },
+      { key: 'authors', name: 'Authors', value: 'A. Author; B. Author' },
+      { key: 'retrieved', name: 'Retrieved', value: '2026-10-14' },
+      { key: 'pdf', name: 'PDF', value: 'artifact artifact-1 r2' },
     ]);
   });
 
   test('a field the view does not know yet still shows, under its own name', () => {
     expect(fieldRows({ new_field: 'x', kind: 'lemma' })).toEqual([
-      { name: 'Kind', value: 'lemma' },
-      { name: 'new field', value: 'x' },
+      { key: 'kind', name: 'Kind', value: 'lemma' },
+      { key: 'new_field', name: 'new field', value: 'x' },
     ]);
     expect(fieldRows({})).toEqual([]);
   });
@@ -181,5 +185,34 @@ describe('the links to an entry, a page at a time', () => {
     expect(incomingPage({ incoming: links(3), incoming_total: 3 }, 0).next).toBeNull();
     // Links removed since the count: an empty page ends the list.
     expect(incomingPage({ incoming: [], incoming_total: 450 }, 400).next).toBeNull();
+  });
+});
+
+test("a field's row is keyed by its name as stored, not its name in words", () => {
+  // Two stored names that read the same in words stay two rows.
+  const rows = fieldRows({ foo_bar: 1, 'foo bar': 2 });
+  expect(rows.map((row) => row.name)).toEqual(['foo bar', 'foo bar']);
+  expect(new Set(rows.map((row) => row.key)).size).toBe(2);
+});
+
+test("a column's filter says it searched only the entries read so far", () => {
+  expect(filterText(0, 50, true)).toBe(
+    '0 of 50 loaded match; more may match among those not read yet',
+  );
+  expect(filterText(3, 12, false)).toBe('3 of 12 loaded match');
+});
+
+describe("the views' tables agree with the ledger's models (ledger.fixtures.json)", () => {
+  test('the types and their statuses, in order', () => {
+    expect(ENTRY_TYPES).toEqual(Object.keys(fixture.statuses));
+    expect(STATUSES).toEqual(fixture.statuses);
+  });
+
+  test('the link kinds, in order', () => {
+    expect(Object.keys(LINK_WORDS)).toEqual(fixture.link_kinds);
+  });
+
+  test('the names of the fields the types give', () => {
+    expect(Object.keys(FIELD_NAMES).sort()).toEqual(fixture.fields);
   });
 });

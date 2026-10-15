@@ -1,0 +1,74 @@
+{
+  "statuses": {
+    "issue": [
+      "open",
+      "resolved",
+      "obstructed",
+      "split",
+      "withdrawn"
+    ],
+    "claim": [
+      "proposed",
+      "established",
+      "recorded",
+      "disputed",
+      "refuted",
+      "superseded",
+      "withdrawn"
+    ],
+    "result": [
+      "proposed",
+      "established",
+      "recorded",
+      "disputed",
+      "refuted",
+      "superseded",
+      "withdrawn"
+    ],
+    "assumption": [
+      "active",
+      "withdrawn"
+    ],
+    "decision": [
+      "proposed",
+      "in_effect",
+      "rejected",
+      "reversed"
+    ],
+    "task": [
+      "todo",
+      "in_progress",
+      "blocked",
+      "done",
+      "dropped"
+    ],
+    "reference": [
+      "active",
+      "withdrawn"
+    ]
+  },
+  "link_kinds": [
+    "answers",
+    "assumes",
+    "builds_on",
+    "restates",
+    "compares_to",
+    "supersedes",
+    "dominates",
+    "split_into",
+    "affects",
+    "concerns"
+  ],
+  "fields": [
+    "authors",
+    "category",
+    "conditions",
+    "identifiers",
+    "kind",
+    "measures",
+    "pdf",
+    "published",
+    "retrieved",
+    "version"
+  ]
+}

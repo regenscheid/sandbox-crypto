@@ -4,7 +4,7 @@
   import { api } from '../lib/api';
   import type { EntrySummary } from '../lib/api-types';
   import { formatTime } from '../lib/format';
-  import { matches, statusText, type EntryType } from '../lib/ledger';
+  import { filterText, matches, statusText, type EntryType } from '../lib/ledger';
   import { emptyList, PagedList } from '../lib/pagedList';
   import { ledgerEntryHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
@@ -30,6 +30,9 @@
     {statusText(status)}
     <span class="muted">{entries.items.length}{entries.next ? '+' : ''}</span>
   </h3>
+  {#if filter.trim() && entries.items.length}
+    <p class="muted">{filterText(shown.length, entries.items.length, entries.next !== null)}</p>
+  {/if}
   {#each shown as entry (entry.entry_id)}
     <article class="card">
       <a href={ledgerEntryHref(projectId, entry.handle)}>{entry.handle}</a>
