@@ -68,6 +68,7 @@ from .models import (
     EntryRevision,
     EntrySummary,
     EntryView,
+    EvidenceInput,
     EvidenceLink,
     FrontierHistory,
     FrontierPast,
@@ -852,6 +853,7 @@ class Ledger:
                 )
         self._check_links(db, planned)
         self._check_dominates(db, project, planned, role)
+        self._check_quotes(db, planned)
         self._check_published(db, planned)
         gated = self._check_decisions(db, planned, role)
         now = self.clock()
@@ -1589,6 +1591,65 @@ class Ledger:
             now,
         )
 
+    def _check_quotes(self, db: sqlite3.Connection, planned: list[_Planned]) -> None:
+        """A quote names what it quotes as the reference reads at the revision it pins
+        (LG-8, CR-4): a PDF quote, the reference's PDF, pinned by its SHA-256; an ePrint
+        quote, the reference's ePrint identifier. The reference may be one the same
+        change records or revises."""
+        by_id = {p.row.entry_id: p for p in planned}
+        for p in planned:
+            if p.evidence is None:
+                continue
+            kept: list[EvidenceLink] = []
+            for link in p.evidence:
+                if link.target != "quote" or link.locator is None or "named" in link.locator:
+                    kept.append(link)
+                    continue
+                kept.append(self._quoted(db, by_id, p, link))
+            p.evidence = kept
+
+    @staticmethod
+    def _quoted(
+        db: sqlite3.Connection, by_id: dict[str, _Planned], p: _Planned, link: EvidenceLink
+    ) -> EvidenceLink:
+        """``link``, a new quote, with what it quotes named from its reference's fields."""
+        assert link.locator is not None  # noqa: S101 - a quote has one
+        assert link.revision is not None  # noqa: S101 - and pins its reference
+        reference = by_id.get(link.target_id)
+        stored = db.execute(
+            "SELECT head FROM ledger_entries WHERE entry_id=?", (link.target_id,)
+        ).fetchone()
+        if reference is not None and (stored is None or link.revision > stored[0]):
+            fields: Json = reference.fields  # the revision the change makes
+        else:
+            row = db.execute(
+                "SELECT fields FROM ledger_revisions WHERE entry_id=? AND revision=?",
+                (link.target_id, link.revision),
+            ).fetchone()
+            fields = {} if row is None else json.loads(row[0])
+        locator = dict(link.locator)
+        handle = link.handle or link.target_id
+        if locator["source"] == "pdf":
+            pdf = fields.get("pdf")
+            if not isinstance(pdf, dict):
+                raise DocumentError(
+                    INVALID_REQUEST,
+                    f"{p.row.handle} quotes a PDF of {handle}, which names none: give the "
+                    "reference its pdf, or quote the ePrint",
+                )
+            locator["named"] = {"artifact_id": pdf["artifact_id"], "revision": pdf["revision"]}
+            return link.model_copy(update={"locator": locator, "sha256": pdf["sha256"]})
+        identifiers = cast(Json, fields.get("identifiers") or {})
+        eprint = identifiers.get("eprint")
+        if not eprint:
+            raise DocumentError(
+                INVALID_REQUEST,
+                f"{p.row.handle} quotes an ePrint of {handle}, which names none: give the "
+                "reference its eprint identifier, or quote its PDF",
+            )
+        locator["named"] = {"eprint": eprint}
+        return link.model_copy(update={"locator": locator})
+
     def _check_published(self, db: sqlite3.Connection, planned: list[_Planned]) -> None:
         """A published claim or result cites its reference through a ``supports`` link of
         type ``source_claim`` (LG-15), which may be to a reference the same change
@@ -1597,7 +1658,9 @@ class Ledger:
         for p in planned:
             if p.row.origin != "published" or (not p.created and p.evidence is None):
                 continue
-            targets = {link.target_id for link in p.evidence or () if link.target == "entry"}
+            targets = {
+                link.target_id for link in p.evidence or () if link.target in ("entry", "quote")
+            }
             references = made | {
                 entry
                 for (entry,) in db.execute(
@@ -2161,11 +2224,7 @@ def _agent_text(mutation: Mutation) -> Mutation:
             ]
         if change.evidence is not None:
             update["evidence"] = [
-                item
-                if item.scope is None
-                else item.model_copy(
-                    update={"scope": agent_text(item.scope, f"{where} evidence {index}'s scope")}
-                )
+                _agent_evidence(item, f"{where} evidence {index}'s")
                 for index, item in enumerate(change.evidence, 1)
             ]
         changes.append(change.model_copy(update=update))
@@ -2188,6 +2247,17 @@ def _ascii_conditions(fields: Json, where: str) -> None:
                 "an agent writes condition values in printable ASCII, so that results compare "
                 "under one spelling",
             )
+
+
+def _agent_evidence(item: EvidenceInput, where: str) -> EvidenceInput:
+    """An agent's evidence item, its scope and the text it quotes checked."""
+    update: dict[str, object] = {}
+    if item.scope is not None:
+        update["scope"] = agent_text(item.scope, f"{where} scope")
+    if item.quote is not None:
+        text = agent_text(item.quote.text, f"{where} quote")
+        update["quote"] = item.quote.model_copy(update={"text": text})
+    return item.model_copy(update=update) if update else item
 
 
 def _labelled(error: DocumentError, provenance: Json | None) -> DocumentError:

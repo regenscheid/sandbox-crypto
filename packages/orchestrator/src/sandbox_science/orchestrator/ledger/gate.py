@@ -95,7 +95,17 @@ def bearing(link: EvidenceLink) -> bool:
 
 
 def _pinned(link: EvidenceLink) -> tuple[object, ...]:
-    return (link.role, link.type, link.target, link.target_id, link.revision, link.block, link.span)
+    where = None if link.locator is None else json.dumps(link.locator, sort_keys=True)
+    return (
+        link.role,
+        link.type,
+        link.target,
+        link.target_id,
+        link.revision,
+        link.block,
+        link.span,
+        where,
+    )
 
 
 def material(
@@ -116,7 +126,7 @@ def counts(db: sqlite3.Connection, link: EvidenceLink) -> bool:
     that is now refuted, withdrawn or superseded."""
     if not supporting(link):
         return False
-    if link.target != "entry":
+    if link.target not in ("entry", "quote"):
         return True
     row = db.execute(
         "SELECT r.status FROM ledger_entries e JOIN ledger_revisions r "

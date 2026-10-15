@@ -120,6 +120,42 @@ class LinkInput(Contract):
     note: Note | None = None
 
 
+class QuoteInput(Contract):
+    """What a claim or result quotes from the reference it cites (LG-8, CR-4): a PDF's
+    page and lines as ``pdf_pages`` or ``pdf_search`` numbered them, with the page's
+    printed label, or an ePrint passage as the e-print tools gave it, with the date stamp
+    they gave the paper; and the text, as it was read."""
+
+    source: Literal["pdf", "eprint"]
+    page: Annotated[int, Field(ge=1, le=100000, strict=True)] | None = None
+    """The PDF's physical page, from 1."""
+    label: Annotated[str, Field(min_length=1, max_length=32)] | None = None
+    first_line: Annotated[int, Field(ge=1, le=100000, strict=True)] | None = None
+    last_line: Annotated[int, Field(ge=1, le=100000, strict=True)] | None = None
+    dated: Annotated[str, Field(min_length=1, max_length=128)] | None = None
+    """For an ePrint, the date stamp the e-print tools gave the paper, such as
+    ``2015-06-30T18:41:29Z; 2015-06-30T20:25:17Z``: the paper ID and this stamp are
+    what names the version, as the server reports it."""
+    text: Annotated[str, Field(min_length=1, max_length=2000)]
+
+    @model_validator(mode="after")
+    def _source(self) -> Self:
+        if self.source == "pdf":
+            if self.page is None or self.first_line is None or self.last_line is None:
+                raise ValueError("a PDF quote names its page and its first and last lines")
+            if self.dated is not None:
+                raise ValueError("a PDF quote names no date stamp: the PDF's hash names it")
+        elif self.dated is None:
+            raise ValueError("an ePrint quote names the date stamp the e-print tools gave")
+        if (self.first_line is None) != (self.last_line is None) or (
+            self.first_line is not None
+            and self.last_line is not None
+            and self.first_line > self.last_line
+        ):
+            raise ValueError("a quote's lines run from its first to its last")
+        return self
+
+
 class EvidenceInput(Contract):
     """An evidence link as a change adds it (LG-8): its role, its type, a scope note and
     one pinned target: an entry revision (``entry``, ``revision`` defaulting to the
@@ -143,6 +179,8 @@ class EvidenceInput(Contract):
     checked: Annotated[int, Field(ge=1, le=999999999, strict=True)] | None = None
     scope: Note | None = None
     """What the evidence covers, such as "$p = 17$ only"."""
+    quote: QuoteInput | None = None
+    """With ``entry`` naming a reference: what the claim or result quotes from it."""
 
 
 ClaimKind = Literal["lemma", "theorem", "observation", "counterexample", "negative_result", "other"]
@@ -295,7 +333,7 @@ class EvidenceLink(Contract):
     evidence_id: str
     role: EvidenceRole
     type: EvidenceType
-    target: Literal["entry", "artifact", "block", "review"]
+    target: Literal["entry", "artifact", "block", "review", "quote"]
     target_id: str
     revision: int | None = None
     """The target's pinned revision: an entry's, an artifact's or a document's."""
@@ -308,7 +346,10 @@ class EvidenceLink(Contract):
     scope: str | None = None
     added: int
     handle: str | None = None
-    """An entry target's handle, as it reads now."""
+    """An entry target's handle, as it reads now; a quote's reference's."""
+    locator: dict[str, Any] | None = None
+    """For a quote: its source, where it is (the PDF and its page and lines, or the
+    ePrint and its date stamp) and its text."""
 
 
 class EntryFinding(Contract):
