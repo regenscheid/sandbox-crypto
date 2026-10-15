@@ -40,10 +40,12 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.contracts.worker import Language
 
+from .aio import threaded
 from .artifact_publisher import ArtifactPublisher
 from .connectors import MAX_LOAD, MAX_LOADED_CHARS, MAX_QUERY, Connectors
 from .consistency.controller import REVIEW_EFFECTS, ReviewController, Reviews
 from .delegation import specs as delegation_specs
+from .delegation.tracks import EFFECTS as TRACK_EFFECTS
 from .documents import annotation_tools
 from .documents.errors import DocumentError
 from .documents.tool import DOCUMENT_EFFECTS, DocumentTool, WorkRequests, with_notices
@@ -68,6 +70,7 @@ from .worker_client import WorkerAPIError, WorkerClient, dump
 
 if TYPE_CHECKING:
     from .delegation.hook import Delegations
+    from .delegation.tracks import TrackTools
 
 _log = logging.getLogger(__name__)
 
@@ -482,6 +485,7 @@ class Toolbox:
         questions: QuestionTool | None = None,
         delegated: bool = False,
         check: bool = False,
+        tracks: TrackTools | None = None,
     ) -> None:
         """For a ``delegated`` run, a call to a tool it is not offered, such as a review,
         plan, delegate, question or connector tool, is refused with
@@ -627,6 +631,14 @@ class Toolbox:
                     model=call.model,
                 ),
                 MEMORY_EFFECTS,
+            )
+        if tracks is not None:
+            entries += _group(
+                tracks.specs,
+                lambda name, call: threaded(
+                    tracks.call, name, call.args, operation=call.operation, model=call.model
+                ),
+                TRACK_EFFECTS,
             )
         if delegations is not None:
             entries += _group(

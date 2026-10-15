@@ -77,6 +77,11 @@ class TaskBrief(Contract):
     ] = Field(default=(), max_length=MAX_INPUTS)
     model: str | None = Field(default=None, min_length=1, max_length=128)
     """A model alias the project lets a brief choose (PD-28)."""
+    track: Identifier | None = None
+    """A track of the session's active plan, whose steps the child records its progress
+    on, and only those (PD-9); a track has one running delegation at most (PD-12)."""
+    issue: str | None = Field(default=None, min_length=1, max_length=128)
+    """An issue the task works on, which its outcome is recorded on as work (LG-F8)."""
 
 
 class CheckBrief(Contract):
@@ -162,6 +167,17 @@ SPECS: Final = (
                     "maxItems": MAX_INPUTS,
                     "description": "For a task, optional: paths in the session workspace or "
                     "shared/, documents and ledger entries it should read",
+                },
+                "track": {
+                    "type": "string",
+                    "description": "For a task, optional: a track of the session's active "
+                    "plan, whose steps it records its progress on; one task at a time",
+                },
+                "issue": {
+                    "type": "string",
+                    "description": "For a task, optional: the issue it works on, such as I-2; "
+                    "its outcome, what it dismissed and the obstructions it claims are "
+                    "recorded there as work",
                 },
             },
             "additionalProperties": False,

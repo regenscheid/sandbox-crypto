@@ -134,19 +134,42 @@ TASK_SHAPE: Final[dict[str, JsonValue]] = {
     "obstacle": "only and always when blocked: what prevents the task",
     "deviations": ["where you departed from the brief, and why (at most 10)"],
     "open_questions": ["what you could not settle, such as a question for the user"],
+    "dismissals": [
+        {"what": "a line of work you dropped", "limit": "time | tools | context | ideas"}
+    ],
+    "obstructions": [
+        {"claim": "what you claim cannot be done", "evidence": "why, as you found it"}
+    ],
 }
 """A task's result's fields, as the correction notice describes them."""
 
 
+class Dismissal(StrictContract):
+    """A line of work a task dropped, and what ran out (LG-6's ``limit``)."""
+
+    what: Item
+    limit: Literal["time", "tools", "context", "ideas"]
+
+
+class Obstruction(StrictContract):
+    """An obstruction a task claims, with its evidence as it found it (LG-6, LG-7)."""
+
+    claim: Annotated[str, _texts(2000)]
+    evidence: Annotated[str, _texts(4000)]
+
+
 class TaskResult(StrictContract):
     """What a task returns (``sandbox-task-result-1``): the delegated run's claims about
-    what it did; the outcome's ``ended`` is the platform's observation (PD-17)."""
+    what it did, the lines of work it dropped and the obstructions it claims; the
+    outcome's ``ended`` is the platform's observation (PD-17)."""
 
     status: Literal["complete", "partial", "blocked"]
     summary: Annotated[str, _texts(8000)]
     obstacle: Annotated[str, _texts(1000)] | None = None
     deviations: tuple[Item, ...] = _ITEMS
     open_questions: tuple[Item, ...] = _ITEMS
+    dismissals: tuple[Dismissal, ...] = Field(default=(), max_length=10)
+    obstructions: tuple[Obstruction, ...] = Field(default=(), max_length=5)
 
     @model_validator(mode="after")
     def _consistent(self) -> Self:
@@ -261,6 +284,8 @@ class Outcome(TurnHook):
         """What the run's tools showed whole."""
         self.shown: set[str] = set()
         """The target's evidence links its reads of the target's revision showed."""
+        self.created: list[str] = []
+        """The entries the run's ledger changes created, by ID (LG-6's ``produced``)."""
 
     @property
     def read_proofs(self) -> bool | None:
@@ -272,6 +297,7 @@ class Outcome(TurnHook):
         return all(p.evidence_id in self.shown and p.read in self.seen for p in self.target.proofs)
 
     async def observe_tool(self, run: RunView, record: dict[str, Any]) -> None:
+        self._created(record)
         read = record.get("read")
         if self.target is None or "error" in record or not isinstance(read, dict):
             return
@@ -296,6 +322,19 @@ class Outcome(TurnHook):
                 )
         elif isinstance(shown.get("sha256"), str) and shown.get("complete") is True:
             self.seen.add(("file", cast(str, shown["sha256"])))
+
+    def _created(self, record: dict[str, Any]) -> None:
+        if record.get("ledger") not in ("ledger_change", "ledger_import") or "error" in record:
+            return
+        result = record.get("result")
+        entries = (
+            cast(dict[str, object], result).get("entries") if isinstance(result, dict) else None
+        )
+        for entry in cast(list[object], entries) if isinstance(entries, list) else []:
+            if isinstance(entry, dict) and cast(dict[str, object], entry).get("created") is True:
+                found = cast(dict[str, object], entry).get("entry_id")
+                if isinstance(found, str) and found not in self.created:
+                    self.created.append(found)
 
     async def closing(self, run: RunView, answer: str | None) -> Closing:
         try:

@@ -123,11 +123,29 @@ def brief_text(task: str, inputs: list[str], note: str) -> str:
     return "\n\n".join(parts)
 
 
-def task_text(task: str, context: str, inputs: Sequence[str]) -> str:
-    """A task's brief as the delegated run's first message: the parent's own words."""
+def task_text(
+    task: str,
+    context: str,
+    inputs: Sequence[str],
+    *,
+    track: str | None = None,
+    issue: str | None = None,
+) -> str:
+    """A task's brief as the delegated run's first message: the parent's own words, and
+    the platform's lines for its track and its issue."""
     parts = [f"Task: {task}"]
     if context:
         parts.append(f"Context from your parent: {context}")
     if inputs:
         parts.append("Inputs:\n" + "\n".join(f"- {item}" for item in inputs))
+    if track is not None:
+        parts.append(
+            f"Your track: {track}, of the session's plan. Read its steps with track_read and "
+            "record your progress on them with track_progress."
+        )
+    if issue is not None:
+        parts.append(
+            f"Your issue: {issue}. Your outcome is recorded on it as work, with the lines of "
+            "work you dismissed and the obstructions you claim (dismissals, obstructions)."
+        )
     return "\n\n".join(parts)
