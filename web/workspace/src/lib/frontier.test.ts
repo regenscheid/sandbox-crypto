@@ -13,6 +13,7 @@ import type {
   FrontierResult,
 } from './api-types';
 import {
+  candidatesText,
   conditionsText,
   indicatorsText,
   lookalikeText,
@@ -143,6 +144,10 @@ describe('the frontier in words', () => {
     );
     expect(lookalikeText({ attack: 'a​b' })).toBe('attack: a​b (U+200B)');
     expect(conditionsText({})).toBe('No conditions');
+    // A heading, the history and the past show each hidden character as its code point.
+    expect(conditionsText({ 'at\u200Btack': 'dual\u202Ehybrid', model: 'Gröbner' })).toBe(
+      'at⟦U+200B⟧tack: dual⟦U+202E⟧hybrid; model: Gröbner',
+    );
   });
 
   it('says what the main agent changed since the user, or that the user wrote none', () => {
@@ -159,6 +164,25 @@ describe('the frontier in words', () => {
       'Nothing it compares changed since your r2.',
     );
     expect(revisedSince({ ...revised, since: null })).toBe('You have written no revision of it.');
+  });
+
+  it('says which candidates are listed: past 100, the oldest of the window', () => {
+    expect(candidatesText(group({ candidates: [result()] }))).toBe('Newest first.');
+    const many = Array.from({ length: 100 }, (_, n) =>
+      result({ entry_id: `entry-${n}`, handle: `R-${n + 1}` }),
+    );
+    const listed = group({ best: [], candidates: many, more: { candidates: 30 } });
+    expect(candidatesText(listed)).toBe(
+      'Only the oldest 100 of this window are listed, newest of them first; 30 newer ones are ' +
+        'not listed.',
+    );
+    const html = render(FrontierGroup, {
+      props: { projectId: 'p1', group: listed, measures: category().measures },
+    }).body;
+    expect(html).toContain('Only the oldest 100 of this window are listed');
+    expect(html).not.toContain('And 30 more');
+    // Of those listed, the newest comes first.
+    expect(html.indexOf('>R-100<')).toBeLessThan(html.indexOf('>R-1<'));
   });
 
   it('keeps each group once, the first time it was read', () => {
@@ -259,7 +283,8 @@ describe('the frontier views', () => {
     ]);
     expect(html).toContain('Unverified: published by');
     expect(html).toContain('Disputed: shown as r2');
-    expect(html).toContain('And 4 more, not listed.');
+    expect(html).toContain('4 newer ones are not listed.');
+    expect(html).not.toContain('And 4 more');
     // Newest first: the result made last is listed first.
     expect(html.indexOf('R-9')).toBeLessThan(html.indexOf('javascript:alert(1)'));
   });

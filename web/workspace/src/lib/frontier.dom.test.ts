@@ -200,11 +200,63 @@ describe('the frontier view', () => {
     expect(root.textContent).toContain('The statement of R-6.');
   });
 
-  it('shows a failed read', async () => {
-    server({ '': 503 });
+  it('shows a failed read, and reads it again on request', async () => {
+    const answers: Record<string, FrontierAnswer | number> = { '': 503 };
+    const queries = server(answers);
     const root = show();
     await settle();
     expect(root.textContent).toContain('the frontier cannot be read now');
     expect(root.textContent).not.toContain('No result of this category');
+    answers[''] = answer([group('primal')], null);
+    button(root, 'Try again')!.click();
+    await settle();
+    expect(queries).toEqual(['', '']);
+    expect(headings(root)).toEqual(['attack: primal']);
+    expect(button(root, 'Try again')).toBeUndefined();
+  });
+
+  it('pages groups within a window of older candidates, and notes that pages may shift', async () => {
+    const answers: Record<string, FrontierAnswer | number> = {
+      '': answer([group('primal')], 1, { truncated: true, next_candidates_before: 40 }),
+      '?candidates_before=40': answer([group('primal')], 1),
+      '?groups_after=1&candidates_before=40': 503,
+    };
+    const queries = server(answers);
+    const root = show();
+    await settle();
+    button(root, 'Older candidates')!.click();
+    await settle();
+    expect(root.textContent).not.toContain('Groups are read by their place');
+    button(root, 'More groups')!.click();
+    await settle();
+    // A failed page leaves the way back and a retry, not an empty page.
+    expect(root.textContent).toContain('the frontier cannot be read now');
+    expect(button(root, 'Newer candidates')).toBeDefined();
+    answers['?groups_after=1&candidates_before=40'] = answer([group('dual')], null);
+    button(root, 'Try again')!.click();
+    await settle();
+    expect(queries).toEqual([
+      '',
+      '?candidates_before=40',
+      '?groups_after=1&candidates_before=40',
+      '?groups_after=1&candidates_before=40',
+    ]);
+    expect(headings(root)).toEqual(['attack: primal', 'attack: dual']);
+    expect(root.textContent).toContain('Groups are read by their place');
+  });
+
+  it('keeps the way back when a window of candidates fails to read', async () => {
+    server({
+      '': answer([group('primal')], null, { truncated: true, next_candidates_before: 40 }),
+      '?candidates_before=40': 503,
+    });
+    const root = show();
+    await settle();
+    button(root, 'Older candidates')!.click();
+    await settle();
+    expect(root.textContent).toContain('the frontier cannot be read now');
+    button(root, 'Newer candidates')!.click();
+    await settle();
+    expect(headings(root)).toEqual(['attack: primal']);
   });
 });

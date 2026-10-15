@@ -5,7 +5,7 @@
      on the server. -->
 <script lang="ts">
   import type { CategoryMeasure, FrontierGroup, FrontierResult } from '../lib/api-types';
-  import { conditionsText, moreText } from '../lib/frontier';
+  import { candidatesText, conditionsText, moreText } from '../lib/frontier';
   import Result from './FrontierResult.svelte';
 
   let {
@@ -13,7 +13,9 @@
     group,
     measures,
   }: { projectId: string; group: FrontierGroup; measures: readonly CategoryMeasure[] } = $props();
-  // Results come in the order they were made; candidates read newest first.
+  // Results come in the order they were made; candidates read newest first. The answer
+  // lists the first 100 a group has in that order, the oldest of the window, until the
+  // route lists the newest (lane S); `candidatesText` says which are listed.
   const candidates = $derived([...group.candidates].reverse());
 </script>
 
@@ -21,7 +23,9 @@
   {#each items as result (result.entry_id)}
     <Result {projectId} {result} {measures} />
   {/each}
-  {#if moreText(group, kind)}<p class="muted">{moreText(group, kind)}</p>{/if}
+  {#if kind !== 'candidates' && moreText(group, kind)}<p class="muted">
+      {moreText(group, kind)}
+    </p>{/if}
 {/snippet}
 
 <section class="frontier-group">
@@ -45,7 +49,7 @@
     <h3>Candidates</h3>
     <p class="muted">
       Not eligible: proposed results of this project, or disputed ones that never were eligible, and
-      published results you have not confirmed. Newest first.
+      published results you have not confirmed. {candidatesText(group)}
     </p>
     {@render results('candidates', candidates)}
   {/if}

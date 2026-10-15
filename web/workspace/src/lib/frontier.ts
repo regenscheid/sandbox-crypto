@@ -10,7 +10,7 @@ import type { CategoryMeasure, CategoryRevised, FrontierGroup, FrontierResult } 
 import { formatTime } from './format';
 import { authorText } from './ledger';
 import { EVIDENCE_TYPE_WORDS } from './ledgerEvidence';
-import { codePoint } from './text';
+import { codePoint, visible } from './text';
 
 /** The most proposed results one read of a frontier takes as candidates. */
 export const CANDIDATES_READ = 500;
@@ -20,10 +20,15 @@ export function measureText(measure: CategoryMeasure): string {
   return `${measure.name}, in ${measure.unit}, ${measure.direction} is better`;
 }
 
-/** A group's conditions in words, as the group spells them. */
+/**
+ * A group's conditions in words, as the group spells them, each character a person may not
+ * see shown as its code point, such as `⟦U+200B⟧`.
+ */
 export function conditionsText(conditions: Record<string, string>): string {
   const pairs = Object.entries(conditions);
-  return pairs.length === 0 ? 'No conditions' : pairs.map(([k, v]) => `${k}: ${v}`).join('; ');
+  return pairs.length === 0
+    ? 'No conditions'
+    : pairs.map(([k, v]) => `${visible(k)}: ${visible(v)}`).join('; ');
 }
 
 /**
@@ -89,6 +94,19 @@ export function indicatorsText(result: FrontierResult): string[] {
 export function moreText(group: Pick<FrontierGroup, 'more'>, kind: string): string {
   const count = group.more[kind] ?? 0;
   return count > 0 ? `And ${count} more, not listed.` : '';
+}
+
+/**
+ * Which of a group's candidates are listed, in words. The answer lists the first 100 in
+ * the order they were made, so a group with more lists the oldest of the window.
+ */
+export function candidatesText(group: Pick<FrontierGroup, 'candidates' | 'more'>): string {
+  const more = group.more.candidates ?? 0;
+  if (more === 0) return 'Newest first.';
+  return (
+    `Only the oldest ${group.candidates.length} of this window are listed, newest of them ` +
+    `first; ${more} newer ${more === 1 ? 'one is' : 'ones are'} not listed.`
+  );
 }
 
 /** A group's key: its conditions as spelled. */

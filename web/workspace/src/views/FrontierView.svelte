@@ -22,6 +22,8 @@
   let before = $state<number | null>(null);
   /** The windows of candidates read before this one, the latest first, to go back to. */
   let newer = $state<(number | null)[]>([]);
+  /** How many pages of groups are shown: past one, a page may have shifted under the next. */
+  let pages = $state(0);
   // The route keys this view by the project and category: they never change here.
   const list = new PagedList(groups, async (after) => {
     const found = await api.frontier(projectId, category, after, before);
@@ -30,12 +32,18 @@
       next: found.next_groups_after,
       shown: () => {
         if (after === null) read = found.frontier;
+        pages = after === null ? 1 : pages + 1;
       },
     };
   });
   void list.reload();
   const shown = $derived(uniqueGroups(groups.items));
   const measures = $derived(read?.category.measures ?? []);
+
+  /** Read again what failed: the first page, or the next one. */
+  function retry(): void {
+    void (groups.items.length === 0 ? list.reload() : list.more());
+  }
 
   /** Read the frontier again with another window of candidates, from its first group. */
   function readWindow(next: number | null, back: (number | null)[]): void {
@@ -56,24 +64,27 @@
   <Category category={read.category} revised={read.agent_revised} lookalike={read.lookalike} />
   {#if read.truncated || before !== null}
     <p class="muted">{windowText(before, read.truncated)}</p>
-    <p>
-      {#if read.next_candidates_before !== null}
-        <button
-          type="button"
-          disabled={groups.loading}
-          onclick={() => readWindow(read!.next_candidates_before, [before, ...newer])}
-          >Older candidates</button
-        >
-      {/if}
-      {#if before !== null}
-        <button
-          type="button"
-          disabled={groups.loading}
-          onclick={() => readWindow(newer[0] ?? null, newer.slice(1))}>Newer candidates</button
-        >
-      {/if}
-    </p>
   {/if}
+{/if}
+<!-- Outside the read, so a window that fails to read can still be left. -->
+{#if (read !== null && read.next_candidates_before !== null) || before !== null}
+  <p>
+    {#if read !== null && read.next_candidates_before !== null}
+      <button
+        type="button"
+        disabled={groups.loading}
+        onclick={() => readWindow(read!.next_candidates_before, [before, ...newer])}
+        >Older candidates</button
+      >
+    {/if}
+    {#if before !== null}
+      <button
+        type="button"
+        disabled={groups.loading}
+        onclick={() => readWindow(newer[0] ?? null, newer.slice(1))}>Newer candidates</button
+      >
+    {/if}
+  </p>
 {/if}
 
 {#each shown as group (groupKey(group.conditions))}
@@ -82,8 +93,17 @@
   {#if read}<p class="muted">No result of this category is eligible or a candidate yet.</p>{/if}
 {/each}
 {#if groups.loading}<p class="muted">Loading…</p>{/if}
-{#if groups.error}<ErrorMessage error={groups.error} />{/if}
-{#if groups.next !== null}
+{#if groups.error}
+  <ErrorMessage error={groups.error} />
+  <p><button type="button" disabled={groups.loading} onclick={retry}>Try again</button></p>
+{/if}
+{#if pages > 1}
+  <p class="muted">
+    Groups are read by their place in the list, so a change between pages can shift them and one may
+    be missed. Reload the page to read them all again.
+  </p>
+{/if}
+{#if groups.next !== null && !groups.error}
   <p>
     <button type="button" disabled={groups.loading} onclick={() => list.more()}>More groups</button>
   </p>

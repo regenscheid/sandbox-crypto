@@ -8,6 +8,7 @@
 <script lang="ts">
   import type { Category, CategoryRevised } from '../lib/api-types';
   import { formatTime } from '../lib/format';
+  import { visible } from '../lib/text';
   import {
     lookalikeText,
     measureText,
@@ -54,7 +55,7 @@
   <dt>Condition keys</dt>
   <dd>
     {category.conditions.length
-      ? category.conditions.join(', ')
+      ? category.conditions.map(visible).join(', ')
       : 'None: every result is compared with every other'}
   </dd>
   <dt>Revision</dt>
