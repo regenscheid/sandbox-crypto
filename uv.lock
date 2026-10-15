@@ -7,6 +7,7 @@ members = [
     "sandbox-science",
     "sandbox-science-contracts",
     "sandbox-science-event-store",
+    "sandbox-science-launcher",
     "sandbox-science-mcp-proxy",
     "sandbox-science-orchestrator",
     "sandbox-science-package-cache",
@@ -1563,6 +1564,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "sandbox-science-contracts" },
     { name = "sandbox-science-event-store" },
+    { name = "sandbox-science-launcher" },
     { name = "sandbox-science-mcp-proxy" },
     { name = "sandbox-science-orchestrator" },
     { name = "sandbox-science-package-cache" },
@@ -1593,6 +1595,7 @@ dev = [
 requires-dist = [
     { name = "sandbox-science-contracts", editable = "packages/contracts" },
     { name = "sandbox-science-event-store", editable = "packages/event-store" },
+    { name = "sandbox-science-launcher", editable = "packages/launcher" },
     { name = "sandbox-science-mcp-proxy", editable = "packages/mcp-proxy" },
     { name = "sandbox-science-orchestrator", editable = "packages/orchestrator" },
     { name = "sandbox-science-package-cache", editable = "packages/package-cache" },
@@ -1634,6 +1637,17 @@ requires-dist = [{ name = "pydantic", specifier = ">=2.9" }]
 name = "sandbox-science-event-store"
 version = "0.1.0"
 source = { editable = "packages/event-store" }
+
+[[package]]
+name = "sandbox-science-launcher"
+version = "0.1.0"
+source = { editable = "packages/launcher" }
+dependencies = [
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pydantic", specifier = ">=2.9" }]
 
 [[package]]
 name = "sandbox-science-mcp-proxy"
