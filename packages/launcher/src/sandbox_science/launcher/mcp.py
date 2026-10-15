@@ -4,7 +4,10 @@
 With ``[mcp_proxy]`` in the config, ``up``:
 
 1. checks that the OpenShell providers exist, before it starts anything: the owner
-   creates them, with the MCP servers' credentials;
+   creates them, with the MCP servers' credentials. With ``provider_env_file``, it first
+   registers ``crypto-research-mcp`` from the owner's file, when the provider is missing
+   or ``--refresh-provider`` asks, by running access_provider.py: only that process,
+   and the one OpenShell command it gives them to, reads the values;
 2. compiles the sandbox's policy (``sandbox-science-mcp-proxy compile-policy``);
 3. creates the sandbox from the proxy's image, with the providers, and waits until
    it is ready;
@@ -38,10 +41,11 @@ import asyncio
 import json
 import re
 import secrets
+import sys
 from pathlib import Path
 from typing import Any, cast
 
-from . import toml
+from . import access_provider, toml
 from .config import LauncherConfig, LauncherError, McpProxyConfig
 from .state import Layout, ensure_token, private_dir, write_private
 from .supervise import Part, Supervisor, environment, passed
@@ -159,16 +163,38 @@ def harness_options(config: LauncherConfig, layout: Layout) -> list[str]:
     ]  # fmt: skip
 
 
+async def register_provider(
+    config: LauncherConfig, layout: Layout, supervisor: Supervisor, *, refresh: bool
+) -> None:
+    """Register the Access provider from the owner's file when it is missing, or always
+    with ``refresh``, in a process of its own: the launcher never opens the file."""
+    mcp = settings(config)
+    if mcp.provider_env_file is None or mcp.provider_profile is None:
+        if refresh:
+            raise LauncherError("--refresh-provider needs [mcp_proxy] provider_env_file")
+        return
+    provider = access_provider.PROVIDER
+    if not refresh and provider in await _providers(config):
+        return
+    print(f"registering the OpenShell provider {provider} from {mcp.provider_env_file}", flush=True)
+    said = await supervisor.run(
+        f"registering the provider {provider}",
+        [sys.executable, "-I", "-m", access_provider.__name__, str(mcp.provider_env_file),
+         "--profile", str(mcp.provider_profile), "--provider", provider,
+         "--openshell", config.openshell.cli],
+        layout.mcp,
+        config.start_timeout,
+        tooling(config),
+    )  # fmt: skip
+    print(said.strip(), flush=True)
+
+
+async def _providers(config: LauncherConfig) -> set[str]:
+    return access_provider.provider_names(await OpenShell(config).json("provider", "list"))
+
+
 async def check_providers(config: LauncherConfig) -> None:
-    listing = await OpenShell(config).json("provider", "list")
-    providers: object = (
-        cast(dict[str, object], listing).get("providers") if isinstance(listing, dict) else None
-    )
-    names = {
-        str(cast(dict[str, object], item).get("name"))
-        for item in (cast(list[object], providers) if isinstance(providers, list) else [])
-        if isinstance(item, dict)
-    }
+    names = await _providers(config)
     for provider in settings(config).providers:
         if provider not in names:
             raise LauncherError(

@@ -296,9 +296,25 @@ The policy compiler binds the server's endpoint to that one provider (`credentia
    ```
 5. Attach the provider to the MCP proxy's sandbox (`--provider crypto-research-mcp` when it is created, [above](#running-it)), and put the URL of the server in the project policy's entry.
 
-**Rotation.** A new token goes in the same way with `openshell provider update crypto-research-mcp --credential CF_ACCESS_CLIENT_ID --credential CF_ACCESS_CLIENT_SECRET --wait`. A running process keeps the placeholder of the credential's revision it started with, so the MCP proxy's sandbox is restarted after the update ([refresh](#oauth-flow-mcp-2025-11-25), the same rule). Revoking the token in Cloudflare stops access at once; deleting the provider (`openshell provider delete crypto-research-mcp`) stops the proxy from sending it.
+**From the owner's file** (approved by the owner, 2026-10-15). Instead of typing the values in at steps 3 and 4, the owner keeps them in a file, `~/.config/sandbox-science/secrets/cloudflare.env` on babbage, which no agent opens. A helper registers the provider from it:
 
-**Checked on babbage, 2026-10-14:** the `openshell provider create`, `update` and `profile` commands and flags above, from the installed 0.1.3's `--help`; no provider, profile or sandbox was created. The profile's fields follow OpenShell 0.1.3's profile documentation (`auth_style: header` with `header_name`); its `lint` needs the gateway and has not run. Not checked: a request through the proxy with the provider attached.
+```bash
+uv run python -m sandbox_science.launcher.access_provider ~/.config/sandbox-science/secrets/cloudflare.env \
+  --profile examples/openshell/profiles/cloudflare-access.yaml --openshell ~/.local/opt/openshell-0.1.3/bin/openshell
+```
+
+- **The file.** The helper refuses a file that is not a regular file, that is not the user's, or that its group or others may read or write.
+  - It holds `KEY=VALUE` lines, blank lines and `#` comments.
+  - The keys are `CF-Access-Client-Id` and `CF-Access-Client-Secret`, or `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET`. Case doesn't matter, nor does `-` against `_`. A `:` may come before the `=`.
+  - A value may have spaces and quotes around it. Other keys are ignored.
+  - A file missing either value is refused, with the missing key named.
+- **What it does.** It runs `openshell provider profile lint` and `import` if the gateway has no `cloudflare-access` profile yet. Then it runs `openshell provider create`, as at step 4, or `provider update … --wait` if the provider exists.
+- **Where the values go.** Only to that one `create` or `update` command, through its environment. They never appear on a command line, in a log, in the helper's own environment or in its output. Nothing that command says is shown, since it could echo them.
+- **The default on babbage, for now** (the owner, 2026-10-15). `[mcp_proxy] provider_env_file` names the file. `sandbox-science up` then runs the helper itself, in a process of its own, whenever the gateway lacks the provider, as each new lab gateway does. `up --refresh-provider` registers the provider again, as after a rotation ([quickstart](QUICKSTART.md#the-mcp-proxy)). The launcher never opens the file. Steps 3 and 4 remain the alternative.
+
+**Rotation.** A new token goes in the same way with `openshell provider update crypto-research-mcp --credential CF_ACCESS_CLIENT_ID --credential CF_ACCESS_CLIENT_SECRET --wait`, or from the owner's file with `sandbox-science up --refresh-provider`. A running process keeps the placeholder of the credential's revision it started with, so the MCP proxy's sandbox is restarted after the update ([refresh](#oauth-flow-mcp-2025-11-25), the same rule). Revoking the token in Cloudflare stops access at once; deleting the provider (`openshell provider delete crypto-research-mcp`) stops the proxy from sending it.
+
+**Checked on babbage, 2026-10-14:** the `openshell provider create`, `update` and `profile` commands and flags above, from the installed 0.1.3's `--help`; no provider, profile or sandbox was created. The profile's fields follow OpenShell 0.1.3's profile documentation (`auth_style: header` with `header_name`); its `lint` needs the gateway and has not run. Not checked: a request through the proxy with the provider attached. The helper has not run against a gateway yet: its tests use a stand-in CLI. It assumes that `provider profile list -o json` names the profile by `id` or `name`, and it takes an `import` that says the profile exists as success.
 
 ### What the server offers
 

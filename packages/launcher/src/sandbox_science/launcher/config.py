@@ -36,7 +36,8 @@ A relative path is against the file's directory, and ``~`` is the user's home. E
 address is a loopback one. ``[openshell]`` is the worker's own table (docs/WORKER.md):
 the launcher passes it on with its paths made absolute, and runs its own OpenShell
 commands with its ``cli`` and ``env``. The model's key file is only named here: the
-launcher never reads it, and gives its path to the run service.
+launcher never reads it, and gives its path to the run service. Nor does it open
+``[mcp_proxy] provider_env_file``: a process of its own does (access_provider.py).
 """
 
 from __future__ import annotations
@@ -59,6 +60,8 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
+from .access_provider import PROVIDER
 
 Identifier = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")]
 Variable = Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
@@ -299,6 +302,29 @@ class McpProxyConfig(_Strict):
     within OpenShell's 19 characters."""
     listen: Listen = "127.0.0.1:18080"
     """Where the forward to the proxy listens, for the run service."""
+    provider_env_file: ConfigPath | None = None
+    """The owner's file with the Cloudflare Access service token of the provider
+    ``crypto-research-mcp``. With it, ``up`` registers the provider from the file, in a
+    process of its own, when the provider is missing, or with ``--refresh-provider``
+    (the owner, 2026-10-15, for now). The launcher never opens the file."""
+    provider_profile: ConfigPath | None = None
+    """The provider's OpenShell profile, ``examples/openshell/profiles/cloudflare-access
+    .yaml``, imported when the gateway has none yet; needed with ``provider_env_file``."""
+
+    @model_validator(mode="after")
+    def _registered(self) -> Self:
+        if self.provider_env_file is not None:
+            if self.provider_profile is None:
+                raise ValueError(
+                    "mcp_proxy.provider_env_file needs provider_profile, the provider's "
+                    "OpenShell profile (examples/openshell/profiles/cloudflare-access.yaml)"
+                )
+            if PROVIDER not in self.providers:
+                raise ValueError(
+                    f"mcp_proxy.provider_env_file registers the provider {PROVIDER}, which "
+                    "mcp_proxy.providers must name"
+                )
+        return self
 
 
 class LauncherConfig(_Strict):

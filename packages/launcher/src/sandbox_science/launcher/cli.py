@@ -59,6 +59,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     ):
         command = commands.add_parser(name, help=text)
         command.add_argument("--config", type=Path, default=Path("sandbox-science.toml"))
+        if name == "up":
+            command.add_argument(
+                "--refresh-provider",
+                action="store_true",
+                help="register [mcp_proxy] provider_env_file's provider again, though it exists",
+            )
         if name == "down":
             command.add_argument(
                 "--keep-sandboxes",
@@ -70,7 +76,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         config = load_config(args.config)
         match args.command:
             case "up":
-                return up(config, args.config.absolute())
+                return up(config, args.config.absolute(), refresh=args.refresh_provider)
             case "down":
                 return down(config, args.config.absolute(), keep=args.keep_sandboxes)
             case _:
@@ -82,7 +88,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 130
 
 
-def up(config: LauncherConfig, path: Path) -> int:
+def up(config: LauncherConfig, path: Path, *, refresh: bool = False) -> int:
     parts.check(config)
     layout = Layout(config.state_dir)
     layout.make()
@@ -94,7 +100,7 @@ def up(config: LauncherConfig, path: Path) -> int:
         for part in instance.stop_left_behind(earlier):
             print(f"stopped the {part.name} (process {part.pid}) an earlier launcher left running")
         parts.prepare(config)
-        return asyncio.run(_up(config, path, layout, record))
+        return asyncio.run(_up(config, path, layout, record, refresh=refresh))
     finally:
         os.close(held)
 
@@ -139,6 +145,8 @@ async def _up(
     path: Path,
     layout: Layout,
     record: Callable[[list[Running]], None],
+    *,
+    refresh: bool = False,
 ) -> int:
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
@@ -170,7 +178,7 @@ async def _up(
     )
     status = 0
     try:
-        await _start(config, layout, supervisor, outcome, hurry)
+        await _start(config, layout, supervisor, outcome, hurry, refresh=refresh)
         _announce(config, path, layout)
         reason = await supervisor.watch()
         if reason is not None:
@@ -208,10 +216,15 @@ async def _start(
     supervisor: Supervisor,
     outcome: sandboxes.Outcome,
     hurry: asyncio.Event,
+    *,
+    refresh: bool = False,
 ) -> None:
     timeout = config.start_timeout
     if config.mcp_proxy is not None:
+        await mcp.register_provider(config, layout, supervisor, refresh=refresh)
         await mcp.check_providers(config)
+    elif refresh:
+        raise LauncherError("--refresh-provider needs [mcp_proxy] provider_env_file")
     print(f"starting the worker on {config.worker.listen}", flush=True)
     worker_env = passed(config.worker.pass_env)
     await supervisor.start(_worker(config, layout), timeout)

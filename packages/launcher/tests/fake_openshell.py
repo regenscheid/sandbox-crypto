@@ -6,7 +6,13 @@ it does goes in ``FAKE_JOURNAL`` as the parts' stand-ins' steps do. With ``FAKE_
 saying ``{"openshell": "forward-exits-once"}``, the first forward exits a moment after
 it starts, as one does when its sandbox stops; with ``forward-exits-always``, every one
 does; with ``create-fails``, ``sandbox create`` fails and makes nothing; with
-``get-fails``, ``sandbox get`` cannot reach the gateway.
+``get-fails``, ``sandbox get`` cannot reach the gateway; with ``provider-fails``,
+``provider create`` and ``update`` fail.
+
+``provider create`` and ``update`` read their credentials from the environment, as
+``--credential KEY`` does, and say the values on stdout and stderr, as a careless CLI
+could: the caller must not show them. With ``FAKE_OPENSHELL_CALLS``, each call's
+arguments and environment go there, a JSON line each.
 """
 
 from __future__ import annotations
@@ -35,6 +41,18 @@ def load() -> dict[str, Any]:
     if not state_file.exists():
         return {"providers": [], "sandboxes": {}}
     return json.loads(state_file.read_text())
+
+
+def register(name: str, keys: list[str], what: str) -> None:
+    for stream in (sys.stdout, sys.stderr):
+        print(" ".join(f"{key}={os.environ.get(key)}" for key in keys), file=stream)
+    if behaviour == "provider-fails" or not all(os.environ.get(key) for key in keys):
+        sys.exit(1)
+    state = load()
+    if name not in state["providers"]:
+        state["providers"].append(name)
+    save(state)
+    note(f"provider {what} {name} {' '.join(keys)}")
 
 
 def save(state: dict[str, Any]) -> None:
@@ -69,7 +87,31 @@ def forward(local: str) -> None:
         connection.close()
 
 
+if calls := os.environ.get("FAKE_OPENSHELL_CALLS"):
+    with Path(calls).open("a") as log:
+        log.write(json.dumps({"argv": args, "env": dict(os.environ)}) + "\n")
+
 match args:
+    case ["provider", "profile", "list", "-o", "json"]:
+        print(json.dumps({"profiles": [{"id": found} for found in load().get("profiles", [])]}))
+    case ["provider", "profile", "lint" | "import" as step, "-f", profile]:
+        if not Path(profile).is_file():
+            print(f"error: no profile at {profile}", file=sys.stderr)
+            sys.exit(1)
+        if step == "import":
+            state = load()
+            state["profiles"] = [*state.get("profiles", []), "cloudflare-access"]
+            save(state)
+        note(f"provider profile {step} {Path(profile).name}")
+    case [
+        "provider", "create", "--name", name, "--type", kind,
+        "--credential", one, "--credential", two,
+    ]:  # fmt: skip
+        register(name, [one, two], f"create {kind}")
+    case ["provider", "update", name, "--credential", one, "--credential", two, "--wait"]:
+        if name not in load()["providers"]:
+            sys.exit(1)
+        register(name, [one, two], "update")
     case ["provider", "list", "-o", "json"]:
         providers = [{"name": name, "type": "cloudflare-access"} for name in load()["providers"]]
         print(json.dumps({"providers": providers}))

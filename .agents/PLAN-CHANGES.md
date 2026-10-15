@@ -8,6 +8,10 @@ Decision on lab 38 (#305), which the owner can reverse:
 
 - **A comment starts a run** ([run service](../docs/specs/run-service.md), RS-6b; LD-22). A work request to an idle session starts a run as a chat message does, within the model budget, and it ends a job wait. Requests get no `held` or `refused` state, which would need a migration: where a message would be held, the run service keeps the request from starting a run until the session's next run or the service's restart, and over the budget it looks again every 15 minutes.
 
+Decisions of the owner for the M2 exit rerun:
+
+- **The MCP provider from the owner's file** ([MCP connectors](../docs/MCP-CONNECTORS.md#crypto-research-mcp-a-cloudflare-access-service-token)). A helper (`sandbox_science.launcher.access_provider`) registers `crypto-research-mcp` from the owner's `cloudflare.env`, the approved alternative to typing the token in. It refuses a file others may use, and passes the values only to the one OpenShell command that registers them, through its environment. "For now", it is babbage's default: `[mcp_proxy] provider_env_file` makes `up` run it whenever the gateway lacks the provider, as each lab gateway does, or on `up --refresh-provider`. The launcher never opens the file, and agents never do.
+
 Decisions of the coordinator on the review of the ledger's gate (#276–#281), which the owner can reverse:
 
 - **What a check or review covered** ([ledger spec](../docs/specs/ledger.md), LG-17). A check or review counts for a later revision only if it keeps the statement, fields, `assumes` links and every evidence link that bears on the entry: `supports`, `derivation` and `contradicts` of a type that can count. LG-17 named the `derivation` targets alone, which let evidence of either sign added after a review pass as reviewed. Reviews and `refuted`, `withdrawn` or `superseded` entries are not evidence that counts, and any `proof` that counts needs the independent check.

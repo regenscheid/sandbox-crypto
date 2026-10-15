@@ -159,16 +159,20 @@ def free_ports() -> tuple[int, int]:
 class Launcher:
     """``sandbox-science`` as a process, its output read as it comes."""
 
-    def __init__(self, config: Path, env: dict[str, str], command: str = "up") -> None:
+    def __init__(
+        self, config: Path, env: dict[str, str], command: str = "up", *options: str
+    ) -> None:
         self.config = config
         self.env = env
         self.lines: queue.Queue[str] = queue.Queue()
         self.seen: list[str] = []
         self.process = subprocess.Popen(
-            [sys.executable, "-m", "sandbox_science.launcher", command, "--config", str(config)],
+            [sys.executable, "-m", "sandbox_science.launcher", command, "--config", str(config),
+             *options],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env,
         )  # fmt: skip
-        threading.Thread(target=self._read, daemon=True).start()
+        self.reader = threading.Thread(target=self._read, daemon=True)
+        self.reader.start()
 
     def _read(self) -> None:
         assert self.process.stdout is not None
@@ -185,7 +189,8 @@ class Launcher:
 
     def finish(self, timeout: float = 30) -> int:
         status = self.process.wait(timeout)
-        time.sleep(0.1)
+        # All it said: the reader ends at the end of its output, however loaded the host.
+        self.reader.join(timeout)
         while not self.lines.empty():
             self.seen.append(self.lines.get())
         return status
@@ -210,7 +215,10 @@ def site(make_config: ConfigMaker, fake_parts: Path, tmp_path: Path) -> Iterator
     journal.touch()
 
     def launch(
-        parts: dict[str, str] | None = None, env: dict[str, str] | None = None, **changes: Any
+        parts: dict[str, str] | None = None,
+        env: dict[str, str] | None = None,
+        options: tuple[str, ...] = (),
+        **changes: Any,
     ) -> Launcher:
         fakes = ["FAKE_JOURNAL", "FAKE_PARTS", "FAKE_OPENSHELL"]
         extra = changes.pop("pass_env", {})
@@ -238,7 +246,7 @@ def site(make_config: ConfigMaker, fake_parts: Path, tmp_path: Path) -> Iterator
             "FAKE_OPENSHELL": str(tmp_path / "openshell.json"),
             **(env or {}),
         }
-        return Launcher(config, environment)
+        return Launcher(config, environment, "up", *options)
 
     started: list[Launcher] = []
 

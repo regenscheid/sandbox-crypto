@@ -138,6 +138,9 @@ def test_the_examples_mcp_proxy_works_uncommented(home: Path, tmp_path: Path) ->
     assert proxy.credentials["crypto-research-mcp.CF_ACCESS_CLIENT_SECRET"] == (
         "CF_ACCESS_CLIENT_SECRET"
     )
+    # Only named: loading the config opens nothing there.
+    assert proxy.provider_env_file == home / ".config/sandbox-science/secrets/cloudflare.env"
+    assert proxy.provider_profile == tmp_path / "openshell/profiles/cloudflare-access.yaml"
 
 
 MCP = {"image": "sandbox-science/mcp-proxy:abc1234", "providers": ["p"], "servers": ["s"]}
@@ -162,6 +165,14 @@ def test_the_mcp_proxy_defaults_to_the_only_project(make_config: Any) -> None:
         ({"mcp_proxy": {"sandbox": "a-name-far-too-long-for-it"}}, "mcp_proxy.sandbox"),
         ({"mcp_proxy": {"listen": "127.0.0.1:18100"}}, "the worker and the MCP proxy's forward"),
         ({"mcp_proxy": {"servers": []}}, "mcp_proxy.servers"),
+        (
+            {"mcp_proxy": {"providers": ["crypto-research-mcp"], "provider_env_file": "a.env"}},
+            "mcp_proxy.provider_env_file needs provider_profile",
+        ),
+        (
+            {"mcp_proxy": {"provider_env_file": "a.env", "provider_profile": "a.yaml"}},
+            "registers the provider crypto-research-mcp, which mcp_proxy.providers must name",
+        ),
     ],
 )
 def test_an_mcp_proxy_that_cannot_work_is_refused(

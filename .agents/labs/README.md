@@ -33,6 +33,7 @@ All state goes under `~/.local/state/openshell-lab`, and every service runs as a
    openshell provider profile import -f examples/openshell/profiles/github-token.yaml
    GITHUB_TOKEN="test-secret-lab-github-$(openssl rand -hex 8)" openshell provider create --name github-readonly --type github-token --credential GITHUB_TOKEN
    ```
+   A lab with the MCP proxy runs `sandbox-science up` with `[mcp_proxy]` uncommented in `examples/sandbox-science.toml`. Its `provider_env_file` makes `up` register `crypto-research-mcp` on the new gateway from the owner's file, the one real provider a lab uses (the owner, 2026-10-15). No agent opens that file or anything else in its directory: only the launcher's helper process reads it.
 4. `bash worker_up.sh`: the worker on 127.0.0.1:8100 with `[openshell.environments]`, a client limited to `$PROJECT` (default `lab17`, token in `$LAB/worker/client-a.token`) and the example policy granted to that project (digest in `$LAB/policy.digest`).
 5. Checks, through the worker's API (they use project `lab17`, environments `lab17-a` and `lab17-c`):
    - `python -I checks.py $LAB/worker/client-a.token $(cat $LAB/policy.digest) envs sync mmap packages cancel idioms orphans revisions`: any subset of the parts, in order. `envs` creates the two environments first.
