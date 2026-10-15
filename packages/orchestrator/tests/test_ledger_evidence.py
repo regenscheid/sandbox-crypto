@@ -260,3 +260,60 @@ def test_a_published_entry_cites_its_reference(ledger: Ledger) -> None:
     change(ledger, {**published, "evidence": [{**cite, "entry": "REF-1"}]}, op="op-3")
     with pytest.raises(DocumentError, match="cites its reference"):
         change(ledger, evidence("C-1", 1, evidence_removed=[held.evidence_id]), op="op-4")
+
+
+def test_entries_of_a_version_21_store_hold_no_evidence_after_the_migration(
+    ledger: Ledger, tmp_path: Path
+) -> None:
+    """Version 22 adds ``ledger_evidence``: the entries an older store holds keep their
+    revisions, hold no evidence, and take evidence as new entries do."""
+    import sqlite3
+
+    from sandbox_science.orchestrator.control import migrations
+    from sandbox_science.orchestrator.documents import DocumentStore, store_path
+
+    from .control_versions import older_store
+
+    change(ledger, NEW["claim"], NEW["claim"], NEW["task"])
+    before = ledger.entry("p", "C-1")
+    ledger.documents.close()
+    old = tmp_path / "old"
+    old.mkdir()
+    older_store(store_path(tmp_path), store_path(old), migrations.BASELINE + 19)
+    raw = sqlite3.connect(store_path(old))
+    tables = {name for (name,) in raw.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert (raw.execute("PRAGMA user_version").fetchone()[0], "ledger_evidence" in tables) == (
+        21,
+        False,
+    )
+    raw.close()
+    documents = DocumentStore(store_path(old))
+    documents.initialize()  # the writer brings the store to the current version
+    try:
+        migrated = Ledger(documents)
+        after = migrated.entry("p", "C-1")
+        assert (after.evidence, after.asserted_only) == ([], True)
+        assert after.model_dump(exclude={"evidence", "asserted_only"}) == before.model_dump(
+            exclude={"evidence", "asserted_only"}
+        )
+        migrated.change(
+            "p",
+            {
+                "operation_id": "after",
+                "reason": "r",
+                "changes": [
+                    {
+                        "entry": "C-1",
+                        "expected": 1,
+                        "evidence": [{"role": "supports", "type": "proof", "entry": "C-2"}],
+                    }
+                ],
+            },
+            USER,
+        )
+        assert migrated.entry("p", "C-1").asserted_only is False
+        with documents.control.read() as tx:
+            version = tx.sql.execute("PRAGMA user_version").fetchone()[0]
+        assert version == migrations.VERSION
+    finally:
+        documents.close()
