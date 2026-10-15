@@ -21,7 +21,27 @@ export default defineConfig({
     },
   },
   test: {
-    include: ['src/**/*.test.ts', 'server/**/*.test.mjs'],
-    environment: 'node',
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: 'node',
+          include: ['src/**/*.test.ts', 'server/**/*.test.mjs'],
+          exclude: ['src/**/*.dom.test.ts'],
+          environment: 'node',
+        },
+      },
+      // Views that a test mounts and clicks through, in a DOM, with Svelte's browser
+      // runtime: only the files named `*.dom.test.ts`.
+      {
+        extends: true,
+        resolve: { conditions: ['browser'] },
+        test: {
+          name: 'dom',
+          include: ['src/**/*.dom.test.ts'],
+          environment: 'happy-dom',
+        },
+      },
+    ],
   },
 });

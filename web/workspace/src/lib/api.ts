@@ -425,6 +425,16 @@ const part = encodeURIComponent;
  */
 export const MEMORY_MAX_BYTES = 2048 * 1024;
 
+/** The ledger's answer to the user's change (orchestrator `MutationResult`), as the views read it. */
+export interface LedgerChangeAnswer {
+  operation_id: string;
+  replayed: boolean;
+  entries: { entry_id: string; handle: string; revision: number; status: string }[];
+  cleared_total: number;
+  flags_cleared: string[];
+  flags_reopened: string[];
+}
+
 export const api = {
   projectMacros: (project: string) => get<MacroContext>(`/projects/${part(project)}/macros`),
   changeMacros: (project: string, value: Record<string, unknown>) =>
@@ -518,6 +528,22 @@ export const api = {
           : `${revision === null ? '?' : '&'}incoming_after=${incomingAfter}`),
     ),
   /** A page of an entry's revisions, newest first, before `before`. */
+  /** The user's clearing of open flags on an entry: those named, or else all, with the reason. */
+  clearLedgerFlags: (
+    project: string,
+    entry: string,
+    change: { flags: string[]; reason: string; operation_id: string },
+  ) => post<LedgerChangeAnswer>(`/projects/${part(project)}/ledger/${part(entry)}/flags`, change),
+  /** The user's reopening of cleared flags on an entry, each as a new flag, with the reason. */
+  reopenLedgerFlags: (
+    project: string,
+    entry: string,
+    change: { flags: string[]; reason: string; operation_id: string },
+  ) =>
+    post<LedgerChangeAnswer>(
+      `/projects/${part(project)}/ledger/${part(entry)}/flags/reopened`,
+      change,
+    ),
   ledgerHistory: (project: string, entry: string, before: number | null = null) =>
     get<LedgerHistory>(
       `/projects/${part(project)}/ledger/${part(entry)}/history` +

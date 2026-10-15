@@ -6,6 +6,7 @@
   import { formatTime } from '../lib/format';
   import { filterText, matches, statusText, type EntryType } from '../lib/ledger';
   import { emptyList, PagedList } from '../lib/pagedList';
+  import { openFlagsText } from '../lib/ledgerFlags';
   import { ledgerEntryHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
 
@@ -38,6 +39,8 @@
       <a href={ledgerEntryHref(projectId, entry.handle)}>{entry.handle}</a>
       {#if entry.origin === 'published'}<span class="muted">published</span>{/if}
       {#if entry.asserted_only}<span class="muted">asserted only</span>{/if}
+      {#if entry.open_flags > 0}<strong class="flagged">{openFlagsText(entry.open_flags)}</strong
+        >{/if}
       <p>{entry.title}</p>
       <p class="muted">r{entry.revision} · {formatTime(entry.updated)}</p>
     </article>

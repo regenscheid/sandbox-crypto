@@ -12,10 +12,20 @@
   import { ledgerEntryHref } from '../lib/router';
   import LedgerEvidence from './LedgerEvidence.svelte';
   import LedgerFindings from './LedgerFindings.svelte';
+  import LedgerFlags from './LedgerFlags.svelte';
   import LedgerIncoming from './LedgerIncoming.svelte';
   import LedgerLinks from './LedgerLinks.svelte';
 
-  let { projectId, entry }: { projectId: string; entry: EntryView } = $props();
+  let {
+    projectId,
+    entry,
+    changed = async () => {},
+  }: {
+    projectId: string;
+    entry: EntryView;
+    /** Read the entry again, after the user's change to it. */
+    changed?: () => Promise<void>;
+  } = $props();
   const fields = $derived(fieldRows(entry.fields, projectId));
 </script>
 
@@ -45,6 +55,8 @@
   <dt>Reason</dt>
   <dd>{entry.reason}</dd>
 </dl>
+
+<LedgerFlags {projectId} {entry} {changed} />
 
 <h2>Statement</h2>
 <Markdown source={entry.statement} />

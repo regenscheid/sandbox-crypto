@@ -7,6 +7,7 @@
   import { Detail, noDetail } from '../lib/detail';
   import { formatTime } from '../lib/format';
   import { linksByKind } from '../lib/ledger';
+  import { openFlagsText } from '../lib/ledgerFlags';
   import { ledgerEntryHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
   import LedgerLinks from './LedgerLinks.svelte';
@@ -29,6 +30,8 @@
     <summary
       ><a href={ledgerEntryHref(projectId, issue.handle)}>{issue.handle}</a>
       {issue.title}
+      {#if issue.open_flags > 0}<strong class="flagged">{openFlagsText(issue.open_flags)}</strong
+        >{/if}
       <span class="muted">r{issue.revision} · {formatTime(issue.updated)}</span></summary
     >
     {#if shown.loading}<p class="muted">Loading…</p>{/if}
