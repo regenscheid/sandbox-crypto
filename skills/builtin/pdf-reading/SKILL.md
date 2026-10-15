@@ -20,7 +20,7 @@ For a long paper, read bounded page ranges, and say which pages you did not read
 
 The tools count pages physically. The printed label can differ: front matter in Roman numerals, a journal's own page numbers, or a standard that numbers each part afresh. When a paper says "see page 12", it means the label. Look up the physical page in the list from `pdf_info` before calling `pdf_pages`. A citation that gives both, such as "p. 12 (physical page 14)", lets a reader find the place either way.
 
-Line numbers depend on how the page was read. `pdf_pages` leaves out running headers, footers and page numbers unless asked to include them, and `pdf_search` always counts them. So on a page with a running header, a search hit's line number can be higher than the same line's number in a default `pdf_pages` read. Cite and quote lines with the numbers of the read you took the text from.
+A line has the same number in `pdf_pages` and `pdf_search`. Running headers, footers and page numbers count in the numbering. `pdf_pages` leaves them out unless asked to include them, and says which numbers it left out, so the lines it shows can start at 2. A line marked (header/footer) is the page's furniture, not the text of the paper.
 
 ## Pages with no text
 

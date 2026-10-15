@@ -12,7 +12,6 @@ import struct
 import subprocess
 import sys
 import zlib
-from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -20,95 +19,10 @@ import pytest
 
 pytest.importorskip("pdf_oxide")
 
+from sandbox_science.testing.pdfs import make_pdf
 from sandbox_science.worker import pdfhelper
 
 HELPER = Path(pdfhelper.__file__)
-
-
-# A minimal PDF writer: Helvetica text at given positions, page labels, an outline, and
-# optionally an image-only page.
-def _text(value: str) -> str:
-    return "(" + value.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)") + ")"
-
-
-def make_pdf(
-    pages: Sequence[Sequence[tuple[float, float, str]]],
-    *,
-    labels: list[tuple[int, str]] | None = None,
-    outline: list[tuple[str, int]] | None = None,
-    image_page: int | None = None,
-) -> bytes:
-    """``pages`` holds (x, y, text) lines per page; ``labels`` (start index, style) ranges;
-    ``outline`` (title, zero-based page) entries; ``image_page`` a page drawn as an image only."""
-    objects: list[bytes] = []
-
-    def add(body: bytes) -> int:
-        objects.append(body)
-        return len(objects)
-
-    catalog = add(b"")  # filled in at the end
-    pages_ref = add(b"")
-    font = add(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
-    image = add(
-        b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray"
-        b" /BitsPerComponent 8 /Length 4 >>\nstream\n\x00\xff\xff\x00\nendstream"
-    )
-    page_refs: list[int] = []
-    for number, lines in enumerate(pages):
-        if number == image_page:
-            content = b"q 200 0 0 200 100 400 cm /Im1 Do Q"
-        else:
-            content = b"".join(
-                f"BT /F1 12 Tf {x:.2f} {y:.2f} Td {_text(text)} Tj ET\n".encode("latin-1")
-                for x, y, text in lines
-            )
-        stream = add(b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream")
-        page = add(
-            (
-                f"<< /Type /Page /Parent {pages_ref} 0 R /MediaBox [0 0 612 792]"
-                f" /Resources << /Font << /F1 {font} 0 R >> /XObject << /Im1 {image} 0 R >> >>"
-                f" /Contents {stream} 0 R >>"
-            ).encode()
-        )
-        page_refs.append(page)
-    kids = " ".join(f"{ref} 0 R" for ref in page_refs)
-    objects[pages_ref - 1] = f"<< /Type /Pages /Kids [{kids}] /Count {len(page_refs)} >>".encode()
-    extra = ""
-    if labels:
-        nums = " ".join(f"{start} << /S /{style} >>" for start, style in labels)
-        extra += f" /PageLabels << /Nums [{nums}] >>"
-    if outline:
-        root = add(b"")
-        items = []
-        for _ in outline:
-            items.append(add(b""))
-        for position, ((title, page), ref) in enumerate(zip(outline, items, strict=True)):
-            links = f" /Parent {root} 0 R /Dest [{page_refs[page]} 0 R /XYZ 0 792 0]"
-            if position > 0:
-                links += f" /Prev {items[position - 1]} 0 R"
-            if position < len(items) - 1:
-                links += f" /Next {items[position + 1]} 0 R"
-            objects[ref - 1] = f"<< /Title {_text(title)}{links} >>".encode("latin-1")
-        objects[root - 1] = (
-            f"<< /Type /Outlines /First {items[0]} 0 R /Last {items[-1]} 0 R /Count {len(items)} >>"
-        ).encode()
-        extra += f" /Outlines {root} 0 R"
-    objects[catalog - 1] = f"<< /Type /Catalog /Pages {pages_ref} 0 R{extra} >>".encode()
-
-    out = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
-    offsets = []
-    for number, body in enumerate(objects, start=1):
-        offsets.append(len(out))
-        out += b"%d 0 obj\n" % number + body + b"\nendobj\n"
-    xref = len(out)
-    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
-    out += b"".join(b"%010d 00000 n \n" % offset for offset in offsets)
-    out += b"trailer\n<< /Size %d /Root %d 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (
-        len(objects) + 1,
-        catalog,
-        xref,
-    )
-    return bytes(out)
 
 
 PAGES = [
@@ -168,6 +82,60 @@ def test_lines_carry_their_boxes(workspace: Path) -> None:
     x0, y0, x1, y1 = first["bbox"]
     assert x0 <= 72 < x1
     assert y0 <= 700 < y1
+
+
+HEADED = [(72, 700, "the twist of the curve has"), (72, 680, "order 4r with r prime")]
+"""A page with a running header above its two lines and a page number below them."""
+HEADER = [(72, 760, "Journal of Tests, vol. 1"), (300, 40, "7")]
+
+
+def test_headers_and_footers_are_numbered_and_marked_the_same_in_every_operation(
+    workspace: Path,
+) -> None:
+    """One numbering for pdf_pages and pdf_search: every line counts, the header and the
+    page number included, so a cited line is the same line in both (CR-4)."""
+    (workspace / "headed.pdf").write_bytes(make_pdf([HEADED], artifacts={0: HEADER}))
+    [page] = pdfhelper.pages("headed.pdf", "1", artifacts=True)["pages"]
+    assert [(line["n"], line["text"], line.get("artifact", False)) for line in page["lines"]] == [
+        (1, "Journal of Tests, vol. 1", True),
+        (2, "the twist of the curve has", False),
+        (3, "order 4r with r prime", False),
+        (4, "7", True),
+    ]
+    assert "artifacts_left_out" not in page
+    # Left out by default, but not renumbered: the body keeps lines 2 and 3.
+    [page] = pdfhelper.pages("headed.pdf", "1", artifacts=False)["pages"]
+    assert [(line["n"], line["text"]) for line in page["lines"]] == [
+        (2, "the twist of the curve has"),
+        (3, "order 4r with r prime"),
+    ]
+    assert page["artifacts_left_out"] == [1, 4]
+    hits = pdfhelper.search("headed.pdf", "r prime")["hits"]
+    assert [(hit["n"], hit.get("artifact", False)) for hit in hits] == [(3, False)]
+    hits = pdfhelper.search("headed.pdf", "journal")["hits"]
+    assert [(hit["n"], hit.get("artifact")) for hit in hits] == [(1, True)]
+    assert pdfhelper.info("headed.pdf")["pages"][0]["has_text"]
+
+
+def test_a_page_of_headers_alone_has_text_but_no_body(workspace: Path) -> None:
+    (workspace / "blank.pdf").write_bytes(make_pdf([[]], artifacts={0: HEADER}))
+    [page] = pdfhelper.pages("blank.pdf", "1", artifacts=False)["pages"]
+    assert (page["lines"], page["artifacts_left_out"]) == ([], [1, 2])
+    assert "note" not in page  # it has text: the header and the page number
+    assert pdfhelper.info("blank.pdf")["pages"][0]["has_text"]
+
+
+def test_a_line_that_mixes_a_header_and_body_text_is_body_text(workspace: Path) -> None:
+    """The parser puts a header's words and the body's on one line: the line is kept,
+    since leaving it out would lose the body's words."""
+    mixed = make_pdf([[(110, 700, "Theorem 2 holds")]], artifacts={0: [(72, 700, "J. Tests")]})
+    (workspace / "mixed.pdf").write_bytes(mixed)
+    [page] = pdfhelper.pages("mixed.pdf", "1", artifacts=False)["pages"]
+    assert [(line["n"], line["text"]) for line in page["lines"]] == [
+        (1, "J. Tests Theorem 2 holds")
+    ]
+    assert "artifact" not in page["lines"][0]
+    assert "artifacts_left_out" not in page
 
 
 def test_search_names_pages_and_lines(workspace: Path) -> None:

@@ -157,8 +157,10 @@ PDF_SPECS: Final = (
     ToolSpec(
         "pdf_pages",
         'Read pages of a PDF as numbered lines, at most 20 pages a call, such as "3-5,9". '
-        "Cite a line as p<page>:<line>, with the physical page number. Extracted text of "
-        "equations, matrices and figures can be wrong: render the page to check it.",
+        "Cite a line as p<page>:<line>, with the physical page number. Lines are numbered as "
+        "pdf_search numbers them: running headers, footers and page numbers count, though "
+        "they are left out unless include_artifacts. Extracted text of equations, matrices "
+        "and figures can be wrong: render the page to check it.",
         {
             "type": "object",
             "properties": {
@@ -1513,7 +1515,14 @@ def format_pdf(kind: str, result: dict[str, Any]) -> str:
             index = page.get("index")
             lines.append(f"--- page {index} (printed {page.get('label')}) ---")
             for line in _items(page.get("lines")):
-                lines.append(f"[p{index}:{line.get('n')}] {line.get('text')}")
+                lines.append(f"[p{index}:{line.get('n')}] {_marked(line)}{line.get('text')}")
+            left = page.get("artifacts_left_out")
+            if isinstance(left, list) and left:
+                numbers = ", ".join(str(n) for n in cast(list[object], left))
+                lines.append(
+                    f"(lines {numbers}: running headers, footers or page numbers, left out; "
+                    "the other lines keep their numbers, and include_artifacts shows them)"
+                )
             if page.get("note"):
                 lines.append(f"({page.get('note')})")
             if page.get("truncated"):
@@ -1524,7 +1533,7 @@ def format_pdf(kind: str, result: dict[str, Any]) -> str:
         for hit in hits:
             lines.append(
                 f"[p{hit.get('page_index')}:{hit.get('n')}] (printed {hit.get('page_label')}) "
-                f"{hit.get('text')}"
+                f"{_marked(hit)}{hit.get('text')}"
             )
         if result.get("truncated"):
             lines.append("(more hits were not returned; search for something narrower)")
@@ -1539,6 +1548,11 @@ def format_pdf(kind: str, result: dict[str, Any]) -> str:
             f"sha256 {image.get('sha256')}. Publish it to keep it as evidence."
         )
     return "\n".join(lines)
+
+
+def _marked(line: Mapping[str, object]) -> str:
+    """What a PDF line that is a running header, footer or page number starts with."""
+    return "(header/footer) " if line.get("artifact") is True else ""
 
 
 def _host_port(text: str) -> HostPort:

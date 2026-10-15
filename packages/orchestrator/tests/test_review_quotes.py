@@ -18,6 +18,8 @@ from sandbox_science.orchestrator.consistency.ledger import ingest_ledger
 from sandbox_science.orchestrator.consistency.store import ReviewStore, dump
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.tools import format_pdf
+from sandbox_science.testing.pdfs import make_pdf
+from sandbox_science.worker import pdfhelper
 
 from .test_consistency import MAIN, dispatch
 from .test_consistency import store as store
@@ -137,6 +139,56 @@ def test_a_pdf_quote_is_found_in_what_pdf_pages_returned_and_spans_its_lines(
     spans = {"source": "pdf", "page": 3, "first_line": 30, "last_line": 31, "text": TWIST}
     inside = {**spans, "first_line": 29, "text": "the twist of the curve has order"}
     assert recorded(ledger, reviews, spans, inside) == ["q1"]
+
+
+HEADED = [(72, 700, "Let q be prime."), (72, 680, "the twist of the curve has order 4r")]
+"""A page under a running header, above its page number: lines 2 and 3 of 4."""
+FURNITURE = [(72, 760, "Journal of Tests, vol. 1"), (300, 40, "7")]
+
+
+@pytest.mark.parametrize("kept", ["pdf_pages", "pdf_search"])
+def test_a_quote_cited_by_either_pdf_tools_numbers_is_found(
+    store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kept: str
+) -> None:
+    """pdf_pages and pdf_search number a page's lines one way, its running header and
+    page number counted, though pdf_pages leaves them out: a line cited by the number one
+    tool gave is found in what the other returned (the pdf-reading skill, #423)."""
+    pytest.importorskip("pdf_oxide")
+    reviews, _, _ = store
+    ledger = Ledger(reviews.documents)
+    data = make_pdf([HEADED], artifacts={0: FURNITURE})
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "paper.pdf").write_bytes(data)
+    monkeypatch.setenv("SESSION_WORKSPACE", str(workspace))
+    artifact, digest = publish(ledger, tmp_path, data)
+    paper(ledger, {"artifact_id": artifact, "revision": 1})
+    paged = pdfhelper.pages("paper.pdf", "1", artifacts=False)
+    found = pdfhelper.search("paper.pdf", "twist")
+    assert paged["source"]["sha256"] == found["source"]["sha256"] == digest
+    [page] = paged["pages"]
+    assert [line["n"] for line in page["lines"]] == [2, 3]
+    assert page["artifacts_left_out"] == [1, 4]
+    (hit,) = found["hits"]
+    assert hit["n"] == page["lines"][1]["n"] == 3
+    # The model is told the numbers left out, and which hit is the page's furniture.
+    assert "(lines 1, 4: running headers, footers or page numbers, left out;" in format_pdf(
+        "pages", paged
+    )
+    furniture = format_pdf("search", pdfhelper.search("paper.pdf", "journal"))
+    assert "[p1:1] (printed 1) (header/footer) Journal of Tests, vol. 1" in furniture
+    twist = {"source": "pdf", "page": 1, "first_line": 3, "last_line": 3,
+             "text": "the twist of the curve has order 4r"}  # fmt: skip
+    quotes = [twist]
+    if kept == "pdf_pages":
+        call(reviews, 1, kept, {"path": "paper.pdf", "pages": "1"},
+             format_pdf("pages", paged), {"pdf": paged})  # fmt: skip
+        both = {**twist, "first_line": 2, "text": "Let q be prime. the twist"}
+        quotes.append(both)
+    else:
+        call(reviews, 1, kept, {"path": "paper.pdf", "query": "twist"},
+             format_pdf("search", found), {"pdf": found})  # fmt: skip
+    assert recorded(ledger, reviews, *quotes) == [f"q{n + 1}" for n in range(len(quotes))]
 
 
 def test_text_shaped_like_a_pdf_tools_output_is_no_source(store: Any, tmp_path: Path) -> None:
