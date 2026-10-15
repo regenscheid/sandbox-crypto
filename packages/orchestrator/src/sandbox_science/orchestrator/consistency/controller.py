@@ -300,10 +300,16 @@ class ReviewController:
         persistent: bool = False,
         memory: MemoryGiven | None = None,
         connectors: Collection[str] = (),
+        earlier: int = 0,
     ) -> None:
         """``memory`` is the project memory the reviewer is given: the one the reviewed
         run was given when it started (PM-8). ``connectors`` are the MCP servers the run's
-        project configures, whose e-print results can be quotes' sources (CR-4)."""
+        project configures, whose e-print results can be quotes' sources (CR-4).
+        ``earlier`` is how many messages after the system message are the session's
+        earlier conversation (RS-10). They are not observed: each was observed in its own
+        run's window, and an earlier answer is not this run's narration, so the window's
+        actions, which list only its own calls, would hold no record of what it says was
+        done (lab 41)."""
         store.scope(context.project_id, context.session_id)
         project = recorded(store.documents.path.parent, context.project_id)
         if context.environment_id != project.sessions[context.session_id].environment_id:
@@ -328,7 +334,11 @@ class ReviewController:
         self.owner, self.instance = new_id("review-owner"), new_id("turn")
         self.task: asyncio.Task[None] | None = None
         self.review: str | None = None
-        self.position = 0
+        if earlier < 0:
+            raise ValueError("earlier counts messages")
+        self.position = 1 + earlier if earlier else 0
+        """The next message to observe; the system message and the earlier conversation
+        before it are never observed."""
         self.effects = False
         self.seen: set[str] = set()
         self.delivered: set[str] = set()
