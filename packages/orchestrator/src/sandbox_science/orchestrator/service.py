@@ -13,7 +13,8 @@ until it is stopped (RS-1). The service and the workspace share the control stor
   resumes or writes again (RS-12). Its delegations still running end ``interrupted``,
   and each of its children's runs gets its ``stopped`` event, from its record if it
   saved one (PD-40). Its questions to the user still open close ``interrupted``: no
-  run is left to receive their answers (PD-23);
+  run is left to receive their answers (PD-23), and so does an open question whose run
+  holds no lease, as one whose own close failed as it was cancelled;
 - starts a run for each session that has queued messages and no run (RS-6), within the
   project's model budget (RS-6a). The run's conversation begins with the session's
   earlier tasks and answers (RS-10), then the messages queued once it holds the lease;
@@ -164,6 +165,8 @@ class RunService:
             if await threaded(self.runs.reap, dead):
                 _log.warning("run %s of session %s was interrupted", dead.run, dead.session)
                 await self._ended(dead.project, dead.session, dead.run)
+        for _, session, question in await threaded(self.questions.close_orphans):
+            _log.warning("question %s of session %s had no run: closed", question, session)
         for key, active in list(self.active.items()):
             if active.task is not None and active.task.done():
                 del self.active[key]

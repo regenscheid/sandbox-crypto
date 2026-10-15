@@ -95,6 +95,8 @@ _COLUMNS: Final = (
 )
 INTERRUPTED: Final = "the run was interrupted"
 """Why the run service closes the questions of a run whose holder is gone."""
+ORPHANED: Final = "the run that asked ended without closing it"
+"""Why the run service closes an open question whose run holds no lease."""
 SESSION_CLOSED: Final = "the session was closed"
 RUN_ENDED: Final = (
     "the run that asked has ended, so this answer would be lost: send it as a chat message instead"
@@ -289,6 +291,34 @@ class Questions:
             )
             return _get(db, project, session, question_id)
 
+    def close_orphans(self) -> list[tuple[str, str, str]]:
+        """Close ``interrupted`` every open question whose run holds no lease, live or
+        expired: the run ended without closing it, as when its own close failed as it was
+        cancelled. A run whose lease expired keeps its questions until the run service
+        ends it, which closes them. The (project, session, question) closed."""
+        orphan = (
+            "state = 'open' AND NOT EXISTS (SELECT 1 FROM run_leases AS l WHERE "
+            "l.project_id = user_questions.project_id AND "
+            "l.session_id = user_questions.session_id AND l.run = user_questions.run)"
+        )
+        with self.control.read() as tx:
+            if tx.sql.execute(f"SELECT 1 FROM user_questions WHERE {orphan}").fetchone() is None:  # noqa: S608
+                return []  # a look, without a write, at each of the service's ticks
+        with self.control.write() as tx:
+            found = [
+                (str(project), str(session), str(question))
+                for question, project, session in tx.sql.execute(
+                    "SELECT question_id, project_id, session_id FROM user_questions "  # noqa: S608
+                    f"WHERE {orphan}"
+                )
+            ]
+            tx.sql.execute(
+                f"UPDATE user_questions SET state = 'interrupted', closed_at = ?, reason = ? "  # noqa: S608
+                f"WHERE {orphan}",
+                (self._now(), ORPHANED),
+            )
+            return found
+
     def close(
         self,
         project: str,
@@ -348,32 +378,32 @@ def close_open(
     return ids
 
 
-def answer_by_message(
-    db: sqlite3.Connection,
-    project: str,
-    session: str,
-    message_id: str,
-    text: str,
-    at: str,
-    *,
-    live_after: float,
+def answered_by(
+    db: sqlite3.Connection, project: str, session: str, message_id: str, text: str
 ) -> Question | None:
-    """The question a chat message answers, in the open change ``db``: the one it
-    answered already, or else the oldest open question of the run that holds the session
-    (its lease renewed after ``live_after``), which it answers now in the user's own
-    words. ``None`` when no run that holds the session waits for an answer: the message
-    is then an ordinary one."""
+    """The question the chat message ``message_id`` answered, in the open change ``db``,
+    if one did: the same message again is that answer, and the same ID with other text,
+    or in another session, a conflict."""
     row = db.execute(
         f"SELECT {_COLUMNS} FROM user_questions WHERE message_id = ?",  # noqa: S608
         (message_id,),
     ).fetchone()
-    if row is not None:
-        found = _question(row)
-        if (found.project, found.session) != (project, session) or (
-            found.answer is None or found.answer.text != text.strip()
-        ):
-            raise ControlError(CONFLICT, f"message {message_id!r} was written with other content")
-        return found
+    if row is None:
+        return None
+    found = _question(row)
+    if (found.project, found.session) != (project, session) or (
+        found.answer is None or found.answer.text != text.strip()
+    ):
+        raise ControlError(CONFLICT, f"message {message_id!r} was written with other content")
+    return found
+
+
+def waiting(
+    db: sqlite3.Connection, project: str, session: str, *, live_after: float
+) -> Question | None:
+    """The question a message to the session answers now, in the open change ``db``: the
+    oldest open question of the run that holds the session, its lease renewed after
+    ``live_after``. ``None`` when that run waits for no answer, or no run holds it."""
     row = db.execute(
         f"SELECT {_COLUMNS} FROM user_questions WHERE question_id = ("  # noqa: S608
         "SELECT q.question_id FROM user_questions AS q JOIN run_leases AS l "
@@ -382,9 +412,14 @@ def answer_by_message(
         "AND l.renewed_at > ? ORDER BY q.rowid LIMIT 1)",
         (project, session, live_after),
     ).fetchone()
-    if row is None:
-        return None
-    question = _question(row)
+    return None if row is None else _question(row)
+
+
+def answer_with(
+    db: sqlite3.Connection, question: Question, message_id: str, text: str, at: str
+) -> Question:
+    """Answer the open ``question`` in the user's own words with the chat message
+    ``message_id``, in the open change ``db``, at the time ``at``."""
     try:
         given = _checked(question, Answer(kind="free", text=text))
     except ControlError as error:
@@ -398,7 +433,15 @@ def answer_by_message(
         "message_id = ? WHERE question_id = ? AND state = 'open'",
         (given.model_dump_json(exclude_defaults=True), at, message_id, question.question_id),
     )
-    return _get(db, project, session, question.question_id)
+    return _get(db, question.project, question.session, question.question_id)
+
+
+def by_message(db: sqlite3.Connection, message_id: str) -> bool:
+    """Whether the chat message ``message_id`` answered a question."""
+    found = db.execute(
+        "SELECT 1 FROM user_questions WHERE message_id = ?", (message_id,)
+    ).fetchone()
+    return found is not None
 
 
 def _get(db: sqlite3.Connection, project: str, session: str, question_id: str) -> Question:

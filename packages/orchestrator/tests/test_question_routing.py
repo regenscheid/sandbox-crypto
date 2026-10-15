@@ -6,6 +6,7 @@ restarted under it, or the session closed."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -17,9 +18,10 @@ from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator import question_tool
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.projects import ProjectStore, run_name
-from sandbox_science.orchestrator.question_tool import CANCELLED
+from sandbox_science.orchestrator.question_tool import CANCELLED, QuestionTool
 from sandbox_science.orchestrator.questions import (
     INTERRUPTED,
+    ORPHANED,
     RUN_ENDED,
     SESSION_CLOSED,
     Answer,
@@ -52,6 +54,16 @@ def asked(questions: Questions, context: ExecutionContext, run: str, operation: 
     return questions.ask(context, run, f"call-{operation}", operation, f"{operation}?", CURVES)
 
 
+def say(state: RunState, message_id: str, text: str, answers: str | None) -> ChatMessage | Question:
+    return state.say("p", "s", message_id, text, author="user", answers=answers)
+
+
+def changed(error: pytest.ExceptionInfo[ControlError], now: str | None) -> None:
+    """The message was refused: the question it answers changed, and is now ``now``."""
+    assert error.value.kind == "conflict"
+    assert error.value.details == {"reason": "question_changed", "question": now}
+
+
 def test_a_message_answers_the_oldest_question_of_the_run_that_holds_the_session(
     tmp_path: Path,
 ) -> None:
@@ -61,7 +73,7 @@ def test_a_message_answers_the_oldest_question_of_the_run_that_holds_the_session
     state.acquire("p", "s", "run-1", "holder")
     first, second = (asked(questions, context, "run-1", op) for op in ("op-1", "op-2"))
 
-    answered = state.post("p", "s", "m-1", "  Ed448, for the margin.\n", author="user")
+    answered = say(state, "m-1", "  Ed448, for the margin.\n", first.question_id)
     assert isinstance(answered, Question)
     assert (answered.question_id, answered.state, answered.message) == (
         first.question_id,
@@ -69,19 +81,75 @@ def test_a_message_answers_the_oldest_question_of_the_run_that_holds_the_session
         "m-1",
     )
     assert answered.answer == Answer(kind="free", text="Ed448, for the margin.")
-    assert state.post("p", "s", "m-1", "  Ed448, for the margin.\n", author="user") == answered
+    # A retry is the answer given, whatever the chat shows now.
+    assert say(state, "m-1", "  Ed448, for the margin.\n", None) == answered
     with pytest.raises(ControlError) as error:
-        state.post("p", "s", "m-1", "Ed25519", author="user")
-    assert error.value.kind == "conflict"
+        say(state, "m-1", "Ed25519", first.question_id)
+    assert (error.value.kind, error.value.details) == ("conflict", {})
+    with pytest.raises(ControlError) as error:  # its ID is not a queued message's
+        state.post("p", "s", "m-1", "  Ed448, for the margin.\n", author="user")
+    assert error.value.message == "message 'm-1' answered a question"
 
-    later = state.post("p", "s", "m-2", "Both, then.", author="user")
+    later = say(state, "m-2", "Both, then.", second.question_id)
     assert isinstance(later, Question)
     assert later.question_id == second.question_id
-    queued = state.post("p", "s", "m-3", "And the date?", author="user")
+    queued = say(state, "m-3", "And the date?", None)
     assert isinstance(queued, ChatMessage)
     assert queued.state == "queued"
     assert [m.message_id for m in state.messages("p", "s")] == ["m-3"]  # answers are not queued
     assert questions.get("p", "s", stale.question_id).state == "open"
+    projects.close()
+
+
+def test_a_message_names_the_question_it_answers_or_nothing_is_written(
+    tmp_path: Path,
+) -> None:
+    """The message answers the question the user was shown: a button, a cancel or another
+    message that closed it first, or a question that opened unseen, refuses it, and it
+    stays the user's draft."""
+    projects, context = opened(tmp_path)
+    state, questions = RunState(projects.control), Questions(projects.control)
+    state.acquire("p", "s", "run-1", "holder")
+    question = asked(questions, context, "run-1", "op-1")
+    with pytest.raises(ControlError) as error:  # sent with no question shown
+        say(state, "m-1", "Hello.", None)
+    changed(error, question.question_id)
+
+    say(state, "m-2", "Ed448.", question.question_id)  # the first of two messages wins
+    with pytest.raises(ControlError) as error:
+        say(state, "m-3", "Ed25519.", question.question_id)
+    changed(error, None)
+
+    clicked = asked(questions, context, "run-1", "op-2")  # a button answers first
+    questions.answer("p", "s", clicked.question_id, Answer(kind="decide"))
+    with pytest.raises(ControlError) as error:
+        say(state, "m-4", "Ed448.", clicked.question_id)
+    changed(error, None)
+
+    cancelled = asked(questions, context, "run-1", "op-3")  # the run is cancelled first
+    questions.close("p", "s", run="run-1", state="cancelled", reason="the run was cancelled")
+    with pytest.raises(ControlError) as error:
+        say(state, "m-5", "Ed448.", cancelled.question_id)
+    changed(error, None)
+
+    assert state.messages("p", "s") == []
+    assert questions.get("p", "s", question.question_id).answer == Answer(
+        kind="free", text="Ed448."
+    )
+    assert questions.get("p", "s", clicked.question_id).answer == Answer(kind="decide")
+    projects.close()
+
+
+def test_a_message_from_anything_but_the_users_chat_answers_no_question(
+    tmp_path: Path,
+) -> None:
+    projects, context = opened(tmp_path)
+    state, questions = RunState(projects.control), Questions(projects.control)
+    state.acquire("p", "s", "run-1", "holder")
+    question = asked(questions, context, "run-1", "op-1")
+    queued = state.post("p", "s", "m-1", "A note from a watcher.", author="watcher")
+    assert queued.state == "queued"
+    assert questions.get("p", "s", question.question_id).state == "open"
     projects.close()
 
 
@@ -93,25 +161,78 @@ def test_a_message_waits_in_the_queue_once_the_asking_runs_lease_expired(
     RunState(projects.control, clock=past).acquire("p", "s", "run-1", "a-dead-process")
     questions = Questions(projects.control)
     question = asked(questions, context, "run-1", "op-1")
-    found = RunState(projects.control).post("p", "s", "m-1", "Ed448", author="user")
+    found = say(RunState(projects.control), "m-1", "Ed448", None)
     assert isinstance(found, ChatMessage)
     assert found.state == "queued"
     assert questions.get("p", "s", question.question_id).state == "open"
     projects.close()
 
 
-def test_a_message_too_long_for_an_answer_is_refused_naming_its_question(
-    tmp_path: Path,
+@pytest.mark.parametrize(("size", "fits"), [(16_000, True), (16_001, False)])
+def test_a_message_answers_with_at_most_16000_characters(
+    tmp_path: Path, size: int, fits: bool
 ) -> None:
     projects, context = opened(tmp_path)
     state, questions = RunState(projects.control), Questions(projects.control)
     state.acquire("p", "s", "run-1", "holder")
     question = asked(questions, context, "run-1", "op-1")
-    with pytest.raises(ControlError) as error:
-        state.post("p", "s", "m-1", "x" * 16_001, author="user")
-    assert error.value.kind == "invalid_request"
-    assert error.value.message.startswith(f"the message answers question {question.question_id}")
-    assert state.messages("p", "s") == []
+    text = "é" * size  # characters, not bytes
+    if fits:
+        answered = say(state, "m-1", text, question.question_id)
+        assert isinstance(answered, Question)
+        assert answered.state == "answered"
+    else:
+        with pytest.raises(ControlError) as error:
+            say(state, "m-1", text, question.question_id)
+        assert error.value.kind == "invalid_request"
+        assert error.value.message.startswith(
+            f"the message answers question {question.question_id}"
+        )
+        assert state.messages("p", "s") == []
+        assert questions.get("p", "s", question.question_id).state == "open"
+    projects.close()
+
+
+async def test_a_question_left_open_by_a_failed_close_is_closed_by_the_sweep(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run cancelled while it waits closes its question; when that close fails, the
+    question has no run, and the run service's sweep closes it."""
+    projects, context = opened(tmp_path)
+    state, questions = RunState(projects.control), Questions(projects.control)
+    state.acquire("p", "s", "run-1", "holder")
+    tool = QuestionTool(questions, context, run="run-1", poll_seconds=0.01)
+    waiting = asyncio.create_task(tool.call({"question": "Go on?"}, operation="o", call_id="c"))
+    for _ in range(500):
+        if questions.open("p", "s"):
+            break
+        await asyncio.sleep(0.01)
+    (question,) = questions.open("p", "s")
+
+    def failing(*args: object, **kwargs: object) -> list[str]:
+        raise ControlError("busy", "the store was busy")
+
+    monkeypatch.setattr(questions, "close", failing)
+    waiting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiting
+    assert questions.get("p", "s", question.question_id).state == "open"
+    assert questions.close_orphans() == []  # its run still holds the session
+    state.release("p", "s", "holder")
+    assert questions.close_orphans() == [("p", "s", question.question_id)]
+    closed = questions.get("p", "s", question.question_id)
+    assert (closed.state, closed.reason, closed.answer) == ("interrupted", ORPHANED, None)
+    assert questions.close_orphans() == []
+    projects.close()
+
+
+def test_the_sweep_leaves_a_run_whose_lease_expired_to_the_service(tmp_path: Path) -> None:
+    projects, context = opened(tmp_path)
+    past = FakeClock(datetime.now(UTC) - timedelta(minutes=5))
+    RunState(projects.control, clock=past).acquire("p", "s", "run-1", "a-dead-process")
+    questions = Questions(projects.control)
+    question = asked(questions, context, "run-1", "op-1")
+    assert questions.close_orphans() == []  # the service ends the run, then its questions
     assert questions.get("p", "s", question.question_id).state == "open"
     projects.close()
 
@@ -187,7 +308,9 @@ async def test_a_message_answers_the_question_a_service_run_waits_on(
     post(harness, "m-1", "Sign the release.")
     async with serving(harness, Reply(calls=[ASK]), Reply("Signed with Ed448.")):
         question = await asking(harness)
-        answered = runs(harness).post(PROJECT, SESSION, "m-2", "Ed448, please.", author="user")
+        answered = runs(harness).say(
+            PROJECT, SESSION, "m-2", "Ed448, please.", author="user", answers=question.question_id
+        )
         assert isinstance(answered, Question)
         assert answered.question_id == question.question_id
         (record,) = await ended(harness)
@@ -235,3 +358,14 @@ async def test_the_questions_of_a_run_whose_service_died_close_interrupted(
         await eventually(lambda: runs(harness).ended(PROJECT, SESSION, run), timeout=10)
     closed = questions_of(harness).get(PROJECT, SESSION, question.question_id)
     assert (closed.state, closed.reason, closed.answer) == ("interrupted", INTERRUPTED, None)
+
+
+async def test_the_service_closes_a_question_whose_run_holds_no_lease(harness: Harness) -> None:
+    run = "20261014T000000000000Z-gone"
+    question = questions_of(harness).ask(
+        harness.context(), run, "call-1", "op-1", "Which curve?", CURVES
+    )
+    async with serving(harness, serve=False) as service:
+        await service.tick()
+    closed = questions_of(harness).get(PROJECT, SESSION, question.question_id)
+    assert (closed.state, closed.reason) == ("interrupted", ORPHANED)

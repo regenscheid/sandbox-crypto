@@ -4,12 +4,14 @@
 The workspace writes and reads the run service's records in the control store
 (docs/specs/run-service.md, RS-2, RS-15); it starts no run itself. Routes:
 
-- ``POST …/sessions/{session}/messages`` with ``{"message_id", "text"}`` queues a message
-  for the session's run (RS-4). The same ID with the same text answers the message
-  already written, so a retried write is safe. While the run that holds the session
-  waits for the user's answer to a question, the message answers the oldest such
+- ``POST …/sessions/{session}/messages`` with ``{"message_id", "text", "question_id"}``
+  queues a message for the session's run (RS-4). The same ID with the same text answers
+  the message already written, so a retried write is safe. While the run that holds the
+  session waits for the user's answer to a question, the message answers the oldest such
   question in the user's own words instead, and the answer names the question rather
-  than a message (PD-23).
+  than a message (PD-23). ``question_id`` is the question the page showed the message
+  would answer, or null (or left out) when it showed none: another is a conflict
+  (``question_changed``), and nothing is written.
 - ``GET …/sessions/{session}/messages?after=N`` lists the session's messages with their
   state, the run that holds the session, if one does, and whether the run service is
   running (RS-3): without it, a message waits. While a message is queued, no run holds
@@ -24,7 +26,8 @@ The workspace writes and reads the run service's records in the control store
   cursor, with the run's state: ``active`` while it holds the session, ``ended`` once its
   ``stopped`` event is written, and ``interrupted`` otherwise (RS-12).
 - ``GET …/sessions/{session}/questions`` lists the session's latest questions to the
-  user, open and closed, oldest first, with the run that holds the session (PD-26).
+  user, open and closed, oldest first, with the run that holds the session (PD-26);
+  with ``?state=open``, its open questions only.
 - ``POST …/sessions/{session}/questions/{question}/answer`` with ``{"kind", "picked",
   "text"}`` answers an open question: options picked, the user's own words, the agent to
   decide, or a cancel (PD-23). The same answer again is the answer already given. An
@@ -139,9 +142,17 @@ async def post(request: web.Request) -> web.Response:
     project, session = _scope(request)
     body = await json_body(request, "message")
     fields = cast(dict[str, object], body) if isinstance(body, dict) else {}
-    if set(fields) != {"message_id", "text"}:
-        raise ProjectError(ErrorKind.INVALID_REQUEST, "a message is {message_id, text}")
+    if not {"message_id", "text"} <= set(fields) <= {"message_id", "text", "question_id"}:
+        raise ProjectError(
+            ErrorKind.INVALID_REQUEST, "a message is {message_id, text, question_id}"
+        )
     message_id, text = fields["message_id"], fields["text"]
+    answers = fields.get("question_id")
+    if answers is not None:
+        try:
+            answers = _IDENTIFIER.validate_python(answers, strict=True)
+        except ValidationError:
+            raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid question_id") from None
     try:
         message_id = _IDENTIFIER.validate_python(message_id, strict=True)
     except ValidationError:
@@ -153,7 +164,9 @@ async def post(request: web.Request) -> web.Response:
     def write() -> str:
         session_record(context.projects, project, session)
         state = RunState(context.writer)
-        found = state.post(project, session, message_id, text, author=USER_ID or "user")
+        found = state.say(
+            project, session, message_id, text, author=USER_ID or "user", answers=answers
+        )
         written = MessageAnswer(
             message=found if isinstance(found, ChatMessage) else None,
             question=found if isinstance(found, Question) else None,
@@ -267,12 +280,18 @@ async def cancel(request: web.Request) -> web.Response:
 
 async def questions(request: web.Request) -> web.Response:
     project, session = _scope(request)
+    state = request.query.get("state")
+    if state not in (None, "open"):
+        raise ProjectError(ErrorKind.INVALID_REQUEST, "state is open, or left out")
     context = request.app[CONTEXT]
 
     def read() -> str:
         session_record(context.projects, project, session)
+        store = Questions(context.documents)
         listing = QuestionListing(
-            questions=Questions(context.documents).listed(project, session),
+            questions=store.open(project, session)
+            if state == "open"
+            else store.listed(project, session),
             run=RunState(context.documents).lease(project, session),
         )
         return api.dumps(listing.model_dump(mode="json"))

@@ -52,10 +52,10 @@ A question is written once and closed once: the table's triggers refuse any othe
 
 The workspace answers through two routes ([workspace](WORKSPACE.md#api-v0)):
 
-- `GET …/sessions/{session}/questions` lists the session's latest questions with the run that holds the session.
+- `GET …/sessions/{session}/questions` lists the session's latest 50 questions, open and closed, with the run that holds the session; `?state=open` lists only the open ones.
 - `POST …/sessions/{session}/questions/{question}/answer` with `{"kind", "picked", "text"}` answers one: `picked` names the options, `free` carries the text, and `decide` and `cancel` carry nothing. An open question is answered only while the run that asked holds the session (its lease is live): otherwise no one would read the answer, and the route refuses it with 409 `conflict`, the details' `reason` `run_ended`, so the words can be sent as a chat message instead. The question closes when the run service ends that run.
 
-A chat message can also be the answer. While the run that holds the session (its lease is live) waits for an answer, a message the user writes to the session answers the oldest open question of that run, in the user's own words, instead of being queued (`RunState.post`, in one transaction). The question keeps the message's ID, and the message route's answer names the question instead of a message, so a retried write gets the same question back. A message longer than an answer may be (16,000 characters) is refused, naming the question. A question whose run no longer holds the session takes no message: the message is queued as any other, and the question closes when the service ends the run. This is a coordinator decision, which the owner can reverse: the message could instead wait in the queue for the run's next turn.
+A chat message can also be the answer. While the run that holds the session (its lease is live) waits for an answer, a message the user writes to the session answers the oldest open question of that run, in the user's own words, instead of being queued (`RunState.say`, in one transaction). The message names the question the page showed it would answer (`question_id`, or none): when that is not the question it would answer now, because a button, a cancel or another message closed it first, or a question opened that the page had not shown, nothing is written, and the route answers 409 `conflict` with the reason `question_changed` and the question it would answer now; the page keeps the draft. The question keeps the message's ID, and the message route's answer names the question instead of a message, so a retried write gets the same question back. A message longer than an answer may be (16,000 characters) is refused, naming the question. A question whose run no longer holds the session takes no message: the message is queued as any other, and the question closes when the service ends the run. Only the user's own messages from the chat answer questions: `RunState.post`, for any other message, only queues. This is a coordinator decision, which the owner can reverse: the message could instead wait in the queue for the run's next turn.
 
 ## When no run can receive the answer
 
@@ -63,6 +63,7 @@ A chat message can also be the answer. While the run that holds the session (its
 - **The run stops otherwise**, as when the run service stops: the call closes it `interrupted`, "the run stopped before it was answered".
 - **The run's process dies**: the run service ends the run when its lease expires (RS-12) and closes its open questions `interrupted`, "the run was interrupted".
 - **The session closes** (`session close`): its open questions close `cancelled`, "the session was closed". A run still waiting reads that as its result.
+- **The run's own close failed**, as when the store was busy as it was cancelled: at each look, about once a second, the run service closes every open question whose run holds no lease `interrupted`, "the run that asked ended without closing it". A run whose lease expired keeps its questions until the service ends it, as above.
 
 ## Not built yet
 
