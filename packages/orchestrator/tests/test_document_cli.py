@@ -195,3 +195,37 @@ def test_the_user_records_a_ledger_check(state: Path, capsys: pytest.CaptureFixt
     assert json.loads(out)["entries"][0]["revision"] == 2
     status, _, err = _run(capsys, "ledger", "check", *where, "C-1", "--revision", "1")
     assert (status, "conflict" in err) == (1, True)
+
+
+def test_the_user_clears_ledger_flags(state: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """``ledger clear``: the user clears open flags on an entry with the reason."""
+    from sandbox_science.orchestrator.ledger import Ledger
+
+    documents = DocumentStore(store_path(state))
+    ledger = Ledger(documents)
+    claim = {"type": "claim", "origin": "project", "title": "K", "statement": "s"}
+    cited = [{"role": "supports", "type": "proof", "entry": "C-1"}]
+    result = {"type": "result", "origin": "project", "title": "R", "statement": "s"}
+    for op, change in (
+        ("made", claim),
+        ("cites", {**result, "evidence": cited}),
+        ("revised", {"entry": "C-1", "expected": 1, "statement": "Other."}),
+    ):
+        ledger.change("p1", {"operation_id": op, "reason": "r", "changes": [change]}, AGENT)
+    (flag,) = ledger.entry("p1", "R-1").flags
+    documents.close()
+    where = ("--state-dir", str(state), "--project", "p1")
+    status, out, _ = _run(
+        capsys, "ledger", "clear", *where, "R-1", "--flag", flag.flag_id, "--reason", "Holds."
+    )
+    assert (status, json.loads(out)["flags_cleared"]) == (0, [flag.flag_id])
+    status, _, err = _run(
+        capsys, "ledger", "clear", *where, "R-1", "--flag", flag.flag_id, "--reason", "Again."
+    )
+    assert (status, "conflict" in err) == (1, True)
+    status, out, _ = _run(
+        capsys, "ledger", "reopen", *where, "R-1", "--flag", flag.flag_id, "--reason", "No."
+    )
+    assert (status, len(json.loads(out)["flags_reopened"])) == (0, 1)
+    status, out, _ = _run(capsys, "ledger", "clear", *where, "R-1", "--all", "--reason", "Yes.")
+    assert (status, json.loads(out)["cleared_total"]) == (0, 1)

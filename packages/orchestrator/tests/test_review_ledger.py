@@ -754,3 +754,198 @@ def test_a_fix_with_entry_revisions_keeps_the_receipts_of_fixes_without_them(sto
         "p", "s", {**response.model_dump(mode="json"), "entry_revisions": []}, MAIN
     )
     assert again == {**first, "replayed": True}
+
+
+# Flags (LG-28, LG-29): the gate's flags clause, and the reviews' reading of flags.
+
+
+def test_an_open_flag_holds_the_gate_until_it_is_cleared_with_a_reason(store) -> None:
+    reviews, _, _ = store
+    supported(reviews)
+    review_passes(reviews)
+    revised = {"entry": "REF-1", "expected": 1, "statement": "A. Author, *A paper*, v2."}
+    change(reviews, revised, op="revised")
+    (flag,) = Ledger(reviews.documents).entry("p", "C-1").flags
+    assert (flag.cause, flag.source["handle"]) == ("evidence_changed", "REF-1")
+    assert clause(reviews, "flagged", 2) == "flags"
+    Ledger(reviews.documents).change(
+        "p",
+        {
+            "operation_id": "clear",
+            "reason": "The new version states the same lemma.",
+            "flags_cleared": [flag.flag_id],
+        },
+        MAIN,
+    )
+    establish(reviews, "established", 2)
+    assert Ledger(reviews.documents).entry("p", "C-1").status == "established"
+
+
+def flag_items(reviews: ReviewStore) -> list[Any]:
+    with reviews.documents.control.read() as tx:
+        return tx.sql.execute(
+            "SELECT source_key,characters,structural,effects,payload FROM review_feed "
+            "WHERE kind='ledger' AND json_extract(locator,'$.flags') IS NOT NULL ORDER BY seq"
+        ).fetchall()
+
+
+def test_reviews_read_the_flags_an_agent_raises_and_clears(store) -> None:
+    """A raised flag is an observation that makes no review due; the main agent's
+    clearing is one, with its reason; the user's is not the session's to review."""
+    reviews, _, _ = store
+    supported(reviews)
+    change(reviews, {"entry": "REF-1", "expected": 1, "statement": "v2."}, op="v2")
+    (first,) = Ledger(reviews.documents).entry("p", "C-1").flags
+    clear = {"reason": "Same lemma.", "flags_cleared": [first.flag_id]}
+    Ledger(reviews.documents).change("p", {"operation_id": "c1", **clear}, MAIN)
+    change(reviews, {"entry": "REF-1", "expected": 2, "statement": "v3."}, op="v3")
+    (second,) = Ledger(reviews.documents).entry("p", "C-1").flags
+    Ledger(reviews.documents).clear_flags(
+        "p", "C-1", [second.flag_id], USER, reason="Mine.", operation_id="c2"
+    )
+    ingest_ledger(reviews, "p", "s")
+    rows = flag_items(reviews)
+    assert [tuple(row[:4]) for row in rows] == [
+        ("ledger:flags:v2:raised", 0, 0, 0),
+        ("ledger:flags:c1:cleared", 0, 0, 1),
+        ("ledger:flags:v3:raised", 0, 0, 0),
+    ]
+    cleared = json.loads(rows[1][4])
+    assert (cleared["reason"], cleared["flags"][0]["flag"]) == ("Same lemma.", first.flag_id)
+
+
+def test_the_change_that_flags_an_entry_does_not_establish_it(store) -> None:
+    """Probe P1 of the review of #296: one change revised REF-1, which flags C-1, and
+    established C-1, whose gate ran before the flags were raised."""
+    from sandbox_science.orchestrator.documents import DocumentError
+
+    reviews, _, _ = store
+    supported(reviews)
+    review_passes(reviews)
+    revised = {"entry": "REF-1", "expected": 1, "statement": "A. Author, *A paper*, v2."}
+    decision = {
+        "type": "decision",
+        "status": "in_effect",
+        "title": "Establish",
+        "statement": "s",
+        "links": [{"kind": "affects", "entry": "C-1"}],
+    }
+    established = {"entry": "C-1", "expected": 2, "status": "established"}
+    with pytest.raises(DocumentError, match="also flags it") as refused:
+        change(reviews, revised, decision, established, op="both")
+    assert refused.value.details["clause"] == "flags"
+    ledger = Ledger(reviews.documents)
+    assert (ledger.entry("p", "C-1").status, ledger.entry("p", "REF-1").revision) == (
+        "proposed",
+        1,
+    )
+    # The user's decision is not gated: C-1 is established, flagged for reconsideration.
+    change(reviews, revised, decision, established, op="users", author=USER)
+    view = ledger.entry("p", "C-1")
+    assert (view.status, view.open_flags) == ("established", 1)
+
+
+def test_a_flag_storm_is_one_review_item_and_coverage_stays_complete(store) -> None:
+    """Probe P8 of the review of #296: 300 flags made 300 feed items, more than one
+    review's 256, so no review's coverage was ever complete."""
+    reviews, _, _ = store
+    change(reviews, {"type": "assumption", "title": "p", "statement": "$p$."}, op="a")
+    review_passes(reviews)
+    dependent = {**CLAIM, "links": [{"kind": "assumes", "entry": "A-1"}]}
+    for n in range(10):
+        change(reviews, *[dependent] * 32, op=f"u{n}", author=USER)  # not the session's
+    change(reviews, {"entry": "A-1", "expected": 1, "statement": "$q$."}, op="rev")
+    ingest_ledger(reviews, "p", "s", drain=True)
+    ((key, characters, _, effects, payload),) = flag_items(reviews)
+    listed = json.loads(payload)
+    assert (key, characters, effects, listed["total"], len(listed["flags"])) == (
+        "ledger:flags:rev:raised",
+        0,
+        0,
+        320,
+        320,
+    )
+    review = dispatch(reviews)
+    with reviews.documents.control.read() as tx:
+        (complete,) = tx.sql.execute(
+            "SELECT coverage_complete FROM review_runs WHERE review_id=?", (review,)
+        ).fetchone()
+    assert complete == 1
+
+
+def test_a_fix_confirmed_by_the_revision_it_cites_does_not_hold_once_reverted(store) -> None:
+    """The confirmation snapshot holds the entry as it reads now beside the revision the
+    fix cites, so a revert shows; and once reverted, the gate holds the finding."""
+    from sandbox_science.orchestrator.consistency.findings import Findings
+
+    from .test_consistency import read_confirmation
+
+    reviews, _, now = store
+    supported(reviews)
+    _, finding = finding_on(reviews, "evidence")
+    change(reviews, ANOTHER, op="another")
+    cite(reviews, "swap", 2, "REF-2", "REF-1")
+    api = Findings(reviews)
+    revision = api.get("p", "s", finding)["revision"]
+    claimed = api.respond(
+        "p",
+        "s",
+        {
+            "finding": finding,
+            "expected": revision,
+            "action": "fix",
+            "explanation": "C-1 cites REF-2, which states it.",
+            "entry_revisions": [["C-1", 3]],
+            "operation_id": "fix",
+        },
+        MAIN,
+    )
+    cite(reviews, "back", 3, "REF-1", "REF-2")
+    confirmation = dispatch(reviews, "confirmation")
+    held = {
+        (item["locator"]["revision"], item["locator"].get("current", False))
+        for item in reviews.manifest("p", "s", confirmation, limit=20)["evidence"]
+        if item["kind"] == "ledger" and item["locator"]["handle"] == "C-1"
+    }
+    assert {(3, False), (4, True)} <= held
+    read_confirmation(reviews, confirmation)
+    api.confirm(
+        "p",
+        "s",
+        confirmation,
+        "owner",
+        {
+            "finding": finding,
+            "expected": claimed["revision"],
+            "decision": "confirm",
+            "explanation": "REF-2 states it.",
+            "anchors": [anchor(reviews, confirmation, "ledger")],
+            "operation_id": "confirm",
+        },
+    )
+    reviews.finish("p", "s", confirmation, "owner", "passed", "Decided.")
+    now[0] += 1000
+    review_passes(reviews)
+    assert clause(reviews, "reverted", 4) == "finding"
+
+
+def test_a_fix_cites_a_revision_that_changes_what_the_finding_is_on(store) -> None:
+    """Probe P9 of the review of #296 (#290's code): a fix of a finding on C-1's
+    statement cited a title-only revision, and once confirmed, the gate took the finding
+    on the unchanged statement as resolved."""
+    from sandbox_science.orchestrator.consistency.findings import Findings
+    from sandbox_science.orchestrator.documents import DocumentError
+
+    reviews, _, _ = store
+    supported(reviews)
+    _, finding = finding_on(reviews, "statement")
+    change(reviews, {"entry": "C-1", "expected": 2, "title": "Fermat, restated"}, op="t")
+    api = Findings(reviews)
+    revision = api.get("p", "s", finding)["revision"]
+    with pytest.raises(DocumentError, match="does not change what the finding is anchored") as e:
+        api.respond("p", "s", fix(finding, revision, ["C-1", 3], op="cosmetic"), MAIN)
+    assert e.value.kind == "invalid_request"
+    restated = {"entry": "C-1", "expected": 3, "statement": "$a^{16} = 1$ in GF(17)."}
+    change(reviews, restated, op="s")
+    claimed = api.respond("p", "s", fix(finding, revision, ["C-1", 4]), MAIN)
+    assert claimed["status"] == "claimed fixed"

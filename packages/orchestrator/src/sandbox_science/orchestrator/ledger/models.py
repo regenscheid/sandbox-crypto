@@ -4,9 +4,9 @@ carry (docs/specs/ledger.md, LG-1 to LG-5, LG-30)."""
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Final, Literal
+from typing import Annotated, Any, Final, Literal, Self
 
-from pydantic import Field, JsonValue
+from pydantic import Field, JsonValue, model_validator
 
 from sandbox_science.contracts.model import Contract, Identifier, Sha256
 
@@ -228,12 +228,44 @@ class EntryChange(Contract):
     """The IDs of evidence links to remove."""
 
 
+FlagID = Annotated[str, Field(pattern=r"^flag-[0-9a-f]{24}$")]
+
+FlagCause = Literal[
+    "assumption_revised", "assumption_withdrawn", "dependency_status", "evidence_changed", "spread"
+]
+"""Why an entry is flagged for reconsideration (LG-28)."""
+
+MAX_CLEARED: Final = 256
+"""The most flags one change clears, by ID or by entry."""
+
+
+class FlagScope(Contract):
+    """All the open flags on an entry, or those of one cause."""
+
+    entry: Reference
+    cause: FlagCause | None = None
+
+
 class Mutation(Contract):
-    """A change to one or more entries, all or nothing, under an operation ID (LG-30)."""
+    """A change to one or more entries, all or nothing, under an operation ID (LG-30);
+    it may also clear flags, with its reason, and the user's may reopen cleared ones
+    (LG-29)."""
 
     operation_id: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")]
     reason: Note
-    changes: list[EntryChange] = Field(min_length=1, max_length=32)
+    changes: list[EntryChange] = Field(default_factory=list[EntryChange], max_length=32)
+    flags_cleared: list[FlagID] | None = Field(default=None, max_length=MAX_CLEARED)
+    """Open flags the change clears, with its reason."""
+    flags_cleared_on: list[FlagScope] | None = Field(default=None, max_length=32)
+    """Entries whose open flags, or those of one cause, the change clears."""
+    flags_reopened: list[FlagID] | None = Field(default=None, max_length=64)
+    """Cleared flags the user opens again."""
+
+    @model_validator(mode="after")
+    def _changes_something(self) -> Self:
+        if not (self.changes or self.flags_cleared or self.flags_cleared_on or self.flags_reopened):
+            raise ValueError("a change names entries to change or flags to clear or reopen")
+        return self
 
 
 class EntryLink(Contract):
@@ -290,6 +322,36 @@ class EntryFinding(Contract):
     revision: int | None = None
 
 
+class EntryFlag(Contract):
+    """An open flag for reconsideration (LG-28): its cause, what it came from, the flag it
+    spread from, the revision it was raised on, the reviews whose snapshots held that
+    revision, and the cleared flag it opens again, when the user reopened one."""
+
+    flag_id: str
+    cause: FlagCause
+    source: dict[str, Any]
+    via: str | None
+    revision: int
+    raised: str
+    reviews: list[str]
+    reopens: str | None = None
+
+
+class ClearedFlag(Contract):
+    """A flag that was cleared (LG-29): who cleared it, when, and why."""
+
+    flag_id: str
+    cause: FlagCause
+    source: dict[str, Any]
+    via: str | None
+    revision: int
+    raised: str
+    cleared: str
+    cleared_by: dict[str, Any]
+    reason: str
+    operation_id: str
+
+
 class EntrySummary(Contract):
     """An entry as a list shows it."""
 
@@ -303,6 +365,8 @@ class EntrySummary(Contract):
     updated: str
     asserted_only: bool | None = None
     """For a claim or result: whether it holds no evidence links at all (LG-11)."""
+    open_flags: int = 0
+    """How many flags for reconsideration are open on it (LG-28)."""
 
 
 class EntryView(EntrySummary):
@@ -320,6 +384,8 @@ class EntryView(EntrySummary):
     """How many there are in all."""
     findings: list[EntryFinding]
     """The review findings anchored to the entry, newest first: as many as 50."""
+    flags: list[EntryFlag]
+    """Its open flags, newest first: as many as 50."""
     head: int
     author: dict[str, Any]
     reason: str
@@ -348,6 +414,8 @@ class EntryHistory(Contract):
     handle: str
     revisions: list[EntryRevision]
     next_before: int | None
+    flags_cleared: list[ClearedFlag] = Field(default_factory=list[ClearedFlag])
+    """On the first page: the flags cleared on the entry, latest first, as many as 50."""
 
 
 class ChangedEntry(Contract):
@@ -362,3 +430,18 @@ class MutationResult(Contract):
     operation_id: str
     entries: list[ChangedEntry]
     replayed: bool = False
+    flagged: list[str] = Field(default_factory=list[str])
+    """The handles of the entries the change flagged for reconsideration (LG-28), as many
+    as ``SHOWN_FLAGGED``."""
+    flagged_total: int = 0
+    """How many entries it flagged in all."""
+    flags_cleared: list[str] = Field(default_factory=list[str])
+    """The flags it cleared, as many as ``SHOWN_FLAGGED``."""
+    cleared_total: int = 0
+    """How many flags it cleared in all."""
+    flags_reopened: list[str] = Field(default_factory=list[str])
+    """The flags the user's change opened again, each a new flag."""
+
+
+SHOWN_FLAGGED: Final = 50
+"""The flagged entries and cleared flags a change's result lists; it counts the rest."""

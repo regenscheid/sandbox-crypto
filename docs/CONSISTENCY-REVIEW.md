@@ -17,7 +17,8 @@ cannot read through a reviewer grant, spend budget, raise a finding or finalize 
 ## Running and scheduling
 
 With `--state-dir`, the harness observes its transcript, canonical execution projections,
-agent-authored document revisions, the session's agents' ledger revisions ([ledger](LEDGER.md))
+agent-authored document revisions, the session's agents' ledger revisions and the flags
+their changes raise or clear ([ledger](LEDGER.md))
 and durable explicit-publication artifact events. The reviewer uses a distinct
 `--reviewer-model ALIAS` with the existing model gateway, or `--reviewer-script FILE`
 plus that alias for synthetic validation. The adapter limits each answer to 2,048 tokens
@@ -109,7 +110,7 @@ Main agents may claim fixes or rebut; only a confirmation reviewer or explicit u
 decision can confirm a fix. User writes
 use strict expected revisions and replay-safe operation IDs. A block's supersession
 links old and replacement revisions and never claims that it fixed the finding.
-A claimed fix may cite changed ledger entry revisions (`entry_revisions`, a later revision of an entry the finding is anchored to); the confirmation snapshot pins each as a `ledger` item, and confirm/reject requires a whole read of it. A response without them keeps the digest it had before the field. A finding's anchor may name a field of a ledger entry revision the snapshot holds (`title`, `statement`, `status`, `fields`, `links` or `evidence`); supersession counts an anchor on a ledger entry as replaced only when a later revision changed what a decision rests on, and the anchored field when it names one ([ledger](LEDGER.md)). `review_finding_entries` keeps the entries each finding is anchored to, written by triggers, and an index finds the review evidence that holds an entry.
+A claimed fix may cite changed ledger entry revisions (`entry_revisions`, a later revision of an entry the finding is anchored to that changes the anchored field, and the entry's statement, fields, assumptions or evidence unless that field is its title, status or links); the confirmation snapshot pins each as a `ledger` item, and confirm/reject requires a whole read of it. A response without them keeps the digest it had before the field. A finding's anchor may name a field of a ledger entry revision the snapshot holds (`title`, `statement`, `status`, `fields`, `links` or `evidence`); supersession counts an anchor on a ledger entry as replaced only when a later revision changed what a decision rests on, and the anchored field when it names one ([ledger](LEDGER.md)). `review_finding_entries` keeps the entries each finding is anchored to, written by triggers, and an index finds the review evidence that holds an entry.
 Confirmation decisions compare the pinned finding revision and current head before
 writing. Reviewer confirm/reject also requires audited read ranges covering the finding metadata,
 original/response anchored blocks (or whole items) and exact changed revisions. Empty slices of a nonempty source,

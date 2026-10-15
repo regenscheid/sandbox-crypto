@@ -180,3 +180,64 @@ async def test_the_user_records_a_check_through_the_workspace(
         "invalid_request",
     )
     assert (await client.post(url, json=body)).status == 403
+
+
+async def test_the_user_clears_flags_through_the_workspace(
+    aiohttp_client: ClientFactory, seeded: Path, static_dir: Path
+) -> None:
+    """LG-29: the user clears an entry's open flags with the reason: same-origin, the
+    user's, and only the flags on that entry."""
+    documents = DocumentStore(store_path(seeded))
+    try:
+        ledger = Ledger(documents)
+        cited = [{"role": "supports", "type": "proof", "entry": "C-1"}]
+        result = {"type": "result", "origin": "project", "title": "R", "statement": "s"}
+        for op, change in (
+            ("cites", {**result, "evidence": cited}),
+            ("revised", {"entry": "C-1", "expected": 1, "statement": "Other."}),
+        ):
+            ledger.change("p1", {"operation_id": op, "reason": "r", "changes": [change]}, MAIN)
+        (flag,) = ledger.entry("p1", "R-1").flags
+    finally:
+        documents.close()
+    client = await workspace(aiohttp_client, seeded, static_dir)
+    body = {"flags": [flag.flag_id], "reason": "It still holds.", "operation_id": "clear-1"}
+    assert (await client.post(BASE + "/R-1/flags", json=body)).status == 403
+    await error_of(
+        await client.post(BASE + "/C-1/flags", json=body, headers=origin(client)),
+        404,
+        "not_found",
+    )
+    await error_of(
+        await client.post(BASE + "/R-1/flags", json={**body, "flags": []}, headers=origin(client)),
+        400,
+        "invalid_request",
+    )
+    response = await client.post(BASE + "/R-1/flags", json=body, headers=origin(client))
+    assert response.status == 200, await response.text()
+    assert (await response.json())["flags_cleared"] == [flag.flag_id]
+    entry = LedgerEntry.model_validate(await (await client.get(BASE + "/R-1")).json()).entry
+    assert (entry.flags, entry.open_flags) == ([], 0)
+    # The user reopens it, as a new flag; and clears every open flag on the entry at once.
+    reopen = {"flags": [flag.flag_id], "reason": "It does not.", "operation_id": "reopen-1"}
+    response = await client.post(BASE + "/R-1/flags/reopened", json=reopen, headers=origin(client))
+    assert response.status == 200, await response.text()
+    (again,) = (await response.json())["flags_reopened"]
+    history = LedgerHistory.model_validate(
+        await (await client.get(BASE + "/R-1/history")).json()
+    ).history
+    assert [(f.flag_id, f.reason) for f in history.flags_cleared] == [
+        (flag.flag_id, "It still holds.")
+    ]
+    await error_of(
+        await client.post(
+            BASE + "/R-1/flags",
+            json={**body, "cause": "spread", "operation_id": "both"},
+            headers=origin(client),
+        ),
+        400,
+        "invalid_request",
+    )
+    everything = {"reason": "Holds.", "operation_id": "clear-all"}
+    response = await client.post(BASE + "/R-1/flags", json=everything, headers=origin(client))
+    assert (await response.json())["flags_cleared"] == [again]

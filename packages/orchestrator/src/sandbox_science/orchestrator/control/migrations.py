@@ -1773,6 +1773,55 @@ BEGIN SELECT RAISE(ABORT, 'memory proposals are kept'); END""",
         schema.execute(statement)
 
 
+def _ledger_flags(schema: Schema) -> None:
+    """Version 25: the ledger's flags for reconsideration (docs/specs/ledger.md, LG-28,
+    LG-29): each on an entry at the revision it was raised on, with its cause, what it
+    came from, and the flag it spread from; open until the user or the main agent clears
+    it with a reason. One open flag per entry, cause and source; a flag is never deleted,
+    and only its clearing is ever written to it. The user reopens a cleared flag as a new
+    flag that names it (``reopens``)."""
+    for statement in (
+        """CREATE TABLE ledger_flags (
+    flag_id TEXT PRIMARY KEY
+        CHECK (length(flag_id) = 29 AND flag_id GLOB 'flag-*'
+        AND substr(flag_id, 6) NOT GLOB '*[^0-9a-f]*'),
+    project TEXT NOT NULL CHECK (length(CAST(project AS BLOB)) BETWEEN 1 AND 128),
+    entry_id TEXT NOT NULL REFERENCES ledger_entries(entry_id),
+    revision INTEGER NOT NULL CHECK (revision BETWEEN 1 AND 999999999),
+    cause TEXT NOT NULL CHECK (cause IN ('assumption_revised', 'assumption_withdrawn',
+        'dependency_status', 'evidence_changed', 'spread')),
+    source TEXT NOT NULL CHECK (json_valid(source) AND json_type(source) = 'object'
+        AND length(CAST(source AS BLOB)) <= 4096),
+    via TEXT REFERENCES ledger_flags(flag_id),
+    reopens TEXT REFERENCES ledger_flags(flag_id),
+    key TEXT NOT NULL CHECK (length(CAST(key AS BLOB)) BETWEEN 1 AND 512),
+    raised TEXT NOT NULL CHECK (length(raised) BETWEEN 1 AND 64),
+    cleared TEXT CHECK (cleared IS NULL OR length(cleared) BETWEEN 1 AND 64),
+    cleared_by TEXT CHECK (cleared_by IS NULL OR (json_valid(cleared_by)
+        AND length(CAST(cleared_by AS BLOB)) <= 8192)),
+    reason TEXT CHECK (reason IS NULL OR length(CAST(reason AS BLOB)) BETWEEN 1 AND 16384),
+    operation_id TEXT
+        CHECK (operation_id IS NULL OR length(CAST(operation_id AS BLOB)) BETWEEN 1 AND 128),
+    CHECK ((cause = 'spread') = (via IS NOT NULL)),
+    CHECK ((cleared IS NULL) = (cleared_by IS NULL)
+        AND (cleared IS NULL) = (reason IS NULL)
+        AND (cleared IS NULL) = (operation_id IS NULL))
+) STRICT""",
+        "CREATE UNIQUE INDEX ledger_flags_open ON ledger_flags(entry_id,key) WHERE cleared IS NULL",
+        "CREATE INDEX ledger_flags_project ON ledger_flags(project,cleared,raised)",
+        "CREATE INDEX ledger_flags_entries ON ledger_flags(entry_id,cleared)",
+        """CREATE TRIGGER ledger_flags_kept BEFORE UPDATE ON ledger_flags
+WHEN OLD.cleared IS NOT NULL OR NEW.flag_id IS NOT OLD.flag_id OR NEW.project IS NOT OLD.project
+OR NEW.entry_id IS NOT OLD.entry_id OR NEW.revision IS NOT OLD.revision
+OR NEW.cause IS NOT OLD.cause OR NEW.source IS NOT OLD.source OR NEW.via IS NOT OLD.via
+OR NEW.reopens IS NOT OLD.reopens OR NEW.key IS NOT OLD.key OR NEW.raised IS NOT OLD.raised
+BEGIN SELECT RAISE(ABORT, 'a ledger flag is only cleared, once'); END""",
+        """CREATE TRIGGER ledger_flags_no_delete BEFORE DELETE ON ledger_flags
+BEGIN SELECT RAISE(ABORT, 'ledger flags are kept'); END""",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -1797,6 +1846,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _ledger_evidence,
     _ledger_review_index,
     _memory,
+    _ledger_flags,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""
