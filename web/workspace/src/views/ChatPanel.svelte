@@ -26,6 +26,7 @@
   import ChatRun from './ChatRun.svelte';
   import ChatWaiting from './ChatWaiting.svelte';
   import ErrorMessage from './ErrorMessage.svelte';
+  import HiddenBanner from './HiddenBanner.svelte';
   import PollStatus from './PollStatus.svelte';
 
   let { projectId, sessionId, closed }: { projectId: string; sessionId: string; closed: boolean } =
@@ -144,6 +145,7 @@
         bind:value={draft.text}
         rows="4"></textarea></label
     >
+    <HiddenBanner text={draft.text} />
     {#if bytes > MAX_MESSAGE_BYTES}<p role="alert">
         The message is {bytes.toLocaleString('en-US')} bytes; a message holds at most {MAX_MESSAGE_BYTES.toLocaleString(
           'en-US',

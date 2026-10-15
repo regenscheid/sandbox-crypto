@@ -7,6 +7,7 @@
 <script lang="ts">
   import type { EntryView } from '../lib/api-types';
   import Markdown from '../lib/Markdown.svelte';
+  import HiddenBanner from './HiddenBanner.svelte';
   import { formatTime } from '../lib/format';
   import { authorText, fieldRows, linksByKind, statusText, TYPE_NAME } from '../lib/ledger';
   import { ledgerEntryHref } from '../lib/router';
@@ -61,6 +62,7 @@
 
 <h2>Statement</h2>
 <Markdown source={entry.statement} />
+<HiddenBanner text={entry.statement} links />
 
 {#if fields.length}
   <h2>Fields</h2>

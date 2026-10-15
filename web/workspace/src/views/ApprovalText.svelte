@@ -6,7 +6,7 @@
      with every link address, title and reference definition the rendering would hide.
      Only text, never HTML, outside the Markdown component's preview. -->
 <script lang="ts">
-  import { linksIn, textDiff } from '../lib/approval';
+  import { linksIn, renderingHides, textDiff } from '../lib/approval';
   import Markdown from '../lib/Markdown.svelte';
   import { blankRun, chipped, codePoint, parts, visible } from '../lib/text';
 
@@ -22,6 +22,7 @@
       'from others, each shown as its code point below.',
   );
   const blanks = $derived(blankRun(text));
+  const hides = $derived(renderingHides(text));
   const changes = $derived(before === null ? null : textDiff(before, text));
   const links = $derived(preview ? linksIn(text) : []);
 </script>
@@ -34,6 +35,14 @@
     <p role="alert" class="banner">
       More than two blank lines in a row from line {blanks}: read on to the end.
     </p>
+  {/if}
+  {#if hides.length > 0}
+    <div role="alert" class="banner">
+      <p>A rendering of this text hides what the exact text below holds:</p>
+      <ul>
+        {#each hides as hidden, index (index)}<li>{hidden.what}, at line {hidden.line}</li>{/each}
+      </ul>
+    </div>
   {/if}
   <p class="label">{label}</p>
   <pre class="exact">{#each parts(text) as part, index (index)}{#if part.hidden}<span class="chip"

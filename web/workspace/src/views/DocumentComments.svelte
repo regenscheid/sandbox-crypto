@@ -8,9 +8,11 @@
   import { macroSet } from '../lib/macros';
   import { emptyList, PagedList } from '../lib/pagedList';
   import { idle, submit } from '../lib/submit';
+  import { visible } from '../lib/text';
   import Markdown from '../lib/Markdown.svelte';
   import AnnotationThread from './AnnotationThread.svelte';
   import ErrorMessage from './ErrorMessage.svelte';
+  import HiddenBanner from './HiddenBanner.svelte';
   let { projectId, found }: { projectId: string; found: DocumentRevision } = $props();
   const initial = untrack(() => found);
   const id = $derived(found.document.document_id);
@@ -146,7 +148,7 @@
           >{/if}
         <details>
           <summary>Selected block source</summary>
-          <pre>{selected?.source ?? ''}</pre>
+          <pre>{visible(selected?.source ?? '')}</pre>
         </details>
         <label
           >Comment Markdown <textarea
@@ -155,6 +157,7 @@
             rows="5"
             maxlength="8192"></textarea></label
         >
+        <HiddenBanner text={draft.body} />
         <label
           >Address to main agent <select bind:value={draft.session}
             ><option value="">No work request</option

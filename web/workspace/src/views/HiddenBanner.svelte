@@ -1,15 +1,18 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- What a text shown elsewhere, raw in a text box or rendered, may hide from its reader
      (threat model, A3): each character shown as its code point, with its line and column,
-     and, with `links`, every link address, title and reference definition a rendering
-     shows only on hover or not at all. Nothing when the text hides nothing. -->
+     and, with `links` (beside a rendering), every link address, title and reference
+     definition a rendering shows only on hover or not at all, and what else it hides:
+     math that draws nothing, references to hidden characters, a code fence's words after
+     its language. Nothing when the text hides nothing. -->
 <script lang="ts">
-  import { linksIn } from '../lib/approval';
+  import { linksIn, renderingHides } from '../lib/approval';
   import { hiddenPlaces, visible } from '../lib/text';
 
   let { text, links = false }: { text: string; links?: boolean } = $props();
   const places = $derived(hiddenPlaces(text));
   const found = $derived(links ? linksIn(text) : []);
+  const hides = $derived(links ? renderingHides(text) : []);
   const listed = $derived(places.slice(0, 8));
   const heading = $derived(
     `${places.length} ${places.length === 1 ? 'character' : 'characters'} you may not see ` +
@@ -17,7 +20,7 @@
   );
 </script>
 
-{#if places.length > 0 || found.length > 0}
+{#if places.length > 0 || found.length > 0 || hides.length > 0}
   <div role="status" class="hidden-banner">
     {#if places.length > 0}
       <p>{heading}</p>
@@ -28,6 +31,12 @@
           </li>
         {/each}
         {#if places.length > listed.length}<li>and {places.length - listed.length} more</li>{/if}
+      </ul>
+    {/if}
+    {#if hides.length > 0}
+      <p>What the rendering hides:</p>
+      <ul>
+        {#each hides as hidden, index (index)}<li>{hidden.what}, at line {hidden.line}</li>{/each}
       </ul>
     {/if}
     {#if found.length > 0}

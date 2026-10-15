@@ -7,6 +7,7 @@
   import { guardedWrite } from '../lib/mutation';
   import { idle, submit } from '../lib/submit';
   import ErrorMessage from './ErrorMessage.svelte';
+  import HiddenBanner from './HiddenBanner.svelte';
   let {
     projectId,
     documentId,
@@ -80,6 +81,7 @@
           maxlength="8192"
           rows="5"></textarea></label
       >
+      <HiddenBanner text={draft.body} />
       <p>
         An empty body removes its formulas from the current body; the original and corrections
         remain in history.

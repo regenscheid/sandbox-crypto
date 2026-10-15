@@ -14,6 +14,9 @@
   import { documentHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
   import CommentBodyEditor from './CommentBodyEditor.svelte';
+  import { visible } from '../lib/text';
+  import ApprovalText from './ApprovalText.svelte';
+  import HiddenBanner from './HiddenBanner.svelte';
   let {
     projectId,
     documentId,
@@ -110,11 +113,11 @@
     <summary
       >Original quoted context{thread.anchor.quote_truncated ? ' (bounded excerpt)' : ''}</summary
     >
-    {#if thread.anchor.before}<pre>{thread.anchor.before}</pre>{/if}
-    <blockquote><pre>{thread.anchor.quote}</pre></blockquote>
-    {#if thread.anchor.after}<pre>{thread.anchor.after}</pre>{/if}
+    {#if thread.anchor.before}<pre>{visible(thread.anchor.before)}</pre>{/if}
+    <blockquote><pre>{visible(thread.anchor.quote)}</pre></blockquote>
+    {#if thread.anchor.after}<pre>{visible(thread.anchor.after)}</pre>{/if}
     {#if thread.attachment.status === 'stale'}<h4>Current text (bounded excerpt)</h4>
-      <pre>{thread.attachment.current}</pre>{/if}
+      <pre>{visible(thread.attachment.current ?? '')}</pre>{/if}
   </details>
   {#if earlier.available(thread.entries_before !== null)}<button
       disabled={busy}
@@ -129,7 +132,14 @@
           entry.created_at * 1000,
         ).toLocaleString()}
       </p>
-      {#if entry.body}<Markdown source={entry.body} {macros} />{/if}
+      {#if entry.body}<Markdown source={entry.body} {macros} /><HiddenBanner
+          text={entry.body}
+          links
+        />
+        <details>
+          <summary>The comment, exactly as written</summary>
+          <ApprovalText text={entry.body} label="The comment, exactly" />
+        </details>{/if}
       {#if entry.body_source}
         {#if entry.body_source.held}<p role="status">
             Body math checks held: {entry.body_source.held}
@@ -141,7 +151,10 @@
               >Current body revision {entry.body_source.revision} · {entry.body_source.author
                 ? describeAuthor(entry.body_source.author)
                 : 'legacy ownership unknown'}</summary
-            ><Markdown source={entry.body_source.body ?? ''} {macros} />
+            ><Markdown source={entry.body_source.body ?? ''} {macros} /><HiddenBanner
+              text={entry.body_source.body ?? ''}
+              links
+            />
           </details>
           {#if entry.author.kind === 'user'}<CommentBodyEditor
               {projectId}
@@ -205,6 +218,7 @@
           maxlength="8192"
           rows="4"></textarea></label
       >
+      <HiddenBanner text={draft.body} />
       <label
         >Address to main agent <select bind:value={draft.session}
           ><option value="">No work request</option

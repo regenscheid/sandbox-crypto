@@ -13,8 +13,10 @@
   import { documentDrafts } from '../lib/drafts';
   import { guardedWrite } from '../lib/mutation';
   import { documentHref } from '../lib/router';
+  import { visible } from '../lib/text';
   import ConfirmText from './ConfirmText.svelte';
   import ErrorMessage from './ErrorMessage.svelte';
+  import HiddenBanner from './HiddenBanner.svelte';
   let {
     projectId,
     found,
@@ -194,6 +196,7 @@
         rows="16"
         spellcheck="false"></textarea></label
     >
+    <HiddenBanner {text} />
     <label>Reason <input bind:value={reason} disabled={busy} maxlength="1000" /></label>
     <button disabled={busy || !reason.trim()} onclick={save}
       >Save {block === null ? 'source' : 'block'}</button
@@ -203,14 +206,14 @@
       <p role="alert">{result.message || result.outcome} Your draft is still above.</p>
       {#each result.conflicts as conflict, index (index)}
         <h3>Current {conflict.block ?? conflict.math}</h3>
-        <pre>{conflict.now ?? 'Removed'}</pre>
+        <pre>{visible(conflict.now ?? 'Removed')}</pre>
         {#each conflict.changed_by ?? [] as change (change.revision)}<p>
             Revision {change.revision} by {describeAuthor(change.author)}
           </p>{/each}
       {/each}
       {#if current}<details>
           <summary>Current revision {current.revision.number}</summary>
-          <pre>{current.text}</pre>
+          <pre>{visible(current.text)}</pre>
         </details>{/if}
       <button disabled={busy} onclick={resolve}
         >{block === null
@@ -223,7 +226,7 @@
           aria-label="Retained draft"
           readonly
           value={retained}
-          rows="10"></textarea>
+          rows="10"></textarea><HiddenBanner text={retained} />
       </details>{/if}
   {/if}
   {#if error}<ErrorMessage {error} />{/if}
