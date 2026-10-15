@@ -21,7 +21,7 @@ The answer is the call's result, so it reaches the run and the call that asked, 
 | `answer` | Means |
 | --- | --- |
 | `picked` | The user picked the options in `picked`, in the question's order. |
-| `own_words` | The user answered in their own words, in `text`, kept as they wrote it. |
+| `own_words` | The user answered in their own words, in `text`: trimmed, and otherwise as they wrote it. |
 | `decide` | The user leaves it to the agent; a `note` asks it to decide and say what it chose and why. |
 | `cancelled` | The user cancelled the question; a `note` asks the agent not to ask it again unless something changes. |
 | `null` | The question closed without an answer; `state` and `note` say why. |
@@ -43,7 +43,7 @@ A delegated run is not offered `ask_user`, and a call to it is refused with `not
 - `ask` writes an open question for a run and its tool call. The same operation in the same session returns the question it asked; a different question under that operation is a conflict.
 - `get` reads one question of a session; another session's is not found.
 - `open` lists a session's open questions, oldest first, and `listed` its latest 50, open or closed.
-- `answer` closes an open question with the user's answer. A pick must name one of the question's options, or several when `multiple` is set, and nothing else; an answer in the user's own words is 1 to 16,000 characters and is kept as written, without the check for hidden characters; `decide` and `cancel` carry nothing. A cancel closes the question `cancelled` with the reason "the user cancelled it"; any other answer closes it `answered`. The same answer again returns the question; another answer, or one to a closed question, is a conflict.
+- `answer` closes an open question with the user's answer. A pick must name one of the question's options, or several when `multiple` is set, and nothing else; an answer in the user's own words is 1 to 16,000 characters, trimmed and otherwise kept as written, without the check for hidden characters; `decide` and `cancel` carry nothing. A cancel closes the question `cancelled` with the reason "the user cancelled it"; any other answer closes it `answered`. The same answer again returns the question; another answer, or one to a closed question, is a conflict.
 - `close` closes the open questions of a run, one question, or a whole session, `cancelled` or `interrupted`, with a reason, when no run can receive their answers.
 
 A question is written once and closed once: the table's triggers refuse any other change, and any delete.
