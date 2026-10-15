@@ -141,11 +141,11 @@ class EvidenceInput(Contract):
     """What the evidence covers, such as "$p = 17$ only"."""
 
 
+ClaimKind = Literal["lemma", "theorem", "observation", "counterexample", "negative_result", "other"]
+
+
 class ClaimFields(Contract):
-    kind: (
-        Literal["lemma", "theorem", "observation", "counterexample", "negative_result", "other"]
-        | None
-    ) = None
+    kind: ClaimKind | None = None
 
 
 Measure = (
