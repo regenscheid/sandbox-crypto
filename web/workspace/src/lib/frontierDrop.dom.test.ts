@@ -67,6 +67,7 @@ function frontier(linked: boolean): FrontierAnswer {
     project_id: 'p1',
     observed_at: 'now',
     next_groups_after: null,
+    next_groups_key: null,
     frontier: {
       category: {
         category: 'key-recovery',
@@ -85,6 +86,7 @@ function frontier(linked: boolean): FrontierAnswer {
       groups: [
         {
           conditions: { attack: 'dual' },
+          key: JSON.stringify({ attack: 'dual' }),
           best: linked ? [result('R-3')] : [result('R-3'), target],
           dominated: linked ? [target] : [],
           not_compared: [],

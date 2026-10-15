@@ -697,6 +697,7 @@ def _group(category: Category, conditions: dict[str, str], members: list[_Member
     ]
     return FrontierGroup(
         conditions=conditions,
+        key=_slot(conditions),
         best=best,
         dominated=dominated,
         not_compared=[r for r, eligible, _ in members if eligible and not _numeric(category, r)],

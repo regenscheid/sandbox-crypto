@@ -386,17 +386,18 @@ async def test_a_frontier_through_the_workspace(
     first, _ = answer.frontier.groups
     assert (first.conditions, [r.handle for r in first.candidates]) == (
         {"model": "classical"},
-        ["R-1", "R-2"],
+        ["R-2", "R-1"],
     )
-    assert first.candidates[0].statement == "Time $2^{105}$."
+    assert first.candidates[-1].statement == "Time $2^{105}$."
     assert answer.next_groups_after is None
     monkeypatch.setattr(frontier, "SHOWN_RESULTS", 1)
     page = FrontierAnswer.model_validate(
         await (await client.get(url, params={"limit": "1"})).json()
     )
     (group,) = page.frontier.groups
+    # The newest of a group's candidates first, consistent with candidates_before.
     assert ([r.handle for r in group.candidates], group.more, page.next_groups_after) == (
-        ["R-1"],
+        ["R-2"],
         {"candidates": 1},
         1,
     )
@@ -407,7 +408,35 @@ async def test_a_frontier_through_the_workspace(
         [{"model": "quantum"}],
         None,
     )
-    for bad in ({"x": "1"}, {"groups_after": "-1"}, {"limit": "0"}, {"candidates_before": "0"}):
+    # Groups page by their folded conditions key too, which a change between reads keeps.
+    page = FrontierAnswer.model_validate(
+        await (await client.get(url, params={"limit": "1"})).json()
+    )
+    (first,) = page.frontier.groups
+    assert page.next_groups_key == first.key == '{"model": "classical"}'
+    documents = DocumentStore(store_path(seeded))
+    try:
+        early = {**candidate, "fields": {**candidate["fields"], "conditions": {"model": "aaa"}}}
+        Ledger(documents).change(
+            "p1", {"operation_id": "r3", "reason": "r", "changes": [early]}, MAIN
+        )
+    finally:
+        documents.close()
+    shifted = FrontierAnswer.model_validate(
+        await (await client.get(url, params={"groups_after": "1", "limit": "1"})).json()
+    )
+    assert [g.conditions for g in shifted.frontier.groups] == [{"model": "classical"}]
+    keyed = FrontierAnswer.model_validate(
+        await (await client.get(url, params={"groups_after_key": first.key, "limit": "1"})).json()
+    )
+    assert ([g.conditions for g in keyed.frontier.groups], keyed.next_groups_key) == (
+        [{"model": "quantum"}],
+        None,
+    )
+    both = {"groups_after": "1", "groups_after_key": first.key}
+    for bad in (
+        {"x": "1"}, {"groups_after": "-1"}, {"limit": "0"}, {"candidates_before": "0"}, both
+    ):  # fmt: skip
         await error_of(await client.get(url, params=bad), 400, "invalid_request")
     await error_of(await client.get("/api/v0/projects/p1/frontier/bounds"), 404, "not_found")
 

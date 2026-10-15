@@ -346,6 +346,7 @@ export interface FrontierAnswer {
   observed_at: string;
   frontier: FrontierView;
   next_groups_after: number | null;
+  next_groups_key: string | null;
 }
 
 /** A page of a project's frontier categories. */
@@ -377,6 +378,7 @@ export interface FrontierChange {
 /** The results of a category under one set of conditions (LG-21). */
 export interface FrontierGroup {
   conditions: Record<string, string>;
+  key: string;
   best: FrontierResult[];
   dominated: FrontierResult[];
   not_compared: FrontierResult[];

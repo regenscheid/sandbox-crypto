@@ -66,6 +66,11 @@ class FrontierAnswer(Contract):
     observed_at: AwareDatetime
     frontier: FrontierView
     next_groups_after: int | None
+    """Where the next page of groups begins, by position; none on the last. Kept for a
+    release: a change between reads can move a group past it."""
+    next_groups_key: str | None
+    """The key of the page's last group, when more follow: ``groups_after_key`` reads
+    on from it, whatever changed between reads."""
     """Where the next page of groups begins; none on the last."""
 
 
@@ -121,8 +126,15 @@ async def frontier(request: web.Request) -> web.Response:
     project = identifier(request, "project")
     name = matched(_NAME, request.match_info["category"], "frontier category")
     assert name is not None  # noqa: S101 - a path part is always there
-    query = query_of(request, {"groups_after", "limit", "candidates_before"})
+    query = query_of(request, {"groups_after", "groups_after_key", "limit", "candidates_before"})
     start = int(matched(_COUNT, query.get("groups_after"), "groups_after") or 0)
+    after_key = query.get("groups_after_key")
+    if after_key is not None and "groups_after" in query:
+        raise ProjectError(
+            ErrorKind.INVALID_REQUEST, "name groups_after_key, or groups_after, not both"
+        )
+    if after_key is not None and not 1 <= len(after_key.encode()) <= 8192:
+        raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid groups_after_key")
     older = matched(_NUMBER, query.get("candidates_before"), "candidates_before")
     limit = int(matched(_LIMIT, query.get("limit", "20"), "limit") or 20)
 
@@ -130,18 +142,28 @@ async def frontier(request: web.Request) -> web.Response:
         view = ledger.frontier(
             project, name, candidates_before=None if older is None else int(older)
         )
-        end = start + limit
+        # Groups in the order of their keys, so a key names where a page ends.
+        ordered = sorted(view.groups, key=lambda group: group.key)
+        if after_key is not None:
+            ordered = [group for group in ordered if group.key > after_key]
+            first = 0
+        else:
+            first = start
+        end = first + limit
+        page = ordered[first:end]
+        more = len(ordered) > end
         return FrontierAnswer(
             project_id=project,
             observed_at=datetime.now(UTC),
             frontier=view.model_copy(
                 update={
-                    "groups": [_shown(group) for group in view.groups[start:end]],
+                    "groups": [_shown(group) for group in page],
                     "unplaced": view.unplaced[:SHOWN_RESULTS],
                     "unplaced_more": max(0, len(view.unplaced) - SHOWN_RESULTS),
                 }
             ),
-            next_groups_after=end if len(view.groups) > end else None,
+            next_groups_after=start + limit if more and after_key is None else None,
+            next_groups_key=page[-1].key if more and page else None,
         ).model_dump_json()
 
     return await read_answer(request, project, read)
@@ -180,11 +202,13 @@ def _listed(change: FrontierChange) -> FrontierChange:
 
 def _shown(group: FrontierGroup) -> FrontierGroup:
     """``group`` with the first ``SHOWN_RESULTS`` of each kind of result, and how many
-    more of each."""
+    more of each: the candidates newest first, as the frontier reads them, so a group's
+    newest are never the ones left out."""
     parts = ("best", "dominated", "not_compared", "candidates")
     return group.model_copy(
         update={
             **{part: getattr(group, part)[:SHOWN_RESULTS] for part in parts},
+            "candidates": group.candidates[::-1][:SHOWN_RESULTS],
             "more": {
                 part: len(getattr(group, part)) - SHOWN_RESULTS
                 for part in parts

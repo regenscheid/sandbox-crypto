@@ -614,6 +614,9 @@ class FrontierGroup(Contract):
     """The results of a category under one set of conditions (LG-21)."""
 
     conditions: dict[str, str]
+    key: str = ""
+    """The conditions as the frontier folds them (as the history keys a group): the
+    same whichever result's spelling ``conditions`` shows, and a cursor for groups."""
     best: list[FrontierResult]
     """The eligible results no other eligible result dominates."""
     dominated: list[FrontierResult]

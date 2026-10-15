@@ -73,6 +73,7 @@ const result = (fields: Partial<FrontierResult> = {}): FrontierResult => ({
 
 const group = (fields: Partial<Group> = {}): Group => ({
   conditions: { attack: 'primal' },
+  key: JSON.stringify({ attack: 'primal' }),
   best: [result()],
   dominated: [],
   not_compared: [],
@@ -271,6 +272,7 @@ describe('the frontier views', () => {
         projectId: 'p1',
         group: group({
           conditions: { [HOSTILE]: HOSTILE },
+          key: JSON.stringify({ [HOSTILE]: HOSTILE }),
           best: [],
           candidates: [hostile, result({ handle: 'R-9', entry_id: 'entry-9' })],
           more: { candidates: 4 },
