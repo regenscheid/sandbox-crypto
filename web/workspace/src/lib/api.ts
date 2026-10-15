@@ -11,6 +11,10 @@ import type {
   LedgerEntry,
   LedgerHistory,
   LedgerListing,
+  MemoryAnswer,
+  MemoryChange,
+  MemoryHistory,
+  MemoryProposals,
   ProjectAnswer,
   ProjectListing,
   ProjectView,
@@ -414,6 +418,13 @@ export const ARTIFACT_LISTING_MAX_BYTES = 256 * 1024;
 
 const part = encodeURIComponent;
 
+/**
+ * The most bytes a project memory answer can take: 100 entries, or 50 proposals each with
+ * the entry beside it, or 50 versions, of 1,000 characters each, all escaped
+ * (`test_routes_memory.py` checks the server's largest answers against it).
+ */
+export const MEMORY_MAX_BYTES = 2048 * 1024;
+
 export const api = {
   projectMacros: (project: string) => get<MacroContext>(`/projects/${part(project)}/macros`),
   changeMacros: (project: string, value: Record<string, unknown>) =>
@@ -512,6 +523,24 @@ export const api = {
       `/projects/${part(project)}/ledger/${part(entry)}/history` +
         (before === null ? '' : `?before=${before}`),
     ),
+  /** The project memory's accepted entries in order, and the bound agents receive. */
+  memory: (project: string) =>
+    get<MemoryAnswer>(`/projects/${part(project)}/memory`, { maxBytes: MEMORY_MAX_BYTES }),
+  /** The proposals that wait for the user, oldest first. */
+  memoryProposals: (project: string) =>
+    get<MemoryProposals>(`/projects/${part(project)}/memory/proposals`, {
+      maxBytes: MEMORY_MAX_BYTES,
+    }).then((found) => found.proposals),
+  /** A page of an entry's versions, newest first, before `before`. */
+  memoryHistory: (project: string, entry: string, before: number | null = null) =>
+    get<MemoryHistory>(
+      `/projects/${part(project)}/memory/${part(entry)}/history` +
+        (before === null ? '' : `?before=${before}`),
+      { maxBytes: MEMORY_MAX_BYTES },
+    ).then((found) => found.history),
+  /** The user's change of the memory, with its operation ID. */
+  changeMemory: (project: string, change: Record<string, unknown>) =>
+    post<MemoryChange>(`/projects/${part(project)}/memory`, change),
   history: (project: string, document: string) =>
     get<DocumentHistory>(`/projects/${part(project)}/documents/${part(document)}/history`),
   mathRepair: (request: MathRepairRequest) => post<MathRepairAnswer>('/math-repair', request),

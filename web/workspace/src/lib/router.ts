@@ -12,6 +12,8 @@
  * - `#/projects/<project>/documents/<document>/history` who changed what in it;
  * - `#/projects/<project>/artifacts/<artifact>/revisions/<number>/<sha256>` a published
  *   PDF in the viewer;
+ * - `#/projects/<project>/memory` the project memory: its entries and the proposals that
+ *   wait for the user;
  * - `#/projects/<project>/ledger` the project's ledger as a board,
  *   `#/projects/<project>/ledger/issues` its issues and what they concern, and
  *   `#/projects/<project>/ledger/<entry>` one entry by its handle or ID, with
@@ -32,6 +34,7 @@ export type Route =
     }
   | { view: 'history'; project: string; document: string }
   | { view: 'pdf'; project: string; artifact: string; revision: number; sha256: string }
+  | { view: 'memory'; project: string }
   | { view: 'ledger'; project: string }
   | { view: 'issues'; project: string }
   | { view: 'entry'; project: string; entry: string; revision: number | null }
@@ -61,6 +64,7 @@ export function parseRoute(hash: string): Route {
   const project = parts.length >= 2 ? decoded(parts[1]!) : null;
   if (project === null) return { view: 'missing' };
   if (parts.length === 2) return { view: 'project', project };
+  if (parts.length === 3 && parts[2] === 'memory') return { view: 'memory', project };
   if (parts[2] === 'ledger') return ledgerRoute(project, parts.slice(3));
   const name = parts.length >= 4 ? decoded(parts[3]!) : null;
   if (name === null) return { view: 'missing' };
@@ -141,6 +145,10 @@ export function historyHref(project: string, document: string): string {
 
 export function pdfHref(project: string, artifact: string, revision: number, sha256: string) {
   return `${projectHref(project)}/artifacts/${encodeURIComponent(artifact)}/revisions/${revision}/${sha256}`;
+}
+
+export function memoryHref(project: string): string {
+  return `${projectHref(project)}/memory`;
 }
 
 export function ledgerHref(project: string): string {
