@@ -5,7 +5,10 @@ operation ID (LG-30, LG-31), their events (LG-33), and who may change what (LG-1
 
 from __future__ import annotations
 
+import hashlib
+import threading
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -268,3 +271,157 @@ def test_several_mutations_apply_together_with_their_provenance(ledger: Ledger) 
     assert revision.provenance == {**source, "line": 2}
     again = ledger.apply("p", [(lines[0], None)], MAIN)
     assert again[0].replayed
+
+
+# The review of #252.
+
+
+def test_a_mutations_fingerprint_is_pinned() -> None:
+    """A receipt compares a retry by this digest: it leaves out unset fields, so a field
+    a later version adds with a None default does not turn a retry into a conflict."""
+    from sandbox_science.orchestrator.ledger import Mutation
+    from sandbox_science.orchestrator.ledger.store import fingerprint
+
+    mutation = Mutation.model_validate(
+        {
+            "operation_id": "op-1",
+            "reason": "r",
+            "changes": [{"type": "task", "title": "Run the check", "statement": "Run it."}],
+        }
+    )
+    canonical = (
+        '{"changes":[{"statement":"Run it.","title":"Run the check","type":"task"}],'
+        '"operation_id":"op-1","reason":"r"}'
+    )
+    assert fingerprint(mutation) == hashlib.sha256(canonical.encode()).hexdigest()
+    assert fingerprint(mutation) == (
+        "6eaba7140bd1064c786138fa769661356ae5924458946dda7da9841ec74bc8fd"
+    )
+
+
+def test_fields_beyond_the_tables_bound_are_refused_and_nothing_is_written(
+    ledger: Ledger,
+) -> None:
+    # 64 authors of 256 characters of four bytes each: more than 64 KiB as UTF-8.
+    huge = {
+        **NEW["reference"],
+        "fields": {**REFERENCE_FIELDS, "authors": ["\U0001d53d" * 256] * 64},
+    }
+    with pytest.raises(DocumentError, match="exceed 65536 bytes") as refused:
+        change(ledger, *([NEW["task"]] * 31), huge)
+    assert refused.value.kind == "invalid_request"
+    assert ledger.entries("p").entries == []
+    assert events(ledger) == []
+    # Two-byte characters fit: the bound counts UTF-8, not the six-byte escapes.
+    change(ledger, {**huge, "fields": {**huge["fields"], "authors": ["é" * 256] * 64}}, op="ok")
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_a_measure_that_is_not_a_finite_number_is_refused(ledger: Ledger, value: float) -> None:
+    result = {**NEW["result"], "fields": {"measures": {"time": value}}}
+    with pytest.raises(DocumentError, match="result fields") as refused:
+        change(ledger, result)
+    assert refused.value.kind == "invalid_request"
+
+
+def test_a_decision_is_rejected_or_reversed_only_by_another_decision(ledger: Ledger) -> None:
+    change(ledger, NEW["decision"])
+    change(ledger, {"entry": "D-1", "expected": 1, "status": "in_effect"}, op="op-2")
+    for status in ("reversed", "rejected"):
+        with pytest.raises(DocumentError, match=f"becomes {status} by another decision"):
+            change(ledger, {"entry": "D-1", "expected": 2, "status": status}, op=status)
+
+
+def test_a_references_pdf_is_an_artifact_revision_of_the_project(
+    ledger: Ledger, tmp_path: Path
+) -> None:
+    from sandbox_science.contracts import ArtifactRef, ExecutionContext
+    from sandbox_science.contracts.artifact_inventory import ArtifactPublicationSource
+    from sandbox_science.orchestrator.artifacts import ArtifactInventory
+
+    def pdf(artifact: str, revision: int) -> dict[str, Any]:
+        fields = {**REFERENCE_FIELDS, "pdf": {"artifact_id": artifact, "revision": revision}}
+        return {**NEW["reference"], "fields": fields}
+
+    with pytest.raises(DocumentError, match="no artifact nothing r7") as refused:
+        change(ledger, pdf("nothing", 7))
+    assert refused.value.kind == "not_found"
+    projects = ProjectStore(tmp_path, readonly=True)
+    environment = projects.get("p").sessions["s"].environment_id
+    projects.close()
+    source = ArtifactPublicationSource(
+        context=ExecutionContext(project_id="p", session_id="s", environment_id=environment),
+        run_id="r1",
+        tool_call="publish",
+        worker_endpoint_sha256="a" * 64,
+    )
+    data = b"%PDF-1.4\n"
+    worker = ArtifactRef(
+        artifact_id="worker-1",
+        project_id="p",
+        source_path="paper.pdf",
+        media_type="application/pdf",
+        size=len(data),
+        sha256=hashlib.sha256(data).hexdigest(),
+        created_at=datetime.now(UTC),
+        produced_by="unproven-hint",
+    )
+    inventory = ArtifactInventory(ledger.documents)
+    inventory.begin(source, "publish-1", "paper.pdf", "application/pdf")
+    inventory.pin(source, "publish-1", "paper.pdf", "application/pdf", worker)
+    receipt = inventory.finish(source, "publish-1", "paper.pdf", "application/pdf", worker, data)
+    assert receipt.revision is not None
+    made = pdf(receipt.revision.artifact_id, receipt.revision.revision)
+    assert change(ledger, made, op="op-2")["entries"][0]["handle"] == "REF-1"
+    with pytest.raises(DocumentError, match="no artifact"):
+        change(ledger, pdf(receipt.revision.artifact_id, 2), op="op-3")
+
+
+def test_a_mutation_reads_the_clock_once(ledger: Ledger) -> None:
+    ticks = iter(datetime(2026, 10, 14, 12, n, tzinfo=UTC) for n in range(60))
+    timed = Ledger(ledger.documents, clock=lambda: next(ticks))
+    timed.change(
+        "p", {"operation_id": "op-1", "reason": "r", "changes": [NEW["task"], NEW["issue"]]}, MAIN
+    )
+    assert {e.updated for e in timed.entries("p").entries} == {"2026-10-14T12:00:00+00:00"}
+    log = EventLog(ledger.control, "ledger_entry", "test")
+    with ledger.control.read() as tx:
+        times = {e.time for e in log.page(tx.sql, "p", 0, 10)}
+    assert times == {datetime(2026, 10, 14, 12, 0, tzinfo=UTC)}
+
+
+def test_a_retry_after_a_restart_replays(tmp_path: Path, ledger: Ledger) -> None:
+    first = change(ledger, NEW["claim"], NEW["task"])
+    reopened = DocumentStore(store_path(tmp_path))
+    try:
+        again = change(Ledger(reopened), NEW["claim"], NEW["task"])
+        assert again == {**first, "replayed": True}
+    finally:
+        reopened.close()
+
+
+def test_concurrent_writers_never_share_a_handle(tmp_path: Path, ledger: Ledger) -> None:
+    stores = [DocumentStore(store_path(tmp_path)) for _ in range(4)]
+    failures: list[BaseException] = []
+
+    def write(n: int) -> None:
+        try:
+            for k in range(10):
+                Ledger(stores[n]).change(
+                    "p",
+                    {"operation_id": f"w{n}-{k}", "reason": "r", "changes": [NEW["task"]]},
+                    MAIN,
+                )
+        except BaseException as error:
+            failures.append(error)
+
+    threads = [threading.Thread(target=write, args=(n,)) for n in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    for store in stores:
+        store.close()
+    assert not failures, failures
+    handles = [e.handle for e in ledger.entries("p", limit=200).entries]
+    assert sorted(handles, key=lambda h: int(h[2:])) == [f"T-{n}" for n in range(1, 41)]

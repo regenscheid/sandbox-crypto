@@ -66,6 +66,9 @@ TEXTS: Final = TextRevisions("statement")
 
 RECEIPTS: Final = Receipts("ledger", "operation ID {operation!r} names another ledger change")
 
+MAX_FIELDS: Final = 65536
+"""An entry's fields, as UTF-8 JSON, are at most this many bytes."""
+
 _ID: Final = re.compile(r"entry-[0-9a-f]{24}")
 _HANDLE: Final = re.compile(r"(I|C|R|A|D|T|REF)-([1-9][0-9]{0,8})")
 _TYPES: Final = {prefix: kind for kind, prefix in PREFIXES.items()}
@@ -172,15 +175,15 @@ class Ledger:
             start = 0
             if after is not None:
                 start = db.execute(
-                    "SELECT rowid FROM ledger_entries WHERE entry_id=?",
+                    "SELECT position FROM ledger_entries WHERE entry_id=?",
                     (self._find(db, project, after).entry_id,),
                 ).fetchone()[0]
             rows = db.execute(
                 "SELECT e.entry_id,e.project,e.type,e.number,e.origin,e.head,"
                 "r.revision,r.title,r.status,r.statement,r.fields,r.author,r.reason,r.created "
                 "FROM ledger_entries e JOIN ledger_revisions r ON r.entry_id=e.entry_id "
-                "AND r.revision=e.head WHERE e.project=? AND e.rowid>? AND (? IS NULL OR "
-                "e.type=?) AND (? IS NULL OR r.status=?) ORDER BY e.rowid LIMIT ?",
+                "AND r.revision=e.head WHERE e.project=? AND e.position>? AND (? IS NULL OR "
+                "e.type=?) AND (? IS NULL OR r.status=?) ORDER BY e.position LIMIT ?",
                 (project, start, kind, kind, status, status, limit + 1),
             ).fetchall()
         found = [self._summary(_Row(*r[:6]), r[6:]) for r in rows[:limit]]
@@ -262,10 +265,8 @@ class Ledger:
         role: str,
         provenance: Json | None,
     ) -> MutationResult:
-        fingerprint = hashlib.sha256(
-            json.dumps(mutation.model_dump(mode="json"), sort_keys=True).encode()
-        ).hexdigest()
-        replay = RECEIPTS.find(db, project, author.actor, mutation.operation_id, fingerprint)
+        digest = fingerprint(mutation)
+        replay = RECEIPTS.find(db, project, author.actor, mutation.operation_id, digest)
         if replay is not None:
             return MutationResult.model_validate({**replay, "replayed": True})
         numbers: dict[str, int] = {}
@@ -273,7 +274,7 @@ class Ledger:
         ids = [p.row.entry_id for p in planned]
         if len(set(ids)) != len(ids):
             raise DocumentError(INVALID_REQUEST, "a mutation changes an entry once")
-        now = self.clock().isoformat()
+        now = self.clock()
         changed: list[ChangedEntry] = []
         for p in planned:
             self._write(db, project, p, mutation, author, provenance, now)
@@ -292,7 +293,7 @@ class Ledger:
             project,
             author.actor,
             mutation.operation_id,
-            fingerprint,
+            digest,
             result.model_dump(mode="json"),
         )
         return result
@@ -339,6 +340,7 @@ class Ledger:
                 planned.statement, planned.changed = text, [*planned.changed, "statement"]
         if change.fields is not None:
             fields = _fields(row.type, change.fields)
+            _check_pdf(db, project, fields)
             if fields != planned.fields:
                 planned.fields, planned.changed = fields, [*planned.changed, "fields"]
         if change.status is not None and change.status != current[2]:
@@ -385,7 +387,7 @@ class Ledger:
             title=change.title,
             statement=_normalized(change.statement),
             status=status,
-            fields=_fields(kind, change.fields or {}),
+            fields=_check_pdf(db, project, _fields(kind, change.fields or {})),
         )
 
     def _write(
@@ -396,13 +398,14 @@ class Ledger:
         mutation: Mutation,
         author: Author,
         provenance: Json | None,
-        now: str,
+        now: datetime,
     ) -> None:
         row = p.row
         if p.created:
+            # position orders the project's entries as they were made.
             db.execute(
-                "INSERT INTO ledger_entries(entry_id,project,type,number,origin,head) "
-                "VALUES(?,?,?,?,?,1)",
+                "INSERT INTO ledger_entries(entry_id,project,type,number,origin,head,position) "
+                "VALUES(?,?,?,?,?,1,(SELECT coalesce(max(position),0)+1 FROM ledger_entries))",
                 (row.entry_id, project, row.type, row.number, row.origin),
             )
         else:
@@ -418,12 +421,12 @@ class Ledger:
                 p.title,
                 p.status,
                 statement,
-                json.dumps(p.fields, sort_keys=True),
+                _encoded(p.fields),
                 author.model_dump_json(exclude_none=True),
                 mutation.reason,
                 mutation.operation_id,
                 None if provenance is None else json.dumps(provenance, sort_keys=True),
-                now,
+                now.isoformat(),
             ),
         )
         payload: Json = {
@@ -443,7 +446,7 @@ class Ledger:
             author.session_id,
             row.entry_id,
             payload,
-            self.clock(),
+            now,
         )
 
     def _statement(
@@ -537,7 +540,43 @@ def _fields(kind: str, raw: Json) -> Json:
                 INVALID_REQUEST,
                 "a reference gives its publication or version date, or when it was retrieved",
             )
-    return value.model_dump(mode="json", exclude_defaults=True)
+    fields = value.model_dump(mode="json", exclude_defaults=True)
+    if len(_encoded(fields).encode()) > MAX_FIELDS:
+        raise DocumentError(INVALID_REQUEST, f"{kind} fields exceed {MAX_FIELDS} bytes")
+    return fields
+
+
+def _encoded(fields: Json) -> str:
+    """Fields as the table keeps them: UTF-8 as is, no NaN or infinity."""
+    return json.dumps(fields, sort_keys=True, ensure_ascii=False, allow_nan=False)
+
+
+def _check_pdf(db: sqlite3.Connection, project: str, fields: Json) -> Json:
+    """A reference's PDF is a revision of an artifact of the project (LG-15, RA-19)."""
+    pdf = fields.get("pdf")
+    if pdf is not None and (
+        db.execute(
+            "SELECT 1 FROM artifact_revisions WHERE artifact=? AND number=? AND project=?",
+            (pdf["artifact_id"], pdf["revision"], project),
+        ).fetchone()
+        is None
+    ):
+        raise DocumentError(
+            NOT_FOUND, f"no artifact {pdf['artifact_id']} r{pdf['revision']} in this project"
+        )
+    return fields
+
+
+def fingerprint(mutation: Mutation) -> str:
+    """What a receipt compares a retry with: the mutation as JSON without the fields it
+    leaves unset, so that a field a later version adds does not change it."""
+    canonical = json.dumps(
+        mutation.model_dump(mode="json", exclude_none=True),
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def _status(row: _Row, status: str) -> str:
@@ -547,6 +586,9 @@ def _status(row: _Row, status: str) -> str:
         raise DocumentError(
             INVALID_REQUEST, f"only a decision in effect makes an entry {status} (LG-4)"
         )
+    if status in ("rejected", "reversed"):
+        # LG-30: reversing a decision is a new decision that states its own changes.
+        raise DocumentError(INVALID_REQUEST, f"a decision becomes {status} by another decision")
     if status == "recorded" and row.origin != "published":
         raise DocumentError(INVALID_REQUEST, "only a published entry is recorded")
     if status == "proposed" and row.origin == "published":

@@ -1374,10 +1374,13 @@ def _ledger(schema: Schema) -> None:
     number INTEGER NOT NULL CHECK (number BETWEEN 1 AND 999999999),
     origin TEXT CHECK (origin IS NULL OR origin IN ('published', 'project')),
     head INTEGER NOT NULL CHECK (head BETWEEN 1 AND 999999999),
+    position INTEGER NOT NULL UNIQUE CHECK (position >= 1),
     CHECK ((type IN ('claim', 'result')) = (origin IS NOT NULL)),
     UNIQUE (project, type, number)
 ) STRICT""",
-        """CREATE TRIGGER ledger_entries_kept BEFORE UPDATE OF entry_id,project,type,number,origin
+        "CREATE INDEX ledger_entries_order ON ledger_entries(project,position)",
+        """CREATE TRIGGER ledger_entries_kept
+BEFORE UPDATE OF entry_id,project,type,number,origin,position
 ON ledger_entries BEGIN SELECT RAISE(ABORT, 'a ledger entry keeps its identity'); END""",
         """CREATE TRIGGER ledger_entries_head BEFORE UPDATE OF head ON ledger_entries
 WHEN NEW.head != OLD.head + 1

@@ -60,7 +60,10 @@ class ClaimFields(Contract):
     ) = None
 
 
-Measure = float | Annotated[str, Field(min_length=1, max_length=256)]
+Measure = (
+    Annotated[float, Field(allow_inf_nan=False)]
+    | Annotated[str, Field(min_length=1, max_length=256)]
+)
 
 
 class ResultFields(ClaimFields):
