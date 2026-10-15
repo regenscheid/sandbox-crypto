@@ -290,6 +290,9 @@ class Outcome(TurnHook):
         revision."""
         self.seen: set[Read] = set()
         """What the run's tools showed whole."""
+        self.ranges: dict[str, list[tuple[int, int]]] = {}
+        """The byte ranges of each file, by its SHA-256, that the run's reads showed whole:
+        a file is read whole once they cover it, however many reads it took."""
         self.shown: set[str] = set()
         """The target's evidence links its reads of the target's revision showed."""
         self.created: list[str] = []
@@ -334,8 +337,29 @@ class Outcome(TurnHook):
                     ("block", document, str(revision), str(block))
                     for block in cast(list[object], blocks)
                 )
-        elif isinstance(shown.get("sha256"), str) and shown.get("complete") is True:
-            self.seen.add(("file", cast(str, shown["sha256"])))
+        elif isinstance(sha256 := shown.get("sha256"), str):
+            self._file(sha256, shown)
+
+    def _file(self, sha256: str, shown: dict[str, object]) -> None:
+        """A read of a file: one that showed it whole, or the last of the reads that
+        together showed every byte of it, from its start to its end, with that SHA-256."""
+        if shown.get("complete") is True:
+            self.seen.add(("file", sha256))
+            return
+        offset, length, size = shown.get("offset"), shown.get("shown"), shown.get("size")
+        if not (isinstance(offset, int) and isinstance(length, int) and isinstance(size, int)):
+            return
+        if length <= 0:
+            return
+        ranges = self.ranges.setdefault(sha256, [])
+        ranges.append((offset, offset + length))
+        reached = 0
+        for start, end in sorted(ranges):
+            if start > reached:
+                return
+            reached = max(reached, end)
+        if size > 0 and reached >= size:
+            self.seen.add(("file", sha256))
 
     def _created(self, record: dict[str, Any]) -> None:
         if record.get("ledger") not in ("ledger_change", "ledger_import") or "error" in record:
