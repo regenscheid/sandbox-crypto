@@ -461,8 +461,10 @@ class ReviewController:
             kind: Literal["confirmation", "terminal"] = "confirmation" if targets else "terminal"
             review = await self._dispatch(kind, label)
             if review is None:
-                # Another live process owns this session's review. This one-shot
-                # driver cannot take over or wait on an unowned in-memory task.
+                # Another live process owns this session's review, or the project's
+                # reviewer has no calls left this hour: the work waits as one pending
+                # review. This one-shot driver cannot take over or wait on an unowned
+                # in-memory task.
                 summary["pending"] = True
                 break
             if not config.terminal_hold:
@@ -476,6 +478,16 @@ class ReviewController:
             ended = await asyncio.to_thread(self.store.run, *self.scope, review)
             if ended["state"] in ("failed", "dropped"):
                 continue
+            if (
+                ended["state"] == "capped"
+                and (await asyncio.to_thread(self.store.progress, *self.scope))["retry_end"]
+                is not None
+            ):
+                # A limit ended it: its window waits for a later review, not this hold,
+                # which the same limit would end again.
+                summary["outcome"] = ended["state"]
+                summary["pending"] = True
+                break
             if ended["kind"] == "confirmation":
                 # The confirmation left new feed pending; a terminal window still
                 # checks the final author answer after checking the proposed fix.

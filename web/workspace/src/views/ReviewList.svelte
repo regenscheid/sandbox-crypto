@@ -2,11 +2,18 @@
 <!-- The session's consistency reviews, newest first, and the windows none could cover. -->
 <script lang="ts">
   import type { ReviewBrowser, ReviewPanel } from '../lib/reviewBrowser';
-  import { leftUnreviewed, outcomeText, reviewLine, unreviewedText } from '../lib/reviewText';
+  import {
+    leftUnreviewed,
+    outcomeText,
+    reviewLine,
+    unreviewedText,
+    waitingText,
+  } from '../lib/reviewText';
   let { panel, browser, busy }: { panel: ReviewPanel; browser: ReviewBrowser; busy: boolean } =
     $props();
 </script>
 
+{#if panel.waiting}<p role="status" class="waiting">{waitingText(panel.waiting)}</p>{/if}
 {#if panel.unreviewed.length}
   <div role="status" class="unreviewed">
     <h3>Left unreviewed</h3>

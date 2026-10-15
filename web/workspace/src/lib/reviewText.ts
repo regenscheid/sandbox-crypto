@@ -22,7 +22,9 @@ const OUTCOMES: Readonly<Record<string, string>> = {
   passed: 'passed: no inconsistency found in the reviewed evidence (not a proof)',
   findings: 'reported findings',
   inconclusive: 'inconclusive: the main claims could not be evaluated',
-  capped: 'capped: a limit ended it, which its summary names; the findings it recorded stand',
+  capped:
+    'capped: a limit ended it, which its summary names; the findings it recorded stand, ' +
+    'and a window a limit cut short is reviewed again',
   failed: 'failed: reviewer error',
   dropped: 'dropped: lost to a restart',
 };
@@ -144,6 +146,18 @@ export function unreviewedText(window: Json): string {
   if (found['type'] === 'confirmation')
     return `A confirmation review failed ${failures} times; its finding's fix stays unconfirmed.`;
   return `Feed entries ${text(found['start'])} to ${text(found['end'])} were left unreviewed after ${failures} failed reviews.`;
+}
+
+/** Why the session's next review waits (lab 38): the reviewer's hourly calls are spent. */
+export function waitingText(waiting: Json): string {
+  const found =
+    typeof waiting === 'object' && waiting !== null && !Array.isArray(waiting) ? waiting : {};
+  return (
+    `The project's reviewer used ${text(found['calls'])} of its ${text(found['limit'])} ` +
+    `calls in the hour before ${when(found['since'] as number | undefined)}. The session's ` +
+    'work since its last review waits for one review, which starts at the next run once ' +
+    'calls are left.'
+  );
 }
 
 /** An audit record in one line. */

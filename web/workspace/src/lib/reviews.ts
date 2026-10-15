@@ -130,9 +130,12 @@ export const reviews = {
       `${base(p, s)}/math-checks/${part(id)}?after=${after}${span ? `&span=${part(span)}` : ''}`,
     ),
   list: (p: string, s: string, after: string | null = null) =>
-    get<{ reviews: Review[]; next_after: string | null; unreviewed: Json[] }>(
-      `${base(p, s)}/reviews${after ? `?after=${part(after)}` : ''}`,
-    ),
+    get<{
+      reviews: Review[];
+      next_after: string | null;
+      unreviewed: Json[];
+      waiting?: Json;
+    }>(`${base(p, s)}/reviews${after ? `?after=${part(after)}` : ''}`),
   findings: (p: string, s: string, after: string | null = null) =>
     get<{ findings: Finding[]; next_after: string | null }>(
       `${base(p, s)}/findings${after ? `?after=${part(after)}` : ''}`,

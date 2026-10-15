@@ -278,6 +278,7 @@ class ReviewerRunner:
                 f"The review's time budget ended: {self.config.time_seconds:g} seconds"
                 f"{await self._calls()}. Recorded findings are retained.",
                 cap=True,
+                retry=True,
             )
         except asyncio.CancelledError:
             await self._finish("dropped", "The live reviewer task ended before a durable outcome.")
@@ -324,6 +325,7 @@ class ReviewerRunner:
                     f"{self.config.max_input_chars:,}-character bound{await self._calls()}. "
                     "Recorded findings are retained.",
                     cap=True,
+                    retry=True,
                 )
                 return
             # This is a soft estimate; provider usage is recorded separately and
@@ -342,7 +344,9 @@ class ReviewerRunner:
                 why = await threaded(
                     self.store.refusal, self.project, self.session, self.review, estimate
                 )
-                await self._finish("capped", why + " Recorded findings are retained.", cap=True)
+                await self._finish(
+                    "capped", why + " Recorded findings are retained.", cap=True, retry=True
+                )
                 return
             await threaded(self.store.renew, self.project, self.session, self.review, self.owner)
             reply = await self.model.complete(messages, SPECS)
@@ -468,6 +472,7 @@ class ReviewerRunner:
             f"The review's call limit was reached: {self.config.max_turns} calls without an "
             "outcome. Recorded findings are retained.",
             cap=True,
+            retry=True,
         )
 
     async def _calls(self) -> str:
@@ -481,7 +486,10 @@ class ReviewerRunner:
         summary: str,
         *,
         cap: bool = False,
+        retry: bool = False,
     ) -> None:
+        """End the review; ``retry`` when a limit ended it, so that its window is reviewed
+        again rather than taken as covered (lab 38)."""
         try:
             await threaded(
                 self.store.finish,
@@ -492,6 +500,7 @@ class ReviewerRunner:
                 outcome,
                 summary,
                 cap_reached=cap,
+                retry=retry,
             )
         except DocumentError as error:
             # An expired/recovered owner cannot overwrite the replacement's outcome.

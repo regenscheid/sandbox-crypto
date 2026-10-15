@@ -956,6 +956,8 @@ class ReviewStore:
             db, project, session, plan.confirmation_key
         ):
             return False
+        if self._deferred(db, project, session, config):
+            return False
         db.execute(
             """INSERT INTO review_runs(review_id,project,session,kind,author_run,owner,state,
           start_seq,end_seq,created,lease_until,alias,rubric,config,config_revision,classifier,
@@ -1031,6 +1033,36 @@ class ReviewStore:
                 "end": plan.selected_end,
             },
         )
+        return True
+
+    def _deferred(
+        self, db: sqlite3.Connection, project: str, session: str, config: ReviewConfig
+    ) -> bool:
+        """Whether the project's reviewer has no calls left this hour (lab 38): then no
+        review starts, and the session's work waits as one pending review, covering all of
+        it since the last, which the next safe point or run boundary starts once calls are
+        left. The first deferral of a pending review is recorded."""
+        hourly = db.execute(
+            "SELECT count(*) FROM review_calls WHERE project=? AND created>?",
+            (project, self.clock() - 3600),
+        ).fetchone()[0]
+        if hourly < config.calls_per_hour:
+            return False
+        first = db.execute(
+            "UPDATE review_windows SET requested=1 WHERE project=? AND session=? AND requested=0",
+            (project, session),
+        ).rowcount
+        if first:
+            # No review exists yet: the event is the session's.
+            self.review_log.append(
+                db,
+                "review.deferred",
+                project,
+                session,
+                session,
+                {"reason": "calls_per_hour", "calls": hourly, "limit": config.calls_per_hour},
+                datetime.fromtimestamp(self.clock(), UTC),
+            )
         return True
 
     @staticmethod
@@ -1117,7 +1149,10 @@ class ReviewStore:
         *,
         cap_reached: bool = False,
         require_expired: bool = False,
+        retry: bool = False,
     ) -> None:
+        """End a review. A failed or dropped one, or one a limit ended (``retry``),
+        leaves its window to be reviewed again; the third time, it is left unreviewed."""
         if outcome == "running":
             raise DocumentError(INVALID_REQUEST, "a review must end with an outcome")
         text(summary)
@@ -1159,7 +1194,7 @@ class ReviewStore:
                             "confirmation_key": found["confirmation_key"],
                         },
                     )
-            elif outcome in ("failed", "dropped"):
+            elif outcome in ("failed", "dropped") or retry:
                 window = db.execute(
                     "SELECT failures FROM review_windows WHERE project=? AND session=?",
                     (project, session),
@@ -1662,7 +1697,7 @@ class ReviewStore:
         if after is not None:
             identifier(after, "rev")
         if self.documents.control.missing:
-            return {"reviews": [], "next_after": None, "unreviewed": []}
+            return {"reviews": [], "next_after": None, "unreviewed": [], "waiting": None}
         with self.documents.control.read() as tx:
             db = tx.sql
             cursor = db.execute("SELECT coalesce(max(rowid),0)+1 FROM review_runs").fetchone()[0]
@@ -1688,6 +1723,14 @@ class ReviewStore:
                 event.payload
                 for event in self.review_log.recent(db, project, session, "review.unreviewed", 50)
             ]
+            # A deferral no review was dispatched after: the session's work is waiting.
+            deferred = self.review_log.recent(db, project, session, "review.deferred", 1)
+            started = self.review_log.recent(db, project, session, "review.dispatched", 1)
+            waiting = (
+                {**deferred[0].payload, "since": deferred[0].time.timestamp()}
+                if deferred and (not started or started[0].seq < deferred[0].seq)
+                else None
+            )
         values: list[Json] = []
         size = 0
         for review in ids[:50]:
@@ -1701,4 +1744,5 @@ class ReviewStore:
             "reviews": values,
             "next_after": values[-1]["review_id"] if len(ids) > len(values) else None,
             "unreviewed": unreviewed,
+            "waiting": waiting,
         }

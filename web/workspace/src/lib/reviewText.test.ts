@@ -14,6 +14,7 @@ import {
   reviewLine,
   unreviewedText,
   usageText,
+  waitingText,
   when,
 } from './reviewText';
 
@@ -124,6 +125,14 @@ describe('what the reviews panel says', () => {
 describe('what the reviews panel says, after review', () => {
   it('says a capped review ended at a limit its summary names, and whether a failed window is retried', () => {
     expect(outcomeText('capped')).toMatch(/a limit ended it, which its summary names/);
+    expect(outcomeText('capped')).toMatch(/a window a limit cut short is reviewed again$/);
+    expect(
+      waitingText({ reason: 'calls_per_hour', calls: 240, limit: 240, since: 1791990000 }),
+    ).toBe(
+      `The project's reviewer used 240 of its 240 calls in the hour before ${when(1791990000)}. ` +
+        "The session's work since its last review waits for one review, which starts at the " +
+        'next run once calls are left.',
+    );
     expect(outcomeText('failed')).toBe(
       'failed: reviewer error; its window is due to be reviewed again',
     );
