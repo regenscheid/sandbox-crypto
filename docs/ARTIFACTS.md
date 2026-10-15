@@ -437,7 +437,7 @@ with synthetic state and no live model, worker or OpenShell VM.
 - Complete telemetry and snapshotting, link semantics, authenticated feed binding and
   control ingestion of the worker's observations.
 - Imports and MCP binary results, retention drop workflows, observed inputs and kernel
-  lineage, read and download routes beyond the artifact list and the PDF viewer, ledger
-  integration, previews other than PDFs, and annotations stored on PDFs.
+  lineage, read and download routes beyond the artifact list and the PDF viewer,
+  previews other than PDFs, and annotations stored on PDFs.
 - The stronger writer proof that living-document files need (LD-49). Explicit
   publication does not prove an atomic source pass.

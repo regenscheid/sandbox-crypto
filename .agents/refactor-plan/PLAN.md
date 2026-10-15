@@ -16,18 +16,29 @@ Each finding there has its evidence with `file:line`, a concrete proposal, effor
 
 ## Progress
 
-Findings done, by phase, with their PRs (main `959267c`). Leftovers of a done finding are in [BACKLOG](../BACKLOG.md#repository); decisions that refined the plan on the way are in [PLAN-CHANGES](../PLAN-CHANGES.md).
+Findings done, by phase, with their PRs (main `b8487377`). Leftovers of a done finding are in [BACKLOG](../BACKLOG.md#repository); decisions that refined the plan on the way are in [PLAN-CHANGES](../PLAN-CHANGES.md).
 
 - **Phase 0, done:** A-01, A-10 (#125); E-02's 503 (#124); C-01, C-10, C-11, C-15 (#133); A-03, C-05, D-10, B-11, C-18, F-07 and `reviews.py` removed (#129, #138); F-01 (#123); F-02 (#126); F-10 (#126); F-12 and CI guards (#128); E-16 (#127). Pulled forward from later phases: the reference docs synced with the code, with inventory and link checks, which covers C-17, F-08 and most of F-09 (#131, #135, #136, #140).
 - **Phase 1, done:** F-04 steps 1–3 and F-06 (#137, #139, #144); C-13 (#141); F-05 for the loop (#134), the workspace routes (#132) and the worker manager (#141); C-14 (#146); C-12 (#144); F-03 (#182, with the kernel-start fix #179, the leftover-process check #180 and the stall diagnostics #256). **Left:** F-04 step 4, the fast tier's remaining wall-clock waits, and recording the nightly repeat's flake rate.
 - **Phase 2, lane O, done:** A-02 (#143, #149, #150), A-11 (#151), A-12 (#149), A-04 (#156), A-05 (#158), A-08 (#165), A-13 and A-14 (#166).
 - **Phase 2, lane S, done apart from leftovers:** B-01 (#145), B-02 (#152, #159), A-07 (#160), B-14 (#168), B-17/E-12 (#176), B-10 in four parts (#177, #178, #181, #183), B-05 (#197), B-03 (#200), B-15 (#211), B-09 (#214), B-08 (#215), B-07 (#216), B-06 (#219), B-12 (#221). **Left:** B-10 for the findings tables and the prompt-provenance columns, and B-14's per-thread reads.
-- **Phase 2, lane W, done apart from leftovers:** C-04 (#153), C-03 in all its stages (#155, #163, #164, #185, #186, #191, #196, #201), C-06 (#212), C-07 (#217), C-08's first slice (#222), C-09 (#224), C-02 (#246), C-16 in five steps (#226, #229, #236, #239, #242), C-17 (#245). Bugs found by reviews on the way: #210, #238. **Left:** C-08 for the executor endpoints, recycles and kernels, versions for the worker's other databases, and the local launcher (in progress, #261).
+- **Phase 2, lane W, done apart from leftovers:** C-04 (#153), C-03 in all its stages (#155, #163, #164, #185, #186, #191, #196, #201), C-06 (#212), C-07 (#217), C-08's first slice (#222), C-09 (#224), C-02 (#246), C-16 in five steps (#226, #229, #236, #239, #242), C-17 (#245). Bugs found by reviews on the way: #210, #238. **Left:** C-08 for the executor endpoints, recycles and kernels, and versions for the worker's other databases. The local launcher is built (Phase 4, below).
 - **Phase 2, lane C, done:** D-01 (#148), D-02, D-07, D-11 (#161).
 - **Phase 2, lane G, done:** E-01, E-02 (#147), E-03 (#154), E-04 (#154, #157, #174), E-13 (#157, #174), E-05 (#162), E-17, E-19 (#167), E-14 (#170, #171, #172, #184), E-15 (#173, #187, #189, #199, #203, #204, #205, #208), E-20 (#175).
-- **Phase 2's exit:** `_run_task` is 55 lines with no subsystem checks; no source file disables private-usage checks, and the hygiene check refuses it; the control store has one schema version (18); `manager.py` is a 543-line facade; the workspace has one handler pattern. The characterization tests of each lane are unchanged.
+- **Phase 2's exit:** `_run_task` is 55 lines with no subsystem checks; no source file disables private-usage checks, and the hygiene check refuses it; the control store has one schema version (18 then); `manager.py` is a 543-line facade; the workspace has one handler pattern. The characterization tests of each lane are unchanged.
 - **Phase 3, done:** B-04 (#240, #241, #243, #244, #247, #248), D-03 (#188), D-04 (#192), D-06 (#195), D-09 (#223), E-10 (#187, #189, #199, #203, #204, #205). **Left:** `Anchor` and `Mutation` in `contracts` (they wait for their first caller), D-05 and D-12 (Phase 5).
-- **Phase 4, started:** A-09 (#193); A-06, the run service (spec #194; #206, #207, #209); E-06 and E-07 in the browser (#213, #202); E-11 (#218, #220); E-08, the PDF viewer (#228, #234, #235); D-08, the harness's MCP client (#227, #231, #232); delegation's first steps, the run tree's parent link (#233) and kernels per run (#237), after its spec (#225); the ledger's backend in four steps (#252 to #255, after the spec decisions in #250); the specs for file recording and project memory (#251) and the worker's deleted-file report (#258, protocol 5). **In progress:** the ledger's views (#259, #260), the harness's file recorder, and project memory.
+- **Phase 4, the M2 exit path, done:**
+  - Item 1, chat: A-06, the run service (spec #194; #206, #207, #209), E-06 and E-07 in the browser (#213, #202), a comment to an idle session starting a run (#319), and the model budget kept at a run's safe points (#333).
+  - Item 2, a real model: A-09 (#193), then a whole run through the owner's gateway (lab 37, #289).
+  - Item 3, the ledger and board: the backend (#252 to #255, #266, #276, #277, #279 to #281, #290, #294, #296, #318, after the spec decisions in #250) and the views (#259, #260, #270, #303, #307, #309, #320).
+  - Item 4, E-11 (#218, #220). Item 5, E-08, the PDF viewer (#228, #234, #235).
+  - Item 8, the exit lab: labs 37 (#289), 38 (#305) and 39 (#331). It was met in lab 39, with B5 and B6 open, after the fixes #287, #288, #295, #297 to #299, #303, #312 to #316, #319 and #327 to #330.
+  - The local launcher, `sandbox-science up` (#261, #267, #268, #272, #282, #312, #322, #329).
+  - Also built on the way: file recording and the artifact list (#262, #265, #269, #275, #278, #313, #315, #330), project memory (#283 to #286, #291), the checks against hidden text in what agents write and users approve (#293, #300 to #302, #306, #308, #311, #317, #325), and the specs for file recording and project memory (#251) with the worker's deleted-file report (#258, protocol 5).
+- **Phase 4, open:**
+  - Item 7, delegation: the spec (#225), the run tree's parent link (#233) and kernels per run (#237) exist, and nothing starts delegated runs. The first piece is the "check this claim" delegation (the owner, 2026-10-14).
+  - Item 9, MCP connectors: the client (#227, #231), `compile-policy` (#232), the proxy in the launcher (#272), the provider registered from the owner's file (#322) and the first real calls (lab 39) are done. B5 remains: a run is offered all 72 tools in every call, and #332, #334 and #335, stacked and in review, offer only the tools its task may use.
+  - Also open: the ledger's frontier (#304, #310, #321, #323, #326), and B6 (numbers the model copies).
 
 ## The state of the code
 
@@ -259,15 +270,15 @@ The refactors in Phase 2 rewrite central objects whose tests reach into their pr
 
 ### Phase 4: the M2 exit path, thinnest first (feature work; about 15–20 agent-days)
 
-1. **Chat and a live transcript:**
+1. **Chat and a live transcript** (*done*, #206, #207, #209, #213, #202):
    - A-06 and E-06: the run service, one run per session, messages queued to safe points;
    - E-07: run events written as they happen and streamed to the GUI.
-2. **A real model:**
+2. **A real model** (*done*, #193, lab 37):
    - A-09: a context limit, token accounting and retries for gateway errors;
    - then a first run through the owner's LiteLLM gateway. The first live call worked on 2026-10-14 ([PLAN-CHANGES](../PLAN-CHANGES.md)); the alias `sandbox-orchestrator` serves every role until the owner sets one per role.
-3. **The ledger and board** on the Phase 3 pieces, with the views: `docs/specs/ledger.md` and its decided questions.
-4. **E-11:** user-grade review and finding views for the "user feedback → automatic review" step.
-5. **E-08:** the PDF viewer, on a second origin.
+3. **The ledger and board** on the Phase 3 pieces, with the views: `docs/specs/ledger.md` and its decided questions. *Done* but for the frontier (#304, #310, #321, #323 in review), the pack import and work records; the lab used the board, the evidence and the gate.
+4. **E-11:** user-grade review and finding views for the "user feedback → automatic review" step. *Done* (#218, #220).
+5. **E-08:** the PDF viewer, on a second origin. *Done* (#228, #234, #235).
 6. **Approvals:** for M2 through the CLI on babbage (decision 1), with E-09 later.
 7. **Delegation, as in Claude Science** (the owner's intent, D81, PD-14). Children are frames in the same runtime: each delegated run is a role of the one tool loop, with its own prompt, tool table, hooks and budget (A-02). Its kernels come from the existing worker kernel path, keyed by session and run. The parent gets a delegate tool and a handback record, and plan steps name the delegate (as Claude Science's delegation tracks do). This comes after the loop's hooks; it is part of M2 only if the owner says so. The owner answered open question 3 on 2026-10-14 (recorded in the [spec](../../docs/specs/plans-and-delegation.md), PD-15):
    - **Concurrency:** support at least 8–10 subagents at once in a session; 4–5 is the typical number.
@@ -288,8 +299,10 @@ The refactors in Phase 2 rewrite central objects whose tests reach into their pr
    - **Still open:** questions 1 and 2, plan approval and progress across versions.
 
    The archived code is reference for the records design and the tests.
-8. **The M2 exit lab on babbage**, a testing checkpoint (decision 1): two workbooks share the project container with distinct kernels, a third uses its own, and the path paper → Sage → document → user feedback → automatic review → board update runs with a real model.
-9. **MCP connectors, for real research** (D-08; decision 1): an MCP client in the harness through the project's proxy (built, #231), the proxy's policy compiled by the platform instead of a lab script (`compile-policy`, #232), and the owner's Cloudflare Access service token for crypto-research-mcp, which is enough on its own: the connector auth service and OAuth are off the path (#227, [PLAN-CHANGES](../PLAN-CHANGES.md)). What is left is the owner registering the provider and a first call through the proxy. With delegation (item 7), this is the first milestone for real use.
+
+   **Remaining:** nothing starts delegated runs. The run tree's parent link (#233) and kernels per run (#237) are built. The owner chose the first piece, after the M2 exit lab: a "check this claim" delegation, a run with a fresh context whose report is the ledger's `independent_check` (LG-17), so that proved results no longer wait for the user's check ([PLAN-CHANGES](../PLAN-CHANGES.md)).
+8. **The M2 exit lab on babbage**, a testing checkpoint (decision 1): two workbooks share the project container with distinct kernels, a third uses its own, and the path paper → Sage → document → user feedback → automatic review → board update runs with a real model. *Met in lab 39* ([#331](../docs/agent-reports/babbage-openshell-lab-39-2026-10-15.md); labs 37 and 38 were #289 and #305), with B5 and B6 open.
+9. **MCP connectors, for real research** (D-08; decision 1): an MCP client in the harness through the project's proxy (built, #231), the proxy's policy compiled by the platform instead of a lab script (`compile-policy`, #232), and the owner's Cloudflare Access service token for crypto-research-mcp, which is enough on its own: the connector auth service and OAuth are off the path (#227, [PLAN-CHANGES](../PLAN-CHANGES.md)). The launcher registers the provider from the owner's file (#322), and lab 39 made real calls through the proxy to the e-print tools. **Remaining:** B5, a run offered all 72 tools in every call (about 17,000 tokens), where it needs the tools its task may use (#332, #334 and #335, in review: a listing leaves out the tools the policy denies, an index loads tools on demand, and the launcher passes the index's settings), and B6 (numbers the model copies). With delegation (item 7), this is the first milestone for real use.
 
 ### Phase 5: later, and opportunistic
 
