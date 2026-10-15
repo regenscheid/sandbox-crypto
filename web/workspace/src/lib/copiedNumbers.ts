@@ -12,7 +12,12 @@ export function copiedValues(finding: {
   statement: string;
 }): { stated: string; held: string } | null {
   if (finding.category !== 'contradicting_value') return null;
-  const found = /Stated: (\d{1,5000})\. In the artifact: (\d{1,5000})\./.exec(finding.statement);
+  // Anchored at the end of the platform's text, so a number in the artifact's key, which an
+  // agent may choose and the text quotes earlier, cannot stand in for the two named last.
+  const found =
+    /Stated: (\d{1,5000})\. In the artifact: (\d{1,5000})\. It looks copied by hand\.\s*$/.exec(
+      finding.statement,
+    );
   return found === null ? null : { stated: found[1]!, held: found[2]! };
 }
 
@@ -22,8 +27,8 @@ export interface Column {
   held: string;
 }
 
-/** The most digit pairs the view lines up; longer numbers are shown without marks. */
-export const MAX_CELLS = 4_000_000;
+/** The most digit pairs the view lines up, about 500 digits each; longer numbers are shown without marks. */
+export const MAX_CELLS = 250_000;
 
 /**
  * The digits of `stated` and `held` lined up as few edits apart as they are (an edit
