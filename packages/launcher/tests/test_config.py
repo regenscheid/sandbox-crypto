@@ -116,6 +116,13 @@ def test_the_example_config_is_a_launcher_config(home: Path) -> None:
     assert config.workspace.static == example.parent / "../web/workspace/dist"
     assert config.workspace.preview() == "127.0.0.2:8201"
     assert config.openshell.model_dump()["environments"]["suspend_after"] == 3600.0
+    assert config.run_service.math_checks == example.parent / "../web/workspace/dist-math"
+    assert config.model.watcher == config.model.name == config.model.reviewer
+    (project,) = config.projects
+    assert [(item.id, item.dedicated) for item in project.sessions] == [
+        ("main", False),
+        ("scratch", True),
+    ]
 
 
 def test_the_examples_mcp_proxy_works_uncommented(home: Path, tmp_path: Path) -> None:
@@ -164,3 +171,58 @@ def test_an_mcp_proxy_that_cannot_work_is_refused(
     with pytest.raises(LauncherError) as error:
         load_config(make_config({**changes, "mcp_proxy": proxy}))
     assert message in str(error.value)
+
+
+def test_sessions_are_names_or_tables_with_dedicated(make_config: Any) -> None:
+    config = load_config(
+        make_config(
+            {
+                "projects": [
+                    {
+                        "id": "crypto",
+                        "profile": "minimal",
+                        "sessions": ["a", {"id": "c", "dedicated": True}],
+                    }
+                ]
+            }
+        )
+    )
+    (project,) = config.projects
+    assert [(session.id, session.dedicated) for session in project.sessions] == [
+        ("a", False),
+        ("c", True),
+    ]
+    with pytest.raises(LauncherError, match="lists a session twice"):
+        load_config(
+            make_config(
+                {
+                    "projects": [
+                        {
+                            "id": "crypto",
+                            "profile": "minimal",
+                            "sessions": ["a", {"id": "a", "dedicated": True}],
+                        }
+                    ]
+                }
+            )
+        )
+
+
+def test_the_run_service_takes_a_watcher_and_the_math_checks(make_config: Any) -> None:
+    config = load_config(
+        make_config(
+            {
+                "model": {"watcher": "sandbox-orchestrator", "watcher_interval": 600},
+                "run_service": {"math_checks": "dist-math", "node": "bin/node"},
+            }
+        )
+    )
+    site = config.worker.policy.parent
+    model, service = config.model, config.run_service
+    assert (model.watcher, model.watcher_interval) == ("sandbox-orchestrator", 600.0)
+    assert (model.watcher_calls_per_hour, model.watcher_first_check) == (None, None)
+    with pytest.raises(LauncherError, match="watcher_interval"):
+        load_config(make_config({"model": {"watcher_interval": 0}}))
+    assert service.math_checks == site / "dist-math"
+    assert service.node == str(site / "bin/node")
+    assert load_config(make_config()).run_service.node == "node"  # a name on PATH

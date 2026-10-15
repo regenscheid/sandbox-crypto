@@ -194,3 +194,66 @@ def test_the_run_service_takes_the_review_limits_the_config_sets(
     assert harness[harness.index("--review-calls-per-hour") + 1] == "500"
     unset = load_config(make_config({"bin_dir": str(commands), "model": {"reviewer": "r"}}))
     assert "--review-token-budget" not in parts.harness_argv(unset, Layout(unset.state_dir))
+
+
+def fake_node(directory: Path, version: str) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    node = directory / "node"
+    node.write_text(f"#!/bin/sh\necho {version}\n")
+    node.chmod(0o755)
+    return node
+
+
+def test_dedicated_sessions_watcher_and_math_reach_their_commands(
+    make_config: Any, commands: Path, tmp_path: Path
+) -> None:
+    build = tmp_path / "dist-math"
+    build.mkdir()
+    for name in parts.MATH_FILES:
+        (build / name).write_text("// built\n")
+    node = fake_node(tmp_path / "node-bin", "v24.20.0")
+    config = load_config(
+        make_config(
+            {
+                "bin_dir": str(commands),
+                "projects": [{"id": "crypto", "profile": "minimal",
+                              "sessions": ["a", {"id": "c", "dedicated": True}]}],
+                "model": {"watcher": "watcher", "watcher_interval": 600},
+                "run_service": {"math_checks": str(build), "node": str(node)},
+            }
+        )
+    )  # fmt: skip
+    parts.check(config)
+    layout = Layout(config.state_dir)
+    opened = [argv for argv in parts.project_argvs(config, layout, "sha256:" + "a" * 64)
+              if argv[1:3] == ["session", "open"]]  # fmt: skip
+    assert [argv[-2:] for argv in opened] == [["--session", "a"], ["c", "--dedicated"]]
+    harness = parts.harness_argv(config, layout)
+    assert harness[harness.index("--watcher-model") + 1] == "watcher"
+    assert harness[harness.index("--watcher-interval") + 1] == "600"
+    assert "--watcher-calls-per-hour" not in harness  # the run service's default
+    assert harness[harness.index("--math-node") + 1] == str(node)
+    assert harness[harness.index("--math-launcher") + 1] == str(build / "check-math.mjs")
+    assert harness[harness.index("--math-bundle") + 1] == str(build / "mathcheck.mjs")
+    plain = load_config(make_config({"bin_dir": str(commands)}))
+    assert not any(
+        flag.startswith(("--watcher", "--math")) for flag in parts.harness_argv(plain, layout)
+    )
+
+
+def test_math_checks_need_their_build_and_a_recent_node(
+    make_config: Any, commands: Path, tmp_path: Path
+) -> None:
+    build = tmp_path / "dist-math"
+    old = fake_node(tmp_path / "old", "v20.11.1")
+    config = load_config(
+        make_config(
+            {"bin_dir": str(commands), "run_service": {"math_checks": str(build), "node": str(old)}}
+        )
+    )
+    with pytest.raises(LauncherError) as error:
+        parts.check(config)
+    message = str(error.value)
+    assert f"no math checker build at {build}: in web/workspace, run npm run build:math" in message
+    assert "the math checks need Node 22.12 or newer" in message
+    assert "v20.11.1" in message

@@ -19,6 +19,7 @@ def test_values_tables_and_arrays_of_tables_read_back() -> None:
         "count": 3,
         "ratio": 0.5,
         "names": ["a", "b"],
+        "sessions": ["a", {"id": "c", "dedicated": True}],
         "empty": [],
         "dotted.key": "kept",
         "openshell": {
@@ -36,6 +37,6 @@ def test_values_tables_and_arrays_of_tables_read_back() -> None:
 
 def test_none_is_left_out_and_other_values_are_refused() -> None:
     assert tomllib.loads(toml.dumps({"a": 1, "b": None})) == {"a": 1}
-    for value in (float("nan"), object(), {1, 2}):
+    for value in (float("nan"), object(), {1, 2}, [{"x": object()}]):
         with pytest.raises(TypeError):
             toml.dumps({"a": value})

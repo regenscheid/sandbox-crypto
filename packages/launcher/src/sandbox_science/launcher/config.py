@@ -50,6 +50,7 @@ from urllib.parse import urlsplit
 from pydantic import (
     AfterValidator,
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     StringConstraints,
@@ -74,6 +75,13 @@ def _path(value: Path, info: ValidationInfo) -> Path:
 
 
 ConfigPath = Annotated[Path, AfterValidator(_path)]
+
+
+def _command(value: str, info: ValidationInfo) -> str:
+    """A command with a ``/`` in it, or starting with ``~``, is a path, against the file."""
+    if "/" in value or value.startswith("~"):
+        return str(_path(Path(value), info))
+    return value
 
 
 def split(address: str) -> tuple[str, int]:
@@ -119,6 +127,17 @@ class ModelConfig(_Strict):
     review_calls_per_hour: int | None = Field(default=None, ge=1, le=10000)
     """The reviewer calls a project may make in an hour; the run service's default when
     unset."""
+    watcher: str | None = Field(default=None, min_length=1)
+    """The job watcher's alias, for its check-ins on long jobs; it may be the main
+    agent's. None by default: no check-ins."""
+    watcher_calls_per_hour: int | None = Field(default=None, ge=1, le=10000)
+    """The watcher calls a project may make in an hour; the run service's default (60)
+    when unset."""
+    watcher_first_check: float | None = Field(default=None, gt=0)
+    """Seconds into a job before its first check-in; the run service's default (300)
+    when unset."""
+    watcher_interval: float | None = Field(default=None, gt=0)
+    """Seconds between check-ins; the run service's default (1,800) when unset."""
 
     @field_validator("url")
     @classmethod
@@ -137,13 +156,30 @@ class ModelConfig(_Strict):
         )
 
 
+class SessionConfig(_Strict):
+    id: Identifier
+    dedicated: bool = False
+    """In an environment of its own, from the project's profile, rather than the project's
+    default environment. A session keeps the mode it was first opened in."""
+
+
+def _sessions(value: object) -> object:
+    """A session named alone is one in the project's default environment."""
+    if isinstance(value, list | tuple):
+        items = cast(list[object] | tuple[object, ...], value)
+        return [{"id": item} if isinstance(item, str) else item for item in items]
+    return value
+
+
 class ProjectConfig(_Strict):
     id: Identifier
     profile: Identifier
     """The base profile of the project's environments: a key of ``openshell.environments
     .profiles``."""
-    sessions: tuple[Identifier, ...] = ("main",)
-    """Sessions opened for chat, each in the project's default environment."""
+    sessions: Annotated[tuple[SessionConfig, ...], BeforeValidator(_sessions)] = (
+        SessionConfig(id="main"),
+    )
+    """Sessions opened for chat: a name, or ``{ id = "...", dedicated = true }``."""
 
 
 class WorkerConfig(_Strict):
@@ -159,6 +195,12 @@ class WorkerConfig(_Strict):
 
 
 class RunServiceConfig(_Strict):
+    math_checks: ConfigPath | None = None
+    """The math checker's build, ``web/workspace/dist-math`` after ``npm run build:math``:
+    with it, the run service checks the documents' formulas; without it, every formula
+    shows "renderer unavailable"."""
+    node: Annotated[str, AfterValidator(_command)] = "node"
+    """Node 22.12 or newer, for the math checks: a path, or a name on ``PATH``."""
     pass_env: tuple[Variable, ...] = ()
     """Environment variables this part gets besides the usual few (``PATH``, ``HOME``, the
     locale, proxies and CA settings). Never a secret: the parts run in the control zone
@@ -294,7 +336,8 @@ class LauncherConfig(_Strict):
                     f"project {project.id}'s profile {project.profile!r} is not one of "
                     f"openshell.environments.profiles: {', '.join(sorted(profiles))}"
                 )
-            if len(set(project.sessions)) != len(project.sessions):
+            sessions = [session.id for session in project.sessions]
+            if len(set(sessions)) != len(sessions):
                 raise ValueError(f"project {project.id} lists a session twice")
         self._distinct(self.addresses())
         return self

@@ -260,7 +260,13 @@ async def _start(
 
 def _announce(config: LauncherConfig, path: Path, layout: Layout) -> None:
     projects = "; ".join(
-        f"{project.id} (sessions {', '.join(project.sessions)})" for project in config.projects
+        f"{project.id} (sessions "
+        + ", ".join(
+            session.id + (" in an environment of its own" if session.dedicated else "")
+            for session in project.sessions
+        )
+        + ")"
+        for project in config.projects
     )
     print(
         "\nSandbox Science is running.\n"

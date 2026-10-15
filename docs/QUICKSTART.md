@@ -13,7 +13,7 @@ Everything listens on loopback, so only your own computer can reach it. The step
 - **OpenShell**, with the policy middleware and the package cache. On babbage, `.agents/labs/lab_up.sh` brings up all three under `~/.local/state/openshell-lab`, and `lab_down.sh` removes them.
 - **The research images**, built: `images/build.sh minimal`, and `images/build.sh crypto-base` if you want it ([images](IMAGES.md)). Each build prints the image's tag, for the config.
 - **The repository's Python environment**: `uv sync` in the checkout. It installs the `sandbox-science` command with the parts' own commands.
-- **The web app**, built: `cd web/workspace && npm ci --ignore-scripts && npm run build`.
+- **The web app and the math checker**, built: `cd web/workspace && npm ci --ignore-scripts && npm run build && npm run build:math`. The math checks run on Node 22.12 or newer.
 - **A model gateway and its key**: an OpenAI-compatible gateway, such as LiteLLM, and a file holding its key that only you can read (mode 600; the launcher refuses one others can read). The launcher only passes the file's path to the run service: it never reads the key, and never prints it.
 
 ## The config
@@ -23,10 +23,10 @@ Everything listens on loopback, so only your own computer can reach it. The step
 | Section | What it says |
 | --- | --- |
 | `state_dir` | Where the launcher keeps what it makes (see [the state directory](#the-state-directory)); `~/.local/state/sandbox-science` by default |
-| `[[projects]]` | Each project: its `id`, the `profile` its environments start from, and the `sessions` to open for chat (`["main"]` by default) |
-| `[model]` | The gateway's `url`, the main agent's model `name`, and `api_key_file`; an optional `reviewer` model is for reviews and the workspace's math repairs, and optional `review_token_budget` and `review_calls_per_hour` set a review's token budget and the reviewer's hourly call cap ([consistency review](CONSISTENCY-REVIEW.md)) |
+| `[[projects]]` | Each project: its `id`, the `profile` its environments start from, and the `sessions` to open for chat (`["main"]` by default). A session is a name, in the project's default environment, or `{ id = "scratch", dedicated = true }`, in an environment of its own. A session keeps the mode it was first opened in, so changing `dedicated` for one that exists makes `up` fail at that session |
+| `[model]` | The gateway's `url`, the main agent's model `name`, and `api_key_file`. Optional:<br>- `reviewer`, the model for reviews and the workspace's math repairs, with `review_token_budget` and `review_calls_per_hour`, a review's token budget and the reviewer's hourly call cap ([consistency review](CONSISTENCY-REVIEW.md));<br>- `watcher`, the model for the job watcher's check-ins on long jobs (none by default; it may be the main agent's), with `watcher_calls_per_hour`, `watcher_first_check` and `watcher_interval` (by default 60 calls an hour, 300 s and 1,800 s).<br>Each limit left out keeps the run service's default |
 | `[worker]` | Its `listen` address, its `pool_id`, and the project `policy` granted to every project |
-| `[run_service]` | Optional: its `pass_env` |
+| `[run_service]` | Optional:<br>- `math_checks`, the math checker's build (`web/workspace/dist-math`), and `node` (`node` on `PATH` by default). Without `math_checks`, every formula in a document shows "renderer unavailable";<br>- its `pass_env` |
 | `[workspace]` | Its `listen` address, its `preview_listen` address for the PDF viewer (by default the next port), and `static`, the web app's build |
 | `[openshell]` | The worker's own `[openshell]` table ([worker settings](WORKER.md)): the OpenShell CLI and the `env` it needs to reach the gateway, the sandboxes' Python, the isolation tier, the package cache, and `[openshell.environments]` with the profiles' image tags |
 | `[mcp_proxy]` | Optional: the [MCP proxy](#the-mcp-proxy) |
@@ -53,7 +53,7 @@ The launcher does these steps in order. It stops at the first that fails and say
 2. It makes the state directory and the tokens the parts need, and writes the worker's settings.
 3. It starts the worker, and waits for its address to take connections.
 4. It grants the project policy to every project.
-5. It makes each project in the control store, or moves an existing one to the policy, and opens its sessions.
+5. It makes each project in the control store, or moves an existing one to the policy, and opens its sessions, the dedicated ones in environments of their own.
 6. It starts the run service, and then the workspace.
 
 When everything is up, it prints:
