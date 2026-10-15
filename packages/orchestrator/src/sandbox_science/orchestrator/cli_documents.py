@@ -308,7 +308,8 @@ def document(args: argparse.Namespace) -> int:
 
 def ledger(args: argparse.Namespace) -> int:
     """The user's ledger commands: ``check`` records that the user checked an entry at a
-    revision, which the gate's independent check counts (LG-17); ``clear`` clears open
+    revision, which the gate's independent check counts (LG-17), or a reference, which
+    vouches for the PDF the revision names (LG-16); ``clear`` clears open
     flags on an entry with a reason, and ``reopen`` opens cleared ones again (LG-29);
     ``drop`` drops a ``dominates`` link an entry holds, with a reason (LG-22)."""
     with contextlib.closing(ProjectStore(args.state_dir, readonly=True)) as projects:
@@ -470,7 +471,8 @@ def add_parsers(commands: Any) -> None:
     checked = ledger_actions.add_parser(
         "check",
         parents=[common],
-        help="record that you checked an entry at the revision you read (LG-17)",
+        help="record that you checked an entry at the revision you read (LG-17); "
+        "a reference's check vouches for its PDF (LG-16)",
     )
     checked.add_argument("entry", help="the entry's handle (such as C-12) or ID")
     checked.add_argument("--revision", type=int, required=True, help="the revision you checked")

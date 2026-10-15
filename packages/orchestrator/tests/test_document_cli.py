@@ -204,6 +204,26 @@ def test_the_user_records_a_ledger_check(state: Path, capsys: pytest.CaptureFixt
     assert (status, "conflict" in err) == (1, True)
 
 
+def test_the_user_checks_a_reference(state: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """``ledger check`` of a reference, which vouches for the PDF the revision names
+    (LG-16 as the coordinator decided)."""
+    from sandbox_science.orchestrator.ledger import Ledger
+
+    from .test_ledger import REFERENCE_FIELDS
+
+    documents = DocumentStore(store_path(state))
+    reference = {"type": "reference", "title": "A paper", "statement": "A paper.",
+                 "fields": REFERENCE_FIELDS}  # fmt: skip
+    Ledger(documents).change(
+        "p1", {"operation_id": "ref", "reason": "r", "changes": [reference]}, AGENT
+    )
+    documents.close()
+    where = ("--state-dir", str(state), "--project", "p1")
+    status, out, err = _run(capsys, "ledger", "check", *where, "REF-1", "--revision", "1")
+    assert status == 0, err
+    assert json.loads(out)["entries"][0]["revision"] == 2
+
+
 def test_the_user_drops_a_dominates_link(state: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """``ledger drop``: the user drops a dominates link an entry holds, with the reason."""
     from sandbox_science.orchestrator.documents import USER

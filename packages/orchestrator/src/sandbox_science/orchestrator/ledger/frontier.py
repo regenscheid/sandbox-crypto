@@ -450,20 +450,33 @@ def _cited(db: sqlite3.Connection, entry: str, revision: int) -> bool:
 
 def _vouched(db: sqlite3.Connection, reference: str) -> set[str]:
     """The SHA-256s of the PDFs the user vouches for as ``reference``'s (LG-16 as
-    amended): those a revision of it that the user recorded names, as the user's record
-    of the reference, PDF included. An agent may name any artifact as a reference's PDF,
-    one it made included, so its naming vouches for nothing. A reference holds no
-    evidence, so the user cannot check one (``ledger check``); and the e-print server
-    vouches for none yet, since no e-print result names a hash."""
-    return {
-        sha256
-        for (sha256,) in db.execute(
-            "SELECT DISTINCT json_extract(fields,'$.pdf.sha256') FROM ledger_revisions "
-            "WHERE entry_id=? AND json_extract(author,'$.kind')='user' "
-            "AND json_extract(fields,'$.pdf.sha256') IS NOT NULL",
-            (reference,),
-        )
+    amended): those named by the revisions of it that the user checked (``ledger check``,
+    or the workspace's), whose PDF field, hash included, the revision pins. Vouching is
+    explicit: no other revision of the user's vouches, any more than a user's other edits
+    confirm a result, and an agent may name any artifact as a reference's PDF, one it
+    made included. The e-print server vouches for none yet: no e-print result names a
+    hash."""
+    head = db.execute("SELECT head FROM ledger_entries WHERE entry_id=?", (reference,)).fetchone()
+    if head is None:
+        return set()
+    checked = {
+        link.checked
+        for link in evidence.stored(db, reference, head[0])
+        if link.role == "independent_check"
+        and link.checked is not None
+        and link.added == link.checked + 1
+        and gate.added_by_user(db, reference, link, head[0])
     }
+    found: set[str] = set()
+    for revision in checked:
+        row = db.execute(
+            "SELECT json_extract(fields,'$.pdf.sha256') FROM ledger_revisions "
+            "WHERE entry_id=? AND revision=?",
+            (reference, revision),
+        ).fetchone()
+        if row is not None and row[0] is not None:
+            found.add(row[0])
+    return found
 
 
 def _by_user(db: sqlite3.Connection, entry: str, revision: int) -> bool:

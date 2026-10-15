@@ -207,29 +207,76 @@ def pdf_quote(reviews: ReviewStore, tmp_path: Path, author: Author) -> tuple[Led
     return ledger, digest
 
 
-def test_a_pdf_an_agent_named_confirms_nothing_until_the_user_vouches(
-    store: Any, tmp_path: Path
+def reference_change(
+    ledger: Ledger, author: Author, operation: str, change: dict[str, Any]
 ) -> None:
-    """Review defect 2: an agent may name any artifact as a reference's PDF, one it made
-    included, so the check of a quote of it confirms nothing until the user records a
-    revision of the reference that names the PDF. A reference holds no evidence, so the
-    user cannot check one."""
+    ledger.change(
+        "p",
+        {"operation_id": operation, "reason": "r", "changes": [{"entry": "REF-1", **change}]},
+        author,
+    )
+
+
+def test_a_pdf_confirms_only_once_the_user_checks_the_reference(store: Any, tmp_path: Path) -> None:
+    """Review defect 2, as the coordinator decided: an agent may name any artifact as a
+    reference's PDF, one it made included, so the check of a quote of it confirms nothing
+    until the user checks a revision of the reference that names the PDF. Vouching is
+    explicit: an agent's check of the reference and the user's other revisions of it
+    vouch for nothing."""
     reviews, _, _ = store
     ledger, _ = pdf_quote(reviews, tmp_path, MAIN)
     assert shown(ledger) == UNVERIFIED
-    with pytest.raises(DocumentError, match="a reference holds no evidence"):
-        ledger.check("p", "REF-1", 1, USER, operation_id="vouched")
+    own = {"role": "independent_check", "type": "proof", "entry": "REF-1", "revision": 1,
+           "checked": 1}  # fmt: skip
+    reference_change(ledger, MAIN, "agent", {"expected": 1, "evidence": [own]})
     assert shown(ledger) == UNVERIFIED
-    ledger.change(
-        "p",
-        {"operation_id": "named", "reason": "I read this PDF.",
-         "changes": [{"entry": "REF-1", "expected": 1, "title": "A paper (PDF read)"}]},
-        USER,
-    )  # fmt: skip
+    reference_change(ledger, USER, "title", {"expected": 2, "title": "A paper (PDF read)"})
+    assert shown(ledger) == UNVERIFIED
+    ledger.check("p", "REF-1", 3, USER, operation_id="vouched", note="Read the PDF.")
     assert shown(ledger) == CONFIRMED
 
 
-def test_a_pdf_the_user_named_confirms_by_the_check(store: Any, tmp_path: Path) -> None:
+def test_the_users_own_reference_vouches_only_once_checked(store: Any, tmp_path: Path) -> None:
     reviews, _, _ = store
     ledger, _ = pdf_quote(reviews, tmp_path, USER)
+    assert shown(ledger) == UNVERIFIED
+    ledger.check("p", "REF-1", 1, USER, operation_id="vouched")
     assert shown(ledger) == CONFIRMED
+
+
+def test_a_check_of_a_revision_without_the_pdf_vouches_for_nothing(
+    store: Any, tmp_path: Path
+) -> None:
+    """The check vouches for the PDF the checked revision names, pinned by it: a check of
+    the reference before an agent named the PDF does not vouch for that PDF."""
+    reviews, _, _ = store
+    artifact, digest = publish(Ledger(reviews.documents), tmp_path, b"%PDF-1.4\n")
+    ledger = setup(reviews)
+    ledger.check("p", "REF-1", 1, USER, operation_id="before")
+    pdf = {"artifact_id": artifact, "revision": 1}
+    reference_change(
+        ledger, MAIN, "pdf", {"expected": 2, "fields": {**REFERENCE_FIELDS, "pdf": pdf}}
+    )
+    found = pages(digest, "paper.pdf", {30: "Our attack recovers the key", 31: "in time 2^120."})
+    call(reviews, 2, "pdf_pages", {"path": "paper.pdf", "pages": "3"},
+         format_pdf("pages", found), {"pdf": found})  # fmt: skip
+    text = "recovers the key in time 2^120"
+    result(ledger, {"source": "pdf", "page": 3, "first_line": 30, "last_line": 31, "text": text})
+    checked, sources = review(reviews)
+    check(reviews, checked, only(sources), "supported")
+    assert shown(ledger) == UNVERIFIED
+    ledger.check("p", "REF-1", 3, USER, operation_id="after")
+    assert shown(ledger) == CONFIRMED
+
+
+def test_a_reference_holds_no_evidence_but_checks_of_itself(store: Any) -> None:
+    reviews, _, _ = store
+    ledger = setup(reviews)
+    result(ledger)
+    for item in (
+        {"role": "supports", "type": "source_claim", "entry": "R-1"},
+        {"role": "independent_check", "type": "proof", "entry": "R-1", "revision": 1,
+         "checked": 1},
+    ):  # fmt: skip
+        with pytest.raises(DocumentError, match="a reference holds no evidence but checks"):
+            reference_change(ledger, USER, "bad", {"expected": 1, "evidence": [item]})

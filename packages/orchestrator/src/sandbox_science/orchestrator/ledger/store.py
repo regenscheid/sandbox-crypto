@@ -639,7 +639,8 @@ class Ledger:
         """The user's record that they checked ``reference`` at ``revision`` (LG-17): an
         ``independent_check`` evidence link of the user's, on the entry as it reads at
         that revision, with the note as its scope. It is a conflict when the entry has
-        moved on. Only the user records one; an agent's check counts for nothing."""
+        moved on. Only the user records one; an agent's check counts for nothing. A
+        reference's check vouches for the PDF the revision names (LG-16)."""
         if author.kind != "user":
             raise _refused("only the user records that they checked an entry")
         self._project(project)
