@@ -3,8 +3,11 @@
   import { reviews, type ResponseBody } from '../lib/reviews';
   import { Preview } from '../lib/preview';
   import Markdown from '../lib/Markdown.svelte';
-  import ErrorMessage from './ErrorMessage.svelte';
   import { macroSet } from '../lib/macros';
+  import { visible } from '../lib/text';
+  import ApprovalText from './ApprovalText.svelte';
+  import ErrorMessage from './ErrorMessage.svelte';
+  import HiddenBanner from './HiddenBanner.svelte';
   let {
     projectId,
     sessionId,
@@ -59,10 +62,12 @@
       {problem} Display uses a diagnostic context.
     </p>{/each}
   <Markdown source={body.body} {macros} />
+  <HiddenBanner text={body.body} links />
   {#if body.held}<p role="status">{body.held}</p>{/if}
   <details>
     <summary>Exact explanation source and attribution</summary>
-    <pre>{JSON.stringify(body, null, 2)}</pre>
+    <ApprovalText text={body.body} label="The explanation, exactly" />
+    <pre>{visible(JSON.stringify(body, null, 2))}</pre>
   </details>
   <button disabled={body.revision <= 1} onclick={earlier}>Read previous explanation body</button>
   {#if viewed}<button
