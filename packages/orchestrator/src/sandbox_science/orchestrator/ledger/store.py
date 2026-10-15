@@ -1613,7 +1613,7 @@ class Ledger:
         ``obstructed`` or ``refuted``, and a decision ``reversed``, only in a change that
         puts in effect a decision that affects it. The main agent's decision to establish
         a result needs the gate (LG-17), and one that makes an issue obstructed needs an
-        accepted assessment (LG-7), which work records will carry. An entry leaves
+        accepted assessment (LG-7, ``_accepted_obstruction``). An entry leaves
         ``refuted``, ``withdrawn`` or ``superseded`` only by such a decision too, which
         for the main agent's on a claim or result passes the gate, whatever status it
         brings the entry back to; and a claim or result that was once established or
@@ -1696,13 +1696,15 @@ class Ledger:
                 )
                 gate.establish(db, p.row.entry_id, p.row.handle, held, now, p.row.head)
                 gated.add(p.row.entry_id)
-            elif p.status == "obstructed":
+            elif p.status == "obstructed" and not _accepted_obstruction(db, p.row.entry_id):
                 raise gate.refused(
                     p.row.entry_id,
                     "assessment",
-                    f"{p.row.handle} becomes obstructed with an assessment that accepts the "
-                    "claimed obstruction; work records are not built yet, so only the user's "
-                    "decision makes an issue obstructed",
+                    f"{p.row.handle} becomes obstructed by the main agent's decision only "
+                    "when an obstruction claimed on it (a work record ending "
+                    "obstruction_claimed) stands accepted: its latest assessment on the issue "
+                    "accepts it, recorded by the user. A delegation started to assess the "
+                    "claim will count too once delegations can be briefed to assess one",
                 )
         return gated
 
@@ -2566,6 +2568,26 @@ def _agent_text(mutation: Mutation) -> Mutation:
     if mutation.work is not None:
         work = [_agent_work(item, f"work {n}'s") for n, item in enumerate(mutation.work, 1)]
     return mutation.model_copy(update={"reason": reason, "changes": changes, "work": work})
+
+
+def _accepted_obstruction(db: sqlite3.Connection, issue: str) -> bool:
+    """Whether an obstruction claimed on ``issue`` stands accepted (LG-7): a work record
+    on it ending ``obstruction_claimed`` whose latest assessment on the issue accepts it,
+    an assessment the user recorded. LG-7 also counts one from a delegation started to
+    assess the claim (its brief names it) and run by an agent other than the claimer's;
+    delegations are briefed only to check entries so far, so an agent's assessment counts
+    for nothing yet."""
+    latest: dict[str, tuple[str, str]] = {}
+    for claim, verdict, kind in db.execute(
+        "SELECT json_extract(a.detail,'$.assesses'),json_extract(a.detail,'$.verdict'),"
+        "json_extract(a.author,'$.kind') FROM ledger_work a JOIN ledger_work c "
+        "ON c.record_id=json_extract(a.detail,'$.assesses') WHERE a.entry_id=? "
+        "AND a.ending='assessment' AND c.entry_id=? AND c.ending='obstruction_claimed' "
+        "ORDER BY a.position DESC LIMIT 1000",
+        (issue, issue),
+    ):
+        latest.setdefault(claim, (verdict, kind))
+    return any(verdict == "accepted" and kind == "user" for verdict, kind in latest.values())
 
 
 def _work_id(db: sqlite3.Connection, project: str, reference: str, named: dict[str, str]) -> str:
