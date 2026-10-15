@@ -133,7 +133,10 @@ without changing its revision or response payload. Only the pinned reviewer deci
 can resolve that pending response.
 
 Interrupt-threshold findings are delivered at main-agent safe points as bounded
-untrusted data. Other severity counts are delivered without their prose or anchors and
+untrusted data. An agent's own rebuttal, which leaves a finding open at a new revision,
+is not delivered back to the session's runs: in lab 40 the agent read its rebuttal as a
+new notice and rebutted again, seven times, until its run ran out of turns. A reviewer's
+decision on it, or the user's response, is delivered. Other severity counts are delivered without their prose or anchors and
 do not cause an extra author response turn. Notices are acknowledged only after a
 successful model call received them and `ProjectStore.save_run` durably saved the run.
 A failed model/save or a finding arriving on the last allowed model turn leaves it
