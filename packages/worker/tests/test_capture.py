@@ -432,40 +432,62 @@ async def test_http_disconnect_does_not_claim_remote_cancellation(
     service: tuple[TestClient[Any, Any], ExecutionManager, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A client that goes away while the sandbox reads cancels the capture, and the worker
+    counts the capture until the sandbox acknowledges its cleanup: it never claims the
+    sandbox's read stopped because the HTTP request did.
+
+    Each step waits on the one before, not on a clock. The client leaves once the read
+    has begun, and the sandbox's acknowledgement waits for the test. An earlier version
+    left on a 50 ms client timeout: a runner slow to connect or to make the capture's
+    blob writer (in a thread pool) let the timeout pass before the read began, so the
+    worker rightly gave the capture up unread and the test waited in vain (CI, slow tier,
+    2026-10-15). The capture's budget is long, so it never ends the capture here."""
     import aiohttp
 
     http, manager, _ = service
     await manager.capabilities("env1")
-    view(manager).set_capture(timeout=0.2)
+    view(manager).set_capture(timeout=600)
     channel = view(manager).channel("env1")
     original = channel.request
-    started, cancelled = asyncio.Event(), asyncio.Event()
+    reading, cancel_asked = asyncio.Event(), asyncio.Event()
+    release, acknowledged = asyncio.Event(), asyncio.Event()
 
-    async def delayed(op: str, **fields: Any) -> dict[str, Any]:
+    async def held(op: str, **fields: Any) -> dict[str, Any]:
         if op == "capture_read":
-            started.set()
-        reply = await original(op, **fields)
-        if op == "capture_read":
-            await cancelled.wait()
-        elif op == "capture_cancel":
-            cancelled.set()
-        return reply
+            reading.set()
+            reply = await original(op, **fields)
+            await acknowledged.wait()  # the sandbox's read lasts until the cleanup
+            return reply
+        if op == "capture_cancel":
+            cancel_asked.set()
+            await release.wait()
+            reply = await original(op, **fields)
+            acknowledged.set()
+            return reply
+        return await original(op, **fields)
 
-    monkeypatch.setattr(channel, "request", delayed)
-    task = asyncio.create_task(
-        http.post(
-            "/v1/artifacts",
+    monkeypatch.setattr(channel, "request", held)
+    session = aiohttp.ClientSession()
+    posting = asyncio.create_task(
+        session.post(
+            http.make_url("/v1/artifacts"),
             json={"context": CONTEXT.model_dump(), "path": "x"},
             headers=AUTH,
-            timeout=aiohttp.ClientTimeout(total=0.05),
         )
     )
-    await asyncio.wait_for(started.wait(), 2)
-    with pytest.raises(TimeoutError):
-        await task
-    assert view(manager).captures() == 1  # Default aiohttp handler continues after disconnect.
-    await asyncio.wait_for(cancelled.wait(), 2)
-    await eventually(lambda: view(manager).captures() == 0, timeout=10)
+    try:
+        await asyncio.wait_for(reading.wait(), 60)
+        posting.cancel()  # the client goes away while the sandbox reads
+        with pytest.raises(asyncio.CancelledError):
+            await posting
+    finally:
+        await session.close()
+    await asyncio.wait_for(cancel_asked.wait(), 60)
+    # Asked to clean up, and not yet acknowledged: the capture is still the worker's.
+    assert view(manager).captures() == 1
+    release.set()
+    await asyncio.wait_for(acknowledged.wait(), 60)
+    await eventually(lambda: view(manager).captures() == 0, timeout=60)
     assert manager.store._db.execute("SELECT count(*) FROM artifacts").fetchone()[0] == 0
     assert list((manager.blobs.root / "tmp").iterdir()) == []
 
