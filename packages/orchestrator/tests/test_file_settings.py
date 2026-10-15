@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -118,3 +119,30 @@ def test_the_command_line_shows_and_changes_them(
     again = [*base, "--expected", "1", "--operation-id", "o2", "--no-ignore"]
     assert cli.main(again) == 0
     assert '"ignore": []' in capsys.readouterr().out
+
+
+def test_a_name_built_to_backtrack_is_matched_quickly() -> None:
+    rules = IgnoreRules(["*-*-*.log", "**/a*a*a*a*a*b/"])
+    name = "-" * 250 + "x"
+    deep = "/".join(["a" * 250] * 16) + "/c"
+    started = time.monotonic()
+    for _ in range(100):
+        assert not rules.ignores(name)
+        assert not rules.ignores(deep)
+    assert time.monotonic() - started < 2
+
+
+@pytest.mark.parametrize("path", ["x" * 256, "a/" + "é" * 128, "a//b", "../a", "", "shared/"])
+def test_a_path_with_an_unusable_name_is_refused(path: str) -> None:
+    with pytest.raises(ValueError, match="not a path"):
+        DEFAULTS.ignores(path)
+
+
+def test_settings_too_large_or_with_a_backwards_class_are_invalid(files: ProjectFiles) -> None:
+    base = {"expected": 0, "recording": "all", "operation_id": "o1"}
+    with pytest.raises(DocumentError) as backwards:
+        files.change("p1", {**base, "ignore": ["[z-a].txt"]}, USER)
+    with pytest.raises(DocumentError) as large:
+        files.change("p1", {**base, "ignore": ["é" * 256] * 200}, USER)
+    assert backwards.value.kind == large.value.kind == "invalid_request"
+    assert files.get("p1").revision == 0

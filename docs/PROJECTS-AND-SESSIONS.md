@@ -138,8 +138,11 @@ artifacts](specs/research-artifacts.md), RA-29, RA-39; `orchestrator/file_settin
   `.ipynb_checkpoints/`, `.git/`, `.venv/`, `venv/`, `node_modules/`, `.mypy_cache/`,
   `.pytest_cache/`, `.ruff_cache/`, `build/`, `dist/`, `*.egg-info/`, `tmp/`, `*.tmp`,
   `*.swp`, `*~` and `.DS_Store`. A pattern is matched inside its area: the session
-  workspace, or `shared/` without that prefix. Negation (`!`) is not supported. At most 200
-  patterns of 256 characters.
+  workspace, or `shared/` without that prefix, segment by segment and without regular
+  expressions, so no name makes matching slow; a path with a name over 255 bytes is never
+  matched (the recorder leaves it out). Negation (`!`) is not supported. At most 200
+  patterns of 256 characters and 64 KiB in all; a pattern that cannot mean anything, such
+  as a backwards class `[z-a]`, is refused.
 
 Only the user changes them, naming the revision read and an operation ID, in the GUI or
 with the command line:
