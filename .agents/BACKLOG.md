@@ -242,7 +242,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
   - [x] Recorded packages and declared licenses for unchanged/base/unmanaged revisions: [PR #113](https://github.com/regenscheid/sandbox-crypto/pull/113) delivered at `a080229` after all four fresh checks passed. [Lab32 report/archive](docs/agent-reports/babbage-openshell-lab-32-2026-10-13.md) preserves 62→68 actual entries, full unchanged/base metadata, native paging, qualified stopped-VM reads, the original helper failure, post-teardown correction and independent complete cleanup. Operator-domain answers and broader CP-26 requirements remain open.
 - [ ] Hidden text in what the user approves and agents then read (threat model, A3): the shared pieces (`check_agent_text`, `ApprovalText`, the widened `visible()`, `hidden.fixtures.json`) and the project memory are built; the other surfaces follow, checked on write only, so stored text still reads, and the user's own text shown with chips, never refused
   - [x] Server: documents agents create and agents' or captured code's patches, agents' comments, review text (statements, remedies, confirmations, response explanations and bodies), and every text an agent writes into a session plan
-  - [ ] Server: ledger statements and fields (after lane S's flags, #296)
+  - [x] Server: ledger statements and fields (after lane S's flags, #296): an agent's reasons, titles, statements, fields, link notes and evidence scopes
   - [x] GUI: applying a suggested patch, with a diff against the head
   - [x] GUI: Move to project and Restore this revision
   - [x] GUI: a session plan's save, when it holds agent text
