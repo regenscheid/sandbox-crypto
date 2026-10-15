@@ -6,7 +6,7 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 Decision of the coordinator on the review of CR-4 (#346, #348 to #350), which the owner can reverse:
 
-- **A PDF quote confirms only a vouched PDF** ([ledger spec](../docs/specs/ledger.md), LG-15, LG-16). A reference's PDF can be any artifact of the project, one an agent made included, and the platform cannot yet tell a downloaded paper from it. A PDF quote confirms a result by the citation check alone only when the PDF's hash is vouched for, by the e-print server naming it in a recorded result (asked of the owner) or by a revision of the reference the user recorded or checked; otherwise the result stays unverified until the user confirms it. An ePrint passage quote confirms by the check alone.
+- **A PDF quote confirms only a vouched PDF** ([ledger spec](../docs/specs/ledger.md), LG-15, LG-16). A reference's PDF can be any artifact of the project, one an agent made included, and the platform cannot yet tell a downloaded paper from it. A PDF quote confirms a result by the citation check alone only when the PDF's hash is vouched for, by the e-print server naming it in a recorded result (asked of the owner) or by a revision of the reference the user recorded that names it (a reference holds no evidence, so the user cannot check one); otherwise the result stays unverified until the user confirms it. An ePrint passage quote confirms by the check alone.
 
 Decision of the coordinator on CR-4, which the owner can reverse:
 

@@ -399,9 +399,8 @@ def _member(
 
 def _confirmed(db: sqlite3.Connection, entry: str, revision: int) -> str | None:
     """Who confirmed published result ``entry`` as ``revision`` reads (LG-16 as amended):
-    ``citation check`` when every quote the revision holds has a ``supported`` check of
-    the consistency reviewer, the latest of each, of the revision's statement, fields,
-    assumptions and evidence (CR-4); ``user`` when the user's latest revision holds that
+    ``citation check`` when the consistency reviewer's checks confirm each of its quotes
+    (CR-4, ``_cited``); ``user`` when the user's latest revision holds that
     material and the user wrote it, by recording the entry or by a revision that brought
     it in, or checked it (``ledger check``, or the workspace's); None when neither did. A
     user's other edits, such as a title or a dropped link, confirm nothing, and material
@@ -412,22 +411,59 @@ def _confirmed(db: sqlite3.Connection, entry: str, revision: int) -> str | None:
 
 
 def _cited(db: sqlite3.Connection, entry: str, revision: int) -> bool:
-    """Whether every quote revision ``revision`` of ``entry`` holds, at least one, has a
-    ``supported`` citation check, its latest, of the revision's material (CR-4)."""
+    """Whether the consistency reviewer's checks confirm revision ``revision`` of
+    ``entry`` (CR-4; LG-16 as amended): it holds at least one quote, and each
+    - cites a reference that is not refuted, withdrawn or superseded, in a link that counts;
+    - of a PDF, is of a PDF the user vouches for (``_vouched``);
+    - has a ``supported`` check of the revision's statement, fields, assumptions and
+      evidence, its latest of them, and no ``unsupported`` check of any revision since,
+      so that a revision that returns to checked material does not return to its check."""
     quotes = [link for link in evidence.stored(db, entry, revision) if link.target == "quote"]
     material = gate.examined(db, entry, {revision}).get(revision)
     if not quotes or material is None:
         return False
     digest = gate.fingerprint(material)
+    vouched: dict[str, set[str]] = {}
     for link in quotes:
+        if not gate.counts(db, link):
+            return False
+        if (link.locator or {}).get("source") == "pdf":
+            if link.target_id not in vouched:
+                vouched[link.target_id] = _vouched(db, link.target_id)
+            if link.sha256 not in vouched[link.target_id]:
+                return False
         latest = db.execute(
-            "SELECT verdict FROM citation_checks WHERE entry_id=? AND evidence_id=? "
-            "AND material=? ORDER BY created DESC, rowid DESC LIMIT 1",
+            "SELECT verdict,created,rowid FROM citation_checks WHERE entry_id=? AND "
+            "evidence_id=? AND material=? ORDER BY created DESC, rowid DESC LIMIT 1",
             (entry, link.evidence_id, digest),
         ).fetchone()
         if latest is None or latest[0] != "supported":
             return False
+        if db.execute(
+            "SELECT 1 FROM citation_checks WHERE entry_id=? AND evidence_id=? AND "
+            "verdict='unsupported' AND (created>? OR (created=? AND rowid>?)) LIMIT 1",
+            (entry, link.evidence_id, latest[1], latest[1], latest[2]),
+        ).fetchone():
+            return False
     return True
+
+
+def _vouched(db: sqlite3.Connection, reference: str) -> set[str]:
+    """The SHA-256s of the PDFs the user vouches for as ``reference``'s (LG-16 as
+    amended): those a revision of it that the user recorded names, as the user's record
+    of the reference, PDF included. An agent may name any artifact as a reference's PDF,
+    one it made included, so its naming vouches for nothing. A reference holds no
+    evidence, so the user cannot check one (``ledger check``); and the e-print server
+    vouches for none yet, since no e-print result names a hash."""
+    return {
+        sha256
+        for (sha256,) in db.execute(
+            "SELECT DISTINCT json_extract(fields,'$.pdf.sha256') FROM ledger_revisions "
+            "WHERE entry_id=? AND json_extract(author,'$.kind')='user' "
+            "AND json_extract(fields,'$.pdf.sha256') IS NOT NULL",
+            (reference,),
+        )
+    }
 
 
 def _by_user(db: sqlite3.Connection, entry: str, revision: int) -> bool:
