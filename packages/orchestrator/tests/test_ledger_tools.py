@@ -473,7 +473,11 @@ async def test_lines_end_at_newlines_only(ledger: Ledger) -> None:
     line1 = json.dumps(mutation("c1", TASK)).replace(', "reason"', ',\r"reason"')
     files.files["cr.jsonl"] = (line1 + "\n" + json.dumps(mutation("c2", TASK)) + "\r\n").encode()
     ledgers = tool(ledger, files)
-    assert "error" not in await imports(ledgers, files, "u.jsonl")
+    # Read as one line, whole, and refused for the characters an agent may not write
+    # (threat model, A3), not split at them.
+    error = (await imports(ledgers, files, "u.jsonl"))["error"]
+    assert error.get("line") == 1, error
+    assert "change 1's statement holds U+2028" in error["message"]
     result = await imports(ledgers, files, "cr.jsonl")
     assert [i["line"] for i in result["imported"]] == [1, 2]
 

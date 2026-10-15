@@ -18,6 +18,8 @@ from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import USER, DocumentError, DocumentStore, store_path
 from sandbox_science.orchestrator.documents.annotations import Annotations
 from sandbox_science.orchestrator.documents.models import Author
+from sandbox_science.orchestrator.ledger import Ledger
+from sandbox_science.orchestrator.ledger.models import Mutation
 from sandbox_science.orchestrator.projects import ProjectStore
 
 FIXTURES = Path(__file__).resolve().parents[3] / "web" / "workspace" / "src" / "lib"
@@ -218,3 +220,96 @@ def test_an_agents_line_ends_are_kept_as_line_feeds(documents: DocumentStore) ->
     assert documents.revision("p", document, done.revision).text == (
         "First.\n\nLine one\nline two.\n"
     )
+
+
+CLAIM = {
+    "type": "claim",
+    "origin": "project",
+    "title": "Fermat for 17",
+    "statement": "$a^{16} = 1$ for every nonzero $a$ in GF(17).",
+    "fields": {"kind": "observation"},
+}
+PAPER = {
+    "type": "reference",
+    "title": "A paper",
+    "statement": "A. Author, *A paper*, ePrint 2024/123.",
+    "fields": {"identifiers": {"eprint": "2024/123"}, "published": "2024-02-01"},
+}
+
+
+def placed(place: str, text: str) -> tuple[str, dict[str, Any]]:
+    """A change from the agent with ``text`` in one place of its ledger text, valid
+    otherwise, and the reason it gives."""
+    reason = text if place == "reason" else "Recorded."
+    entry: dict[str, Any] = {
+        "title": {**CLAIM, "title": text},
+        "statement": {**CLAIM, "statement": text},
+        "fields": {**PAPER, "fields": {**PAPER["fields"], "authors": ["A. Author", text]}},
+        "note": {**CLAIM, "links": [{"kind": "compares_to", "entry": "C-1", "note": text}]},
+        "scope": {
+            **CLAIM,
+            "evidence": [{"role": "supports", "type": "proof", "entry": "C-1", "scope": text}],
+        },
+        "reason": CLAIM,
+    }[place]
+    return reason, entry
+
+
+PLACES = ["title", "statement", "fields", "note", "scope", "reason"]
+NAMES = ["title", "statement", "fields.authors[1]", "link 1's note", "evidence 1's scope", "reason"]
+
+
+@pytest.fixture
+def ledger(documents: DocumentStore) -> Ledger:
+    made = Ledger(documents)
+    made.change("p", {"operation_id": "op-0", "reason": "First.", "changes": [CLAIM]}, AGENT)
+    return made
+
+
+@pytest.mark.parametrize("text", HIDDEN)
+@pytest.mark.parametrize(("place", "name"), list(zip(PLACES, NAMES, strict=True)))
+def test_an_agent_writes_no_hidden_ledger_text(
+    ledger: Ledger, text: str, place: str, name: str
+) -> None:
+    reason, entry = placed(place, text)
+    mutation = {"operation_id": "op-1", "reason": reason, "changes": [entry]}
+    with pytest.raises(DocumentError) as refused:
+        ledger.change("p", mutation, AGENT)
+    assert refused.value.kind == "invalid_request"
+    assert f"{name} holds U+" in refused.value.message
+    # The same change with plain words is made: only the text was refused.
+    clean_reason, clean = placed(place, "Plain words.")
+    ledger.change("p", {"operation_id": "op-2", "reason": clean_reason, "changes": [clean]}, AGENT)
+
+
+def test_a_field_key_and_a_results_file_line_are_named(ledger: Ledger) -> None:
+    space = chr(0x200B)
+    entry = {**PAPER, "fields": {**PAPER["fields"], "identifiers": {f"eprint{space}": "1"}}}
+    mutation = Mutation.model_validate(
+        {"operation_id": "op-1", "reason": "Recorded.", "changes": [entry]}
+    )
+    with pytest.raises(DocumentError) as refused:
+        ledger.apply("p", [(mutation, {"line": 3})], AGENT)
+    message = refused.value.message
+    assert message.startswith("line 3: a key of change 1's fields.identifiers holds U+200B")
+    assert space not in message
+
+
+def test_the_users_ledger_text_is_kept_as_written(ledger: Ledger) -> None:
+    title = "Fermat " + chr(0x200B) + "for 17"
+    mutation = {"operation_id": "op-1", "reason": "Mine.", "changes": [{**CLAIM, "title": title}]}
+    ledger.change("p", mutation, USER)
+    assert ledger.entry("p", "C-2").title == title
+
+
+def test_an_agents_ledger_line_ends_become_line_feeds(ledger: Ledger) -> None:
+    entry = {
+        **CLAIM,
+        "statement": "First line\r\nsecond line.",
+        "links": [{"kind": "compares_to", "entry": "C-1", "note": "Smaller\rthan C-1."}],
+    }
+    mutation = {"operation_id": "op-1", "reason": "Why\r\n", "changes": [entry]}
+    ledger.change("p", mutation, AGENT)
+    made = ledger.entry("p", "C-2")
+    assert made.statement == "First line\nsecond line."
+    assert [link.note for link in made.links] == ["Smaller\nthan C-1."]

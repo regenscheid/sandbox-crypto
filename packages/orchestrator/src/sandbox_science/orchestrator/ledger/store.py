@@ -29,6 +29,7 @@ from sandbox_science.contracts import new_id
 from sandbox_science.orchestrator.control import EventLog, Receipts
 from sandbox_science.orchestrator.control.texts import TextRevisions
 from sandbox_science.orchestrator.documents import DocumentStore
+from sandbox_science.orchestrator.documents.agent_text import agent_text, agent_values
 from sandbox_science.orchestrator.documents.blocks import parse
 from sandbox_science.orchestrator.documents.comment_bodies import prepare
 from sandbox_science.orchestrator.documents.errors import (
@@ -503,6 +504,14 @@ class Ledger:
         operation ID and receipt. ``provenance`` names where a mutation came from, such
         as the line of a results file (LG-41)."""
         role = self._authority(project, author)
+        if role != "user":
+            kept: list[tuple[Mutation, Json | None]] = []
+            for mutation, provenance in mutations:
+                try:
+                    kept.append((_agent_text(mutation), provenance))
+                except DocumentError as error:
+                    raise _labelled(error, provenance) from None
+            mutations = kept
         pinned: dict[evidence.Block, str] = {}
         for mutation, provenance in mutations:
             blocks: list[evidence.Block] = []
@@ -1679,6 +1688,44 @@ def _dropped(p: _Planned, kind: str) -> list[EntryLink]:
         for link in p.previous
         if link.kind == kind and (link.target, link.target_id) not in after
     ]
+
+
+def _agent_text(mutation: Mutation) -> Mutation:
+    """An agent's ledger text as it is kept: its line ends line feeds, and no character the
+    user may not see, as it is or as a character reference (``check_agent_text``, threat
+    model A3): the user reads and decides on entries, and agents read them again. Checked
+    when written, so stored text still reads; the user's own text is kept as written."""
+    changes: list[EntryChange] = []
+    for number, change in enumerate(mutation.changes, 1):
+        where = f"change {number}'s"
+        update: dict[str, object] = {}
+        if change.title is not None:
+            update["title"] = agent_text(change.title, f"{where} title")
+        if change.statement is not None:
+            update["statement"] = agent_text(change.statement, f"{where} statement")
+        if change.fields is not None:
+            update["fields"] = agent_values(change.fields, f"{where} fields")
+        if change.links is not None:
+            update["links"] = [
+                link
+                if link.note is None
+                else link.model_copy(
+                    update={"note": agent_text(link.note, f"{where} link {index}'s note")}
+                )
+                for index, link in enumerate(change.links, 1)
+            ]
+        if change.evidence is not None:
+            update["evidence"] = [
+                item
+                if item.scope is None
+                else item.model_copy(
+                    update={"scope": agent_text(item.scope, f"{where} evidence {index}'s scope")}
+                )
+                for index, item in enumerate(change.evidence, 1)
+            ]
+        changes.append(change.model_copy(update=update))
+    reason = agent_text(mutation.reason, "the reason")
+    return mutation.model_copy(update={"reason": reason, "changes": changes})
 
 
 def _labelled(error: DocumentError, provenance: Json | None) -> DocumentError:
