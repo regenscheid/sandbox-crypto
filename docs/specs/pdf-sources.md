@@ -25,7 +25,7 @@ These belong to other specs or later work: importing PDFs as artifact revisions 
    - the page count, and each page's index, label, size in points, rotation and whether it has a text layer;
    - the outline (bookmarks), each with its title, level and target page;
    - the parser's name and version, and the source's path, size and SHA-256.
-2. **`pdf_pages`** returns the text of selected pages (for example `"3-5,9"`), at most 20 per call, as numbered lines. Each line carries its bounding box. A page over the output limit is cut, and the result says so.
+2. **`pdf_pages`** returns the text of selected pages (for example `"3-5,9"`), at most 20 per call, as numbered lines. Each line carries its bounding box, which the agent sees when it asks (`boxes`), in the form `pdf_render` takes a region (amended 2026-10-15: the render's description had sent the agent to boxes `pdf_pages` did not show). A page over the output limit is cut, and the result says so.
 3. **`pdf_search`** finds a case-insensitive string. Each hit gives its page index and label, line number, the line's text and its box. Hits stop at a limit, and the result says so.
 
    **One line numbering** (amended 2026-10-15 by the coordinator, from the `pdf-reading` skill's writing). Both tools number a page's lines one way: every line with text, from 1, in the parser's order. Running headers, footers and page numbers (tagged `/Artifact`) are counted and marked as such. `pdf_pages` leaves them out unless asked, and says which numbers it left out, but never renumbers the rest. A line cited from either tool is therefore the same line, and the citation check (CR-4) finds a quote by either tool's numbers. A line that mixes such text with the body's is body text.
