@@ -60,6 +60,7 @@ from pydantic import (
 )
 
 Identifier = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")]
+Variable = Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
 
 
 class LauncherError(Exception):
@@ -146,6 +147,17 @@ class WorkerConfig(_Strict):
     policy: ConfigPath
     """The project policy granted to every project."""
     log_level: Literal["debug", "info", "warning", "error"] = "info"
+    pass_env: tuple[Variable, ...] = ()
+    """Environment variables this part gets besides the usual few (``PATH``, ``HOME``, the
+    locale, proxies and CA settings). Never a secret: the parts run in the control zone
+    (docs/THREAT-MODEL.md), which holds no engine or cluster credentials."""
+
+
+class RunServiceConfig(_Strict):
+    pass_env: tuple[Variable, ...] = ()
+    """Environment variables this part gets besides the usual few (``PATH``, ``HOME``, the
+    locale, proxies and CA settings). Never a secret: the parts run in the control zone
+    (docs/THREAT-MODEL.md), which holds no engine or cluster credentials."""
 
 
 class WorkspaceConfig(_Strict):
@@ -154,6 +166,10 @@ class WorkspaceConfig(_Strict):
     """The PDF viewer's origin; by default the next port on the same address."""
     static: ConfigPath
     """The web app's build: ``web/workspace/dist`` after ``npm run build``."""
+    pass_env: tuple[Variable, ...] = ()
+    """Environment variables this part gets besides the usual few (``PATH``, ``HOME``, the
+    locale, proxies and CA settings). Never a secret: the parts run in the control zone
+    (docs/THREAT-MODEL.md), which holds no engine or cluster credentials."""
 
     def preview(self) -> str:
         if self.preview_listen is not None:
@@ -217,9 +233,12 @@ class LauncherConfig(_Strict):
     """Where the ``sandbox-science-*`` commands are; by default beside this one's Python."""
     start_timeout: float = Field(default=300.0, gt=0, le=3600)
     """Seconds each part has to become ready."""
+    stop_timeout: float = Field(default=30.0, gt=0, le=600)
+    """Seconds each part has to stop before it is killed."""
     projects: tuple[ProjectConfig, ...] = Field(min_length=1)
     model: ModelConfig
     worker: WorkerConfig
+    run_service: RunServiceConfig = Field(default_factory=RunServiceConfig)
     workspace: WorkspaceConfig
     openshell: OpenShellConfig
 

@@ -105,3 +105,14 @@ def test_an_absent_or_broken_file_is_named(tmp_path: Path) -> None:
     broken.write_text("state_dir = \n")
     with pytest.raises(LauncherError, match="is not TOML"):
         load_config(broken)
+
+
+def test_the_example_config_is_a_launcher_config(home: Path) -> None:
+    example = Path(__file__).parents[3] / "examples" / "sandbox-science.toml"
+    config = load_config(example)
+    assert config.state_dir == home / ".local/state/sandbox-science"
+    assert config.worker.policy == example.parent / "policy.yaml"
+    assert config.worker.policy.is_file()
+    assert config.workspace.static == example.parent / "../web/workspace/dist"
+    assert config.workspace.preview() == "127.0.0.2:8201"
+    assert config.openshell.model_dump()["environments"]["suspend_after"] == 3600.0

@@ -32,6 +32,7 @@ Evaluate NVIDIA OpenShell as the execution backend behind an adapter. Its docume
 
 | Document | Purpose |
 | --- | --- |
+| [Quickstart](docs/QUICKSTART.md) | Running a local Sandbox Science with one command: `sandbox-science up` |
 | [Documentation index](docs/README.md) | Every page in `docs/`, as reference, design, specification or historical |
 | [Detailed implementation plan](docs/IMPLEMENTATION-PLAN.md) | Shared contracts, component ownership, ordered work packages and evidence gates |
 | [Planning consistency review](.agents/planning-consistency-review-2026-10-10.md) | The 2026-10-10 review of planning drift and reuse of infrastructure and standard components (historical) |

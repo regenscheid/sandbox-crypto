@@ -13,6 +13,7 @@ Progress and history are not kept here: current state is in [STATUS](../.agents/
 
 | Page | What it covers |
 | --- | --- |
+| [Quickstart](QUICKSTART.md) | A local Sandbox Science with one command, `sandbox-science up`: what it needs, its config, logging in, a first chat, and stopping it |
 | [Decisions](DECISIONS.md) | The decision register, the source of truth for each decision's status |
 | [Threat model](THREAT-MODEL.md) | Assets, threat sources, trust zones and isolation tiers (D43) |
 | [Licensing](LICENSING.md) | License tiers for dependencies, and the license checks |

@@ -1,0 +1,374 @@
+# SPDX-License-Identifier: MIT
+"""Running the parts: each started when the one before is ready, and stopped in reverse.
+
+Each part runs in a session of its own, so a Ctrl-C at the terminal reaches only the
+launcher, which then stops the parts one at a time: SIGTERM, then SIGKILL for whatever
+of the part's session is left after its stop timeout. A part's output goes to its log
+in the state directory, except lines that hold a secret (the workspace's login
+address), which go to a private file of their own instead.
+
+A part that listens must find its address free before it starts, and is ready when it
+prints its ready line and its address takes connections while it still runs. One that
+stops before it is ready, or later by itself, stops the launcher.
+
+Each part dies with the launcher (Linux's ``PR_SET_PDEATHSIG``, set by a small
+trampoline before the part's command runs), so a launcher killed outright leaves no part
+running unsupervised. A part gets only the environment variables ``ENVIRONMENT`` names
+and those the config passes on, never the whole shell's: an API key exported there does
+not reach the run service.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import os
+import re
+import signal
+import socket
+import sys
+import time
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TextIO
+
+from .config import LauncherError
+from .state import Layout, write_private
+
+CHUNK = 65536
+TAIL_LINES = 12
+POLL = 0.2
+ENVIRONMENT = frozenset(
+    {
+        "PATH", "HOME", "USER", "LOGNAME", "LANG", "LANGUAGE", "TZ", "TMPDIR",
+        "XDG_RUNTIME_DIR", "SSL_CERT_FILE", "SSL_CERT_DIR",
+        "http_proxy", "https_proxy", "no_proxy", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+    }
+)  # fmt: skip
+"""The variables of the launcher's environment every part gets, with the ``LC_`` ones."""
+_TRAMPOLINE = (
+    "import ctypes, os, sys\n"
+    "ctypes.CDLL(None, use_errno=True).prctl(1, 15)  # PR_SET_PDEATHSIG, SIGTERM\n"
+    "if os.getppid() != int(sys.argv[1]):\n"
+    "    sys.exit(70)  # the launcher died before the signal was set\n"
+    "os.execv(sys.argv[2], sys.argv[2:])\n"
+)
+
+
+def environment() -> dict[str, str]:
+    """The launcher's environment as every part gets it: ``ENVIRONMENT`` and ``LC_*``."""
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if key in ENVIRONMENT or key.startswith("LC_")
+    }
+
+
+def passed(names: Iterable[str]) -> dict[str, str]:
+    """The variables of the launcher's environment a part's ``pass_env`` names."""
+    return {name: os.environ[name] for name in names if name in os.environ}
+
+
+def start_time(pid: int) -> int | None:
+    """When the process started, in clock ticks since boot; None if it is gone."""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as stat:
+            return int(stat.read().rsplit(b")", 1)[1].split()[19])
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def free(address: str) -> bool:
+    """Whether nothing listens on ``address``, so a part may."""
+    host, _, port = address.rpartition(":")
+    with socket.socket() as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind((host, int(port)))
+        except OSError:
+            return False
+    return True
+
+
+class StopRequested(Exception):  # noqa: N818 - a request, not an error
+    """The launcher was asked to stop while it was starting the parts."""
+
+
+@dataclass(frozen=True)
+class Part:
+    name: str
+    argv: list[str]
+    cwd: Path
+    ready_line: str | None = None
+    """Text in a line of the part's output that says it is ready."""
+    address: str | None = None
+    """``host:port`` the part listens on; ready once it takes a connection."""
+    private: tuple[re.Pattern[str], Path] | None = None
+    """Lines that match go to this file, mode 600, instead of the log."""
+    env: Mapping[str, str] = field(default_factory=dict[str, str])
+
+    @property
+    def title(self) -> str:
+        return self.name.replace("-", " ")
+
+
+@dataclass
+class Running:
+    part: Part
+    process: asyncio.subprocess.Process
+    log: Path
+    ready: asyncio.Event = field(default_factory=asyncio.Event)
+    pump: asyncio.Task[None] | None = None
+
+
+def _append(path: Path) -> int:
+    return os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_CLOEXEC, 0o600)
+
+
+def tail(path: Path, lines: int = TAIL_LINES) -> str:
+    """The last lines of a log, to show with an error."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return "\n".join(f"    {line}" for line in text.splitlines()[-lines:])
+
+
+async def reachable(address: str, timeout: float = 1.0) -> bool:
+    host, _, port = address.rpartition(":")
+    try:
+        _, writer = await asyncio.wait_for(asyncio.open_connection(host, int(port)), timeout)
+    except (OSError, TimeoutError):
+        return False
+    writer.close()
+    with contextlib.suppress(OSError):
+        await writer.wait_closed()
+    return True
+
+
+class Supervisor:
+    """The parts started so far, in their order."""
+
+    def __init__(
+        self,
+        layout: Layout,
+        stop: asyncio.Event,
+        *,
+        stop_timeout: float,
+        changed: Callable[[], None] = lambda: None,
+        env: Mapping[str, str] | None = None,
+    ) -> None:
+        self.layout = layout
+        self.env = dict(environment() if env is None else env)
+        """What every part's environment starts from (``environment``)."""
+        self.stop_requested = stop
+        self.stop_timeout = stop_timeout
+        self.changed = changed
+        """Called when a part starts or stops, to keep the instance's record."""
+        self.running: list[Running] = []
+
+    async def start(self, part: Part, timeout: float) -> Running:
+        """Start ``part`` and wait until it is ready."""
+        if part.address is not None and not free(part.address):
+            raise LauncherError(
+                f"something else listens on {part.address}, where the {part.title} would: "
+                "stop it, or give the part another address"
+            )
+        running = await self._spawn(part)
+        self.running.append(running)
+        self.changed()
+        ready = asyncio.ensure_future(self._ready(running))
+        exited = asyncio.ensure_future(running.process.wait())
+        stopped = asyncio.ensure_future(self.stop_requested.wait())
+        try:
+            done, _ = await asyncio.wait(
+                {ready, exited, stopped}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+            )
+        finally:
+            for waiting in (ready, exited, stopped):
+                waiting.cancel()
+        alive = exited not in done and running.process.returncode is None
+        if alive and ready in done and not ready.cancelled() and ready.exception() is None:
+            return running
+        if stopped in done:
+            raise StopRequested
+        if exited in done or running.process.returncode is not None:
+            if running.pump is not None:
+                await running.pump
+            raise LauncherError(
+                f"the {part.title} stopped as it started, with status "
+                f"{running.process.returncode}; the end of its log, {running.log}:\n"
+                + tail(running.log)
+            )
+        raise LauncherError(
+            f"the {part.title} was not ready within {timeout:g} s; its log: {running.log}"
+        )
+
+    async def run(
+        self,
+        name: str,
+        argv: list[str],
+        cwd: Path,
+        timeout: float,
+        env: Mapping[str, str] | None = None,
+    ) -> str:
+        """Run a command to its end, its output in the launcher's log, and return it;
+        ``env`` adds to the parts' environment, as a part's own does."""
+        process = await asyncio.create_subprocess_exec(
+            *argv, cwd=cwd, env={**self.env, **(env or {})}, stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+            start_new_session=True,
+        )  # fmt: skip
+        talking = asyncio.ensure_future(process.communicate())
+        stopped = asyncio.ensure_future(self.stop_requested.wait())
+        try:
+            done, _ = await asyncio.wait(
+                {talking, stopped}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+            )
+        finally:
+            stopped.cancel()
+        if talking not in done:
+            _end_session(process.pid, signal.SIGKILL)
+        output, _ = await talking
+        text = output.decode("utf-8", errors="replace")
+        with os.fdopen(_append(self.layout.log("launcher")), "w", encoding="utf-8") as log:
+            log.write(f"$ {name}\n{text}")
+        if stopped in done:
+            raise StopRequested
+        if talking not in done:
+            raise LauncherError(f"{name} took longer than {timeout:g} s")
+        if process.returncode != 0:
+            shown = "\n".join(f"    {line}" for line in text.splitlines()[-TAIL_LINES:])
+            raise LauncherError(f"{name} failed, with status {process.returncode}:\n{shown}")
+        return text
+
+    async def watch(self) -> str | None:
+        """Wait until the launcher is asked to stop (None) or a part stops by itself."""
+        exits = {asyncio.ensure_future(running.process.wait()): running for running in self.running}
+        stopped = asyncio.ensure_future(self.stop_requested.wait())
+        try:
+            done, _ = await asyncio.wait({stopped, *exits}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for waiting in (stopped, *exits):
+                waiting.cancel()
+        if stopped in done:
+            return None
+        running = next(exits[waiting] for waiting in exits if waiting in done)
+        if running.pump is not None:
+            await running.pump
+        return (
+            f"the {running.part.title} stopped by itself, with status "
+            f"{running.process.returncode}; the end of its log, {running.log}:\n"
+            + tail(running.log)
+        )
+
+    async def stop(self, *, now: Callable[[], bool] = lambda: False) -> None:
+        """Stop every part, the last started first. ``now`` cuts each wait short."""
+        while self.running:
+            running = self.running.pop()
+            await self._stop(running, now)
+            self.changed()
+
+    async def _stop(self, running: Running, now: Callable[[], bool]) -> None:
+        process = running.process
+        if process.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                process.send_signal(signal.SIGTERM)
+            deadline = time.monotonic() + self.stop_timeout
+            while process.returncode is None and time.monotonic() < deadline and not now():
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(asyncio.shield(process.wait()), POLL)
+            if process.returncode is None:
+                print(f"the {running.part.title} did not stop in time; killing it", flush=True)
+        # Whatever the part started and left in its session goes with it.
+        await asyncio.to_thread(end_session, process.pid)
+        await process.wait()
+        if running.pump is not None:
+            await running.pump
+
+    async def _spawn(self, part: Part) -> Running:
+        log = self.layout.log(part.name)
+        os.close(_append(log))
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, "-I", "-c", _TRAMPOLINE, str(os.getpid()), *part.argv,
+            cwd=part.cwd, env={**self.env, **part.env},
+            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT, start_new_session=True,
+        )  # fmt: skip
+        running = Running(part, process, log)
+        running.pump = asyncio.ensure_future(self._pump(running))
+        return running
+
+    async def _pump(self, running: Running) -> None:
+        stream = running.process.stdout
+        if stream is None:  # never: the part's output is a pipe
+            return
+        with os.fdopen(_append(running.log), "w", encoding="utf-8") as log:
+            pending = b""
+            while chunk := await stream.read(CHUNK):
+                *lines, pending = (pending + chunk).split(b"\n")
+                for line in lines:
+                    self._line(running, line.decode("utf-8", errors="replace"), log)
+                log.flush()
+            if pending:
+                self._line(running, pending.decode("utf-8", errors="replace"), log)
+
+    def _line(self, running: Running, line: str, log: TextIO) -> None:
+        part = running.part
+        shown = line
+        if part.private is not None and part.private[0].search(line):
+            write_private(part.private[1], line.strip() + "\n")
+            shown = f"[a private line, in {part.private[1]}]"
+        print(shown, file=log)
+        # Ready only once the line is written, private ones included.
+        if part.ready_line is not None and part.ready_line in line:
+            running.ready.set()
+
+    async def _ready(self, running: Running) -> None:
+        part = running.part
+        if part.ready_line is not None:
+            await running.ready.wait()
+        if part.address is not None:
+            while not await reachable(part.address) or running.process.returncode is not None:
+                await asyncio.sleep(POLL)
+
+
+def end_session(session: int) -> None:
+    """End every process in the session a part leads: SIGTERM, then SIGKILL two seconds
+    later for what is left. A process that started a session of its own (``setsid``)
+    has left the part's, and is not found."""
+    if not _end_session(session, signal.SIGTERM):
+        return
+    for _ in range(int(2 / POLL)):
+        time.sleep(POLL)
+        if not _end_session(session, 0):
+            return
+    _end_session(session, signal.SIGKILL)
+
+
+def members(session: int) -> list[int]:
+    """The processes in ``session``, by ``/proc``."""
+    found: list[int] = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/stat", "rb") as stat:
+                fields = stat.read().rsplit(b")", 1)[1].split()
+            # A zombie has ended already; only its parent's wait is left.
+            if fields[0] != b"Z" and int(fields[3]) == session:
+                found.append(int(entry))
+        except (OSError, IndexError, ValueError):
+            continue
+    return found
+
+
+def _end_session(session: int, signal_number: int) -> bool:
+    """Send ``signal_number`` to every process in ``session``, whatever its process
+    group; whether any was there."""
+    found = members(session)
+    for pid in found:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.kill(pid, signal_number)
+    return bool(found)
