@@ -7,7 +7,8 @@ session's records (``runstate.py``), which its two hooks and its job waits share
 - ``UserMessages`` offers each queued message before the next model call, as the
   user's own message (RS-7); at a closing answer, a message that waits makes the run
   continue (RS-8). After the run's record is saved, the messages a model call saw are
-  marked delivered (RS-9). A message also ends a job wait (``RunChat.arrived``).
+  marked delivered (RS-9). A message, or a work request addressed to the session's
+  main agent, also ends a job wait (``RunChat.arrived``).
 - ``EventLog`` writes what the run does as events, as it happens (RS-13, RS-14), from
   the conversation and the run's records. It comes last among the hooks, so that the
   notices of a safe point are in the conversation when it writes them. Its last
@@ -24,7 +25,7 @@ import contextlib
 import json
 import logging
 import secrets
-from collections.abc import AsyncGenerator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -77,6 +78,9 @@ class RunChat:
         message, the earlier conversation and the task."""
         self.state, self.context, self.run, self.run_id = state, context, run, run_id
         self.task, self.message_ids, self.prefix = task, tuple(message_ids), prefix
+        self.requests: Callable[[], bool] | None = None
+        """Whether a work request waits that the run may be offered: the run's document
+        tool says, once it has one."""
         self.parent, self.delegation = parent, delegation
         self.poll, self.clock = poll, clock
         self.offered: set[str] = set()
@@ -110,8 +114,10 @@ class RunChat:
         self.offered.update(ids)
 
     async def arrived(self) -> None:
-        """Return once a message waits for this run."""
-        while not await self.pending():
+        """Return once a message, or a work request it may be offered, waits for this
+        run."""
+        requests = self.requests
+        while not await self.pending() and not (requests is not None and await threaded(requests)):
             await self.clock.sleep(self.poll)
 
     async def write(self, kind: EventKind, data: dict[str, Any]) -> None:

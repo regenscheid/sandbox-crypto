@@ -171,6 +171,10 @@ class RunRequest:
     message_ids: tuple[str, ...] = ()
     """The queued messages the run is started for (RS-6): its conversation begins with
     them, and ``task`` only names them in the record."""
+    requests: bool = False
+    """Whether the run is started for the session's waiting work requests (LD-22): its
+    conversation begins with them, as its hooks offer them, and ``task`` only names
+    them in the record."""
     parent: str | None = None
     """A delegated run's parent: the name its record will be kept under (PD-32)."""
     delegation: str | None = None
@@ -181,6 +185,11 @@ class RunRequest:
     ``prompt_provenance.memory.version``, as the harness read it), never from an agent's
     arguments: the version decides what every run of the tree is told. Without it, a run
     is given the memory as it is when it starts."""
+
+    @property
+    def queued(self) -> bool:
+        """Whether the run begins with what waited for it rather than with ``task``."""
+        return bool(self.message_ids) or self.requests
 
     def __post_init__(self) -> None:
         if (self.parent is None) != (self.delegation is None):
@@ -417,7 +426,7 @@ class Harness:
                     transcript = await run_task(
                         self.main.model,
                         toolbox,
-                        None if request.message_ids else request.task,
+                        None if request.queued else request.task,
                         run_id=admitted.run_id,
                         history=request.history,
                         stop=stop,
@@ -470,9 +479,9 @@ class Harness:
             admitted.context,
             run=run_name(admitted.started_at, admitted.run_id),
             run_id=admitted.run_id,
-            task=None if request.message_ids else request.task,
+            task=None if request.queued else request.task,
             message_ids=request.message_ids,
-            prefix=1 + len(request.history) + (0 if request.message_ids else 1),
+            prefix=1 + len(request.history) + (0 if request.queued else 1),
             parent=request.parent,
             delegation=request.delegation,
             clock=self.clock,
@@ -526,6 +535,8 @@ class Harness:
                 connectors=connectors,
             )
         documents = DocumentTool(stores.documents, context, run_id=run_id, alias=alias)
+        if chat is not None:
+            chat.requests = documents.requests_waiting
         # Code in the sandbox has no route to the ledger: the agent imports what it
         # writes (LG-41), reading the file as its read_file tool does.
         ledger = LedgerTool(

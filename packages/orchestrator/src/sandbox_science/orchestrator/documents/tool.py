@@ -26,6 +26,7 @@ from pydantic import JsonValue
 
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator.aio import lease, threaded
+from sandbox_science.orchestrator.control.notices import MAX_PER_RUN
 from sandbox_science.orchestrator.hooks import (
     Closing,
     Effect,
@@ -270,6 +271,15 @@ class DocumentTool:
             seen=self.request_seen,
             max_chars=20000,
         )
+
+    def requests_waiting(self) -> bool:
+        """Whether a work request waits that this run may still be offered: one no run
+        holds, while the run is under its limit. It ends a job wait (run-service spec
+        RS-7)."""
+        if self.role != "main" or len(self.request_seen) >= MAX_PER_RUN:
+            return False
+        scope = (self.context.project_id, self.context.session_id)
+        return bool(Annotations(self.store).waiting(scope))
 
     @asynccontextmanager
     async def active_requests(self) -> AsyncGenerator[None]:
@@ -603,6 +613,10 @@ class WorkRequests(TurnHook):
         ids = record.delivered.get(self.name)
         if ids:
             await asyncio.to_thread(self._acknowledge, record, ids)
+
+    def unanswered(self) -> set[str]:
+        """The requests the run was offered and no model call saw."""
+        return self.tool.request_seen - self.tool.request_delivered
 
     async def _pending(self) -> tuple[Notice, ...]:
         found = await self.tool.request_notices()

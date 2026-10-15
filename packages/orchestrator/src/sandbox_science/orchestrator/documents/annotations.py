@@ -906,6 +906,35 @@ class Annotations:
             project=notice,
         )
 
+    def waiting(self, scope: tuple[str, str] | None = None) -> list[tuple[str, str, str]]:
+        """The requests that wait for a run, oldest first, as (project, session, request
+        ID), in every session or in ``scope``'s alone: not answered, delivered by no saved
+        run, and held by no run. A waiting request starts a run for its session, as a
+        queued message does, and ends a job wait (run-service spec RS-6, RS-7)."""
+        where, parameters = "", tuple[str, ...]()
+        if scope is not None:
+            where, parameters = "AND project_id=? AND session_id=? ", scope
+        with self.store.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT project_id,session_id,request_id FROM annotation_requests "  # noqa: S608
+                "WHERE state!='responded' AND delivered_run IS NULL "
+                f"AND (claimed_run IS NULL OR claim_until<=?) {where}ORDER BY rowid",
+                (self.clock(), *parameters),
+            ).fetchall()
+        return [(project, session, request) for project, session, request in rows]
+
+    def claimed(self, project: str, session: str, run: str) -> list[str]:
+        """The requests ``run`` was offered and no saved run delivered, its lease expired
+        or not: those of a run that died (RS-12)."""
+        with self.store.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT request_id FROM annotation_requests WHERE project_id=? AND "
+                "session_id=? AND claimed_run=? AND delivered_run IS NULL "
+                "AND state!='responded' ORDER BY rowid",
+                (project, session, run),
+            ).fetchall()
+        return [request for (request,) in rows]
+
     def renew(self, project: str, session: str, run: str) -> None:
         self.leases.renew(project, session, run)
 
