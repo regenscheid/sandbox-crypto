@@ -22,6 +22,8 @@ export interface ReviewPanel {
   reviews: ListState<Review, string>;
   /** Windows left unreviewed after bounded retries, from the reviews' first page. */
   unreviewed: Json[];
+  /** Why the session's next review waits, when it does (lab 38). */
+  waiting: Json;
   findings: ListState<Finding, string>;
   checks: ListState<MathJob, string>;
   /** Sources waiting for math checks, from the checks' first page. */
@@ -44,6 +46,7 @@ export function emptyReviewPanel(): ReviewPanel {
   return {
     reviews: emptyList(),
     unreviewed: [],
+    waiting: null,
     findings: emptyList(),
     checks: emptyList(),
     queue: [],
@@ -95,6 +98,7 @@ export class ReviewBrowser {
         shown: () => {
           if (after !== null) return;
           panel.unreviewed = page.unreviewed;
+          panel.waiting = page.waiting ?? null;
           const chosen = panel.selected;
           if (chosen)
             panel.selected =

@@ -171,3 +171,59 @@ def test_the_run_service_sets_the_review_limits_a_project_has_not() -> None:
     settings = Settings(review_token_budget=800000, review_calls_per_hour=500)
     assert (settings.reviews().token_budget, settings.reviews().calls_per_hour) == (800000, 500)
     assert Settings().reviews() == ReviewConfig()
+
+
+@pytest.mark.asyncio
+async def test_with_no_calls_left_this_hour_the_work_waits_as_one_review(store) -> None:
+    """Lab 38: once the project's calls for the hour were spent, three reviews started
+    with none left, ended capped, and took their windows with them. Now no review starts:
+    the session's work waits as one pending review, said once, and the first review once
+    calls are left covers all of it."""
+    reviews, documents, now = store
+    reviews.defaults = ReviewConfig(calls_per_hour=4)
+    first = window(reviews, 4)
+    await ReviewerRunner(reviews, "p", "s", first, "owner", LabReviewer()).run()
+    assert reviews.run("p", "s", first)["state"] == "passed"
+    start = {"author_run": "author-1", "owner": "owner", "alias": "reviewer"}
+    for n in range(3):
+        claim(reviews, f"Later step {n}.", key=f"later{n}")
+        assert reviews.dispatch("p", "s", "terminal", **start) is None
+    listing = reviews.listing("p", "s")
+    assert listing["waiting"] == {"reason": "calls_per_hour", "calls": 4, "limit": 4,
+                                  "since": now[0]}  # fmt: skip
+    assert len(deferrals(documents)) == 1
+    now[0] += 3601
+    assert reviews.due("p", "s")
+    later = dispatch(reviews)
+    run = reviews.run("p", "s", later)
+    assert (run["start_seq"], run["end_seq"]) == (5, 7)
+    assert reviews.listing("p", "s")["waiting"] is None
+
+
+def deferrals(documents: Any) -> list[Any]:
+    from sandbox_science.orchestrator.control import EventLog
+
+    log = EventLog(documents.control, "review", "test")
+    with documents.control.read() as tx:
+        return log.recent(tx.sql, "p", "s", "review.deferred", 10)
+
+
+@pytest.mark.asyncio
+async def test_a_review_a_limit_ends_keeps_its_window(store) -> None:
+    """Lab 38's capped reviews took their windows as covered. A review a limit ends now
+    leaves its window to the next review, as a failed one does."""
+    reviews, _, now = store
+    reviews.defaults = ReviewConfig(max_turns=3)
+    first = window(reviews, 4)
+    await ReviewerRunner(reviews, "p", "s", first, "owner", LabReviewer()).run()
+    assert reviews.run("p", "s", first)["state"] == "capped"
+    progress = reviews.progress("p", "s")
+    assert (progress["watermark"], progress["retry_end"]) == (0, 4)
+    reviews.defaults = ReviewConfig()
+    now[0] += 200
+    again = dispatch(reviews)
+    run = reviews.run("p", "s", again)
+    assert (run["start_seq"], run["end_seq"]) == (1, 4)
+    await ReviewerRunner(reviews, "p", "s", again, "owner", LabReviewer()).run()
+    assert reviews.run("p", "s", again)["state"] == "passed"
+    assert reviews.progress("p", "s")["watermark"] == 4
