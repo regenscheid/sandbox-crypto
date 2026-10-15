@@ -29,6 +29,7 @@ from pydantic import ConfigDict, Field, ValidationError, model_validator
 from sandbox_science.contracts.model import Contract
 from sandbox_science.orchestrator.control import EventLog, Receipts
 
+from .documents.agent_text import check_agent_text
 from .documents.errors import CONFLICT, INVALID_REQUEST, NOT_FOUND, POLICY_DENIED, DocumentError
 from .documents.models import Author
 
@@ -51,7 +52,12 @@ MAX_CHANGES: Final = 50_000
 MAX_PROPOSALS: Final = 10_000
 """The changes and the proposals a project's memory keeps, its history included."""
 GIVEN_CHARS: Final = 16_000
-"""The characters of entries an agent receives (PM-7)."""
+"""The characters of the memory section an agent receives, as sent (PM-7)."""
+SECTION_RESERVE: Final = 1_000
+"""The characters of the section kept for its framing, its opening and closing lines and
+the line on entries left out; the entries' blocks take the rest."""
+MARKER: Final = 16
+"""The length of the code that marks where each entry begins and ends in a section."""
 
 EntryId = Annotated[str, Field(pattern=r"^mem-[1-9][0-9]{0,8}$")]
 ProposalId = Annotated[str, Field(pattern=r"^prop-[1-9][0-9]{0,8}$")]
@@ -64,9 +70,6 @@ Change = Literal["added", "edited", "removed", "moved"]
 RECEIPTS: Final = Receipts("memory", "operation ID {operation!r} names another memory change")
 _USER: Final = "user"
 """The actor of the user's receipts; an agent's is its run."""
-_CONTROL: Final = re.compile(r"[\x00-\x08\x0b-\x1f\x7f\u202a-\u202e\u2066-\u2069]")
-"""Control characters, and the bidirectional overrides and isolates that would show
-the user other text than an agent receives. Tabs and line breaks are text."""
 _PROJECT: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _ENTRY: Final = re.compile(r"mem-[1-9][0-9]{0,8}")
 
@@ -116,7 +119,10 @@ class MemoryVersion(Contract):
     """One version of an entry: what changed, who applied it, and whose proposal."""
 
     revision: int
+    """The entry's revision after it, which counts the changes of its text; a move keeps
+    it."""
     version: int
+    """The memory's version this change made."""
     change: Change
     text: str | None
     """``None`` for a removal."""
@@ -134,6 +140,7 @@ class MemoryEntryHistory(Contract):
     versions: tuple[MemoryVersion, ...]
     """Newest first."""
     next_before: int | None
+    """The memory's version to read on from, for older versions."""
 
 
 class MemoryChange(Contract):
@@ -206,13 +213,23 @@ class UserChange(_Request):
         return self
 
 
+def entry_block(entry: MemoryEntry, marker: str) -> str:
+    """An entry as a system message gives it, between markers that carry ``marker``, a
+    code no entry contains (PM-6)."""
+    return (
+        f'<entry-{marker} id="{entry.entry_id}" revision="{entry.revision}">\n'
+        f"{entry.text}\n</entry-{marker}>"
+    )
+
+
 def given(entries: Sequence[MemoryEntry]) -> int:
     """How many of ``entries``, from the first, an agent receives: whole entries while
-    their text stays within ``GIVEN_CHARS`` (PM-7)."""
-    total = 0
+    their blocks, with the section's framing and its other lines, stay within
+    ``GIVEN_CHARS`` (PM-7)."""
+    total, room = 0, GIVEN_CHARS - SECTION_RESERVE
     for count, entry in enumerate(entries):
-        total += len(entry.text)
-        if total > GIVEN_CHARS:
+        total += len(entry_block(entry, "0" * MARKER)) + 1
+        if total > room:
             return count
     return len(entries)
 
@@ -228,18 +245,14 @@ def _scope(project: object) -> str:
 
 
 def _clean(value: str, what: str, limit: int) -> str:
-    """Text as kept: without surrounding white space, 1 to ``limit`` characters."""
+    """Text as kept: without surrounding white space, 1 to ``limit`` characters, and no
+    character the user may not see, as it is or as a character reference (threat model,
+    A3; ``check_agent_text``): every agent role receives an accepted entry, so a hidden
+    instruction in one would reach them all."""
+    check_agent_text(value, what)  # as sent: refused, never stripped
     text = value.strip()
     if not 1 <= len(text) <= limit:
         raise DocumentError(INVALID_REQUEST, f"{what} is 1 to {limit} characters")
-    if _CONTROL.search(text) is not None:
-        raise DocumentError(
-            INVALID_REQUEST, f"{what} holds a control or bidirectional formatting character"
-        )
-    try:
-        text.encode("utf-8")
-    except UnicodeEncodeError:
-        raise DocumentError(INVALID_REQUEST, f"{what} is not UTF-8 text") from None
     return text
 
 
@@ -266,8 +279,11 @@ def _time(value: str) -> datetime:
 _LIVE: Final = (
     "SELECT e.entry_id,e.head,v.text,v.created,e.position FROM memory_entries e "
     "JOIN memory_versions v ON v.project=e.project AND v.entry_id=e.entry_id "
-    "AND v.revision=e.head WHERE e.project=? AND e.removed=0"
+    "AND v.version=(SELECT max(w.version) FROM memory_versions w "
+    "WHERE w.project=e.project AND w.entry_id=e.entry_id) "
+    "WHERE e.project=? AND e.removed=0"
 )
+"""The accepted entries, each at its latest version."""
 _PROPOSAL: Final = (
     "SELECT proposal_id,action,entry_id,base,text,reason,proposer,created,state,decided "
     "FROM memory_proposals WHERE project=?"
@@ -318,24 +334,25 @@ class ProjectMemory:
             return tuple(self._proposal(db, project, row) for row in rows)
 
     def history(self, project: str, entry: str, *, before: int | None = None) -> MemoryEntryHistory:
-        """An entry's versions, newest first, 50 at a time, before revision ``before``."""
+        """An entry's versions, newest first, 50 at a time, before the memory's version
+        ``before``."""
         _scope(project)
         if _ENTRY.fullmatch(entry) is None:
             raise DocumentError(INVALID_REQUEST, "a memory entry is named mem-N")
         if before is not None and (type(before) is not int or before < 1):
-            raise DocumentError(INVALID_REQUEST, "before is a revision")
+            raise DocumentError(INVALID_REQUEST, "before is a version of the memory")
         if self.control.missing:
             raise DocumentError(NOT_FOUND, f"there is no memory entry {entry}")
         with self.control.read() as tx:
             db = tx.sql
-            head, removed = _row(db, project, entry)
+            _, removed = _row(db, project, entry)
             rows = db.execute(
                 "SELECT v.revision,v.version,v.change,v.text,v.author,v.created,v.proposal,"
                 "p.proposer,p.created,p.reason FROM memory_versions v LEFT JOIN "
                 "memory_proposals p ON p.project=v.project AND p.proposal_id=v.proposal "
-                "WHERE v.project=? AND v.entry_id=? AND v.revision<? "
-                "ORDER BY v.revision DESC LIMIT 51",
-                (project, entry, before or head + 1),
+                "WHERE v.project=? AND v.entry_id=? AND v.version<? "
+                "ORDER BY v.version DESC LIMIT 51",
+                (project, entry, before or 1_000_000_000),
             ).fetchall()
         versions = tuple(
             MemoryVersion(
@@ -356,7 +373,7 @@ class ProjectMemory:
             entry_id=entry,
             removed=removed,
             versions=versions,
-            next_before=versions[-1].revision if len(rows) > 50 else None,
+            next_before=versions[-1].version if len(rows) > 50 else None,
         )
 
     # Changes.
@@ -370,7 +387,9 @@ class ProjectMemory:
         if author.kind != "agent" or author.run_id is None or author.session_id is None:
             raise DocumentError(POLICY_DENIED, "only an agent run proposes; the user changes")
         request = _parse(ProposalRequest, value)
-        text = _clean(request.text, "an entry's text", MAX_TEXT) if request.text else None
+        text = (
+            _clean(request.text, "an entry's text", MAX_TEXT) if request.text is not None else None
+        )
         reason = _clean(request.reason, "the reason", MAX_REASON)
         fingerprint = _fingerprint(request)
         with self.control.write() as tx:
@@ -380,10 +399,14 @@ class ProjectMemory:
                 row = db.execute(_PROPOSAL + " AND proposal_id=?", (project, replay["proposal"]))
                 return self._proposal(db, project, row.fetchone()), True
             counters = _head(db, project)
-            waiting, made = db.execute(
-                "SELECT count(*) FILTER (WHERE state='waiting'),count(*) FILTER (WHERE run_id=?) "
-                "FROM memory_proposals WHERE project=?",
-                (author.run_id, project),
+            # Two counts the (project,state) and (project,run_id) indexes answer.
+            (waiting,) = db.execute(
+                "SELECT count(*) FROM memory_proposals WHERE project=? AND state='waiting'",
+                (project,),
+            ).fetchone()
+            (made,) = db.execute(
+                "SELECT count(*) FROM memory_proposals WHERE project=? AND run_id=?",
+                (project, author.run_id),
             ).fetchone()
             if waiting >= MAX_WAITING:
                 raise DocumentError(
@@ -445,7 +468,9 @@ class ProjectMemory:
         if author.kind != "user":
             raise DocumentError(POLICY_DENIED, "only the user changes the memory; agents propose")
         request = _parse(UserChange, value)
-        text = _clean(request.text, "an entry's text", MAX_TEXT) if request.text else None
+        text = (
+            _clean(request.text, "an entry's text", MAX_TEXT) if request.text is not None else None
+        )
         fingerprint = _fingerprint(request)
         with self.control.write() as tx:
             db = tx.sql
@@ -592,7 +617,9 @@ class _Change:
         return MemoryChange(version=self.version, entry_id=head.entry, revision=head.revision + 1)
 
     def move(self, head: _Head, direction: Literal["up", "down"]) -> MemoryChange:
-        """Swap the entry with the one before it (``up``) or after it."""
+        """Swap the entry with the one before it (``up``) or after it. A move keeps both
+        entries' revisions, which count the changes of their text, so a proposal or an
+        edit that names one is not stale for it; each gets a version that says so."""
         up = direction == "up"
         found = self.db.execute(
             _LIVE + f" AND e.position{'<' if up else '>'}? "
@@ -606,9 +633,12 @@ class _Change:
         other = _Head(found[0], found[1], found[2], found[4])
         self.bump()
         for moved, position in ((head, other.position), (other, head.position)):
-            self._next(moved, position=position)
-            self.append(moved.entry, moved.revision + 1, "moved", moved.text, position, None)
-        return MemoryChange(version=self.version, entry_id=head.entry, revision=head.revision + 1)
+            self.db.execute(
+                "UPDATE memory_entries SET position=? WHERE project=? AND entry_id=?",
+                (position, self.project, moved.entry),
+            )
+            self.append(moved.entry, moved.revision, "moved", moved.text, position, None)
+        return MemoryChange(version=self.version, entry_id=head.entry, revision=head.revision)
 
     def decide(
         self, proposal: str, decision: Literal["accept", "decline"], expected: int | None
@@ -663,16 +693,11 @@ class _Change:
         )
         return result
 
-    def _next(self, head: _Head, *, removed: bool = False, position: int | None = None) -> None:
+    def _next(self, head: _Head, *, removed: bool = False) -> None:
+        """The entry's next revision: its text changed, or it was removed."""
         self.db.execute(
-            "UPDATE memory_entries SET head=?,removed=?,position=? WHERE project=? AND entry_id=?",
-            (
-                head.revision + 1,
-                int(removed),
-                head.position if position is None else position,
-                self.project,
-                head.entry,
-            ),
+            "UPDATE memory_entries SET head=?,removed=? WHERE project=? AND entry_id=?",
+            (head.revision + 1, int(removed), self.project, head.entry),
         )
 
 

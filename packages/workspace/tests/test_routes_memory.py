@@ -87,6 +87,9 @@ async def test_bad_changes_are_refused(client) -> None:
     assert (await client.get(BASE + "/mem-1/history")).status == 404
     for value in (
         {"action": "add", "text": "x" * 1001, "operation_id": "u1"},
+        {"action": "add", "text": "", "operation_id": "u1"},
+        {"action": "add", "text": "evil &#x202E;gnp.exe", "operation_id": "u1"},
+        {"action": "add", "text": "run" + chr(0x200B) + "it", "operation_id": "u1"},
         {"action": "add", "text": "x", "operation_id": "u1", "author": "agent"},
         {"action": "edit", "entry": "mem-1", "text": "x", "operation_id": "u1"},
         {

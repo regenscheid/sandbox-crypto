@@ -1678,8 +1678,10 @@ def _numbered(column: str, prefix: str) -> str:
 def _memory(schema: Schema) -> None:
     """Version 24: the project memory (docs/specs/project-memory.md, PM-1 to PM-3, PM-11):
     each project's entries, numbered ``mem-N``, with their place on the Memory page; their
-    versions, written once; the agents' proposals, numbered ``prop-N``, each decided once;
-    and the memory's version, which counts the changes of its accepted entries."""
+    versions, written once, one for each change of the memory that touched the entry (a
+    move keeps the entry's revision, which counts the changes of its text); the agents'
+    proposals, numbered ``prop-N``, each decided once; and the memory's version, which
+    counts the changes of its accepted entries, and its counters, which never go back."""
     entry, proposal = _numbered("entry_id", "mem"), _numbered("proposal_id", "prop")
     for statement in (
         """CREATE TABLE memory_heads (
@@ -1690,6 +1692,10 @@ def _memory(schema: Schema) -> None:
 ) STRICT""",
         """CREATE TRIGGER memory_heads_no_delete BEFORE DELETE ON memory_heads
 BEGIN SELECT RAISE(ABORT, 'a project memory is kept'); END""",
+        """CREATE TRIGGER memory_heads_forward BEFORE UPDATE ON memory_heads
+WHEN NEW.project != OLD.project OR NEW.version < OLD.version
+    OR NEW.entries < OLD.entries OR NEW.proposals < OLD.proposals
+BEGIN SELECT RAISE(ABORT, 'a project memory version or counter never goes back'); END""",
         f"""CREATE TABLE memory_entries (
     project TEXT NOT NULL REFERENCES memory_heads(project),
     entry_id TEXT NOT NULL CHECK ({entry}),
@@ -1721,7 +1727,7 @@ BEGIN SELECT RAISE(ABORT, 'memory entries are kept'); END""",
     proposal TEXT CHECK (proposal IS NULL OR ({_numbered("proposal", "prop")})),
     created TEXT NOT NULL CHECK (length(created) BETWEEN 1 AND 64),
     CHECK ((change = 'removed') = (text IS NULL)),
-    PRIMARY KEY (project, entry_id, revision),
+    PRIMARY KEY (project, entry_id, version),
     FOREIGN KEY (project, entry_id) REFERENCES memory_entries(project, entry_id)
 ) STRICT""",
         "CREATE INDEX memory_versions_version ON memory_versions(project,version)",
