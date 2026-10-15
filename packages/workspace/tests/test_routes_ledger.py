@@ -241,3 +241,18 @@ async def test_the_user_clears_flags_through_the_workspace(
     everything = {"reason": "Holds.", "operation_id": "clear-all"}
     response = await client.post(BASE + "/R-1/flags", json=everything, headers=origin(client))
     assert (await response.json())["flags_cleared"] == [again]
+
+
+async def test_the_gate_through_the_workspace(
+    aiohttp_client: ClientFactory, seeded: Path, static_dir: Path
+) -> None:
+    """LG-17: the entry panel reads each clause of the gate for an entry."""
+    from sandbox_science.workspace.ledger import LedgerGate
+
+    client = await workspace(aiohttp_client, seeded, static_dir)
+    answer = LedgerGate.model_validate(await (await client.get(BASE + "/C-1/gate")).json())
+    assert (answer.gate.handle, answer.gate.applies, answer.gate.holds) == ("C-1", True, False)
+    assert answer.gate.clauses[0].clause == "evidence"
+    assert answer.gate.clauses[0].holds is False
+    await error_of(await client.get(BASE + "/C-1/gate", params={"x": "1"}), 400, "invalid_request")
+    await error_of(await client.get(BASE + "/C-9/gate"), 404, "not_found")

@@ -24,7 +24,7 @@ from pydantic import AwareDatetime, ConfigDict, Field, ValidationError
 from sandbox_science.contracts import Contract, ErrorKind, Identifier
 from sandbox_science.orchestrator.documents import USER, DocumentStore
 from sandbox_science.orchestrator.ledger import EntryHistory, EntryPage, EntryView, Ledger
-from sandbox_science.orchestrator.ledger.models import MAX_CLEARED, FlagCause, FlagID
+from sandbox_science.orchestrator.ledger.models import MAX_CLEARED, FlagCause, FlagID, GateView
 from sandbox_science.orchestrator.projects import ProjectError
 
 from . import documents
@@ -53,6 +53,14 @@ class LedgerEntry(Contract):
     entry: EntryView
 
 
+class LedgerGate(Contract):
+    """The gate for one ledger entry as it reads now (LG-17)."""
+
+    project_id: Identifier
+    observed_at: AwareDatetime
+    gate: GateView
+
+
 class LedgerHistory(Contract):
     """A page of a ledger entry's revisions."""
 
@@ -65,6 +73,7 @@ def add_routes(app: web.Application) -> None:
     app.router.add_get(PATH, listing)
     app.router.add_get(PATH + "/{entry}", entry)
     app.router.add_get(PATH + "/{entry}/history", history)
+    app.router.add_get(PATH + "/{entry}/gate", gate_read)
     app.router.add_post(PATH + "/{entry}/checks", check)
     app.router.add_post(PATH + "/{entry}/flags", clear)
     app.router.add_post(PATH + "/{entry}/flags/reopened", reopen)
@@ -146,6 +155,20 @@ async def history(request: web.Request) -> web.Response:
         found = ledger.history(project, reference, before=None if raw is None else int(raw))
         return LedgerHistory(
             project_id=project, observed_at=datetime.now(UTC), history=found
+        ).model_dump_json()
+
+    return await _answer(request, project, read)
+
+
+async def gate_read(request: web.Request) -> web.Response:
+    """GET …/ledger/{entry}/gate: each clause of the gate for the entry as it reads now,
+    and the decisions that affect it; a read, which changes nothing."""
+    project, reference = identifier(request, "project"), _entry(request)
+    _query(request, set())
+
+    def read(ledger: Ledger) -> str:
+        return LedgerGate(
+            project_id=project, observed_at=datetime.now(UTC), gate=ledger.gate(project, reference)
         ).model_dump_json()
 
     return await _answer(request, project, read)
