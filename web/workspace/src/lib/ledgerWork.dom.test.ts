@@ -175,4 +175,31 @@ describe('the work records on an entry', () => {
     expect(failed.textContent).toContain('no work now');
     expect(failed.textContent).toContain('Recover the key');
   });
+
+  it("show a delegated check's verdict and status, as a check of the entry (lab 40, B6)", async () => {
+    server(entry('issue'), {
+      '': [
+        record(4, {
+          tried: 'An independent check of I-1 at revision 2, by a delegated run.',
+          ending: 'assessment',
+          limit: null,
+          references: [{ delegation: 'del-1', note: 'refuted, complete: Step 3 fails.' }],
+          author: { kind: 'agent', session_id: 's1', run_id: 'run-2', role: 'delegated' },
+        }),
+      ],
+    });
+    const root = show();
+    await settle();
+    const item = root.querySelector('li.work')!;
+    expect(item.querySelector('strong')!.textContent).toBe('Check of the entry');
+    expect(item.textContent).toContain(
+      'A check of the entry by delegation del-1: refuted, complete.',
+    );
+    expect(item.textContent).not.toContain('critique');
+    expect(
+      [...item.querySelectorAll('a')]
+        .find((a) => a.textContent === 'The run tree')!
+        .getAttribute('href'),
+    ).toBe('#/projects/p1/sessions/s1/tree');
+  });
 });

@@ -43,6 +43,14 @@ export const VERDICT_WORDS: Record<NonNullable<WorkRecord['verdict']>, string> =
  * detail is their produced entries or their references.
  */
 export function detailText(record: WorkRecord, read: readonly WorkRecord[] = []): string {
+  const check = checkView(record);
+  if (check !== null) {
+    const outcome =
+      check.verdict === null
+        ? 'its note gives no verdict; its outcome is in the run tree'
+        : `${check.verdict}, ${check.status ?? 'no status'}`;
+    return `A check of the entry by delegation ${visible(check.delegation)}: ${outcome}.`;
+  }
   if (record.ending === 'limit') {
     const ran =
       record.limit === null
@@ -59,6 +67,42 @@ export function detailText(record: WorkRecord, read: readonly WorkRecord[] = [])
   const assessed = read.find((other) => other.record_id === record.assesses);
   const what = assessed === undefined ? '' : ` (${ENDING_WORDS[assessed.ending].toLowerCase()})`;
   return `Assesses work record ${visible(record.assesses)}${what}: ${verdict}.`;
+}
+
+/**
+ * A delegated check's record (LG-F8): the platform records a check that returned a result
+ * as the delegated run's assessment of the entry, of no other record, citing the
+ * delegation, whose note begins with the verdict and status (`confirmed, complete: …`).
+ */
+export interface CheckView {
+  delegation: string;
+  verdict: string | null;
+  status: string | null;
+  /** The session the delegated run ran in, where the run tree shows the delegation. */
+  session: string | null;
+}
+
+/** A record's delegated check; null for any other record. */
+export function checkView(record: WorkRecord): CheckView | null {
+  if (record.ending !== 'assessment' || record.assesses !== null) return null;
+  const cited = record.references.find((reference) => typeof reference.delegation === 'string');
+  if (cited === undefined) return null;
+  const note = typeof cited.note === 'string' ? cited.note : '';
+  // Only the platform's head of the note: the verdict and status the result's schema allows.
+  const said = /^(confirmed|refuted|inconclusive), (complete|partial|blocked)(?::|$)/.exec(note);
+  const session = record.author.session_id;
+  return {
+    delegation: cited.delegation as string,
+    verdict: record.verdict ?? said?.[1] ?? null,
+    status: said?.[2] ?? null,
+    session: typeof session === 'string' ? session : null,
+  };
+}
+
+/** A record's ending in words: a delegated check's is a check of the entry, not a critique. */
+export function endingText(record: WorkRecord): string {
+  if (checkView(record) !== null) return 'Check of the entry';
+  return ENDING_WORDS[record.ending] ?? visible(String(record.ending));
 }
 
 /** A pinned reference of a record, in words, and where it leads when somewhere. */

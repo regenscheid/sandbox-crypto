@@ -10,7 +10,14 @@ import type { EntryLink, WorkRecord } from './api-types';
 import { hostileMarkup } from './approvalTesting';
 import fixtures from './hidden.fixtures.json';
 import { fieldRows } from './ledger';
-import { detailText, holdsWork, producedLinks, referenceView } from './ledgerWork';
+import {
+  checkView,
+  detailText,
+  endingText,
+  holdsWork,
+  producedLinks,
+  referenceView,
+} from './ledgerWork';
 
 const HOSTILE = '"><script>alert(1)</script><img src=x onerror=alert(1)>';
 
@@ -150,6 +157,68 @@ describe('a work record', () => {
     );
     expect(Object.keys(views)).toHaveLength(2);
     for (const source of Object.values(views)) expect(String(source)).not.toContain('{@html');
+  });
+});
+
+describe("a delegated check's record (lab 40, B6)", () => {
+  /** A check's outcome as the platform records it (delegation/work.py, `_check`). */
+  const checked = (note: string, fields: Partial<WorkRecord> = {}) =>
+    record({
+      tried: 'An independent check of C-4 at revision 2, by a delegated run with a fresh context.',
+      ending: 'assessment',
+      limit: null,
+      references: [{ delegation: 'del-1', note }],
+      author: { kind: 'agent', session_id: 's1', run_id: 'run-2', role: 'delegated' },
+      provenance: { delegation: 'del-1' },
+      ...fields,
+    });
+
+  it('is a check of the entry, with the verdict and status its note begins with', () => {
+    const shown = checked('confirmed, complete: Every step holds.');
+    expect(checkView(shown)).toEqual({
+      delegation: 'del-1',
+      verdict: 'confirmed',
+      status: 'complete',
+      session: 's1',
+    });
+    expect(endingText(shown)).toBe('Check of the entry');
+    expect(detailText(shown)).toBe(
+      'A check of the entry by delegation del-1: confirmed, complete.',
+    );
+    expect(detailText(checked('refuted, partial'))).toMatch(/: refuted, partial\.$/);
+  });
+
+  it('reads only the head the platform writes, and says when the note gives no verdict', () => {
+    expect(detailText(checked('the verdict is confirmed, complete'))).toBe(
+      'A check of the entry by delegation del-1: its note gives no verdict; its outcome is in ' +
+        'the run tree.',
+    );
+    expect(checkView(checked('approved, complete: x'))!.verdict).toBeNull();
+  });
+
+  it('is no other assessment', () => {
+    expect(checkView(checked('confirmed, complete', { assesses: 'work-a' }))).toBeNull();
+    expect(
+      checkView(checked('x', { references: [{ document: 'doc-1', revision: 1, block: 'b1' }] })),
+    ).toBeNull();
+    expect(endingText(record({ ending: 'assessment', limit: null }))).toBe('Assessment');
+  });
+
+  it('leads to the run tree of its session, and says no critique', () => {
+    const html = render(WorkRecordItem, {
+      props: { projectId: 'p1', record: checked('confirmed, complete: ok') },
+    }).body;
+    expect(html).toContain('Check of the entry');
+    expect(html).not.toContain('critique');
+    expect(hrefs(html)).toEqual(['#/projects/p1/sessions/s1/tree']);
+    const hostile = render(WorkRecordItem, {
+      props: {
+        projectId: 'p1',
+        record: checked(`${HOSTILE}`, { author: { kind: 'agent', session_id: '../x' } }),
+      },
+    }).body;
+    expect(hostileMarkup(hostile)).toBe(false);
+    expect(hrefs(hostile)).toEqual([]);
   });
 });
 

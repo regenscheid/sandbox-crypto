@@ -129,6 +129,11 @@
     >
     <fieldset>
       <legend>Measures, each with its unit and whether lower or higher is better</legend>
+      <p class="muted">
+        Names here and condition keys below: a letter or digit first, then letters, digits, dots,
+        dashes or underscores, without spaces, such as <code>time_bits</code> or
+        <code>attack_model</code>.
+      </p>
       {#each draft.measures as measure, index (index)}
         <p class="measure">
           <label>Name <input bind:value={measure.name} maxlength="128" /></label>
@@ -161,7 +166,7 @@
       >
     </fieldset>
     <fieldset>
-      <legend>Condition keys, such as attack model or cost model</legend>
+      <legend>Condition keys, such as attack_model or cost_model</legend>
       {#each draft.conditions as _, index (index)}
         <p class="condition">
           <label>Key <input bind:value={draft.conditions[index]} maxlength="128" /></label>
