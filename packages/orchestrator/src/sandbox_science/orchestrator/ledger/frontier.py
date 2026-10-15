@@ -12,12 +12,15 @@ compared as ``normal`` makes them, so a capital or a no-break space makes no oth
 
 The frontier is a projection of the entries, read when asked for (LG-34). Published
 results that are ``recorded`` and project results that are ``established`` are
-eligible, and stay so, marked, when they become ``disputed`` (LG-20). Results are
-compared only under equal conditions: one dominates another when every measure is a
-number for both, it is at least as good on each and better on one; the best known are
-the eligible results no other dominates, and a result with a missing or non-numeric
-measure is listed beside them as not compared (LG-21). Project results not yet eligible
-are candidates, with the best known results they would dominate (LG-23).
+eligible, and stay so, marked, when they become ``disputed``: the frontier then shows
+the revision before, which was eligible (LG-20). A published result an agent recorded
+is eligible only once the user confirmed it, as the revision shown reads (LG-16 and
+LG-20 as the coordinator amended them); until then it is an unverified candidate.
+Results are compared only under equal conditions: one dominates another when every
+measure is a number for both, it is at least as good on each and better on one; the
+best known are the eligible results no other dominates, and a result with a missing or
+non-numeric measure is listed beside them as not compared (LG-21). Project results not
+yet eligible are candidates, with the best known results they would dominate (LG-23).
 """
 
 from __future__ import annotations
@@ -36,12 +39,14 @@ from sandbox_science.orchestrator.documents.errors import (
     DocumentError,
 )
 
+from . import gate
 from .models import (
     PREFIXES,
     Category,
     CategoryDefinition,
     CategoryMeasure,
     CategoryPage,
+    CategoryRevised,
     FrontierGroup,
     FrontierResult,
     FrontierView,
@@ -60,11 +65,18 @@ def normal(text: str) -> str:
     return _SPACES.sub(" ", folded).strip()
 
 
-MAX_RESULTS: Final = 500
-"""The most results of a category the frontier reads; it says when there are more."""
+MAX_CANDIDATES: Final = 500
+"""The most proposed results of a category the frontier reads as candidates; it says
+when there are more. It reads every result that is, or was, eligible."""
 
 _ELIGIBLE: Final = {"published": "recorded", "project": "established"}
 """The status that makes a result of each origin eligible (LG-20)."""
+
+_SHOWN: Final = (
+    "SELECT e.entry_id,e.type,e.number,e.origin,r.revision,r.title,r.status,r.statement,"
+    "r.fields,r.author FROM ledger_entries e JOIN ledger_revisions r ON r.entry_id=e.entry_id "
+    "AND r.revision=e.head WHERE e.project=? AND e.type='result' "
+)
 
 _TEXTS: Final = TextRevisions("statement")
 _PREFIX: Final = PREFIXES
@@ -228,56 +240,144 @@ def _category(row: tuple[Any, ...]) -> Category:
 
 
 def view(db: sqlite3.Connection, project: str, category: Category) -> FrontierView:
-    """``category``'s frontier as its results' current revisions read now."""
-    rows = db.execute(
-        "SELECT e.entry_id,e.type,e.number,e.origin,r.revision,r.title,r.status,r.statement,"
-        "r.fields FROM ledger_entries e JOIN ledger_revisions r ON r.entry_id=e.entry_id "
-        "AND r.revision=e.head WHERE e.project=? AND e.type='result' "
+    """``category``'s frontier as its results read now: every result that is or was
+    eligible, and as many as ``MAX_CANDIDATES`` proposed ones."""
+    held = db.execute(
+        _SHOWN + "AND (r.status='disputed' OR (json_extract(r.fields,'$.category')=? "
+        "AND r.status IN ('recorded','established'))) ORDER BY e.position",
+        (project, category.category),
+    ).fetchall()
+    proposed = db.execute(
+        _SHOWN + "AND e.origin='project' AND r.status='proposed' "
         "AND json_extract(r.fields,'$.category')=? ORDER BY e.position LIMIT ?",
-        (project, category.category, MAX_RESULTS + 1),
+        (project, category.category, MAX_CANDIDATES + 1),
     ).fetchall()
     keys = category.conditions
-    groups: dict[tuple[str, ...], list[tuple[FrontierResult, bool, bool]]] = {}
+    groups: dict[tuple[str, ...], tuple[dict[str, str], list[_Member]]] = {}
     unplaced: list[FrontierResult] = []
-    for row in rows[:MAX_RESULTS]:
-        entry, origin, status = row[0], row[3], row[6]
-        fields = json.loads(row[8])
-        eligible = status == _ELIGIBLE.get(origin) or (
-            status == "disputed"
-            and db.execute(
-                "SELECT 1 FROM ledger_revisions WHERE entry_id=? AND status=? LIMIT 1",
-                (entry, _ELIGIBLE.get(origin)),
-            ).fetchone()
-            is not None
-        )
-        candidate = not eligible and origin == "project" and status in ("proposed", "disputed")
-        if not (eligible or candidate):
+    # Results in the order they were made: their numbers.
+    for row in sorted([*held, *proposed[:MAX_CANDIDATES]], key=lambda r: r[2]):
+        member = _member(db, row, category.category)
+        if member is None:
             continue
-        shown = _result(db, row, fields, eligible and status == "disputed")
-        conditions = fields.get("conditions", {})
-        if any(key not in conditions for key in keys):
+        shown, eligible = member[0], member[1]
+        given = {normal(key): value for key, value in shown.conditions.items()}
+        values = [given.get(normal(key)) for key in keys]
+        if any(value is None for value in values):
             if eligible:
                 unplaced.append(shown)
             continue
-        groups.setdefault(tuple(conditions[key] for key in keys), []).append(
-            (shown, eligible, candidate)
-        )
+        written = dict(zip(keys, (str(v) for v in values), strict=True))
+        found = groups.setdefault(tuple(normal(v) for v in written.values()), (written, []))
+        found[1].append(member)
     return FrontierView(
         category=category,
-        groups=[
-            _group(category, dict(zip(keys, values, strict=True)), members)
-            for values, members in groups.items()
-        ],
+        groups=[_group(category, written, members) for written, members in groups.values()],
         unplaced=unplaced,
-        truncated=len(rows) > MAX_RESULTS,
+        truncated=len(proposed) > MAX_CANDIDATES,
+        agent_revised=revised(db, project, category),
     )
 
 
-def _group(
-    category: Category,
-    conditions: dict[str, str],
-    members: list[tuple[FrontierResult, bool, bool]],
-) -> FrontierGroup:
+_Member = tuple[FrontierResult, bool, bool]
+"""A result as the frontier shows it, whether it is eligible, and whether a candidate."""
+
+
+def _member(db: sqlite3.Connection, row: tuple[Any, ...], name: str) -> _Member | None:
+    """The result of ``row``, at its current revision, as the frontier holds it: shown,
+    eligible or a candidate; None when it is neither, or no longer in category
+    ``name``. A disputed result is eligible only when the revision before it became
+    disputed was, and is shown as that revision reads (LG-20)."""
+    entry, origin, status = row[0], row[3], row[6]
+    disputed = False
+    if status == "disputed":
+        before = db.execute(
+            "SELECT revision,title,status,statement,fields,author FROM ledger_revisions "
+            "WHERE entry_id=? AND revision<? AND status!='disputed' "
+            "ORDER BY revision DESC LIMIT 1",
+            (entry, row[4]),
+        ).fetchone()
+        if before is not None and before[2] == _ELIGIBLE[origin]:
+            row = (*row[:4], before[0], before[1], status, before[3], before[4], before[5])
+            disputed = True
+    fields = json.loads(row[8])
+    if fields.get("category") != name:
+        return None
+    eligible = disputed or status == _ELIGIBLE[origin]
+    unverified = eligible and origin == "published" and not _confirmed(db, entry, row[4], row[9])
+    eligible = eligible and not unverified
+    candidate = not eligible and (
+        unverified or (origin == "project" and status in ("proposed", "disputed"))
+    )
+    if not (eligible or candidate):
+        return None
+    shown = _result(db, row, fields, disputed=disputed, unverified=unverified)
+    return shown, eligible, candidate
+
+
+def _confirmed(db: sqlite3.Connection, entry: str, revision: int, author: str) -> bool:
+    """Whether the user confirmed published result ``entry`` as ``revision`` reads: the
+    user wrote it, or a revision since, or one before, with the same statement, fields,
+    assumptions and evidence, by recording, revising or checking it (``ledger check``,
+    or the workspace's). The consistency reviewer's citation check (CR-4) is not built
+    yet."""
+    if json.loads(author).get("kind") == "user":
+        return True
+    examined = gate.examined(db, entry, {revision})
+    now = examined.get(revision)
+    rows = db.execute(
+        "SELECT revision FROM ledger_revisions WHERE entry_id=? AND revision!=? "
+        "AND json_extract(author,'$.kind')='user' ORDER BY revision DESC LIMIT ?",
+        (entry, revision, gate.KEPT_REVISIONS),
+    ).fetchall()
+    found = gate.examined(db, entry, {r[0] for r in rows})
+    return now is not None and now in found.values()
+
+
+def revised(db: sqlite3.Connection, project: str, category: Category) -> CategoryRevised | None:
+    """The main agent's revision of ``category`` that the user has not revised since, with
+    what it changed from the user's latest revision before it; None when the user wrote
+    the current one."""
+    if category.author.get("kind") == "user":
+        return None
+    found = db.execute(
+        "SELECT max(revision) FROM frontier_category_revisions WHERE project=? AND "
+        "category=? AND json_extract(author,'$.kind')='user'",
+        (project, category.category),
+    ).fetchone()[0]
+    before = None if found is None else read(db, project, category.category, found)
+    return CategoryRevised(
+        revision=category.revision,
+        created=category.created,
+        author=category.author,
+        reason=category.reason,
+        since=found,
+        changed=[] if before is None else _changes(before, category),
+    )
+
+
+def _changes(before: Category, after: Category) -> list[str]:
+    """What ``after`` changed from ``before``, in words."""
+    changed = [part for part in ("target", "kind") if getattr(before, part) != getattr(after, part)]
+    old = {m.name: m for m in before.measures}
+    new = {m.name: m for m in after.measures}
+    for name, measure in new.items():
+        if name not in old:
+            changed.append(f"measure {name} added, {measure.direction} is better")
+            continue
+        if old[name].unit != measure.unit:
+            changed.append(f"measure {name}'s unit")
+        if old[name].direction != measure.direction:
+            changed.append(f"measure {name}'s direction: {measure.direction} is better")
+    changed += [f"measure {name} removed" for name in old if name not in new]
+    changed += [f"condition key {k} added" for k in after.conditions if k not in before.conditions]
+    changed += [
+        f"condition key {k} removed" for k in before.conditions if k not in after.conditions
+    ]
+    return changed
+
+
+def _group(category: Category, conditions: dict[str, str], members: list[_Member]) -> FrontierGroup:
     """One set of conditions' best known, dominated, not compared and candidate results."""
     compared = [r for r, eligible, _ in members if eligible and _numeric(category, r)]
     best: list[FrontierResult] = []
@@ -337,9 +437,9 @@ def _number(result: FrontierResult, name: str) -> float:
 
 
 def _result(
-    db: sqlite3.Connection, row: tuple[Any, ...], fields: Json, disputed: bool
+    db: sqlite3.Connection, row: tuple[Any, ...], fields: Json, *, disputed: bool, unverified: bool
 ) -> FrontierResult:
-    """The entry of ``row`` as the frontier shows it."""
+    """The entry of ``row`` as the frontier shows it, at the revision ``row`` names."""
     entry = row[0]
     text = _TEXTS.read(db, entry, row[7], full=False)
     held = db.execute(
@@ -357,6 +457,8 @@ def _result(
         status=row[6],
         origin=row[3],
         disputed=disputed,
+        unverified=unverified,
+        author=json.loads(row[9]),
         conditions=fields.get("conditions", {}),
         measures=fields.get("measures", {}),
         evidence_types=list(dict.fromkeys(h[0] for h in held)),

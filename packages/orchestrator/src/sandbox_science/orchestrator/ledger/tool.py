@@ -38,6 +38,7 @@ from .models import (
     PREFIXES,
     STATUSES,
     CategoryPage,
+    CategoryRevised,
     ClaimKind,
     EntryHistory,
     EntryPage,
@@ -333,10 +334,13 @@ SPECS: Final = (
         "ledger_frontier",
         "Read the project's frontier. Without category: a page of its categories. With "
         "category: its best known results under each set of conditions (eligible results: "
-        "recorded published ones, established project ones, and those since disputed, "
-        "marked; none dominated by another, at least as good on every measure and better "
-        "on one), the dominated ones, those not compared (a measure missing or not a "
-        "number), and candidates with the best known they would dominate if established. "
+        "recorded published ones the user recorded or confirmed, established project ones, "
+        "and those since disputed, marked; none dominated by another, at least as good on "
+        "every measure and better on one), the dominated ones, those not compared (a "
+        "measure missing or not a number), and candidates with the best known they would "
+        "dominate: project results not established, and published ones an agent recorded "
+        "that the user has not confirmed (unverified). agent_revised says what the main "
+        "agent changed in the category that the user has not revised since. "
         "With revision: the category's definition at that revision. A result in a "
         "category gives a value for each condition key and only its measures.",
         {
@@ -581,6 +585,7 @@ class LedgerTool:
             category[long] = _clip(category[long], 500)
         shown: Json = {
             "category": category,
+            **({"agent_revised": _revised(view.agent_revised)} if view.agent_revised else {}),
             "groups": [],
             "unplaced": [r.handle for r in view.unplaced][:100],
             "truncated": view.truncated,
@@ -782,11 +787,24 @@ def _shown(result: FrontierResult, *extra: str) -> Json:
     }
     if result.disputed:
         value["disputed"] = True
+    if result.unverified:
+        value["unverified"] = True
+    value["by"] = result.author.get("role") or result.author.get("kind")
     if result.open_findings or result.open_flags:
         value |= {"open_findings": result.open_findings, "open_flags": result.open_flags}
     for key in extra:
         value[key] = getattr(result, key)
     return value
+
+
+def _revised(revised: CategoryRevised) -> Json:
+    """The main agent's revision of a category the user has not revised since."""
+    return {
+        "revision": revised.revision,
+        "since": revised.since,
+        "reason": _clip(revised.reason, 300),
+        "changed": [_clip(change, 200) for change in revised.changed[:20]],
+    }
 
 
 def _group(group: FrontierGroup, cap: int) -> Json:

@@ -295,9 +295,11 @@ async def test_the_frontier_categories_through_the_workspace(
 
 
 async def test_a_frontier_through_the_workspace(
-    aiohttp_client: ClientFactory, seeded: Path, static_dir: Path
+    aiohttp_client: ClientFactory, seeded: Path, static_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """LG-21, LG-23: the GUI reads a category's frontier."""
+    """LG-21, LG-23: the GUI reads a category's frontier, a page of groups at a time, each
+    with the first results of each kind and how many more (the review's L3)."""
+    from sandbox_science.workspace import frontier
     from sandbox_science.workspace.frontier import FrontierAnswer
 
     documents = DocumentStore(store_path(seeded))
@@ -325,16 +327,38 @@ async def test_a_frontier_through_the_workspace(
                        "measures": {"time": 105}},
         }  # fmt: skip
         ledger.change("p1", {"operation_id": "r1", "reason": "r", "changes": [candidate]}, MAIN)
+        quantum = {**candidate["fields"], "conditions": {"model": "quantum"}}
+        more = [candidate, {**candidate, "fields": quantum}]
+        ledger.change("p1", {"operation_id": "r2", "reason": "r", "changes": more}, MAIN)
     finally:
         documents.close()
     client = await workspace(aiohttp_client, seeded, static_dir)
     url = "/api/v0/projects/p1/frontier/key-recovery"
     answer = FrontierAnswer.model_validate(await (await client.get(url)).json())
-    (group,) = answer.frontier.groups
-    assert (group.conditions, [r.handle for r in group.candidates]) == (
+    first, _ = answer.frontier.groups
+    assert (first.conditions, [r.handle for r in first.candidates]) == (
         {"model": "classical"},
-        ["R-1"],
+        ["R-1", "R-2"],
     )
-    assert group.candidates[0].statement == "Time $2^{105}$."
-    await error_of(await client.get(url, params={"x": "1"}), 400, "invalid_request")
+    assert first.candidates[0].statement == "Time $2^{105}$."
+    assert answer.next_groups_after is None
+    monkeypatch.setattr(frontier, "SHOWN_RESULTS", 1)
+    page = FrontierAnswer.model_validate(
+        await (await client.get(url, params={"limit": "1"})).json()
+    )
+    (group,) = page.frontier.groups
+    assert ([r.handle for r in group.candidates], group.more, page.next_groups_after) == (
+        ["R-1"],
+        {"candidates": 1},
+        1,
+    )
+    page = FrontierAnswer.model_validate(
+        await (await client.get(url, params={"groups_after": "1", "limit": "1"})).json()
+    )
+    assert ([g.conditions for g in page.frontier.groups], page.next_groups_after) == (
+        [{"model": "quantum"}],
+        None,
+    )
+    for bad in ({"x": "1"}, {"groups_after": "-1"}, {"limit": "0"}):
+        await error_of(await client.get(url, params=bad), 400, "invalid_request")
     await error_of(await client.get("/api/v0/projects/p1/frontier/bounds"), 404, "not_found")

@@ -4,6 +4,10 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 ## 2026-10-15
 
+Decision of the coordinator on the review of the frontier (#304, #310, #321, #323), which the owner can reverse:
+
+- **An agent's published result is unverified until confirmed** ([ledger spec](../docs/specs/ledger.md), LG-16, LG-20). A published result an agent records shows on the frontier as unverified and counts only as a candidate, until the consistency reviewer's citation check (CR-4) confirms that the citation resolves and supports the statement, or the user confirms it; one the user records is eligible at once. Each frontier result shows its author and role. Until CR-4 confirms citations, the user's confirmation is their revision or check (`ledger check`) of the entry as the frontier shows it. A disputed result is shown as the revision before it was disputed, which must have been eligible.
+
 Decision on lab 39 (#331), which the owner can reverse:
 
 - **The model budget during a run** ([run service](../docs/specs/run-service.md), RS-6c). A run checks the project's MAIN budget before each model call after the first, as well as at its start, and stops there once the project has spent it (`budget`) or once its own calls have used its share of it (`run_budget`; half by default, `serve --run-share`). An answer it gave stands, and what no model call saw waits for the next run. Lab 39's comment run spent 370,000 tokens past its cap because the budget was checked only at the start.

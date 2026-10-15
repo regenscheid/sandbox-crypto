@@ -777,7 +777,15 @@ async def test_the_agent_reads_a_frontier_a_group_at_a_time(ledger: Ledger) -> N
         "status": "proposed",
         "origin": "project",
         "measures": {"time": 0.0, "memory": 100.0},
+        "by": "main",
         "would_dominate": [],
+    }
+    # The main agent defined the category, and the user has not revised it since.
+    assert whole["agent_revised"] == {
+        "revision": 1,
+        "since": None,
+        "reason": KEY_RECOVERY["reason"],
+        "changed": [],
     }
     small = tool(ledger)
     small.budget = len(json.dumps(whole["groups"][0])) + 900
