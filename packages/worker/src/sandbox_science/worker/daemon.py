@@ -185,6 +185,7 @@ class Daemon:
                 for key in (
                     "kernel_id",
                     "language",
+                    "run",
                     "birth_id",
                     "start_environment",
                     "start_execution",
