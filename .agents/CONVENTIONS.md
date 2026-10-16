@@ -91,7 +91,7 @@ CI runs the same checks, and the math checker's tests (`uv run pytest -q package
 
 ## Licensing
 
-- Every source file starts with `# SPDX-License-Identifier: MIT`, or the same in the file type's own comment syntax (`//`, `/* */`, `<!-- -->`). JSON files cannot carry it.
+- Every source file starts with `# SPDX-License-Identifier: MIT`, or the same in the file type's own comment syntax (`//`, `/* */`, `<!-- -->`). JSON files cannot carry it. A file ported from an Apache-2.0 source says `Apache-2.0` instead and keeps that source's notices ([LICENSING.md](../docs/LICENSING.md)).
 - New dependencies must follow the tiers in [LICENSING.md](../docs/LICENSING.md). Tier 1 platform code may depend only on MIT, MIT-0, BSD, ISC, Apache-2.0, PSF-2.0, PostgreSQL, public-domain or unmodified MPL-2.0 packages.
 - Never import or link GPL, LGPL or AGPL code from platform code. GPL research tools are reached only through process or protocol boundaries.
 - Add each new runtime dependency to the LICENSING.md component table in the same pull request.
@@ -120,6 +120,7 @@ CI runs the same checks, and the math checker's tests (`uv run pytest -q package
 - Tests that load `examples/` files keep the examples valid.
 - Security behavior gets explicit negative tests (denials, rejected inputs).
 - Integration tests that need OpenShell, KVM, a cluster or the public registries are marked `@pytest.mark.integration`. The root `conftest.py` skips them unless `SS_INTEGRATION=1`. They run on babbage, not in CI.
+- Tests that call the deployment's real model gateway, for the labs, are marked `@pytest.mark.live`. The root `conftest.py` skips them unless `SS_LIVE_GATEWAY` is set, so CI never runs one. A live test reports what it measures and gates nothing unless its fixture says so ([specs](../docs/specs/README.md)).
 - Async tests and fixtures run under pytest-asyncio's auto mode, so they need no `asyncio` mark.
 - Every test has a 300 s limit (pytest-timeout), so a hang fails instead of stalling CI. `--timeout=0` turns it off for long manual runs. In CI a fast-tier test has 120 s; a test past its limit has every thread's stack printed, then its worker is ended and xdist names the test.
 - A component with a deadline, a lease or a polling interval reads time through the `Clock` protocol in `contracts` and takes its timeouts and intervals as constructor parameters, defaulting to `SYSTEM_CLOCK` and the production values. Code that predates this rule is converted as the refactoring plan reaches it. Tests pass `sandbox_science.testing.FakeClock` and short timeouts instead of patching module constants, and wait for a condition with `eventually()` instead of sleeping. A timeout test uses a peer that never answers, so the timeout is the only possible outcome.

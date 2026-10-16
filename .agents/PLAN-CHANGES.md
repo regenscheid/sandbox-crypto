@@ -2,11 +2,43 @@
 
 Dated list of changes to the plan, decisions and conventions ([conventions](CONVENTIONS.md)), newest first, one or two lines each. Progress and lab results are in PR descriptions, [lab reports](docs/agent-reports/) and the git log. The earlier long-form log is in git: `git show 0e6a662:.agents/PLAN-CHANGES.md`.
 
+## 2026-10-16
+
+Conventions, with the `live` marker (#455) and the GPT adapter's ported code (#452):
+
+- **`live` tests.** A test marked `@pytest.mark.live` calls the deployment's real model gateway, for the labs. The root `conftest.py` skips it unless `SS_LIVE_GATEWAY` is set, so CI never runs one. Added to [CONVENTIONS](CONVENTIONS.md#testing).
+- **Ported Apache-2.0 files.** A file ported from an Apache-2.0 source (`orchestrator/pairing.py`, from OpenAI Codex) carries `SPDX-License-Identifier: Apache-2.0` and its source's notices, and its package declares `MIT AND Apache-2.0` ([licensing](../docs/LICENSING.md)). [CONVENTIONS](CONVENTIONS.md#licensing) says so.
+
+Decisions of the coordinator on the context-management build, which the owner can reverse:
+
+- **Provenance of an import** (#457; [context management](../docs/specs/context-management.md), CM-9). A ledger import of a results file is `observed` only when the file is an artifact revision that an execution wrote, with its lineage. Otherwise it is `interpreted`. A command-line task counts as the user's words, since the operator wrote it (#464).
+- **The user's move back restores the user's confirmation** ([ledger](../docs/LEDGER.md); #453). When the user moves a disputed published result back to `recorded`, keeping its material, what confirmed it before confirms it again. The main agent's move back needs a new confirmation. A caveat added later unconfirms nothing, and a reversed decision settles nothing.
+
+Decisions of the coordinator on lab 42's fixes, which the owner can reverse:
+
+- **A review holds plan changes, memory proposals and cancels as actions** ([consistency review spec](../docs/specs/consistency-review.md), CR-2; #449, B2). The review's snapshot holds the plan as recorded at dispatch, as context. A terminal review also lists the run's earlier windows' actions, as context (B5).
+- **A delegated run's output is the record; its summary is a claim** (CR-2, CR-4; #449, B3). A parent's review holds the delegated run's executions with their output, chosen by the numbers of its outcome. A value missing from output that was cut short, or from executions left out, is unverified, not contradicted.
+- **A run's answer to the user is the turn that answered** ([run service](../docs/specs/run-service.md), RS-10; #448, B4). Text held back by the plan's veto, and text written in closing rounds after the answer, are not the answer. The context-management view (CM-29) replaces RS-10, and the record's `answer` still says which text answered.
+- **A blank obstacle or refutation is absent** ([plans and delegation](../docs/specs/plans-and-delegation.md), PD-17, PD-18; #445, B6).
+
 ## 2026-10-15
+
+Decisions of the owner on context management (#439):
+
+- **The context-management spec is approved,** with questions 1 to 11 decided as recommended ([spec](../docs/specs/context-management.md); [specs README](../docs/specs/README.md), question 18). Folds start at 0.75 of the ceiling and stub old bulky tool output; the default ceiling is 600,000 tokens; a new run sees the recent raw work of earlier runs and folds of older work; no provider-native compaction in the first build; one control arm of skeleton-only folds; the geometry is option (b). **The pause on new work is lifted:** the build plan is in the [BACKLOG](BACKLOG.md#repository), and lab round 1, the continuity probes on both model families, is the acceptance condition.
+- **D61 is amended** ([decision register](../docs/DECISIONS.md)). GPT models go through LiteLLM's `/v1/responses` with reasoning items kept and replayed, and Claude models through `/v1/messages`. Replaying Claude's thinking is a deployment setting, off until a gateway image with LiteLLM's thinking fixes passes a conformance fixture. Other aliases keep chat completions. Each adapter is chosen per alias and none is used by default until the labs confirm.
+- **The ledger rule: weakening a settled state needs no authority; strengthening needs the user or a passing gate** ([ledger spec](../docs/specs/ledger.md); #440). The main agent reopens an obstructed question by itself, with a reason, and the ledger records a work record that ends `reopened`. This reverses the coordinator's earlier choice that leaving `obstructed` needed a decision. In general, an agent's strengthening change counts only checks, reviews and acceptances recorded after the entry was last weakened, and a flag on a settled entry is cleared by the user. On a settled claim or result the main agent may clear it after a check whose brief named the flag.
+
+Decisions of the coordinator on the ledger's research state, from #440's reviews, which the owner can reverse:
+
+- **Caveats are outside the gate's material and the citation check** (CR-4; CM-10). They unsettle nothing. An agent adds caveats and removes none; the user removes one from a settled entry by a decision.
+- **A user's obstruction without an assessment counts as settled** (CM-13). Its label is impossible, within its excluded scope when it names one. Every new obstruction names an excluded scope; an older one reads "scope not stated".
+- **A user's acceptance settles only the obstruction it was given for.** Obstructing again after a reopening needs a fresh acceptance or the user's own decision.
+- **The user edits a decision the user wrote directly,** without a decision. Agents never change one the user wrote, apart from adding its missing reopen condition.
 
 Decision of the owner on pausing work:
 
-- **New work waits for the context-management decision.** The owner is deciding how to manage the context of long runs. Their priority is strong recall and reasoning over long research projects; auditability and budget control come second ([STATUS](STATUS.md#open-questions)). Until the owner decides, no new work starts, and work in flight finishes. Waiting: skills K6a (#437, a draft, not to be reviewed or merged), the skills lab and the rest of the [BACKLOG](BACKLOG.md).
+- **New work waits for the context-management decision.** The owner is deciding how to manage the context of long runs. Their priority is strong recall and reasoning over long research projects; auditability and budget control come second ([STATUS](STATUS.md#open-questions)). Until the owner decides, no new work starts, and work in flight finishes. Waiting: skills K6a (#437, a draft, not to be reviewed or merged), the skills lab and the rest of the [BACKLOG](BACKLOG.md). The approval above lifted the pause.
 - **Direction for context management.** The owner uses both Claude and GPT models, so the approach must work for both. The owner prefers an existing library known to be good for long research sessions; failing that, the project follows closely how Claude Science and OpenScience manage context, rather than designing its own. A survey of libraries and a close study of those systems is under way, and the owner decides from its result. No live evaluation is planned.
 
 Decisions of the owner on the skills spec's questions 15 and 16, with the spec's approval (#373):

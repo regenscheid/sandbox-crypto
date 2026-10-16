@@ -7,7 +7,7 @@ not built. The as-built sections come first; everything under
 [Proposals (not built)](#proposals-not-built) is design, not running code. The
 requirement for a planning phase and live plan progress is confirmed
 ([D86](DECISIONS.md)); the [plans and delegation](specs/plans-and-delegation.md)
-specification and the [skills](specs/skills.md) specification are approved.
+specification, the [skills](specs/skills.md) specification and the [context management](specs/context-management.md) specification are approved.
 Standing authorization for autonomous work does not
 acquire an approval gate because a plan is useful.
 
@@ -79,7 +79,7 @@ What each input does:
   CM-40), the same messages rendered as its items, or through Claude's Messages API
   ([messages.py](../packages/orchestrator/src/sandbox_science/orchestrator/messages.py),
   CM-38), whose progress notes are the answer's text. MAIN retries a rate limit or an unavailable upstream up to three
-  times and stops with `context_limit` past `--max-input-chars`; compaction is not built.
+  times and stops with `context_limit` past `--max-input-chars`. A run's view holds the session's earlier runs' messages as sent; until folds are built, past half of `--max-input-chars` it leaves out the oldest and keeps the user's words ([context management](specs/context-management.md), CM-29, CM-30).
 - **Run records.** Saved runs keep the rendered messages and the prompt provenance;
   failed runs keep fixed failure metadata and partial outcomes
   ([projects.py](../packages/orchestrator/src/sandbox_science/orchestrator/projects.py) `RunRecord`).
@@ -235,7 +235,7 @@ authority or proof of provider behavior:
 ## Not built
 
 There is no prompt catalog or external prompt loader, no USER plan approval, no link from effects to plan
-steps, no liveness record for interrupted steps, no compaction,
+steps, no liveness record for interrupted steps, no folds of older work,
 no resume prompt and no durable record of display-repair calls or spend.
 Delegation is built as a role of the one loop, with the prompts listed above. An earlier,
 unwired prototype, including its delegated-child prompt and controller, is kept on the
@@ -273,7 +273,7 @@ These design rules hold for what is built and for the proposals below.
   scope/cursor and exact retained anchors. Approvals and user instructions, open
   questions, budgets, pending effects, the current plan and unresolved findings must
   remain visible. A failed summary does not advance a cursor or drop source context.
-  Child contexts receive pinned briefs, not the parent's unbounded transcript. The approved [context management](specs/context-management.md) spec meets these rules (CM-15 to CM-26); it is not built.
+  Child contexts receive pinned briefs, not the parent's unbounded transcript. The approved [context management](specs/context-management.md) spec meets these rules (CM-15 to CM-26); its archive, view and adapters are built and its folds are not.
 - **Capacity and provider failure:** harness errors keep a safe failed run, with no
   automatic retry of its tool effects. The model client retries a rate limit or an
   unavailable upstream up to three times. Any other future retry must enforce configured or user-authorized
