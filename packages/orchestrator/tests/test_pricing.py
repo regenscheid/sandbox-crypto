@@ -206,6 +206,56 @@ def test_a_call_past_a_tier_is_priced_wholly_at_it() -> None:
     assert cost(prices, at) == pytest.approx(72_000 * 5e-06 + 200_000 * 5e-07 + 2_000 * 3e-05)
 
 
+def live(base: float, tier: Tier) -> Json:
+    """A deployment's model information as the live gateway sends it: null fields for the
+    tiers its model has none of, beside the priced 272k tier. The tier's values are the
+    lab's (check-491); the base rates are half of them, for the test."""
+    fields: Json = {
+        "input_cost_per_token": base,
+        "output_cost_per_token": base * 3.75,
+        "cache_read_input_token_cost": base / 10,
+        "cache_creation_input_token_cost": base * 1.25,
+    }
+    for size in ("128k", "200k", "512k"):
+        for name in (
+            "input_cost_per_token",
+            "output_cost_per_token",
+            "cache_read_input_token_cost",
+            "cache_creation_input_token_cost",
+        ):
+            fields[f"{name}_above_{size}_tokens"] = None
+    fields |= {
+        "input_cost_per_token_above_272k_tokens": tier.input,
+        "output_cost_per_token_above_272k_tokens": tier.output,
+        "cache_read_input_token_cost_above_272k_tokens": tier.cache_read,
+        "cache_creation_input_token_cost_above_272k_tokens": tier.cache_write,
+    }  # fmt: skip
+    return fields
+
+
+@pytest.mark.parametrize(
+    ("alias", "tier"),
+    [
+        ("arrcodex-gpt-6-sol", Tier(272_000, 4e-06, 1.5e-05, 4e-07, 5e-06)),
+        ("arrcodex-gpt-daybreak-blue", Tier(272_000, 8e-06, 3e-05, 8e-07, 1e-05)),
+    ],
+)
+def test_null_tier_fields_name_no_tier(alias: str, tier: Tier) -> None:
+    """The live gateway's shape (#491's regression): null 128k, 200k and 512k fields are
+    no tiers, and the 272k tier prices a 283k-token call."""
+    info = {"data": [deployment(alias, "openai/x", **live((tier.input or 0) / 2, tier))]}
+    prices = only(prices_of(info, alias))
+    assert prices.tiers == (tier,)
+    lab = Tokens(fresh=83_000, cache_read=200_000, cache_write=0, output=2_000)
+    expected = (
+        83_000 * (tier.input or 0) + 200_000 * (tier.cache_read or 0) + 2_000 * (tier.output or 0)
+    )
+    assert cost(prices, lab) == pytest.approx(expected)
+    # Below the tier, the base rates.
+    small = Tokens(fresh=1_000, cache_read=0, cache_write=0, output=0)
+    assert cost(prices, small) == pytest.approx(1_000 * (tier.input or 0) / 2)
+
+
 def test_the_highest_tier_passed_applies() -> None:
     prices = Prices(1.0, 1.0, tiers=(Tier(128_000, 2.0, 2.0), Tier(200_000, 3.0, 3.0)))
     assert cost(prices, Tokens(150_000, 0, 0, 0)) == pytest.approx(150_000 * 2.0)

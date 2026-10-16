@@ -162,10 +162,13 @@ _KINDS: Final = {
 
 def _tiers(fields: dict[str, Any]) -> tuple[Tier, ...] | None:
     """A deployment's tiers from its ``…_above_<N>k_tokens`` fields; ``None`` when one of
-    them is not a price, which leaves the deployment unpriced."""
+    them is not a price, which leaves the deployment unpriced. A field that is null names
+    no tier: LiteLLM's model information lists every tier it knows of for every model,
+    null where the model has none (lab, 2026-10-16: null 128k, 200k and 512k fields beside
+    a priced 272k tier)."""
     rates: dict[int, dict[str, float]] = {}
     for key, value in fields.items():
-        if (named := _TIERED.fullmatch(key)) is None:
+        if value is None or (named := _TIERED.fullmatch(key)) is None:
             continue
         if (price := _price(value)) is None:
             return None
