@@ -109,6 +109,7 @@ function frontier(linked: boolean): FrontierAnswer {
 const holder = (note: string | null, revision = 4): EntryView => ({
   entry_id: HOLDER,
   pins: [],
+  figure_checks: [],
   handle: 'R-3',
   type: 'result',
   kind: null,

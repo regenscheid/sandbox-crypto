@@ -2849,6 +2849,42 @@ BEGIN SELECT RAISE(ABORT, 'chat pins are kept'); END""",
         schema.execute(statement)
 
 
+def _figure_checks(schema: Schema) -> None:
+    """Version 57: the figure checks (docs/specs/figures.md, FG-19 to FG-21). A save of
+    a document or a ledger entry records it in ``figure_sources`` until its figures are
+    checked, and when a check its checker could not finish is tried again (``tries``,
+    ``after``); ``figure_checks`` holds the result of each figure of a text's current
+    revision, by the block (or ``statement``) and the figure's place there (``chart:<n>``
+    or ``file:<n>``), replaced when a later revision is checked."""
+    subject = "subject_type TEXT NOT NULL CHECK (subject_type IN ('document', 'statement'))"
+    for statement in (
+        f"""CREATE TABLE figure_sources (
+    {subject},
+    subject_id TEXT NOT NULL,
+    project TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    tries INTEGER NOT NULL DEFAULT 0,
+    after REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (subject_type, subject_id)
+) STRICT""",
+        f"""CREATE TABLE figure_checks (
+    {subject},
+    subject_id TEXT NOT NULL,
+    project TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    place TEXT NOT NULL,
+    figure TEXT NOT NULL CHECK (figure GLOB 'chart:[0-9]*' OR figure GLOB 'file:[0-9]*'),
+    path TEXT,
+    input_sha256 TEXT NOT NULL CHECK (length(input_sha256) = 64),
+    status TEXT NOT NULL CHECK (status IN ('accepted', 'rejected', 'unavailable')),
+    result TEXT NOT NULL CHECK (json_valid(result) AND length(CAST(result AS BLOB)) <= 65536),
+    checked TEXT NOT NULL,
+    PRIMARY KEY (subject_type, subject_id, place, figure)
+) STRICT""",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -2905,6 +2941,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _fold_proposals,
     _document_pins,
     _statement_and_chat_pins,
+    _figure_checks,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

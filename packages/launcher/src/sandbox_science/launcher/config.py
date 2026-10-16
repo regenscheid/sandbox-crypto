@@ -344,8 +344,9 @@ class RunServiceConfig(_Strict):
     a limit; none when unset."""
     math_checks: ConfigPath | None = None
     """The math checker's build, ``web/workspace/dist-math`` after ``npm run build:math``:
-    with it, the run service checks the documents' formulas; without it, every formula
-    shows "renderer unavailable"."""
+    with it, the run service checks the documents' formulas, and their charts with the
+    figure checker it holds (``figures``); without it, every formula shows "renderer
+    unavailable" and every chart's check is unavailable."""
     node: Annotated[str, AfterValidator(_command)] = "node"
     """Node 22.12 or newer, for the math checks: a path, or a name on ``PATH``."""
     pass_env: tuple[Variable, ...] = ()

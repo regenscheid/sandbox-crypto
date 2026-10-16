@@ -381,6 +381,7 @@ export interface EntryView {
   reason: string;
   anchors: Record<string, unknown>[];
   pins: Record<string, unknown>[];
+  figure_checks: Record<string, unknown>[];
 }
 
 export type EnvironmentState = "creating" | "ready" | "stopped" | "deleted";

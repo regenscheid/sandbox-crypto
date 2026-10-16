@@ -25,6 +25,7 @@ from .documents import USER, Author, DocumentError, DocumentStore, store_path
 from .documents.agent_text import visible
 from .documents.errors import CONFLICT
 from .documents.tool import view_blocks
+from .figurechecks import subscribe as check_figures
 from .history.reads import Register, shown
 from .ledger import Ledger
 from .mathchecks import subscribe as check_math
@@ -231,6 +232,7 @@ def document(args: argparse.Namespace) -> int:
         project = projects.get(args.project)
     store = DocumentStore(store_path(args.state_dir), producer="harness-cli")
     check_math(store)
+    check_figures(store)
     try:
         match args.action:
             case "import":

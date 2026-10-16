@@ -144,6 +144,7 @@ const past: FrontierPastAnswer = {
 const holder: EntryView = {
   entry_id: HOLDER,
   pins: [],
+  figure_checks: [],
   handle: 'R-3',
   type: 'result',
   kind: null,

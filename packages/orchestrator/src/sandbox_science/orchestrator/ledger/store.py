@@ -44,6 +44,7 @@ from sandbox_science.orchestrator.documents.normalize import normalize
 from sandbox_science.orchestrator.documents.pins import newer, text_references
 from sandbox_science.orchestrator.documents.pins import pin as pin_references
 from sandbox_science.orchestrator.documents.project_macros import head as macro_head
+from sandbox_science.orchestrator.figurechecks import results as figure_results
 from sandbox_science.orchestrator.projects import ProjectError, recorded, run_id_of
 
 from . import evidence, flags, frontier, gate, standing
@@ -269,6 +270,7 @@ class Ledger:
                 reason=found[6],
                 anchors=json.loads(found[9] or "[]"),
                 pins=newer(db, project, json.loads(found[10] or "[]")),
+                figure_checks=figure_results(db, "statement", row.entry_id, number),
             )
 
     def entries(

@@ -43,6 +43,10 @@ holds them again if nothing changed. A message the user writes meanwhile starts 
 consolidation run (the coordinator's decision of 2026-10-16): its view shows every
 current decision in one line, and it is told to propose how to consolidate them, for
 the user to approve; the held messages and requests still wait.
+
+Each look also starts, unless one still runs, the figure checks of the documents and
+ledger entries saved since (``figurechecks``, FG-19), wherever they were saved, with the
+configured figure checker: a check never holds up a run.
 """
 
 from __future__ import annotations
@@ -67,6 +71,8 @@ from .control.errors import BUSY
 from .delegation.records import DelegationRecords
 from .documents.annotations import Annotations
 from .documents.tool import REQUESTS_TASK, WorkRequests
+from .figurecheck import FigureChecker
+from .figurechecks import FigureChecks
 from .harness import Harness, RunRequest, admit, save
 from .history import Archive, Folder
 from .history.markers import Decided, current_decisions
@@ -130,6 +136,7 @@ class RunService:
         poll: float = POLL_SECONDS,
         retry: float = RETRY_SECONDS,
         clock: Clock = SYSTEM_CLOCK,
+        figures: FigureChecker | None = None,
     ) -> None:
         if harness.stores is None:
             raise ValueError("the run service needs the state directory's stores")
@@ -148,17 +155,26 @@ class RunService:
         self.holder = secrets.token_hex(16)
         self._beaten = -BEAT_SECONDS
         self.ledger = Ledger(harness.stores.documents)
+        self.figures = FigureChecks(harness.stores.documents, figures)
+        self.checking: asyncio.Task[int] | None = None
+        """The figure checks running, which the next look does not start again."""
         self.marks: dict[tuple[str, str], tuple[tuple[int, int], tuple[Decided, ...]]] = {}
         """When each session's messages were held for its research state: the ledger's
         mark, and the session's current decisions, whose change queues them again."""
 
     async def serve(self) -> None:
         """Run until cancelled. The runs in progress then end ``interrupted``."""
+        # Texts saved before figure checks were built are checked once now.
+        await threaded(self.figures.backfill)
         try:
             while True:
                 await self.tick()
                 await self.clock.sleep(self.poll)
         finally:
+            if self.checking is not None:
+                self.checking.cancel()
+                with contextlib.suppress(BaseException):
+                    await self.checking
             for (project, session), active in list(self.active.items()):
                 if active.task is None or active.task.done():
                     continue  # it ended on its own
@@ -174,6 +190,11 @@ class RunService:
         if now - self._beaten >= BEAT_SECONDS:
             await threaded(self.runs.beat, self.holder)
             self._beaten = now
+        if self.checking is None or self.checking.done():
+            ended = self.checking
+            if ended is not None and not ended.cancelled() and ended.exception() is not None:
+                _log.warning("figure checks failed: %r", ended.exception())
+            self.checking = asyncio.create_task(self.figures.drain())
         for dead in await threaded(self.runs.dead):
             mine = self.active.get((dead.project, dead.session))
             if mine is not None and mine.run == dead.run:

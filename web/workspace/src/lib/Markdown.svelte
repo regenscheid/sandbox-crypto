@@ -12,7 +12,8 @@
   `renderDocument`), with the server's IDs and the document's macros, and reports where
   the two parsers disagree in `mismatches`. Given `pins`, the text's reference map, each
   path image it shows is drawn in place (figureRefs.ts, `FigureRef`); given `repin`, a
-  figure with a newer revision offers to move its pin there.
+  figure with a newer revision offers to move its pin there. Given `checks`, the text's
+  figure checks, each chart shows its result (FG-23).
 -->
 <script lang="ts">
   import { flushSync, getContext, mount, unmount } from 'svelte';
@@ -33,6 +34,7 @@
     pins = [],
     projectId = null,
     repin = null,
+    checks = null,
   }: {
     source: string;
     document?: DocumentInput | null;
@@ -41,6 +43,7 @@
     pins?: Pin[];
     projectId?: string | null;
     repin?: ((block: string, path: string, revision: number) => Promise<void>) | null;
+    checks?: Pin[] | null;
   } = $props();
   const projectMacros = getContext<(() => MacroSet) | undefined>('project-macros');
   /** Counts what makes this text render again: repairs it waits for, or its turn in a go. */
@@ -102,7 +105,7 @@
       }),
     );
     // A chart fence is drawn where it is written, from the data its text pins (FG-15).
-    for (const placed of placeCharts(target, pins, references.length))
+    for (const placed of placeCharts(target, pins, references.length, checks))
       shown.push(
         mount(FigureChart, { target: placed.target, props: { projectId, chart: placed } }),
       );

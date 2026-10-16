@@ -715,6 +715,9 @@ class EntryView(EntrySummary):
     pins: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]])
     """The statement's references to recorded files, each with the revision it is pinned
     to and a newer one as ``latest``, or why it is not pinned (figures spec, FG-7)."""
+    figure_checks: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]])
+    """The checks of the statement's figures at this revision, when it was checked as the
+    current one (figures spec, FG-23; ``figurechecks.results``)."""
 
 
 class EntryPage(Contract):

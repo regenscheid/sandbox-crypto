@@ -122,6 +122,37 @@ export interface ChartData {
   sha256: string;
 }
 
+/** A figure check's result as the server records it (FG-21, FG-23); `unchecked` when
+ * the revision shown has none, as an earlier revision or one not checked yet. */
+export interface CheckView {
+  status: 'accepted' | 'rejected' | 'unavailable' | 'unchecked';
+  errors: { kind: string; message: string; line: number | null; column: number | null }[];
+  notes: { kind: string; message: string }[];
+  reason: string | null;
+}
+
+/** The check of the `nth` chart at `place`: its block, or `statement` in a ledger
+ * statement, which has no blocks of its own. */
+export function chartCheck(checks: readonly Pin[], place: string, nth: number): CheckView {
+  const found = checks.find((item) => item.place === place && item.figure === `chart:${nth}`);
+  const status = text(found?.status);
+  const problems = (value: unknown) =>
+    (Array.isArray(value) ? (value as Pin[]) : []).map((item) => ({
+      kind: text(item.kind),
+      message: text(item.message),
+      line: count(item.line),
+      column: count(item.column),
+    }));
+  return {
+    status: ['accepted', 'rejected', 'unavailable'].includes(status)
+      ? (status as CheckView['status'])
+      : 'unchecked',
+    errors: problems(found?.errors),
+    notes: problems(found?.notes),
+    reason: text(found?.reason) || null,
+  };
+}
+
 /** A chart fence placed in the rendered text. */
 export interface PlacedChart {
   target: HTMLElement;
@@ -130,6 +161,8 @@ export interface PlacedChart {
   /** Its data paths that are not pinned, each with why: the chart is not drawn. */
   broken: { path: string; reason: string }[];
   drawn: boolean;
+  /** Its check, in a text that is checked (FG-23); none in one that is not, as chat. */
+  check: CheckView | null;
 }
 
 /** The data paths a chart's text names (`data.url`), each occurrence in order, as the
@@ -158,9 +191,16 @@ export function chartPaths(source: string): string[] {
  * Give each `vega-lite` fence in `root` a place of its own (FG-1, FG-15), with the pins of
  * the data paths it names, one for each occurrence, in order: in a document, only its own
  * block's pins, so one chart never takes another's (review of #500, L3). A text's first
- * `FIGURES_PER_TEXT` figures, counting `before` already placed, are drawn at once.
+ * `FIGURES_PER_TEXT` figures, counting `before` already placed, are drawn at once. Given
+ * `checks`, the text's figure checks, each chart has its own.
  */
-export function placeCharts(root: HTMLElement, pins: readonly Pin[], before = 0): PlacedChart[] {
+export function placeCharts(
+  root: HTMLElement,
+  pins: readonly Pin[],
+  before = 0,
+  checks: readonly Pin[] | null = null,
+): PlacedChart[] {
+  const seen = new Map<string, number>();
   const queues = new Map<string, Pin[]>();
   const key = (block: string | null, path: string) => `${block ?? ''}\u0000${path}`;
   for (const pin of pins) {
@@ -192,7 +232,12 @@ export function placeCharts(root: HTMLElement, pins: readonly Pin[], before = 0)
     const target = root.ownerDocument.createElement('span');
     target.className = 'figure-ref';
     code.parentElement!.replaceWith(target);
-    placed.push({ target, source, data, broken, drawn: before + placed.length < FIGURES_PER_TEXT });
+    const place = block ?? 'statement';
+    const nth = seen.get(place) ?? 0;
+    seen.set(place, nth + 1);
+    const drawn = before + placed.length < FIGURES_PER_TEXT;
+    const check = checks === null ? null : chartCheck(checks, place, nth);
+    placed.push({ target, source, data, broken, drawn, check });
   }
   return placed;
 }

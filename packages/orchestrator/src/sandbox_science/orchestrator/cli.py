@@ -66,6 +66,7 @@ from .connectors import ProxyClient, check_proxy
 from .consistency.models import ReviewConfig
 from .control import ControlError
 from .documents import DocumentError, DocumentStore, store_path
+from .figurecheck import FigureChecker
 from .harness import (
     Finished,
     Harness,
@@ -415,7 +416,14 @@ async def _serve(args: argparse.Namespace) -> int:
         )
         harness = _harness(args, client, main, stores, stack, interruption)
         print(f"serving the sessions of {args.state_dir}", file=sys.stderr)
-        serving = asyncio.ensure_future(RunService(harness, poll=args.poll).serve())
+        figures = (
+            FigureChecker(args.math_node, args.figure_launcher, args.figure_bundle)
+            if args.figure_launcher is not None
+            else None
+        )
+        serving = asyncio.ensure_future(
+            RunService(harness, poll=args.poll, figures=figures).serve()
+        )
         # SIGTERM stops it as Ctrl-C does: runs in progress end interrupted.
         loop = asyncio.get_running_loop()
         loop.add_signal_handler(signal.SIGTERM, serving.cancel)
@@ -567,6 +575,15 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
         "--math-bundle", type=Path, help="operator-configured built math checker bundle"
     )
     command.add_argument(
+        "--figure-launcher",
+        type=Path,
+        help="operator-configured bounded figure check launcher, run on --math-node by serve "
+        "(FG-20)",
+    )
+    command.add_argument(
+        "--figure-bundle", type=Path, help="operator-configured built figure checker bundle"
+    )
+    command.add_argument(
         "--mcp-proxy", help="the MCP proxy's address; agents get its servers' tools (D-08)"
     )
     command.add_argument(
@@ -656,6 +673,11 @@ def _check_agent(parser: argparse.ArgumentParser, args: argparse.Namespace) -> N
         any(v is None or not v.is_absolute() for v in configured_math) or args.state_dir is None
     ):
         parser.error("math checks need --state-dir and all three absolute --math-* paths")
+    configured_figures = (args.figure_launcher, args.figure_bundle)
+    if any(v is not None for v in configured_figures) and (
+        any(v is None or not v.is_absolute() for v in configured_figures) or args.math_node is None
+    ):
+        parser.error("figure checks need --math-node and both absolute --figure-* paths")
     if args.reviewer_model is not None:
         if args.state_dir is None:
             parser.error("--reviewer-model needs --state-dir for durable snapshots")

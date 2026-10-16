@@ -211,6 +211,7 @@
         document={input}
         bind:mismatches
         pins={found.pins ?? []}
+        checks={found.figure_checks ?? []}
         {projectId}
         repin={shown.number === info.head ? (b, p, r) => repin(found, b, p, r) : null}
       />
