@@ -1211,6 +1211,7 @@ class Harness:
                 connectors=connectors.servers if connectors is not None else (),
                 earlier=len(admitted.request.history),
                 archived_as=chat.run if chat is not None else None,
+                images=await self._reviewer_images(inventory, context),
             )
             on_close(reviews.close)
         artifacts = ArtifactPublisher(inventory, self.client, context, run_id=run_id, alias=alias)
@@ -1313,6 +1314,15 @@ class Harness:
             images=viewer,
             image_offer={"offered": accepts, "why": why},
         )
+
+    async def _reviewer_images(
+        self, inventory: ArtifactInventory, context: ExecutionContext
+    ) -> ImageViewer | None:
+        """The reviewer's viewer, when its alias accepts images (FG-39). What it draws
+        is the platform's execution, never the reviewer's (CR-2, CR-F8)."""
+        if self.reviewer is None or not (await self._images(self.reviewer.alias))[0]:
+            return None
+        return ImageViewer(inventory, context.model_copy(update={"actor": "platform"}), self.client)
 
     async def _images(self, alias: str) -> tuple[bool, str]:
         """Whether a run on ``alias`` is offered ``view_image``, and why (FG-33): the

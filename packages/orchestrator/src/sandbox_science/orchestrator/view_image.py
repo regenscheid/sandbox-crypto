@@ -36,7 +36,7 @@ from .aio import threaded
 from .artifacts import ArtifactInventory, scoped_path
 from .documents.errors import INVALID_REQUEST, NOT_FOUND, DocumentError
 from .hooks import Notice
-from .model import ToolSpec
+from .model import Message, ToolSpec
 from .notices import IMAGES
 from .worker_client import WorkerClient
 
@@ -48,6 +48,12 @@ MAX_VIEWS: Final = 32
 """Images one run views (FG-36)."""
 DRAW_OUTPUT: Final = 8 * 1024 * 1024
 """The helper's answer at most: a drawn PNG of ``MAX_SOURCE`` bytes, in base64, in JSON."""
+DRAWN: Final = (
+    "drawn in the session's environment by its helper, from the file there: as trustworthy "
+    "as that environment, whose code could have changed the helper; the platform checked "
+    "only that it is a PNG within the limits"
+)
+"""What a drawn image's record says of it (docs/specs/figures.md, as built)."""
 _PNG: Final = b"\x89PNG\r\n\x1a\n"
 _JPEG: Final = b"\xff\xd8\xff"
 _JPEG_FRAMES: Final = frozenset({*range(0xC0, 0xC4), *range(0xC5, 0xC8), *range(0xC9, 0xCC)}) | {
@@ -188,9 +194,9 @@ class ImageViewer:
                 return _refused(ErrorKind.INTERNAL, "the drawing is not a PNG within the limits")
             _, width, height = found
             record["drawn"] = {"sha256": hashlib.sha256(data).hexdigest(), "page": page,
-                               "region": region}  # fmt: skip
+                               "region": region, "trust": DRAWN}  # fmt: skip
         record.update(media_type=media, width=width, height=height)
-        token = images.keep(images.Image(media, data))
+        token = images.keep(images.Image(media, data, width, height))
         self.tokens.append(token)
         shown = {"framing": IMAGES.version, **record}
         notice = Notice("images", (token,), IMAGES.text, shown)
@@ -281,6 +287,11 @@ class ImageViewer:
             INVALID_REQUEST, "name the file by path, or by artifact_id and revision"
         )
 
+    def fresh(self, context: ExecutionContext | None = None) -> ImageViewer:
+        """Another viewer over the same inventory and worker, with images of its own: a
+        review's, whose drawings the platform asks for (``context``'s actor)."""
+        return ImageViewer(self.inventory, context or self.context, self.client)
+
     def close(self) -> None:
         """The run ended: its images go as their lines from now on (FG-36)."""
         images.forget(self.tokens)
@@ -292,6 +303,14 @@ _KINDS: Final = {
     "invalid_request": ErrorKind.INVALID_REQUEST,
     "conflict": ErrorKind.CONFLICT,
 }
+
+
+def framed(viewed: Viewed) -> Message:
+    """The message that carries a viewed image after the turn's results (FG-37)."""
+    if viewed.notice is None or viewed.token is None:
+        raise ValueError("only a viewed image has a message")
+    text = viewed.notice.framing + json.dumps(viewed.notice.payload, ensure_ascii=False)
+    return {"role": "user", "content": text, images.IMAGE: viewed.token}
 
 
 def _refused(kind: ErrorKind, message: str) -> Viewed:
