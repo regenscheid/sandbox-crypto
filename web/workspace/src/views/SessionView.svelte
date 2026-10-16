@@ -7,6 +7,7 @@
   import { kernelPanelScope } from '../lib/kernels';
   import { planPanelScope } from '../lib/plans';
   import ChatPanel from './ChatPanel.svelte';
+  import FoldProposals from './FoldProposals.svelte';
   import JobsPanel from './JobsPanel.svelte';
   import KernelPanel from './KernelPanel.svelte';
   import PlanPanel from './PlanPanel.svelte';
@@ -69,6 +70,7 @@
   </dl>
 
   <ChatPanel {projectId} {sessionId} closed={detail.session.closed_at !== null} />
+  <FoldProposals {projectId} {sessionId} />
   {@const planScope = planPanelScope(projectId, sessionId, detail)}
   {#if planScope}
     <PlanPanel {projectId} {sessionId} closed={detail.session.closed_at !== null} />

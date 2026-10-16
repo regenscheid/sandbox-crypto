@@ -7,6 +7,7 @@
   import HiddenBanner from './HiddenBanner.svelte';
   import { stoppedText } from '../lib/chat';
   import { entries, usageLine } from '../lib/transcript';
+  import RunFolds from './RunFolds.svelte';
   import RunSkills from './RunSkills.svelte';
   import ToolCall from './ToolCall.svelte';
 
@@ -51,6 +52,7 @@
 </dl>
 
 <RunSkills {run} />
+<RunFolds {run} />
 
 {#if run.stopped === 'error'}
   <p class="problem">Partial transcript. No final answer was recorded.</p>

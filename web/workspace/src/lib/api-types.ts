@@ -10,6 +10,21 @@ export interface AdmissionSummary {
   recorded: boolean;
 }
 
+/** A place a revision or work record comes from (CM-9), besides the change's own tool call: an archive message by its ID (``message``, with ``quote`` for words of the user's), or a tool result by its call (``call``), whole or the characters ``start`` to ``end`` of its output; an artifact revision (``artifact``, ``revision``, optionally its ``sha256``); a document block at a revision (``document``, ``revision``, ``block``); or an entry revision (``entry``, ``revision`` defaulting to its current one). A PDF passage is anchored as a quote evidence link (LG-8). */
+export interface AnchorInput {
+  message: string | null;
+  call: string | null;
+  quote: string | null;
+  start: number | null;
+  end: number | null;
+  artifact: string | null;
+  document: string | null;
+  entry: string | null;
+  revision: number | null;
+  block: string | null;
+  sha256: string | null;
+}
+
 /** How the user closed a question. */
 export interface Answer {
   kind: "picked" | "free" | "decide" | "cancel";
@@ -401,6 +416,11 @@ export interface ExecutionContext {
   environment_id: string;
   policy_revision: string | null;
   actor: string;
+}
+
+/** A session's fold proposals waiting (CM-15), oldest first: each written by a model from folded material, which the user accepts or dismisses. */
+export interface FoldProposalList {
+  proposals: ProposalView[];
 }
 
 /** A category's frontier as its results read now, a page of its groups. */
@@ -961,6 +981,42 @@ export interface ProjectView {
   sessions: ProjectSession[];
   environments: EnvironmentView[];
   model_cost: ModelCost;
+}
+
+/** One operation a fold proposes, as its enrichment call gives it (CM-15). */
+export interface ProposalInput {
+  op: "issue" | "decision" | "work" | "caveat" | "assumption";
+  title: string | null;
+  statement: string | null;
+  kind: "question" | "hypothesis" | "contradiction" | null;
+  concerns: string[];
+  status: "rejected" | "in_effect" | null;
+  reason: string | null;
+  reopen_condition: string | null;
+  reopen_on: string[];
+  entry: string | null;
+  tried: string | null;
+  limit: "time" | "tools" | "context" | "ideas" | null;
+  caveat: string | null;
+  relied_on_by: string[];
+  basis: "user_quoted" | "observed" | "interpreted";
+  anchors: AnchorInput[];
+}
+
+/** A proposal as kept: what it proposes, the fold that proposed it, and its state. */
+export interface ProposalView {
+  proposal_id: string;
+  session: string;
+  fold: string;
+  run: string;
+  created: string;
+  proposal: ProposalInput;
+  anchors: Record<string, unknown>[];
+  state: "waiting" | "accepted" | "dismissed";
+  result: Record<string, unknown> | null;
+  reason: string | null;
+  decided_by: Record<string, unknown> | null;
+  decided_at: string | null;
 }
 
 export interface ProvisionDetail {

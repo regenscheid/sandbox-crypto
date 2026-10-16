@@ -315,7 +315,7 @@ export type ChatEntry =
       usage: string | null;
     }
   | { kind: 'tool'; seq: number; name: string; outcome: string; result: string }
-  | { kind: 'note'; seq: number; text: string; problem: boolean };
+  | { kind: 'note'; seq: number; text: string; problem: boolean; message?: string };
 
 const text = (value: unknown): string => (typeof value === 'string' ? value : '');
 const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
@@ -362,25 +362,44 @@ export function stoppedText(data: Record<string, unknown>): string {
   return failure ? `${said} Failure: ${visible(failure)}.` : said;
 }
 
-/** A fold of the run's view (context management, CM-46), as a line. */
+/** A fold of the run's view (context management, CM-46), or an overview of folds, with
+ * its level (CM-21), as a line; and the folded region over or back within its budget. */
 export function foldText(data: Record<string, unknown>): string {
   const state = text(data['state']);
   const span = list(data['span']).map(String);
   const positions = span.length === 2 ? ` positions ${span[0]} to ${span[1]}` : '';
-  if (state === 'started') return `A fold of${positions} started; its narrative is being written.`;
+  const level = typeof data['level'] === 'number' ? data['level'] : 1;
+  const overview = level > 1 || list(data['parts']).length > 0;
+  const what = overview ? `An overview (level ${level}) of${positions}` : `A fold of${positions}`;
+  if (state === 'started') return `${what} started; its narrative is being written.`;
   if (state === 'waiting') return 'The view reached its wall: the run waits for the running fold.';
   if (state === 'waited')
     return `The view reached its wall and waited ${String(data['seconds'])} s for the running fold.`;
-  if (state === 'rejected')
-    return `A fold of${positions} was rejected: ${visible(text(data['reason']))}.`;
+  if (state === 'rejected') return `${what} was rejected: ${visible(text(data['reason']))}.`;
+  if (state === 'region_over_budget') {
+    const budget = typeof data['budget_tokens'] === 'number' ? data['budget_tokens'] : '?';
+    return `The folded region is over its budget of ${budget.toLocaleString('en-US')} tokens, with nothing left to merge.`;
+  }
+  if (state === 'region_within_budget') return 'The folded region is back within its budget.';
   const freed = typeof data['freed'] === 'number' ? data['freed'].toLocaleString('en-US') : '?';
-  const how = state === 'applied' ? 'with its narrative' : 'skeleton-only';
+  const how =
+    state === 'applied'
+      ? 'with its narrative'
+      : state === 'code_merge'
+        ? 'built by code'
+        : 'skeleton-only';
   const reason = text(data['reason']);
+  const kept = record(data['proposals'])['kept'];
+  const proposed =
+    typeof kept === 'number' && kept > 0
+      ? ` It proposed ${kept} research-state ${kept === 1 ? 'update' : 'updates'} for the user to accept or dismiss.`
+      : '';
   return (
-    `Folded${positions}, ${how}: about ${freed} tokens freed, ${String(data['stubs'] ?? 0)} results stubbed.` +
+    `${overview ? `Overview (level ${level}) of` : 'Folded'}${positions}, ${how}: about ${freed} tokens freed, ${String(data['stubs'] ?? 0)} results stubbed.` +
     (reason && state !== 'applied'
-      ? ` ${visible(reason.replace(/^skeleton-only: /, 'The narrative failed: '))}.`
-      : '')
+      ? ` ${visible(reason.replace(/^(skeleton-only|built by code): /, 'The narrative failed: '))}.`
+      : '') +
+    proposed
   );
 }
 
@@ -469,7 +488,15 @@ export function chatEntries(events: readonly RunEvent[]): ChatEntry[] {
         problem: false,
       });
     } else if (kind === 'fold') {
-      entries.push({ kind: 'note', seq, text: foldText(data), problem: false });
+      const fold = text(data['fold']);
+      entries.push({
+        kind: 'note',
+        seq,
+        text: foldText(data),
+        problem: text(data['state']) === 'region_over_budget',
+        // The fold record's text, read whole from the session's archive.
+        ...(/^msg-[0-9a-f]{16}$/.test(fold) ? { message: fold } : {}),
+      });
     } else if (kind === 'stopped') {
       const stopped = text(data['stopped']);
       entries.push({

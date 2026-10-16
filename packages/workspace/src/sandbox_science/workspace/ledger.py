@@ -19,7 +19,6 @@ one with a ``reason``. Same-origin, the user's only.
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -40,7 +39,7 @@ from sandbox_science.orchestrator.ledger.models import (
     GateView,
     WorkPage,
 )
-from sandbox_science.orchestrator.ledger.proposals import FoldProposals
+from sandbox_science.orchestrator.ledger.proposals import FoldProposals, ProposalView
 from sandbox_science.orchestrator.projects import ProjectError
 
 from . import documents
@@ -108,6 +107,13 @@ class LedgerWork(Contract):
     project_id: Identifier
     observed_at: AwareDatetime
     work: WorkPage
+
+
+class FoldProposalList(Contract):
+    """A session's fold proposals waiting (CM-15), oldest first: each written by a model
+    from folded material, which the user accepts or dismisses."""
+
+    proposals: list[ProposalView]
 
 
 class LedgerHistory(Contract):
@@ -466,7 +472,7 @@ async def proposals_read(request: web.Request) -> web.Response:
 
     def read(ledger: Ledger) -> str:
         waiting = FoldProposals(ledger).waiting(project, session)
-        return json.dumps({"proposals": [p.model_dump(mode="json") for p in waiting]})
+        return FoldProposalList(proposals=waiting).model_dump_json()
 
     return await read_answer(request, project, read)
 

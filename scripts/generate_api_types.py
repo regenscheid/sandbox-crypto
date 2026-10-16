@@ -55,6 +55,7 @@ from sandbox_science.workspace.frontier import (
 )
 from sandbox_science.workspace.kernels import WorkspaceObservation
 from sandbox_science.workspace.ledger import (
+    FoldProposalList,
     LedgerCitations,
     LedgerEntry,
     LedgerGate,
@@ -106,6 +107,7 @@ MODELS: tuple[type[BaseModel], ...] = (
     FrontierPastAnswer,
     MemoryAnswer,
     ProjectSkills,
+    FoldProposalList,
     SkillSettingsChange,
     SkillSettingsView,
     MemoryProposals,

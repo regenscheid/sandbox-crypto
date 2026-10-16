@@ -3,9 +3,10 @@
 <script lang="ts">
   import { chatEntries, type WatchedRun } from '../lib/chat';
   import Markdown from '../lib/Markdown.svelte';
+  import { messageHref } from '../lib/router';
   import { visible, visibleOutput } from '../lib/text';
   import HiddenBanner from './HiddenBanner.svelte';
-  let { run }: { run: WatchedRun } = $props();
+  let { run, projectId = null }: { run: WatchedRun; projectId?: string | null } = $props();
   const entries = $derived(chatEntries(run.events));
 </script>
 
@@ -35,7 +36,10 @@
           <pre>{visibleOutput(entry.result)}</pre>
         </details>
       {:else if entry.kind === 'note'}
-        <p class:problem={entry.problem} class="muted">{entry.text}</p>
+        <p class:problem={entry.problem} class="muted">
+          {entry.text}{#if entry.message && projectId}
+            <a href={messageHref(projectId, entry.message)}>Its record</a>{/if}
+        </p>
       {:else}
         <p class="muted">{entry.text}</p>
       {/if}
