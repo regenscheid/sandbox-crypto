@@ -11,8 +11,10 @@ it. ``up`` goes on without them, and ``skills update`` exits 1.
 ``up --update-skills`` and ``sandbox-science skills update`` import each pack again from
 its ref, and move each project's pin to the import, saying what changed since the pin it
 left. Each step is a ``sandbox-science-harness skills`` command, run on the user's machine
-with the user's git. With ``[skills] embedding_model`` the import embeds the skills
-through the gateway, given the key file's path, which the launcher never opens.
+with the user's git. With ``[skills] embedding_model`` the import embeds the skills,
+and with ``metadata_model`` it has the pass derive what the pack leaves out, both through
+the gateway, given the key file's path, which the launcher never opens; their calls count
+for the first project that names the pack.
 """
 
 from __future__ import annotations
@@ -31,18 +33,25 @@ from .supervise import Supervisor, passed
 
 
 def import_argv(config: LauncherConfig, name: str, pack: SkillPackConfig) -> list[str]:
-    """``skills import``'s action and options for ``pack``: the key file by its path."""
+    """``skills import``'s action and options for ``pack``: the key file by its path, and
+    the first project that names the pack, whose cost the import's model calls count for."""
     origin = ["--git", pack.git] if pack.git is not None else ["--archive", str(pack.archive)]
     argv = ["import", "--name", name, *origin]
     if pack.ref is not None:
         argv += ["--ref", pack.ref]
     if pack.path is not None:
         argv += ["--path", pack.path]
-    if (model := config.skills.embedding_model) is not None:
-        argv += [
-            "--embedding-model", model, "--model-url", config.model.url,
-            "--api-key-file", str(config.model.api_key_file),
-        ]  # fmt: skip
+    models = {
+        "--embedding-model": config.skills.embedding_model,
+        "--metadata-model": config.skills.metadata_model,
+    }
+    for flag, model in models.items():
+        if model is not None:
+            argv += [flag, model]
+    if any(model is not None for model in models.values()):
+        argv += ["--model-url", config.model.url, "--api-key-file", str(config.model.api_key_file)]
+        users = [project.id for project in config.projects if name in project.skills]
+        argv += ["--project", users[0]] if users else []
     return argv
 
 
@@ -157,6 +166,14 @@ def _imported(name: str, found: dict[str, Any], *, first: bool) -> str:
     embedded = cast(dict[str, Any], found.get("embeddings") or {})
     if "failed" in embedded:
         line += f"; embedding them failed, and runs embed them as they start: {embedded['failed']}"
+    derived = cast(dict[str, Any], found.get("derived") or {})
+    if "failed" in derived:
+        line += f"; the pass over the catalog failed: {derived['failed']}"
+    elif derived:
+        dropped = len(cast(list[object], derived.get("dropped") or []))
+        topics = len(cast(dict[str, object], derived.get("topics") or {}))
+        line += f"; the pass found {topics} topic{'' if topics == 1 else 's'}"
+        line += f", {dropped} item{'' if dropped == 1 else 's'} dropped" if dropped else ""
     return line
 
 

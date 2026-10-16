@@ -23,6 +23,7 @@ static = "web/workspace/dist"
 
 [skills]
 embedding_model = "embed"   # optional: the gateway's embedding alias
+metadata_model = "main"     # optional: the alias of the import's pass over the catalog
 
 [skills.packs.crypto]
 git = "https://github.com/OWNER/REPO"   # or archive = "pack.tar.gz"
@@ -250,6 +251,12 @@ class SkillsConfig(_Strict):
     """The gateway's embedding alias, of at most 200 bytes: imports embed the skills, and
     runs compare them with what they search for by meaning as well as words. None by
     default: words only."""
+    metadata_model: Annotated[str, AfterValidator(_alias)] | None = Field(
+        default=None, min_length=1
+    )
+    """The gateway's model alias, of at most 200 bytes, for the import's pass that derives
+    topics, entry skills, short descriptions and bindings from a pack's catalog. None by
+    default: no pass."""
     pass_env: tuple[Variable, ...] = ()
     """Environment variables the import's git gets besides the usual few and the run
     service's ``pass_env``, such as ``SSH_AUTH_SOCK`` for an ssh URL."""

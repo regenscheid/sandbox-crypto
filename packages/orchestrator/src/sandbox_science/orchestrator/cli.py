@@ -329,6 +329,7 @@ def _harness(
         ),
         mcp=mcp,
         vectors=vectors,
+        skills_metadata=getattr(args, "skills_metadata_model", None),
     )
 
 
@@ -385,6 +386,12 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
         "--skills-embedding-model",
         type=embedding_alias,
         help="the gateway's embedding model alias: skills are compared by meaning too",
+    )
+    command.add_argument(
+        "--skills-metadata-model",
+        type=embedding_alias,
+        help="the alias of the imports' model pass whose topics, entry skills and short "
+        "descriptions runs are given; none without it",
     )
     command.add_argument("--api-key-file", type=Path)
     command.add_argument("--min-isolation-tier", type=int, default=3)

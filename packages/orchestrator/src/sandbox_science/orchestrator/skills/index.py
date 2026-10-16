@@ -46,6 +46,8 @@ _CUTS: Final = (400, 240, 160, 100, 60)
 Shortening = Literal["none", "descriptions", "topics", "names", "counts"]
 ENTRY_CUT: Final = 160
 """An entry skill's description where the list names the others only."""
+ENTRY_LINE: Final = 400
+"""The entry skills' line where the list gives counts only."""
 
 
 @dataclass(frozen=True)
@@ -116,7 +118,8 @@ def index(entries: Sequence[Entry], budget: int = BUDGET) -> tuple[list[str], Sh
     """The index's lines, and how they were shortened to fit ``budget`` characters (SK-7):
     descriptions cut at a word, shorter until they fit; then skills listed by name, grouped
     by the topics the import's pass found, or by pack, entry skills keeping a description;
-    then the groups with their counts."""
+    then the groups with their counts, by topic or, past the budget, by pack, and as many
+    packs as fit; the counts never pass the budget."""
     lines = [_line(e, _shown(e)) for e in entries]
     if _size(lines) <= budget:
         return lines, "none"
@@ -134,11 +137,25 @@ def index(entries: Sequence[Entry], budget: int = BUDGET) -> tuple[list[str], Sh
     named += [f"- {group}: {', '.join(names)}" for group, names in groups.items()]
     if _size(named) <= budget:
         return named, "topics" if any(entry.topic for entry in entries) else "names"
-    counts = [f"- {group}: {len(names)} skills" for group, names in groups.items()]
-    entries_named = [e.qualified for e in entries if e.entry]
-    if entries_named:
-        counts.insert(0, f"- entry skills: {', '.join(entries_named)}")
-    return counts, "counts"
+    routes = [e.qualified for e in entries if e.entry]
+    head = [cut(f"- entry skills: {', '.join(routes)}", ENTRY_LINE)] if routes else []
+    counts = [*head, *(f"- {group}: {len(names)} skills" for group, names in groups.items())]
+    if _size(counts) <= budget:
+        return counts, "counts"
+    by_source: dict[str, int] = {}
+    for entry in entries:
+        by_source[entry.source] = by_source.get(entry.source, 0) + 1
+    counts = [*head, *(f"- {source}: {count} skills" for source, count in by_source.items())]
+    if _size(counts) <= budget:
+        return counts, "counts"
+    # As many packs as fit, and how many more: the counts never pass the budget.
+    kept: list[str] = []
+    for number, line in enumerate(counts):
+        rest = f"- and {len(counts) - number} more packs"
+        if _size([*kept, line, rest]) > budget:
+            return ([*kept, rest] if _size([*kept, rest]) <= budget else kept), "counts"
+        kept.append(line)
+    return kept, "counts"
 
 
 def _shown(entry: Entry) -> str:

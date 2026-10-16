@@ -280,12 +280,15 @@ class SkillStore:
         *,
         delegates: bool = True,
         excluded: Collection[str] | None = None,
+        derived: tuple[str, str] | None = None,
     ) -> SkillSet:
         """The skills a run of ``project`` is given now, or, with ``excluded``, would be
         given with those excluded instead of the settings'. A run of ``role`` gets the
         built-in skills ``ROLES`` gives it, with no role all of them, and a run that cannot
-        delegate (``delegates``) none that teach delegating. Each description is served as
-        the bodies are (``served``)."""
+        delegate (``delegates``) none that teach delegating. With ``derived``, an alias and
+        a pass version, the entries carry what that pass derived from their snapshots, and
+        what another alias's or version's pass derived is never served. Each description is
+        served as the bodies are (``served``)."""
         if self.control.missing:
             return SkillSet((), (), ())
         with self.control.read() as tx:
@@ -299,16 +302,14 @@ class SkillStore:
                 found = pin.pinned
                 revision = _revision(found)
                 sources.append(f"{pin.source}@{revision}")
-                derived = _derived(db, found.snapshot)
+                given = _derived(db, found.snapshot, derived) if derived is not None else {}
                 topics = {
                     skill: topic
-                    for topic, skills in cast(
-                        dict[str, list[str]], derived.get("topics", {})
-                    ).items()
+                    for topic, skills in cast(dict[str, list[str]], given.get("topics", {})).items()
                     for skill in skills
                 }
-                shorts = cast(dict[str, str], derived.get("descriptions", {}))
-                entries_of = set(cast(list[str], derived.get("entry", [])))
+                shorts = cast(dict[str, str], given.get("descriptions", {}))
+                entries_of = set(cast(list[str], given.get("entry", [])))
                 for name, description, body in db.execute(
                     "SELECT name,description,body_sha256 FROM skill_skills WHERE snapshot=? "
                     "ORDER BY name",
@@ -557,11 +558,11 @@ class SkillStore:
             return _pins(tx.sql, project)
 
 
-def _derived(db: sqlite3.Connection, snapshot: str) -> dict[str, Any]:
-    """What the latest pass derived from ``snapshot``, or nothing."""
+def _derived(db: sqlite3.Connection, snapshot: str, pass_: tuple[str, str]) -> dict[str, Any]:
+    """What the pass of this alias and version derived from ``snapshot``, or nothing."""
     row = db.execute(
-        "SELECT derived FROM skill_metadata WHERE snapshot=? ORDER BY created DESC LIMIT 1",
-        (snapshot,),
+        "SELECT derived FROM skill_metadata WHERE snapshot=? AND alias=? AND version=?",
+        (snapshot, *pass_),
     ).fetchone()
     return {} if row is None else cast(dict[str, Any], json.loads(row[0]))
 

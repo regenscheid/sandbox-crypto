@@ -92,6 +92,7 @@ from .runstate import RunState
 from .session_plans import PlanRef, SessionPlans
 from .skills import SkillStore, SkillTool
 from .skills.builtin import builtin_pack
+from .skills.derive import VERSION as PASS_VERSION
 from .skills.discovery import SkillDiscovery
 from .skills.embeddings import SkillVectors
 from .tools import HARNESS_TOOL_NAMES, Toolbox, ToolOutcome
@@ -439,6 +440,7 @@ class Harness:
         delegated: Role | None = None,
         gateway: ModelGateway | None = None,
         vectors: SkillVectors | None = None,
+        skills_metadata: str | None = None,
     ) -> None:
         """``checker`` is the configured math checker; without it, math checks report
         the renderer unavailable. A reviewer and a checker need stores. ``delegated`` is
@@ -446,11 +448,14 @@ class Harness:
         serves the other aliases a brief may choose, and says which it lists (PD-30);
         without it, delegated runs call ``delegated``'s alias only. ``vectors`` makes the
         skills' embeddings in the background, so that runs compare them by meaning too
-        once they exist (docs/specs/skills.md, SK-29)."""
+        once they exist (docs/specs/skills.md, SK-29). ``skills_metadata`` is the alias
+        of the import's model pass whose derivations, of this harness's version, runs are
+        given (SK-30); without it, none."""
         if stores is None and (reviewer is not None or checker is not None):
             raise ValueError("a reviewer and a math checker need the state directory's stores")
         self.client, self.main, self.stores = client, main, stores
         self.vectors = vectors
+        self.derived = None if skills_metadata is None else (skills_metadata, PASS_VERSION)
         self.watcher, self.reviewer, self.checker = watcher, reviewer, checker
         self.settings = settings or Settings()
         self.clock = clock
@@ -839,7 +844,13 @@ class Harness:
         # A check, and a run given no delegate tools, gets no skill that teaches them.
         delegates = delegations is not None and admitted.request.target is None
         skills = await threaded(
-            _skills, stores, context.project_id, role, alias, delegates=delegates
+            _skills,
+            stores,
+            context.project_id,
+            role,
+            alias,
+            delegates=delegates,
+            derived=self.derived,
         )
         if skills is not None and self.vectors is not None:
             # Reads the vectors the store has; the gateway's work goes on in the background.
@@ -956,14 +967,20 @@ class Harness:
 
 
 def _skills(
-    stores: Stores, project: str, role: str, alias: str | None, *, delegates: bool
+    stores: Stores,
+    project: str,
+    role: str,
+    alias: str | None,
+    *,
+    delegates: bool,
+    derived: tuple[str, str] | None = None,
 ) -> SkillTool | None:
     """The run's skills, the built-in skills that ship pinned first (SK-40), or ``None``
     when the project pins none; ``delegates`` says whether the run has the delegate
     tools, without which the skills that teach them are left out."""
     store = SkillStore(stores.projects.control)
     store.ensure(project, builtin_pack())
-    found = store.effective(project, role, delegates=delegates)
+    found = store.effective(project, role, delegates=delegates, derived=derived)
     return SkillTool(store, found, role=role, alias=alias) if found.entries else None
 
 

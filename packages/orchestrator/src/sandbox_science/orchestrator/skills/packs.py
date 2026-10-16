@@ -189,6 +189,8 @@ def hidden(files: tuple[PackFile, ...]) -> list[dict[str, Any]]:
     return found
 
 
+_SCHEME: Final = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:")
+"""A URI's scheme, as ``https:``, ``mailto:``, ``data:`` or ``tel:`` start one."""
 _LINKED: Final = (".md", ".markdown", ".txt")
 """The files whose relative links the report checks: the Markdown a skill links from."""
 
@@ -211,8 +213,8 @@ def broken_links(files: tuple[PackFile, ...]) -> list[dict[str, Any]]:
             continue
         for href in dict.fromkeys(_targets(parser.parse(newlines(text)))):
             target = urllib.parse.unquote(href.partition("#")[0].partition("?")[0])
-            if not target or "://" in href or href.startswith(("#", "/", "mailto:")):
-                continue
+            if not target or _SCHEME.match(href) or href.startswith(("#", "/")):
+                continue  # a URI of any scheme names no file of the pack
             where = posixpath.normpath(posixpath.join(posixpath.dirname(file.path), target))
             if where in paths or where in folders:
                 continue

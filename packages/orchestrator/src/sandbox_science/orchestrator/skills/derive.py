@@ -115,22 +115,68 @@ FORBIDDEN: Final = frozenset(
     {
         "PATH", "HOME", "SHELL", "USER", "LOGNAME", "LANG", "LANGUAGE", "TERM", "TMPDIR",
         "TMP", "TEMP", "PWD", "OLDPWD", "IFS", "ENV", "CDPATH", "MAIL", "HOSTNAME", "TZ",
-        "EDITOR", "VISUAL", "PAGER", "MANPATH", "INFOPATH", "PROMPT_COMMAND", "PS1", "PS2",
-        "PS3", "PS4", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
-        "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "CLASSPATH", "PERL5LIB", "PERLLIB",
-        "RUBYLIB", "GEM_HOME", "GEM_PATH", "NODE_PATH", "NODE_OPTIONS", "JAVA_HOME",
-        "JAVA_TOOL_OPTIONS", "R_LIBS", "R_HOME", "VIRTUAL_ENV",
+        "EDITOR", "VISUAL", "PAGER", "MANPAGER", "BROWSER", "MANPATH", "INFOPATH",
+        "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "REQUESTS_CA_BUNDLE",
+        "CLASSPATH", "VIRTUAL_ENV", "IPYTHONDIR", "DOT_SAGE", "GPRC", "ZDOTDIR",
+        "CONFIG_SITE", "CC", "CXX", "CPP", "LD", "AR", "AS", "NM", "RANLIB", "FC", "F77",
+        "DISPLAY", "INPUTRC", "HISTFILE", "COLUMNS", "LINES", "MATPLOTLIBRC", "MPLCONFIGDIR",
+        "MPLBACKEND", "TERMINFO", "TERMCAP", "EMACS", "SUDO_ASKPASS", "GIT_ASKPASS",
+        "SSH_ASKPASS", "LS_COLORS", "TEXINPUTS", "BIBINPUTS", "TEXMFHOME", "WGETRC",
+        "CURL_HOME", "NETRC", "KRB5CCNAME", "GNUPGHOME", "MAKEFILES",
     }
 )  # fmt: skip
-"""Loader and shell variables a binding may not name (SK-31)."""
+"""Shell, loader, interpreter start-up, pager and tool-configuration variables a binding
+may not name (SK-31): a pack's file under one would run, or change what runs, at every
+start of the tool."""
 FORBIDDEN_PREFIXES: Final = (
-    "LD_", "DYLD_", "PYTHON", "LC_", "BASH_", "GIT_", "SSL_", "XDG_", "CONDA", "OPENSSL_",
-    "MALLOC_", "GCONV_", "NLSPATH", "LOCPATH", "HOSTALIASES", "RESOLV_", "SANDBOX_",
+    "LD_", "DYLD_", "PYTHON", "PY", "IPYTHON", "JUPYTER", "SAGE", "PARI", "GP_", "R_",
+    "RSTUDIO", "JULIA", "MATLAB", "OCTAVE", "MAGMA", "MAPLE", "MATHEMATICA", "PERL",
+    "RUBY", "GEM_", "BUNDLE", "NODE", "NPM_", "YARN", "DENO", "BUN_", "JAVA", "JDK_",
+    "MAVEN", "GRADLE", "RUST", "CARGO", "GO", "CONDA", "MAMBA", "PIP_", "UV_", "POETRY",
+    "VIRTUALENV", "TCL", "TK_", "LC_", "BASH", "ZSH", "SHELL", "PS", "PROMPT", "HIST",
+    "LESS", "MORE", "GIT_", "SSH_", "SSL_", "OPENSSL", "CURL", "GNUTLS", "XDG_", "DBUS_",
+    "WAYLAND", "X", "QT_", "GTK", "MALLOC", "GCONV", "NLSPATH", "LOCPATH", "HOSTALIASES",
+    "RESOLV", "SANDBOX_", "OMP_", "MKL_", "OPENBLAS", "CUDA", "NV", "LIBRARY_PATH",
+    "CPATH", "C_INCLUDE", "CPLUS_INCLUDE", "PKG_CONFIG", "CMAKE", "MAKE", "TEX", "MPL",
+    "KRB5", "GNUPG", "GPG", "AWS_", "GOOGLE_", "AZURE_", "KUBE", "DOCKER",
 )  # fmt: skip
+FORBIDDEN_SUFFIXES: Final = (
+    "OPT", "OPTS", "OPTIONS", "FLAGS", "RC", "RCFILE", "PROFILE", "PROFILE_USER",
+    "STARTUP", "STARTUP_FILE", "ENVIRON", "ENVIRON_USER", "WRAPPER", "HOOK", "HOOKS",
+    "INIT", "_CONFIG", "_CONFIG_DIR", "CONFIG_PATH", "_LIBS", "_PLUGINS",
+)  # fmt: skip
+"""Families of start-up and configuration variables, whatever the tool."""
+
+
+def forbidden(variable: str) -> bool:
+    """Whether a binding may not name ``variable``, by name or by family."""
+    return (
+        variable in FORBIDDEN
+        or variable.startswith(FORBIDDEN_PREFIXES)
+        or variable.endswith(FORBIDDEN_SUFFIXES)
+    )
+
+
+def mentioned(snap: Snapshot) -> set[str]:
+    """The environment variables the pack's own files mention (SK-30)."""
+    found: set[str] = set()
+    for file in snap.fetched.files:
+        try:
+            text = file.content.decode()
+        except UnicodeDecodeError:
+            continue
+        for match in _MENTION.finditer(text):
+            found.update(group for group in match.groups() if group)
+    return found
 
 
 class PassError(Exception):
-    """The pass could not be had: the import stands without what it would derive."""
+    """The pass could not be had: the import stands without what it would derive.
+    ``cost`` is what the gateway reported a call it answered cost, if it answered."""
+
+    def __init__(self, message: str, cost: float | None = None) -> None:
+        super().__init__(message)
+        self.cost = cost
 
 
 @dataclass(frozen=True)
@@ -205,7 +251,7 @@ async def derive(model: ChatModel, snap: Snapshot, alias: str) -> Derived:
     try:
         turn = await model.complete(messages(snap), [TOOL])
     except ModelError as error:
-        raise PassError(f"the pass's call failed: {error}") from None
+        raise PassError(f"the pass's call failed: {error}", error.cost) from None
     answer: object = None
     calls = [c for c in turn.tool_calls if c.name == TOOL.name]
     text = calls[0].arguments if calls else (turn.text or "")
@@ -240,7 +286,7 @@ def check(answer: object, snap: Snapshot) -> tuple[dict[str, Any], list[dict[str
     topics: dict[str, list[str]] = {}
     placed: set[str] = set()
     for item in _items(given.get("topics"), "topics", drop)[:MAX_TOPICS]:
-        name, skills = _clean(item.get("name")), item.get("skills")
+        name, skills = _topic(item.get("name")), item.get("skills")
         if not name or len(name) > TOPIC or name in topics or not isinstance(skills, list):
             drop("topic", item, f"not a new topic name of 1 to {TOPIC} characters with skills")
             continue
@@ -274,12 +320,15 @@ def check(answer: object, snap: Snapshot) -> tuple[dict[str, Any], list[dict[str
             descriptions[skill] = cut(text, SHORT)  # one too long is cut, as the index cuts
     bindings: dict[str, str] = {}
     places = _places(snap)
+    named = mentioned(snap)
     for item in _items(given.get("bindings"), "bindings", drop)[:MAX_BINDINGS]:
         variable, path = item.get("variable"), item.get("path")
         if not isinstance(variable, str) or not _VARIABLE.fullmatch(variable):
             drop("binding", item, "not an environment variable's name")
-        elif variable in FORBIDDEN or variable.startswith(FORBIDDEN_PREFIXES):
-            drop("binding", item, "a loader or shell variable, which a pack may not set")
+        elif forbidden(variable):
+            drop("binding", item, "a shell, loader or start-up variable, which a pack may not set")
+        elif variable not in named:
+            drop("binding", item, "not a variable the pack's files mention")
         elif variable in bindings:
             drop("binding", item, "the variable twice")
         elif (inside := _inside(path, places)) is None:
@@ -321,6 +370,13 @@ def _clean(value: object) -> str:
         and (char.isprintable() or char.isspace())
     )
     return " ".join(kept.split())
+
+
+def _topic(value: object) -> str:
+    """A topic's name, without what could pass for the index's own notation: brackets,
+    slashes, colons and a leading list mark."""
+    text = re.sub(r"[\[\]()/:·]", " ", _clean(value))
+    return " ".join(text.split()).lstrip("-\u2013\u2014*\u2022 ").strip()
 
 
 def _shown(item: object) -> str:
