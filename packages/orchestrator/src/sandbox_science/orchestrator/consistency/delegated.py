@@ -5,9 +5,15 @@ the coordinator amended it for lab 41's B5).
 A delegated run has no review of its own: what it did reaches its parent as an outcome.
 So once a delegation of the run ends, its review window gains, from the platform's own
 records: the delegated run's actions, read from its run record as the run's own are
-(``actions.action_from``), naming the delegation; the delegation's outcome, as context;
-and the result files its outcome pinned, copied as a ledger entry's pins are. Delegations
-of those delegations come in too. None of it makes a review due.
+(``actions.action_from``), naming the delegation; its executions with their output, each
+in each state its calls saw it, bounded as the run's own are; the delegation's outcome,
+as context; and the result files its outcome pinned, copied as a ledger entry's pins are.
+Delegations of those delegations come in too. None of it makes a review due.
+
+The executions are the record an outcome's summary rests on (lab 42's B3): a task printed
+one value from Sage and its summary gave another, and a review that held only the
+summary took it as checked. Each names its run, its delegation and its place among the
+run's tool calls, which is where it is read from.
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ from sandbox_science.orchestrator.projects import run_id_of
 
 from .actions import action_from
 from .artifacts import pinned_artifact
+from .executions import execution_projection
 from .ledger import delegation_outcome
 from .store import Json, ReviewStore
 
@@ -31,6 +38,8 @@ MAX_DEPTH: Final = 3
 """How many levels of delegations below a run its review follows."""
 MAX_DELEGATED_ACTIONS: Final = 200
 """The most actions one delegated run brings into its parent's review."""
+MAX_DELEGATED_EXECUTIONS: Final = 100
+"""The most execution items one delegated run brings into its parent's review."""
 MAX_RESULTS: Final = 8
 """The most result files one delegation brings into its parent's review."""
 
@@ -101,17 +110,40 @@ def delegated_work(
     tools = cast(list[Any], json.loads(row[0])) if row[0] else []
     found: list[Delegated] = []
     located = {"run": run_id, "delegation": delegation}
-    for number, call in enumerate(tools):
-        if len(found) >= MAX_DELEGATED_ACTIONS:
-            break
-        action = action_from(cast(Json, call) if isinstance(call, dict) else None, f"{number}")
+    actions = executions = 0
+    states: set[str] = set()  # an execution in a state once, as the run's own are
+    for number, raw in enumerate(tools):
+        call = cast(Json, raw) if isinstance(raw, dict) else None
+        action = action_from(call, f"{number}") if actions < MAX_DELEGATED_ACTIONS else None
         if action is not None:
+            actions += 1
             found.append(
                 Delegated(
                     f"delegated:{delegation}:action:{number}",
                     "action",
                     {**located, "message": number},
                     action,
+                )
+            )
+        for execution in _executions(call):
+            identity = f"{execution['execution_id']}:{execution.get('state')}"
+            if executions >= MAX_DELEGATED_EXECUTIONS or identity in states:
+                continue
+            executions += 1
+            states.add(identity)
+            payload, complete = execution_projection(execution)
+            found.append(
+                Delegated(
+                    f"delegated:{delegation}:execution:{identity}",
+                    "execution",
+                    {
+                        "execution": execution["execution_id"],
+                        "attempt": execution.get("attempt_id"),
+                        **located,
+                        "message": number,
+                    },
+                    payload,
+                    complete,
                 )
             )
     recorded = cast(Json, json.loads(files[0])) if files and files[0] else {}
@@ -151,6 +183,20 @@ def delegated_work(
             Delegated(f"delegated:{delegation}", "delegation", {**located, "name": name}, outcome)
         )
     return found
+
+
+def _executions(call: Json | None) -> list[Json]:
+    """The executions a tool record holds, in the states its call saw them: a run's, a
+    job's or a restart's, and the jobs a wait saw end (lab 41's B7)."""
+    if call is None:
+        return []
+    ended = call.get("executions")
+    found = [call.get("execution"), *(cast(list[Any], ended) if isinstance(ended, list) else [])]
+    return [
+        cast(Json, item)
+        for item in found
+        if isinstance(item, dict) and isinstance(cast(Json, item).get("execution_id"), str)
+    ]
 
 
 def observe_delegated(store: ReviewStore, project: str, session: str, run_id: str) -> int:

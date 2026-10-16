@@ -16,7 +16,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Final, Literal, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 from pydantic import ValidationError
 
@@ -48,6 +48,9 @@ from .prompt_bundle import (
     encode_provenance,
 )
 from .rubric import RUBRIC_VERSION
+
+if TYPE_CHECKING:
+    from .actions import Earlier
 
 
 def _reported_cost(cost: object) -> bool:
@@ -225,6 +228,16 @@ _FINDING_FIELDS: Final = (
     "supersedes",
 )
 """An open finding as a snapshot copies it."""
+
+
+def _revised(found: Json) -> Json:
+    """A document observation's revision and the blocks it changed, as an actions item
+    lists them."""
+    return {
+        "document": found.get("document"),
+        "revision": found.get("revision"),
+        **cast(Json, found.get("blocks") or {}),
+    }
 
 
 def _confirmation_key(targets: list[tuple[str, int]], pins: dict[str, Json]) -> str:
@@ -672,7 +685,7 @@ class ReviewStore:
         targets = self.confirmation_targets(project, session)
         if kind == "confirmation" and not targets:
             return None
-        plan = self._plan(project, session, kind, targets, coverage_complete)
+        plan = self._plan(project, session, kind, targets, coverage_complete, author_run)
         if plan.kind == "confirmation" and not plan.targets:
             # Serve author work instead, with the configuration and targets as they are
             # now: the review may have been disabled or reconfigured meanwhile.
@@ -681,7 +694,7 @@ class ReviewStore:
             if not config.enabled:
                 return None
             targets = self.confirmation_targets(project, session)
-            plan = self._plan(project, session, "terminal", targets, False)
+            plan = self._plan(project, session, "terminal", targets, False, author_run)
         review = new_id("rev")
         with self.documents.control.write() as tx:
             committed = self._commit_snapshot(
@@ -706,19 +719,36 @@ class ReviewStore:
         kind: ReviewType,
         targets: list[tuple[str, int]],
         coverage_complete: bool,
+        author_run: str,
     ) -> _Plan:
-        """The items, grants and pins a review of ``kind`` would take now."""
+        """The items, grants and pins a review of ``kind`` would take now, for the run
+        ``author_run``."""
+        from .actions import plan_item
+
         with self.documents.control.read() as tx:
             db = tx.sql
             window = self._dispatch_window(db, project, session)
+            # A terminal review's answer may say what the run did in its windows reviewed
+            # before; their actions come in as context (lab 42's B5).
+            earlier = (
+                self._earlier(db, project, session, window, author_run)
+                if kind == "terminal"
+                else None
+            )
             # Fix targets and their original evidence take precedence over new feed
             # items; those keep their watermark for a later review.
             selected_end, pinned = (
                 (window.watermark, [])
                 if kind == "confirmation"
-                else self._feed_items(db, project, session, window)
+                else self._feed_items(db, project, session, window, earlier)
             )
             findings = self._open_findings(db, project, session, targets)
+        # The session plan as recorded now, which a narrated plan change is checked
+        # against (lab 42's B2).
+        planned = plan_item(self.documents, project, session, author_run)
+        if planned is not None:
+            encoded = dump(planned[1])
+            pinned.append(EvidenceItem("plan", dump(planned[0]), encoded, digest(encoded), 1))
         budget = SnapshotBudget(size=sum(item.size for item in pinned), items=len(pinned))
         grants: dict[str, Json] = {}
         included: list[tuple[str, int]] = []
@@ -796,14 +826,7 @@ class ReviewStore:
             if kind == "action"
         ]
         revised = [
-            {
-                "document": found.get("document"),
-                "revision": found.get("revision"),
-                **cast(Json, found.get("blocks") or {}),
-            }
-            for _, _, kind, _, payload in rows
-            if kind == "document"
-            for found in [stored_json(payload)]
+            _revised(stored_json(payload)) for _, _, kind, _, payload in rows if kind == "document"
         ]
         located, listed = actions_item(actions, revised, start + 1, rows[-1][0])
         encoded = dump(listed)
@@ -829,14 +852,54 @@ class ReviewStore:
         return _Window(watermark, retry, end)
 
     @staticmethod
+    def _earlier(
+        db: sqlite3.Connection, project: str, session: str, window: _Window, run: str
+    ) -> Earlier | None:
+        """Run ``run``'s actions and document revisions in its windows reviewed before
+        ``window``: those the feed holds from the run's first observation to the
+        watermark, its delegated runs' included, the latest twice ``MAX_ACTIONS`` of them;
+        None when the run had no observation before."""
+        from .actions import MAX_ACTIONS, Earlier
+
+        (first,) = db.execute(
+            "SELECT min(seq) FROM review_feed WHERE project=? AND session=? AND seq<=? "
+            "AND json_extract(locator,'$.run')=?",
+            (project, session, window.watermark, run),
+        ).fetchone()
+        if first is None:
+            return None
+        rows = db.execute(
+            "SELECT kind,locator,payload FROM (SELECT seq,kind,locator,payload FROM "
+            "review_feed WHERE project=? AND session=? AND seq>=? AND seq<=? AND "
+            "(kind='action' OR (kind='document' AND source_key GLOB 'document:*')) "
+            "ORDER BY seq DESC LIMIT ?) ORDER BY seq",
+            (project, session, first, window.watermark, 2 * MAX_ACTIONS),
+        ).fetchall()
+        return Earlier(
+            [
+                (stored_json(loc), stored_json(found))
+                for kind, loc, found in rows
+                if kind == "action"
+            ],
+            [_revised(stored_json(found)) for kind, _, found in rows if kind == "document"],
+            first,
+            window.watermark,
+        )
+
+    @staticmethod
     def _feed_items(
-        db: sqlite3.Connection, project: str, session: str, window: _Window
+        db: sqlite3.Connection,
+        project: str,
+        session: str,
+        window: _Window,
+        earlier: Earlier | None = None,
     ) -> tuple[int, list[EvidenceItem]]:
         """The feed's next items after the watermark, as many as the snapshot's bytes
         allow, and the last one's sequence number. What a tool call read for a quote
         (a raw ``source``) is not an item: the transcript holds the result the agent saw,
         and only a source a quote cites comes in, pinned beside its entry (``quoted:``),
-        so a long read that no quote cites leaves the coverage whole (CR-4)."""
+        so a long read that no quote cites leaves the coverage whole (CR-4). The actions
+        item lists the window's actions, and ``earlier``'s as context."""
         from .actions import actions_item
 
         items: list[EvidenceItem] = []
@@ -857,23 +920,16 @@ class ReviewStore:
                 end = seq
                 continue
             item = EvidenceItem(kind, locator, payload, sha, complete)
-            # Room is kept for the actions item, at most half an item.
-            if items and size + item.size > MAX_SNAPSHOT_BYTES - MAX_ITEM_BYTES // 2:
+            # Room is kept for the actions and plan items, at most half an item each.
+            if items and size + item.size > MAX_SNAPSHOT_BYTES - MAX_ITEM_BYTES:
                 break
             items.append(item)
             size += item.size
             end = seq
             if kind == "document" and str(key).startswith("document:"):
-                found = stored_json(payload)
-                revised.append(
-                    {
-                        "document": found.get("document"),
-                        "revision": found.get("revision"),
-                        **cast(Json, found.get("blocks") or {}),
-                    }
-                )
-        if actions or revised:
-            located, listed = actions_item(actions, revised, window.watermark + 1, end)
+                revised.append(_revised(stored_json(payload)))
+        if actions or revised or (earlier is not None and (earlier.actions or earlier.documents)):
+            located, listed = actions_item(actions, revised, window.watermark + 1, end, earlier)
             encoded = dump(listed)
             items.append(EvidenceItem("actions", dump(located), encoded, digest(encoded), 1))
         return end, items

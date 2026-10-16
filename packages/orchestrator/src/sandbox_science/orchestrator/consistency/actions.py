@@ -2,25 +2,31 @@
 """What a run did, for the reviewer to match its narration against (docs/specs/
 consistency-review.md, CR-2 as the coordinator amended it for lab 40).
 
-The review controller records each tool call a run makes whose effect class is
-``effect`` as an ``action`` observation: the tool, its target as the arguments name it,
-how it ended (``ok``, ``refused`` or ``error``) and what it made (a document or ledger
-revision, a work record, an artifact revision, an execution, files written). Actions
-are not review evidence one by one: a review's snapshot holds one derived ``actions``
-item for its window, listing them by run, with the blocks each document revision in
-the window changed since the revision before. A narrated action the list does not hold
-has no record (rubric ``sandbox-consistency-4``).
+The review controller records each tool call a run makes that may change something, of
+any effect class but ``read``, as an ``action`` observation: the tool, its target as the
+arguments name it, how it ended (``ok``, ``refused`` or ``error``) and what it made (a
+document or ledger revision, a work record, an artifact revision, an execution, files
+written, a plan's version, status or step, a memory proposal). Plan changes are actions
+too (lab 42's B2): a run that recorded its steps and finished its plan, and said so, was
+otherwise held to have no record of it. Actions are not review evidence one by one: a
+review's snapshot holds one derived ``actions`` item for its window, listing them by
+run, with the blocks each document revision in the window changed since the revision
+before; a terminal review's lists the run's actions in its earlier windows too, as
+context (lab 42's B5). A narrated action the list does not hold has no record (rubric
+``sandbox-consistency-5``).
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any, Final, cast
 
 from sandbox_science.orchestrator.documents.errors import DocumentError
 from sandbox_science.orchestrator.documents.store import DocumentStore
 from sandbox_science.orchestrator.model import Message
+from sandbox_science.orchestrator.session_plans import PlanAuthority, PlanScope, SessionPlans
 
 from .store import MAX_ITEM_BYTES, Json, dump
 
@@ -37,14 +43,21 @@ _TARGETS: Final = (
     "delegation_id",
     "artifact",
     "reference",
+    "step_id",
+    "job_id",
+    "finding",
 )
 """The arguments that name what a call acts on, in the order they are looked for."""
+CHANGES: Final = frozenset({"effect", "plan", "proposal", "cancel"})
+"""The effect classes of the calls that may change something, every class but ``read``
+(``hooks.Effect``): a ``plan`` call changes the session plan or a track's steps, a
+``proposal`` makes a memory proposal, and a ``cancel`` stops a job or a delegation."""
 _REFUSED: Final = frozenset({"policy_denied", "conflict", "not_found", "invalid_request"})
 
 
 def action_of(messages: Sequence[Message], call: Json | None) -> Json | None:
-    """The action the tool call ``messages`` ends with, when the run executed it and its
-    effect class is ``effect`` (``call``, its ``tool_records`` entry); None otherwise."""
+    """The action the tool call ``messages`` ends with, when the run executed it and it
+    may change something (``call``, its ``tool_records`` entry); None otherwise."""
     if not messages:
         return None
     return action_from(call, str(messages[-1].get("tool_call_id", "")))
@@ -52,8 +65,8 @@ def action_of(messages: Sequence[Message], call: Json | None) -> Json | None:
 
 def action_from(call: Json | None, call_id: str) -> Json | None:
     """The action of tool record ``call``, made under ``call_id``, when its effect class
-    is ``effect``: a run's own, or a delegated run's, read from its run record."""
-    if call is None or call.get("effect") != "effect":
+    is one of ``CHANGES``: a run's own, or a delegated run's, read from its run record."""
+    if call is None or call.get("effect") not in CHANGES:
         return None
     try:
         arguments: object = json.loads(str(call.get("arguments") or "{}"))
@@ -70,7 +83,7 @@ def action_from(call: Json | None, call_id: str) -> Json | None:
         "call": call_id[:128],
         "target": target,
         "outcome": _outcome(call),
-        "made": _made(call)[:20],
+        "made": _made(call, given)[:20],
     }
 
 
@@ -89,9 +102,10 @@ def _outcome(call: Json) -> str:
     return "refused" if str(error) in _REFUSED else "error"
 
 
-def _made(call: Json) -> list[str]:
-    """What the call made, as the run's tool record says."""
-    made: list[str] = []
+def _made(call: Json, given: Json) -> list[str]:
+    """What the call made, as the run's tool record says; ``given``, its arguments, name
+    the step and status a plan change recorded, which its receipt does not."""
+    made = _plan_made(call, given)
     document = call.get("document")
     if isinstance(document, dict):
         found = cast(Json, document)
@@ -122,7 +136,96 @@ def _made(call: Json) -> list[str]:
     delegation = call.get("delegation")
     if isinstance(delegation, dict) and cast(Json, delegation).get("delegation_id"):
         made.append(f"delegation {cast(Json, delegation)['delegation_id']}")
+    proposal = call.get("result") if call.get("memory") == "memory_propose" else None
+    if isinstance(proposal, dict) and cast(Json, proposal).get("proposal_id"):
+        found = cast(Json, proposal)
+        made.append(f"memory proposal {found['proposal_id']} ({found.get('state')})")
     return made
+
+
+def _plan_made(call: Json, given: Json) -> list[str]:
+    """The plan change a ``plan_*`` or ``track_progress`` call recorded, from its receipt:
+    the plan and version, and the step and status, or the plan's status, it recorded."""
+    receipt = call.get("plan_receipt") or call.get("track_progress")
+    ref = cast(Json, receipt).get("ref") if isinstance(receipt, dict) else None
+    if not isinstance(ref, dict):
+        return []
+    found, named = cast(Json, receipt), cast(Json, ref)
+    plan = f"plan {named.get('plan_id')} v{named.get('version')}"
+    action = found.get("action")
+    if action == "progress":
+        return [f"{plan}: step {given.get('step_id')} {given.get('status')}"]
+    if action == "status" and call.get("tool") == "plan_activate":
+        return [f"{plan}: active"]
+    if action == "status":
+        outcome = given.get("outcome")
+        goal = cast(Json, outcome).get("status") if isinstance(outcome, dict) else None
+        return [f"{plan}: {given.get('status', 'completed')}" + (f", goal {goal}" if goal else "")]
+    return [plan + (" (draft)" if action == "publish" else "")]
+
+
+def plan_item(
+    documents: DocumentStore, project: str, session: str, run: str
+) -> tuple[Json, Json] | None:
+    """The session plan as recorded now, as a review's ``plan`` item (lab 42's B2): its
+    locator, and its payload, which gives the plan's status and goal outcome and each
+    current step's title, track and latest recorded status, with who recorded it and
+    when; None when the session has no plan, or it cannot be read."""
+    try:
+        reader = PlanAuthority(
+            scope=PlanScope(project_id=project, session_id=session), role="main", run_id=run
+        )
+        plan = SessionPlans(documents).compact_current(reader)
+    except (DocumentError, ValueError):  # a plan past the read's bound, or no run to read as
+        return None
+    if plan is None:
+        return None
+    head = plan.head
+    body = {step.step_id: step for phase in plan.version.body.phases for step in phase.steps}
+    steps: list[Json] = []
+    for step in plan.steps:
+        latest = step.latest
+        steps.append(
+            {
+                "step": step.step_id,
+                "title": body[step.step_id].title,
+                "track": body[step.step_id].track_id,
+                "status": latest.status if latest is not None else "pending",
+                **(
+                    {
+                        "by": latest.author.run_id or latest.author.role,
+                        "at": latest.recorded_at.isoformat(),
+                        "step_changed_since": not step.matches_current_step,
+                    }
+                    if latest is not None
+                    else {}
+                ),
+            }
+        )
+    payload: Json = {
+        "about": (
+            "The session plan as the platform recorded it when this review was "
+            "dispatched, as context: its status, its goal outcome, and each step's latest "
+            "recorded status. A plan change an answer narrates is checked against it and "
+            "the actions item; an earlier plan_read in the transcript shows the plan as "
+            "it was then."
+        ),
+        "plan": head.ref.plan_id,
+        "version": head.ref.version,
+        "status": head.status,
+        "goal": head.outcome.status if head.outcome is not None else None,
+        "steps": steps,
+        "total": len(steps),
+    }
+    while len(dump(payload).encode()) > MAX_ITEM_BYTES // 2 and payload["steps"]:
+        payload["steps"] = payload["steps"][: len(payload["steps"]) // 2]
+    locator: Json = {
+        "plan": head.ref.plan_id,
+        "version": head.ref.version,
+        "status_revision": head.status_revision,
+        "progress_cursor": head.progress_cursor,
+    }
+    return locator, payload
 
 
 def changed_blocks(documents: DocumentStore, project: str, document: str, number: int) -> Json:
@@ -155,13 +258,8 @@ def _texts(mapped: Any) -> dict[str, str]:
     }
 
 
-def actions_item(
-    actions: list[tuple[Json, Json]], documents: list[Json], start: int, end: int
-) -> tuple[Json, Json]:
-    """One window's ``actions`` item: its locator, and its payload, which lists the
-    actions by run in order, and each document revision's changed blocks, as many as fit
-    one item; the transcript holds the calls themselves."""
-    listed = [
+def _listed(actions: list[tuple[Json, Json]]) -> list[Json]:
+    return [
         {
             **payload,
             "run": locator.get("run"),
@@ -169,6 +267,32 @@ def actions_item(
         }
         for locator, payload in actions
     ]
+
+
+@dataclass(frozen=True)
+class Earlier:
+    """A run's actions and document revisions in its windows reviewed before, from feed
+    item ``start`` to ``end``: context for a terminal review (lab 42's B5)."""
+
+    actions: list[tuple[Json, Json]]
+    documents: list[Json]
+    start: int
+    end: int
+
+
+def actions_item(
+    actions: list[tuple[Json, Json]],
+    documents: list[Json],
+    start: int,
+    end: int,
+    earlier: Earlier | None = None,
+) -> tuple[Json, Json]:
+    """One window's ``actions`` item: its locator, and its payload, which lists the
+    actions by run in order, and each document revision's changed blocks, as many as fit
+    one item; the transcript holds the calls themselves. ``earlier`` adds, as context,
+    the run's actions in its windows reviewed before, the latest kept when they do not
+    all fit, before any of the window's own is left out."""
+    listed = _listed(actions)
     payload: Json = {
         "about": (
             "Each run's tool calls in this window that change something, in order, as the "
@@ -181,8 +305,29 @@ def actions_item(
         "total": len(listed),
         "documents": documents,
     }
+    locator: Json = {"actions": "window", "from": start, "to": end}
+    if earlier is not None and (earlier.actions or earlier.documents):
+        before = _listed(earlier.actions)
+        older: Json = {
+            "about": (
+                "The reviewed run's tool calls that change something, and the blocks its "
+                "document revisions changed, in its windows reviewed before this one, as "
+                "the platform recorded them: context for an answer that says what the run "
+                "did earlier, not under review here."
+            ),
+            "actions": before[-MAX_ACTIONS:],
+            "total": len(before),
+            "documents": earlier.documents[-MAX_ACTIONS:],
+        }
+        payload["earlier"] = older
+        while len(dump(payload).encode()) > MAX_ITEM_BYTES // 2 and (
+            older["actions"] or older["documents"]
+        ):
+            part = "actions" if older["actions"] else "documents"
+            older[part] = older[part][(len(older[part]) + 1) // 2 :]
+        older["shown"] = len(older["actions"])
+        locator["earlier"] = {"from": earlier.start, "to": earlier.end}
     while len(dump(payload).encode()) > MAX_ITEM_BYTES // 2 and payload["actions"]:
         payload["actions"] = payload["actions"][: len(payload["actions"]) // 2]
     payload["shown"] = len(payload["actions"])
-    locator = {"actions": "window", "from": start, "to": end}
     return locator, payload

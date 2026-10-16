@@ -373,3 +373,249 @@ async def test_a_waited_jobs_end_reaches_the_review(store: Any) -> None:
         if i["kind"] == "execution"
     ]
     assert states == ["queued", "succeeded"]
+
+
+def test_a_memory_proposal_and_a_cancel_are_actions_and_a_read_is_not() -> None:
+    """Lab 42's B2: only calls of class effect were actions. A memory proposal and a
+    cancel change something too; a skill's load, a read, does not."""
+    result = {"proposal_id": "mp-1", "state": "pending", "replayed": False}
+    proposed = {"memory": "memory_propose", "effect": "proposal", "result": result}
+    messages, call = called(1, "memory_propose", {"reason": "r"}, **proposed)
+    found = action_of(messages, call)
+    assert found is not None
+    assert (found["outcome"], found["made"]) == ("ok", ["memory proposal mp-1 (pending)"])
+    stopped = {"effect": "cancel", "execution": {"execution_id": "exe-1", "state": "cancelled"}}
+    messages, call = called(2, "cancel_job", {"job_id": "exe-1"}, **stopped)
+    found = action_of(messages, call)
+    assert found is not None
+    assert (found["target"], found["made"]) == (
+        {"job_id": "exe-1"}, ["execution exe-1 (cancelled)"]
+    )  # fmt: skip
+    messages, call = called(3, "skills", {"load": "verify-claim"}, effect="read")
+    assert action_of(messages, call) is None
+
+
+@pytest.mark.asyncio
+async def test_a_plan_change_is_an_action_and_the_review_holds_the_plan(store: Any) -> None:
+    """Lab 42's B2: run 3 recorded its steps, finished its plan and said so. Its review
+    listed no plan call among its actions, read the plan as an earlier plan_read showed
+    it, and raised fail findings. The plan tools' calls are actions, with the step and
+    status, or the plan's status, each recorded, and the snapshot holds the session plan
+    as recorded at dispatch."""
+    from sandbox_science.orchestrator.plan_tools import PlanTools
+    from sandbox_science.orchestrator.projects import ProjectStore
+    from sandbox_science.orchestrator.session_plans import SessionPlans
+
+    from .test_plan_tools import body
+
+    reviews, documents, _ = store
+    context = context_for(reviews)
+    controller = ReviewController(reviews, context, run_id="author-1", model=None, alias=None)
+    transcript: list[dict[str, Any]] = [{"role": "user", "content": "Check the claim."}]
+    projects = ProjectStore(documents.path.parent)
+    plans = PlanTools(SessionPlans(documents), projects, context, run_id="author-1", alias="main")
+    toolbox = Toolbox(cast(WorkerClient, object()), context, plans=plans)
+
+    async def call(number: int, tool: str, **arguments: Any) -> Any:
+        request = ToolCall(f"call-{number}", tool, json.dumps(arguments))
+        outcome = await toolbox.call(request, f"op-{number}", model="scripted")
+        exchange, executed = called(number, tool, arguments, **outcome.record)
+        transcript.extend(exchange)
+        await controller.safe_point(transcript, tool=outcome.record, call=executed)
+        return json.loads(outcome.text)
+
+    try:
+        created = await call(1, "plan_create", operation_id="create", body=body(count=2),
+                             reason="Plan the check")  # fmt: skip
+        ref = created["receipt"]["ref"]
+        await call(2, "plan_activate", operation_id="activate", base=ref, reason="Begin",
+                   expected_status_revision=1, expected_progress_cursor=0)  # fmt: skip
+        progress = {"base": ref, "expected_step_cursor": 0, "status": "completed", "note": "Done"}
+        await call(3, "plan_progress", operation_id="s0", step_id="step-0",
+                   expected_status_revision=2, **progress)  # fmt: skip
+        await call(4, "plan_progress", operation_id="stale", step_id="step-1",
+                   expected_status_revision=1, **progress)  # fmt: skip
+        await call(5, "plan_progress", operation_id="s1", step_id="step-1",
+                   expected_status_revision=2, **progress)  # fmt: skip
+        await call(6, "plan_finish", operation_id="finish", base=ref, expected_status_revision=2,
+                   expected_progress_cursor=2, reason="Finished",
+                   outcome={"status": "achieved", "summary": "Checked", "evidence": [],
+                            "remaining_work": []})  # fmt: skip
+    finally:
+        projects.close()
+    transcript.append(
+        {"role": "assistant", "content": "Both steps are done; the plan is finished."}
+    )
+    await controller.safe_point(transcript)
+    review = dispatch(reviews)
+    items = reviews.manifest("p", "s", review, limit=50)["evidence"]
+    (listed,) = [i for i in items if i["kind"] == "actions"]
+    found = json.loads(reviews.read_evidence("p", "s", review, listed["evidence"])["text"])
+    plan = f"plan {ref['plan_id']} v1"
+    assert [(a["tool"], a["outcome"], a["made"]) for a in found["actions"]] == [
+        ("plan_create", "ok", [f"{plan} (draft)"]),
+        ("plan_activate", "ok", [f"{plan}: active"]),
+        ("plan_progress", "ok", [f"{plan}: step step-0 completed"]),
+        ("plan_progress", "refused", []),
+        ("plan_progress", "ok", [f"{plan}: step step-1 completed"]),
+        ("plan_finish", "ok", [f"{plan}: completed, goal achieved"]),
+    ]
+    assert found["actions"][2]["target"] == {"step_id": "step-0"}
+    (held,) = [i for i in items if i["kind"] == "plan"]
+    state = json.loads(reviews.read_evidence("p", "s", review, held["evidence"])["text"])
+    assert (state["plan"], state["status"], state["goal"]) == (
+        ref["plan_id"], "completed", "achieved"
+    )  # fmt: skip
+    assert [(s["step"], s["status"], s["by"]) for s in state["steps"]] == [
+        ("step-0", "completed", "author-1"),
+        ("step-1", "completed", "author-1"),
+    ]
+    assert held["locator"]["version"] == 1
+
+
+def test_a_session_without_a_plan_has_no_plan_item(store: Any) -> None:
+    from .test_consistency import claim
+
+    reviews, _, _ = store
+    claim(reviews)
+    review = dispatch(reviews)
+    assert "plan" not in {i["kind"] for i in reviews.manifest("p", "s", review)["evidence"]}
+
+
+@pytest.mark.asyncio
+async def test_a_terminal_review_holds_the_runs_actions_in_its_earlier_windows(
+    store: Any,
+) -> None:
+    """Lab 42's B5: run 1's terminal review held only its closing answer, whose
+    document_create a checkpoint had reviewed, and it ended inconclusive. A terminal
+    review's actions item lists, as context, the run's actions in the windows reviewed
+    before, with its document revisions' changed blocks; an earlier run's are not its."""
+    reviews, documents, _ = store
+    reviews.observe(
+        "p", "s", "turn-0:action:1", "action", {"run": "author-0", "message": 1},
+        {"tool": "document_patch", "call": "call-1", "target": {"document": "old"},
+         "outcome": "ok", "made": ["document doc-0 r2"]},
+    )  # fmt: skip
+    reviews.finish("p", "s", dispatch(reviews, "checkpoint"), "owner", "inconclusive", "Seen.")
+    controller = ReviewController(
+        reviews, context_for(reviews), run_id="author-1", model=None, alias=None
+    )
+    notes = documents.create(
+        "p", name="notes", title="Notes", text="The order is 19.\n", author=MAIN, session_id="s"
+    )  # fmt: skip
+    created = {"effect": "effect",
+               "document": {"outcome": "created", "document_id": notes.document_id,
+                            "revision": 1}}  # fmt: skip
+    exchange, call = called(1, "document_create", {"name": "notes"}, **created)
+    transcript = [{"role": "user", "content": "Write the notes."}, *exchange]
+    await controller.safe_point(transcript, tool=created, call=call)
+    checkpoint = dispatch(reviews, "checkpoint")
+    reviews.finish("p", "s", checkpoint, "owner", "inconclusive", "Checked.")
+    transcript.append({"role": "assistant", "content": "I created the notes: the order is 19."})
+    await controller.safe_point(transcript)
+    terminal = dispatch(reviews)
+    items = reviews.manifest("p", "s", terminal, limit=50)["evidence"]
+    assert [i["kind"] for i in items if i["kind"] != "actions"] == ["transcript"]
+    (listed,) = [i for i in items if i["kind"] == "actions"]
+    found = json.loads(reviews.read_evidence("p", "s", terminal, listed["evidence"])["text"])
+    assert (found["actions"], found["documents"]) == ([], [])
+    earlier = found["earlier"]
+    assert [(a["run"], a["tool"], a["made"]) for a in earlier["actions"]] == [
+        ("author-1", "document_create", [f"document {notes.document_id} r1"])
+    ]
+    assert [(d["document"], d["revision"]) for d in earlier["documents"]] == [
+        (notes.document_id, 1)
+    ]
+    assert listed["locator"]["earlier"]["to"] == reviews.run("p", "s", checkpoint)["end_seq"]
+    # A checkpoint lists its own window's actions only.
+    items = reviews.manifest("p", "s", checkpoint, limit=50)["evidence"]
+    (listed,) = [i for i in items if i["kind"] == "actions"]
+    assert "earlier" not in listed["locator"]
+
+
+@pytest.mark.asyncio
+async def test_a_delegated_runs_executions_and_their_output_reach_the_review(
+    store: Any,
+) -> None:
+    """Lab 42's B3: a task printed ...7031 from Sage and its summary said ...7033. The
+    review held the summary and the task's actions, not its output, took the summary as
+    checked and failed the document's correct value. Once the delegation ends, the run's
+    review holds the delegated run's executions with their output, in each state its
+    calls saw them, bounded as the run's own are, each naming its run and delegation;
+    none of it makes a review due."""
+    from datetime import UTC, datetime, timedelta
+
+    from sandbox_science.orchestrator.delegation.records import (
+        Delegation,
+        DelegationRecords,
+        Ending,
+    )
+    from sandbox_science.orchestrator.projects import ProjectStore, RunRecord, run_name
+
+    reviews, documents, _ = store
+    context = context_for(reviews)
+    start = datetime(2026, 10, 16, 3, tzinfo=UTC)
+    parent, child = run_name(start, "author-1"), run_name(start + timedelta(seconds=1), "task-1")
+    factor = "1013176677300131846900870239606035638738100997248092069256697437031"
+    cell = {"execution_id": "exe-1", "attempt_id": "att-1", "kind": "cell", "state": "succeeded",
+            "request": {"code": "factor(n)", "language": "sage"},
+            "result": {"stdout": {"text": f"{factor}\n", "truncated": False},
+                       "stderr": {"text": "", "truncated": False}, "exit_code": 0,
+                       "outputs": [], "written_files": []}}  # fmt: skip
+    queued = {"execution_id": "exe-2", "kind": "job", "state": "queued"}
+    ended = {**queued, "state": "succeeded",
+             "result": {"stdout": {"text": "is_prime: True\n", "truncated": False}}}  # fmt: skip
+    tools: list[dict[str, Any]] = [
+        {"tool": "sage", "arguments": json.dumps({"code": "factor(n)"}), "effect": "effect",
+         "execution": cell},
+        {"tool": "start_job", "arguments": "{}", "effect": "effect", "execution": queued},
+        {"tool": "wait_jobs", "arguments": "{}", "effect": "read", "executions": [ended]},
+        {"tool": "job_status", "arguments": "{}", "effect": "read", "execution": ended},
+    ]  # fmt: skip
+    delegation = "dlg-" + "1" * 24
+    summary = f"The largest factor ends in {factor[-4:-1]}3."
+    projects = ProjectStore(documents.path.parent)
+    records = DelegationRecords(documents)
+    try:
+        projects.save_run(
+            RunRecord(run_id="author-1", context=context, task="t", started_at=start,
+                      ended_at=start, stopped="answered", messages=[], tools=[])
+        )  # fmt: skip
+        records.start("p", "s", Delegation.model_validate(
+            {"delegation_id": delegation, "parent": parent, "run": child, "kind": "task",
+             "brief": {"task": "Factor the twist order."},
+             "started_at": start.isoformat()}))  # fmt: skip
+        records.end("p", "s", delegation, Ending(
+            "returned", "answered", summary,
+            result={"status": "complete", "summary": summary}))  # fmt: skip
+        projects.save_run(
+            RunRecord(run_id="task-1", role="delegated", parent=parent, delegation=delegation,
+                      context=context, task="t", started_at=start + timedelta(seconds=1),
+                      ended_at=start + timedelta(seconds=1), stopped="answered", messages=[],
+                      tools=tools)
+        )  # fmt: skip
+    finally:
+        projects.close()
+    controller = ReviewController(reviews, context, run_id="author-1", model=None, alias=None)
+    await controller.safe_point([])
+    assert not reviews.due("p", "s")
+    assert not reviews.run_effects("p", "s", "author-1")
+    review = dispatch(reviews)
+    items = reviews.manifest("p", "s", review, limit=50)["evidence"]
+    executions = [i for i in items if i["kind"] == "execution"]
+    assert [(i["locator"]["execution"], i["locator"]["message"]) for i in executions] == [
+        ("exe-1", 0), ("exe-2", 1), ("exe-2", 2)
+    ]  # fmt: skip
+    assert {(i["locator"]["run"], i["locator"]["delegation"]) for i in executions} == {
+        ("task-1", delegation)
+    }
+    read = [
+        json.loads(reviews.read_evidence("p", "s", review, i["evidence"])["text"])
+        for i in executions
+    ]
+    assert [(e["state"], e["stdout"]) for e in read] == [
+        ("succeeded", f"{factor}\n"), ("queued", ""), ("succeeded", "is_prime: True\n")
+    ]  # fmt: skip
+    assert read[0]["request"] == {"code": "factor(n)", "language": "sage"}
+    (outcome,) = [i for i in items if i["kind"] == "delegation"]
+    assert summary in reviews.read_evidence("p", "s", review, outcome["evidence"])["text"]
