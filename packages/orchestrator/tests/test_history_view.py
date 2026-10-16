@@ -32,6 +32,7 @@ from sandbox_science.orchestrator.history import (
 )
 from sandbox_science.orchestrator.history.view import ABORTED, SHARE, WORDS
 from sandbox_science.orchestrator.notices import (
+    DIGEST,
     KERNEL_LINES,
     REDELIVERED,
     SKILLS_WORDS,
@@ -264,7 +265,9 @@ async def test_the_main_view_holds_main_runs_and_answers_a_held_message_once(
     assert body(str(request[-1]["content"])) == f'{REDELIVERED.text}"{held}"'
     assert after.delivered["messages"] == ["m-9"]
     root_messages = [m for m in own(root) if m["role"] != "system"]
-    assert request[1 : 1 + len(root_messages)] == [*root_messages[:-1], root.messages[-1]]
+    # After the system message, the state block with the research state's digest (CM-26).
+    assert DIGEST.text in str(request[1]["content"])
+    assert request[2 : 2 + len(root_messages)] == [*root_messages[:-1], root.messages[-1]]
 
 
 async def test_a_skill_body_the_view_holds_counts_as_loaded(harness: Harness, pack: Path) -> None:

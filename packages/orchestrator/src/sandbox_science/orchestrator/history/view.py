@@ -105,6 +105,8 @@ class View:
     though messages near it are left out."""
     words: str | None = None
     """The state block's text, before it is archived (``settle``)."""
+    digest: str | None = None
+    """The research state the state block renders, framed (``digest``, CM-16, CM-37a)."""
     unarchived: int = 0
     """The session's main runs that ran before the archive existed."""
     recorded: int = 0
@@ -246,14 +248,17 @@ async def settle(
     *,
     run: str,
     kernels: Sequence[KernelInfo] | None,
+    parent: str | None = None,
     patience: float = PATIENCE,
     clock: Clock = SYSTEM_CLOCK,
 ) -> View:
     """``view`` as ``run`` sends it: its state block, if it has one, archived and first,
     tried again while the store is busy, and a line before each earlier run's part that
     ran cells, with whether each of their kernels is among ``kernels``, those running now
-    (``None``: unknown)."""
+    (``None``: unknown). The state block holds the research-state digest too, when the
+    view has one; a delegated run's (``parent``) holds what CM-37a gives it."""
     parts: list[Part] = []
+    text = ""
     if view.words is not None:
         left = ""
         if view.left_out is not None:
@@ -279,8 +284,14 @@ async def settle(
                     else ". "
                 )
             )
-        entry = Entry("user", "state_block", STATE_BLOCK.text + left + before + view.words)
-        row = await patiently(archive, context, run, entry, patience=patience, clock=clock)
+        text = STATE_BLOCK.text + left + before + view.words
+    if view.digest:
+        text = f"{text}\n\n{view.digest}" if text else view.digest
+    if text:
+        entry = Entry("user", "state_block", text)
+        row = await patiently(
+            archive, context, run, entry, parent=parent, patience=patience, clock=clock
+        )
         parts.append(Part("state_block", row.chat(), row))
     running = None if kernels is None else {(k.kernel_id, k.generation) for k in kernels}
     current: str | None = None
@@ -292,7 +303,7 @@ async def settle(
             parts.append(Part("kernels", {"role": "user", "content": line}))
         current = name
         parts.append(part)
-    return replace(view, parts=tuple(parts), words=None)
+    return replace(view, parts=tuple(parts), words=None, digest=None)
 
 
 def _now(kernel: Json, running: set[tuple[str, int]] | None) -> str:

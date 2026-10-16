@@ -48,6 +48,7 @@ from .connectors import Connectors, ProxyClient
 from .consistency.controller import ReviewController
 from .consistency.models import ReviewConfig
 from .consistency.store import ReviewStore
+from .control import ControlError
 from .delegation import prompt as delegated_prompt
 from .delegation.fence import ChildFence
 from .delegation.hook import Child, ChildEnd, Deadline, Delegations
@@ -55,6 +56,7 @@ from .delegation.models import ModelChoice
 from .delegation.outcome import Outcome, Target, result_of
 from .delegation.records import DelegationRecords
 from .delegation.tracks import TrackTools, grant
+from .digest import SHARE, Digest, constraints_block, render
 from .documents import DocumentError, DocumentStore, DocumentTool
 from .documents.tool import REQUESTS_TASK, WorkRequests
 from .file_settings import ProjectFiles
@@ -87,6 +89,7 @@ from .memory import MemoryEntry, ProjectMemory
 from .memory_prompt import for_reviewer, for_run, for_watcher
 from .memory_tools import MemoryTool
 from .model import ChatModel, Message, ModelError, ModelGateway
+from .notices import DIGEST, TASK_CONSTRAINTS
 from .plan_tools import PlanTools
 from .projects import (
     ProjectError,
@@ -625,12 +628,23 @@ class Harness:
 
     async def _view(self, admitted: Admitted) -> View | None:
         """A main run's view of its session, with stores (CM-29): the earlier messages of
-        its session from the archive, which it starts with; ``None`` for any other run."""
+        its session from the archive, which it starts with, after a state block that
+        holds the research-state digest (CM-16, CM-26). A delegated task starts with the
+        user's standing constraints alone, and a check with nothing (CM-37a)."""
         stores, request, context = self.stores, admitted.request, admitted.context
-        if stores is None or request.parent is not None:
+        if stores is None:
             return None
         project, session = context.project_id, context.session_id
         archive = Archive(stores.projects.control, clock=self.clock)
+        name = run_name(admitted.started_at, admitted.run_id)
+        if request.parent is not None:
+            block = await threaded(self._task_block, stores, project, session, request)
+            if block is None:
+                return None
+            return await settle(
+                View(digest=block), archive, context, run=name, kernels=None,
+                parent=request.parent, clock=self.clock,
+            )  # fmt: skip
         calls = await threaded(stores.projects.usage, project, session, self.main.alias)
         runs = await threaded(stores.projects.runs, project, session)
         view = await threaded(
@@ -650,8 +664,44 @@ class Harness:
                 kernels = (await self.client.observe_kernels(context)).kernels
             except Exception as error:  # unknown, then: the run goes on
                 _log.warning("the kernels could not be observed for the view: %r", error)
-        name = run_name(admitted.started_at, admitted.run_id)
+        found = await threaded(self._digest, stores, project, session)
+        view = dataclasses.replace(view, digest=found)
         return await settle(view, archive, context, run=name, kernels=kernels, clock=self.clock)
+
+    def _digest(self, stores: Stores, project: str, session: str) -> str | None:
+        """The research-state digest a main run's state block holds (CM-16), within its
+        share of the run's input; ``None`` when the research state is empty."""
+        digest = Digest(
+            Ledger(stores.documents),
+            plans=SessionPlans(stores.documents),
+            questions=Questions(stores.documents, clock=self.clock),
+            delegations=DelegationRecords(stores.documents, clock=self.clock),
+        )
+        try:
+            body = render(
+                digest.sections(project, session), int(self.settings.max_input_chars * SHARE)
+            ).text
+        except DocumentError as error:  # a project the ledger does not know yet
+            _log.warning("no digest for %s/%s: %s", project, session, error)
+            return None
+        return DIGEST.text + "\n" + body if body else None
+
+    def _task_block(
+        self, stores: Stores, project: str, session: str, request: RunRequest
+    ) -> str | None:
+        """A delegated task's state block: the user's standing constraints, each with the
+        user's words beside it (CM-37a). A check gets none, nor anything else."""
+        if request.delegation is None:
+            return None
+        records = DelegationRecords(stores.documents, clock=self.clock)
+        try:
+            if records.get(project, session, request.delegation).kind != "task":
+                return None
+            lines = Digest(Ledger(stores.documents)).constraints(project, session)
+        except (ControlError, DocumentError) as error:  # no record of it: no constraints
+            _log.warning("no state block for delegated run %s: %s", request.run_id, error)
+            return None
+        return TASK_CONSTRAINTS.text + "\n" + constraints_block(lines) if lines else None
 
     def _limits(self, request: RunRequest) -> dict[str, JsonValue]:
         """The limits a run runs under, as its record keeps them (PD-29)."""
