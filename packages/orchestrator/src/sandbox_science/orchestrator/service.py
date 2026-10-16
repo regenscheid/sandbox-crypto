@@ -33,7 +33,12 @@ Each run is admitted, run, saved and acknowledged as ``run`` does, holding the s
 run lease from admission until its record is saved. A session whose runs fail waits
 ``retry`` seconds, doubling with each failure in a row up to ``MAX_WAIT``; after
 ``MAX_FAILURES`` in a row, its queued messages are held with the reason ``failed`` (RS-9),
-and its work requests start no run.
+and its work requests start no run. A run that stops because the session's current
+decisions do not fit its view (``research_state``, CM-45) holds what it was offered and
+what is queued with that reason, as are messages written later: the next run would stop
+the same way. They are queued again when the project's ledger changes, as when the user
+consolidates the decisions, or when the user resumes; a service that restarts queues
+them once more, and the next run holds them again if nothing changed.
 """
 
 from __future__ import annotations
@@ -59,7 +64,9 @@ from .delegation.records import DelegationRecords
 from .documents.annotations import Annotations
 from .documents.tool import REQUESTS_TASK, WorkRequests
 from .harness import Harness, RunRequest, admit, save
+from .history import Folder
 from .hooks import TurnHook
+from .ledger import Ledger
 from .model import GATEWAY_BUDGET
 from .projects import ProjectError, run_name
 from .questions import INTERRUPTED, Questions
@@ -76,6 +83,8 @@ MAX_WAIT: Final = 900.0
 """The longest wait between a session's failing runs."""
 MAX_FAILURES: Final = 5
 """Failed runs in a row after which a session's messages are held."""
+RESEARCH_STATE: Final = "research_state"
+"""Why a session's messages are held when its decisions do not fit its view (CM-45)."""
 
 
 class LogSink:
@@ -131,6 +140,10 @@ class RunService:
         the session's next run is offered them with the others."""
         self.holder = secrets.token_hex(16)
         self._beaten = -BEAT_SECONDS
+        self.ledger = Ledger(harness.stores.documents)
+        self.marks: dict[tuple[str, str], tuple[int, int]] = {}
+        """The ledger's mark when each session's messages were held for its research
+        state: a change of it queues them again."""
 
     async def serve(self) -> None:
         """Run until cancelled. The runs in progress then end ``interrupted``."""
@@ -176,6 +189,9 @@ class RunService:
                 active.stop.set()
                 if active.task is not None:
                     active.task.cancel()
+        for key in await threaded(self.runs.held_for, RESEARCH_STATE):
+            if key not in self.active:
+                await self._consolidated(*key)
         waiting = set(await threaded(self.runs.waiting))
         for project, session, request in await threaded(self.annotations.waiting):
             if request not in self.held.get((project, session), ()):
@@ -183,6 +199,17 @@ class RunService:
         for key in sorted(waiting):
             if key in self.active or self.waiting_until.get(key, now) > now:
                 continue
+            if key in self.marks:
+                queued = await threaded(self.runs.messages, *key, state="queued")
+                # Writing again queues the held messages with the new one (RS-12); only
+                # the user's resume queues them alone, and then the run starts.
+                if queued and all(message.reason == RESEARCH_STATE for message in queued):
+                    self.marks.pop(key)
+                else:  # its decisions still do not fit: what comes waits too
+                    ids = [message.message_id for message in queued]
+                    await threaded(self.runs.hold, *key, ids, RESEARCH_STATE)
+                    self._hold(*key, await self._requests(*key))
+                    continue
             # Not while a lease is left, even an expired one: it may have expired since
             # the look for dead leases above, and the next look ends its run first.
             if not await threaded(self.runs.leased, *key):
@@ -289,6 +316,18 @@ class RunService:
         wait = min(self.retry * 2 ** (count - 1), MAX_WAIT)
         self.waiting_until[key] = self.clock.monotonic() + wait
 
+    async def _consolidated(self, project: str, session: str) -> None:
+        """Queue again a session's messages held for its research state once the ledger
+        changed since, or when this service has not seen it held (CM-45)."""
+        key = project, session
+        mark = await threaded(self.ledger.mark, project)
+        if self.marks.get(key) == mark:
+            return
+        self.marks.pop(key, None)
+        self.held.pop(key, None)
+        count = await threaded(self.runs.resume, project, session, reason=RESEARCH_STATE)
+        _log.info("session %s: %d messages queued again for its research state", session, count)
+
     def _hold(self, project: str, session: str, requests: Iterable[str]) -> None:
         self.held.setdefault((project, session), set()).update(requests)
 
@@ -363,6 +402,18 @@ class RunService:
                 # resets: what waits for the session waits that long (RS-6d).
                 _log.warning("the model gateway's budget is spent; session %s waits", session)
                 self.waiting_until[project, session] = self.clock.monotonic() + MAX_WAIT
+            if finished.transcript.stopped == "context_limit" and any(
+                isinstance(hook, Folder) and hook.stopped == RESEARCH_STATE
+                for hook in finished.hooks
+            ):
+                # The next run would stop the same way: what waits, waits for a change of
+                # the ledger or the user (CM-45).
+                self.marks[project, session] = await threaded(self.ledger.mark, project)
+                offered = await threaded(runs.offered_to, project, session, name)
+                queued = await threaded(runs.messages, project, session, state="queued")
+                held = [*offered, *(m.message_id for m in queued if m.message_id not in offered)]
+                await threaded(runs.hold, project, session, held, RESEARCH_STATE)
+                self._hold(project, session, [*active.request_ids, *unanswered(finished.hooks)])
             if finished.transcript.stopped == "cancelled":
                 # What it was offered and did not answer waits for the user (RS-11).
                 offered = await threaded(runs.offered_to, project, session, name)

@@ -922,7 +922,8 @@ def test_a_huge_ledger_change_keeps_to_its_line(archive: Archive) -> None:
 async def test_dropped_records_markers_keep_to_their_share(archive: Archive) -> None:
     """The re-check of #459, M2: the marker lines of records left out of the region keep
     to a quarter of its share: failure aggregates give way first, then the oldest, and a
-    last line counts them and says how to read them whole."""
+    last line counts them and says how to read them whole. Since step (f2b) a record is
+    left out only when outlines, not decisions, pass the region's budget."""
     first = [archive.append(PROJECT, SESSION, "earlier", Entry("user", "task", "Look."))]
     decisions = tuple(
         {"kind": "decision", "subject": f"D-{n}", "text": f"D-{n} → rejected: " + "why " * 20}
@@ -932,11 +933,11 @@ async def test_dropped_records_markers_keep_to_their_share(archive: Archive) -> 
     old = recorded(archive, first, failures + decisions)
     second = [archive.append(PROJECT, SESSION, "earlier", Entry("user", "user", "More."))]
     recorded(archive, second, ())
-    shape = Geometry(20_000, 0, 2_000, 1.0)  # a region of 3,000 characters
+    shape = Geometry(4_000, 0, 2_000, 1.0)  # a region of 600 characters: two outlines pass it
     view = session_view(archive, CONTEXT, geometry=shape, per_token=1.0)
     assert view.folds_left_out == (old,)
     lines = view.markers_left_out
-    assert sum(len(line) + 3 for line in lines[:-1]) <= 3_000 // 4
+    assert sum(len(line) + 3 for line in lines[:-1]) <= 600 // 4
     assert not any(line.startswith("failures:") for line in lines)
     assert "D-29 → rejected" in " ".join(lines)  # the newest kept, the oldest gone
     assert "D-0 → rejected" not in " ".join(lines)

@@ -33,8 +33,9 @@ from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.harness import Harness as Core
 from sandbox_science.orchestrator.harness import Role, Settings, Stores
 from sandbox_science.orchestrator.harness import admit as harness_admit
-from sandbox_science.orchestrator.history import body
+from sandbox_science.orchestrator.history import Folder, body
 from sandbox_science.orchestrator.jobstate import JobState
+from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.model import OpenAICompatibleModel, ScriptedModel
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
 from sandbox_science.orchestrator.runstate import DeadLease, RunState
@@ -847,3 +848,39 @@ async def test_a_run_that_stops_for_its_lost_lease_ends_and_backs_off(
     assert [data["stopped"] for data in stopped] == ["interrupted"]
     assert states(harness) == {"m-1": "queued"}
     assert names(harness) == []
+
+
+async def test_a_research_state_stop_holds_the_messages_until_the_ledger_changes(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CM-45: a run that stops because the session's current decisions do not fit its
+    view holds what it was offered with the reason ``research_state``, and messages
+    written later too, since the next run would stop the same way; a change of the
+    ledger queues them again, and so does the user's resume."""
+
+    async def research_state(self: Folder, transcript: Any) -> bool:
+        self.geometry = self.start
+        return self._stop("research_state", "the decisions do not fit")
+
+    monkeypatch.setattr(Folder, "before_call", research_state)
+    mark = [(1, 1)]
+    monkeypatch.setattr(Ledger, "mark", lambda self, project: mark[0])
+    post(harness, "m-1", "Go on.")
+    async with serving(harness):
+        await eventually(lambda: states(harness) == {"m-1": "held"}, timeout=20)
+        (record,) = records(harness)
+        assert record.stopped == "context_limit"
+        events = runs(harness).events(PROJECT, SESSION, names(harness)[0])
+        (stopped,) = [event.data for event in events if event.kind == "stopped"]
+        assert (stopped["reason"], stopped["stopped"]) == ("research_state", "context_limit")
+        post(harness, "m-2", "And this?")  # the next run would stop the same way
+        await eventually(lambda: states(harness) == {"m-1": "held", "m-2": "held"}, timeout=20)
+        await asyncio.sleep(0.2)
+        assert len(names(harness)) == 1
+        reasons = {m.message_id: m.reason for m in runs(harness).messages(PROJECT, SESSION)}
+        assert reasons == {"m-1": "research_state", "m-2": "research_state"}
+        mark[0] = (2, 9)  # the user consolidated: the ledger changed
+        await eventually(lambda: len(names(harness)) == 2, timeout=20)
+        await eventually(lambda: states(harness) == {"m-1": "held", "m-2": "held"}, timeout=20)
+        runs(harness).resume(PROJECT, SESSION)  # the user resumes: a run starts
+        await eventually(lambda: len(names(harness)) == 3, timeout=20)

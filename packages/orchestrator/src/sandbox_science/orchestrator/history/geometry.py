@@ -8,6 +8,9 @@ floor. On a small ceiling the scale λ shrinks the state block's and the fold re
 budgets and the floor together, so that a fold at the trigger still takes half a chunk
 when both regions are full: the steady state. A run whose system message and tools pass
 0.2 C, or whose λ would fall below 0.4, does not start.
+
+The shares are settable (``Shares``), as the labs set small ones to force overviews and
+the user's words into pointers; λ then counts the shares as set.
 """
 
 from __future__ import annotations
@@ -27,14 +30,33 @@ MAX_PROMPT: Final = 0.2
 
 
 @dataclass(frozen=True)
+class Shares:
+    """The view's shares of C, before λ scales them: the user's words', the digest's
+    (together the state block) and the fold region's."""
+
+    words: float = 0.10
+    digest: float = 0.05
+    region: float = 0.15
+
+    def __post_init__(self) -> None:
+        for name in ("words", "digest", "region"):
+            if not 0.0 < getattr(self, name) <= 0.5:
+                raise ValueError(f"the {name} share must be above 0 and at most 0.5")
+
+
+DEFAULT_SHARES: Final = Shares()
+
+
+@dataclass(frozen=True)
 class Geometry:
     """A run's geometry, in tokens: ``ceiling`` C, ``prompt`` P (the system message and
-    tools), the chunk K and the scale λ."""
+    tools), the chunk K and the scale λ, and the shares it scales."""
 
     ceiling: int
     prompt: int
     chunk: int
     scale: float
+    shares: Shares = DEFAULT_SHARES
 
     @property
     def trigger(self) -> int:
@@ -51,22 +73,30 @@ class Geometry:
 
     @property
     def state_block(self) -> int:
-        return int(0.15 * self.ceiling * self.scale)
+        return self.words + self.digest
 
     @property
     def words(self) -> int:
-        """The user's words' share of the state block: two thirds of it."""
-        return self.state_block * 2 // 3
+        """The user's words' share of the state block: two thirds of it by default."""
+        return int(self.shares.words * self.ceiling * self.scale)
 
     @property
     def digest(self) -> int:
         """The research-state digest's share of the state block: the third left."""
-        return self.state_block - self.words
+        return int(self.shares.digest * self.ceiling * self.scale)
 
     @property
     def region(self) -> int:
         """The fold region's budget."""
-        return int(0.15 * self.ceiling * self.scale)
+        return int(self.shares.region * self.ceiling * self.scale)
+
+    @property
+    def region_cap(self) -> int:
+        """How far current decision lines may grow the fold region past its budget: while
+        the system message and tools, the state block, the region, the raw floor and
+        half a chunk stay under the trigger, so a useful fold still fits (CM-21b)."""
+        room = self.trigger - self.prompt - self.state_block - self.floor - self.chunk // 2
+        return max(self.region, room)
 
     @property
     def record(self) -> int:
@@ -88,7 +118,7 @@ class Geometry:
             )
         return None
 
-    def summary(self) -> dict[str, float | int]:
+    def summary(self) -> dict[str, object]:
         """The values a run used, as its record keeps them (CM-47)."""
         return {
             "ceiling": self.ceiling,
@@ -100,15 +130,24 @@ class Geometry:
             "floor": self.floor,
             "state_block": self.state_block,
             "region": self.region,
+            "region_cap": self.region_cap,
+            **(
+                {}
+                if self.shares == DEFAULT_SHARES
+                else {"shares": [self.shares.words, self.shares.digest, self.shares.region]}
+            ),
         }
 
 
-def geometry(ceiling: int, prompt: int, chunk: int | None = None) -> Geometry:
+def geometry(
+    ceiling: int, prompt: int, chunk: int | None = None, shares: Shares = DEFAULT_SHARES
+) -> Geometry:
     """The geometry at ``ceiling`` with ``prompt`` tokens of system message and tools;
-    ``chunk`` is the role's chunk size, if it sets one."""
+    ``chunk`` is the role's chunk size, if it sets one, and ``shares`` the view's."""
     size = chunk if chunk is not None else max(MIN_CHUNK, int(0.2 * ceiling))
-    scale = min(1.0, (TRIGGER * ceiling - prompt - size / 2) / (0.3 * ceiling + 0.7 * size))
-    return Geometry(ceiling, prompt, size, max(0.0, scale))
+    scaled = shares.words + shares.digest + shares.region  # 0.3 by default
+    scale = min(1.0, (TRIGGER * ceiling - prompt - size / 2) / (scaled * ceiling + 0.7 * size))
+    return Geometry(ceiling, prompt, size, max(0.0, scale), shares)
 
 
 def ceiling(

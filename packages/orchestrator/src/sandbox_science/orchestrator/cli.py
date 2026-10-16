@@ -80,6 +80,7 @@ from .harness import (
     save,
 )
 from .history import CEILING
+from .history.geometry import Shares
 from .jobstate import JobState
 from .loop import MAX_INPUT_CHARS, Interruption
 from .mathcheck import MathChecker
@@ -367,6 +368,11 @@ def _harness(
             ceiling=getattr(args, "context_ceiling", CEILING),
             chunk=getattr(args, "fold_chunk", None),
             input_limit=getattr(args, "input_limit", None),
+            shares=Shares(
+                getattr(args, "words_share", 0.10),
+                getattr(args, "digest_share", 0.05),
+                getattr(args, "region_share", 0.15),
+            ),
             skeleton_only=getattr(args, "skeleton_only_folds", False),
             fold_alias=getattr(args, "fold_alias", None),
             watcher_calls_per_hour=args.watcher_calls_per_hour,
@@ -485,6 +491,18 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
     command.add_argument(
         "--fold-chunk", type=int, help="the tokens a fold takes (default max(50,000, 0.2 C))"
     )
+    for share, default, what in (
+        ("words", 0.10, "the user's own words in the state block"),
+        ("digest", 0.05, "the research-state digest in the state block"),
+        ("region", 0.15, "the fold region"),
+    ):
+        command.add_argument(
+            f"--{share}-share",
+            type=float,
+            default=default,
+            help=f"the share of C for {what}, before λ scales it (default {default}); the "
+            "labs set small shares to force overviews, pointers and spills",
+        )
     command.add_argument(
         "--skeleton-only-folds",
         action="store_true",
@@ -643,6 +661,9 @@ def _check_agent(parser: argparse.ArgumentParser, args: argparse.Namespace) -> N
     for flag in ("context_ceiling", "fold_chunk", "input_limit"):
         if (value := getattr(args, flag, None)) is not None and value < 1:
             parser.error(f"--{flag.replace('_', '-')} must be at least 1")
+    for flag in ("words_share", "digest_share", "region_share"):
+        if (value := getattr(args, flag, None)) is not None and not 0 < value <= 0.5:
+            parser.error(f"--{flag.replace('_', '-')} must be above 0 and at most 0.5")
     mcp = (args.mcp_proxy, args.mcp_token_file, args.mcp_project)
     if (any(value is not None for value in mcp) and any(value is None for value in mcp)) or (
         args.mcp_proxy is None and args.mcp_server

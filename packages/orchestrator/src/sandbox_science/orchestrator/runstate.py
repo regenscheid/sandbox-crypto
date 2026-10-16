@@ -300,16 +300,28 @@ class RunState:
         those an interrupted run saw, or a failing session's."""
         self._set_state(project, session, ids, "held", reason)
 
-    def resume(self, project: str, session: str) -> int:
-        """Queue the session's held messages again; how many."""
+    def resume(self, project: str, session: str, *, reason: str | None = None) -> int:
+        """Queue the session's held messages again, or only those held for ``reason``;
+        how many."""
         now = self._now().isoformat()
         with self.control.write() as tx:
             _session(tx.sql, project, session)
             return tx.sql.execute(
                 "UPDATE session_messages SET state = 'queued', updated_at = ? "
-                "WHERE project_id = ? AND session_id = ? AND state = 'held'",
-                (now, project, session),
+                "WHERE project_id = ? AND session_id = ? AND state = 'held' "
+                "AND (? IS NULL OR reason = ?)",
+                (now, project, session, reason, reason),
             ).rowcount
+
+    def held_for(self, reason: str) -> list[tuple[str, str]]:
+        """Every session with messages held for ``reason``, as (project, session)."""
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT DISTINCT project_id, session_id FROM session_messages "
+                "WHERE state = 'held' AND reason = ? ORDER BY project_id, session_id",
+                (reason,),
+            ).fetchall()
+        return [(project, session) for project, session in rows]
 
     def waiting(self) -> list[tuple[str, str]]:
         """Every session with queued messages, as (project, session)."""

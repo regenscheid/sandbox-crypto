@@ -67,6 +67,7 @@ LABELS: Final = {
     "tool_result": "tool result",
     "state_block": "state block",
     "fold": "fold record",
+    "spill": "spill record",
 }
 """Each kind of message the platform writes, as its header names it."""
 KINDS: Final = (*LABELS, "assistant")
@@ -214,7 +215,7 @@ class Entry:
         and the state blocks and fold records, which copy what the indexes cover, and
         with the text of a Claude answer's thinking blocks that it does not hold, its
         reasoning summaries (CM-38)."""
-        if self.kind in ("state_block", "fold") or (
+        if self.kind in ("state_block", "fold", "spill") or (
             self.kind == "tool_result" and self.source in UNINDEXED
         ):
             return None

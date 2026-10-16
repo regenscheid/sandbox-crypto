@@ -233,7 +233,8 @@ def _change(span: _Span, args: str, found: Json, at: str) -> str:
         fields = cast(Json, change.get("fields") or {})
         if handle.startswith("D-") and ("status" in change or done.get("created")):
             text = f"{handle} → {status}: {reason}"
-            decided: Json = {"status": status}  # what retires the line when it changes
+            # What retires the line when it changes, and what its short forms show.
+            decided: Json = {"status": status, "reason": reason}
             if fields.get("reopen_condition"):
                 text += f"; reopen if {fields['reopen_condition']}"
                 decided["reopen"] = str(fields["reopen_condition"])

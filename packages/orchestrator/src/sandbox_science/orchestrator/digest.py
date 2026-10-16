@@ -34,8 +34,9 @@ index.
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Final, cast
 
@@ -92,6 +93,8 @@ USERS: Final = ("user", "task", "comment")
 SCANNED: Final = 2000
 """The most entries of one type a section reads, newest first, of those it can show."""
 CLIP: Final = 300
+HANDLE: Final = re.compile(r"(?<![\w-])(?:REF|[ICRADT])-\d+(?![\w-])")
+"""A ledger handle in a line's text."""
 
 
 @dataclass(frozen=True)
@@ -126,6 +129,14 @@ class Rendered:
     text: str
     shown: tuple[str, ...] = ()
     left_out: tuple[str, ...] = ()
+    lines: Mapping[str, str] = field(default_factory=dict[str, str])
+    """The line each handle shown has, as the digest shows it: what a fold record's
+    marker is compared with for its short form (CM-21b)."""
+    named: frozenset[str] = frozenset()
+    """The handles the plan and the open questions name: the markers on them come first
+    among those the fold region keeps (CM-21b)."""
+    pinned: frozenset[str] = frozenset()
+    """The user's standing constraints, which are never shortened."""
 
 
 def _clip(text: str, limit: int = CLIP) -> str:
@@ -505,10 +516,26 @@ def render(sections: Sequence[Section], budget: int) -> Rendered:
     decisions = next((i for i, s in enumerate(sections) if s.key == "decisions"), None)
     if decisions is not None and carry > 0:
         fitted[decisions] = _fit(sections[decisions], len(fitted[decisions][0]) + carry)
+    # What the current plan step and the open questions name (CM-21b's priority).
+    named = {
+        found
+        for section in sections
+        for line in section.lines
+        if section.key == "questions" or (section.key == "plan" and " (current) " in line.text)
+        for found in HANDLE.findall(line.text)
+    }
     return Rendered(
         "".join(text for text, _, _ in fitted),
         tuple(line.handle for _, shown, _ in fitted for line in shown if line.handle),
         tuple(line.handle for _, _, left in fitted for line in left if line.handle),
+        {line.handle: line.text for _, shown, _ in fitted for line in shown if line.handle},
+        frozenset(named),
+        frozenset(
+            line.handle
+            for section in sections
+            for line in section.lines
+            if line.pinned and line.handle
+        ),
     )
 
 
