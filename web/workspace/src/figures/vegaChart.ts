@@ -12,7 +12,7 @@
  * was generated.
  */
 import * as vega from 'vega';
-import { expressionFunction, parse, View } from 'vega';
+import { expressionFunction, parse, tupleid, View } from 'vega';
 import { expressionInterpreter } from 'vega-interpreter';
 import { compile } from 'vega-lite';
 import {
@@ -28,13 +28,17 @@ import {
   Refusals,
   Spending,
   argument,
+  checkBuild,
   type Fetch,
 } from './chart';
+
+/** A row of the run's data, whose transform checked what it holds. */
+const owned = (value: object): boolean => tupleid(value) != null;
 
 /** The refusals and the spending of the chart running now; a worker runs one chart at a
  * time. */
 let running = new Refusals();
-let spending = new Spending();
+let spending = new Spending(owned);
 
 /** Run `read` for Vega, noting a refusal it throws so the chart is refused after. */
 function noted<T>(read: () => T): T {
@@ -80,15 +84,26 @@ for (const step of Object.values(
     return out;
   };
 }
-// The functions that build strings or arrays, each within the limits and counted in the
-// run's spending; registered here, they come before the interpreter's own.
-const pad = expressionFunction('pad') as (...args: unknown[]) => unknown;
-const truncate = expressionFunction('truncate') as (...args: unknown[]) => unknown;
+// The functions that build strings or arrays, each refused before it builds past the
+// limits (checkBuild), and what it built counted in the run's spending; registered here,
+// they come before the interpreter's own.
 type Call = (...args: never[]) => unknown;
+const vegas = (name: string) => expressionFunction(name) as (...args: unknown[]) => unknown;
+const [pad, truncate, timeSequence, utcSequence] = [
+  'pad',
+  'truncate',
+  'timeSequence',
+  'utcSequence',
+].map(vegas);
 const builders: Record<string, Call> = {
   sequence: (start: number, stop?: number, step?: number) => boundedSequence(start, stop, step),
-  pad: (...args: unknown[]) => pad(...args),
-  truncate: (...args: unknown[]) => truncate(...args),
+  pad: (...args: unknown[]) => pad!(...args),
+  truncate: (...args: unknown[]) => truncate!(...args),
+  timeSequence: (...args: unknown[]) => timeSequence!(...args),
+  utcSequence: (...args: unknown[]) => utcSequence!(...args),
+  btoa: (value: unknown) => btoa(String(value)),
+  atob: (value: unknown) => atob(String(value)),
+  encodeURIComponent: (value: unknown) => encodeURIComponent(String(value)),
   upper: (value: unknown) => String(value).toUpperCase(),
   lower: (value: unknown) => String(value).toLowerCase(),
   trim: (value: unknown) => String(value).trim(),
@@ -103,9 +118,55 @@ for (const [name, build] of Object.entries(builders))
   expressionFunction(name, (...args: unknown[]) =>
     noted(() => {
       args.forEach(argument);
+      checkBuild(name, args);
       return spending.spend((build as (...args: unknown[]) => unknown)(...args));
     }),
   );
+// The interpreter's own functions that read a string, registered so that the checks
+// below see their arguments too (review of #500, L1): a long one is refused before it is
+// read, which would flatten a string built by concatenation.
+const readers: Record<string, Call> = {
+  length: (value: { length: unknown }) => value.length,
+  parseFloat: (value: string) => parseFloat(value),
+  parseInt: (value: string, radix?: number) => parseInt(value, radix),
+  regexp: (pattern: string, flags?: string) => new RegExp(pattern, flags),
+  test: (pattern: string | RegExp, value: unknown) => new RegExp(pattern).test(String(value)),
+};
+for (const [name, read] of Object.entries(readers))
+  if (expressionFunction(name) === undefined) expressionFunction(name, read);
+
+/** The functions an expression calls, each checked first: every argument within
+ * `argument`, and what it would build within `checkBuild` (review of #500, L1 and L2). */
+const checked = new WeakMap<object, object>();
+function checking(functions: object): object {
+  let proxy = checked.get(functions);
+  if (proxy !== undefined) return proxy;
+  const wrapped = new Map<PropertyKey, [unknown, unknown]>();
+  proxy = new Proxy(functions, {
+    get(target, name, receiver) {
+      const value: unknown = Reflect.get(target, name, receiver);
+      if (typeof value !== 'function') return value;
+      const known = wrapped.get(name);
+      if (known?.[0] === value) return known[1];
+      const call = function (this: unknown, ...args: unknown[]): unknown {
+        noted(() => {
+          args.forEach(argument);
+          checkBuild(String(name), args);
+        });
+        return (value as (...args: unknown[]) => unknown).apply(this, args);
+      };
+      wrapped.set(name, [value, call]);
+      return call;
+    },
+  });
+  checked.set(functions, proxy);
+  return proxy;
+}
+/** A parse context whose functions are checked. */
+const bounded = (ctx: unknown): unknown => {
+  const { functions } = ctx as { functions: object };
+  return Object.create(ctx as object, { functions: { value: checking(functions) } });
+};
 
 /** Vega's interpreter, each value it gives spent against the run's limits, so string
  * concatenation (`+`), which no function makes, is bounded too: an expression's text is
@@ -116,7 +177,7 @@ const interpreter = expressionInterpreter as unknown as Interpreter;
 const spent =
   (make: string) =>
   (ctx: unknown, expr: unknown): Evaluator => {
-    const evaluate = interpreter[make]!(ctx, expr);
+    const evaluate = interpreter[make]!(bounded(ctx), expr);
     return (...args) => noted(() => spending.spend(evaluate(...args)));
   };
 const boundedInterpreter = {
@@ -125,7 +186,7 @@ const boundedInterpreter = {
   event: spent('event'),
   handler: spent('handler'),
   encode(ctx: unknown, encode: { channels: Record<string, unknown> }): Evaluator {
-    const evaluate = interpreter['encode']!(ctx, encode);
+    const evaluate = interpreter['encode']!(bounded(ctx), encode);
     return (item, ...rest) => {
       const changed = evaluate(item, ...rest);
       noted(() => {
@@ -144,7 +205,7 @@ export async function chartSvg(
 ): Promise<{ svg: string; name: string | null }> {
   const spec = checkedChart(source, [...files.keys()]);
   running = new Refusals();
-  spending = new Spending();
+  spending = new Spending(owned);
   const refusals = running;
   let runtime;
   let datasets: string[];

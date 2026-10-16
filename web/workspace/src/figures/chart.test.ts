@@ -19,6 +19,8 @@ import {
   MAX_RUN_CHARACTERS,
   MAX_RUN_ELEMENTS,
   Spending,
+  checkBuild,
+  formatWidth,
   MAX_SVG,
   MAX_TEXT,
   sceneSize,
@@ -324,6 +326,105 @@ describe("what a chart's expressions make (review of #500, memory)", () => {
       mark: 'bar',
     });
     const { svg } = await chartSvg(labelled, files, read);
+    expect(svg).toMatch(/^<svg/);
+  });
+}); // prettier-ignore
+
+describe("what a chart's functions read and build (review of #500, L1 and L2)", () => {
+  const rows = (stop: number) => ({ sequence: { start: 0, stop, as: 'i' } });
+  const chart = (transform: object[], stop = 8) =>
+    JSON.stringify({
+      data: rows(stop),
+      transform,
+      mark: 'point',
+      encoding: { x: { field: 'i', type: 'quantitative' } },
+    });
+
+  it('refuses a string doubled inside an object, then read by indexof', async () => {
+    // L1's crash: {v: datum.o.v + datum.o.v} 28 times, then indexof(), on 8 rows.
+    const doubling = Array.from({ length: 28 }, () => ({ calculate: '{v: datum.o.v + datum.o.v}', as: 'o' }));
+    const nested = chart([{ calculate: "{v: 'abcdefgh'}", as: 'o' }, ...doubling, { calculate: "indexof(datum.o.v, 'z')", as: 'n' }]);
+    await expect(chartSvg(nested, new Map(), read)).rejects.toThrow('size');
+    const listed = chart([{ calculate: "['abcdefgh']", as: 'o' }, ...Array.from({ length: 28 }, () => ({ calculate: '[datum.o[0] + datum.o[0]]', as: 'o' }))]);
+    await expect(chartSvg(listed, new Map(), read)).rejects.toThrow('size');
+  });
+
+  it('refuses a long string read by any function, before it is read', async () => {
+    const long = { calculate: "pad('', 40000)", as: 's' };
+    for (const read_ of ["indexof(datum.s + datum.s, 'z')", "lastindexof(datum.s + datum.s, 'z')", "test('z', datum.s + datum.s)", 'parseFloat(datum.s + datum.s)', 'parseInt(datum.s + datum.s)', 'length(datum.s + datum.s)', 'toNumber(datum.s + datum.s)'])
+      await expect(chartSvg(chart([long, { calculate: read_, as: 'n' }]), new Map(), read), read_).rejects.toThrow('size');
+  });
+
+  it('refuses what a function would build past the limits, before building it', async () => {
+    // L2's crashes: pad() to 1e8, and join() of 8,000 elements with a 60 Ki separator.
+    for (const build of ["pad('', 1e8)", "join(sequence(0, 8000), pad('', 60000))", "replace(pad('', 1000, 'a'), regexp('a', 'g'), pad('', 1000))", "replace(pad('', 1000, 'a'), regexp('a', 'g'), \"$'\")", "truncate(pad('', 60000), 60000, 'right', pad('', 60000))", "format(1, '100000d')", "timeSequence('milliseconds', 0, 1e9)", "btoa(pad('', 60000))"]) {
+      const started = performance.now();
+      await expect(chartSvg(chart([{ calculate: build, as: 'b' }], 1), new Map(), read), build).rejects.toThrow('size');
+      expect(performance.now() - started, build).toBeLessThan(2000);
+    }
+    expect(() => checkedChart(bars({ encoding: { y: { field: 'ms', type: 'quantitative', axis: { format: '100000d' } } } }), ['data/t.csv'])).toThrow('size');
+  });
+
+  it('estimates what a function builds from its arguments', () => {
+    const fits = (name: string, ...args: unknown[]) => { try { checkBuild(name, args); return true; } catch { return false; } };
+    expect(fits('pad', 'x', MAX_FIELD)).toBe(true);
+    expect(fits('pad', 'x', MAX_FIELD + 1)).toBe(false);
+    expect(fits('pad', 'x', MAX_FIELD / 2, 'ab')).toBe(true);
+    expect(fits('pad', 'x', MAX_FIELD / 2 + 2, 'ab')).toBe(false);
+    expect(fits('join', ['a', 'b'], '-')).toBe(true);
+    expect(fits('join', [['x'.repeat(MAX_FIELD / 2)], ['x'.repeat(MAX_FIELD / 2)]], 'yy')).toBe(false);
+    expect(fits('replace', 'a,b,c', /,/g, ', ')).toBe(true);
+    expect(fits('replace', 'a'.repeat(300), /a/g, 'b'.repeat(300))).toBe(false);
+    expect(fits('replace', 'a'.repeat(300), /a/, 'b'.repeat(300))).toBe(true);
+    expect(fits('replace', 'a'.repeat(300), /x*/g, 'b'.repeat(300))).toBe(false);
+    expect(fits('truncate', 'x'.repeat(MAX_FIELD), 10)).toBe(true);
+    expect(fits('format', 1, ',.2f')).toBe(true);
+    expect(fits('format', 1, `>${MAX_FIELD + 1}d`)).toBe(false);
+    expect(formatWidth('010d')).toBe(10);
+    expect(formatWidth('.100f')).toBe(0);
+    expect(fits('timeSequence', 'day', new Date(2020, 0, 1), new Date(2021, 0, 1))).toBe(true);
+    expect(fits('utcSequence', 'seconds', 0, 1e9)).toBe(false);
+    expect(fits('utcSequence', 'seconds', 0, 1e9, 1000)).toBe(true);
+    expect(fits('indexof', 'x', 'y')).toBe(true);
+  });
+
+  it('spends the strings and arrays nested in a value, but not the rows of the data', () => {
+    const doubled = { o: { v: 'x'.repeat(MAX_FIELD + 1) } };
+    expect(() => new Spending().spend(doubled)).toThrow('size');
+    expect(() => new Spending().spend([['x'.repeat(MAX_FIELD + 1)]])).toThrow('size');
+    expect(() => new Spending().rows([{ o: doubled }])).toThrow('size');
+    expect(() => new Spending().rows([{ a: [{ s: 'x'.repeat(MAX_FIELD + 1) }] }])).toThrow('size');
+    const spending = new Spending();
+    spending.spend({ a: ['ab', { b: 'cde' }] });
+    expect([spending.characters, spending.elements]).toEqual([5, 2]);
+    // A row of the run's data is accounted for by its transform: not spent again.
+    const row = { s: 'x'.repeat(MAX_FIELD + 1) };
+    const rowsOwned = new Spending((value) => value === row);
+    expect(() => rowsOwned.spend([row])).not.toThrow();
+    expect(() => rowsOwned.rows([{ lookup: row }])).not.toThrow();
+    const shared = { s: 'abc' };
+    const twice = new Spending();
+    twice.spend({ a: shared, b: shared });
+    expect(twice.characters).toBe(3);
+  });
+
+  it('still draws charts that pad, join, replace, format and step through time', async () => {
+    const ordinary = bars({
+      transform: [
+        { calculate: "pad(format(datum.ms, '.1f'), 6, ' ', 'left')", as: 'padded' },
+        { calculate: "join([datum.size, datum.ms], ' / ')", as: 'joined' },
+        { calculate: "replace(datum.joined, regexp('/', 'g'), 'per')", as: 'replaced' },
+        { calculate: "{label: truncate(datum.replaced, 8), n: length(datum.replaced)}", as: 'o' },
+        { calculate: "length(timeSequence('day', datetime(2020, 0, 1), datetime(2020, 1, 1)))", as: 'days' },
+        { filter: "indexof(datum.o.label, 'per') >= 0 && test('^[0-9]', datum.padded + '1') || true" },
+      ],
+      encoding: {
+        x: { field: 'size', type: 'ordinal' },
+        y: { field: 'ms', type: 'quantitative', axis: { format: '08.2f' } },
+        tooltip: { field: 'o.label' },
+      },
+    });
+    const { svg } = await chartSvg(ordinary, files, read);
     expect(svg).toMatch(/^<svg/);
   });
 }); // prettier-ignore
