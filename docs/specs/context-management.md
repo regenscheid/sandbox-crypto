@@ -1,6 +1,6 @@
 # Context management for long research sessions
 
-Date: 2026-10-15. **Status: Draft, for the owner's review. Nothing in it is built.** The owner decided on 2026-10-15: the approach works for both Claude and GPT models, and a session may switch between them; the project follows proven designs, Claude Science's and OpenScience's, and adopts no context-management library, since none is known to be good for this work; the working context's ceiling is a per-role setting, 600,000 tokens by default, never more than the model's window less its maximum output; the spec is organized by layers, with the research state kept explicitly; and continuity probes on both model families are the first build's acceptance condition. Everything else is recommended and waits for the owner's review, the open questions first. W0 behavior specification; conventions in the [index](README.md).
+Date: 2026-10-15. **Status: Draft, for the owner's review. Nothing in it is built.** The owner decided on 2026-10-15: the approach works for both Claude and GPT models, and a session may switch between them; the project follows proven designs, Claude Science's and OpenScience's, and adopts no context-management library, since none is known to be good for this work; the working context's ceiling is a per-role setting, 600,000 tokens by default, never more than the model's window less its maximum output, and the first lab round checks what that default does to quality; the spec is organized by layers, with the research state kept explicitly; and continuity probes on both model families are the first build's acceptance condition. Everything else is recommended and waits for the owner's review, the open questions first. W0 behavior specification; conventions in the [index](README.md).
 
 ## Scope
 
@@ -16,6 +16,8 @@ A research session runs for days. Its runs together read and produce millions of
 4. Two native model adapters: Claude through the gateway's `/v1/messages`, with the rules that bind thinking to its history, and GPT through `/v1/responses`, with reasoning items.
 
 The spec has six layers: the archive, the research state, folds, the working view, retrieval and the model adapters.
+
+**The ceiling.** 600,000 tokens is the owner's default for how much live context a call may carry, so that the model works with several hundred thousand tokens of recent work. It is a setting, not a finding: studies of long contexts find that models reason less well as the context grows (Chroma's "Context Rot"; the Graphwalks results at 256,000 and 1,000,000 tokens), so more live context is not always better. The first lab round checks the default's effect on quality, and the owner lowers it if the larger context does worse (CM-27).
 
 **Out of scope.** Project memory, which stays as it is ([project memory](project-memory.md)). The consistency reviewer's and the job watcher's inputs, which are bounded on their own. Provider-native compaction (open question 3). A session scratchpad, which comes only if the continuity probes find state that neither the ledger nor the plan holds.
 
@@ -38,6 +40,7 @@ Terms:
 
 - CM-1. **Which runs.** Main runs get the session view (CM-29). Delegated runs fold within their own run (CM-37). The consistency reviewer and the job watcher keep their own bounded inputs and have no view.
 - CM-2. **Both model families** (owner, 2026-10-15). The archive, the research state, fold records, the state block and the retrieval tools are plain text and records that any model reads. A session may switch between Claude and GPT models. Only native items, such as thinking and reasoning, stay with the model that made them (CM-42).
+- CM-2a. **One replaceable subsystem** (new). The view builder, the fold engine (scheduling, skeletons, enrichment, validation, overviews and marker retention) and the retrieval tools sit behind one interface. The loop calls it at its safe points: it hands over each appended message and each call's usage, and asks for the next call's view. The interface lives outside the loop's own module, as a turn hook does (refactoring plan, working rule 7). The archive and the research state are stable stores that the subsystem reads and does not own. Replacing the subsystem, with a plain summary, a provider's compaction or a library, changes neither store, nor the loop, nor the model adapters.
 
 ### Layer 1: the archive
 
@@ -76,10 +79,10 @@ Terms:
   5. Entry revisions and work records keep their basis and anchors (CM-9). An anchor on an archive message is a transcript anchor, the contract addition the index approved ([addition 3](README.md#proposed-contract-additions-new)).
 - CM-11. **Failure is not impossibility.** The research state keeps three things apart, and the digest labels them differently (CM-16):
   - an attempt that did not succeed: a work record ending `limit`, which says what ran out (time, tools, context or ideas), or a claim of kind `observation` with `numerical_experiment` or `finite_test` evidence and its scope, such as "no collision in 2^40 trials";
-  - a claimed obstruction: a work record ending `obstruction_claimed` that no assessment has accepted;
-  - an impossibility: an issue `obstructed` by a decision with an accepted assessment (LG-7), or a claim of kind `negative result` with `proof` evidence.
+  - a claimed obstruction or negative result that is not settled: a work record ending `obstruction_claimed` that no assessment has accepted, or a claim of kind `negative result` that is `proposed` or `disputed`, whatever evidence it holds. An agent can propose such a claim and attach its own proof before anyone checks it;
+  - a settled impossibility, in the ledger's settled statuses only: an issue `obstructed` by a decision in effect that names its excluded scope and an accepted assessment (LG-7); a project claim of kind `negative result` that is `established`, which only a decision that passes the gate makes it (LG-17); or a published one that is `recorded` and confirmed as LG-16 says, labelled as its source's claim.
 
-  Only the last is called impossible. A failed numerical experiment never becomes one by being folded or summarized.
+  Only the last is called impossible, always with its scope (the excluded scope, or the claim's statement and evidence scope notes) and the assumptions it rests on (its `assumes` links). A settled entry with an open flag (LG-28), such as one whose assumption changed, renders as unresolved, with the flag's cause, until the flag is cleared. A proposed, disputed or flagged negative result never renders as impossible: the digest says "claimed, not established", "disputed" or "flagged", with its handle. A failed numerical experiment never becomes an impossibility by being folded or summarized.
 - CM-12. **The read register** (new). The platform records, from the tool records, how much of each source a session read. It is an observation, not the agent's statement. A source is a PDF artifact revision, an ePrint paper, a fetched web page or a saved output file. Its extent is one of:
   - `whole`: every page of a PDF returned whole by `pdf_pages`; every byte of a file read with `read_file`, counted as PD-18 counts a whole read; a fetch that returned the whole page;
   - `partial`: part of it, saying which, such as pages 3–7 of 21, a byte range, or the first part of a fetched page;
@@ -100,28 +103,28 @@ Terms:
   Each proposal names its basis and its anchors, which lie in the span. Code validates each one: its form; that the handles it names exist; that its anchors lie in the span; that its numbers and identifiers occur in the span (CM-20); and that its text holds no hidden character (`check_agent_text`). It keeps the valid ones, at most 20 per fold, as the fold's proposals, recorded as agent-proposed. Nothing is written to the ledger. A proposal waits, shown in the digest, until the main agent or the user accepts it or dismisses it with a reason. The main agent accepts proposals with one tool call, as it imports a results file (LG-41), with its own authority: a status that needs a decision still needs one, and the gate still applies. The user accepts or dismisses them in the GUI. A fold's proposals change no entry and settle nothing (owner, 2026-10-15).
 - CM-16. **The digest.** At every rebuild, code renders a digest of the research state into the state block (CM-26). Its sections, in order, each with its share of the digest's budget:
   1. the session plan: its goal and version, each step's status and note, and the current step;
-  2. decisions, rejected and reversed ones first, since they stop repeated work, then those in effect: each with its handle, statement, status, reason, reopen condition and any open flag;
+  2. decisions: first the user's standing constraints, which are decisions in effect with the basis `user` (CM-48); then rejected and reversed decisions, which stop repeated work; then the others in effect, and proposed ones. Each with its handle, statement, status, reason, reopen condition and any open flag;
   3. open questions and hypotheses, and open contradictions with what they concern;
   4. active assumptions, each with the entries that rely on it, and their open flags;
-  5. findings: claims and results with their status, evidence types, scope notes and caveats; then attempts that did not succeed, claimed obstructions and accepted obstructions, each under its own label (CM-11);
+  5. findings: claims and results with their status, evidence types, scope notes and caveats; then attempts that did not succeed, unsettled obstructions and negative results, and settled impossibilities with their scope and assumptions, each under its own label (CM-11);
   6. sources: references with their read extents (CM-12);
   7. the session's open items, by ID with one line each: unresolved review findings addressed to it, jobs and delegations still running, questions to the user not yet answered, and approvals its tool results said it waits for (`approval_required`);
   8. fold proposals waiting (CM-15);
   9. an index of delegation outcomes and recorded artifacts: IDs and titles only.
 
-  Every line ends with its basis (`[user]`, `[observed]`, `[interpreted]`) and the handles and archive IDs to retrieve it with (`ledger_read`, `history_read`). Within a section, the entries the session touched come first, then the most recently changed and the most linked. A section over its share ends with a line saying how many entries it left out and how to list them. The digest is project-wide, since the ledger is (LG-3).
+  Every line ends with its basis (`[user]`, `[observed]`, `[interpreted]`) and the handles and archive IDs to retrieve it with (`ledger_read`, `history_read`). Within a section, the entries the session touched come first, then the most recently changed and the most linked. A section over its share ends with a line saying how many entries it left out and how to list them. A current decision, caveat or incomplete read that its section leaves out is shown in full in the fold region instead, when a fold holds its marker (CM-21b). The main run's digest is project-wide, since the ledger is (LG-3); delegated runs get digests of their own (CM-37a).
 
 ### Layer 3: folds
 
 - CM-17. **A fold record** holds (CScience; new where marked):
   - a span header: the first and last archive positions and IDs, the runs and the dates;
   - the skeleton, built by code (CM-18);
-  - marker lines, built by code: each incomplete read, each caveat and each decision line of the span (CM-18) (new);
+  - marker lines, built by code: each incomplete read, each caveat and each decision line of the span, each with its kind and its subject: the entry's handle, the source, or the tool call (CM-18) (new);
   - the narrative, written by the enrichment call (CM-19);
   - search keys: literal strings that occur in the span (CM-20);
-  - its level, 1 for a fold of raw messages and 2 for an overview, and its size in tokens.
+  - its level: 1 for a fold of raw messages, and for an overview one more than the highest level among its parts; and its size in tokens.
 
-  The record is archived (CM-3), and the view shows it in place of its span. The span's messages stay in the archive.
+  The record is archived (CM-3) as it was built, its marker lines whole, and is never changed afterwards. What the view shows of it is rendered from the stored record at each rebuild (CM-21b), in place of its span. The span's messages stay in the archive.
 - CM-18. **The skeleton** (CScience's design, with this platform's own record lines and budgets). Code builds a chronological, labelled outline of the span. Each item has a budget in tokens:
 
   | Item | In the skeleton | Budget |
@@ -140,7 +143,9 @@ Terms:
   - a **caveat**: an evidence scope note; evidence of type `finite_test` or `numerical_experiment`; a caveat line (CM-10); a work record ending `limit` or `obstruction_claimed`; a check that ended `inconclusive`; a tool call that failed or timed out;
   - a **decision line**: each decision change in the span, with its reason and reopen condition.
 
-  An item over its budget keeps its head and tail, with a marker for the cut. When the skeleton is over its share of the record, code squeezes tool results first, then tool arguments, then assistant text, then delegation summaries. User message lines, marker lines and decision lines are never squeezed. When there is room, budgets grow and tool results come back. Code also lists the literals it finds in the span as search keys, within their share, with their message IDs: hashes, ePrint IDs, DOIs, numbers of 12 or more digits, and `name = value` pairs.
+  When a span holds more than five failed or timed-out calls of one tool, they form one marker for that tool: their count, and their first and last message IDs.
+
+  An item over its budget keeps its head and tail, with a marker for the cut. When the skeleton is over its share of the record, code squeezes tool results first, then tool arguments, then assistant text, then delegation summaries. User message lines, marker lines and decision lines are never squeezed within a record; marker lines count toward the fold region's budget, where CM-21b bounds them, not toward the record's share. When there is room, budgets grow and tool results come back. Code also lists the literals it finds in the span as search keys, within their share, with their message IDs: hashes, ePrint IDs, DOIs, numbers of 12 or more digits, and `name = value` pairs.
 - CM-19. **The enrichment call** (CScience's division of labor; its contract is the project's own). A separate model call writes the narrative, the connective account of the span. It is not part of the run's conversation. By default it uses the run's own alias and sends the run's current view, tools included, unchanged, so that it reads them from the prompt cache, followed by one instruction with the span's header and skeleton; a role setting may name another alias. It may not call the tools: a tool call in its answer fails the fold. Its answer is one JSON object holding the narrative, the search keys and the proposals (CM-15). Its contract:
   - keep every standing constraint the user gave, including those carried by earlier folds;
   - record attempts, pivots, decisions and outcomes only where the span's messages show them;
@@ -153,15 +158,35 @@ Terms:
   - each search key occurs word for word in the span; any other is removed;
   - each number of three or more digits, each hex string of eight or more characters, and each DOI, ePrint ID, ledger handle and archive ID in the narrative occurs in the span, or, for a handle, exists; any other is replaced by a marker naming the nearest search key (new);
   - the narrative and the proposals hold no hidden character, and a line that imitates the platform's framing of the state block or of fold records is quoted as text;
-  - the record is at most a tenth of a chunk (CM-27), and using it frees tokens.
+  - the record, without its marker lines, is at most a tenth of a chunk (CM-27), and using it frees tokens.
 
   A fold that fails gets one retry. After that, a skeleton-only fold is used: the skeleton, the marker lines and code's own search keys, with no narrative and no proposals. A fold that cannot be built changes nothing, and the view stays as it was (the `compact-v1` rule in [orchestrator prompts](../ORCHESTRATOR-PROMPTS.md#authority-and-lifecycle-checks-that-prompts-cannot-supply); OpenScience likewise rejects empty or truncated summaries).
-- CM-21. **Overviews update.** When the first-level folds total at least 0.4 of a chunk, the oldest three or more are merged into one overview (CScience). When the fold region passes its budget (CM-27), the two oldest overviews are merged into one. An overview:
-  - carries every marker line of its parts, copied by code;
-  - carries its parts' search keys, without duplicates, within its share;
+- CM-21. **Overviews update.** When the first-level folds total at least 0.4 of a chunk, the oldest three or more are merged into one overview (CScience). When the fold region is still over its budget (CM-21b), the two oldest records of the region, overviews included, are merged into one, so overviews are merged again as a session goes on. An overview:
+  - holds its span header, an updated narrative, and its parts' marker lines and search keys. Its parts' skeletons stay in their stored records, which `history_read` returns;
+  - carries every stored marker line of its parts, current and retired alike (CM-21a), copied by code;
+  - carries its parts' search keys, without duplicates, within its share. Keys beyond the share are left out of the view, oldest first, and stay in the stored records;
   - updates the older narrative rather than rewriting it: the model keeps what is still true word for word, marks what was finished or superseded, and adds what the newer parts add (OpenScience).
 
-  Code checks that the overview keeps every incomplete-read marker, every caveat marker and every decision line with its reason, byte for byte. An overview that drops or changes one is rejected, and the folds stay as they were. A decision or caveat line whose entry the digest shows with the same text may be shortened to its handle and the words "in the state block". If the marker lines alone do not fit in an overview, the folds stay unmerged.
+  Code checks that the overview's stored marker lines are exactly its parts' marker lines, byte for byte, with every incomplete-read marker, every caveat marker and every decision line with its reason. An overview that drops or changes one is rejected, and the folds stay as they were. The model never writes marker lines. What the view shows of them is decided when the view is rendered (CM-21b), never by changing a stored record.
+- CM-21a. **Current and retired markers** (new). At each rebuild, code decides from the records whether each stored marker is current or retired. Nothing a model wrote enters the decision:
+
+  | Marker | Current while | Retired when |
+  | --- | --- | --- |
+  | An incomplete read | the read register shows the source's extent short of `whole` | the register shows the source read `whole` later; the retirement names the message that completed the read |
+  | A caveat from a ledger entry: a scope note, an evidence type or a caveat line | the entry's current revision still holds it, and the entry is not `superseded`, `withdrawn` or `refuted` | a later revision dropped or changed it, or the entry was set aside |
+  | A work record ending `limit` or `obstruction_claimed` | its issue is `open`, and no assessment decided the claimed obstruction | the issue is resolved, obstructed, split or withdrawn, or an assessment decided the claim |
+  | An inconclusive check | the entry keeps the material it checked, and no later check of it ended | the entry's statement, fields or evidence changed, or a later check ended |
+  | A failed or timed-out tool call | no later call of the same tool with the same arguments succeeded, and the marker is in a first-level fold | such a call succeeded, or its fold was merged into an overview and no work record cites the call |
+  | A decision line | it is the newest change of its decision, and the decision is `proposed`, `in_effect` or `rejected` | a later change of the same decision exists, or the decision was `reversed`; the reversing decision's own line is then current |
+
+  "Superseded" thus means that a later record concerns the same subject: a later read of the same source, a later revision of the same entry, a later identical call, a later change of the same decision. The rules compare IDs, handles, statuses and revisions, never text.
+- CM-21b. **Rendering markers within a bound** (new). At each rebuild, code renders each fold record from its stored form, together with the new state block. A request's view holds until the next rebuild, so each request decides for itself:
+  - a current marker is shown in its short form (its handle or source, and the words "in the state block") only when that view's state block holds the same information exactly: the same handle, status, reason and reopen condition for a decision; the same text for a caveat; the same source and extent for a read. Otherwise it is shown in full. When newer entries push an entry out of the digest, the next view therefore shows its marker in full again;
+  - a retired marker is shown only as a line in its record's index of retired markers: its kind, its subject, what retired it, and the archive IDs of both, such as `read: REF-2 PDF pp. 1–3 of 21 → read whole later (msg-…, msg-…)`;
+  - the fold region stays within 0.15 C. When it would not, code reduces it in this order: it merges records into overviews (CM-21); it collapses each record's index of retired markers into one count per kind, oldest records first, with the record's ID for `history_read`; it merges the oldest records again; and last, it shows the lowest-priority current markers by handle and status only, with a line saying how many and how to read them (`ledger_list`, `history_read`);
+  - priority among current markers, highest first: the user's standing constraints (CM-16); markers on entries that the current plan step or an open issue names; rejected decisions with reopen conditions; incomplete reads of sources that a ledger entry cites; then the rest, newest first.
+
+  So every current decision, caveat and incomplete read is shown in full, in the state block or in the fold region, as long as they fit in both together. Past that, a request shows the lowest-priority ones by handle only, and says so. The stored records, the ledger and the archive keep everything whole, and the run records each reduction (CM-46).
 - CM-22. **The narrative is lossy.** Every narrative leaves things out, and an overview more so. The research state, the marker lines and the archive are what make reasons, caveats and values survive; the narrative only connects them. No requirement here relies on a narrative being complete.
 - CM-23. **Where a span ends.** Never between a tool call and its result, nor between the calls of one assistant message and their results. A span takes the oldest messages of the raw tail, about a chunk's worth (CM-27). It ends at the boundary nearest to that size where a plan step changed or a user message arrived, when one lies within a quarter of a chunk, and at the nearest call boundary otherwise (SelfCompact's evidence favors task boundaries).
 - CM-24. **When folds happen.** Code measures the view (CM-28) at every safe point:
@@ -193,14 +218,17 @@ Terms:
   | Raw floor | 0.2 C | 120,000 |
   | State block | At most 0.15 C: the user's words at most 0.10 C, the digest at most 0.05 C | 90,000: 60,000 and 30,000 |
   | Fold region | At most 0.15 C | 90,000 |
-  | Fold record or overview | At most 0.1 K; the narrative at most a quarter of it, the search keys a tenth | 12,000 |
+  | Fold record or overview | At most 0.1 K without its marker lines, which the fold region's bound covers (CM-21b); the narrative at most a quarter of it, the search keys a tenth | 12,000 |
   | Overview made when | The first-level folds total at least 0.4 K, three or more of them | 48,000 |
   | Smallest ceiling | The system message and tools fit in 0.3 C | 180,000 |
 
-  A fold takes the oldest K of the raw tail, or less when K would leave the raw tail below its floor. Everything newer stays word for word, so the model works with between about 0.65 C and 0.85 C of live context. W comes from the gateway's model information (LiteLLM's `max_input_tokens`), or from the role's setting where the gateway does not say. An unknown W never turns folding off: C is then the role's ceiling, and a context error folds and retries (CM-43). OpenCode never compacts when it does not know the window, which is the failure this avoids. A run whose system message and tools need more than 0.3 C does not start, and says why.
-- CM-28. **Counting tokens.** The view's size is the input tokens the gateway reported for the last call, plus an estimate for what was added since: its characters divided by the characters per token that the session's recent calls show, or 4 until there are any (Codex).
+  A fold takes the oldest K of the raw tail, or less when K would leave the raw tail below its floor. Everything newer stays word for word, so the model works with between about 0.65 C and 0.85 C of live context. The 600,000 default is the owner's choice of how much live context to carry, not evidence that more is better; the first lab round runs the probes at the default as well as at a lowered ceiling, and the owner lowers the default if the larger context does worse. W comes from the gateway's model information (LiteLLM's `max_input_tokens`), or from the role's setting where the gateway does not say. An unknown W never turns folding off: C is then the role's ceiling, and a context error folds and retries (CM-43). OpenCode never compacts when it does not know the window, which is the failure this avoids. A run whose system message and tools need more than 0.3 C does not start, and says why.
+- CM-28. **Counting tokens** (Codex's accounting, made precise):
+  - **Total input** is every token a call's input occupies, cached or not. Each adapter normalizes its provider's usage to it. Claude's Messages API reports `input_tokens` without the cache's tokens, so the total is `input_tokens` + `cache_read_input_tokens` + `cache_creation_input_tokens`. OpenAI's Responses API counts the cached tokens inside `input_tokens` (and breaks them out in `input_tokens_details.cached_tokens`), so the total is `input_tokens`. The chat-completions client (CM-41) takes `prompt_tokens` as the gateway reports it; the first lab round checks that figure against the native counts for both families;
+  - **between rebuilds**, the view's size is the last call's total input, plus an estimate of what was added since: the call's answer as it will be sent back, the tool results and the new input. A native item whose size the text does not show, such as encrypted reasoning or signed thinking that will be replayed, counts as the output tokens the provider reported for it; the rest counts as its characters divided by the characters per token of the session's recent calls on that model, or 4 until there are any;
+  - **after a rebuild** (a fold, or a run's start) **or a change of model**, the baseline resets: the size is a fresh estimate of the whole new view, part by part, never the old count carried forward. The first call after it reports the true total, which becomes the new baseline. Without the reset, the view just folded would still measure as before the fold, and would fold again at once.
 - CM-29. **The view spans the session** (new; replaces RS-10). A new run starts from the session's view: the system message, a rebuilt state block, the folds, the raw tail, which now holds the end of earlier runs with their tool calls and results, and the new task. It folds as any run does (open question 1).
-- CM-30. **The user's words and their budget.** The user's folded messages fit in 0.10 C. When they do not, the oldest become one-line pointers: the message's ID, time, length and first words, which `history_read` returns whole. The newest folded message is always whole. This changes RS-10's rule that the user's messages are never cut (open question 2).
+- CM-30. **The user's words and their budget.** The user's folded messages fit in 0.10 C. When they do not, the oldest become one-line pointers: the message's ID, time, length and first words, which `history_read` returns whole. A message that a standing constraint anchors (a decision in effect with the basis `user`, CM-16) becomes a pointer only after every other message has, and its pointer names that decision's handle, so the constraint stays in view through the decision. The newest folded message is always whole. This changes RS-10's rule that the user's messages are never cut (open question 2).
 - CM-31. **Switching models.** When a session's next call is on another model, native items stay behind (CM-42), and the raw tail is sent as text and tool calls in the new provider's format. The folds and the state block carry over unchanged. When the new model's C is smaller than the view, the session folds before it switches, with the old model writing the narrative (Codex compacts with the old model when the new one's window is smaller).
 - CM-32. **The prompt cache.** Between rebuilds the view only grows at its end, so each call reads the earlier part from the provider's cache. At a rebuild the state block and the fold region change, so the next call writes the cache again from the state block on; the system message and tools stay cached. The Claude adapter marks cache breakpoints after the system message, after the fold region and on the last message. A run that waits longer than the cache's lifetime (five minutes by default on Claude) pays the full input price once when it resumes. The enrichment call reads the run's cached view (CM-19).
 
@@ -215,7 +243,13 @@ Terms:
 - CM-34. **`history_read(message or range, offset)`** returns whole content: a message, a tool result whole, or the saved file behind a sample, in pages of at most 20,000 characters (the tool output budget the ledger's tools use), with where the next page starts. A range of positions returns its messages in order.
 - CM-35. **Retrieval stays.** A retrieval result in the raw tail is never stubbed (CM-24), and its skeleton line names the IDs it returned.
 - CM-36. **Cues.** The state block's lines and the fold records carry handles, archive IDs and search keys, which tell the agent what to retrieve. A search key such as `twist order` leads `history_search("twist order")` to the tool output holding the 135-digit group order computed on day 1.
-- CM-37. **Delegated runs.** A delegated run folds within its own run, with the delegated role's settings (PD-27). Its state block holds its brief in place of the user's words, labelled as the parent's brief, and the digest. Its retrieval tools read only its own run: a check must not read its parent's reasoning, which could carry the verdict (LG-17; open question 8). Today a delegated run's token limit, at most 400,000 tokens over all its calls (PD-38), ends it long before its view nears the ceiling, so its folds matter only once those limits rise.
+- CM-37. **Delegated runs.** A delegated run folds within its own run, with the delegated role's settings (PD-27). Its state block holds its brief in place of the user's words, labelled as the parent's brief, and a digest of its own (CM-37a), never the main run's. Its retrieval tools read only its own run: a check must not read its parent's reasoning, which could carry the verdict (LG-17; open question 8). Today a delegated run's token limit, at most 400,000 tokens over all its calls (PD-38), ends it long before its view nears the ceiling, so its folds matter only once those limits rise.
+- CM-37a. **Delegated digests** (new). A delegated run starts with a fresh context (PD-13): its role's instructions, the brief, its track of the plan, its skills and the inputs the brief names, and not its parent's transcript. Its digest keeps to that:
+  - **a check's digest**: the entry and the revision under check, as the platform's brief names them; the evidence the brief pins as its inputs, by reference; and what the run needs to work: its turns and tokens left, its own jobs and kernels, and the form its result takes. Nothing else from the ledger: no decisions, other entries, findings, work records, earlier checks' outcomes, fold proposals or delegation outcomes. The parent's note stays where LG-17 puts it, in the brief, labelled as the requester's note, not evidence;
+  - **a task's digest**: its brief, the steps of its track with their statuses (PD-9), the entries its brief names, the entries and work records its own run made, and the same operational information. Not the project-wide digest, since a task may assess a claimed obstruction, which LG-7 asks another agent to do;
+  - neither has the user's words: the user writes to the root only (PD-41).
+
+  This closes the path by which the view could hand a checker its parent's conclusion or an earlier check's outcome. What a check may read with its own ledger tools is LG-13's and LG-17's rule, which this spec does not change (open question 10).
 
 ### Layer 6: model adapters
 
@@ -228,7 +262,7 @@ Terms:
   - no server-side compaction and no context editing (open question 3).
 - CM-39. **The gateway's version gates thinking replay** (new). Each call's usage records the gateway's version from the `x-litellm-version` response header, and the run record keeps it; a missing header is recorded as unknown. The owner's gateway runs LiteLLM 1.102.1, which drops Claude's signed thinking blocks whose visible text is empty; the newest Claude models return such blocks by default. The two fixes (commits `897bfea38d` and `f470e418ea`) are in development builds only (`v1.107.0-dev.3`), not in a stable release or the 1.106.0 release candidates. So the Claude adapter replays thinking only when the run's gateway reports a stable release at or above a deployment's minimum, 1.107.0 by default, the first stable release expected to hold both fixes. Below it, or with the version unknown, it sends no thinking block from the history, and the run records that replay was off and why. The fold design and the GPT adapter do not wait for this. LiteLLM 1.102.1 also has none of LiteLLM's own clearing or compaction stand-ins, which this design does not use.
 - CM-40. **GPT through `/v1/responses`** ([D61](../DECISIONS.md), amended):
-  - requests set `store: false`;
+  - requests set `store: false` and `include: ["reasoning.encrypted_content"]`. Without the second, no encrypted reasoning comes back, and there is nothing to replay. The first lab round confirms that real responses through the gateway carry it;
   - each output item is archived byte for byte: `encrypted_content`, `phase`, and the item IDs as the gateway rewrote them. They are replayed only through the same gateway;
   - between rebuilds, every reasoning item, function call and output since the last user message is sent back unchanged. In a platform run, that is the whole run;
   - at a rebuild, reasoning items before the fold boundary are dropped and those in the raw tail are kept. OpenAI does not document whether reasoning is bound to the history before it, as Claude's thinking is: a fixture and the labs test it. If replaying the tail's reasoning after a rebuild is refused or does worse, all reasoning is dropped at rebuilds, as on Claude;
@@ -242,12 +276,13 @@ Terms:
 - CM-43. **Overflow.** A gateway context error starts a skeleton-only fold and one retry of the call. A second context error in a row stops the run with `context_limit`, reason `overflow` (OpenScience; OpenCode's error classifier is a reference).
 - CM-44. **Breaker.** After three folds in a run that each freed less than 10% of the view, the run folds no more (OpenScience). If the view then passes the hard wall, the run stops with `context_limit`, reason `breaker`.
 - CM-45. **Irreducible context.** If the system message, the state block, the fold region and the raw floor together still pass the hard wall after merging and stubbing (CM-24), the run stops with `context_limit`, reason `irreducible`, instead of looping (OpenCode's loop bugs).
-- CM-46. **Records and events.** Each fold is a run event of kind `fold` (RS-14): its ID, level and span, its state (`started`, `applied`, `skeleton_only`, `failed` or `rejected`), the tokens it freed, and why it failed. The run record keeps each call's view by its parts: the state block's archive ID, the fold record IDs and the raw tail's first and last positions. What a call saw can therefore be rebuilt from the archive.
+- CM-46. **Records and events.** Each fold is a run event of kind `fold` (RS-14): its ID, level and span, its state (`started`, `applied`, `skeleton_only`, `failed` or `rejected`), the tokens it freed, and why it failed. The run record keeps each call's view by its parts: the state block's archive ID, the fold record IDs, how each record was rendered (which markers were short, which retired, which reduced to a handle, CM-21b), and the raw tail's first and last positions. What a call saw can therefore be rebuilt from the archive. Each rebuild that reduced current markers to their handles is also a `fold` event, with how many, so the GUI and the labs see when the research state outgrew the view.
 - CM-47. **Settings.** Per role (PD-27): the ceiling, the fold trigger and hard wall fractions, the chunk size and the enrichment alias. The shares of the user's words and of the digest are deployment settings. Each run records the values it used (PD-29).
 
 ### Prompt rules
 
 - CM-48. **Rules for the main and delegated system prompts** (new; written in the project's own words when built):
+  - when the user sets a standing constraint, such as "only attacks with memory below 2^64", record it as a decision in effect with the basis `user`, anchored on the user's message, so that it stays in view after the message is folded (CM-16, CM-30);
   - when you abandon an approach, record a decision with its reason and the condition that would reopen it, and a work record on its issue;
   - record an attempt that fails as a work record ending `limit`, saying what ran out. Call nothing impossible without an accepted obstruction or a proof;
   - record what a finding rests on: its evidence type, scope and caveats. When two sources or results disagree, record a contradiction issue that concerns both;
@@ -275,9 +310,20 @@ Day 3, run 14. The request holds:
 4. a raw tail of 410,000 tokens, reaching back into run 12;
 5. the new message.
 
-That is about 515,000 tokens, past the trigger. A fold of the oldest 120,000 tokens of the raw tail starts, and the agent goes on. Two calls later the view is at 525,000, and the fold is ready. At that safe point the raw tail drops by 120,000, the new fold record adds 10,000, and the state block gains the user's messages from the span. The view is now about 417,000 tokens. The next fold comes after about 90,000 more tokens of work.
+That is about 515,000 tokens, past the trigger. A fold of the oldest 120,000 tokens of the raw tail starts, and the agent goes on. Two calls later the agent's work has added 10,000 tokens, the view is at 525,000, and the fold is ready. At that safe point it is applied:
 
-The agent needs the 135-digit group order it computed on day 1. The overview's search keys include `twist order`. `history_search("twist order")` returns the tool result's ID, and `history_read` returns the whole output, from which the agent copies the number. If the agent starts to propose index calculus again, D-4 with its reason and its reopen condition is already in front of it.
+| Change | Tokens |
+| --- | --- |
+| The view before the fold | 525,000 |
+| The span leaves the raw tail | − 120,000 |
+| The new fold record joins the fold region | + 10,000 |
+| The span's user messages move into the state block; they were part of the 120,000 | + 2,000 |
+| The rebuilt digest, the same size; no thinking is dropped, since replay is off on today's gateway (CM-39) | 0 |
+| The view after the fold | 417,000 |
+
+The size after the fold is a fresh estimate of the new view, not the old count carried forward (CM-28), so nothing folds again until the view passes 510,000, about 93,000 tokens of work later. The first-level folds now total 38,000 tokens, under the 48,000 that starts an overview.
+
+The agent needs the 135-digit group order it computed on day 1. The overview's search keys include `twist order`. `history_search("twist order")` returns the tool result's ID, and `history_read` returns the whole output, from which the agent copies the number. If the agent starts to propose index calculus again, D-4 with its reason and its reopen condition is already in front of it. While the digest shows D-4, the overview shows D-4's marker in its short form. On day 5, newer decisions push D-4 out of the digest's share; from that rebuild on, the overview shows D-4's marker in full again, so the reason stays in view (CM-21b). On day 2 the agent had read only pages 1–3 of paper A; that marker stays current until the read register shows the paper read whole, and then becomes one line in the overview's index of retired markers (CM-21a).
 
 ### A smaller window
 
@@ -308,7 +354,8 @@ The owner does not treat cost as a driver. In plain terms, at the prices publish
 - `Anchor`: transcript anchors ([addition 3](README.md#proposed-contract-additions-new), approved) name archive messages and tool results, for provenance (CM-9) and pointers.
 - `Mutation`: the ledger's changes gain the basis and anchors, issue kinds, reopen conditions, `reopen_on` links and caveats (CM-10). A fold's proposals are mutations as LG-30 gives them, imported as LG-41 imports a results file.
 - `Event`: the run event `fold` (CM-46); `context_limit` keeps its reason.
-- `RunRecord`: each call's view by its parts, the gateway's version, whether thinking replay was on, and the context settings used (CM-39, CM-46, CM-47).
+- `RunRecord`: each call's view by its parts and how its fold records were rendered, each call's total input as normalized (CM-28), the gateway's version, whether thinking replay was on, and the context settings used (CM-39, CM-46, CM-47).
+- Fold records are stored once and never changed: their marker lines whole, each with its kind and subject (CM-17); whether a marker is current or retired is computed at each rebuild, never stored in the record (CM-21a).
 - The control store gains tables for the archive and its search index, fold records, fold proposals and the read register, each in one migration step.
 
 ## Changes to other specs
@@ -322,7 +369,7 @@ These apply when the owner approves this spec; until then the specs below stand 
   - RS-14 gains the event kind `fold` (CM-46).
 - **[Plans and delegation](plans-and-delegation.md).**
   - PD-27's "context size at which compaction starts" becomes CM-47's settings, for the main and delegated roles; the reviewer and the watcher have none.
-  - PD-13 and PD-34: a delegated run folds within its own run, and its retrieval reads only its own run (CM-37).
+  - PD-13 and PD-34: a delegated run folds within its own run, its retrieval reads only its own run, and its digest keeps to what PD-13 lists: a check's to the entry and revision under check, its pinned evidence and operational information, a task's to its brief, its track and its own records (CM-37, CM-37a).
   - PD-29: a run's record also keeps the context settings it used and the gateway's version.
 - **[Ledger](ledger.md).**
   - LG-2: issues gain a kind; decisions gain a reopen condition; claims and results gain caveats (CM-10).
@@ -332,6 +379,7 @@ These apply when the owner approves this spec; until then the specs below stand 
   - LG-15: references show the read register's extents (CM-12).
   - LG-41: a fold's proposals are imported as a results file is (CM-15).
   - Scope: "the recall of project facts into context" is now this spec's (CM-16).
+  - LG-13 and PD-34, only if the owner decides open question 10 as recommended: a check's ledger reads are limited to the entry under check and what its brief and the entry's evidence pin.
 - **[Orchestrator prompts](../ORCHESTRATOR-PROMPTS.md#prompt-catalog-and-assembly).**
   - The proposed `compact-v1` is replaced by three new prompts, written in the project's own words: the enrichment instruction, the overview instruction, and the state block's framing (proposed IDs `sandbox-fold-enrich-1`, `sandbox-fold-overview-1`, `sandbox-state-block-1`). The draft "Resume/compaction" text no longer covers compaction.
   - The compaction rule under "Authority and lifecycle checks" is met by CM-15 to CM-26: originals kept, records versioned and archived, the user's instructions, open questions, the plan, pending effects and unresolved findings kept visible, and a failed fold changes nothing.
@@ -368,8 +416,8 @@ All are `scripted`, with a scripted gateway that records every request and repor
 - *Then* nothing folds below 510,000. Past it, a fold of about 120,000 tokens starts at a boundary that splits no tool call, and is applied at the next safe point; the raw tail never drops below 120,000. Past 540,000 the run waits for the fold, then applies a skeleton-only one. With W = 200,000 and O = 32,000, C is 168,000 and the trigger 142,800. With W unknown, C is the role's ceiling and a context error folds. A role whose system message and tools exceed 0.3 C does not start.
 
 **CM-F7 Overviews keep their markers** (CM-21)
-- *When* the scripted overview drops an incomplete-read marker; changes a decision line's reason; or changes a caveat line.
-- *Then* each is rejected and the folds stay. A correct overview keeps every marker line byte for byte.
+- *When* an overview is built whose stored marker lines differ from its parts': one incomplete-read marker dropped, one decision line's reason changed, one caveat line changed, as a faulty build or an answer that supplies marker text of its own would make them.
+- *Then* each is rejected and the folds stay. A correct overview's stored markers equal its parts' byte for byte, and the scripted enrichment answer's own text never appears among them.
 
 **CM-F8 Provenance and authority** (CM-9, CM-10, CM-13, CM-15)
 - *When* the agent records a claim with the basis `user` anchored on a tool result; records one `observed` with no observation anchor; and records one with no anchor. A fold proposes a rejected decision, a contradiction and a caveat, all anchored in the span, one more anchored outside it, and one naming a missing handle.
@@ -384,7 +432,7 @@ All are `scripted`, with a scripted gateway that records every request and repor
 - *Then* no request sends a thinking block whose earlier history changed, and no fold falls between a tool call and its result. With the version 1.107.0, signed empty thinking blocks are replayed byte for byte within a run. With 1.102.1, or no header, no thinking block from the history is sent, and the record says that replay was off and gives the version. A mid-run tool change is handled.
 
 **CM-F11 The GPT wire** (CM-40)
-- *Then* requests set `store: false` and never `truncation`; reasoning items since the last user message are replayed byte for byte; after a rebuild, reasoning before the boundary is gone; calls and outputs are always paired.
+- *Then* every request sets `store: false` and `include: ["reasoning.encrypted_content"]`, and never `truncation`. The fixture checks the request itself, since the scripted gateway returns encrypted reasoning whether or not it was asked for, which would hide the omission. Reasoning items since the last user message are replayed byte for byte; after a rebuild, reasoning before the boundary is gone; calls and outputs are always paired.
 
 **CM-F12 Switching models** (CM-31, CM-42)
 - *When* a session goes from Claude to GPT and back, and then to a model with a smaller window.
@@ -401,12 +449,49 @@ All are `scripted`, with a scripted gateway that records every request and repor
 - *Given* an instruction-shaped string in a tool result, and a narrative line that imitates the state block's framing of the user's words.
 - *Then* the string reaches fold records and search results only inside data framing; the narrative line is quoted as text; the state block's user section holds only USER rows.
 
-**CM-F16 Delegated runs** (CM-37)
-- *Then* a delegated check's `history_search` with the scope `session` returns only its own run's messages, and its state block holds its brief, labelled as the parent's.
+**CM-F16 A checker never sees the parent's verdict** (CM-37, CM-37a; PD-13, LG-17)
+- *Given* claim C-12 and, planted in the session: the parent's assistant text "C-12 holds; I confirmed it by inspection"; a proposed decision to establish C-12; an earlier check of C-12 whose outcome was `confirmed`, recorded as work on C-12; a fold proposal and a fold narrative that repeat the verdict; and a delegation outcome that states it.
+- *When* the main run delegates a check of C-12 at its revision, with a parent's note of its own, and the check runs long enough to fold within its run.
+- *Then* none of the planted strings appears in any request the check run sends: not in its state block, its folds, or the results of its `history_search` with the scope `session` or `project`, which returns only its own run's messages. Its state block holds the brief as the platform wrote it, labelled as the parent's, with the note labelled as the requester's note; and its digest holds C-12 at that revision, the evidence the brief pins, and its operational information. A task run's digest holds its brief, its track and its own records, and none of the planted strings either.
 
 **CM-F17 The session view across runs** (CM-29)
 - *When* a message comes after a run's last answer.
 - *Then* the second run's view holds the first run's tool calls and results (replacing run-service fixture 4's expectation).
+
+**CM-F18 A shortened marker whose entry leaves the digest** (CM-16, CM-21b)
+- *Given* decision D-4, rejected with a reason and a reopen condition, whose marker is in an overview and is shown in its short form while the digest shows D-4.
+- *When* newer rejected decisions fill the digest's share for decisions, so that D-4 leaves the digest.
+- *Then* from that rebuild on, the overview shows D-4's marker in full. In no request is D-4's reason missing from both the state block and the fold region. The stored overview is byte for byte the same throughout.
+
+**CM-F19 Markers retire by the records** (CM-21a, CM-21b)
+- *When*, after their markers were folded: a PDF read in part is later read whole; a rejected decision is later reversed; a caveat is dropped by a later revision of its claim; a failed tool call is later repeated with the same arguments and succeeds; and the issue of a `limit` work record is resolved.
+- *Then* each marker renders, from the next rebuild on, as a line of its record's index of retired markers that names what retired it and the archive IDs of both; the reversing decision's line is current. The stored records are unchanged, and `history_read` of each record returns its markers whole.
+
+**CM-F20 Overviews merged again** (CM-21, CM-21b)
+- *Given* scripted token counts for a session long enough that first-level folds are merged into an overview (level 2), then overviews merged again (level 3), and again (level 4).
+- *Then* each merge keeps every stored marker line of its parts byte for byte; the rendered fold region stays within 0.15 C; current markers are shown in full or in their short form as CM-21b says; retired markers collapse into counts, oldest records first; and no current marker is shown by its handle alone while room remains.
+
+**CM-F21 An important decision past its digest share** (CM-16, CM-21b)
+- *Given* more current decisions than the digest's share holds, among them rejected decision D-7, which an open issue names and the digest leaves out, and the user's standing constraint D-2.
+- *Then* D-7's marker is shown in full in the fold region. When the current markers exceed the digest's share and the fold region together, the lowest-priority ones are shown by handle and status only, with a line giving their number and how to read them, and a `fold` event records it; D-2 and D-7 are never among them.
+
+**CM-F22 A constraint whose message becomes a pointer** (CM-16, CM-30, CM-48)
+- *Given* the user's constraint in run 1, which the agent recorded as D-2, in effect with the basis `user`, anchored on the message; and a small share for the user's words.
+- *When* later messages push the folded messages over that share.
+- *Then* the other messages become pointers first. When the constraint's message becomes a pointer, the pointer names D-2, and D-2's statement is in every later request's digest, first among the decisions.
+
+**CM-F23 A correction invalidates an early record** (CM-16, CM-21a)
+- *Given* claim C-3, recorded on day 1 with a value and a caveat, and folded into an overview.
+- *When* on day 3, claim C-9 supersedes C-3.
+- *Then* C-3's caveat marker is retired from the next rebuild on; the digest shows C-9, and C-3 as superseded by C-9; no later view shows C-3's markers as current; and `history_read` still returns C-3's original record and the tool output it came from.
+
+**CM-F24 Token accounting** (CM-28)
+- *Given* a scripted Claude response reporting 2,000 input tokens, 400,000 read from the cache and 10,000 written to it, and a scripted GPT response reporting 412,000 input tokens, 400,000 of them cached.
+- *Then* both calls count 412,000 tokens of total input. After a fold, the view's size is a fresh estimate of the new view, so the run does not fold again at the next safe point; the first call after it sets the baseline. The same holds after a change of model.
+
+**CM-F25 Impossibility only when settled** (CM-11)
+- *Given* a negative-result claim proposed with the agent's own proof; one that is `disputed`; one `established`, whose assumption then changes; one `established` with its scope and assumptions; and an issue `obstructed` by a decision with an accepted assessment.
+- *Then* the digest labels the first "claimed, not established", the second "disputed", the third unresolved with its flag's cause until the flag is cleared, and only the last two impossible: the claim with its scope and assumptions, and the issue within its excluded scope.
 
 ## Continuity probes
 
@@ -414,7 +499,9 @@ The continuity probes are the first build's acceptance condition (owner, 2026-10
 
 - **The scenario:** one scripted cryptography research scenario with the probes built in.
 - **Folds:** the ceiling is lowered to about 150,000 tokens, so that a session of two to three hours makes at least four folds across at least three runs.
+- **The hardest retention boundaries, forced in every session** by the scenario and by small shares set for the lab, without a large benchmark: overviews merged at least twice (level 3); an important decision left out of the digest's share; the standing constraint's message turned into a pointer (CM-P5); a paper read in part and later read whole (CM-P6); and a correction of a result recorded in the first run (CM-P7).
 - **Models:** one Claude alias and one GPT alias the owner uses for research; the labs' deliberately weaker model is enough for the deterministic fixtures, not for these. Two sessions per family, four in all.
+- **The ceiling's default:** one more session per family runs the same probes at the default ceiling of 600,000, with only the shares lowered, to see whether the larger live context helps or hurts (CM-27).
 - **Scoring:** by script wherever the records allow; the rest by the owner, from a checklist.
 
 | Probe | What happens | Pass bar |
@@ -423,10 +510,11 @@ The continuity probes are the first build's acceptance condition (owner, 2026-10
 | CM-P2 Change an assumption | After folds, the user changes an assumption that several entries rely on | In every session, every entry that relies on it is revisited: revised, marked disputed, or its flag cleared with a reason. No later answer states a dependent conclusion under the old assumption |
 | CM-P3 Check an old exact result | Ten planted values (a hash, a 135-digit order, an ePrint ID, a parameter set) are needed after they are folded | Every value the agent copies is exact and has the right label, and the run's tool records show a search, a read, a saved file or a ledger entry that returned it before it was used: retrieved, never reconstructed |
 | CM-P4 Reconcile two contradictory papers | Two references state conflicting results, whose conditions differ | In every session, a contradiction issue concerns both, with an anchor on each side, and the agent names the differing condition, or leaves the issue open saying what is missing. No claim silently takes one side |
-| CM-P5 Honor a standing constraint | The user sets a constraint in run 1; later a request and injected tool text tempt the agent to break it | No violation in any session |
-| CM-P6 Do not overstate a partial read | A paper is read only in part (its abstract, or a few pages); later the user asks about it | No session describes a partly read source as read or reviewed, or cites it beyond what was read without saying so; answers about it give its extent |
+| CM-P5 Honor a standing constraint | The user sets a constraint in run 1. Its message is later folded and turned into a pointer. Then a request and injected tool text tempt the agent to break it | No violation in any session |
+| CM-P6 Do not overstate a partial read | A paper is read only in part (its abstract, or a few pages); later the user asks about it. Later still, the agent reads it whole | No session describes a partly read source as read or reviewed, or cites it beyond what was read without saying so, until the read register shows it read whole; answers about it give its extent |
+| CM-P7 A correction invalidates an early record | A value recorded in the first run, with claims and a decision resting on it, is found wrong several folds later and corrected | In every session, the corrected value replaces the old one in every later use; the claims and the decision that rested on it are revisited; no later answer uses the old value |
 
-Also reported, not gating: repeated work (calls with the same tool and arguments in the ten calls after each fold, against before); a superseded value used after its correction; "what is done, what is next" against the plan; whether every claim in the closing note maps to a ledger reference or anchor; and a question about something never discussed, which should get "not found" with the search's diagnostics.
+Also reported, not gating: repeated work (calls with the same tool and arguments in the ten calls after each fold, against before); how often a current marker was shown by its handle alone (CM-21b); "what is done, what is next" against the plan; whether every claim in the closing note maps to a ledger reference or anchor; and a question about something never discussed, which should get "not found" with the search's diagnostics.
 
 ## Open questions
 
@@ -439,12 +527,14 @@ Also reported, not gating: repeated work (calls with the same tool and arguments
 7. **The geometry's defaults** (CM-27): the trigger at 0.85 C, the wall at 0.90 C, a chunk and the raw floor at 0.2 C, and the budgets. *Recommended: as drafted,* tuned in the first lab round.
 8. **Retrieval for delegated runs** (CM-37): their own run only. *Recommended: yes for now.* A task run could later search its session, if the labs show the need; a check run never.
 9. **The enrichment model** (CM-19). *Recommended: the run's own alias,* which reads the run's cached view and knows the work; another alias is a setting, with no cache benefit.
+10. **What a check may read with its own ledger tools.** CM-37a keeps the parent's conclusions out of a checker's view, but PD-34 offers a check the ledger's read tools (`ledger_read`, `ledger_list`, `ledger_history`, `ledger_work`). With them it can read other entries, such as a decision to establish its claim, and the work records of the entry it checks, which hold earlier checks' outcomes (LG-F8). The view's path is closed; the tools' path is not. *Recommended:* limit a check's ledger reads to the entry under check and what its brief and the entry's evidence pin, and leave out the entry's work records and the incoming links that lead to decisions. That is a change to LG-13 and PD-34 for the owner to decide, outside this spec's first build.
+11. **Retiring failed tool calls** (CM-21a). A failed or timed-out call retires once its fold is merged into an overview, unless a work record cites it. *Recommended: yes;* a failure that matters belongs in a work record (CM-48), and the archive keeps every call.
 
 ## Decided by the owner (2026-10-15)
 
 1. The approach must work for both Claude and GPT models. The owner uses both, and a session may switch between them (CM-2, CM-31, CM-42).
 2. The project follows proven designs, Claude Science's and OpenScience's, rather than inventing its own. No context-management library is adopted, since none is known to be good for this workload.
-3. The working context's ceiling is configurable per role, 600,000 tokens by default; 200,000 is too small. It is always capped by the model's window less its maximum output (CM-27).
+3. The working context's ceiling is configurable per role, 600,000 tokens by default; 200,000 is too small. It is always capped by the model's window less its maximum output (CM-27). The default is the owner's choice, and the first lab round checks its effect on quality.
 4. The spec is organized by layers. The research state is an explicitly kept record on the ledger and the plan, with provenance, kept current by the agent and proposed to by folds, never settled by them (CM-8 to CM-16).
 5. The continuity probes, on both model families, are the first build's acceptance condition; a comparison against simpler approaches is an open question (open question 4).
 
@@ -456,7 +546,7 @@ Also reported, not gating: repeated work (calls with the same tool and arguments
 - **Codex** ([openai/codex](https://github.com/openai/codex), `rust-v0.163.0` at `6b99197`, Apache-2.0): history normalization, token accounting, the kept user messages, and compacting with the old model before a switch. **OpenCode** ([anomalyco/opencode](https://github.com/anomalyco/opencode), 1.19.1 and `dev` at `d7d44a7`, MIT): the overflow classifier, shrink-and-retry and the cross-model replay rules.
 - **LiteLLM**: the owner's gateway runs 1.102.1; the thinking fixes are in `v1.107.0-dev.3`.
 - Anthropic's documentation on preserved thinking, compaction, context editing and prompt caching; OpenAI's on reasoning, compaction and the Responses API; both providers' published prices, retrieved 2026-10-15.
-- Evidence: Governance Decay (constraint pinning), ACON (literal-keeping summaries), the Complexity Trap (masking against summaries), MemoryArena and MemoryAgentBench (retrieval over originals), SelfCompact (task boundaries) and DeLoop (repeated work after compaction).
+- Evidence: Governance Decay (constraint pinning), ACON (literal-keeping summaries), the Complexity Trap (masking against summaries), MemoryArena and MemoryAgentBench (retrieval over originals), SelfCompact (task boundaries), DeLoop (repeated work after compaction), and Chroma's "Context Rot" and the Graphwalks results (reasoning that weakens as the context grows).
 - Repository: [run service](run-service.md), [plans and delegation](plans-and-delegation.md), [ledger](ledger.md), [project memory](project-memory.md), [tools](tools.md), [PDF sources](pdf-sources.md), [orchestrator prompts](../ORCHESTRATOR-PROMPTS.md), [threat model](../THREAT-MODEL.md), [licensing](../LICENSING.md), [decisions](../DECISIONS.md) D56, D61, D72.
 
 **Porting and notices.** Code PRs that port mechanics keep each source's license and copyright notice in the ported files and say what they changed. From an Apache-2.0 source (Codex, OpenScience), they also carry any `NOTICE` text the source holds at the ported commit; OpenScience's carries OpenCode's MIT notice. Each such PR adds its source to [licensing](../LICENSING.md), and checks each file it borrows from OpenScience against D56, since some OpenScience material derives from Claude Science text. Nothing is ported from Claude Science.
