@@ -730,6 +730,12 @@ class Harness:
                 return False
             return True
 
+        # The session's last main run on another model: this one refits to its own
+        # geometry first, that model writing the refit's narratives (CM-31).
+        switched = await threaded(_switched, stores.projects, project, session, self.main.alias)
+        former = None
+        if switched is not None and self.gateway is not None and not settings.skeleton_only:
+            former = self.gateway.model(switched[0])
         made = Folder(
             archive,
             context,
@@ -747,6 +753,8 @@ class Harness:
             exists=exists,
             judge=judge,
             consolidating=request.consolidate,
+            switched=switched,
+            former=former,
             clock=self.clock,
         )
         # The ceiling a context error capped, carried to later runs: this service's, or
@@ -1280,6 +1288,27 @@ def _learned(projects: ProjectStore, project: str, session: str, alias: str) -> 
         folds = record.summaries.get("folds")
         capped = folds.get("capped") if isinstance(folds, dict) else None
         return capped if record.alias == alias and type(capped) is int else None
+    return None
+
+
+def _switched(
+    projects: ProjectStore, project: str, session: str, alias: str
+) -> tuple[str, int] | None:
+    """The alias and the ceiling of the session's last main run that folded, when it was
+    on another alias than ``alias``, as its record keeps them (CM-31)."""
+    for entry in reversed(projects.runs(project, session)):
+        if entry.role != "main":
+            continue
+        try:
+            record = projects.run(project, session, entry.name)
+        except ProjectError:
+            return None
+        folds = record.summaries.get("folds")
+        shape = folds.get("geometry") if isinstance(folds, dict) else None
+        found = shape.get("ceiling") if isinstance(shape, dict) else None
+        if type(found) is not int:
+            continue
+        return (record.alias, found) if record.alias and record.alias != alias else None
     return None
 
 
