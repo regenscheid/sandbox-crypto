@@ -126,6 +126,34 @@ def test_the_skills_embedding_model_reaches_imports_and_runs_by_the_key_path(
     ]  # fmt: skip
 
 
+def test_the_metadata_model_reaches_imports_with_the_project_that_pays(
+    make_config: Any, commands: Path
+) -> None:
+    """The import's pass by alias, the key by its path, and the first project that names
+    the pack, whose cost its calls count for."""
+    config = load_config(
+        make_config(
+            {
+                "bin_dir": str(commands),
+                "projects": [
+                    {"id": "first", "profile": "minimal", "skills": ["ss"]},
+                    {"id": "second", "profile": "minimal", "skills": ["ss"]},
+                ],
+                "skills": {"metadata_model": "pass", "packs": {"ss": {"archive": "p.zip"}}},
+            }
+        )
+    )
+    argv = skills.import_argv(config, "ss", config.skills.packs["ss"])
+    assert argv[-8:] == [
+        "--metadata-model", "pass", "--model-url", "https://gateway.example/v1",
+        "--api-key-file", str(config.model.api_key_file), "--project", "first",
+    ]  # fmt: skip
+    assert "not read by the launcher" not in " ".join(argv)
+    # Runs are given what that alias's pass derived, and no other's.
+    harness = parts.harness_argv(config, Layout(config.state_dir))
+    assert harness[harness.index("--skills-metadata-model") + 1] == "pass"
+
+
 def test_a_daily_cost_limit_is_set_for_each_project(make_config: Any, commands: Path) -> None:
     model = {"daily_cost_limit": 25}
     config = load_config(make_config({"bin_dir": str(commands), "model": model}))

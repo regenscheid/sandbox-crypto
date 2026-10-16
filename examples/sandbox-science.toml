@@ -46,9 +46,11 @@ static = "../web/workspace/dist"
 # each once, on this computer with your git, and keeps the projects' pins; up
 # --update-skills or sandbox-science skills update fetches them again from their refs and
 # says what changed. embedding_model, the gateway's embedding alias if it has one, lets
-# runs find skills by meaning as well as words.
+# runs find skills by meaning as well as words; metadata_model has each import's model pass
+# derive the topics, entry skills and short descriptions a pack leaves out.
 # [skills]
 # embedding_model = "sandbox-embedding"
+# metadata_model = "sandbox-orchestrator"
 #
 # [skills.packs.crypto]
 # git = "https://github.com/regenscheid/crypto-analysis-skills"

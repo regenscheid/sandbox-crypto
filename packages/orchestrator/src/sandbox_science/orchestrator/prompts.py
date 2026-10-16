@@ -75,7 +75,7 @@ class SkillsPin(Contract):
     framing: Identifier
     sources: tuple[Annotated[str, Field(max_length=200)], ...] = Field(max_length=100)
     skills: Size
-    shortening: Literal["none", "descriptions", "names", "counts"]
+    shortening: Literal["none", "descriptions", "topics", "names", "counts"]
     always: tuple[Annotated[str, Field(max_length=200)], ...] = Field(max_length=20)
     bytes: Size
     sha256: Digest

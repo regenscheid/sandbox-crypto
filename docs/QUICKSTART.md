@@ -30,7 +30,7 @@ Everything listens on loopback, so only your own computer can reach it. The step
 | `[workspace]` | Its `listen` address, its `preview_listen` address for the PDF viewer (by default the next port), and `static`, the web app's build |
 | `[openshell]` | The worker's own `[openshell]` table ([worker settings](WORKER.md)): the OpenShell CLI and the `env` it needs to reach the gateway, the sandboxes' Python, the isolation tier, the package cache, and `[openshell.environments]` with the profiles' image tags |
 | `[mcp_proxy]` | Optional: the [MCP proxy](#the-mcp-proxy) |
-| `[skills]` | Optional: the [skill packs](#skill-packs), `[skills.packs.NAME]` with `git` (and `ref`) or `archive`, and `path`, which each project names in its `skills`; `embedding_model`, the gateway's embedding alias; and `pass_env`, for the skills commands' git |
+| `[skills]` | Optional: the [skill packs](#skill-packs), `[skills.packs.NAME]` with `git` (and `ref`) or `archive`, and `path`, which each project names in its `skills`; `embedding_model`, the gateway's embedding alias; `metadata_model`, the alias of the import's pass over a pack's catalog; and `pass_env`, for the skills commands' git |
 
 `start_timeout` (300 s) and `stop_timeout` (30 s) bound how long each part may take to start and to stop. `bin_dir` says where the parts' commands are, by default beside the launcher's Python.
 
@@ -111,6 +111,7 @@ skills = ["crypto"]
 
 [skills]
 embedding_model = "sandbox-embedding"   # optional: the gateway's embedding alias
+metadata_model = "sandbox-orchestrator" # optional: the alias of the import's pass
 
 [skills.packs.crypto]
 git = "https://github.com/regenscheid/crypto-analysis-skills"   # or archive = "pack.tar.gz"
@@ -120,8 +121,10 @@ ref = "main"                                                     # optional: the
 
 - **`up`** imports a pack the control store has none of, on this computer with your git, and pins it in each project that names it, after the project's built-in skills. After that it fetches nothing and keeps the pins, so the skills change only when you ask. It says at which revision each project pins each pack, and notes a config that now names another place, ref or directory than the pack's import. A local repository's path is against the config file.
 - **What fails is reported, and `up` goes on without it.** A pack that cannot be imported, as when its repository cannot be reached, is left as it was. A pack that a project cannot pin, as when one of its skills has the name of a built-in skill or of another pack's skill the project pins, is not pinned in that project, and the line names the project. The other projects still pin it. For a built-in skill the line gives the `skills settings --exclude` to run first.
-- **`up --update-skills`**, or **`sandbox-science skills update [--pack NAME]`** with or without an instance running, fetches the packs again from their refs and moves the projects' pins. It prints, for each project, the skills added, removed and changed since the pin it left, and exits 1 when a pack or a pin failed. With `embedding_model`, it first checks the model key file, and imports nothing without one. Runs that started before keep the skills they have.
+- **`up --update-skills`**, or **`sandbox-science skills update [--pack NAME]`** with or without an instance running, fetches the packs again from their refs and moves the projects' pins. It prints, for each project, the skills added, removed and changed since the pin it left, and exits 1 when a pack or a pin failed. With `embedding_model` or `metadata_model`, it first checks the model key file, and imports nothing without one. Runs that started before keep the skills they have.
 - **`embedding_model`** has the import embed the skills, and the run service compare them with what the agent searches for and the user asks by meaning as well as words. The launcher gives the import and the run service the model key file's path, and never opens it. When embedding fails at import, `up` says so and goes on: the run service makes the vectors in the background, and runs compare by words until they exist.
+- **`metadata_model`** has each import's model pass derive from the pack's catalog the topics, entry skills, short descriptions and environment bindings the pack leaves out ([skills](SKILLS.md#what-the-import-derives)). It runs once per snapshot. The import's line says how many topics it found and how many items it dropped, and a pass that fails leaves the import as it is. The run service is given the alias too, and runs get only what that alias's pass derived. The launcher gives the pass the model key file's path, never the key.
+- **Cost.** The import's model calls, embeddings and the pass, count for the first project in the config that names the pack.
 - Taking a pack out of a project's `skills` does not unpin it: exclude its skills with `sandbox-science-harness skills settings --project P --expected N --exclude SOURCE/NAME`, against `control/` as above, where `N` is the revision `skills settings --project P` shows.
 
 ## The MCP proxy

@@ -45,15 +45,17 @@ WINDOW: Final = timedelta(hours=24)
 """The daily cost limit's window (RS-6a)."""
 MAX_COST: Final = 1_000_000_000
 """The largest daily cost limit, in the gateway's currency."""
-CostRole = Literal["main", "delegated", "reviewer", "watcher", "embeddings"]
+CostRole = Literal["main", "delegated", "reviewer", "watcher", "embeddings", "metadata"]
 """Whose model calls a cost is for: the main agent's runs, delegated runs, the reviewer,
-the job watcher (lab 40, B5), and the skills' embeddings (docs/specs/skills.md, SK-29)."""
+the job watcher (lab 40, B5), the skills' embeddings (docs/specs/skills.md, SK-29) and the
+import's model pass over a pack's catalog, when the import names the project (SK-30)."""
 COST_ROLES: Final[tuple[CostRole, ...]] = (
     "main",
     "delegated",
     "reviewer",
     "watcher",
     "embeddings",
+    "metadata",
 )
 MAX_MESSAGE_BYTES: Final = 65536
 MAX_EVENT_BYTES: Final = 65536
@@ -504,6 +506,7 @@ class RunState:
                 ("reviewer", "review_calls", "created"),
                 ("watcher", "job_watcher_calls", "requested_at"),
                 ("embeddings", "skill_embedding_calls", "created"),
+                ("metadata", "skill_metadata_calls", "created"),
             ):
                 rows += tx.sql.execute(
                     f"SELECT ?, sum(cost), count(cost) FROM {table} "  # noqa: S608

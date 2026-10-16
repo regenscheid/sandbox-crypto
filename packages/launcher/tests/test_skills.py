@@ -325,5 +325,5 @@ def test_an_update_that_would_embed_needs_the_key_file_first(
     config = load_config(path)
     Layout(config.state_dir).make()
     assert cli.main(["skills", "update", "--config", str(path)]) == 1
-    assert "cannot embed the skills: no model key file at" in capsys.readouterr().err
+    assert "cannot call the import's models: no model key file at" in capsys.readouterr().err
     assert _imports(config) == []

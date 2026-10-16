@@ -2528,6 +2528,44 @@ BEGIN SELECT RAISE(ABORT, 'skill vectors are written once'); END""",
         schema.execute(statement)
 
 
+def _skill_metadata(schema: Schema) -> None:
+    """Version 44: what the import's model pass derived from a snapshot's catalog
+    (docs/specs/skills.md, SK-30 to SK-32), written once by snapshot, alias and the pass's
+    version, with the items it dropped and the model that answered; and the pass's calls,
+    with what the gateway reported they cost, by project when the import names one
+    (RS-6a)."""
+    alias = "length(CAST({0} AS BLOB)) BETWEEN 1 AND 200"
+    for statement in (
+        f"""CREATE TABLE skill_metadata (
+    snapshot TEXT NOT NULL REFERENCES skill_snapshots(snapshot),
+    alias TEXT NOT NULL CHECK ({alias.format("alias")}),
+    version TEXT NOT NULL CHECK (length(version) BETWEEN 1 AND 64),
+    model TEXT NOT NULL CHECK ({alias.format("model")}),
+    derived TEXT NOT NULL CHECK (json_valid(derived) AND json_type(derived) = 'object'
+        AND length(CAST(derived AS BLOB)) <= 262144),
+    dropped TEXT NOT NULL CHECK (json_valid(dropped) AND json_type(dropped) = 'array'
+        AND length(CAST(dropped AS BLOB)) <= 262144),
+    created TEXT NOT NULL CHECK (length(created) BETWEEN 1 AND 64),
+    PRIMARY KEY (snapshot, alias, version)
+) STRICT""",
+        """CREATE TRIGGER skill_metadata_no_update BEFORE UPDATE ON skill_metadata
+BEGIN SELECT RAISE(ABORT, 'derived skill metadata is written once'); END""",
+        """CREATE TRIGGER skill_metadata_no_delete BEFORE DELETE ON skill_metadata
+BEGIN SELECT RAISE(ABORT, 'derived skill metadata is written once'); END""",
+        f"""CREATE TABLE skill_metadata_calls (
+    project TEXT REFERENCES projects(project_id),
+    created REAL NOT NULL,
+    snapshot TEXT NOT NULL,
+    model TEXT NOT NULL CHECK ({alias.format("model")}),
+    input_tokens INTEGER CHECK (input_tokens IS NULL OR input_tokens >= 0),
+    output_tokens INTEGER CHECK (output_tokens IS NULL OR output_tokens >= 0),
+    cost REAL CHECK (cost IS NULL OR cost >= 0)
+) STRICT""",
+        "CREATE INDEX skill_metadata_calls_project ON skill_metadata_calls(project,created)",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -2571,6 +2609,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _skill_settings,
     _builtin_skills,
     _skill_vectors,
+    _skill_metadata,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

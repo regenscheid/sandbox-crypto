@@ -69,10 +69,15 @@ class ChatModel(Protocol):
 class ModelError(Exception):
     """The model gateway failed or answered with something unusable."""
 
-    def __init__(self, message: str, *, status: int | None = None) -> None:
+    def __init__(
+        self, message: str, *, status: int | None = None, cost: float | None = None
+    ) -> None:
         super().__init__(message)
         self.status = status
         """The gateway's HTTP status, when it answered with an error."""
+        self.cost = cost
+        """What the gateway reported the call cost, when it answered 2xx with something
+        unusable: a call it charged for, which its caller may count."""
 
 
 class ContextLimitError(ModelError):
@@ -163,7 +168,12 @@ class OpenAICompatibleModel:
         wait = self._backoff
         for attempt in range(self._retries + 1):
             try:
-                return _parse_completion(*await self._post(body))
+                text, priced = await self._post(body)
+                try:
+                    return _parse_completion(text, priced)
+                except ModelError as error:  # answered, and charged, whatever it holds
+                    error.cost = _cost(priced) if priced is not None else None
+                    raise
             except _RetryableError as retry:
                 # A gateway that asks for a longer wait than the cap is not waited for.
                 if attempt == self._retries or (retry.after or 0) > MAX_RETRY_WAIT:
@@ -192,7 +202,12 @@ class OpenAICompatibleModel:
                 timeout=self._timeout,
                 allow_redirects=False,
             ) as response:
-                data = await _read_limited(response, self._max_response_bytes)
+                try:
+                    data = await _read_limited(response, self._max_response_bytes)
+                except ModelError as error:
+                    if 200 <= response.status < 300:  # charged, though too long to read
+                        error.cost = _cost(response.headers.get(COST_HEADER))
+                    raise
                 try:
                     text = data.decode("utf-8")
                 except UnicodeDecodeError as exc:

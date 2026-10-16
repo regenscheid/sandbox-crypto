@@ -249,6 +249,8 @@ def harness_argv(config: LauncherConfig, layout: Layout) -> list[str]:
     shared = [] if service.run_share is None else ["--run-share", str(service.run_share)]
     if (embedding := config.skills.embedding_model) is not None:
         shared += ["--skills-embedding-model", embedding]  # the skills' imports used it too
+    if (derived := config.skills.metadata_model) is not None:
+        shared += ["--skills-metadata-model", derived]  # the pass whose output runs get
     math: list[str] = []
     if service.math_checks is not None:
         found = node(config)

@@ -70,7 +70,7 @@ def test_up_imports_and_pins_the_skill_packs_before_the_run_service(
     assert steps[opened + 1 : opened + 7] == [
         "sandbox-science-harness skills list crypto",
         "sandbox-science-harness skills list ss",
-        "sandbox-science-harness skills import ss",
+        "sandbox-science-harness skills import crypto ss",  # its calls count for crypto
         "sandbox-science-harness skills embed with embed",
         "sandbox-science-harness skills pin crypto ss",
         "sandbox-science-harness embeds with embed",

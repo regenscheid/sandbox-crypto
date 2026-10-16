@@ -14,15 +14,25 @@ import json
 import sys
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from .control import ControlError
 from .control.errors import INVALID_REQUEST
 from .documents import USER
-from .projects import ProjectStore
+from .model import OpenAICompatibleModel
+from .projects import ProjectError, ProjectStore
 from .skills import SkillSettings, SkillStore, from_archive, from_git, snapshot
 from .skills.builtin import builtin_pack
-from .skills.embeddings import MAX_MODEL_BYTES, Embedder, EmbeddingError, Paid, ensure
+from .skills.derive import ANSWER_TOKENS, VERSION, Derived, PassError, derive
+from .skills.embeddings import (
+    MAX_MODEL_BYTES,
+    Embedder,
+    EmbeddingError,
+    Paid,
+    count_paid,
+    ensure,
+)
+from .skills.packs import Snapshot
 
 
 def skills(args: argparse.Namespace) -> int:
@@ -31,25 +41,14 @@ def skills(args: argparse.Namespace) -> int:
         try:
             match args.action:
                 case "import":
-                    # The key is read before anything is fetched or kept: an import whose
-                    # embedding cannot even start leaves the store as it was.
-                    key = (
-                        args.api_key_file.read_text().strip()
-                        if args.embedding_model is not None
-                        else ""
-                    )
-                    fetched = (
-                        from_git(args.git, args.ref, args.path)
-                        if args.git is not None
-                        else from_archive(args.archive, args.path)
-                    )
-                    found, same = store.add(args.name, snapshot(fetched), USER)
-                    for warning in found.report.get("warnings", []):
-                        print(f"warning: {warning}", file=sys.stderr)
-                    shown = asdict(found)
-                    shown["unchanged"] = same
-                    if args.embedding_model is not None:
-                        shown["embeddings"] = asyncio.run(_embed(store, args, key, found.snapshot))
+                    if args.project is not None and not _exists(projects, args.project):
+                        print(
+                            f"warning: there is no project {args.project!r} yet: the import's "
+                            "model calls count for no project",
+                            file=sys.stderr,
+                        )
+                        args.project = None
+                    shown = _import(store, args)
                 case "pin":
                     # The built-in skills the harness ships first, as a run's start pins
                     # them: a collision with one is refused now, not after the first run.
@@ -70,6 +69,49 @@ def skills(args: argparse.Namespace) -> int:
     return 0
 
 
+def _exists(projects: ProjectStore, project: str) -> bool:
+    """Whether the control store has ``project``, whose cost the import's calls count for."""
+    try:
+        projects.get(project)
+    except ProjectError:
+        return False
+    return True
+
+
+def _import(store: SkillStore, args: argparse.Namespace) -> dict[str, Any]:
+    """Import the pack, with what the model pass derives from its catalog and its skills'
+    embeddings when the arguments name models for them."""
+    # The key is read before anything is fetched or kept: an import whose model calls
+    # cannot even start leaves the store as it was.
+    models = args.embedding_model is not None or args.metadata_model is not None
+    key = args.api_key_file.read_text().strip() if models else ""
+    fetched = (
+        from_git(args.git, args.ref, args.path)
+        if args.git is not None
+        else from_archive(args.archive, args.path)
+    )
+    snap = snapshot(fetched)
+    alias = cast(str | None, args.metadata_model)
+    derived = asyncio.run(_derive(store, args, key, snap)) if alias is not None else None
+    report = derived.report(alias) if isinstance(derived, Derived) and alias else None
+    found, same = store.add(args.name, snap, USER, derived=report)
+    if isinstance(derived, Derived) and alias and not derived.cached and derived.derived:
+        store.add_metadata(
+            snap.sha256, alias, VERSION, derived.model, derived.derived, derived.dropped
+        )
+    for warning in found.report.get("warnings", []):
+        print(f"warning: {warning}", file=sys.stderr)
+    shown = asdict(found)
+    shown["unchanged"] = same
+    if isinstance(derived, PassError):
+        shown["derived"] = {"alias": alias, "failed": str(derived)}
+    elif report is not None:
+        shown["derived"] = report
+    if args.embedding_model is not None:
+        shown["embeddings"] = asyncio.run(_embed(store, args, key, found.snapshot))
+    return shown
+
+
 async def _embed(
     store: SkillStore, args: argparse.Namespace, key: str, snapshot: str
 ) -> dict[str, Any]:
@@ -86,6 +128,7 @@ async def _embed(
         return {"alias": args.embedding_model, "failed": str(error), "cost": sum(costs) or None}
     finally:
         await embedder.close()
+        await count_paid(store, args.project, paid)  # with --project, the project's cost
     if made is None:
         return {"alias": args.embedding_model, "computed": 0, "reused": 0}
     return {
@@ -96,6 +139,31 @@ async def _embed(
         "reused": made.reused,
         "cost": made.cost,
     }
+
+
+async def _derive(
+    store: SkillStore, args: argparse.Namespace, key: str, snap: Snapshot
+) -> Derived | PassError:
+    """What the pass derives from ``snap``'s catalog, kept from an earlier import of it by
+    the same alias and version, or asked for; a failure leaves the import without it, with
+    a warning (SK-30)."""
+    alias = cast(str, args.metadata_model)
+    if (kept := store.metadata(snap.sha256, alias, VERSION)) is not None:
+        return Derived(kept["derived"], kept["dropped"], kept["model"], cached=True)
+    model = OpenAICompatibleModel(args.model_url, alias, key, max_tokens=ANSWER_TOKENS)
+    try:
+        made = await derive(model, snap, alias)
+    except PassError as error:
+        print(f"warning: the pass over the catalog failed: {error}", file=sys.stderr)
+        if error.cost is not None:  # the gateway answered, and charged for it
+            store.add_metadata_call(args.project, snap.sha256, alias, (None, None), error.cost)
+        return error
+    finally:
+        await model.close()
+    store.add_metadata_call(args.project, snap.sha256, made.model, made.tokens, made.cost)
+    for item in made.dropped:
+        print(f"warning: the pass's {item['kind']} was dropped: {item['reason']}", file=sys.stderr)
+    return made
 
 
 def embedding_alias(value: str) -> str:
@@ -156,8 +224,21 @@ def add_parser(commands: Any) -> None:
         type=embedding_alias,
         help="the gateway's embedding model alias, to embed the skills",
     )
-    imported.add_argument("--model-url", help="--embedding-model: the gateway's base URL")
-    imported.add_argument("--api-key-file", type=Path, help="--embedding-model: its key")
+    imported.add_argument(
+        "--metadata-model",
+        type=embedding_alias,
+        help="the gateway's model alias for the pass that derives topics, entry skills, "
+        "short descriptions and bindings from the catalog",
+    )
+    imported.add_argument(
+        "--model-url", help="--embedding-model, --metadata-model: the gateway's base URL"
+    )
+    imported.add_argument(
+        "--api-key-file", type=Path, help="--embedding-model, --metadata-model: its key"
+    )
+    imported.add_argument(
+        "--project", help="the project the import's model calls count toward (RS-6a)"
+    )
     pinned = actions.add_parser(
         "pin", parents=[common], help="pin a source's latest import, or one, in a project"
     )

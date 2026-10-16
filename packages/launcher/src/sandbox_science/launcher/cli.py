@@ -362,8 +362,9 @@ def update_skills(config: LauncherConfig, packs: Sequence[str]) -> int:
         raise LauncherError("the config names no [skills.packs]")
     if not layout.control.is_dir():
         raise LauncherError("sandbox-science up makes the projects first")
-    if config.skills.embedding_model is not None and (problems := parts.key_problems(config)):
-        raise LauncherError("cannot embed the skills: " + "; ".join(problems))
+    models = (config.skills.embedding_model, config.skills.metadata_model)
+    if any(model is not None for model in models) and (problems := parts.key_problems(config)):
+        raise LauncherError("cannot call the import's models: " + "; ".join(problems))
     supervisor = Supervisor(layout, asyncio.Event(), stop_timeout=config.stop_timeout)
     lines, failed = asyncio.run(skills.keep(config, layout, supervisor, update=True, only=packs))
     for line in lines:

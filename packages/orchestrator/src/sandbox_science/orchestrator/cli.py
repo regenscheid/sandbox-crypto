@@ -329,6 +329,7 @@ def _harness(
         ),
         mcp=mcp,
         vectors=vectors,
+        skills_metadata=getattr(args, "skills_metadata_model", None),
     )
 
 
@@ -385,6 +386,12 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
         "--skills-embedding-model",
         type=embedding_alias,
         help="the gateway's embedding model alias: skills are compared by meaning too",
+    )
+    command.add_argument(
+        "--skills-metadata-model",
+        type=embedding_alias,
+        help="the alias of the imports' model pass whose topics, entry skills and short "
+        "descriptions runs are given; none without it",
     )
     command.add_argument("--api-key-file", type=Path)
     command.add_argument("--min-isolation-tier", type=int, default=3)
@@ -611,10 +618,12 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--ref goes with --git")
         if (
             args.action == "import"
-            and args.embedding_model is not None
+            and (args.embedding_model is not None or args.metadata_model is not None)
             and (args.model_url is None or args.api_key_file is None)
         ):
-            parser.error("--embedding-model needs --model-url and --api-key-file")
+            parser.error(
+                "--embedding-model and --metadata-model need --model-url and --api-key-file"
+            )
         try:
             return skills(args)
         except (ProjectError, OSError) as exc:
