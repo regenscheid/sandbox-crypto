@@ -285,6 +285,17 @@ IMAGES: Final = Framing(
     "message shows no image, view the file again to see it: ",
 )
 """The line of an image ``view_image`` put in the conversation (figures spec, FG-37)."""
+REPORT: Final = Framing(
+    "report",
+    "sandbox-notice-report-1",
+    "This run has reached a limit, named below, and this is its last model call: a tool "
+    "call in this reply will not run. Answer now, in the form your answers take, with a "
+    "report of the work so far: what you found and the evidence for it, what is unfinished "
+    "or uncertain, and how the work could go on. A result format with a status reports "
+    "partial. The limit: ",
+)
+"""The report round a run takes at a limit: its turn limit, a delegated run's tokens, the
+conversation's length, or the runaway guard (run-service spec, RS-6f)."""
 
 FRAMINGS: Final = (
     REQUESTS,
@@ -312,4 +323,5 @@ FRAMINGS: Final = (
     FOLD_OVERVIEW,
     CONSOLIDATION,
     IMAGES,
+    REPORT,
 )

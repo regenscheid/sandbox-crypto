@@ -352,12 +352,14 @@ async def test_the_answer_is_the_first_text_a_closing_lets_stand() -> None:
 
 
 async def test_an_answer_a_response_round_followed_stands_at_the_turn_limit() -> None:
-    model = ScriptedModel([ModelTurn("the answer"), call()])
+    model = ScriptedModel([ModelTurn("the answer"), call(), ModelTurn("the report")])
     transcript = await run_task(
         model, toolbox(), "go", run_id="r", max_turns=2, hooks=[Asks("r", "respond")]
     )
-    assert (transcript.stopped, transcript.final_text) == ("turn_limit", None)
+    # The report round at the limit answers last; the answer to the user stays the first.
+    assert (transcript.stopped, transcript.final_text) == ("turn_limit", "the report")
     assert transcript.answer == "the answer"
+    assert transcript.turns == 3
 
 
 class Fence(TurnHook):

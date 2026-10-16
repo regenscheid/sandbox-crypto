@@ -179,7 +179,9 @@ def observed(end: ChildEnd) -> Ended:
             return "returned"
         case "cancelled":
             return "cancelled"
-        case "turn_limit" | "context_limit" | "run_budget" | "budget":
+        case "turn_limit" | "context_limit" | "run_budget" | "budget" | "runaway":
+            # A limit, or the runaway guard: the answer of its report round, if it took
+            # one, is the delegation's report (RS-6f).
             return "limit_reached"
         case _:
             return "failed"

@@ -480,9 +480,13 @@ def add_parsers(commands: Any) -> None:
         "--check-turns", type=int, help="delegation: a check's turns, at most (12)"
     )
     projects.add_argument(
-        "--task-tokens", type=int, help="delegation: a task's tokens, at most (200000)"
+        "--task-tokens",
+        type=int,
+        help="delegation: a task's tokens, at most (5000000; 50000 to 50000000)",
     )
-    projects.add_argument("--task-turns", type=int, help="delegation: a task's turns, at most (20)")
+    projects.add_argument(
+        "--task-turns", type=int, help="delegation: a task's turns, at most (300; 1 to 10000)"
+    )
     projects.add_argument(
         "--models",
         help="delegation: the model aliases a brief may choose, comma-separated; empty for "

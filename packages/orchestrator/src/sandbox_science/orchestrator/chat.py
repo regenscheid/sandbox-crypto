@@ -12,7 +12,9 @@ session's records (``runstate.py``), which its two hooks and its job waits share
 - ``ModelBudget`` keeps the project's MAIN budget during a run the service starts
   (RS-6a): before each model call after the first, the run stops once the project has
   spent its budget over the last 24 hours (``budget``), or once the run's own calls have
-  used its share of it, or a delegated run's its token limit (``run_budget``). With
+  used its share of it, or a delegated run's its token limit (``run_budget``); a
+  delegated run whose tokens leave room for one more call makes it its report round
+  (RS-6f). With
   delegation, the root's share bounds its whole tree, and the tree's calls in flight
   count toward both (``delegation/budget.py``, PD-38).
 - ``SessionHeld`` refuses a delegated run's calls that may change something once its
@@ -198,6 +200,17 @@ class ModelBudget(TurnHook):
         if self.tokens is not None and used + estimate(run) >= self.tokens:
             return "run_budget"
         return None
+
+    async def last_call(self, run: RunView) -> str | None:
+        """A delegated run whose tokens leave room for its next call but not for one more
+        after it makes that call its report round (RS-6f), so that it reports what it found
+        rather than stopping without a word."""
+        if self.tokens is None:
+            return None
+        used = sum(call_tokens(usage) for usage in run.usage)
+        # The next call sends at least what the last one sent and answered.
+        last = call_tokens(run.usage[-1]) if run.usage else 0
+        return "run_budget" if used + 2 * max(estimate(run), last) >= self.tokens else None
 
 
 def estimate(run: RunView) -> int:
@@ -435,7 +448,12 @@ class EventLog(TurnHook):
 
 
 def _context_stop(record: RunRecord) -> dict[str, Any]:
-    """Why a run that folds stopped for its context, as its folds say (CM-43 to CM-45)."""
+    """Why a run that folds stopped for its context, as its folds say (CM-43 to CM-45);
+    or what tripped the runaway guard (RS-6f)."""
+    runaway = record.summaries.get("runaway")
+    if record.stopped == "runaway" and isinstance(runaway, dict):
+        found = cast(dict[str, Any], runaway)
+        return {"reason": found.get("rule"), "detail": found.get("detail")}
     folds = record.summaries.get("folds")
     if record.stopped != "context_limit" or not isinstance(folds, dict):
         return {}

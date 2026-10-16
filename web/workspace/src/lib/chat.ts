@@ -328,7 +328,10 @@ const record = (value: unknown): Record<string, unknown> =>
 
 const STOPPED: Record<string, string> = {
   answered: 'The run answered.',
-  turn_limit: 'The run stopped at its turn limit.',
+  turn_limit:
+    'The run stopped at its turn limit; its last call was asked to report what it found. Send a message to go on.',
+  runaway:
+    'The run stopped: its runaway guard saw it repeat itself without progress, and its last call was asked to report what it found. Send a message to go on.',
   context_limit: 'The run stopped at its context limit.',
   budget:
     'The run stopped: the project reached its daily cost limit. What waits for the session waits until the limit allows another run.',
@@ -361,6 +364,9 @@ export function stoppedText(data: Record<string, unknown>): string {
     const detail = text(data['detail']);
     said += ` Reason: ${visible(reason)}${detail ? `: ${visible(detail)}` : ''}.`;
   }
+  // What tripped the runaway guard (run service, RS-6f).
+  const detail = text(data['detail']);
+  if (stopped === 'runaway' && detail) said += ` It saw ${visible(detail)}.`;
   return failure ? `${said} Failure: ${visible(failure)}.` : said;
 }
 
