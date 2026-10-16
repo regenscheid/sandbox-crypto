@@ -248,6 +248,8 @@ def harness_argv(config: LauncherConfig, layout: Layout) -> list[str]:
     delegated = ["--delegated-model", model.delegated] if model.delegated else []
     # Each alias's gateway API (CM-41); an alias left out takes chat completions.
     apis = [option for alias, kind in model.api.items() for option in ("--api", f"{alias}={kind}")]
+    # The aliases the deployment declares accept images (figures, FG-33).
+    apis += [option for alias in model.images for option in ("--images", alias)]
     # Claude's thinking replay setting (CM-39).
     if (replay := model.thinking_replay) is not None:
         apis += ["--thinking-replay", replay.model_dump_json()]
