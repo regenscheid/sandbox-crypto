@@ -174,6 +174,10 @@ class ModelUsage(Contract):
     thinking_replay: str | None = Field(default=None, max_length=300)
     """Whether the call sent Claude's thinking back: ``on``, or ``off:`` and why (CM-39);
     null for a client without thinking replay."""
+    retried: list[str] = Field(default_factory=list, max_length=16)
+    """What the attempts before this answer's came to, in order (``HTTP 524``, or ``failed
+    response``): the gateway's timeouts and rate limits the call got past (lab 44, B3).
+    Only the answered attempt's tokens and cost are this entry's."""
 
 
 def _summary(value: JsonValue | None) -> dict[str, JsonValue]:
