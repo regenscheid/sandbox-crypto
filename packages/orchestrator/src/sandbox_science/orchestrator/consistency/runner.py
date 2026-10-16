@@ -156,6 +156,7 @@ SPECS = (
                     "artifact_disagreement",
                     "method",
                     "completion",
+                    "handle_citation",
                 ]
             },
             "statement": {"type": "string"},
@@ -566,8 +567,12 @@ class ReviewerRunner:
                 continue
             with self.store.documents.control.read() as tx:
                 db = tx.sql
+                # A suggestion (handle_citation) is no inconsistency: it leaves a pass a pass.
                 count = db.execute(
-                    "SELECT count(*) FROM review_records WHERE review_id=? AND kind='finding'",
+                    "SELECT count(*) FROM review_records r WHERE review_id=? AND kind='finding' "
+                    "AND NOT EXISTS(SELECT 1 FROM review_findings f WHERE "
+                    "f.finding_id=json_extract(r.payload,'$.finding_id') "
+                    "AND f.category IN ('handle_citation'))",
                     (self.review,),
                 ).fetchone()[0]
                 checked = db.execute(

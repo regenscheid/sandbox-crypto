@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Final, Literal
 
 from pydantic import Field
 
@@ -34,8 +34,14 @@ Category = Literal[
     "artifact_disagreement",
     "method",
     "completion",
+    "handle_citation",
 ]
 Severity = Literal["fail", "warn", "note"]
+ADVISORY_CATEGORIES: Final = ("handle_citation",)
+"""Categories whose findings only suggest (the owner, 2026-10-16; CR-18 as amended). They
+are always severity ``note``; they are not counted among the session's unresolved
+findings, never reach the author as a notice or an interruption, are never confirmed,
+rebutted or challenged, and hold nothing."""
 ReviewID = Annotated[str, Field(pattern=r"^rev-[0-9a-f]{24}$")]
 EvidenceID = Annotated[str, Field(pattern=r"^ev-[0-9a-f]{24}$")]
 FindingID = Annotated[str, Field(pattern=r"^finding-[0-9a-f]{24}$")]

@@ -42,6 +42,7 @@ Terms:
   *Amended 2026-10-15 by the coordinator, which the owner can reverse:* the check that a citation resolves and supports the claim is recorded. A claim or result quotes its reference (LG-8): a PDF's page and lines, or an ePrint passage. The platform looks for the quote in its own record of the tool results an agent read, the PDF tools' results under the PDF's SHA-256 or the e-print tools' results for the paper and date stamp, and pins the one that holds it beside the entry in the review; a quote it does not find cannot be confirmed. The source is what a tool returned, with the tool and its arguments: it may be a PDF an agent made, unless the e-print server or the user vouches for the PDF (LG-16). The reviewer reads all of that source and of the entry, and records a citation check, `supported`, `unsupported` or `inconclusive`, bound to the entry revision's statement, fields, assumptions and evidence, with the tool and arguments the source came from. An ePrint is named by its identifier and the server's date stamp, not by exact bytes (LG-8).
 
   *Amended 2026-10-16 by the coordinator for lab 42's B3, which the owner can reverse:* a delegation's outcome, its summary, verdict and report, is the delegated run's claim, not recorded output. A value it states, or the author relays from it, is checked against an execution of the delegated run that states the same quantity (CR-2), the latest successful one when several do, and where they differ the output is the record. A value missing from an output cut short, or from executions the review left out, is unverified, never contradicted, and no other claim is judged by it.
+  *Amended 2026-10-16 by the owner, after context-management lab round 1 (CM-P1):* one more check, a suggestion only. When an answer, note or document relies on a ledger entry, or declines or reopens something because of one, and names no handle (D-3, A-1, C-4, I-3), the reviewer may raise one finding of category `handle_citation`, severity `note`, anchored to that text, with the handle it should cite as its remedy. It is advisory by construction (CR-18's amendment): it never blocks, holds, rejects or challenges, and the agent is not made to act on it.
 - CR-5. Durable artifacts and final reports are held to a stricter standard than passing remarks in conversation (CScience).
 - CR-6. Missing evidence is not proof of fabrication. When an earlier value is unavailable, such as a truncated log or a record outside the snapshot, the finding is `inconclusive`, not `fail` (CScience).
 - CR-7. Each review records what it checked and found consistent, not only its findings (feature plan; OpenScience Desktop records checked items).
@@ -76,6 +77,9 @@ Terms:
 
 - CR-17. A finding records: ID; review ID and type; the reviewer run (alias, resolved model, rubric version), or for a `math` finding the math check; severity; category (CR-4, or `math`, CR-36; *amended 2026-10-11*; or `figure`, the [figures](figures.md) spec's FG-22, *amended 2026-10-16 by the owner*); a statement in Markdown with LaTeX (D25); one or more anchors (transcript entry, execution log range, artifact revision and block, source page or region); pinned evidence references; an optional suggested remedy; status; and every transition with actor, time and reason.
 - CR-18. Severity is `fail` for a materially false or unsupported durable claim or a claimed action without a record, `warn` for a claim that needs correction or qualification, and `note` for information (new names; CScience separates fail-level findings from warnings).
+
+  *Amended 2026-10-16 by the owner:* a finding of the category `handle_citation` is only a suggestion. Whatever severity the reviewer gives it, it is stored as `note`. It is not counted among the session's unresolved findings (so it adds nothing to the counts a run is told, and does not make a conversation turn a terminal one), is never offered to a run as a notice, is not a confirmation target, and takes no `fix` or `rebut` response (the user may dismiss it), so it is never `claimed fixed` or `challenged`. A re-flag never makes it `unaddressed`. A review whose only findings are of this category may still end `passed`. The user sees it in the review panel with the others, and the author's list tool returns it.
+
 - CR-19. A review reports at most 10 findings. With more candidates it reports the most severe and records that the cap was reached (new; OpenScience Desktop caps at 8).
 - CR-20. The reviewer sees the open findings and re-flags one instead of duplicating it. A new finding with the same category and anchors as an open one is turned into a re-flag (new).
 - CR-21. `fail` findings from a checkpoint review interrupt the author at the next safe point: after the current tool call, before the next model request. `warn` and `note` findings are not injected; the author is told how many exist and lists them with a tool. The user sees every finding at once (CScience).
@@ -225,6 +229,11 @@ All fixtures are `scripted`: the author's and the reviewer's model output is scr
 - *Then* the finding is `confirmed fixed`, recorded as confirmed by the math check, and no confirmation review ran.
 - *When*, in a later turn, the author writes another broken formula, and two patches in a row leave it failing.
 - *Then* the first re-flags its finding; after the second it is `unaddressed`, and the turn completes without a third round.
+
+**CR-F15 A missing handle is a suggestion** (CR-4, CR-18 as amended 2026-10-16)
+- *Given* an answer that declines an approach because of rejected decision D-3 and names no handle.
+- *When* the reviewer raises a `handle_citation` finding of any severity.
+- *Then* it is stored as `note` with the handle in its remedy; the author's counts and notices do not include it, no confirmation review is queued for it, a `fix` or `rebut` response to it is refused, and a review with no other finding still ends `passed`.
 
 ## Open questions
 
