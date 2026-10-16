@@ -13,8 +13,8 @@ import math
 import re
 import sqlite3
 import time
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
@@ -242,6 +242,18 @@ def _revised(found: Json) -> Json:
         "revision": found.get("revision"),
         **cast(Json, found.get("blocks") or {}),
     }
+
+
+def _archived(items: list[EvidenceItem]) -> Json:
+    """The first and last archive positions of the messages a snapshot's transcript
+    items copy, when they name them (CR-14 as amended); nothing otherwise."""
+    found = [
+        cast(Json, stored_json(item.locator).get("archive") or {}).get("position")
+        for item in items
+        if item.kind == "transcript"
+    ]
+    positions = [position for position in found if isinstance(position, int)]
+    return {"archive": {"from": min(positions), "to": max(positions)}} if positions else {}
 
 
 def _confirmation_key(targets: list[tuple[str, int]], pins: dict[str, Json]) -> str:
@@ -686,8 +698,11 @@ class ReviewStore:
         alias: str | None,
         classifier: Json | None = None,
         coverage_complete: bool = True,
+        viewed: Sequence[tuple[str, str]] = (),
     ) -> str | None:
         """Pin a bounded prefix. No unseen overflow item is skipped by the watermark.
+        ``viewed`` are the earlier runs' calls whose results the run's view held, each its
+        run's ID and its own: their actions are listed as context (CR-2 as amended).
 
         A confirmation whose fix groups do not fit the snapshot's bounds leaves those
         responses unconfirmed and serves author work instead, as incomplete coverage,
@@ -700,7 +715,7 @@ class ReviewStore:
         targets = self.confirmation_targets(project, session)
         if kind == "confirmation" and not targets:
             return None
-        plan = self._plan(project, session, kind, targets, coverage_complete, author_run)
+        plan = self._plan(project, session, kind, targets, coverage_complete, author_run, viewed)
         if plan.kind == "confirmation" and not plan.targets:
             # Serve author work instead, with the configuration and targets as they are
             # now: the review may have been disabled or reconfigured meanwhile.
@@ -709,7 +724,7 @@ class ReviewStore:
             if not config.enabled:
                 return None
             targets = self.confirmation_targets(project, session)
-            plan = self._plan(project, session, "terminal", targets, False, author_run)
+            plan = self._plan(project, session, "terminal", targets, False, author_run, viewed)
         review = new_id("rev")
         with self.documents.control.write() as tx:
             committed = self._commit_snapshot(
@@ -735,16 +750,17 @@ class ReviewStore:
         targets: list[tuple[str, int]],
         coverage_complete: bool,
         author_run: str,
+        viewed: Sequence[tuple[str, str]] = (),
     ) -> _Plan:
         """The items, grants and pins a review of ``kind`` would take now, for the run
-        ``author_run``.
+        ``author_run``, whose view held the earlier runs' calls ``viewed``.
 
         Open findings take their slots first, confirmation targets and rebuttals before
         the others, in as much as half the snapshot of an author window, or all of a
         confirmation's, so that feed rows, the actions item and the plan item cannot crowd
         them out (the review of #449). The feed's next rows take what is left, and a
         finding that did not fit that share takes what they leave."""
-        from .actions import plan_item
+        from .actions import Earlier, plan_item
 
         plans = self._session_plans()
         with self.documents.control.read() as tx:
@@ -761,6 +777,11 @@ class ReviewStore:
                 if kind == "terminal"
                 else None
             )
+            # And any answer may tell what an earlier run did: the actions of the earlier
+            # runs' calls its view held come in as context too (CR-2 as amended).
+            runs = self._viewed(db, project, session, viewed) if kind != "confirmation" else []
+            if runs:
+                earlier = replace(earlier or Earlier([], [], 0, 0), runs=runs)
         shown: list[EvidenceItem] = []
         if planned is not None:
             encoded = dump(planned[1])
@@ -941,6 +962,29 @@ class ReviewStore:
         )
 
     @staticmethod
+    def _viewed(
+        db: sqlite3.Connection, project: str, session: str, viewed: Sequence[tuple[str, str]]
+    ) -> list[tuple[Json, Json]]:
+        """The actions of the earlier runs' calls ``viewed``, each its run's ID and its
+        own, as the feed holds them, in order, the latest ``MAX_ACTIONS``."""
+        from .actions import MAX_ACTIONS
+
+        wanted = set(viewed)
+        if not wanted:
+            return []
+        found: list[tuple[Json, Json]] = []
+        for locator, payload in db.execute(
+            "SELECT locator,payload FROM review_feed WHERE project=? AND session=? AND "
+            "kind='action' AND json_extract(locator,'$.run') IN (SELECT value FROM "
+            "json_each(?)) ORDER BY seq",
+            (project, session, json.dumps(sorted({run for run, _ in wanted}))),
+        ):
+            located, action = stored_json(locator), stored_json(payload)
+            if "delegation" not in located and (located.get("run"), action.get("call")) in wanted:
+                found.append((located, action))
+        return found[-MAX_ACTIONS:]
+
+    @staticmethod
     def _feed_items(
         db: sqlite3.Connection,
         project: str,
@@ -1016,7 +1060,11 @@ class ReviewStore:
             size += item.size
             if kind == "document" and key.startswith("document:"):
                 revised.append(_revised(stored_json(payload)))
-        if actions or revised or (earlier is not None and (earlier.actions or earlier.documents)):
+        if (
+            actions
+            or revised
+            or (earlier is not None and (earlier.actions or earlier.documents or earlier.runs))
+        ):
             located, listed = actions_item(actions, revised, window.watermark + 1, end, earlier)
             encoded = dump(listed)
             items.append(EvidenceItem("actions", dump(located), encoded, digest(encoded), 1))
@@ -1322,6 +1370,7 @@ class ReviewStore:
                 "type": plan.kind,
                 "start": window.watermark + 1,
                 "end": plan.selected_end,
+                **_archived(plan.items),
             },
         )
         return True

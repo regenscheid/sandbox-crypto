@@ -19,7 +19,7 @@ from sandbox_science.orchestrator.aio import lease, threaded
 from sandbox_science.orchestrator.documents.errors import POLICY_DENIED, DocumentError
 from sandbox_science.orchestrator.documents.models import Author
 from sandbox_science.orchestrator.documents.store import DocumentStore
-from sandbox_science.orchestrator.history import body
+from sandbox_science.orchestrator.history import Archive, body
 from sandbox_science.orchestrator.hooks import (
     Closing,
     Effect,
@@ -34,6 +34,7 @@ from sandbox_science.orchestrator.notices import REVIEW_COUNTS, REVIEW_FINDINGS
 from sandbox_science.orchestrator.projects import recorded
 
 from .actions import action_of
+from .archived import held_calls, places
 from .artifacts import ArtifactConsumer
 from .delegated import observe_delegated
 from .executions import execution_projection
@@ -249,15 +250,18 @@ class ReviewController:
         memory: MemoryGiven | None = None,
         connectors: Collection[str] = (),
         earlier: int = 0,
+        archived_as: str | None = None,
     ) -> None:
         """``memory`` is the project memory the reviewer is given: the one the reviewed
         run was given when it started (PM-8). ``connectors`` are the MCP servers the run's
         project configures, whose e-print results can be quotes' sources (CR-4).
-        ``earlier`` is how many messages after the system message are the session's
-        earlier conversation (RS-10). They are not observed: each was observed in its own
-        run's window, and an earlier answer is not this run's narration, so the window's
-        actions, which list only its own calls, would hold no record of what it says was
-        done (lab 41)."""
+        ``earlier`` is how many messages after the system message are the run's view of
+        its session (CM-29). They are not observed: each was observed in its own run's
+        window, and an earlier answer is not this run's narration (lab 41); the calls
+        whose results they hold are listed, as earlier runs' actions, with each window's
+        (CR-2 as amended). ``archived_as`` is the run's name in the session's archive,
+        when its messages are archived: each transcript item names the archived message
+        it copies (CR-14 as amended)."""
         store.scope(context.project_id, context.session_id)
         project = recorded(store.documents.path.parent, context.project_id)
         if context.environment_id != project.sessions[context.session_id].environment_id:
@@ -287,6 +291,13 @@ class ReviewController:
         self.position = 1 + earlier if earlier else 0
         """The next message to observe; the system message and the earlier conversation
         before it are never observed."""
+        self.archived_as = archived_as
+        self.archive = Archive(store.documents.control) if archived_as is not None else None
+        self.archived = 0
+        """The archive position of the last message observed, of this run's."""
+        self.viewed: tuple[tuple[str, str], ...] | None = None
+        """The earlier runs' calls, each its run's ID and its own, whose results the
+        run's view held."""
         self.effects = False
         self.seen: set[str] = set()
         self.delivered: set[str] = set()
@@ -361,6 +372,7 @@ class ReviewController:
     async def observe(
         self, messages: Sequence[Message], *, tool: Json | None = None, call: Json | None = None
     ) -> None:
+        located = await self._places(messages)
         for index in range(self.position, len(messages)):
             message = messages[index]
             if message.get("role") == "system":
@@ -371,12 +383,13 @@ class ReviewController:
                 "content": clipped(original, 32000),
                 "truncated": len(original) > 32000,
             }
+            at = {"archive": located[index]} if index in located else {}
             await asyncio.to_thread(
                 self.store.observe,
                 *self.scope,
                 f"{self.instance}:message:{index}",
                 "transcript",
-                {"run": self.run_id, "invocation": self.instance, "message": index},
+                {"run": self.run_id, "invocation": self.instance, "message": index, **at},
                 payload,
                 complete=len(original) <= 32000,
             )
@@ -419,6 +432,26 @@ class ReviewController:
             artifact_ingestion = await self.artifact_consumer.ingest()
             self.artifacts_complete = artifact_ingestion["complete"]
 
+    async def _places(self, messages: Sequence[Message]) -> dict[int, Json]:
+        """The archive place of each message not observed yet, by its index, when the
+        run's messages are archived; and, at the first, the earlier runs' calls its view
+        held (``archived.held_calls``)."""
+        archive, name = self.archive, self.archived_as
+        if archive is None or name is None:
+            return {}
+        project, session = self.scope
+        if self.viewed is None:
+            held = messages[1 : self.position]
+            self.viewed = tuple(
+                await asyncio.to_thread(held_calls, archive, project, session, name, held)
+            )
+        located = await asyncio.to_thread(
+            places, archive, project, session, name, messages, self.position, self.archived
+        )
+        if located:
+            self.archived = max(self.archived, *(found["position"] for found in located.values()))
+        return located
+
     async def _ledger(self, *, drain: bool = False) -> bool:
         """Read the ledger's events into the review feed; whether it read them all. A page
         the feed refuses leaves the window's coverage incomplete and the run going, rather
@@ -445,6 +478,7 @@ class ReviewController:
             coverage_complete=self.documents_complete
             and self.artifacts_complete
             and self.ledger_complete,
+            viewed=self.viewed or (),
         )
         if review is not None:
             self.review = review

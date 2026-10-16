@@ -953,6 +953,7 @@ class Harness:
                 memory=for_reviewer(*memory) if memory is not None else None,
                 connectors=connectors.servers if connectors is not None else (),
                 earlier=len(admitted.request.history),
+                archived_as=chat.run if chat is not None else None,
             )
             on_close(reviews.close)
         artifacts = ArtifactPublisher(inventory, self.client, context, run_id=run_id, alias=alias)

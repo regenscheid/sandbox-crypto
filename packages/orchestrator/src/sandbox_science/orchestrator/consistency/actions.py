@@ -13,7 +13,7 @@ review's snapshot holds one derived ``actions`` item for its window, listing the
 run, with the blocks each document revision in the window changed since the revision
 before; a terminal review's lists the run's actions in its earlier windows too, as
 context (lab 42's B5). A narrated action the list does not hold has no record (rubric
-``sandbox-consistency-5``).
+``sandbox-consistency-6``).
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Final, cast
 
 from sandbox_science.orchestrator.documents.errors import DocumentError
@@ -273,12 +273,15 @@ def _listed(actions: list[tuple[Json, Json]]) -> list[Json]:
 @dataclass(frozen=True)
 class Earlier:
     """A run's actions and document revisions in its windows reviewed before, from feed
-    item ``start`` to ``end``: context for a terminal review (lab 42's B5)."""
+    item ``start`` to ``end``: context for a terminal review (lab 42's B5); and ``runs``,
+    the actions of earlier runs' calls whose results the run's view of its session held:
+    context for any review of its work (CR-2 as the context management spec amends it)."""
 
     actions: list[tuple[Json, Json]]
     documents: list[Json]
     start: int
     end: int
+    runs: list[tuple[Json, Json]] = field(default_factory=list[tuple[Json, Json]])
 
 
 def actions_item(
@@ -328,6 +331,22 @@ def actions_item(
             older[part] = older[part][(len(older[part]) + 1) // 2 :]
         older["shown"] = len(older["actions"])
         locator["earlier"] = {"from": earlier.start, "to": earlier.end}
+    if earlier is not None and earlier.runs:
+        listed_runs = _listed(earlier.runs)
+        held: Json = {
+            "about": (
+                "Earlier runs' tool calls that change something, each naming its run, whose "
+                "results the reviewed run's view of its session held, as the platform "
+                "recorded them: context for an answer that says what an earlier run did, "
+                "not under review here."
+            ),
+            "actions": listed_runs[-MAX_ACTIONS:],
+            "total": len(listed_runs),
+        }
+        payload["earlier_runs"] = held
+        while len(dump(payload).encode()) > MAX_ITEM_BYTES // 2 and held["actions"]:
+            held["actions"] = held["actions"][(len(held["actions"]) + 1) // 2 :]
+        held["shown"] = len(held["actions"])
     while len(dump(payload).encode()) > MAX_ITEM_BYTES // 2 and payload["actions"]:
         payload["actions"] = payload["actions"][: len(payload["actions"]) // 2]
     payload["shown"] = len(payload["actions"])
