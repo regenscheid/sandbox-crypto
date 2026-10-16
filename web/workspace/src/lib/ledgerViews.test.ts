@@ -59,6 +59,7 @@ function inspect(html: string): { hrefs: string[]; hostile: boolean } {
 function hostileEntry(fields: Partial<EntryView> = {}): EntryView {
   return {
     entry_id: 'entry-0123456789abcdef01234567',
+    pins: [],
     handle: 'C-1',
     type: 'claim',
     kind: null,

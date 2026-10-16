@@ -39,7 +39,7 @@ from pydantic import ValidationError
 
 from sandbox_science.contracts.artifact_inventory import ArtifactRevision, artifact_path
 
-from .blocks import InlineText
+from .blocks import InlineText, Parsed, normalize_newlines, parse
 from .errors import INVALID_REQUEST, DocumentError
 from .identity import Mapped
 
@@ -162,10 +162,25 @@ def _chart_data(text: str) -> Iterator[str]:
 
 
 def references(mapped: Mapped) -> list[Reference]:
-    """The file references of a revision, in document order."""
+    """The file references of a revision, in document order, by block."""
+    return _found(mapped.parsed, mapped.block_ids)
+
+
+def text_references(text: str, field: str) -> list[Reference]:
+    """The file references of a text that has no blocks of its own, such as a ledger
+    statement or a chat message, all under ``field`` (FG-7). A text the parser refuses,
+    which the GUI shows as written, has none."""
+    try:
+        parsed = parse(normalize_newlines(text), documents=False)
+    except DocumentError:
+        return []
+    return _found(parsed, [field] * len(parsed.blocks))
+
+
+def _found(parsed: Parsed, ids: Sequence[str]) -> list[Reference]:
     found: list[Reference] = []
-    for block in mapped.parsed.blocks:
-        block_id = mapped.block_ids[block.index]
+    for block in parsed.blocks:
+        block_id = ids[block.index]
         for inline in block.inlines:
             found.extend(Reference(block_id, "image", path) for path in _images(inline))
         info = str(block.attrs.get("info") or "").split(" ", 1)[0]
@@ -226,14 +241,15 @@ def pin(
     db: sqlite3.Connection,
     project: str,
     session: str | None,
-    mapped: Mapped,
-    previous: Sequence[Json],
-    moves: Mapping[tuple[str, str], int | None],
+    written: Sequence[Reference],
+    previous: Sequence[Json] = (),
+    moves: Mapping[tuple[str, str], int | None] | None = None,
 ) -> tuple[list[Json], list[str]]:
-    """The pins of ``mapped``'s references, and the blocks whose pins ``moves`` moved.
+    """The pins of the references ``written``, and the blocks whose pins ``moves`` moved.
 
     ``previous`` holds the pins of the revision it was made from; ``moves`` maps a block
     and a path to the revision a ``repin`` names, or ``None`` for the current one."""
+    moves = moves or {}
     kept: dict[tuple[str, str, str, int], Json] = {}
     seen: Counter[tuple[str, str, str]] = Counter()
     for entry in previous:
@@ -244,7 +260,7 @@ def pin(
     pins: list[Json] = []
     moved: list[str] = []
     seen.clear()
-    for reference in references(mapped)[:MAX_REFERENCES]:
+    for reference in written[:MAX_REFERENCES]:
         nth = seen[(reference.block, reference.kind, reference.path)]
         seen[(reference.block, reference.kind, reference.path)] += 1
         move = (reference.block, reference.path)
@@ -285,9 +301,9 @@ def pin(
             pins.append(found)
         else:
             pins.append({**entry, **_resolve(db, project, target, None)})
-    written = {(str(entry["block"]), str(entry["path"])) for entry in pins}
+    named = {(str(entry["block"]), str(entry["path"])) for entry in pins}
     for block, path in moves:
-        if (block, path) not in written:
+        if (block, path) not in named:
             raise DocumentError(
                 INVALID_REQUEST, f"block {block} holds no reference to a recorded file at {path}"
             )

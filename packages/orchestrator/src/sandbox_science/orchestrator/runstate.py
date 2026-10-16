@@ -35,6 +35,8 @@ from sandbox_science.contracts.model import Contract
 from .control import ControlError, ControlStore
 from .control.errors import BUSY, CONFLICT, INVALID_REQUEST, NOT_FOUND
 from .documents import DocumentStore
+from .documents.pins import pin as pin_references
+from .documents.pins import text_references
 from .projects import ModelUsage, ProjectStore, run_name
 from .questions import Question, answer_with, answered_by, by_message, waiting
 
@@ -113,6 +115,8 @@ class ChatMessage(Contract):
     offered: str | None = None
     """The run that last offered it, which saw it whether or not it answered: what a
     cancelled or interrupted run left held, the GUI shows from it."""
+    pins: list[dict[str, JsonValue]] = Field(default_factory=list[dict[str, JsonValue]])
+    """Its references to recorded files, pinned when it was written (figures, FG-7)."""
 
 
 class RunEvent(Contract):
@@ -122,6 +126,8 @@ class RunEvent(Contract):
     at: datetime
     kind: EventKind
     data: dict[str, JsonValue]
+    pins: list[dict[str, JsonValue]] = Field(default_factory=list[dict[str, JsonValue]])
+    """An answer's references to recorded files, pinned when it was written (FG-7)."""
 
 
 class RunLease(Contract):
@@ -142,7 +148,10 @@ class DeadLease(Contract):
 
 
 _MESSAGE_COLUMNS: Final = (
-    "message_id, number, text, author, created_at, state, run, reason, offered"
+    "message_id, number, text, author, created_at, state, run, reason, offered, "
+    "(SELECT pins FROM chat_pins c WHERE c.project_id = session_messages.project_id AND "
+    "c.session_id = session_messages.session_id AND c.source = 'message' "
+    "AND c.key = session_messages.message_id)"
 )
 
 
@@ -669,6 +678,9 @@ class RunState:
                 "INSERT INTO run_events VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (project, session, run, last + 1, self._now().isoformat(), kind, text),
             )
+            answer = data.get("text")
+            if kind == "assistant" and isinstance(answer, str):
+                _pin_chat(db, project, session, "event", f"{run}:{last + 1}", answer)
             return last + 1
 
     def known(self, project: str, session: str, run: str) -> bool:
@@ -698,7 +710,10 @@ class RunState:
         """The run's events after ``after``, in order."""
         with self.control.read() as tx:
             rows = tx.sql.execute(
-                "SELECT seq, at, kind, data FROM run_events WHERE project_id = ? "
+                "SELECT seq, at, kind, data, (SELECT pins FROM chat_pins c "
+                "WHERE c.project_id = e.project_id AND c.session_id = e.session_id "
+                "AND c.source = 'event' AND c.key = e.run || ':' || e.seq) "
+                "FROM run_events e WHERE project_id = ? "
                 "AND session_id = ? AND run = ? AND seq > ? ORDER BY seq LIMIT ?",
                 (project, session, run, after, max(1, min(limit, PAGE))),
             ).fetchall()
@@ -708,8 +723,9 @@ class RunState:
                 at=datetime.fromisoformat(at),
                 kind=kind,
                 data=cast(dict[str, JsonValue], json.loads(data)),
+                pins=json.loads(pins) if pins else [],
             )
-            for seq, at, kind, data in rows
+            for seq, at, kind, data, pins in rows
         ]
 
 
@@ -754,6 +770,7 @@ def _queue(
         )
     except sqlite3.IntegrityError as error:
         raise ControlError(INVALID_REQUEST, f"the message is refused: {error}") from None
+    pinned = _pin_chat(db, project, session, "message", message_id, text)
     # Writing again is resuming: the session's held messages go with this one.
     db.execute(
         "UPDATE session_messages SET state = 'queued', updated_at = ? "
@@ -767,7 +784,23 @@ def _queue(
         author=author,
         created_at=datetime.fromisoformat(now),
         state="queued",
+        pins=pinned,
     )
+
+
+def _pin_chat(
+    db: sqlite3.Connection, project: str, session: str, source: str, key: str, text: str
+) -> list[dict[str, JsonValue]]:
+    """Pin a chat text's references to recorded files, in its write (figures, FG-7):
+    a message's or an answer's pins never move (FG-8)."""
+    pins, _ = pin_references(db, project, session, text_references(text, "text"))
+    if pins:
+        db.execute(
+            "INSERT INTO chat_pins (project_id, session_id, source, key, pins) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (project, session, source, key, json.dumps(pins, sort_keys=True)),
+        )
+    return cast(list[dict[str, JsonValue]], pins)
 
 
 def _session(db: sqlite3.Connection, project: str, session: str) -> None:
@@ -788,7 +821,7 @@ def _holding(db: sqlite3.Connection, project: str, session: str, run: str) -> No
 
 
 def _message(row: tuple[object, ...]) -> ChatMessage:
-    message_id, number, text, author, created_at, state, run, reason, offered = row[:9]
+    message_id, number, text, author, created_at, state, run, reason, offered, pins = row[:10]
     return ChatMessage.model_validate(
         {
             "message_id": message_id,
@@ -800,6 +833,7 @@ def _message(row: tuple[object, ...]) -> ChatMessage:
             "run": run,
             "reason": reason,
             "offered": offered,
+            "pins": json.loads(cast(str, pins)) if pins else [],
         }
     )
 

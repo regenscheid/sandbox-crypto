@@ -59,6 +59,7 @@ const eprintQuote = (locator: Record<string, unknown> = {}) =>
 
 const entry = (evidence: EvidenceLink[]): EntryView => ({
   entry_id: 'entry-0123456789abcdef01234599',
+  pins: [],
   handle: 'R-1',
   type: 'result',
   kind: null,

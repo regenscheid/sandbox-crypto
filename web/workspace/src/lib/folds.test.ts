@@ -158,12 +158,14 @@ describe('fold events in the chat', () => {
     const entries = chatEntries([
       {
         seq: 1,
+        pins: [],
         at: '2026-10-16T00:00:00Z',
         kind: 'fold',
         data: { fold: FOLD, state: 'applied', span: [1, 40], freed: 10, stubs: 0 },
       },
       {
         seq: 2,
+        pins: [],
         at: '2026-10-16T00:00:01Z',
         kind: 'fold',
         data: { fold: 'javascript:alert(1)', state: 'region_over_budget' },

@@ -332,7 +332,9 @@ _CHANGE = {
         "revise (give entry and the revision you read as expected, then only what "
         "changes). links replaces the "
         "entry's outgoing links; evidence adds evidence links, and evidence_removed "
-        "removes those with the IDs it names"
+        "removes those with the IDs it names. A statement's references to recorded files, "
+        "![caption](path), are pinned to the file's revision when it is saved; repin moves "
+        "a pin to a named revision, or to the current one without revision"
     ),
     "properties": {
         "entry": _ENTRY,
@@ -356,6 +358,20 @@ _CHANGE = {
         "links": {"type": "array", "items": _LINK, "maxItems": 64},
         "evidence": {"type": "array", "items": _EVIDENCE, "maxItems": 32},
         "evidence_removed": {"type": "array", "items": {"type": "string"}, "maxItems": 32},
+        "repin": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "revision": {"type": "integer", "minimum": 1},
+                },
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+            "minItems": 1,
+            "maxItems": 32,
+        },
         "basis": _BASIS,
         "anchors": _ANCHORS,
     },

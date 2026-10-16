@@ -118,6 +118,7 @@ describe('a comment thread', () => {
 
 const event = (seq: number, kind: RunEvent['kind'], data: RunEvent['data']): RunEvent => ({
   seq,
+  pins: [],
   at: '2026-10-14T12:00:00Z',
   kind,
   data,

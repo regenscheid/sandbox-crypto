@@ -2822,6 +2822,33 @@ def _document_pins(schema: Schema) -> None:
     )
 
 
+def _statement_and_chat_pins(schema: Schema) -> None:
+    """Version 56: the pins of the references to recorded files in ledger statements and
+    in chat (docs/specs/figures.md, FG-7, FG-8): a JSON array on each ledger revision,
+    and, for a user's message or an agent's answer, a row of ``chat_pins`` written with
+    it and never changed. Rows written before hold none."""
+    pins = (
+        "json_valid(pins) AND json_type(pins) = 'array' AND length(CAST(pins AS BLOB)) <= 1048576"
+    )
+    for statement in (
+        f"ALTER TABLE ledger_revisions ADD COLUMN pins TEXT CHECK (pins IS NULL OR ({pins}))",
+        f"""CREATE TABLE chat_pins (
+    project_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    source TEXT NOT NULL CHECK (source IN ('message', 'event')),
+    key TEXT NOT NULL CHECK (length(CAST(key AS BLOB)) BETWEEN 1 AND 512),
+    pins TEXT NOT NULL CHECK ({pins}),
+    PRIMARY KEY (project_id, session_id, source, key),
+    FOREIGN KEY (project_id, session_id) REFERENCES sessions (project_id, session_id)
+) STRICT""",
+        """CREATE TRIGGER chat_pins_no_update BEFORE UPDATE ON chat_pins
+BEGIN SELECT RAISE(ABORT, 'chat pins are written once'); END""",
+        """CREATE TRIGGER chat_pins_no_delete BEFORE DELETE ON chat_pins
+BEGIN SELECT RAISE(ABORT, 'chat pins are kept'); END""",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -2877,6 +2904,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _cost_sources,
     _fold_proposals,
     _document_pins,
+    _statement_and_chat_pins,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""
