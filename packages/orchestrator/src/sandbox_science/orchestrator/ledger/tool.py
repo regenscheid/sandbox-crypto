@@ -74,6 +74,13 @@ LEDGER_EFFECTS: Final[dict[str, Effect]] = {
 }
 """The ledger tools that only read; the others are effects, which the plan fence gates."""
 
+LINK_RULES: Final = (
+    "targets by kind: assumes an assumption (for a claim use builds_on); builds_on a claim or "
+    "result (a reference is cited by source_claim evidence); answers and split_into an issue; "
+    "restates, compares_to, supersedes and dominates a claim or result"
+)
+"""What each kind of link joins (LG-5), as the change tool says it."""
+
 _ENTRY = {"type": "string", "description": "An entry's handle (such as C-12) or ID"}
 _LINK = {
     "type": "object",
@@ -85,7 +92,8 @@ _LINK = {
         "dominates another of its category where the frontier cannot compare them). A "
         "decision's reopen_on links name what its reopen condition watches: an open issue "
         "that states the condition as a question, or an assumption, claim or result whose "
-        "change would matter; when it is resolved or changes, the decision is flagged"
+        "change would matter; when it is resolved or changes, the decision is flagged. "
+        "Only the kind and the target's type decide what may link, not its status; " + LINK_RULES
     ),
     "properties": {
         "kind": {
@@ -119,7 +127,8 @@ _EVIDENCE = {
     "description": (
         "Evidence for the entry: its role, its type, a scope note saying what it covers, "
         "and one pinned target: entry (with revision, its current one by default), "
-        "artifact with revision (and optionally its sha256; find_artifacts gives an "
+        "artifact with revision (sha256 is optional, best left out: the revision's own is "
+        "pinned; find_artifacts gives an "
         "artifact's ID, revision and SHA-256 by its path, in any run), document with revision, "
         "block and optionally math (a span), or review. An independent_check names the "
         "revision of this entry it checked as checked; its target can be delegation: the "
@@ -249,9 +258,9 @@ _ANCHORS = {
         "type": "object",
         "description": (
             "One of: message (an archive ID, msg-…, from a message's header; quote for the "
-            "user's words), call (a tool call's ID, for its result; start and end for a "
-            "range of its output), artifact with revision, document with revision and "
-            "block, or entry (with revision)"
+            "user's words), call (a tool call's ID, or the message ID of its result, for "
+            "the result; start and end for a range of its output), artifact with revision, "
+            "document with revision and block, or entry (with revision)"
         ),
         "properties": {
             "message": {"type": "string"},

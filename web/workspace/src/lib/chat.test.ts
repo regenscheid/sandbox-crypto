@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 import { render } from 'svelte/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import ChatRun from '../views/ChatRun.svelte';
 import ChatWaiting from '../views/ChatWaiting.svelte';
 import type { EnvironmentState, EventPage, MessageListing } from './api-types';
 import { ApiError } from './http';
@@ -408,6 +409,36 @@ describe('the transcript of a run', () => {
     ]);
   });
 
+  it('says no state for a tool that has none to record, and what it has otherwise', () => {
+    const outcomes = [
+      { state: null, error: null, exit_code: null }, // plan_create, a connector's tool
+      {},
+      { state: null, error: 'not_found', exit_code: null },
+      { state: 'succeeded', error: null, exit_code: 0 },
+    ];
+    const tools = chatEntries(
+      outcomes.map((outcome, index) => event(index + 1, 'tool', { name: 'plan_create', outcome })),
+    );
+    expect(tools.map((entry) => ('outcome' in entry ? entry.outcome : null))).toEqual([
+      '',
+      '',
+      'error not_found',
+      'succeeded, exit code 0',
+    ]);
+    const run = {
+      events: [
+        event(1, 'tool', { name: 'plan_create', result: 'ok', outcome: outcomes[0] }),
+        event(2, 'tool', { name: 'python', result: '1', outcome: outcomes[3] }),
+      ],
+    } as never;
+    const body = render(ChatRun, { props: { run } }).body;
+    expect(body).not.toContain('no state recorded');
+    const summaries = [...body.matchAll(/<summary>(.*?)<\/summary>/g)].map((m) =>
+      (m[1] ?? '').replace(/<!--.*?-->/g, '').replace(/<\/?code>/g, ''),
+    );
+    expect(summaries).toEqual(['plan_create', 'python: succeeded, exit code 0']);
+  });
+
   it('takes no field of the wrong type, and says how a run stopped', () => {
     const [assistant] = chatEntries([event(1, 'assistant', { text: 5, tool_calls: 'x' })]);
     expect(assistant).toEqual({
@@ -436,6 +467,17 @@ describe('the transcript of a run', () => {
     expect(
       stoppedText({ stopped: 'context_limit', reason: 'breaker', detail: 'three weak folds' }),
     ).toBe('The run stopped at its context limit. Reason: breaker: three weak folds.');
+    // The runaway guard (run service, RS-6f) says what it saw.
+    expect(
+      stoppedText({
+        stopped: 'runaway',
+        reason: 'same_error',
+        detail: 'the last 25 tool calls failed with the same error (invalid_request)',
+      }),
+    ).toBe(
+      'The run stopped: its runaway guard saw it repeat itself without progress, and its last call was asked to report what it found. Send a message to go on. It saw the last 25 tool calls failed with the same error (invalid_request).',
+    );
+    expect(stoppedText({ stopped: 'turn_limit' })).toMatch(/^The run stopped at its turn limit; /);
     // A fold of the run's view, as it went (context management, CM-46).
     expect(foldText({ state: 'started', span: [1, 40] })).toBe(
       'A fold of positions 1 to 40 started; its narrative is being written.',

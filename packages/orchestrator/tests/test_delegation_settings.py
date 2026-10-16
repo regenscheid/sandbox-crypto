@@ -68,8 +68,9 @@ def test_a_setting_keeps_its_defaults_until_changed(tmp_path: Path) -> None:
         ({"cap": 0}, "cap"),
         ({"cap": 21}, "cap"),
         ({"check_tokens": 49_999}, "check_tokens"),
-        ({"check_tokens": 400_001}, "check_tokens"),
+        ({"check_tokens": 50_000_001}, "check_tokens"),
         ({"check_turns": 0}, "check_turns"),
+        ({"check_turns": 10_001}, "check_turns"),
         ({"turns": 3}, "turns"),
         ({"models": ("a", "a")}, "models"),
         ({"models": tuple(f"m{n}" for n in range(11))}, "models"),
@@ -77,8 +78,8 @@ def test_a_setting_keeps_its_defaults_until_changed(tmp_path: Path) -> None:
         ({"models": ("-a",)}, "models.0"),
         ({"fallback": "x" * 129}, "fallback"),
         ({"task_tokens": 49_999}, "task_tokens"),
-        ({"task_tokens": 400_001}, "task_tokens"),
-        ({"task_turns": 41}, "task_turns"),
+        ({"task_tokens": 50_000_001}, "task_tokens"),
+        ({"task_turns": 10_001}, "task_turns"),
     ],
 )
 def test_a_setting_out_of_range_is_refused_and_the_old_one_kept(
@@ -93,6 +94,60 @@ def test_a_setting_out_of_range_is_refused_and_the_old_one_kept(
         assert records.settings(PROJECT) == DelegationSettings(cap=4)
         with pytest.raises(ControlError, match="no project"):
             records.configure("other", cap=4)
+    finally:
+        store.close()
+
+
+def test_a_setting_keeps_what_was_set_and_a_former_default_follows_the_new_one(
+    tmp_path: Path,
+) -> None:
+    """The owner, 2026-10-16: a task's limits rose to 300 turns and 5,000,000 tokens. A
+    setting written before holds every limit, its defaults among them: the former
+    defaults in it are read as the new ones, and anything else it set stays. A setting
+    written since holds only what was set, a former default's value included."""
+    store = _store(tmp_path)
+    try:
+        legacy = {
+            "cap": 4,
+            "check_tokens": 150_000,
+            "check_turns": 12,
+            "task_tokens": 200_000,
+            "task_turns": 20,
+            "models": [],
+            "fallback": None,
+        }
+        with store.control.write() as tx:
+            tx.sql.execute(
+                "INSERT INTO project_delegation (project_id, depth, updated_at, limits) "
+                "VALUES (?, 1, '2026-10-15T12:00:00+00:00', ?)",
+                (PROJECT, json.dumps(legacy)),
+            )
+        records = DelegationRecords(store.control)
+        found = records.settings(PROJECT)
+        assert (found.depth, found.cap, found.task_turns, found.task_tokens) == (
+            1, 4, 300, 5_000_000
+        )  # fmt: skip
+        assert found == DelegationSettings(depth=1, cap=4)
+        # A change keeps what the old setting set, and not the former defaults.
+        assert records.configure(PROJECT, check_turns=6) == DelegationSettings(
+            depth=1, cap=4, check_turns=6
+        )
+        # Set since, a former default's value is kept as set.
+        assert records.configure(PROJECT, task_turns=20).task_turns == 20
+        assert records.settings(PROJECT).task_turns == 20
+        assert records.settings(PROJECT).task_tokens == 5_000_000
+        with store.control.read() as tx:
+            (kept,) = tx.sql.execute("SELECT limits FROM project_delegation").fetchone()
+        assert json.loads(kept) == {
+            "set": {
+                "cap": 4,
+                "check_tokens": 150_000,
+                "check_turns": 6,
+                "models": [],
+                "fallback": None,
+                "task_turns": 20,
+            }
+        }
     finally:
         store.close()
 
@@ -131,15 +186,15 @@ def test_the_cli_shows_and_changes_the_whole_setting(
     assert cli.main(argv) == 0
     assert capsys.readouterr().out == (
         f"project {PROJECT}: delegation depth 0 (off); at most 10 delegated runs at once; "
-        "a check gets 150000 tokens and 12 turns, a task 200000 tokens and 20 turns; a brief "
+        "a check gets 150000 tokens and 12 turns, a task 5000000 tokens and 300 turns; a brief "
         "may choose the models: none; "
         "fallback: none\n"
     )
     assert cli.main([*argv, "--depth", "1", "--cap", "3", "--check-turns", "4"]) == 0
     assert capsys.readouterr().out == (
         f"project {PROJECT}: delegation depth 1 (main runs delegate); at most 3 "
-        "delegated runs at once; a check gets 150000 tokens and 4 turns, a task 200000 "
-        "tokens and 20 turns; a brief may choose the models: none; fallback: none\n"
+        "delegated runs at once; a check gets 150000 tokens and 4 turns, a task 5000000 "
+        "tokens and 300 turns; a brief may choose the models: none; fallback: none\n"
     )
     assert cli.main([*argv, "--models", "checker-b, anthropic/opus", "--fallback", "main"]) == 0
     assert capsys.readouterr().out.endswith(

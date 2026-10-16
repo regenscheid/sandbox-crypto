@@ -136,6 +136,7 @@ GOLDEN = {
     "sandbox-fold-overview-1": ("55cf72856d831930c9953d972e16f2da74626f4972e3b787a32d49378efe23cd"),
     "sandbox-consolidation-1": ("d67d1fdf2583ba97951b057b2246ce1d458a60806edf9bf7a7545920cf33f20a"),
     "sandbox-image-1": "6aad833a6a22472424296c64943b54adcd0d064aef1db5403c5f5eea2eb95f11",
+    "sandbox-notice-report-1": "93112b881cb91462c7b85f862d93cd154a9d5c47684af6815a4eedc9156c9c48",
 }
 
 

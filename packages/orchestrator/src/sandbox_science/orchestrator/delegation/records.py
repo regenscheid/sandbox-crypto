@@ -13,7 +13,8 @@ process: it ends ``interrupted`` (PD-40).
 
 Each project's setting (``DelegationSettings``) says how deep its runs may delegate (0,
 the default, offers no delegation; 1 lets main runs delegate), how many delegated runs
-a session's tree runs at once, and a check's tokens and turns. Each method is one
+a session's tree runs at once, and a check's and a task's tokens and turns: a limit it
+leaves out keeps its default, which a later release may raise. Each method is one
 transaction and may run in a thread.
 """
 
@@ -74,6 +75,25 @@ _ON_TRACK: Final = (
 )
 
 
+TASK_TURNS: Final = 300
+"""A task's turns by default (the owner, 2026-10-16: a delegated task does real work)."""
+TASK_TOKENS: Final = 5_000_000
+"""A task's tokens by default, its calls' input and output together. A delegated run does
+not fold: each call sends its whole conversation, up to ``MAX_INPUT_CHARS`` (about 100,000
+tokens), so a task that fills it over a hundred calls uses about this many, mostly read
+from the prompt cache. Its conversation's length, not its tokens, then ends most tasks;
+the tokens bound a runaway one."""
+MAX_TURNS: Final = 10_000
+"""The most turns a project may give a check or a task."""
+MAX_TOKENS: Final = 50_000_000
+"""The most tokens a project may give a check or a task."""
+FORMER_DEFAULTS: Final = {"task_tokens": 200_000, "task_turns": 20}
+"""A task's limits by default before 2026-10-16. A setting written then holds every
+limit, its defaults among them: one of these values in it is read as the default, so
+that the new defaults reach it. A setting written since holds only the limits that were
+set, under ``SET``."""
+SET: Final = "set"
+"""The key of the limits a setting holds as set, in its JSON object."""
 MAX_MODELS: Final = 10
 Alias = Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$")]
 """A model alias as the gateway names it, such as ``main`` or ``anthropic/claude``."""
@@ -87,13 +107,14 @@ class DelegationSettings(Contract):
     """How deep its runs may delegate; 0 offers no delegation."""
     cap: int = Field(default=10, ge=1, le=20)
     """Delegated runs a session's tree runs at once."""
-    check_tokens: int = Field(default=150_000, ge=50_000, le=400_000)
-    """A check's tokens, at most: reserved from its root's share of the model budget."""
-    check_turns: int = Field(default=12, ge=1, le=30)
+    check_tokens: int = Field(default=150_000, ge=50_000, le=MAX_TOKENS)
+    """A check's tokens, at most: a bound on a runaway check (PD-38)."""
+    check_turns: int = Field(default=12, ge=1, le=MAX_TURNS)
     """A check's turns, at most, and no more than its parent has left."""
-    task_tokens: int = Field(default=200_000, ge=50_000, le=400_000)
-    """A task's tokens, at most (PD-11; the coordinator, 2026-10-15)."""
-    task_turns: int = Field(default=20, ge=1, le=40)
+    task_tokens: int = Field(default=TASK_TOKENS, ge=50_000, le=MAX_TOKENS)
+    """A task's tokens, at most (PD-11, PD-38): a bound on a runaway task, not on its
+    work."""
+    task_turns: int = Field(default=TASK_TURNS, ge=1, le=MAX_TURNS)
     """A task's turns, at most, and no more than its parent has left."""
     models: tuple[Alias, ...] = Field(default=(), max_length=MAX_MODELS)
     """The model aliases a brief may choose (PD-28); none, the default, allows no choice,
@@ -193,15 +214,20 @@ class DelegationRecords:
                 is None
             ):
                 raise ControlError(NOT_FOUND, f"no project {project!r}")
+            depth, stored = _stored(db, project)
+            # Only what was ever set is kept, so that the defaults of a later release
+            # reach what was not.
+            kept = {**stored, **{k: v for k, v in changes.items() if k != "depth"}}
             try:
                 found = DelegationSettings.model_validate(
-                    {**_settings(db, project).model_dump(), **changes}
+                    {**kept, "depth": changes.get("depth", depth)}
                 )
             except ValidationError as error:
                 first = error.errors()[0]
                 where = ".".join(str(part) for part in first["loc"])
                 raise ControlError(INVALID_REQUEST, f"{where}: {first['msg']}") from None
-            limits = _json(found.model_dump(exclude={"depth"}))
+            dumped = found.model_dump(mode="json", exclude={"depth"})
+            limits = _json({SET: {name: dumped[name] for name in kept if name in dumped}})
             db.execute(
                 "INSERT OR REPLACE INTO project_delegation (project_id, depth, updated_at, "
                 "limits) VALUES (?, ?, ?, ?)",
@@ -409,15 +435,28 @@ class DelegationRecords:
 
 
 def _settings(db: sqlite3.Connection, project: str) -> DelegationSettings:
+    depth, stored = _stored(db, project)
+    return DelegationSettings.model_validate({**stored, "depth": depth})
+
+
+def _stored(db: sqlite3.Connection, project: str) -> tuple[int, dict[str, object]]:
+    """The project's depth and the limits it set, without a former default that a
+    setting written before 2026-10-16 holds (``FORMER_DEFAULTS``)."""
     found = db.execute(
         "SELECT depth, limits FROM project_delegation WHERE project_id = ?", (project,)
     ).fetchone()
     if found is None:
-        return DelegationSettings()
+        return 0, {}
     depth, limits = found
-    return DelegationSettings.model_validate(
-        {**(json.loads(limits) if limits is not None else {}), "depth": depth}
-    )
+    loaded: object = json.loads(limits) if limits is not None else None
+    stored = cast(dict[str, object], loaded) if isinstance(loaded, dict) else {}
+    if isinstance(kept := stored.get(SET), dict):
+        return depth, dict(cast(dict[str, object], kept))
+    return depth, {
+        name: value
+        for name, value in stored.items()
+        if name not in FORMER_DEFAULTS or value != FORMER_DEFAULTS[name]
+    }
 
 
 def _files(files: dict[str, JsonValue] | None) -> str | None:

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Sequence
 from contextlib import (
@@ -26,7 +27,9 @@ from .model import (
     GatewayBudgetError,
     Message,
     ModelTurn,
+    ToolCall,
 )
+from .notices import REPORT
 from .plan_tools import GUIDANCE, GUIDANCE_VERSION, Plans
 from .plan_tools import NAMES as PLAN_NAMES
 from .projects import FailurePhase, ModelUsage
@@ -38,6 +41,34 @@ from .worker_client import dump
 MAX_INPUT_CHARS: Final = 400_000
 """The longest conversation, with its tool schemas, sent to MAIN by default: about
 100,000 tokens of English or JSON, inside common context windows."""
+MAX_TURNS: Final = 2_000
+"""A run's model calls by default, before its report round: a safety net, not a bound on
+its work (the owner, 2026-10-16: a run may go on for hundreds or thousands of rounds
+without the user; run-service spec, RS-6f)."""
+TURNS_CEILING: Final = 100_000
+"""The most model calls a run may be given."""
+REPORT_ROOM: Final = 8
+"""A run that does not fold takes its report round once its conversation passes all but
+this part of its ``max_input_chars`` (one eighth), which leaves room for the call."""
+RUNAWAY: Final = 25
+"""The runaway guard's count: tool calls in a row that failed with the same error, or
+that made the same call with the same arguments and got the same result, or answers in a
+row that a closing held back (RS-6f)."""
+POLLS: Final = frozenset(
+    {
+        "wait_jobs",
+        "job_status",
+        "list_jobs",
+        "wait_delegations",
+        "delegation_status",
+        "provision_status",
+        "track_progress",
+    }
+)
+"""Tools that watch something change: the same answer again is time passing, so the
+runaway guard never counts them as repeated calls, only as failed ones."""
+REPORT_SOURCE: Final = "report"
+"""The report round's notice source."""
 MAIN_VERSION: Final = "sandbox-main-9"
 """The version of ``SYSTEM_PROMPT``'s text."""
 SYSTEM_PROMPT: Final = (
@@ -160,7 +191,7 @@ class Transcript:
     review findings or a turn for new input (lab 42, B4). A text a veto held back is not
     one. ``None`` while no closing let an answer stand."""
     turns: int = 0
-    max_turns: int = 30
+    max_turns: int = MAX_TURNS
     max_input_chars: int = MAX_INPUT_CHARS
     tools_chars: int = 0
     """The size of the tool schemas, which every model call sends with the messages."""
@@ -171,6 +202,9 @@ class Transcript:
     room: bool = field(default=True, repr=False)
     """False once a model call was refused for the conversation's length."""
     response_rounds: int = 0
+    held: int = field(default=0, repr=False)
+    """Closing answers a hook held back for another turn (a ``retry``), which the runaway
+    guard counts."""
     stopped: str = "answered"
     halted: str | None = None
     """Why a hook stopped the run before a model call, such as a spent budget."""
@@ -339,6 +373,7 @@ async def _ask(hook: TurnHook, transcript: Transcript, answer: str | None) -> De
             decision = "stop"
         case "retry":
             decision = "retry"
+            transcript.held += 1
         case "continue" if closing.notices and transcript.has_room(closing.notices):
             decision = "turn"
         case "respond" if (
@@ -473,6 +508,152 @@ async def _out_of_room(hooks: Sequence[TurnHook], transcript: Transcript) -> Non
         await _closing(hooks, transcript, transcript.pending)
 
 
+@dataclass
+class Runaway:
+    """The runaway guard (RS-6f): a cheap check that stops a run repeating itself without
+    progress, and never one that works. It trips at ``limit`` in a row of one of:
+
+    - tool calls that failed with the same error, the same kind and the same message,
+      whatever the tool or its arguments;
+    - tool calls of the same tool with the same arguments that got the same result,
+      other than ``POLLS``, whose same answer is time passing;
+    - closing answers that a hook held back for another turn (a ``retry``), with no
+      tool call between them.
+
+    Anything else in between starts the count again.
+    """
+
+    limit: int = RUNAWAY
+    key: tuple[str, ...] | None = None
+    count: int = 0
+    tripped: dict[str, str] | None = None
+    """What tripped it: the rule and its detail, which the run's record keeps."""
+
+    def call(self, call: ToolCall, outcome: ToolOutcome) -> None:
+        """A tool call made, with its outcome before any notice rides on it."""
+        error = outcome.record.get("error")
+        digest = hashlib.sha256(outcome.text.encode("utf-8", "replace")).hexdigest()
+        if error is not None:
+            self._seen(("same_error", str(error), digest), f"failed with the same error ({error})")
+        elif call.name in POLLS:
+            self._seen(None, "")
+        else:
+            arguments = hashlib.sha256(call.arguments.encode("utf-8", "replace")).hexdigest()
+            self._seen(
+                ("same_call", call.name, arguments, digest),
+                f"made the same {call.name} call with the same arguments and got the same result",
+            )
+
+    def answer(self, held: bool) -> None:
+        """A closing answer, and whether a hook held it back for another turn."""
+        if held:
+            self._seen(("held",), "", calls=False)
+        else:
+            self._seen(None, "")
+
+    def _seen(self, key: tuple[str, ...] | None, what: str, *, calls: bool = True) -> None:
+        if key is None or key != self.key:
+            self.key, self.count = key, 0
+        if key is None:
+            return
+        self.count += 1
+        if self.count >= self.limit and self.tripped is None:
+            rule = key[0]
+            if calls:
+                detail = f"the last {self.count} tool calls {what}"
+            else:
+                detail = (
+                    f"the last {self.count} answers were held back for another turn, with "
+                    "no tool call between them"
+                )
+            self.tripped = {"rule": rule, "detail": detail}
+
+
+def _not_run(reason: str) -> ToolOutcome:
+    """The result of a tool call the report round does not run."""
+    message = f"not_run: the run reached a limit ({reason}); this call did not run"
+    return ToolOutcome(
+        dump({"error": {"kind": "unavailable", "message": message}}),
+        {"error": "unavailable", "not_run": reason},
+    )
+
+
+async def _last_call(hooks: Sequence[TurnHook], transcript: Transcript) -> tuple[str, str] | None:
+    """The limit that leaves the run room for its next model call and no other, with its
+    detail: a hook's, such as a delegated run's tokens, or, for a run that does not fold,
+    a conversation within ``REPORT_ROOM`` of its ``max_input_chars``."""
+    for hook in hooks:
+        if (reason := await hook.last_call(transcript)) is not None:
+            return reason, "the run's tokens leave room for this call and no other"
+    limit = transcript.max_input_chars
+    if transcript.folds is None and transcript.size > limit - limit // REPORT_ROOM:
+        return "context_limit", f"the conversation is near its {limit:,}-character limit"
+    return None
+
+
+async def _report(
+    model: ChatModel,
+    toolbox: Toolbox,
+    transcript: Transcript,
+    hooks: Sequence[TurnHook],
+    reason: str,
+    detail: str,
+) -> None:
+    """The run's report round at a limit (RS-6f): one more model call, told that it is
+    the last, which answers with what the run found so far. ``reason`` becomes the run's
+    ``stopped``, and an answer its closing lets stand its ``final_text``.
+
+    A hook that halts the run first, as a spent cost limit does, stops it without one. No
+    hook offers notices before the call, so the user's messages wait for the next run; no
+    tool the reply asks for runs, each answered as not run; and the closing has no turn
+    to give. A run that made no model call has nothing to report.
+    """
+    if transcript.turns == 0 or await _halted(hooks, transcript):
+        if transcript.turns == 0:
+            transcript.stopped = reason
+        return
+    transcript.stopped = reason
+    transcript.room, transcript.halted = False, reason
+    if transcript.pending is not None:
+        # The run answered, and a closing round was taken for it: the answer stands,
+        # closed again with no turn left to take, as at a halt.
+        await _closing(hooks, transcript, transcript.pending)
+        return
+    folds = transcript.folds
+    if folds is not None and not await folds.before_call(transcript):
+        # The view has no room however it folds: the run stops for that, whose reason
+        # its folds keep (CM-45), as before any other call.
+        transcript.stopped = "context_limit"
+        return
+    notice = Notice(REPORT_SOURCE, (), REPORT.text, {"limit": reason, "detail": detail})
+    if transcript.size + len(dump([_message(notice)])) > transcript.max_input_chars:
+        return  # no room for the call: the run stops as before, without a report
+    await _offer(transcript, (notice,))
+    transcript.turns += 1
+    reply = await _complete(model, toolbox, transcript)
+    while reply is None and transcript.overflowed and folds is not None:
+        if not await folds.overflow(transcript):
+            break
+        reply = await _complete(model, toolbox, transcript)
+    transcript.halted = reason
+    if reply is None:
+        return
+    await _append(transcript, AssistantMessage.of(reply), Appended("assistant", reply=reply))
+    await _model_returned(hooks, transcript)
+    for call in reply.tool_calls:
+        outcome = _not_run(reason)
+        await _append(
+            transcript,
+            {"role": "tool", "tool_call_id": call.id, "content": outcome.text},
+            Appended("tool_result", call=call, outcome=outcome),
+        )
+        transcript.tool_records.append(
+            {"tool": call.name, "arguments": call.arguments, **outcome.record}
+        )
+    if reply.text:
+        await _closing(hooks, transcript, reply.text)
+
+
 async def _run_task(
     model: ChatModel,
     toolbox: Toolbox,
@@ -489,8 +670,12 @@ async def _run_task(
         await _append(transcript, {"role": "user", "content": task}, Appended("task"))
     await _notices(hooks, "start", transcript)
     revision = toolbox.revision
+    guard = Runaway()
     for turn in range(transcript.max_turns):
         if turn and await _halted(hooks, transcript):
+            return transcript
+        if turn and (last := await _last_call(hooks, transcript)) is not None:
+            await _report(model, toolbox, transcript, hooks, *last)
             return transcript
         await _notices(hooks, "turn", transcript)
         transcript.turns = turn + 1
@@ -515,8 +700,13 @@ async def _run_task(
         await _append(transcript, answer, Appended("assistant", reply=reply))
         await _model_returned(hooks, transcript)
         if not reply.tool_calls:
+            held = transcript.held
             if await _closing(hooks, transcript, reply.text):
                 transcript.pending = reply.text
+                guard.answer(transcript.held > held)
+                if guard.tripped is not None:
+                    await _runaway(model, toolbox, transcript, hooks, guard.tripped)
+                    return transcript
                 continue
             return transcript
         viewed: list[tuple[Notice, str]] = []
@@ -526,6 +716,7 @@ async def _run_task(
                 call, operation_id(f"{run_id}-t{turn}", call), model=reply.model, gates=hooks
             )
             transcript.phase = "harness"
+            guard.call(call, outcome)  # before any notice rides on its result
             await _attach(hooks, transcript, outcome, toolbox.output_chars)
             await _append(
                 transcript,
@@ -551,8 +742,29 @@ async def _run_task(
             # Connector tools loaded: every later model call carries their schemas.
             revision = toolbox.revision
             transcript.tools_chars = len(schema_json(toolbox.specs))
-    transcript.stopped = "turn_limit"
+        if guard.tripped is not None:
+            await _runaway(model, toolbox, transcript, hooks, guard.tripped)
+            return transcript
+    turns = transcript.max_turns
+    await _report(
+        model, toolbox, transcript, hooks, "turn_limit", f"its turn limit, {turns:,} model calls"
+    )
     return transcript
+
+
+async def _runaway(
+    model: ChatModel,
+    toolbox: Toolbox,
+    transcript: Transcript,
+    hooks: Sequence[TurnHook],
+    tripped: dict[str, str],
+) -> None:
+    """The runaway guard tripped: the run stops, ``runaway``, after its report round, and
+    its record keeps what tripped it (RS-6f)."""
+    _log.warning("the runaway guard stopped the run: %s", tripped["detail"])
+    transcript.summaries["runaway"] = {**tripped, "count": RUNAWAY}
+    detail = f"the runaway guard: {tripped['detail']}"
+    await _report(model, toolbox, transcript, hooks, "runaway", detail)
 
 
 def _sections(
@@ -600,7 +812,7 @@ async def run_task(
     run_id: str,
     history: Sequence[Message] = (),
     stop: asyncio.Event | None = None,
-    max_turns: int = 30,
+    max_turns: int = MAX_TURNS,
     max_input_chars: int = MAX_INPUT_CHARS,
     system: str | Section = SYSTEM_PROMPT,
     research_template: str | None = None,

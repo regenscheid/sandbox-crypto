@@ -32,7 +32,9 @@
         {/each}
       {:else if entry.kind === 'tool'}
         <details>
-          <summary><code>{entry.name}</code>: {entry.outcome}</summary>
+          <summary
+            ><code>{entry.name}</code>{#if entry.outcome}: {entry.outcome}{/if}</summary
+          >
           <pre>{visibleOutput(entry.result)}</pre>
         </details>
       {:else if entry.kind === 'note'}

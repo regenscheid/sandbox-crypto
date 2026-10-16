@@ -25,7 +25,7 @@ from .loop_harness import PROJECT, SESSION, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
-from .test_delegation import children, delegation, results, started, wait
+from .test_delegation import children, configure, delegation, results, started, wait
 from .test_delegation import delegating as delegating
 from .test_ledger import MAIN
 from .test_ledger_delegated_check import link
@@ -70,7 +70,7 @@ async def test_a_task_runs_with_its_own_prompt_brief_and_limits(delegating: Harn
     )
     began = json.loads(results(root)[0])
     assert began["task"] == TASK[1]["task"]
-    assert began["limits"] == {"turns": 20, "tokens": 200_000}
+    assert began["limits"] == {"turns": 300, "tokens": 5_000_000}
     (delegation_id,) = started(root)
     found = delegation(delegating, delegation_id)
     assert (found.kind, found.ended) == ("task", "returned")
@@ -83,7 +83,7 @@ async def test_a_task_runs_with_its_own_prompt_brief_and_limits(delegating: Harn
     assert isinstance(outcome, dict)
     assert outcome["format"] == TASK_FORMAT
     assert child.limits is not None
-    assert child.limits["tokens"] == 200_000
+    assert child.limits["tokens"] == 5_000_000
 
 
 async def test_a_task_has_a_delegated_agents_ledger_authority(delegating: Harness) -> None:
@@ -264,3 +264,45 @@ def made(n: int, kind: str) -> Delegation:
             "started_at": "2026-10-15T12:00:01+00:00",
         }
     )
+
+
+PARTIAL = "Partial: a^16 mod 17 is 1 for a = 1..8; a = 9..16 is not done yet."
+
+
+@pytest.mark.parametrize(
+    ("limits", "replies", "stopped"),
+    [
+        # Its turns run out while it works.
+        ({"task_turns": 2}, [Reply(calls=[call("no_such_tool")])] * 2, "turn_limit"),
+        # Its tokens leave room for one more call (the owner's lab, 2026-10-16).
+        (
+            {"task_tokens": 50_000},
+            [Reply(calls=[call("no_such_tool")], tokens=20_000)],
+            "run_budget",
+        ),
+    ],
+)
+async def test_a_task_at_a_limit_reports_what_it_found_to_its_parent(
+    delegating: Harness, limits: dict[str, int], replies: list[Reply], stopped: str
+) -> None:
+    """RS-6f, PD-19: a task stopped by a limit while it works takes a report round, whose
+    answer reaches its parent as the delegation's report; it ended ``limit_reached``, and
+    the report gives no result (one stands only for a run that answered)."""
+    configure(delegating, depth=1, **limits)
+    root = await delegating.run(
+        "root",
+        [Reply(calls=[TASK]), wait(), Reply("Done.")],
+        delegated=[*replies, Reply(PARTIAL)],
+    )
+    (child,) = children(delegating, root)
+    assert (child.stopped, child.final_text) == (stopped, PARTIAL)
+    (delegation_id,) = started(root)
+    found = delegation(delegating, delegation_id)
+    assert (found.ended, found.stopped, found.report, found.result) == (
+        "limit_reached",
+        stopped,
+        PARTIAL,
+        None,
+    )
+    (waited,) = json.loads(results(root)[1])["delegations"]
+    assert waited["answer"] == PARTIAL

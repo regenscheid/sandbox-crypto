@@ -186,10 +186,16 @@ def test_links_are_typed_pinned_and_seen_from_their_target(ledger: Ledger) -> No
     ]
     for n, (bad, message) in enumerate(
         (
-            ({"kind": "answers", "entry": "A-1"}, "points to no assumption"),
+            (
+                {"kind": "answers", "entry": "A-1"},
+                "cannot point to A-1, an assumption: it points to an issue",
+            ),
             ({"kind": "split_into", "entry": "I-1"}, "a claim holds no split_into"),
             ({"kind": "compares_to", "entry": "R-1"}, "states the difference"),
-            ({"kind": "builds_on", "entry": "I-1"}, "a builds_on link points to no issue"),
+            (
+                {"kind": "builds_on", "entry": "I-1"},
+                "a builds_on link cannot point to I-1, an issue: it points to a claim or a result",
+            ),
             ({"kind": "answers", "entry": "I-9"}, "no entry I-9"),
             ({"kind": "assumes", "entry": "A-1", "revision": 2}, "A-1 has no revision 2"),
             ({"kind": "concerns", "finding": "finding-" + "0" * 24}, "a claim holds no concerns"),
@@ -197,6 +203,64 @@ def test_links_are_typed_pinned_and_seen_from_their_target(ledger: Ledger) -> No
     ):
         with pytest.raises(DocumentError, match=message):
             change(ledger, {"entry": "C-1", "expected": 1, "links": [bad]}, op=f"bad-{n}")
+
+
+def test_a_link_names_its_target_as_evidence_does_and_a_wrong_type_says_what_is_allowed(
+    ledger: Ledger,
+) -> None:
+    """Owner's first run: ``builds_on`` to a reference made in the same change, and
+    ``assumes`` to a claim, were refused with "points to no reference". Handles, IDs and
+    ``new:`` keys all resolve for links; what refused was the target's type (LG-5), and the
+    message now names the type it found, the types the kind takes and what to do."""
+    made = change(
+        ledger,
+        {**NEW["assumption"], "key": "a"},
+        {**NEW["claim"], "key": "c", "links": [{"kind": "assumes", "entry": "new:a"}]},
+        op="made",
+    )
+    assumption, claim = (e["entry_id"] for e in made["entries"])
+    # A claim is linked by its handle, its ID and its key; an assumption likewise.
+    for n, (target, entry) in enumerate((("C-1", "A-1"), (claim, assumption))):
+        change(
+            ledger,
+            {**NEW["result"], "links": [
+                {"kind": "builds_on", "entry": target}, {"kind": "assumes", "entry": entry}]},
+            op=f"named-{n}",
+        )  # fmt: skip
+    change(
+        ledger,
+        {**NEW["assumption"], "key": "a2"},
+        {**NEW["claim"], "key": "c2"},
+        {**NEW["result"], "links": [
+            {"kind": "builds_on", "entry": "new:c2"}, {"kind": "assumes", "entry": "new:a2"}]},
+        op="keyed",
+    )  # fmt: skip
+    # A reference of the same change: a claim does not build on one, it cites it.
+    # A recorded or established claim is no assumption either, whatever its status.
+    wrong = (
+        ({"kind": "builds_on", "entry": "new:r"},
+         "a builds_on link cannot point to REF-1, a reference: it points to a claim or a "
+         "result (to cite a reference, give the claim or result supports evidence of type "
+         "source_claim that names it"),
+        ({"kind": "assumes", "entry": "C-1"},
+         "an assumes link cannot point to C-1, a claim: it points to an assumption (to rest "
+         "on another claim, link it with builds_on)"),
+        ({"kind": "assumes", "entry": claim},
+         "an assumes link cannot point to C-1, a claim"),
+        ({"kind": "builds_on", "entry": "A-1"},
+         "a builds_on link cannot point to A-1, an assumption: it points to a claim or a "
+         "result (to rely on an assumption, link it with assumes)"),
+    )  # fmt: skip
+    for n, (link, message) in enumerate(wrong):
+        with pytest.raises(DocumentError) as error:
+            change(
+                ledger,
+                {**NEW["reference"], "key": "r"},
+                {**NEW["claim"], "links": [link]},
+                op=f"wrong-{n}",
+            )
+        assert message in error.value.message
+        assert "status" not in error.value.message
 
 
 def test_an_issue_concerns_findings_and_document_blocks_that_exist(ledger: Ledger) -> None:

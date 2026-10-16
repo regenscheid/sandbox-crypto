@@ -328,7 +328,10 @@ const record = (value: unknown): Record<string, unknown> =>
 
 const STOPPED: Record<string, string> = {
   answered: 'The run answered.',
-  turn_limit: 'The run stopped at its turn limit.',
+  turn_limit:
+    'The run stopped at its turn limit; its last call was asked to report what it found. Send a message to go on.',
+  runaway:
+    'The run stopped: its runaway guard saw it repeat itself without progress, and its last call was asked to report what it found. Send a message to go on.',
   context_limit: 'The run stopped at its context limit.',
   budget:
     'The run stopped: the project reached its daily cost limit. What waits for the session waits until the limit allows another run.',
@@ -361,6 +364,9 @@ export function stoppedText(data: Record<string, unknown>): string {
     const detail = text(data['detail']);
     said += ` Reason: ${visible(reason)}${detail ? `: ${visible(detail)}` : ''}.`;
   }
+  // What tripped the runaway guard (run service, RS-6f).
+  const detail = text(data['detail']);
+  if (stopped === 'runaway' && detail) said += ` It saw ${visible(detail)}.`;
   return failure ? `${said} Failure: ${visible(failure)}.` : said;
 }
 
@@ -405,10 +411,16 @@ export function foldText(data: Record<string, unknown>): string {
   );
 }
 
-/** A tool call's outcome in a few words: its state, error kind and exit code. */
+/**
+ * A tool call's outcome in a few words: its state, error kind and exit code. A tool with
+ * no state to record (a plan or ledger call, a connector's tool) says nothing, not that
+ * it recorded none, which read as a fault in every transcript.
+ */
 function outcomeText(value: unknown): string {
   const outcome = record(value);
-  const parts = [text(outcome['state']) || 'no state recorded'];
+  const parts: string[] = [];
+  const state = text(outcome['state']);
+  if (state) parts.push(state);
   if (outcome['error']) parts.push(`error ${String(outcome['error'])}`);
   if (typeof outcome['exit_code'] === 'number') parts.push(`exit code ${outcome['exit_code']}`);
   return parts.join(', ');

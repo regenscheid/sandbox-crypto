@@ -98,6 +98,7 @@ from .models import (
     WorkPage,
     WorkRecord,
     WorkReference,
+    wrong_link_target,
 )
 
 Json = dict[str, Any]
@@ -1663,7 +1664,10 @@ class Ledger:
         if target.entry_id == planned.row.entry_id:
             raise DocumentError(INVALID_REQUEST, "an entry does not link to itself")
         if target.type not in targets:
-            raise DocumentError(INVALID_REQUEST, f"a {link.kind} link points to no {target.type}")
+            raise DocumentError(
+                INVALID_REQUEST,
+                wrong_link_target(link.kind, planned.row.type, target.handle, target.type),
+            )
         revision = link.revision
         if revision is not None and not 1 <= revision <= head:
             raise DocumentError(NOT_FOUND, f"{target.handle} has no revision {revision}")

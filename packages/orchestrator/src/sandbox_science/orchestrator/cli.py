@@ -83,7 +83,7 @@ from .harness import (
 from .history import CEILING
 from .history.geometry import Shares
 from .jobstate import JobState
-from .loop import MAX_INPUT_CHARS, Interruption
+from .loop import MAX_INPUT_CHARS, MAX_TURNS, TURNS_CEILING, Interruption
 from .mathcheck import MathChecker
 from .messages import ThinkingReplay
 from .model import (
@@ -364,7 +364,7 @@ def _harness(
         ),
         settings=Settings(
             min_isolation_tier=None if args.allow_unisolated else args.min_isolation_tier,
-            max_turns=args.max_turns,
+            max_turns=args.max_turns or MAX_TURNS,
             max_input_chars=args.max_input_chars,
             ceiling=getattr(args, "context_ceiling", CEILING),
             chunk=getattr(args, "fold_chunk", None),
@@ -483,7 +483,13 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
     command.add_argument("--api-key-file", type=Path)
     command.add_argument("--min-isolation-tier", type=int, default=3)
     command.add_argument("--allow-unisolated", action="store_true")
-    command.add_argument("--max-turns", type=int, default=30)
+    command.add_argument(
+        "--max-turns",
+        type=int,
+        help=f"the model calls a main run makes before its report round, a safety net "
+        f"rather than a bound on its work (default {MAX_TURNS:,}; 0 for the default; at "
+        f"most {TURNS_CEILING:,})",
+    )
     command.add_argument(
         "--max-input-chars",
         type=int,
@@ -696,6 +702,8 @@ def _check_agent(parser: argparse.ArgumentParser, args: argparse.Namespace) -> N
         parser.error("--skills-embedding-model needs --model-url")
     if args.max_input_chars is not None and args.max_input_chars < 1:
         parser.error("--max-input-chars must be at least 1")
+    if args.max_turns is not None and not 0 <= args.max_turns <= TURNS_CEILING:
+        parser.error(f"--max-turns is 0 (the default, {MAX_TURNS:,}) to {TURNS_CEILING:,}")
     for flag in ("context_ceiling", "fold_chunk", "input_limit"):
         if (value := getattr(args, flag, None)) is not None and value < 1:
             parser.error(f"--{flag.replace('_', '-')} must be at least 1")

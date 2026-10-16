@@ -392,7 +392,8 @@ def test_dedicated_sessions_watcher_and_math_reach_their_commands(
                 "projects": [{"id": "crypto", "profile": "minimal",
                               "sessions": ["a", {"id": "c", "dedicated": True}]}],
                 "model": {"watcher": "watcher", "watcher_interval": 600, "delegated": "child"},
-                "run_service": {"math_checks": str(build), "node": str(node), "run_share": 25},
+                "run_service": {"math_checks": str(build), "node": str(node), "run_share": 25,
+                                "max_turns": 5000},
             }
         )
     )  # fmt: skip
@@ -405,6 +406,7 @@ def test_dedicated_sessions_watcher_and_math_reach_their_commands(
     assert harness[harness.index("--watcher-model") + 1] == "watcher"
     assert harness[harness.index("--watcher-interval") + 1] == "600"
     assert harness[harness.index("--run-share") + 1] == "25"
+    assert harness[harness.index("--max-turns") + 1] == "5000"
     assert harness[harness.index("--delegated-model") + 1] == "child"
     assert "--watcher-calls-per-hour" not in harness  # the run service's default
     assert harness[harness.index("--math-node") + 1] == str(node)
@@ -416,9 +418,16 @@ def test_dedicated_sessions_watcher_and_math_reach_their_commands(
     assert harness[harness.index("--figure-bundle") + 1] == str(figures / "figurecheck.mjs")
     plain = load_config(make_config({"bin_dir": str(commands)}))
     assert not any(
-        flag.startswith(("--watcher", "--math", "--figure", "--run-share", "--delegated"))
+        flag.startswith(
+            ("--watcher", "--math", "--figure", "--run-share", "--delegated", "--max-turns")
+        )
         for flag in parts.harness_argv(plain, layout)
     )
+    # 0 is the run service's default, which it keeps.
+    zero = load_config(make_config({"bin_dir": str(commands), "run_service": {"max_turns": 0}}))
+    assert "--max-turns" not in parts.harness_argv(zero, layout)
+    with pytest.raises(LauncherError, match="max_turns"):
+        load_config(make_config({"bin_dir": str(commands), "run_service": {"max_turns": 100_001}}))
 
 
 def test_math_checks_need_their_build_and_a_recent_node(
