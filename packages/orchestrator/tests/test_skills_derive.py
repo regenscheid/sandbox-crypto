@@ -346,6 +346,10 @@ STARTUP = [
     "GPRC", "R_PROFILE_USER", "R_ENVIRON_USER", "ZDOTDIR", "SHELLOPTS", "BASHOPTS",
     "CONFIG_SITE", "RUSTC_WRAPPER", "PERL5OPT", "RUBYOPT", "LESSOPEN", "CC", "MATPLOTLIBRC",
     "PYTHONSTARTUP", "NODE_OPTIONS", "GIT_SSH_COMMAND", "TOOL_RC", "MYTOOL_INIT",
+    # What crypto-base's tools load code from at start or on a library load (re-check of
+    # #437), and tools it may gain.
+    "MAXIMA_USERDIR", "SINGULARPATH", "ECLDIR", "LUA_INIT", "LUA_INIT_5_4", "LUA_PATH",
+    "CCACHE_PREFIX",
 ]  # fmt: skip
 
 
@@ -460,3 +464,23 @@ async def test_a_charged_answer_that_is_no_completion_still_counts(
         assert RunState(projects.control).model_costs("p")["metadata"] == pytest.approx(0.5)
     finally:
         projects.close()
+
+
+async def test_a_project_not_made_yet_counts_nothing_and_says_so(
+    gateway: Gateway, tmp_path: Path, repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """As when the launcher's first project for a pack is new in the config: the import
+    goes on, and says its calls count for no project."""
+    gateway.reviewer = lambda messages: Reply(calls=[call("skill_metadata", **ANSWER)])
+    ProjectStore(tmp_path / "state").close()
+    key = tmp_path / "gateway.key"
+    key.write_text(API_KEY)
+    argv = [
+        "skills", "import", "--state-dir", str(tmp_path / "state"), "--name", "ss",
+        "--git", str(repo), "--metadata-model", "pass", "--model-url", gateway.url,
+        "--api-key-file", str(key), "--project", "later",
+    ]  # fmt: skip
+    assert await asyncio.to_thread(cli.main, argv) == 0
+    said = capsys.readouterr()
+    assert "there is no project 'later' yet" in said.err
+    assert json.loads(said.out)["derived"]["entry"] == ["router"]

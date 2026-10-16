@@ -20,7 +20,7 @@ from .control import ControlError
 from .control.errors import INVALID_REQUEST
 from .documents import USER
 from .model import OpenAICompatibleModel
-from .projects import ProjectStore
+from .projects import ProjectError, ProjectStore
 from .skills import SkillSettings, SkillStore, from_archive, from_git, snapshot
 from .skills.builtin import builtin_pack
 from .skills.derive import ANSWER_TOKENS, VERSION, Derived, PassError, derive
@@ -41,8 +41,13 @@ def skills(args: argparse.Namespace) -> int:
         try:
             match args.action:
                 case "import":
-                    if args.project is not None:
-                        projects.get(args.project)  # the project the calls' cost counts for
+                    if args.project is not None and not _exists(projects, args.project):
+                        print(
+                            f"warning: there is no project {args.project!r} yet: the import's "
+                            "model calls count for no project",
+                            file=sys.stderr,
+                        )
+                        args.project = None
                     shown = _import(store, args)
                 case "pin":
                     # The built-in skills the harness ships first, as a run's start pins
@@ -62,6 +67,15 @@ def skills(args: argparse.Namespace) -> int:
             return 1
     print(json.dumps(shown, indent=2))
     return 0
+
+
+def _exists(projects: ProjectStore, project: str) -> bool:
+    """Whether the control store has ``project``, whose cost the import's calls count for."""
+    try:
+        projects.get(project)
+    except ProjectError:
+        return False
+    return True
 
 
 def _import(store: SkillStore, args: argparse.Namespace) -> dict[str, Any]:
