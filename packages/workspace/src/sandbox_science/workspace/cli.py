@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import errno
 import ipaddress
 import logging
 import re
@@ -165,6 +166,8 @@ async def serve(
             await viewer.setup()
             await web.TCPSite(viewer, preview_host, preview_port).start()
             shown = viewer.addresses[0][1] if preview_port == 0 else preview_port
+            if name == "localhost" and preview_host == "127.0.0.1":
+                await _also_on_ipv6(viewer, shown)
             state.origin = base_url(name, shown)
             print(f"PDF viewer origin on {state.origin}/", flush=True)
             state.workspace_origin = url
@@ -180,6 +183,24 @@ async def serve(
         if viewer is not None:
             await viewer.cleanup()
         await runner.cleanup()
+
+
+async def _also_on_ipv6(viewer: web.AppRunner, port: int) -> None:
+    """The viewer given by ``localhost`` also listens on ``[::1]``, where a browser may try
+    ``localhost`` first, so no other program on that port gets the preview's requests;
+    quietly not where this computer has no IPv6 loopback."""
+    try:
+        await web.TCPSite(viewer, "::1", port).start()
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE:
+            _log.warning(
+                "another program listens on [::1]:%s: a browser that tries localhost on ::1 "
+                "first reaches it rather than the PDF viewer. Free that port, or give "
+                "--preview-listen another port",
+                port,
+            )
+        else:
+            _log.debug("no IPv6 loopback for the viewer: %s", exc)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -337,12 +358,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     if name == host:
         # Same site: a browser may run the preview origin's frames on the workspace page's
         # own thread, where a heavy figure stalls the page (FG-17; review of #492, M1).
+        remedy = (
+            "drop --preview-name, or give --preview-name localhost"
+            if args.preview_name not in (None, "localhost")
+            else "listen on 127.0.0.1, where the viewer is given by localhost"
+        )
         _log.warning(
             "the preview origin %s shares the workspace's host: figures and the PDF viewer "
-            "may run on the workspace page's thread. Listen on 127.0.0.1, where the viewer "
-            "is given by localhost, or give --preview-name another name, for a process of "
-            "its own",
+            "may run on the workspace page's thread. For a process of their own, %s",
             name,
+            remedy,
         )
     viewer_app = create_preview_app(
         app[CONTEXT].documents,

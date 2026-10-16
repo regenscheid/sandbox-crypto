@@ -5,14 +5,17 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import re
 import signal
+import socket
 import sqlite3
 import sys
 from pathlib import Path
 
 import aiohttp
 import pytest
+from aiohttp import web
 
 from sandbox_science.orchestrator.control import migrations
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
@@ -99,12 +102,13 @@ def test_a_preview_name_the_listener_would_not_answer_to_is_refused(
 @pytest.mark.parametrize(
     ("listen", "name", "warned"),
     [
-        (["--listen", "127.0.0.1:8200"], "localhost", False),
-        (["--listen", "localhost:8200"], "localhost", True),
-        (["--preview-name", "127.0.0.1"], "127.0.0.1", True),
-        (["--preview-listen", "127.0.0.2:8201"], "127.0.0.2", False),
+        (["--listen", "127.0.0.1:8200"], "localhost", None),
+        (["--listen", "localhost:8200"], "localhost", "listen on 127.0.0.1"),
+        (["--preview-name", "127.0.0.1"], "127.0.0.1", "drop --preview-name, or give "
+         "--preview-name localhost"),
+        (["--preview-listen", "127.0.0.2:8201"], "127.0.0.2", None),
     ],
-)
+)  # fmt: skip
 def test_serve_warns_only_when_the_preview_origin_shares_the_site(
     state_dir: Path,
     static_dir: Path,
@@ -112,7 +116,7 @@ def test_serve_warns_only_when_the_preview_origin_shares_the_site(
     caplog: pytest.LogCaptureFixture,
     listen: list[str],
     name: str,
-    warned: bool,
+    warned: str | None,
 ) -> None:
     given: list[object] = []
 
@@ -125,7 +129,8 @@ def test_serve_warns_only_when_the_preview_origin_shares_the_site(
     args = ["serve", "--state-dir", str(state_dir), "--static", str(static_dir), *listen]
     assert cli.main(args) == 0
     assert given == [name]
-    assert ("shares the workspace's host" in caplog.text) is warned
+    assert ("shares the workspace's host" in caplog.text) is (warned is not None)
+    assert warned is None or warned in caplog.text
 
 
 def test_another_address_needs_allow_remote(tmp_path: Path, static_dir: Path) -> None:
@@ -214,6 +219,34 @@ def test_an_old_control_store_stops_the_server_with_the_reason(
     assert "Traceback" not in err
 
 
+def ipv6_loopback() -> bool:
+    """Whether this computer has an IPv6 loopback to listen on."""
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as probe:
+            probe.bind(("::1", 0))
+    except OSError:
+        return False
+    return True
+
+
+@pytest.mark.asyncio
+async def test_another_program_on_the_viewers_ipv6_port_is_named(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    if not ipv6_loopback():
+        pytest.skip("no IPv6 loopback here")
+    runner = web.AppRunner(web.Application())
+    await runner.setup()
+    with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as other:
+        other.bind(("::1", 0))
+        other.listen()
+        port = other.getsockname()[1]
+        with caplog.at_level(logging.WARNING, "sandbox_science.workspace"):
+            await cli._also_on_ipv6(runner, port)
+    await runner.cleanup()
+    assert f"another program listens on [::1]:{port}" in caplog.text
+
+
 @pytest.mark.asyncio
 async def test_the_server_prints_a_login_url_that_opens_a_session(
     state_dir: Path, static_dir: Path
@@ -249,6 +282,13 @@ async def test_the_server_prints_a_login_url_that_opens_a_session(
                 assert f"frame-ancestors {base}" in named.headers["Content-Security-Policy"]
             async with session.get(f"{base}/") as page:
                 assert origin in page.headers["Content-Security-Policy"]
+            if ipv6_loopback():
+                # Also on [::1], where a browser may try localhost first.
+                async with session.get(
+                    f"http://[::1]:{viewer_port}/viewer/",
+                    headers={"Host": f"localhost:{viewer_port}"},
+                ) as named_on_ipv6:
+                    assert named_on_ipv6.status == 404
             async with session.get(f"{base}/api/v0/projects") as refused:
                 assert refused.status == 401
             async with session.get(f"{base}/login?token={token}") as opened:
