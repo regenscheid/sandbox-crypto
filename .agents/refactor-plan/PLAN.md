@@ -16,7 +16,7 @@ Each finding there has its evidence with `file:line`, a concrete proposal, effor
 
 ## Progress
 
-Findings done, by phase, with their PRs (main `326f4801`). Leftovers of a done finding are in [BACKLOG](../BACKLOG.md#repository); decisions that refined the plan on the way are in [PLAN-CHANGES](../PLAN-CHANGES.md).
+Findings done, by phase, with their PRs (main `0195f834`). Leftovers of a done finding are in [BACKLOG](../BACKLOG.md#repository); decisions that refined the plan on the way are in [PLAN-CHANGES](../PLAN-CHANGES.md).
 
 - **Phase 0, done:** A-01, A-10 (#125); E-02's 503 (#124); C-01, C-10, C-11, C-15 (#133); A-03, C-05, D-10, B-11, C-18, F-07 and `reviews.py` removed (#129, #138); F-01 (#123); F-02 (#126); F-10 (#126); F-12 and CI guards (#128); E-16 (#127). Pulled forward from later phases: the reference docs synced with the code, with inventory and link checks, which covers C-17, F-08 and most of F-09 (#131, #135, #136, #140).
 - **Phase 1, done:** F-04 steps 1–3 and F-06 (#137, #139, #144); C-13 (#141); F-05 for the loop (#134), the workspace routes (#132) and the worker manager (#141); C-14 (#146); C-12 (#144); F-03 (#182, with the kernel-start fix #179, the leftover-process check #180 and the stall diagnostics #256). **Left:** F-04 step 4, the fast tier's remaining wall-clock waits, and recording the nightly repeat's flake rate.
@@ -39,13 +39,17 @@ Findings done, by phase, with their PRs (main `326f4801`). Leftovers of a done f
   - Item 7, delegation: the spec (#225), the run tree's parent link (#233) and kernels per run (#237); checks (#337, #340, #355, #382), the settings and the model choice (#363, #375, #394, #410), no token reservations (#377), restart (#353), the files and work records of an outcome (#385, #386), tasks, tracks, issues and result files (#395, #396, #399), depth 2 (#405), and the run tree's reads and views (#378, #384, #391). Questions to the user (#364, #370, #372) came with it.
   - Item 9, MCP connectors: the client (#227, #231), `compile-policy` (#232), the proxy in the launcher (#272), the provider from the owner's file (#322), real calls (lab 39), tools loaded on demand (B5: #332, #334, #335, #401) and the copied-number check (B6: #338, #341, #344).
   - Fixes from lab 40: #394, #397, #400 to #404, #406 to #409 and #411.
+  - Lab 41 ([report](../docs/agent-reports/babbage-openshell-lab-41-2026-10-15.md), #417) and its fixes: #412, #414 to #416, #418 to #420, #422, #424, #425, #427 and #428.
 - **Also built:**
   - The ledger's frontier (#304, #310, #321, #323, #326, with views #339, #342, #343, #345, #347, #351, #366), work records (#365, #369, #371, with views #380, #383) and the reviewer's citation check of quotes (#346 to #350, with views #358 to #360, #368, #374). The pack import is not planned (the owner, 2026-10-15; #361).
   - Cost: the gateway's budget stops a run (#362), each call's cost is recorded (#367), the token budget gave way to an optional daily cost limit (#377, #381), and the reviewer's and watcher's calls count (#403, #408).
-  - Skill import and pinning (#376), and the triage of the owner's prompt research: checks that change nothing (#382), stop at the first failure and saved long output (#387, #388), refusals and search misses (#389), the user's messages kept (#390, #393).
+  - The triage of the owner's prompt research: checks that change nothing (#382), stop at the first failure and saved long output (#387, #388), refusals and search misses (#389), the user's messages kept (#390, #393).
+  - Skills K1 to K5, on the spec the owner approved (#373): import and pinning (#376), each run's index, the `skills` tool and skills loaded at its start (#421), the seven built-in skills (#423) pinned at each run's start (#426), discovery notices (#431), embeddings made in the background (#433), and the launcher's packs, imported once and updated on request (#435). The control store is at version 43.
+  - The PDF tools number a page's lines one way (#429) and show line boxes on request (#430), after the `pdf-reading` skill found the gaps. Two timing-flaky tests were fixed (#432, #434).
 - **What remains:**
-  - **Skills,** K2 and later. The spec (#373) is a draft until the owner answers its questions 15 and 16 (built-in skills, and the system message's skill sections); then the index, the `skills` tool and loading (K2), and discovery (K3).
-  - **Compaction** of long conversations (A-09's leftover): a conversation over the limit stops with `context_limit`.
+  - **Work is paused** until the owner decides how to manage the context of long runs ([STATUS](../STATUS.md#open-questions)); work in flight finishes.
+  - **Skills,** K6 and later: the import's model pass with topics and entry skills (K6a, #437, a draft on hold), project overrides of what it derives (K6b), helper staging and bindings (K7), per-pack thresholds (K8), and a lab with skills in runs.
+  - **Compaction** of long conversations (A-09's leftover): a conversation over the limit stops with `context_limit`. How to manage context is the owner's open decision.
   - **Other [BACKLOG](../BACKLOG.md) areas:** approvals in the GUI (E-09), questions from delegated runs, editable figures and charts as text, `view_image`, execution-pinned evidence and the ledger's export, a reference's read extent (LG-15) and a basis for memory proposals (PM-3, PM-4); then Phase 5.
 
 ## The state of the code

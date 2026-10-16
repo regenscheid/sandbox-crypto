@@ -2,7 +2,7 @@
 
 Working folder for a cryptography/math research workbench with independently deployable orchestration and sandboxed compute.
 
-**Status:** the worker, policy services, harness and web workspace are built in part and run on OpenShell VMs on babbage; the project ledger, with its views, is built in part and other deployment targets are not built yet. Chat with the main agent in the GUI, delegation of checks and tasks, MCP connectors and a viewer for published PDFs are built; skills in runs are not. [STATUS](.agents/STATUS.md) has the current state, the [refactoring plan](.agents/refactor-plan/PLAN.md) the next steps, and the [documentation index](docs/README.md) every page. Development follows [the conventions](.agents/CONVENTIONS.md).
+**Status:** the worker, policy services, harness and web workspace are built in part and run on OpenShell VMs on babbage; the project ledger, with its views, is built in part and other deployment targets are not built yet. Chat with the main agent in the GUI, delegation of checks and tasks, MCP connectors, skills in runs and a viewer for published PDFs are built. [STATUS](.agents/STATUS.md) has the current state, the [refactoring plan](.agents/refactor-plan/PLAN.md) the next steps, and the [documentation index](docs/README.md) every page. Development follows [the conventions](.agents/CONVENTIONS.md).
 
 ## Terminology
 

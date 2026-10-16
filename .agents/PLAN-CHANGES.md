@@ -4,12 +4,29 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 ## 2026-10-15
 
+Decision of the owner on pausing work:
+
+- **New work waits for the context-management decision.** The owner is deciding how to manage the context of long runs. Their priority is strong recall and reasoning over long research projects; auditability and budget control come second ([STATUS](STATUS.md#open-questions)). Until the owner decides, no new work starts, and work in flight finishes. Waiting: skills K6a (#437, a draft, not to be reviewed or merged), the skills lab and the rest of the [BACKLOG](BACKLOG.md).
+
+Decisions of the owner on the skills spec's questions 15 and 16, with the spec's approval (#373):
+
+- **Built-in skills are a pack in the repository** (SK-40, SK-41). Markdown under `skills/builtin/`, imported and pinned like any pack, each skill excludable, with a CI check that the tools a skill names exist. A pack that collides only with built-in skills is refused with a hint to exclude them, and wins once they are (SK-4).
+- **The index is a pinned section of the system message** (SK-7, SK-36, SK-38, SK-42): 12,000 characters, with its framing and the notice's points set in the spec. Skills loaded at a run's start sit between code markers.
+
+Decisions of the coordinator on lab 41's fixes, which the owner can reverse:
+
+- **A review holds the work it is about** ([consistency review spec](../docs/specs/consistency-review.md), CR-2; #422, #425). A confirmation holds what the session's runs did since the reviewed findings' reviews and the files a claimed fix names by path. A run's review holds its delegated runs' work once each delegation ends, to three levels: their actions, outcomes and result files, as context. A run's transcript for review starts after the session's earlier conversation (#414), so an earlier run's true statement is not matched against this run's calls.
+- **A plan with no open step holds no answer back** ([run service](../docs/specs/run-service.md); #420, B2). A closing answer stands when the plan is finished or has no open step. When open steps remain and the run has not read the plan, the answer is held with a notice that says why, and the run then stops as `plan_unread`. Effect tools still refuse until the run reads the plan, a finished one included; that is a separate decision.
+- **A failed connector listing is tried again, and said** ([MCP connectors](../docs/MCP-CONNECTORS.md); #424, B4). A run's start lists a failed server twice more. A server that still fails is unavailable, not missing: the tool index says so, the first `mcp_tools` call lists it once more, and the run's record and `started` event name it.
+- **A proof file read in ranges counts as read whole** ([plans and delegation](../docs/specs/plans-and-delegation.md), PD-17 to PD-19; #427). One read shows only part of a large file, so such a proof could never satisfy a check's `read_proofs`. A file counts once the check's reads cover it from its first byte to its size, in any order, at one SHA-256.
+- **Skill embeddings are made in the background** ([skills spec](../docs/specs/skills.md), SK-29, SK-36; #433). No run waits for vectors: until they exist it compares by words, and its record says why. A message too short to score is neither embedded nor waited for. The meaning threshold of 0.45 is a default until per-pack thresholds (SK-34).
+
 Decision of the coordinator on the PDF tools, from writing the `pdf-reading` skill (#423), which the owner can reverse:
 
 - **One line numbering for the PDF tools** ([PDF sources](../docs/specs/pdf-sources.md), tools item 3, PDF-F7). `pdf_pages` and `pdf_search` number a page's lines one way, running headers, footers and page numbers counted and marked; `pdf_pages` leaves them out unless asked, without renumbering the rest, so a quote cited by either tool's numbers is found (CR-4).
 - **A render's region from `pdf_pages`' boxes** ([PDF sources](../docs/specs/pdf-sources.md), tools item 2). `pdf_pages` with `boxes` shows each line's box as `pdf_render` takes a region, and the render's description says so; it had sent the agent to boxes `pdf_pages` did not show.
 
-Decisions of the owner on skills, after the first real-use lab. The owner's priority is skill import and discovery tools with a relevance gate like Claude Science's. They are recorded in the [skills spec](../docs/specs/skills.md) as #373 revises it (SK numbers are that revision's). The revision is a draft until the owner answers its questions 15 (built-in skills, and how a pack's names that collide with theirs are handled) and 16 (the system message's skill sections). Skills K2 and later wait for the answers; K1, the import, is built (#376).
+Decisions of the owner on skills, after the first real-use lab. The owner's priority is skill import and discovery tools with a relevance gate like Claude Science's. They are recorded in the [skills spec](../docs/specs/skills.md), which the owner approved with #373.
 
 - **Show, don't force** (SK-35, SK-36). The relevance gate holds the model's call, not its work. Before a run's first model call, and before the call that carries each new user message, the call waits at most 5 s for a notice of the skills that match, with their names, one-line descriptions and the pack's entry skills. Nothing else is held: the model decides, no load is forced, and no reason for skipping a skill is recorded or shown. A delegated run does its own discovery on its own task.
 - **Every call carries an index only** (SK-7, SK-38, SK-39). A compact index within a budget (drafted at 12,000 characters), compressed to names grouped by topic when it does not fit, with search for the rest. Bodies load on demand, or at every run's start from a per-project list that is empty by default, within 100,000 characters per run.
@@ -33,7 +50,7 @@ Decision of the owner on lab models:
 
 Decision of the coordinator on lane K's triage item D16 (the triage's number, not the decision register's), which the owner can reverse:
 
-- **OpenScience's two derived skills are never imported.** OpenScience's `conducting-scientific-research` and `scientific-problem-selection` derive from Claude Science text, so they are not imported, adapted or paraphrased. NOTICE files are checked before anything is borrowed from OpenScience or Open Science Desktop, since a permissive license does not settle D56. The triage puts the rule in the licensing or external-skills docs and in the skills import review; neither says it yet.
+- **OpenScience's two derived skills are never imported.** OpenScience's `conducting-scientific-research` and `scientific-problem-selection` derive from Claude Science text, so they are not imported, adapted or paraphrased. NOTICE files are checked before anything is borrowed from OpenScience or Open Science Desktop, since a permissive license does not settle D56. The rule is in [licensing](../docs/LICENSING.md).
 
 Decisions of the coordinator on lane K's triage, items P1 and P2 (#389), which the owner can reverse:
 
