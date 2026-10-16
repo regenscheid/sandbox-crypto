@@ -62,6 +62,13 @@ test("the figure checker holds the frame's chart code and libraries, with its la
     expect(id).toMatch(/\/src\/figures\/(figurecheck|vegaChart|chart|protocol)\.ts$/);
   const report = JSON.parse(output.find((item) => item.fileName === 'license-manifest.json').source);
   expect(report.distribution).toBe('figure-checker');
+  // It reaches no built-in module of its own: no import, no `require`, no `import()` and
+  // no `process`, which its launcher removes (review of #514, L).
+  const code = output.find((item) => item.fileName === 'figurecheck.mjs').code;
+  const statements = code.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '');
+  expect(statements).not.toMatch(/^\s*import[\s{*'"]/m);
+  expect(statements).not.toMatch(/\bimport\s*\(|\bimport\.meta\b|\brequire\s*\(/);
+  expect(statements).not.toMatch(/\bprocess\s*[.[]|globalThis|\bgetBuiltinModule\b|\bnode:/);
   const versions = Object.fromEntries(report.packages.map((item) => [item.name, item.version]));
   expect(versions).toMatchObject({ vega: '6.4.0', 'vega-lite': '6.4.3', 'vega-interpreter': '2.3.2' });
 }, 60000);

@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import sys
 from pathlib import Path
 
@@ -254,3 +255,50 @@ async def test_the_real_check_notes_values_no_pinned_file_holds() -> None:
     (result,) = await real().check_many([Chart(id="a", source=text, files=SKILL_DATA)])
     assert result.status == "accepted"
     assert sorted(note.kind for note in result.notes) == ["flatten", "literals", "params"]
+
+
+# A stand-in bundle that tries every way its launcher leaves to a built-in module, as
+# code that ran in the checker might: it reports what it reached, and connects to the
+# port its chart names when it reached node:net (review of #514, L).
+REACHING = """
+export async function checkFigure(chart) {
+  const reached = [];
+  const process = globalThis.process;
+  for (const name of ['process', 'require', 'module', 'fetch', 'WebSocket', 'EventSource'])
+    if (name in globalThis) reached.push(name);
+  let net = null;
+  try {
+    net = process?.getBuiltinModule?.('node:net') ?? null;
+  } catch {}
+  try {
+    if (process?.binding?.('tcp_wrap')) reached.push('binding');
+  } catch {}
+  if (net) {
+    reached.push('net');
+    await new Promise((done) => {
+      const socket = net.connect(Number(chart.source), '127.0.0.1', done);
+      socket.on('error', done);
+    });
+  }
+  return { protocol: 1, id: chart.id, engine: ENGINE, status: 'accepted', errors: [],
+           notes: [{ kind: 'reach', message: JSON.stringify(reached) }] };
+}
+"""
+
+
+async def test_a_bundle_reaches_no_built_in_module(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node needed")
+    bundle = tmp_path / "reaching.mjs"
+    bundle.write_text(f"const ENGINE = {json.dumps(ENGINE)};\n" + REACHING)
+    launcher = ROOT / "web/workspace/server/check-figures.mjs"
+    checker = FigureChecker(Path(node), launcher, bundle, timeout=10)
+    with socket.create_server(("127.0.0.1", 0)) as server:
+        server.settimeout(0.5)
+        port = server.getsockname()[1]
+        (result,) = await checker.check_many([Chart(id="a", source=str(port))])
+        with pytest.raises(TimeoutError):
+            server.accept()  # nothing connected
+    assert result.status == "accepted", result.reason
+    assert [(note.kind, note.message) for note in result.notes] == [("reach", "[]")]
