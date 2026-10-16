@@ -43,8 +43,15 @@ T = TypeVar("T")
 SEARCH_SECONDS: Final = 5.0
 """How long a search waits for its text's embedding by default, as discovery does."""
 SIMILAR: Final = 0.45
-"""The cosine similarity at which a skill matches by meaning, until a pack's threshold is
-tuned (SK-34)."""
+"""The cosine similarity at which a skill matches by meaning, for an embedding model of
+no family in ``SIMILAR_BY_FAMILY``, until a pack's threshold is tuned (SK-34)."""
+SIMILAR_BY_FAMILY: Final = (("text-embedding-3-", 0.34),)
+"""Cutoffs by embedding model family, found in the name of the model the gateway reports,
+which may be an alias such as ``arr-text-embedding-3-small``. OpenAI's third models put
+unrelated texts near 0.3, not 0.7 as ``ada-002`` did. In lab 43, on the crypto pack with
+``text-embedding-3-small``, a query only meaning matched found the right skill at 0.358,
+and the best of three unrelated or weaker ones scored 0.317, 0.310 and 0.309: 0.34 sits
+between them. Routing cases tune it per pack (SK-34)."""
 MAX_READ: Final = 64 * 1024
 MAX_FOUND: Final = 8
 NAME: Final = "skills"
@@ -141,6 +148,9 @@ class SkillTool:
         self.project: str | None = None
         self.clock: Clock = SYSTEM_CLOCK
         self.wait = SEARCH_SECONDS
+        self.cutoff = SIMILAR
+        """The cosine similarity at which a skill comes close in meaning, for the model
+        the gateway last embedded in (``similar_at``)."""
 
     async def use(
         self,
@@ -186,6 +196,7 @@ class SkillTool:
             if not usable:
                 raise EmbeddingError(moved)
             why = moved
+        self.cutoff = similar_at(answer.space.model)
         query = answer.vectors[0]
         found = {
             entry.qualified: cosine(query, usable[entry.snapshot][entry.name])
@@ -196,6 +207,10 @@ class SkillTool:
             e.snapshot for e in self.skills.entries if e.name not in usable.get(e.snapshot, {})
         }
         return found, (f"partial: {why or 'pending'}" if missing else None)
+
+    def close(self, similar: dict[str, float]) -> int:
+        """How many skills come close in meaning, at ``cutoff`` or more."""
+        return sum(value >= self.cutoff for value in similar.values())
 
     async def bounded(self, work: Awaitable[T]) -> T:
         """``work``'s result, or ``TimeoutError`` once ``wait`` seconds of the clock pass.
@@ -266,9 +281,10 @@ class SkillTool:
                 why = f"failed: {error}"
             if similar:
                 record["scoring"] = "partial" if why else "hybrid"
+                record |= {"cutoff": self.cutoff, "close": self.close(similar)}
             if why or not similar:
                 record["embedding"] = (why or "none")[:300]
-        found = hybrid(self.skills.entries, query, similar)[:MAX_FOUND]
+        found = hybrid(self.skills.entries, query, similar, self.cutoff)[:MAX_FOUND]
         answer: dict[str, Any] = {"searched": len(self.skills.entries), "found": []}
         for entry, matched, meaning in found:
             item: dict[str, Any] = {"id": entry.qualified, "description": entry.description}
@@ -418,10 +434,17 @@ def _hashes(entry: Entry, served_text: str) -> dict[str, str]:
 def _ranked(record: dict[str, Any]) -> str:
     """How a search ranked, in the words its answer gives the model."""
     match record["scoring"]:
-        case "hybrid":
+        case "hybrid" if record["close"]:
             return "by words and meaning"
-        case "partial":
+        case "hybrid":
+            return "by words; meaning compared but none close enough"
+        case "partial" if record["close"]:
             return f"by words, and by meaning for some packs only ({record['embedding']})"
+        case "partial":
+            return (
+                f"by words; meaning compared for some packs only ({record['embedding']}) "
+                "but none close enough"
+            )
         case _ if "embedding" in record:
             return f"by words alone: meaning could not be compared ({record['embedding']})"
         case _:
@@ -448,16 +471,23 @@ def words(text: str) -> list[str]:
     return [word[:-1] if len(word) > 3 and word.endswith("s") else word for word in words]
 
 
+def similar_at(model: str) -> float:
+    """The cutoff in meaning for vectors of ``model``, as the gateway reports it."""
+    name = model.lower()
+    return next((at for family, at in SIMILAR_BY_FAMILY if family in name), SIMILAR)
+
+
 def hybrid(
-    entries: Sequence[Entry], text: str, similar: dict[str, float]
+    entries: Sequence[Entry], text: str, similar: dict[str, float], cutoff: float = SIMILAR
 ) -> list[tuple[Entry, list[str], float | None]]:
-    """The entries that share words with ``text`` or come close to it in meaning, best
-    first by reciprocal rank fusion of the two orders, with the words and the similarity."""
+    """The entries that share words with ``text`` or come close to it in meaning, at
+    ``cutoff`` or more, best first by reciprocal rank fusion of the two orders, with the
+    words and the similarity."""
     lexical = {
         entry.qualified: (index, matched)
         for index, (entry, matched, _) in enumerate(rank(entries, words(text)))
     }
-    close = sorted((s for s in similar.items() if s[1] >= SIMILAR), key=lambda s: -s[1])
+    close = sorted((s for s in similar.items() if s[1] >= cutoff), key=lambda s: -s[1])
     meaning = {skill: (index, value) for index, (skill, value) in enumerate(close)}
     fused: list[tuple[float, int, Entry]] = []
     for order, entry in enumerate(entries):

@@ -488,6 +488,7 @@ async def workspace(
     login: bool = True,
     job_state: bool = False,
     timeouts: Timeouts = TIMEOUTS,
+    skills_metadata: str | None = None,
 ) -> TestClient[Any, Any]:
     """The workspace app under test, optionally connected to a worker and logged in."""
     worker = WorkerClient(worker_url, WORKER_TOKEN) if worker_url is not None else None
@@ -499,6 +500,7 @@ async def workspace(
             job_worker=worker,
             job_state=JobState(state_dir) if job_state else None,
             timeouts=timeouts,
+            skills_metadata=skills_metadata,
         )
     )
     if login:

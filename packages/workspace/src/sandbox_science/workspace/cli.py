@@ -181,6 +181,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     command.add_argument("--worker", help="worker URL for live jobs and cancellation")
     command.add_argument("--worker-token-file", type=Path, help="worker key (server only)")
+    command.add_argument(
+        "--skills-metadata-model",
+        help="the alias of the import's pass whose topics, entry skills and short "
+        "descriptions the skills page shows, as runs are given them (default: none)",
+    )
     repairs = command.add_argument_group(
         "math repairs", "repairs of LaTeX that KaTeX rejects, by the reviewer model"
     )
@@ -263,6 +268,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             job_worker=job_worker,
             job_state=job_state,
             preview=preview,
+            skills_metadata=args.skills_metadata_model,
         )
     except OSError as exc:
         print(f"error: {exc} (build the web app: npm run build)", file=sys.stderr)
