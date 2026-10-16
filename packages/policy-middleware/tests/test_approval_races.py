@@ -4,7 +4,6 @@ one permission request, and the store is folded at startup, not in a request."""
 
 from __future__ import annotations
 
-import contextlib
 import threading
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
@@ -39,20 +38,67 @@ network:
 """
 
 
-class Gate:
-    """A sink that holds each escalation until a second one arrives, or a short while
-    passes: two requests that both found no permission request meet here. The while is
-    shorter than an escalation waits for its lock."""
+WAIT = 10.0
+"""The longest a test waits for another thread: a cap, never a pause."""
 
-    def __init__(self, sink: StoreSink) -> None:
-        self.sink = sink
-        self.barrier = threading.Barrier(2)
+
+class Race:
+    """Two identical escalations, A and B, held at the steps that decide the race, by
+    events with capped waits rather than by timing.
+
+    Both read the store before either records (``read``), so each finds no permission
+    request outside the recording lock. With ``held_read``, B's first read returns what
+    it read only once A's evaluation has returned, and A's read just after it recorded
+    does not show the request yet, as a store that lags would: so B, outside the lock,
+    still finds no request, takes the lock after A released it, and must find the
+    request inside it. Without it, the one that takes the lock records only once the
+    other's evaluation has returned: the other waited on the lock longer than an
+    escalation waits for it, as on a slow store."""
+
+    def __init__(self, events: EventStore, *, held_read: bool = False) -> None:
+        self.events = events
+        self.sink = StoreSink(events)
+        self.held_read = held_read
+        self.met = threading.Barrier(2)
+        self.roles: dict[int, str] = {}
+        self.racers: set[int] = set()
+        self.lock = threading.Lock()
+        self.done = {"A": threading.Event(), "B": threading.Event()}
+        self.recorded: set[int] = set()
+
+    def read(self, after: int) -> list[Record]:
+        found = _read_records(self.events.path, after)
+        me = threading.get_ident()
+        if self.held_read and me in self.recorded:
+            self.recorded.discard(me)
+            return []  # the read just after recording lags behind the store
+        with self.lock:
+            racing = me not in self.racers and len(self.racers) < 2
+            if racing:
+                self.racers.add(me)
+        if racing:
+            # Both read before either records: each finds no request outside the lock.
+            # A later evaluation, such as a retry, is not held.
+            self.roles[me] = "B" if self.met.wait(timeout=WAIT) == 0 else "A"
+            if self.held_read and self.roles[me] == "B":
+                assert self.done["A"].wait(timeout=WAIT)
+        return found
 
     def record(self, kind: str, payload: Mapping[str, object]) -> int:
+        if kind == "escalation" and not self.held_read:
+            # Whichever holds the lock records only once the other has given up on it.
+            other = "B" if self.roles[threading.get_ident()] == "A" else "A"
+            assert self.done[other].wait(timeout=WAIT)
+        seq = self.sink.record(kind, payload)
         if kind == "escalation":
-            with contextlib.suppress(threading.BrokenBarrierError):
-                self.barrier.wait(timeout=0.1)
-        return self.sink.record(kind, payload)
+            self.recorded.add(threading.get_ident())
+        return seq
+
+    def evaluate(self, middleware: PolicyMiddleware, facts: HttpRequestFacts) -> Verdict:
+        try:
+            return middleware.evaluate_http(facts)
+        finally:
+            self.done[self.roles[threading.get_ident()]].set()
 
 
 @pytest.fixture
@@ -74,35 +120,59 @@ def escalations(events: EventStore) -> list[Record]:
         return [record for record in reader.records() if record.kind == "escalation"]
 
 
-def test_concurrent_identical_escalations_record_one_request(
-    store: PolicyStore,
-    loaded: LoadedPolicy,
-    events: EventStore,
-    make_facts: FactsFactory,
-    policy_config: object,
-) -> None:
+def race(
+    race: Race, store: PolicyStore, loaded: LoadedPolicy, make_facts: FactsFactory
+) -> tuple[PolicyMiddleware, list[Verdict], Callable[[str], HttpRequestFacts]]:
+    """Evaluate two identical escalations at once, as ``race`` holds them: the
+    middleware, the two verdicts, and the requests' facts by ID."""
     middleware = PolicyMiddleware(
         store,
         ceiling=PoolCeiling.unrestricted(),
         floor=HardFloor(),
-        events=Gate(StoreSink(events)),
-        requests=partial(_read_records, events.path),
+        events=race,
+        requests=race.read,
     )
     config = {"policy": {"name": loaded.policy.metadata.name, "digest": loaded.digest}}
 
-    def evaluate(request_id: str) -> Verdict:
-        facts: HttpRequestFacts = make_facts(
-            method="POST", path="/v1/items", request_id=request_id, config=config
-        )
-        return middleware.evaluate_http(facts)
+    def facts(request_id: str) -> HttpRequestFacts:
+        return make_facts(method="POST", path="/v1/items", request_id=request_id, config=config)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        verdicts = list(pool.map(evaluate, ["req-1", "req-2"]))
-    assert [verdict.reason_code for verdict in verdicts] == [reasons.APPROVAL_REQUIRED] * 2
+        futures = [pool.submit(race.evaluate, middleware, facts(f"req-{n}")) for n in (1, 2)]
+        verdicts = [future.result(timeout=WAIT) for future in futures]
+    assert sorted(race.roles.values()) == ["A", "B"]
+    return middleware, verdicts, facts
+
+
+def test_concurrent_identical_escalations_record_one_request(
+    store: PolicyStore, loaded: LoadedPolicy, events: EventStore, make_facts: FactsFactory
+) -> None:
+    """D-09: both escalations find no request outside the lock; one records it, and the
+    other, taking the lock after it, finds the request inside and waits on it."""
+    _, verdicts, _ = race(Race(events, held_read=True), store, loaded, make_facts)
+    assert [v.reason_code for v in verdicts] == [reasons.APPROVAL_REQUIRED] * 2
     [request] = escalations(events)
-    # One recorded the request; the other found it, inside the lock, and waits on it.
     waiting = f"permission request {request.seq}, still waiting"
     assert sum(waiting in verdict.reason for verdict in verdicts) == 1
+    recorded = f"(permission request {request.seq})"
+    assert sum(verdict.reason.endswith(recorded) for verdict in verdicts) == 1
+
+
+def test_an_escalation_that_waits_too_long_for_the_lock_records_nothing(
+    store: PolicyStore, loaded: LoadedPolicy, events: EventStore, make_facts: FactsFactory
+) -> None:
+    """D-09, a slow store: while A records, B waits on the lock longer than an escalation
+    waits for it, and is refused, asked to retry, recording nothing; its retry waits on
+    A's request. (The old version of the test above failed this way when CI was slow.)"""
+    middleware, verdicts, facts = race(Race(events), store, loaded, make_facts)
+    [request] = escalations(events)
+    reasons_given = sorted(verdict.reason for verdict in verdicts)
+    assert any("a permission request is being recorded; retry" in r for r in reasons_given)
+    assert any(r.endswith(f"(permission request {request.seq})") for r in reasons_given)
+    retried = middleware.evaluate_http(facts("req-3"))
+    assert retried.reason_code == reasons.APPROVAL_REQUIRED
+    assert f"permission request {request.seq}, still waiting" in retried.reason
+    assert len(escalations(events)) == 1
 
 
 class CountingReader:
