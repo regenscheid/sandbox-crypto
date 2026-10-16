@@ -37,6 +37,7 @@ from sandbox_science.orchestrator.documents.annotations import Annotations
 from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.mathcheck import Formula, MathCheck
 from sandbox_science.orchestrator.mathchecks.jobs import MathJobs
+from sandbox_science.orchestrator.notices import FOLD_ENRICH
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
 from sandbox_science.orchestrator.session_plans import (
     PlanAuthority,
@@ -326,6 +327,10 @@ class Gateway:
     capable: dict[str, bool] | None = None
     """Whether each alias can call tools, as ``GET /model/info`` says; without it that
     answers 404."""
+    enrich: list[Reply] = field(default_factory=list[Reply])
+    """The folds' enrichment calls' answers, in order; past them, a short narrative."""
+    choices: list[object] = field(default_factory=list[object])
+    """Each enrichment request's ``tool_choice``."""
     per_token: float | None = None
     """With it, each chat completion reports its request's characters, tools included,
     divided by it as its prompt tokens, unless its reply scripts them."""
@@ -508,11 +513,18 @@ class Gateway:
             alias != "reviewer" and str(messages[0].get("content", "")).startswith(DELEGATED)
         )
         key = "delegated" if child else alias
+        last = str(messages[-1].get("content", "")) if messages else ""
+        if last.startswith(FOLD_ENRICH.text):
+            key = "enrich"
+            self.choices.append(body.get("tool_choice"))
         self.requests.setdefault(key, []).append(messages)
         self.tools.setdefault(key, []).append(cast(list[Json], body.get("tools") or []))
         brief = str(messages[1].get("content", "")) if len(messages) > 1 else ""
         routed = next((r for k, r in self.routed.items() if k in brief), None)
-        if child and routed is not None:
+        if key == "enrich":
+            narrative = json.dumps({"narrative": "Earlier work, as its outline shows.", "keys": []})
+            reply = self.enrich.pop(0) if self.enrich else Reply(narrative)
+        elif child and routed is not None:
             reply = routed.pop(0) if routed else Reply("(no routed script)")
         elif child:
             reply = self.delegated.pop(0) if self.delegated else Reply("(no delegated script)")

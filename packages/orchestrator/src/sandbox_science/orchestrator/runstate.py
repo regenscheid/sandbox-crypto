@@ -521,7 +521,9 @@ class RunState:
         """What the project's model calls cost by role, as the gateway reported it, in
         ``COST_ROLES``' order: the calls of its runs that started at ``since`` or later,
         main and delegated, from saved records' ``usage`` and the ``assistant`` events of
-        runs without a record; and the reviewer's, the job watcher's and the skills'
+        runs without a record, and their folds' enrichment calls, from the records'
+        ``summaries.folds.calls`` and the ``fold`` events of runs without one; and the
+        reviewer's, the job watcher's and the skills'
         embedding calls made at ``since`` or later (lab 40, B5). Every call without
         ``since``. A role none of whose calls the gateway priced is left out."""
         first = "" if since is None else run_name(since, "")
@@ -540,8 +542,17 @@ class RunState:
                 "FROM run_events AS e WHERE e.project_id = ? AND e.run >= ? "
                 "AND e.kind = 'assistant' AND NOT EXISTS (SELECT 1 FROM runs WHERE "
                 "runs.project_id = e.project_id AND runs.session_id = e.session_id "
+                "AND runs.name = e.run) "
+                # A fold's enrichment calls: in its run's record, or its fold events.
+                "UNION ALL SELECT coalesce(json_extract(runs.record, '$.role'), 'main'), "
+                "c.value FROM runs, json_each(runs.record, '$.summaries.folds.calls') AS c "
+                "WHERE runs.project_id = ? AND runs.name >= ? "
+                "UNION ALL SELECT 'main', c.value FROM run_events AS e, "
+                "json_each(e.data, '$.calls') AS c WHERE e.project_id = ? AND e.run >= ? "
+                "AND e.kind = 'fold' AND NOT EXISTS (SELECT 1 FROM runs WHERE "
+                "runs.project_id = e.project_id AND runs.session_id = e.session_id "
                 "AND runs.name = e.run)) GROUP BY role",
-                (project, first, project, first),
+                (project, first, project, first, project, first, project, first),
             ).fetchall()
             for role, table, made in (
                 ("reviewer", "review_calls", "created"),

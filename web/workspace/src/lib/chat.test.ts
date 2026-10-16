@@ -444,6 +444,9 @@ describe('the transcript of a run', () => {
     ).toBe(
       'Folded positions 1 to 40, skeleton-only: about 9,000 tokens freed, 0 results stubbed. The narrative failed: it called a tool.',
     );
+    expect(foldText({ state: 'waiting' })).toBe(
+      'The view reached its wall: the run waits for the running fold.',
+    );
     expect(foldText({ state: 'waited', seconds: 2.5 })).toBe(
       'The view reached its wall and waited 2.5 s for the running fold.',
     );

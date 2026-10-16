@@ -22,6 +22,7 @@ from .archive import Archived, escape
 Json = dict[str, Any]
 
 FORMAT: Final = "sandbox-fold-1"
+"""The stored form of a fold record, beside its text."""
 LABELS: Final = (
     "--- fold ",
     "--- The user's own words",
@@ -41,7 +42,6 @@ LABELS: Final = (
 framings. A line from a message or a model that begins so is quoted (CM-20, CM-F15)."""
 MARKER: Final = re.compile(r"-\s*(?:decision|caveat|read|failures)\s*:", re.IGNORECASE)
 """A line that begins like one of a record's marker lines."""
-"""The stored form of a fold record, beside its text."""
 STUB_CHARS: Final = 5_000
 """A tool result longer than this, older than the newest ``STUBS_KEPT``, is stubbed."""
 STUBS_KEPT: Final = 5
@@ -102,11 +102,14 @@ class FoldRecord:
         if self.markers:
             lines.append("Markers:")
             lines += [f"- {marker_line(marker, fold)}" for marker in self.markers]
-        lines.append(
-            f"Narrative: {self.narrative}"
-            if self.narrative
-            else "Narrative: none (a skeleton-only fold)."
-        )
+        if self.narrative:
+            # The run's model wrote it: every line quoted, so none reads as the record's.
+            lines.append(
+                "Narrative, written by the run's model, its values checked by code; quoted:"
+            )
+            lines += [f"> {line}" for line in self.narrative.splitlines()]
+        else:
+            lines.append("Narrative: none (a skeleton-only fold).")
         if self.keys:
             shown = "; ".join(f"{flat(key)} ({at})" for key, at in self.keys)
             lines.append("Search keys: " + shown)
@@ -114,7 +117,7 @@ class FoldRecord:
             for marker in self.markers:
                 if marker.get("kind") == "failures":
                     ids = ", ".join(cast(list[str], marker.get("ids") or []))
-                    lines.append(f"Failed calls of {marker.get('subject')}: {ids}")
+                    lines.append(f"Failed calls of {flat(str(marker.get('subject')))}: {flat(ids)}")
         return "\n".join(lines)
 
     @property

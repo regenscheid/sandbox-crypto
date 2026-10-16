@@ -368,6 +368,7 @@ export function foldText(data: Record<string, unknown>): string {
   const span = list(data['span']).map(String);
   const positions = span.length === 2 ? ` positions ${span[0]} to ${span[1]}` : '';
   if (state === 'started') return `A fold of${positions} started; its narrative is being written.`;
+  if (state === 'waiting') return 'The view reached its wall: the run waits for the running fold.';
   if (state === 'waited')
     return `The view reached its wall and waited ${String(data['seconds'])} s for the running fold.`;
   if (state === 'rejected')

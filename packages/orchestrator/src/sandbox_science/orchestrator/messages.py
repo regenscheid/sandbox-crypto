@@ -286,6 +286,9 @@ class MessagesModel(GatewayModel):
         view = _render(messages, tools, served, replay)
         view.body["model"] = self.model
         view.body["max_tokens"] = self._max_tokens or MAX_TOKENS
+        if self._tool_choice != "auto" and "tools" in view.body:
+            # A call that may not call the tools, as a fold's enrichment retry (CM-19).
+            view.body["tool_choice"] = {"type": self._tool_choice}
         reading = _Reading(served.updates)
         return await self._call(view.body, reading.parse), view, reading
 

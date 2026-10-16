@@ -367,6 +367,8 @@ def _harness(
             ceiling=getattr(args, "context_ceiling", CEILING),
             chunk=getattr(args, "fold_chunk", None),
             input_limit=getattr(args, "input_limit", None),
+            skeleton_only=getattr(args, "skeleton_only_folds", False),
+            fold_alias=getattr(args, "fold_alias", None),
             watcher_calls_per_hour=args.watcher_calls_per_hour,
             watcher_first_check=args.watcher_first_check,
             watcher_interval=args.watcher_interval,
@@ -482,6 +484,15 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
     )
     command.add_argument(
         "--fold-chunk", type=int, help="the tokens a fold takes (default max(50,000, 0.2 C))"
+    )
+    command.add_argument(
+        "--skeleton-only-folds",
+        action="store_true",
+        help="fold MAIN's view without the enrichment call: outlines built by code alone",
+    )
+    command.add_argument(
+        "--fold-alias",
+        help="the alias whose model writes the folds' narratives (default: MAIN's own)",
     )
     command.add_argument(
         "--input-limit",

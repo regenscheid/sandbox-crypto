@@ -1,36 +1,47 @@
 # SPDX-License-Identifier: MIT
 """Folding a main run's view (docs/specs/context-management.md, CM-17 to CM-20, CM-23,
-CM-24, CM-27, CM-43 to CM-46).
+CM-24, CM-24a, CM-27, CM-43 to CM-46).
 
 At each safe point, before a model call, ``Folder`` measures the view in tokens (CM-28).
-Past the trigger it folds the oldest span of the raw tail; past the hard wall it folds
-again until the view is under the wall or the raw tail is at its floor. A span is about
-a chunk of the oldest raw messages, never leaving fewer than the floor, and ends at a
-boundary that splits no call from its results: one where a user message arrived or a
-plan step changed, when one lies within a quarter of a chunk of that size, and the
-nearest otherwise (CM-23). Its record is built by code: the skeleton, the marker lines
-and the search keys (CM-18), checked to be at most a tenth of a chunk without its
-markers and to free tokens (CM-20); a record that fails changes nothing. The record is
-archived, and the view rebuilt from the archive: the state block, the fold region, and
-the raw tail after the record's span, its old large tool results now stubs (CM-24). The
-rebuilt view replaces the conversation the run sends, and the next call's size is a
-fresh estimate (CM-28).
+Past the trigger it starts a fold of the oldest span of the raw tail: about a chunk of
+the oldest raw messages, never leaving fewer than the floor, ending at a boundary that
+splits no call from its results: one where a user message arrived or a plan step
+changed, when one lies within a quarter of a chunk of that size, and the nearest
+otherwise (CM-23). Code builds its record: the skeleton, the marker lines and the search
+keys (CM-18), checked to be at most a tenth of a chunk without its markers and to free
+tokens (CM-20); a record that fails changes nothing. The enrichment call then writes its
+narrative while the agent goes on (CM-19, ``enrich``), and the fold is archived when it
+is ready and applied at the first safe point after: the view is rebuilt from the
+archive, the state block, the fold region, and the raw tail after the record's span, its
+old large tool results now stubs (CM-24). The rebuilt view replaces the conversation
+the run sends, and the next call's size is a fresh estimate (CM-28).
 
-Every fold is skeleton-only until the enrichment call is built (step f1, its second
-part). A gateway context error folds once and tries the call once more; a second in a
-row stops the run (CM-43). After three folds that each freed less than a tenth of the
-view, the run folds no more, and stops if the view then passes the wall (CM-44). A view
-still over the wall with nothing left to fold stops the run (CM-45). The run's record
-keeps the geometry, each fold and each rebuild's parts, and each fold is a run event of
-kind ``fold`` (CM-46). A run whose system message and tools pass a fifth of the ceiling,
-or whose scale λ would fall below 0.4, does not start (CM-27).
+Past the hard wall, a running fold is waited for, at most ``WAIT``, and applied, or its
+span folds skeleton-only if it is not ready by then; then the run folds again,
+skeleton-only, until the view is under the wall or the raw tail is at its floor. A fold
+ready when its run ends is archived already, and the next run's start applies it; one
+still running is cancelled with the run, which records that its call was (CM-24a).
+Without an enrichment model, as a scripted run's or with the skeleton-only setting (the
+control arm of question 4), every fold is skeleton-only and applied at once.
+
+A gateway context error folds once, skeleton-only, and tries the call once more; a
+second in a row stops the run (CM-43). After three folds that each freed less than a
+tenth of the view, the run folds no more, and stops if the view then passes the wall
+(CM-44). A view still over the wall with nothing left to fold stops the run (CM-45). The
+run's record keeps the geometry, each fold with its enrichment calls' usage, and each
+rebuild's parts, and each fold is a run event of kind ``fold`` (CM-46). A run whose
+system message and tools pass a fifth of the ceiling, or whose scale λ would fall below
+0.4, does not start (CM-27).
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
-from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import replace
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from dataclasses import dataclass, replace
 from itertools import accumulate
 from typing import TYPE_CHECKING, Any, Final, cast
 
@@ -42,6 +53,7 @@ from sandbox_science.orchestrator.tokens import chars_per_token, estimate, view_
 from sandbox_science.orchestrator.worker_client import dump
 
 from .archive import Archive, Archived, Entry
+from .enrich import Enriched, enrich
 from .geometry import Geometry, geometry
 from .log import PATIENCE, patiently
 from .reads import Read, Register
@@ -51,6 +63,7 @@ from .view import Earlier, Unit, View, session_view, settle
 
 if TYPE_CHECKING:
     from sandbox_science.orchestrator.loop import Transcript
+    from sandbox_science.orchestrator.model import ChatModel, ToolSpec
     from sandbox_science.orchestrator.projects import ModelUsage
 
 Json = dict[str, Any]
@@ -60,7 +73,24 @@ WEAK: Final = 0.1
 """A fold that frees less than this share of the view is weak (CM-44)."""
 BREAKER: Final = 3
 """Weak folds after which a run folds no more."""
+WAIT: Final = 600.0
+"""The longest wait, in seconds, for a running fold past the hard wall (CM-24)."""
 PLAN_CHANGES: Final = PLAN_NAMES - {"plan_read"}
+
+
+@dataclass
+class _Running:
+    """A fold whose enrichment runs: its span, its record as code built it, and once it
+    is ready, the record as archived (``kept``), which the run's end does not undo."""
+
+    record: FoldRecord
+    rows: tuple[Archived, ...]
+    task: asyncio.Task[None] | None = None
+    done: Enriched | None = None
+    saving: asyncio.Task[None] | None = None
+    kept: tuple[Archived, FoldRecord] | None = None
+    asked: int = 0
+    """The tokens each enrichment call is sent, estimated: what a cancelled call counts."""
 
 
 class Folder(TurnHook):
@@ -83,8 +113,9 @@ class Folder(TurnHook):
         earlier: Earlier | None = None,
         kernels: Sequence[KernelInfo] | None = None,
         digest: Callable[[int], str | None] | None = None,
-        events: Callable[[Json], Awaitable[None]] | None = None,
-        refit: Callable[[View], None] | None = None,
+        model: ChatModel | None = None,
+        exists: Callable[[str], bool] | None = None,
+        wait: float = WAIT,
         clock: Clock = SYSTEM_CLOCK,
         patience: float = PATIENCE,
     ) -> None:
@@ -92,9 +123,11 @@ class Folder(TurnHook):
         before the system message is known; ``calls`` are the session's earlier calls on
         the run's alias, which calibrate its characters per token; ``runs`` and
         ``earlier`` are ``session_view``'s; ``digest`` renders the research state within
-        a budget in characters, for the state block of each rebuild (CM-26); ``events``
-        writes a ``fold`` event, and
-        ``refit`` tells the skills what a rebuilt view holds (CM-29b)."""
+        a budget in characters, for the state block of each rebuild (CM-26); ``model``
+        writes the narratives, none for skeleton-only folds; ``exists`` says whether a
+        ledger handle exists. ``events`` writes a ``fold`` event, ``refit`` tells the
+        skills what a rebuilt view holds (CM-29b), and ``specs`` gives the tools the run
+        sends; the harness sets them once it has made them."""
         self.archive, self.context, self.run = archive, context, run
         self.view, self.start, self.ceiling, self.chunk = view, start, ceiling, chunk
         self.calls, self.runs, self.earlier, self.kernels = (
@@ -103,11 +136,17 @@ class Folder(TurnHook):
             earlier,
             kernels,
         )
-        self.events, self.refit, self.clock, self.patience = events, refit, clock, patience
-        self.digest = digest
+        self.model, self.exists, self.wait, self.digest = model, exists, wait, digest
+        self.clock, self.patience = clock, patience
+        self.events: Callable[[Json], Awaitable[None]] | None = None
+        self.refit: Callable[[View], None] | None = None
+        self.specs: Callable[[], Sequence[ToolSpec]] = tuple
         self.geometry: Geometry | None = None
+        self.running: _Running | None = None
         self.folds: list[Json] = []
         self.rebuilds: list[Json] = []
+        self.spent: list[Json] = []
+        """Each enrichment call's usage, as the run's costs count it."""
         self.weak = 0
         self.overflows = 0
         self.stopped: str | None = None
@@ -133,6 +172,23 @@ class Folder(TurnHook):
         """The view's tokens before the next call (CM-28)."""
         return view_tokens(run.size, run.usage[run.since :], self.per_token(run))
 
+    def lease(self) -> AbstractAsyncContextManager[None]:
+        return self._held()
+
+    @asynccontextmanager
+    async def _held(self) -> AsyncGenerator[None]:
+        """A fold still running when the run ends is cancelled with it (CM-24a)."""
+        try:
+            yield
+        finally:
+            if (running := self.running) is not None and running.task is not None:
+                running.task.cancel()
+                with contextlib.suppress(BaseException):
+                    await running.task
+                if running.saving is not None:  # a ready fold is kept (CM-24a)
+                    with contextlib.suppress(BaseException):
+                        await running.saving
+
     async def before_call(self, transcript: Transcript) -> bool:
         if self.geometry is None:
             per_token = self.per_token(transcript)
@@ -143,11 +199,19 @@ class Folder(TurnHook):
                 return self._stop("start", why)
             if abs(found.scale - self.start.scale) > 1e-6:
                 await self._rebuild(transcript)  # the budgets shrink with λ
+        if self.running is not None and self.running.kept is not None:
+            await self._finish(transcript, self.tokens(transcript))
         wall, size = self.geometry.wall, self.tokens(transcript)
+        if size > wall and self.running is not None:
+            await self._wait(transcript, size)
+            size = self.tokens(transcript)
         while size > wall and await self._fold(transcript, size):
             size = self.tokens(transcript)
-        if size > self.geometry.trigger:
-            await self._fold(transcript, size)
+        if size > self.geometry.trigger and self.running is None and not self.tripped:
+            if self.model is None:
+                await self._fold(transcript, size)
+            else:
+                await self._begin(transcript)
             size = self.tokens(transcript)
         if size <= wall:
             return True
@@ -158,8 +222,15 @@ class Folder(TurnHook):
     async def overflow(self, transcript: Transcript) -> bool:
         self.overflows += 1
         self._cap(transcript)
-        if self.overflows == 1 and await self._fold(transcript, self.tokens(transcript)):
-            return True
+        if self.overflows == 1:
+            size = self.tokens(transcript)
+            if self.running is not None:  # its span, skeleton-only now unless it is ready
+                if self.running.task is not None:
+                    self.running.task.cancel()
+                await self._finish(transcript, size)
+                return True
+            if await self._fold(transcript, size):
+                return True
         return self._stop("overflow", "the gateway refused the call for its length")
 
     def _cap(self, transcript: Transcript) -> None:
@@ -188,12 +259,12 @@ class Folder(TurnHook):
         _log.warning("run %s stops for its context (%s): %s", self.run, reason, detail)
         return False
 
-    async def _fold(self, transcript: Transcript, before: int) -> bool:
-        """One skeleton-only fold of the raw tail's oldest span, applied; whether one was.
-        A record too large for its share is built again of half its span, down to one
-        unit; one that still cannot be built changes nothing (CM-20)."""
+    async def _span(self, transcript: Transcript) -> tuple[FoldRecord, list[Archived]] | None:
+        """The next span and its record as code builds it, or ``None``: nothing to fold,
+        or a record that fails its checks, which changes nothing. A record too large for
+        its share is built again of half its span, down to one unit (CM-20)."""
         if self.tripped or self.geometry is None:
-            return False
+            return None
         shape, per_token = self.geometry, self.per_token(transcript)
         view = await threaded(self._view, per_token)
         taken = span(view.units, shape, per_token)
@@ -208,9 +279,120 @@ class Folder(TurnHook):
             taken = extend(view.units, max(1, taken // 2))
         if record is None:
             if rows:
-                await self._event({"state": "rejected", "span": _span(rows), "reason": "too large"})
+                reason = {"state": "rejected", "span": _positions_of(rows), "reason": "too large"}
+                await self._event(reason)
+            return None
+        return record, rows
+
+    def _reads(self, messages: Sequence[str]) -> list[tuple[str, Read]]:
+        return Register(self.archive.control).of_messages(self.context.project_id, messages)
+
+    async def _fold(self, transcript: Transcript, before: int) -> bool:
+        """One skeleton-only fold of the raw tail's oldest span, applied; whether one was."""
+        found = await self._span(transcript)
+        if found is None:
             return False
-        after = [part.row for unit in view.units[taken:] for part in unit if part.row is not None]
+        record, rows = found
+        kept = await self._keep(record, self.per_token(transcript))
+        await self._applied(transcript, before, kept, rows)
+        return True
+
+    async def _begin(self, transcript: Transcript) -> None:
+        """A fold whose narrative the enrichment call writes while the run goes on."""
+        found = await self._span(transcript)
+        if found is None or self.model is None or self.geometry is None:
+            return
+        record, rows = found
+        per_token = self.per_token(transcript)
+        running = _Running(record, tuple(rows))
+        running.asked = self.tokens(transcript)
+        running.task = asyncio.create_task(
+            self._enrich(running, self.model, list(transcript.sent), self.specs(), per_token)
+        )
+        self.running = running
+        await self._event({"state": "started", "span": _positions_of(rows)})
+
+    async def _enrich(
+        self,
+        running: _Running,
+        model: ChatModel,
+        sent: list[Json],
+        specs: Sequence[ToolSpec],
+        per_token: float,
+    ) -> None:
+        """The enrichment, then the record archived: once begun, the archiving is not
+        cancelled, so a fold is kept or not, never half."""
+        assert self.geometry is not None  # noqa: S101 - set at the first call
+        share = int(self.geometry.record * per_token)
+
+        def spent(usage: ModelUsage) -> None:  # counted as each call returns
+            self.spent.append(usage.model_dump(mode="json"))
+
+        try:
+            running.done = await enrich(
+                model,
+                sent,
+                specs,
+                running.record,
+                running.rows,
+                share=share,
+                exists=self.exists,
+                spent=spent,
+            )
+        except Exception as error:  # the fold stands, skeleton-only
+            _log.warning("the enrichment of run %s failed: %r", self.run, error)
+            failed = f"it failed ({type(error).__name__})"
+            running.done = Enriched(running.record, (), failed)
+
+        async def save() -> None:
+            assert running.done is not None  # noqa: S101 - set above
+            running.kept = await self._keep(running.done.record, per_token)
+
+        running.saving = asyncio.create_task(save())
+        await asyncio.shield(running.saving)
+
+    async def _wait(self, transcript: Transcript, before: int) -> None:
+        """Past the wall: the running fold, at most ``wait`` seconds, then applied, or its
+        span skeleton-only (CM-24); the wait is a ``fold`` event."""
+        running = self.running
+        assert running is not None  # noqa: S101 - the caller checked
+        assert running.task is not None  # noqa: S101 - every running fold has its task
+        began = self.clock.monotonic()
+        await self._event({"state": "waiting"})
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(asyncio.shield(running.task), self.wait)
+        running.task.cancel()
+        waited = round(self.clock.monotonic() - began, 3)
+        await self._event({"state": "waited", "seconds": waited, "ready": running.kept is not None})
+        await self._finish(transcript, before)
+
+    async def _finish(self, transcript: Transcript, before: int) -> None:
+        """The running fold applied: as archived if it is ready, or its span
+        skeleton-only."""
+        running, self.running = self.running, None
+        assert running is not None  # noqa: S101 - the callers checked
+        for task in (running.task, running.saving):
+            if task is not None:
+                with contextlib.suppress(BaseException):
+                    await task
+        if running.kept is not None:
+            await self._applied(transcript, before, running.kept, running.rows, running.done)
+            return
+        if running.done is None:
+            self.spent.append(_cancelled(running))
+            done = Enriched(running.record, (), "it was not ready")
+        else:
+            done = replace(
+                running.done, record=running.record, failed=running.done.failed or "it was not kept"
+            )
+        kept = await self._keep(running.record, self.per_token(transcript))
+        await self._applied(transcript, before, kept, running.rows, done)
+
+    async def _keep(self, record: FoldRecord, per_token: float) -> tuple[Archived, FoldRecord]:
+        """``record`` archived with the stubs it makes of the raw tail after it now."""
+        view = await threaded(self._view, per_token)
+        last = record.last[0]
+        after = [p.row for u in view.units for p in u if p.row and p.row.position > last]
         record = replace(record, stubs=stubbed(after, view.stubs))
         entry = Entry(
             "user",
@@ -223,26 +405,37 @@ class Folder(TurnHook):
         row = await patiently(
             self.archive, self.context, self.run, entry, patience=self.patience, clock=self.clock
         )
+        return row, record
+
+    async def _applied(
+        self,
+        transcript: Transcript,
+        before: int,
+        kept: tuple[Archived, FoldRecord],
+        rows: Sequence[Archived],
+        done: Enriched | None = None,
+    ) -> None:
+        """The view rebuilt with the archived fold ``kept``; its event."""
+        row, record = kept
         await self._rebuild(transcript)
         freed = before - self.tokens(transcript)
         # Folds before the run's first call catch up on a session folded little or not at
         # all, such as one from before folds: the breaker counts the run's own (CM-44).
         if freed < WEAK * before and transcript.usage:
             self.weak += 1
-        made = {
+        calls = [usage.model_dump(mode="json") for usage in (done.calls if done else ())]
+        made: Json = {
             "fold": row.message_id,
             "level": record.level,
-            "span": _span(rows),
+            "span": _positions_of(rows),
             "state": record.state,
             "freed": freed,
             "stubs": len(record.stubs),
         }
+        if done is not None and done.failed:
+            made["reason"] = f"skeleton-only: {done.failed}"
         self.folds.append(made)
-        await self._event(made)
-        return True
-
-    def _reads(self, messages: Sequence[str]) -> list[tuple[str, Read]]:
-        return Register(self.archive.control).of_messages(self.context.project_id, messages)
+        await self._event({**made, "calls": calls} if calls else made)
 
     def _view(self, per_token: float) -> View:
         assert self.geometry is not None  # noqa: S101 - set at the first call
@@ -284,19 +477,34 @@ class Folder(TurnHook):
             await self.events(data)
 
     def summary(self) -> object | None:
+        running = self.running
+        if running is not None and running.task is not None and running.kept is None:
+            running.task.cancel()  # the run ended: so does its fold (CM-24a)
+            if running.done is None:  # a call was in flight; those returned are counted
+                self.spent.append(_cancelled(running))
         if self.geometry is None:
             return None
         found: Json = {
             "geometry": self.geometry.summary(),
             "folds": self.folds,
             "rebuilds": self.rebuilds,
+            "calls": self.spent,
             "weak_folds": self.weak,
         }
         if self.capped is not None:
             found["capped"] = self.capped
+        if running is not None and running.kept is not None:
+            found["kept"] = running.kept[0].message_id  # ready: the next run applies it
         if self.stopped is not None:
             found |= {"stopped": self.stopped, "detail": self.detail}
         return found
+
+
+def _cancelled(running: _Running) -> Json:
+    """The usage of an enrichment call cancelled before it returned, which the gateway
+    never reported: its input estimated, as the view it was sent, and so marked (RS-6a);
+    its cost unknown."""
+    return {"cancelled": True, "estimated": True, "input_tokens": running.asked, "cost": None}
 
 
 def span(units: Sequence[Unit], shape: Geometry, per_token: float) -> int:
@@ -347,7 +555,7 @@ def _positions(units: Sequence[Unit]) -> list[int]:
     return [part.row.position for unit in units for part in unit if part.row is not None]
 
 
-def _span(rows: Sequence[Archived]) -> list[int]:
+def _positions_of(rows: Sequence[Archived]) -> list[int]:
     return [rows[0].position, max(row.position for row in rows)] if rows else []
 
 
