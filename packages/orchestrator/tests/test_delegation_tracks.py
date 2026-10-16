@@ -10,10 +10,10 @@ import json
 from typing import Any
 
 from sandbox_science.orchestrator.documents import USER
+from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.ledger.models import WorkRecord
 from sandbox_science.orchestrator.session_plans import PlanBody, PlanRef, SessionPlans
 
-from .ledger_support import AnchoredLedger as Ledger
 from .loop_harness import PLAN, PROJECT, USER_PLANS, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness

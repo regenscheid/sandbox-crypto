@@ -32,6 +32,7 @@ from sandbox_science.orchestrator.documents.models import Author
 from sandbox_science.orchestrator.history.reads import reference_reads
 from sandbox_science.orchestrator.hooks import Effect
 from sandbox_science.orchestrator.model import ToolSpec
+from sandbox_science.orchestrator.recording import FileRecorder, Written
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 
 from .models import (
@@ -684,6 +685,9 @@ class LedgerTool:
         self.ledger, self.context, self.run_id = ledger, context, run_id
         self.role, self.alias, self.read = role, alias, read
         self.budget = output_chars
+        self.recorder: FileRecorder | None = None
+        """Records a results file as an artifact revision when an import finds it is none
+        yet, so the import is anchored on one (CM-9)."""
 
     def author(self, call_id: str | None, model: str | None) -> Author:
         return Author(
@@ -1009,6 +1013,32 @@ class LedgerTool:
         shown["more"] = more
         return _dump(shown)
 
+    async def _recorded(self, path: str, digest: str, author: Author) -> Json:
+        """The artifact revision at ``path`` that holds ``digest``, recorded now when the
+        file is none yet (CM-9; the coordinator, 2026-10-16): an import is observed only
+        when the file is an execution's output, and anchored on that revision. Nothing
+        when the project records no files, or the file could not be recorded."""
+        if self.recorder is None:
+            return {}
+        publisher = self.recorder.publisher
+        for attempt in range(2):
+            try:
+                found, _, _ = await publisher.find(path=path)
+            except DocumentError:
+                return {}
+            for revision in found:
+                if revision.reference.sha256 == digest and not revision.deleted:
+                    return {
+                        "artifact": revision.reference.artifact_id,
+                        "revision": revision.reference.revision,
+                    }
+            if attempt == 0:
+                call = author.tool_call or "ledger_import"
+                await self.recorder.record(
+                    Written(paths=(path,)), tool_call=call, model=author.model, operation=call
+                )
+        return {}
+
     async def _import(self, args: _Import, author: Author) -> str:
         """Check every line of a results file, then apply them all, or none (LG-41)."""
         if self.read is None:
@@ -1046,6 +1076,7 @@ class LedgerTool:
             "file": content.path,
             "sha256": digest,
             "environment": self.context.environment_id,
+            **await self._recorded(content.path, digest, author),
         }
         results = await asyncio.to_thread(
             self.ledger.apply,

@@ -2531,9 +2531,10 @@ class Ledger:
         provenance_: Json | None,
     ) -> tuple[str, list[Json]]:
         """The basis and resolved anchors of a revision or work record (CM-9): the user's
-        are the user's; the platform's records are observed, anchored on the results file's
-        line or the delegation they record; an agent's are what it names, ``interpreted``
-        by default, and never the user's own."""
+        are the user's; an import's are anchored on its results file's line, observed when
+        the file is an artifact revision an execution produced and interpreted otherwise;
+        a check's outcome is observed, anchored on its delegation; an agent's are what it
+        names, where it may look, ``interpreted`` by default, and never the user's own."""
 
         def find(reference: str) -> tuple[str, int]:
             row = self._find(db, project, reference)
@@ -2542,12 +2543,21 @@ class Ledger:
         def block(name: str, revision: int, block: str) -> str:
             return pinned[(name, revision, block, None)]
 
-        kept = anchoring.resolve(db, project, anchors, block, find)
+        kept = anchoring.resolve(db, project, anchors, block, find, _scope(db, project, author))
         if author.kind == "user":
             return "user", kept
         if provenance_ is not None and "file" in provenance_:
-            line = {k: provenance_.get(k) for k in ("file", "sha256", "line")}
-            return "observed", [line, *kept]
+            artifact, revision = provenance_.get("artifact"), provenance_.get("revision")
+            digest = str(provenance_.get("sha256"))
+            executed = None
+            if isinstance(artifact, str) and isinstance(revision, int):
+                executed = anchoring.executed(db, project, artifact, revision, digest)
+            if executed is None:
+                line = {k: provenance_.get(k) for k in ("file", "sha256", "line")}
+                return "interpreted", [line, *kept]
+            line = {"artifact": artifact, "revision": revision, "sha256": digest}
+            line["line"] = provenance_.get("line")
+            return ("observed" if executed else "interpreted"), [line, *kept]
         if provenance_ is not None and "delegation" in provenance_:
             return "observed", [{"delegation": provenance_["delegation"]}, *kept]
         if basis == "user":
@@ -3243,6 +3253,25 @@ def _rests_on(db: sqlite3.Connection, issue: str, claim: str) -> bool:
             (decider.fields["assessment"], claim),
         ).fetchone()
         is not None
+    )
+
+
+def _scope(db: sqlite3.Connection, project: str, author: Author) -> anchoring.Scope:
+    """Where ``author``'s anchors on the archive may point (CM-37, PD-13): an agent's,
+    its own session; a delegated agent's, its own run and the messages its brief names."""
+    if author.kind != "agent" or author.session_id is None:
+        return anchoring.Scope()
+    if author.role != "delegated":
+        return anchoring.Scope(session=author.session_id, run=author.run_id)
+    inputs: frozenset[str] = frozenset()
+    for run, brief in db.execute(
+        "SELECT run,brief FROM delegations WHERE project_id=? AND session_id=?",
+        (project, author.session_id),
+    ):
+        if author.run_id is not None and run_id_of(run) == author.run_id:
+            inputs = anchoring.briefed(brief)
+    return anchoring.Scope(
+        session=author.session_id, run=author.run_id, delegated=True, inputs=inputs
     )
 
 

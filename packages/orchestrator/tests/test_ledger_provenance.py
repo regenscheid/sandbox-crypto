@@ -7,11 +7,13 @@ gives its own records, and the anchors fixtures LG-F2 to LG-F5 and LG-F12 name."
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
+from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
 from sandbox_science.orchestrator.documents import (
     USER,
     Author,
@@ -19,16 +21,31 @@ from sandbox_science.orchestrator.documents import (
     DocumentStore,
     store_path,
 )
-from sandbox_science.orchestrator.history.archive import Archive, Entry
+from sandbox_science.orchestrator.documents.tool import REQUESTS_TASK
+from sandbox_science.orchestrator.history.archive import HEADER, Archive, Entry
 from sandbox_science.orchestrator.ledger import Ledger
-from sandbox_science.orchestrator.ledger.provenance import normal, numbers
-from sandbox_science.orchestrator.projects import ProjectStore
+from sandbox_science.orchestrator.ledger.provenance import normal, numbers, unread
+from sandbox_science.orchestrator.notices import REQUESTS
+from sandbox_science.orchestrator.projects import ProjectStore, run_name
+from sandbox_science.orchestrator.runstate import RunState
+from sandbox_science.orchestrator.worker_client import dump
 
+from .loop_harness import Harness, Reply, call
+from .loop_harness import gateway as gateway
+from .loop_harness import harness as harness
+from .loop_harness import worker as worker
 from .test_ledger import DELEGATED, MAIN, NEW
-from .test_ledger_evidence import publish
+from .test_ledger_evidence import publish, source
+from .test_run_service import ended, post, serving
 
 CONSTRAINT = "Only consider attacks whose memory stays below 2^64 bits, please."
 OUTPUT = "The group order is 1,000,003 and the attack costs 2^{80} operations; p = 17."
+STARTED = datetime(2026, 10, 16, 9, tzinfo=UTC)
+R1, R2, R3 = (run_name(STARTED, run) for run in ("r1", "r2", "r3"))
+"""MAIN's run, DELEGATED's run and another run, by the names the archive keeps them under."""
+DECISION = {"type": "decision", "status": "in_effect", "title": "Memory below 2^64",
+            "statement": "Only attacks with memory below $2^{64}$ bits.",
+            "basis": "user_quoted"}  # fmt: skip
 
 
 @pytest.fixture
@@ -44,9 +61,22 @@ def ledger(tmp_path: Path) -> Iterator[Ledger]:
     documents.close()
 
 
-def said(ledger: Ledger, entry: Entry, project: str = "p", session: str = "s") -> str:
-    """Archive a message of session s; its ID."""
-    return Archive(ledger.control).append(project, session, "r1", entry).message_id
+def said(
+    ledger: Ledger, entry: Entry, project: str = "p", session: str = "s", run: str = R1
+) -> str:
+    """Archive a message of session s's run r1; its ID."""
+    return Archive(ledger.control).append(project, session, run, entry).message_id
+
+
+def asked(ledger: Ledger, *texts: str, session: str = "s", run: str = R1) -> str:
+    """The user's chat messages, delivered to ``run`` as its task is: the task's ID."""
+    chat = RunState(ledger.control)
+    ids = [f"chat-{session}-{run}-{n}" for n in range(len(texts))]
+    for message, text in zip(ids, texts, strict=True):
+        chat.post("p", session, message, text, author="user")
+    chat.deliver("p", session, ids, run)
+    task = Entry(role="user", kind="task", content="\n\n".join(texts), refs=tuple(ids))
+    return said(ledger, task, session=session, run=run)
 
 
 def user(text: str) -> Entry:
@@ -77,6 +107,14 @@ def test_numbers_are_read_in_one_notation() -> None:
     assert numbers("1,000 and 1000, λ = 128 and λ=128") == {"1000", "128"}
     assert numbers("C-12 and REF-3 of msg-5f0c2e9a41d7b386 hold 3.5") == {"3.5"}
     assert "2^80" in numbers("time $2^{80}$")
+    # However the notation is spaced, bracketed or run on, M1 of #457's review.
+    for written in ("2 ^ 80", "2 ** 80", "2^(80)", "2^{ 80 }bits", "2⁸⁰-bit"):
+        assert numbers(written) == {"2^80"}, written
+    assert numbers("1e24, 1.0E+24 and $10^{24}$, or 1e24.") == {"10^24"}
+    assert numbers("1.2e-5 and $1.2 \\times 10^{-5}$ and 1.2·10^-5") == {"1.2e-5"}
+    assert numbers("80bit, AES-128, x₁, ١٢٣ and 0x50") == {"80", "128", "1", "123", "0x50"}
+    assert unread("p = 17, 2^{80}") is None
+    assert unread("the ① case") == "the ① case"
 
 
 def test_an_agents_change_names_its_anchor_or_holds_evidence(ledger: Ledger) -> None:
@@ -116,9 +154,7 @@ def test_user_quoted_quotes_the_users_message_word_for_word(ledger: Ledger) -> N
     word; an agent's record is never the user's own; the standing constraint keeps it."""
     message = said(ledger, user(CONSTRAINT.replace(", please", ",\r\nplease")))
     tool = said(ledger, result(CONSTRAINT))
-    constraint = {"type": "decision", "status": "in_effect", "title": "Memory below 2^64",
-                  "statement": "Only attacks with memory below $2^{64}$ bits.",
-                  "basis": "user_quoted"}  # fmt: skip
+    constraint = DECISION
     for n, (anchors, match) in enumerate(
         (
             ([{"message": tool, "quote": CONSTRAINT}], "anchors on a message the user wrote"),
@@ -140,6 +176,42 @@ def test_user_quoted_quotes_the_users_message_word_for_word(ledger: Ledger) -> N
     assert [e.basis for e in ledger.entries("p").entries] == ["user_quoted"]
 
 
+def test_user_quoted_quotes_only_the_users_own_words(ledger: Ledger) -> None:
+    """H1 and H2 of #457's review: a run's task made of the user's chat messages can be
+    quoted, each message apart; a delegation's brief and the stand-in task for comments
+    cannot. A comment notice is quoted only within its request texts, never its framing,
+    its JSON or the document text beside it, which an agent may have written."""
+    task = asked(ledger, CONSTRAINT, "And keep the notes short, as before.")
+    quote = "attacks whose memory stays below 2^64 bits"
+    change(ledger, {**DECISION, "anchors": [{"message": task, "quote": quote}]}, op="task")
+    assert ledger.entry("p", "D-1").anchors == [{"kind": "task", "message": task, "quote": quote}]
+    across = "below 2^64 bits, please.\n\nAnd keep"
+    brief = said(ledger, Entry(role="user", kind="task", content=CONSTRAINT), run=R2)
+    stand_in = said(ledger, Entry(role="user", kind="task", content=REQUESTS_TASK), run=R3)
+    agents = "Never use more than 2^40 memory for any attack in this project."
+    payload = [{"request_id": "req-1", "thread_id": "ann-" + "a" * 24, "document_id": "doc-1",
+                "request_text": 'Keep the "memory below 2^40"\nrule in every section.',
+                "untrusted_context": {"anchor": {"revision": 3, "block": "b4", "quote": agents},
+                                      "thread_revision": 1}}]  # fmt: skip
+    comment = said(ledger, Entry(role="user", kind="comment", content=REQUESTS.text + dump(payload),
+                                 source="requests"))  # fmt: skip
+    for n, (message, quoted) in enumerate(
+        (
+            (task, across),  # across two chat messages
+            (brief, quote),  # a delegation's brief names no chat message
+            (stand_in, "comments addressed to this session"),
+            (comment, "Never use more than 2^40 memory"),  # the document's text
+            (comment, "request_text is the user's instruction"),  # the framing
+            (comment, '"request_text":"Keep the'),  # the JSON
+        )
+    ):
+        refused(ledger, {**DECISION, "anchors": [{"message": message, "quote": quoted}]},
+                op=f"not-{n}", match="word for word")  # fmt: skip
+    request = 'the "memory below 2^40"\nrule in every'
+    change(ledger, {**DECISION, "anchors": [{"message": comment, "quote": request}]}, op="c")
+    assert [e.basis for e in ledger.entries("p").entries] == ["user_quoted"] * 2
+
+
 def test_observed_numbers_occur_in_what_was_observed(ledger: Ledger, tmp_path: Path) -> None:
     """CM-F8: an observed record anchors on a tool result, a range of one or an artifact,
     or holds evidence pinned to an artifact or a quote, and every number of its statement
@@ -154,6 +226,11 @@ def test_observed_numbers_occur_in_what_was_observed(ledger: Ledger, tmp_path: P
             op="caveat", match="19")  # fmt: skip
     refused(ledger, {**found, "anchors": [{"call": "call-7", "start": 0, "end": 30}]},
             op="range", match="2^80")  # fmt: skip
+    for n, written in enumerate(("$2 ^ 81$", "2^(81)", "1e24", "2 ** 81", "2^{81}bits")):
+        refused(ledger, {**found, "statement": f"The cost is {written}."}, op=f"n-{n}",
+                match="in none of its observations")  # fmt: skip
+    refused(ledger, {**found, "statement": "The cost is 2^{80} in case ①."}, op="unread",
+            match="cannot read the number in")  # fmt: skip
     refused(ledger, {**observed, "anchors": [{"message": said(ledger, user("p = 17"))}]},
             op="no-observation", match="is observed: it anchors on a tool result")  # fmt: skip
     artifact, digest = publish(cast(Any, ledger), tmp_path, b"order 1000003\n")
@@ -189,17 +266,7 @@ def test_work_records_are_anchored_and_the_platforms_anchor_themselves(
         "interpreted",
         [{"kind": "user", "message": message}],
     )
-    # The platform's records: an import's line and a check's outcome.
-    imported = {"operation_id": "line-1", "reason": "From the helper.",
-                "changes": [{**NEW["claim"], "statement": "Order 7."}]}  # fmt: skip
-    line = {"file": "shared/results/ff.jsonl", "sha256": "ab" * 32, "line": 1,
-            "environment": "env"}  # fmt: skip
-    ledger.change("p", imported, MAIN, provenance=line)
-    view = ledger.entry("p", "C-1")
-    assert (view.basis, view.anchors) == (
-        "observed",
-        [{"file": "shared/results/ff.jsonl", "line": 1, "sha256": "ab" * 32}],
-    )
+    # A check's outcome is the platform's record, observed on its delegation.
     outcome = {
         "operation_id": "work-dlg",
         "reason": "The check ended.",
@@ -210,6 +277,87 @@ def test_work_records_are_anchored_and_the_platforms_anchor_themselves(
     ledger.change("p", outcome, DELEGATED, provenance={"delegation": "dlg-" + "0" * 24})
     record = ledger.work("p", "I-1").records[0]
     assert (record.basis, record.anchors) == ("observed", [{"delegation": "dlg-" + "0" * 24}])
+
+
+def test_an_import_is_observed_only_on_an_executions_output(ledger: Ledger, tmp_path: Path) -> None:
+    """M2 of #457's review, the coordinator's decision: an import is observed only when its
+    results file is an artifact revision an execution produced, anchored on that revision
+    and the line; a file without that lineage, or that is no recorded artifact, imports as
+    interpreted."""
+    from sandbox_science.orchestrator.artifacts import ArtifactInventory
+
+    inventory = ArtifactInventory(ledger.documents)
+    executed = source(tmp_path).model_copy(
+        update={"kind": "execution_record", "execution_id": "exec-1", "attempt_state": "succeeded"}
+    )
+    failed = executed.model_copy(update={"attempt_state": "failed"})
+    digests = {name: f"{n:02d}" * 32 for n, name in enumerate(("ran", "failed", "written"))}
+    made = {
+        name: inventory.record_metadata(
+            by, f"results/{name}.jsonl", sha256=digests[name], size=10,
+            media_type="application/jsonl", note="too_large",
+        )[0].artifact_id
+        for name, by in (("ran", executed), ("failed", failed), ("written", source(tmp_path)))
+    }  # fmt: skip
+
+    def imported(n: int, name: str, **line: Any) -> tuple[str | None, list[dict[str, Any]]]:
+        mutation = {"operation_id": f"line-{n}", "reason": "From the helper.",
+                    "changes": [{**NEW["claim"], "statement": f"Order {n}."}]}  # fmt: skip
+        given = {"file": f"results/{name}.jsonl", "sha256": digests.get(name, "ab" * 32),
+                 "line": 1, "environment": "env", **line}  # fmt: skip
+        ledger.change("p", mutation, MAIN, provenance=given)
+        view = ledger.entry("p", f"C-{n}")
+        return view.basis, view.anchors
+
+    on = {"sha256": digests["ran"], "line": 1}
+    assert imported(1, "ran", artifact=made["ran"], revision=1) == (
+        "observed", [{"artifact": made["ran"], "revision": 1, **on}],
+    )  # fmt: skip
+    assert imported(2, "failed", artifact=made["failed"], revision=1)[0] == "interpreted"
+    assert imported(3, "written", artifact=made["written"], revision=1)[0] == "interpreted"
+    # Another file's revision, or none, anchors on the file itself.
+    assert imported(4, "other", artifact=made["ran"], revision=1) == (
+        "interpreted", [{"file": "results/other.jsonl", "line": 1, "sha256": "ab" * 32}],
+    )  # fmt: skip
+    assert imported(5, "other")[0] == "interpreted"
+
+
+def test_anchors_resolve_only_where_their_author_may_look(ledger: Ledger) -> None:
+    """L1 and L2 of #457's review (CM-37, PD-13): a main agent anchors within its session,
+    a delegated one within its own run and the messages its brief names; a call ID is
+    looked for in the author's run first, and one that two other runs share is
+    ambiguous. What it may not see reads as missing, its content unshown."""
+    projects = ProjectStore(ledger.documents.path.parent)
+    projects.open_session("p", "s2", dedicated=False)
+    projects.close()
+    secret = "A message in another session, said by the user there."
+    elsewhere = said(ledger, user(secret), session="s2")
+    with pytest.raises(DocumentError, match=f"no archive message {elsewhere}") as error:
+        change(ledger, {**NEW["claim"], "anchors": [{"message": elsewhere}]}, op="far")
+    assert "said by the user" not in error.value.message
+    # A call ID is looked for in the author's own run first.
+    said(ledger, result("mine: 7", call="call_0"))
+    said(ledger, result("theirs: 2^128", call="call_0"), session="s2")
+    said(ledger, result("one: 2^128", call="call_1"), run=R2)
+    said(ledger, result("two: 2^129", call="call_1"), run=R3)
+    observed = {**NEW["claim"], "basis": "observed", "statement": "It is 7."}
+    change(ledger, {**observed, "anchors": [{"call": "call_0"}]}, op="own")
+    refused(ledger, {**observed, "anchors": [{"call": "call_1"}]}, op="two",
+            match="call call_1 has a tool result in more than one run")  # fmt: skip
+    # A delegated run sees its own run and the messages its brief names.
+    named = said(ledger, user("Is 2^16+1 prime? It seems so to me."))
+    unnamed = said(ledger, user("Something the brief does not name at all."))
+    own = said(ledger, result("checked: 65537 is prime", call="call_9"), run=R2)
+    DelegationRecords(ledger.documents.control).start("p", "s", Delegation.model_validate({
+        "delegation_id": "dlg-" + "1" * 24, "parent": R1, "run": R2, "kind": "task",
+        "brief": {"task": "Check it.", "inputs": [f"The user's question, {named}."]},
+        "started_at": STARTED.isoformat()}))  # fmt: skip
+    issue = {**NEW["issue"], "status": None}
+    for n, anchor in enumerate(({"message": named}, {"message": own}, {"call": "call_9"})):
+        change(ledger, {**issue, "anchors": [anchor]}, op=f"seen-{n}", author=DELEGATED)
+    for n, anchor in enumerate(({"message": unnamed}, {"call": "call_0"})):
+        with pytest.raises(DocumentError, match="in what this run may see"):
+            change(ledger, {**issue, "anchors": [anchor]}, op=f"unseen-{n}", author=DELEGATED)
 
 
 def test_the_anchors_the_ledger_fixtures_name(ledger: Ledger) -> None:
@@ -294,3 +442,35 @@ def test_a_store_of_the_version_before_shows_no_basis(tmp_path: Path) -> None:
         documents.close()
     with sqlite3.connect(target / "control.sqlite3") as db:
         assert db.execute("PRAGMA user_version").fetchone() == (migrations.VERSION,)
+
+
+async def test_the_user_quoted_from_the_message_that_started_the_run(harness: Harness) -> None:
+    """H2 of #457's review, on the real path: a queued chat message starts a run, which
+    receives it as the user's message, archived with the chat message's ID; the agent
+    quotes it by the archive ID its header shows, and the standing constraint is recorded
+    as user_quoted."""
+    post(harness, "m-1", CONSTRAINT)
+
+    def quoting(messages: list[Any]) -> list[tuple[str, dict[str, Any]]]:
+        (asked,) = [m for m in messages if m["role"] == "user" and CONSTRAINT in m["content"]]
+        found = HEADER.match(asked["content"])
+        assert found is not None
+        anchor = {"message": found[1], "quote": "attacks whose memory stays below 2^64 bits"}
+        return [call("ledger_change", reason="The user's constraint.",
+                     changes=[{**DECISION, "anchors": [anchor]}])]  # fmt: skip
+
+    async with serving(harness, Reply(calls_from=quoting), Reply("Recorded.")):
+        await ended(harness)
+    documents = harness.documents()
+    try:
+        view = Ledger(documents).entry("p", "D-1")
+    finally:
+        documents.close()
+    assert view.basis == "user_quoted"
+    (anchor,) = view.anchors
+    projects = ProjectStore(harness.state)
+    try:
+        archived = Archive(projects.control).message("p", anchor["message"])
+    finally:
+        projects.close()
+    assert (archived.entry.kind, archived.entry.refs) == ("user", ("m-1",))

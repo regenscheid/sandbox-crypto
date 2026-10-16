@@ -44,7 +44,7 @@ from typing import TYPE_CHECKING, Any, Final, cast
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ExecutionContext, KernelInfo
 from sandbox_science.orchestrator.documents.tool import REQUESTS_TASK
 from sandbox_science.orchestrator.hooks import Point, RunView, TurnHook
-from sandbox_science.orchestrator.notices import KERNEL_LINES, REQUESTS, STATE_BLOCK
+from sandbox_science.orchestrator.notices import KERNEL_LINES, STATE_BLOCK, requests
 from sandbox_science.orchestrator.projects import ProjectError
 from sandbox_science.orchestrator.skills.discovery import shown_in
 from sandbox_science.orchestrator.skills.tool import given
@@ -417,7 +417,7 @@ def _words(
             label = "user message" if row.entry.kind == "user" else "task"
             items.append(_Words(row.message_id, label, content, row))
         elif row.entry.kind == "comment":
-            for request in _requests(content):
+            for request in requests(content):
                 label = f"comment on document {request.get('document_id')}"
                 text = str(request.get("request_text") or "")
                 items.append(_Words(row.message_id, label, text, row))
@@ -477,16 +477,6 @@ def _block(item: _Words, cap: int) -> str:
             f"{where} ...]\n{text[-half:]}"
         )
     return f"{item.head} ---\n{text}"
-
-
-def _requests(content: str) -> list[Json]:
-    """The work requests a comment notice delivered, as its message holds them."""
-    try:
-        found = json.loads(content.removeprefix(REQUESTS.text))
-    except ValueError:
-        return []
-    items = cast(list[object], found) if isinstance(found, list) else []
-    return [cast(Json, item) for item in items if isinstance(item, dict)]
 
 
 def _kernel(content: str) -> Json | None:
