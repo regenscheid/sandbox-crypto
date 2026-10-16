@@ -3,21 +3,26 @@
 what the ledger, the session plan and the read register hold, rendered by code into a
 run's state block, so that where the research stands never rests on a summary.
 
-``Digest.sections`` gathers its nine sections, in CM-16's order and with its shares;
-``render`` fits them in a budget: a section's unused share passes to the sections after
-it, and what is left at the end goes to the decisions; a section over its share ends with
-a line saying how many it left out and how to list them. Within a section, the entries
-this session touched come first, then the most recently changed, then the most linked.
-Every line ends with its basis (CM-9) and the call that reads it whole.
+``Digest.sections`` gathers its nine sections, in CM-16's order and with its shares, each
+on its own, so that one that cannot be read leaves the others; ``render`` fits them in a
+budget: a section's unused share passes to the sections after it, and what is left at
+the end goes to the decisions; a section over its share ends with a line saying how many
+it left out and how to list them, counted in its share. Within a section, the entries
+this session wrote come first, then the most recently changed, then the most linked.
+Every line ends with its basis (CM-9) and the call that reads it whole. ``Rendered``
+names the handles shown and those left out, which folds keep apart (CM-21b).
 
 The labels are the ledger's own: an entry's kind, session, standing (CM-11, which
 ``ledger.standing`` decides) and basis, and its open flags with their causes; the digest
 recomputes none of them. The user's standing constraints are the decisions in effect
-with the basis ``user`` or ``user_quoted``, the project's and this session's; beside a
-``user_quoted`` one, code copies the quotes its anchors hold, which the ledger verified
-against the user's message when it was written (CM-9). Decisions meant for another
-session are counted, not shown (CM-10). ``constraints`` is what a delegated task gets
-(CM-37a); a check gets nothing.
+with the basis ``user`` or ``user_quoted``, the project's and this session's. Beside a
+``user_quoted`` one go the quotes its anchors hold that are the user's: each anchored on
+a message the user wrote, and found in the user's words there, word for word, when the
+digest is rendered. Any other quote an anchor holds is not shown: an agent wrote it.
+Decisions meant for another session are counted, not shown (CM-10). ``constraints`` is
+what a delegated task gets (CM-37a): a constraint an agent recorded shows the user's
+checked words and its statement marked as the agent's, without its reason. A check gets
+nothing.
 
 Not built yet: fold proposals (section 8, step f3), and among the open items the review
 findings, jobs and approvals a session waits for, and recorded artifacts in the index.
@@ -25,18 +30,24 @@ findings, jobs and approvals a session waits for, and recorded artifacts in the 
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass, field
+import logging
+import sqlite3
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field, replace
 from typing import Any, Final, cast
 
+from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
+from sandbox_science.orchestrator.documents import DocumentError
 from sandbox_science.orchestrator.history.reads import reference_reads
-from sandbox_science.orchestrator.ledger.models import EntrySummary, EntryView
+from sandbox_science.orchestrator.ledger.models import MIN_QUOTE, EntrySummary, EntryView
+from sandbox_science.orchestrator.ledger.provenance import users_words
 from sandbox_science.orchestrator.ledger.store import Ledger
 from sandbox_science.orchestrator.questions import Questions
 from sandbox_science.orchestrator.session_plans import PlanAuthority, PlanScope, SessionPlans
 
 Json = dict[str, Any]
+_log = logging.getLogger(__name__)
 
 SHARE: Final = 0.1
 """The share of a run's input, in characters, that the digest takes at most."""
@@ -59,21 +70,27 @@ TAGS: Final = {
     "interpreted": "[interpreted]",
 }
 UNRECORDED: Final = "[basis not recorded]"
-STANDINGS: Final = ("attempt", "claimed", "disputed", "flagged", "impossible")
-"""CM-11's labels, in the order findings show them, after the plain findings."""
+STANDINGS: Final = ("impossible", "flagged", "disputed", "claimed", "attempt")
+"""CM-11's labels, in the order findings show them, before the plain findings: what
+stops repeated work stays in view first."""
+USERS: Final = ("user", "task", "comment")
+"""The archive's kinds of message that can hold the user's own words (CM-9)."""
 SCANNED: Final = 2000
-"""The most entries of one type the digest reads, newest first."""
+"""The most entries of one type a section reads, newest first, of those it can show."""
 CLIP: Final = 300
 
 
 @dataclass(frozen=True)
 class Line:
-    """One item of a section, with what orders it."""
+    """One item of a section, with what orders it and the handle that reads it whole."""
 
     text: str
     touched: bool = False
     updated: str = ""
     linked: int = 0
+    handle: str | None = None
+    pinned: bool = False
+    """A line no later line of its section may displace: one of the user's constraints."""
 
 
 @dataclass
@@ -88,6 +105,15 @@ class Section:
     """A line the section always ends with, such as the count of other sessions'."""
 
 
+@dataclass(frozen=True)
+class Rendered:
+    """The digest's text, the handles it shows, and those it leaves out (CM-21b)."""
+
+    text: str
+    shown: tuple[str, ...] = ()
+    left_out: tuple[str, ...] = ()
+
+
 def _clip(text: str, limit: int = CLIP) -> str:
     text = " ".join(text.split())
     return text if len(text) <= limit else text[: limit - 1] + "…"
@@ -97,11 +123,18 @@ def _tag(basis: str | None) -> str:
     return TAGS.get(basis or "", UNRECORDED)
 
 
+def _lines(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _ordered(lines: list[Line]) -> list[Line]:
     """The session's own first, then the most recently changed, then the most linked."""
     by_link = sorted(lines, key=lambda line: -line.linked)
     by_time = sorted(by_link, key=lambda line: line.updated, reverse=True)
     return sorted(by_time, key=lambda line: not line.touched)
+
+
+Pick = Callable[[EntrySummary], bool]
 
 
 class Digest:
@@ -117,49 +150,91 @@ class Digest:
     ) -> None:
         self.ledger, self.plans = ledger, plans
         self.questions, self.delegations = questions, delegations
-        self._read: dict[tuple[str, str], list[tuple[EntrySummary, EntryView]]] = {}
+        self._listed: dict[tuple[str, str], list[EntrySummary]] = {}
+        self.unread: dict[str, int] = {}
+        """Of each type, how many entries a section could show but did not read, past
+        ``SCANNED``."""
 
-    def _views(self, project: str, kind: str) -> list[tuple[EntrySummary, EntryView]]:
-        """The project's entries of one type, newest ``SCANNED``, each with its view; read
-        once for each rendering."""
-        if (project, kind) not in self._read:
-            self._read[project, kind] = self._scan(project, kind)
-        return self._read[project, kind]
-
-    def _scan(self, project: str, kind: str) -> list[tuple[EntrySummary, EntryView]]:
-        found: list[EntrySummary] = []
-        after: str | None = None
-        while True:
-            page = self.ledger.entries(project, kind=kind, after=after, limit=200)
-            found += page.entries
-            if page.next_after is None or len(found) >= SCANNED:
-                break
-            after = page.next_after
-        return [(s, self.ledger.entry(project, s.entry_id)) for s in found[-SCANNED:]]
+    def _views(self, project: str, kind: str, pick: Pick) -> list[tuple[EntrySummary, EntryView]]:
+        """The entries of one type that ``pick`` keeps, by their summaries, the newest
+        ``SCANNED`` of them with their views; how many it passed over is counted."""
+        if (project, kind) not in self._listed:
+            found: list[EntrySummary] = []
+            after: str | None = None
+            while True:
+                page = self.ledger.entries(project, kind=kind, after=after, limit=200)
+                found += page.entries
+                if page.next_after is None:
+                    break
+                after = page.next_after
+            self._listed[project, kind] = found
+        kept = [s for s in self._listed[project, kind] if pick(s)]
+        newest = sorted(kept, key=lambda s: s.updated, reverse=True)[:SCANNED]
+        if len(kept) > SCANNED:
+            self.unread[kind] = self.unread.get(kind, 0) + len(kept) - SCANNED
+        return [(s, self.ledger.entry(project, s.entry_id)) for s in newest]
 
     def _line(self, view: EntryView, session: str, text: str) -> Line:
         touched = view.author.get("session_id") == session
         hint = f" {_tag(view.basis)} (ledger_read {view.handle})"
-        return Line(text + hint, touched, view.updated, view.incoming_total)
+        return Line(text + hint, touched, view.updated, view.incoming_total, view.handle)
+
+    def users_quotes(self, project: str, view: EntryView) -> list[tuple[str, str]]:
+        """The quotes ``view``'s anchors hold that are the user's: each on a message the
+        user wrote, found there word for word (as CM-9 checks a quote); with its message."""
+        found: list[tuple[str, str]] = []
+        with self.ledger.control.read() as tx:
+            for anchor in view.anchors:
+                quote, message = anchor.get("quote"), anchor.get("message")
+                if anchor.get("kind") not in USERS or not isinstance(quote, str):
+                    continue
+                said = [_lines(s) for s in users_words(tx.sql, project, str(message))]
+                wanted = _lines(quote)
+                if any(
+                    len(wanted.strip()) >= min(MIN_QUOTE, len(s.strip())) and wanted in s
+                    for s in said
+                ):
+                    found.append((str(message), quote))
+        return found
+
+    def _quotes(self, project: str, view: EntryView) -> str:
+        return "".join(
+            f"\n  the user's words, as the agent quoted them and the platform found them in "
+            f'the user\'s message {message}: "{_clip(quote, 600)}"'
+            for message, quote in self.users_quotes(project, view)
+        )
+
+    @staticmethod
+    def _standing(session: str) -> Pick:
+        def pick(s: EntrySummary) -> bool:
+            return (
+                s.status == "in_effect"
+                and s.basis in ("user", "user_quoted")
+                and s.session in (None, session)
+            )
+
+        return pick
 
     def constraints(self, project: str, session: str) -> list[Line]:
-        """The user's standing constraints, the project's and this session's, each with
-        the user's quoted words beside it (CM-16, CM-37a)."""
-        self._read = {}
-        return [
-            line
-            for summary, view in self._views(project, "decision")
-            if (line := self._constraint(summary, view, session)) is not None
-        ]
+        """The user's standing constraints, the project's and this session's, for a
+        delegated task (CM-37a): one the user set as the user wrote it; one an agent
+        recorded with the user's checked words and its statement marked as the agent's,
+        without its reason, which is the agent's too."""
+        self._listed, self.unread = {}, {}
+        lines: list[Line] = []
+        for _, view in self._views(project, "decision", self._standing(session)):
+            scoped = "; for this session only" if view.session is not None else ""
+            if view.basis == "user":
+                text = f"{view.handle} {_clip(view.statement)}{scoped} [user]"
+            else:
+                text = (
+                    f"{view.handle} (recorded by an agent: {_clip(view.statement)}){scoped}"
+                    f"{self._quotes(project, view)}"
+                )
+            lines.append(Line(text, handle=view.handle))
+        return lines
 
-    def _constraint(self, summary: EntrySummary, view: EntryView, session: str) -> Line | None:
-        if summary.status != "in_effect" or summary.basis not in ("user", "user_quoted"):
-            return None
-        if summary.session not in (None, session):
-            return None
-        return self._decision(view, session)
-
-    def _decision(self, view: EntryView, session: str) -> Line:
+    def _decision(self, project: str, view: EntryView, session: str) -> Line:
         fields = view.fields
         text = f"{view.handle} ({view.status}) {_clip(view.statement)}"
         text += f"; reason: {_clip(view.reason, 200)}"
@@ -173,134 +248,99 @@ class Digest:
             causes = ", ".join(sorted({flag.cause for flag in view.flags}))
             text += f"; open flags: {causes}"
         line = self._line(view, session, text)
-        quotes = [a for a in view.anchors if isinstance(a.get("quote"), str)]
-        if view.basis == "user_quoted" and quotes:
-            said = "".join(
-                f"\n  the user's own words, copied by the platform ({a.get('message')}): "
-                f'"{_clip(str(a["quote"]), 600)}"'
-                for a in quotes
-            )
-            line = Line(line.text + said, line.touched, line.updated, line.linked)
-        return line
+        if view.basis != "user_quoted":
+            return line
+        said = self._quotes(project, view)
+        return Line(line.text + said, line.touched, line.updated, line.linked, line.handle)
 
     def sections(self, project: str, session: str) -> list[Section]:
-        """CM-16's sections for a main run of ``session``, as the stores hold them now."""
-        self._read = {}
+        """CM-16's sections for a main run of ``session``, as the stores hold them now; a
+        section that cannot be read says so, and the others stand."""
+        self._listed, self.unread = {}, {}
         found = {key: Section(key, title, share) for key, title, share in SECTIONS}
-        found["plan"].lines = self._plan(project, session)
-        found["plan"].hint = "plan_read(current)"
-        decisions = self._views(project, "decision")
+        gatherers: dict[str, Callable[[Section], None]] = {
+            "plan": lambda s: self._plan(s, project, session),
+            "decisions": lambda s: self._decisions(s, project, session),
+            "questions": lambda s: self._questions(s, project, session),
+            "assumptions": lambda s: self._assumptions(s, project, session),
+            "findings": lambda s: self._findings(s, project, session),
+            "sources": lambda s: self._sources(s, project, session),
+            "open": lambda s: self._items(s, found["index"], project, session),
+        }
+        for key, gather in gatherers.items():
+            try:
+                gather(found[key])
+            except (DocumentError, ControlError, sqlite3.Error) as error:
+                _log.warning("the digest's %s could not be read: %s", key, error)
+                found[key].lines, found[key].note = [], f"(This section could not be read: {error})"
+        for key, kind in (("decisions", "decision"), ("findings", "claim"), ("questions", "issue")):
+            if self.unread.get(kind):
+                extra = f"{self.unread[kind]} older entries of this kind were not read for it."
+                found[key].note = f"{found[key].note} {extra}" if found[key].note else extra
+        return list(found.values())
+
+    def _decisions(self, section: Section, project: str, session: str) -> None:
+        standing = self._standing(session)
         elsewhere: dict[str, int] = {}
         groups: list[list[Line]] = [[], [], [], []]
-        for summary, view in decisions:
+        for summary, view in self._views(project, "decision", lambda s: s.status != "withdrawn"):
             if summary.session not in (None, session):
                 elsewhere[summary.session] = elsewhere.get(summary.session, 0) + 1
-            elif (line := self._constraint(summary, view, session)) is not None:
-                groups[0].append(line)
+                continue
+            line = self._decision(project, view, session)
+            if standing(summary):
+                groups[0].append(replace(line, pinned=True))
             elif summary.status in ("rejected", "reversed") or (
                 summary.status == "in_effect" and view.fields.get("excluded_scope")
             ):
-                groups[1].append(self._decision(view, session))
+                groups[1].append(line)
             elif summary.status == "in_effect":
-                groups[2].append(self._decision(view, session))
+                groups[2].append(line)
             elif summary.status == "proposed":
-                groups[3].append(self._decision(view, session))
-        found["decisions"].lines = [line for group in groups for line in _ordered(group)]
-        found["decisions"].hint = "ledger_list with type decision"
+                groups[3].append(line)
+        section.lines = [line for group in groups for line in _ordered(group)]
+        section.hint = "ledger_list with type decision"
         if elsewhere:
             counted = ", ".join(f"{name}: {n}" for name, n in sorted(elsewhere.items()))
-            found["decisions"].note = f"Decisions meant for other sessions, not shown: {counted}."
-        found["questions"].lines = _ordered(
-            [
-                self._line(view, session, self._issue(view))
-                for summary, view in self._views(project, "issue")
-                if summary.status == "open"
-                and (summary.kind or "question") in ("question", "hypothesis", "contradiction")
-            ]
-        )
-        found["questions"].hint = "ledger_list with type issue"
-        found["assumptions"].lines = _ordered(
-            [
-                self._line(view, session, self._assumption(view))
-                for summary, view in self._views(project, "assumption")
-                if summary.status == "active"
-            ]
-        )
-        found["assumptions"].hint = "ledger_list with type assumption"
-        found["findings"].lines = self._findings(project, session)
-        found["findings"].hint = "ledger_list with type claim or result"
-        found["sources"].lines = _ordered(
-            [
-                self._line(view, session, self._source(project, view))
-                for summary, view in self._views(project, "reference")
-                if summary.status == "active"
-            ]
-        )
-        found["sources"].hint = "ledger_list with type reference"
-        found["open"].lines, found["index"].lines = self._items(project, session)
-        found["open"].hint = found["index"].hint = "delegation_status and the chat"
-        return list(found.values())
+            section.note = f"Decisions meant for other sessions, not shown: {counted}."
 
-    def _plan(self, project: str, session: str) -> list[Line]:
-        if self.plans is None:
-            return []
-        scope = PlanScope(project_id=project, session_id=session)
-        snapshot = self.plans.current(PlanAuthority(scope=scope, role="main", run_id="digest"))
-        if snapshot is None:
-            return []
-        body, head = snapshot.version.body, snapshot.head
-        lines = [
-            Line(
-                f"Goal (plan {head.ref.plan_id} version {head.ref.version}, {head.status}): "
-                f"{_clip(body.goal)} [plan] (plan_read current)",
-                touched=True,
-            )
-        ]
-        latest = {s.step_id: s.latest for s in snapshot.steps}
-        current = next(
-            (
-                step.step_id
-                for phase in body.phases
-                for step in phase.steps
-                if (p := latest.get(step.step_id)) is None or p.status != "completed"
-            ),
-            None,
-        )
-        for phase in body.phases:
-            for step in phase.steps:
-                progress = latest.get(step.step_id)
-                status = progress.status if progress is not None else "pending"
-                note = f": {_clip(progress.note, 200)}" if progress is not None else ""
-                mark = " (current)" if step.step_id == current else ""
-                lines.append(Line(f"{step.step_id}{mark} {status} {_clip(step.title)}{note}", True))
-        return lines
+    def _questions(self, section: Section, project: str, session: str) -> None:
+        def pick(s: EntrySummary) -> bool:
+            kind = s.kind or "question"
+            return s.status == "open" and kind in ("question", "hypothesis", "contradiction")
 
-    def _issue(self, view: EntryView) -> str:
-        kind = view.kind or "question"
-        text = f"{view.handle} ({kind}) {_clip(view.statement)}"
-        concerns = [link.handle or link.target_id for link in view.links if link.kind == "concerns"]
-        if concerns:
-            text += f"; concerns {', '.join(concerns)}"
-        return text
+        lines: list[Line] = []
+        for _, view in self._views(project, "issue", pick):
+            text = f"{view.handle} ({view.kind or 'question'}) {_clip(view.statement)}"
+            concerns = [k.handle or k.target_id for k in view.links if k.kind == "concerns"]
+            if concerns:
+                text += f"; concerns {', '.join(concerns)}"
+            lines.append(self._line(view, session, text))
+        section.lines, section.hint = _ordered(lines), "ledger_list with type issue"
 
-    def _assumption(self, view: EntryView) -> str:
-        text = f"{view.handle} {_clip(view.statement)}"
-        relying = [link.handle or "" for link in view.incoming if link.kind == "assumes"]
-        if relying:
-            more = " and others" if view.incoming_total > len(view.incoming) else ""
-            text += f"; relied on by {', '.join(relying)}{more}"
-        if view.flags:
-            text += f"; open flags: {', '.join(sorted({f.cause for f in view.flags}))}"
-        return text
+    def _assumptions(self, section: Section, project: str, session: str) -> None:
+        lines: list[Line] = []
+        for _, view in self._views(project, "assumption", lambda s: s.status == "active"):
+            text = f"{view.handle} {_clip(view.statement)}"
+            relying = [link.handle or "" for link in view.incoming if link.kind == "assumes"]
+            if relying:
+                more = " and others" if view.incoming_total > len(view.incoming) else ""
+                text += f"; relied on by {', '.join(relying)}{more}"
+            if view.flags:
+                text += f"; open flags: {', '.join(sorted({f.cause for f in view.flags}))}"
+            lines.append(self._line(view, session, text))
+        section.lines, section.hint = _ordered(lines), "ledger_list with type assumption"
 
-    def _findings(self, project: str, session: str) -> list[Line]:
+    def _findings(self, section: Section, project: str, session: str) -> None:
         plain: list[Line] = []
         labelled: dict[str, list[Line]] = {label: [] for label in STANDINGS}
-        found = self._views(project, "claim") + self._views(project, "result")
-        found += [(s, v) for s, v in self._views(project, "issue") if s.standing is not None]
+
+        def shown(s: EntrySummary) -> bool:
+            return s.status != "withdrawn"
+
+        found = self._views(project, "claim", shown) + self._views(project, "result", shown)
+        found += self._views(project, "issue", lambda s: s.standing is not None)
         for summary, view in found:
-            if summary.status == "withdrawn":
-                continue
             kind = f", {view.kind}" if view.kind else ""
             text = f"{view.handle} ({view.status}{kind}) {_clip(view.statement)}"
             types = sorted({e.type for e in view.evidence})
@@ -324,29 +364,65 @@ class Digest:
             if standing.by:
                 text += f"; by {standing.by}"
             labelled[standing.label].append(self._line(view, session, text))
-        return [
-            *_ordered(plain),
+        section.lines = [
             *(line for label in STANDINGS for line in _ordered(labelled[label])),
+            *_ordered(plain),
         ]
+        section.hint = "ledger_list with type claim or result; the labelled ones come first"
 
-    def _source(self, project: str, view: EntryView) -> str:
-        reads = reference_reads(self.ledger.control, project, view.fields)
-        text = f"{view.handle} {_clip(view.title, 200)}"
-        if not reads:
-            return text + "; read: not in this project's sessions"
-        shown: list[str] = []
-        for read in reads:
-            covered = cast(Json, read.get("covered") or {})
-            pages = f" pages {covered['pages']}" if "pages" in covered else ""
-            of = f" of {covered['of']}" if covered.get("of") else ""
-            shown.append(f"{read['kind']} {read['extent']}{pages}{of}")
-        return text + f"; read: {'; '.join(shown)}"
+    def _sources(self, section: Section, project: str, session: str) -> None:
+        lines: list[Line] = []
+        for _, view in self._views(project, "reference", lambda s: s.status == "active"):
+            reads = reference_reads(self.ledger.control, project, view.fields)
+            text = f"{view.handle} {_clip(view.title, 200)}"
+            shown: list[str] = []
+            for read in reads:
+                covered = cast(Json, read.get("covered") or {})
+                pages = f" pages {covered['pages']}" if "pages" in covered else ""
+                of = f" of {covered['of']}" if covered.get("of") else ""
+                shown.append(f"{read['kind']} {read['extent']}{pages}{of}")
+            text += f"; read: {'; '.join(shown)}" if shown else "; read: not in this project"
+            lines.append(self._line(view, session, text))
+        section.lines, section.hint = _ordered(lines), "ledger_list with type reference"
 
-    def _items(self, project: str, session: str) -> tuple[list[Line], list[Line]]:
-        waiting: list[Line] = []
-        ended: list[Line] = []
+    def _plan(self, section: Section, project: str, session: str) -> None:
+        section.hint = "plan_read(current)"
+        if self.plans is None:
+            return
+        scope = PlanScope(project_id=project, session_id=session)
+        snapshot = self.plans.current(PlanAuthority(scope=scope, role="main", run_id="digest"))
+        if snapshot is None:
+            return
+        body, head = snapshot.version.body, snapshot.head
+        lines = [
+            Line(
+                f"Goal (plan {head.ref.plan_id} version {head.ref.version}, {head.status}): "
+                f"{_clip(body.goal)} [plan] (plan_read current)",
+                touched=True,
+            )
+        ]
+        latest = {s.step_id: s.latest for s in snapshot.steps}
+        steps = [step for phase in body.phases for step in phase.steps]
+        current = next(
+            (
+                step.step_id
+                for step in steps
+                if (p := latest.get(step.step_id)) is None or p.status != "completed"
+            ),
+            None,
+        )
+        for step in steps:
+            progress = latest.get(step.step_id)
+            status = progress.status if progress is not None else "pending"
+            note = f": {_clip(progress.note, 200)}" if progress is not None else ""
+            mark = " (current)" if step.step_id == current else ""
+            lines.append(Line(f"{step.step_id}{mark} {status} {_clip(step.title)}{note}", True))
+        section.lines = lines
+
+    def _items(self, waiting: Section, index: Section, project: str, session: str) -> None:
+        waiting.hint = index.hint = "delegation_status and the chat"
         if self.questions is not None:
-            waiting += [
+            waiting.lines += [
                 Line(f"{q.question_id} question to the user, not answered: {_clip(q.text, 200)}")
                 for q in self.questions.open(project, session)
             ]
@@ -354,10 +430,9 @@ class Digest:
             listed, _ = self.delegations.listed(project, session)
             for d in reversed(listed):
                 if d.ended is None:
-                    waiting.append(Line(f"{d.delegation_id} {d.kind} running: {_title(d)}"))
+                    waiting.lines.append(Line(f"{d.delegation_id} {d.kind} running: {_title(d)}"))
                 else:
-                    ended.append(Line(f"{d.delegation_id} {d.kind} {d.ended}: {_title(d)}"))
-        return waiting, ended
+                    index.lines.append(Line(f"{d.delegation_id} {d.kind} {d.ended}: {_title(d)}"))
 
 
 def _title(delegation: Delegation) -> str:
@@ -371,38 +446,55 @@ def _title(delegation: Delegation) -> str:
     return f"{named} (delegation_status {delegation.delegation_id})"
 
 
-def render(sections: Sequence[Section], budget: int) -> str:
+def render(sections: Sequence[Section], budget: int) -> Rendered:
     """The sections within ``budget`` characters, by their shares (CM-16). An empty
     section is left out, its share passing on."""
     rooms = [int(budget * section.share) for section in sections]
-    texts: list[str] = []
+    fitted: list[tuple[str, list[Line], list[Line]]] = []
     carry = 0
     for index, section in enumerate(sections):
-        text = _fit(section, rooms[index] + carry)
-        carry = rooms[index] + carry - len(text)
-        texts.append(text)
+        fitted.append(_fit(section, rooms[index] + carry))
+        carry = rooms[index] + carry - len(fitted[-1][0])
     decisions = next((i for i, s in enumerate(sections) if s.key == "decisions"), None)
     if decisions is not None and carry > 0:
-        given = len(texts[decisions]) + carry
-        texts[decisions] = _fit(sections[decisions], given)
-    return "".join(texts)
+        fitted[decisions] = _fit(sections[decisions], len(fitted[decisions][0]) + carry)
+    return Rendered(
+        "".join(text for text, _, _ in fitted),
+        tuple(line.handle for _, shown, _ in fitted for line in shown if line.handle),
+        tuple(line.handle for _, _, left in fitted for line in left if line.handle),
+    )
 
 
-def _fit(section: Section, room: int) -> str:
+def _fit(section: Section, room: int) -> tuple[str, list[Line], list[Line]]:
+    """A section within ``room``: as many of its lines as fit, in order, a shorter later
+    one where a longer one did not, but never one after a pinned line that did not (the
+    user's constraints are never displaced); and when some do not, the line that says so,
+    which counts against the room too."""
     if not section.lines and section.note is None:
-        return ""
-    text = f"## {section.title}\n"
-    shown = 0
+        return "", [], []
+    head = f"## {section.title}\n"
     note = f"{section.note}\n" if section.note else ""
+    total = len(head) + len(note) + sum(len(line.text) + 1 for line in section.lines)
+    reserve = 0 if total <= room else len(_omitted(len(section.lines), section.hint))
+    used = len(head) + len(note) + reserve
+    shown: list[Line] = []
+    left: list[Line] = []
+    blocked = False
     for line in section.lines:
-        if len(text) + len(line.text) + 1 + len(note) > room:
-            break
-        text += line.text + "\n"
-        shown += 1
-    left = len(section.lines) - shown
+        if not blocked and used + len(line.text) + 1 <= room:
+            shown.append(line)
+            used += len(line.text) + 1
+        else:
+            left.append(line)
+            blocked = blocked or line.pinned
+    text = head + "".join(line.text + "\n" for line in shown)
     if left:
-        text += f"({left} more left out of this digest; {section.hint} lists them.)\n"
-    return text + note
+        text += _omitted(len(left), section.hint)
+    return text + note, shown, left
+
+
+def _omitted(count: int, hint: str) -> str:
+    return f"({count} more left out of this digest; {hint} lists them.)\n"
 
 
 def constraints_block(lines: Sequence[Line]) -> str:

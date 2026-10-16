@@ -680,7 +680,7 @@ class Harness:
         try:
             body = render(
                 digest.sections(project, session), int(self.settings.max_input_chars * SHARE)
-            )
+            ).text
         except DocumentError as error:  # a project the ledger does not know yet
             _log.warning("no digest for %s/%s: %s", project, session, error)
             return None
