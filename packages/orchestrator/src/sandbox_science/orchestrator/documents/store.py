@@ -83,6 +83,8 @@ from .models import (
 from .normalize import Normalized, normalize
 from .operations import MAX_OPERATIONS, Operation, touches
 from .parser import parser_versions
+from .pins import newer, unresolved_warnings
+from .pins import pin as pin_references
 from .project_macros import head as macro_head
 
 CACHED: Final = 16
@@ -296,7 +298,7 @@ def _agent_operations(operations: list[Operation]) -> list[Operation]:
     for number, operation in enumerate(operations, 1):
         texts = {
             name: agent_text(value, f"operation {number}'s text")
-            for name in ("markdown", "tex", "with_")
+            for name in ("markdown", "tex", "with_", "path")
             if isinstance(value := getattr(operation, name, None), str)
         }
         kept.append(operation.model_copy(update=texts))
@@ -412,11 +414,25 @@ class DocumentStore:
         ).fetchone()
         if found is None:
             raise DocumentError(NOT_FOUND, f"document {document_id} has no revision {number}")
-        text, stored = db.execute(
-            "SELECT text, block_map FROM revisions WHERE document_id = ? AND number = ?",
+        text, stored, pins = db.execute(
+            "SELECT text, block_map, pins FROM revisions WHERE document_id = ? AND number = ?",
             (document_id, number),
         ).fetchone()
-        return Revision(info=_revision(found), text=text, block_map=json.loads(stored))
+        return Revision(
+            info=_revision(found),
+            text=text,
+            block_map=json.loads(stored),
+            pins=json.loads(pins) if pins else [],
+        )
+
+    def pins(self, project_id: str, reference: str, number: int | None = None) -> list[Json]:
+        """A revision's references to recorded files with their pins, each with the
+        file's current revision as ``latest`` when that is newer (figures spec, FG-8)."""
+        with self.control.read() as tx:
+            db = tx.sql
+            row = self._find(db, project_id, reference)
+            revision = self._revision(db, row.info.document_id, number or row.info.head)
+            return newer(db, project_id, revision.pins)
 
     def mapped(self, project_id: str, reference: str, number: int | None = None) -> Mapped:
         """A revision's parse with its blocks' and spans' IDs."""
@@ -1020,6 +1036,7 @@ class DocumentStore:
                 normalized={},
                 outcome="applied",
                 force=restored.block_ids != head.block_ids or restored.span_ids != head.span_ids,
+                pins_from=target,
             )
             self._remember(db, project_id, author, operation_id, request, result)
             return result
@@ -1609,16 +1626,43 @@ class DocumentStore:
         submission: _Submission | None = None,
         tombstone: bool = False,
         force: bool = False,
+        pins_from: int | None = None,
     ) -> ChangeResult:
-        """The next revision, unless the text is unchanged, with its patch and its event."""
+        """The next revision, unless the text and its pins are unchanged, with its patch
+        and its event. Its references keep the pins of revision ``pins_from`` (the current
+        one unless named) where they are unchanged (figures spec, FG-7, FG-11)."""
         info = row.info
         patch_id = None if submission is None else submission.patch_id
         accepted_by = None if submission is None else submission.accepted_by
+        moves = {
+            (str(entry["block"]), str(entry["path"])): entry.get("revision")
+            for entry in operations
+            if entry.get("op") == "repin"
+        }
+        source = pins_from if pins_from is not None else info.head
+        previous = [] if tombstone else self._stored_pins(db, info.document_id, source)
+        pinned, moved = (
+            ([], [])
+            if tombstone
+            else pin_references(
+                db, info.project_id, info.session_id or author.session_id, mapped, previous, moves
+            )
+        )
+        if source != info.head:
+            # A revert to another revision's pins changes the blocks whose pins differ.
+            current = self._stored_pins(db, info.document_id, info.head)
+            moved += [
+                block
+                for block in {str(entry["block"]) for entry in [*pinned, *current]}
+                if [e for e in pinned if e["block"] == block]
+                != [e for e in current if e["block"] == block]
+            ]
         if (
             head is not None
             and mapped.parsed.text == head.parsed.text
             and not tombstone
             and not force
+            and not moved
         ):
             if submission is not None:
                 self._keep(db, info, submission, "unchanged", {}, info.head)
@@ -1632,6 +1676,10 @@ class DocumentStore:
                 message="the text is unchanged, so no revision was made",
             )
         changes: Changes = compare(head, mapped)
+        for block_id in moved:
+            # A moved pin changes what the block shows (LD-11, as amended for figures).
+            if changes.blocks.get(block_id) in ("kept", "moved"):
+                changes.blocks[block_id] = "changed"
         number = info.head + 1
         stored = block_map(mapped, changes)
         new_blocks = [
@@ -1639,7 +1687,9 @@ class DocumentStore:
             for index, block_id in enumerate(mapped.block_ids)
             if changes.blocks[block_id] in ("added", "changed")
         ]
-        found = warnings(mapped, new_blocks)
+        found = warnings(mapped, new_blocks) + unresolved_warnings(
+            pinned, {mapped.block_ids[index] for index in new_blocks}
+        )
         now = self._clock()
         text = mapped.parsed.text
         if normalized.get("converted"):
@@ -1647,8 +1697,8 @@ class DocumentStore:
         db.execute(
             "INSERT INTO revisions (document_id, number, created_at, author, accepted_by, "
             "session_id, base, parent, reason, operations, patch_id, text, sha256, tombstone, "
-            "normalized, warnings, block_map, parser, macro_revision) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "normalized, warnings, block_map, parser, macro_revision, pins) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 info.document_id,
                 number,
@@ -1669,6 +1719,7 @@ class DocumentStore:
                 _dumps(stored),
                 _dumps({**parser_versions(), "profile": mapped.parsed.profile}),
                 macro_head(db, info.project_id),  # the project macros it is shown with
+                _dumps(pinned) if pinned else None,
             ),
         )
         db.execute(
@@ -1714,6 +1765,17 @@ class DocumentStore:
             normalized=normalized,
             warnings=found,
         )
+
+    @staticmethod
+    def _stored_pins(db: sqlite3.Connection, document_id: str, number: int) -> list[Json]:
+        """The pins a revision was saved with; none for a revision that is not there."""
+        if not number:
+            return []
+        row = db.execute(
+            "SELECT pins FROM revisions WHERE document_id = ? AND number = ?",
+            (document_id, number),
+        ).fetchone()
+        return json.loads(row[0]) if row is not None and row[0] else []
 
     def _cache_put(self, document_id: str, number: int, text: str, mapped: Mapped) -> None:
         key = (document_id, number, hashlib.sha256(text.encode()).hexdigest())

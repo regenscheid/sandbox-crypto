@@ -106,6 +106,8 @@ class InlineText:
     excluded: tuple[tuple[int, int, str], ...]
     """Content ranges of formulas, code spans, automatic links, images, and the brackets,
     address and title of links, with their token types (``link`` for a link's), in order."""
+    images: tuple[str, ...] = ()
+    """The address of each image in it, as the parser reads it, in order (figures, FG-6)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -353,7 +355,12 @@ class _Builder:
                 close_end=_source_end(provenance, end),
             )
         self._list(block, "inlines").append(
-            InlineText(token.content, provenance, tuple(sorted(excluded)))
+            InlineText(
+                token.content,
+                provenance,
+                tuple(sorted(excluded)),
+                tuple(str(image.attrGet("src") or "") for image in images),
+            )
         )
 
     def equation(self, block: int, token: Token) -> None:

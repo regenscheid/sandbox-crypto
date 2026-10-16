@@ -10,7 +10,9 @@ applies to:
 - ``move`` a block before or after another;
 - ``delete`` a block;
 - ``replace_math``: a math span's TeX;
-- ``replace_text``: a quote that occurs exactly once in a block's text.
+- ``replace_text``: a quote that occurs exactly once in a block's text;
+- ``repin``: a block's reference to a recorded file, pinned to another revision, its text
+  unchanged (figures spec, FG-8).
 
 New Markdown is written as if at the top level: the operation lays it inside the lists
 and quotes around its place, with their markers and indentation on each line, and with
@@ -93,8 +95,19 @@ class ReplaceText(_Operation):
     with_: str = Field(alias="with")
 
 
+class Repin(_Operation):
+    """Move the pin of a block's reference to a recorded file (figures spec, FG-8): to
+    ``revision``, or to the file's current revision. The text is unchanged."""
+
+    op: Literal["repin"]
+    block: _ID
+    path: str = Field(min_length=1, max_length=4096)
+    revision: int | None = Field(default=None, ge=1)
+
+
 Operation = Annotated[
-    Replace | Insert | Move | Delete | ReplaceMath | ReplaceText, Field(discriminator="op")
+    Replace | Insert | Move | Delete | ReplaceMath | ReplaceText | Repin,
+    Field(discriminator="op"),
 ]
 
 
@@ -148,7 +161,7 @@ def touches(operation: Operation, mapped: Mapped) -> Touches:
             index = mapped.span_index(operation.math)
             block = () if index is None else (mapped.block_ids[mapped.parsed.spans[index].block],)
             return Touches(holds=block, spans=(operation.math,))
-        case ReplaceText():
+        case ReplaceText() | Repin():
             return Touches(changes=(operation.block,))
 
 
@@ -450,6 +463,9 @@ def apply(mapped: Mapped, operation: Operation, budget: Budget | None = None) ->
             new, (at,) = _apply(text, [_Edit(start, end, laid)])
             hint = BlockHint(operation.block, block.kind, block.start, block.start + 1)
             return Step(new, (at, at + len(laid)), (hint,))
+        case Repin():
+            _block(mapped, operation.block)
+            return Step(text, None)
 
 
 def _insert_at(mapped: Mapped, end: str, markdown: str) -> Step:

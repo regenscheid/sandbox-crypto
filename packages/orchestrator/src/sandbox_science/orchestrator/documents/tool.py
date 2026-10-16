@@ -69,12 +69,22 @@ _OPERATION = {
         "One of: {op: replace, block, markdown}; {op: insert, markdown, and one of before, "
         "after (block IDs) or at: start|end}; {op: move, block, and before or after}; "
         "{op: delete, block}; {op: replace_math, math, tex}; {op: replace_text, block, "
-        "quote, with}, where quote occurs exactly once in the block's text"
+        "quote, with}, where quote occurs exactly once in the block's text; {op: repin, "
+        "block, path, revision}, which pins the block's reference to the recorded file at "
+        "path to that revision, or to its current one without revision"
     ),
     "properties": {
         "op": {
             "type": "string",
-            "enum": ["replace", "insert", "move", "delete", "replace_math", "replace_text"],
+            "enum": [
+                "replace",
+                "insert",
+                "move",
+                "delete",
+                "replace_math",
+                "replace_text",
+                "repin",
+            ],
         },
         "block": {"type": "string"},
         "markdown": {"type": "string"},
@@ -85,6 +95,8 @@ _OPERATION = {
         "tex": {"type": "string"},
         "quote": {"type": "string"},
         "with": {"type": "string"},
+        "path": {"type": "string"},
+        "revision": {"type": "integer", "minimum": 1},
     },
     "required": ["op"],
     "additionalProperties": False,
@@ -101,8 +113,9 @@ SPECS: Final = (
         "document_read",
         "Read a living document, the current revision unless you name one, as blocks in "
         "order: each with its ID, its kind, and its text without the markers of the lists "
-        "and quotes around it, and the ID and TeX of each formula in it. The IDs are not "
-        "part of the text; name them in patches.",
+        "and quotes around it, the ID and TeX of each formula in it, and each reference to "
+        "a recorded file, ![caption](path), with the revision it is pinned to and any newer "
+        "one. The IDs and pins are not part of the text; name them in patches.",
         {
             "type": "object",
             "properties": {
@@ -197,10 +210,17 @@ def _listing(info: DocumentInfo) -> Json:
     return entry
 
 
-def view_blocks(mapped: Mapped, start: int = 0) -> list[Json]:
-    """The read view's blocks: leaves with their text, containers with their markers."""
+def view_blocks(mapped: Mapped, start: int = 0, pins: Sequence[Json] = ()) -> list[Json]:
+    """The read view's blocks: leaves with their text, containers with their markers, and
+    the pins of their references to recorded files (figures spec, FG-10)."""
     parsed = mapped.parsed
     found: list[Json] = []
+    files: dict[str, list[Json]] = {}
+    for pin in pins:
+        shown = {
+            key: pin[key] for key in ("path", "revision", "latest", "unresolved") if key in pin
+        }
+        files.setdefault(str(pin["block"]), []).append(shown)
     for block in parsed.blocks[start:]:
         entry: Json = {"id": mapped.block_ids[block.index], "kind": block.kind}
         parent = mapped.parent_id(block.index)
@@ -229,6 +249,8 @@ def view_blocks(mapped: Mapped, start: int = 0) -> list[Json]:
                 | ({"display": True} if parsed.spans[index].kind == "display" else {})
                 for index in block.spans
             ]
+        if entry["id"] in files:
+            entry["files"] = files[entry["id"]]
         found.append(entry)
     return found
 
@@ -427,7 +449,8 @@ class DocumentTool:
         )
         head["macros"] = context["macros"]
         head["macro_context"] = {k: v for k, v in context.items() if k != "macros"}
-        blocks = view_blocks(mapped, start)
+        pins = self.store.pins(self.context.project_id, info.document_id, revision.info.number)
+        blocks = view_blocks(mapped, start, pins)
         shown = len(blocks)
         while True:
             body: Json = {**head, "blocks": blocks[:shown]}
