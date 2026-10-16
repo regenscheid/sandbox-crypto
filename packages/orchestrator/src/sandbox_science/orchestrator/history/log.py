@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: MIT
 """A run's message log (``hooks.MessageLog``): each message the run adds to its
 conversation, kept in its session's archive as it adds it (docs/specs/
-context-management.md, CM-4), and returned with its ID header (CM-4a).
+context-management.md, CM-4), and returned with its ID header (CM-4a). What a tool
+result read of its sources goes into the read register in the same change (CM-12).
 
 Another process's change can hold the control store for longer than a change waits for
 it (``busy``). An archive write that meets one is tried again, waiting longer each time,
@@ -24,6 +25,7 @@ from sandbox_science.orchestrator.model import Message
 from sandbox_science.orchestrator.notices import DELEGATIONS, REQUESTS
 
 from .archive import Archive, Archived, Entry
+from .reads import Read, reads_of
 
 Json = dict[str, Any]
 _log = logging.getLogger(__name__)
@@ -54,12 +56,19 @@ class RunArchive:
 
     async def append(self, message: Message, appended: Appended) -> Message:
         entry = entry_of(message, appended, task_refs=self.message_ids)
+        call, outcome = appended.call, appended.outcome
+        reads = (
+            reads_of(call.name, call.arguments, outcome.record, entry.content or "", outcome.saved)
+            if appended.kind == "tool_result" and call is not None and outcome is not None
+            else []
+        )
         archived = await patiently(
             self.archive,
             self.context,
             self.run,
             entry,
             parent=self.parent,
+            reads=reads,
             patience=self.patience,
             clock=self.clock,
         )
@@ -74,15 +83,23 @@ async def patiently(
     entry: Entry,
     *,
     parent: str | None = None,
+    reads: Sequence[Read] = (),
     patience: float = PATIENCE,
     clock: Clock = SYSTEM_CLOCK,
 ) -> Archived:
-    """``entry`` appended to ``run``'s archive, tried again while the store is busy."""
+    """``entry`` appended to ``run``'s archive, with what it read (CM-12), tried again
+    while the store is busy."""
     deadline, wait = clock.monotonic() + patience, 0.5
     while True:
         try:
             return await threaded(
-                archive.append, context.project_id, context.session_id, run, entry, parent=parent
+                archive.append,
+                context.project_id,
+                context.session_id,
+                run,
+                entry,
+                parent=parent,
+                reads=reads,
             )
         except ControlError as error:
             if error.kind != BUSY or clock.monotonic() + wait > deadline:

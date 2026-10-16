@@ -25,6 +25,7 @@ from .documents import USER, Author, DocumentError, DocumentStore, store_path
 from .documents.agent_text import visible
 from .documents.errors import CONFLICT
 from .documents.tool import view_blocks
+from .history.reads import Register, shown
 from .ledger import Ledger
 from .mathchecks import subscribe as check_math
 from .projects import ProjectError, ProjectStore, ensure_environment
@@ -196,6 +197,18 @@ async def _session_action(args: argparse.Namespace, store: ProjectStore) -> int:
     if args.action == "open":
         opened = store.open_session(args.project, args.session, dedicated=args.dedicated)
         print(f"session {args.session} is open, in environment {opened.environment_id}")
+        return 0
+    if args.action == "reads":
+        # The read register (CM-12): each source as its reads together covered it, and the
+        # share of reads no descriptor could place (CM-12a).
+        register = Register(store.control)
+        found = {
+            "sources": [
+                shown(read) for read in register.sources(args.project, session=args.session)
+            ],
+            "unplaced": register.unplaced(args.project, args.session),
+        }
+        print(json.dumps(found, indent=2, ensure_ascii=False))
         return 0
     session = store.get(args.project).sessions.get(args.session)
     if session is None:
@@ -481,9 +494,11 @@ def add_parsers(commands: Any) -> None:
         "its own; empty for none (the default)",
     )
     sessions = commands.add_parser(
-        "session", help="open a session, so the GUI can chat in it; or close one: stop its kernels"
+        "session",
+        help="open a session, so the GUI can chat in it; close one: stop its kernels; or show "
+        "its read register: how much of each source it read",
     )
-    sessions.add_argument("action", choices=("open", "close"))
+    sessions.add_argument("action", choices=("open", "close", "reads"))
     sessions.add_argument("--state-dir", type=Path, required=True)
     sessions.add_argument("--project", required=True)
     sessions.add_argument("--session", required=True)

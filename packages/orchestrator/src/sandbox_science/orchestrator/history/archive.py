@@ -52,6 +52,8 @@ from sandbox_science.orchestrator.control.errors import INVALID_REQUEST, NOT_FOU
 from sandbox_science.orchestrator.messages import MESSAGES, thoughts
 from sandbox_science.orchestrator.model import AssistantMessage
 
+from .reads import Read, encoded
+
 Json = dict[str, Any]
 Role = Literal["user", "assistant", "tool"]
 
@@ -314,10 +316,18 @@ class Archive:
         self.control, self.clock = control, clock
 
     def append(
-        self, project: str, session: str, run: str, entry: Entry, *, parent: str | None = None
+        self,
+        project: str,
+        session: str,
+        run: str,
+        entry: Entry,
+        *,
+        parent: str | None = None,
+        reads: Sequence[Read] = (),
     ) -> Archived:
-        """Keep a message ``run`` adds to its conversation, and index it, in one change;
-        the message as archived."""
+        """Keep a message ``run`` adds to its conversation, and index it, with the sources
+        a tool result read (the read register, CM-12), in one change; the message as
+        archived."""
         if entry.kind not in KINDS or (entry.kind == "assistant") != (entry.role == "assistant"):
             raise ControlError(INVALID_REQUEST, f"no {entry.role} message is of kind {entry.kind}")
         created = self.clock.now().astimezone(UTC).isoformat()
@@ -344,6 +354,8 @@ class Archive:
             except sqlite3.IntegrityError as error:
                 raise ControlError(INVALID_REQUEST, f"the message is refused: {error}") from None
             _document(db, project, message_id, entry.searched)
+            for read in reads:
+                _read(db, project, session, message_id, entry.source or "", read)
             recorded = {
                 link.get("path"): link
                 for link in cast(list[Json], (entry.files or {}).get("recorded") or [])
@@ -655,6 +667,29 @@ def _document(
                 f"INSERT INTO {table} (rowid, body) VALUES (?, ?)",  # noqa: S608 - its own
                 (doc, text),
             )
+
+
+def _read(
+    db: sqlite3.Connection, project: str, session: str, message_id: str, tool: str, read: Read
+) -> None:
+    """Keep one read. A web page's continuation names its document, which the fetch that
+    began it named: it counts for that page."""
+    kind, source, label = read.kind, read.source, read.label
+    if kind == "web" and source.startswith("document:"):
+        found = db.execute(
+            "SELECT source, label FROM source_reads WHERE project = ? AND session = ? AND "
+            "kind = 'web' AND source NOT LIKE 'document:%' AND "
+            "json_extract(detail, '$.document') = ? ORDER BY rowid DESC LIMIT 1",
+            (project, session, source.removeprefix("document:")),
+        ).fetchone()
+        if found is not None:
+            source, label = found
+    db.execute(
+        "INSERT INTO source_reads (project, session, message_id, tool, kind, source, label, "
+        "extent, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (project, session, message_id, (tool or "unknown")[:256], kind, source[:1024],
+         label[:4096] if label else None, read.extent, encoded(read)),
+    )  # fmt: skip
 
 
 def _row(archived: Archived) -> tuple[object, ...]:
