@@ -275,6 +275,32 @@ def test_observed_numbers_occur_in_what_was_observed(ledger: Ledger, tmp_path: P
     assert [e.basis for e in ledger.entries("p").entries] == ["observed"] * 3
 
 
+def test_a_tool_results_message_id_anchors_its_call(ledger: Ledger) -> None:
+    """Owner's first run: the model read the ID in a tool result's header, named it as the
+    anchor's ``call``, and was refused. It names the result, as ``message`` does; an ID of
+    another kind of message, or one out of the author's sight, says what to do instead."""
+    projects = ProjectStore(ledger.documents.path.parent)
+    projects.open_session("p", "s2", dedicated=False)
+    projects.close()
+    shown = said(ledger, result(OUTPUT, call="call-7"))
+    asked_of = said(ledger, user("Is p = 17 the prime you meant? Yes, it is."))
+    elsewhere = said(ledger, result("p = 19", call="call-8"), session="s2")
+    observed = {**NEW["claim"], "basis": "observed", "statement": "The cost is $2^{80}$."}
+    change(ledger, {**observed, "anchors": [{"call": shown}]}, op="by-message")
+    stored = ledger.entry("p", "C-1")
+    assert stored.basis == "observed"
+    # With a range of its output, as a call ID gives one.
+    ranged = {**observed, "statement": "The cost is $2^{81}$."}
+    refused(ledger, {**ranged, "anchors": [{"call": shown, "start": 0, "end": 30}]},
+            op="range", match="2^81")  # fmt: skip
+    # A message that is no tool result: the error says how to anchor it.
+    refused(ledger, {**NEW["claim"], "anchors": [{"call": asked_of}]}, op="user",
+            match="is the ID of a user message, not of a tool result")  # fmt: skip
+    # One the author may not see reads as missing, and says what kind of ID it was given.
+    refused(ledger, {**NEW["claim"], "anchors": [{"call": elsewhere}]}, op="far",
+            match="looks like a message ID")  # fmt: skip
+
+
 def test_work_records_are_anchored_and_the_platforms_anchor_themselves(
     ledger: Ledger, tmp_path: Path
 ) -> None:

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 import { render } from 'svelte/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import ChatRun from '../views/ChatRun.svelte';
 import ChatWaiting from '../views/ChatWaiting.svelte';
 import type { EnvironmentState, EventPage, MessageListing } from './api-types';
 import { ApiError } from './http';
@@ -406,6 +407,36 @@ describe('the transcript of a run', () => {
       { kind: 'note', seq: 8, text: 'The wait for jobs ended.', problem: false },
       { kind: 'note', seq: 9, text: 'The run answered.', problem: false },
     ]);
+  });
+
+  it('says no state for a tool that has none to record, and what it has otherwise', () => {
+    const outcomes = [
+      { state: null, error: null, exit_code: null }, // plan_create, a connector's tool
+      {},
+      { state: null, error: 'not_found', exit_code: null },
+      { state: 'succeeded', error: null, exit_code: 0 },
+    ];
+    const tools = chatEntries(
+      outcomes.map((outcome, index) => event(index + 1, 'tool', { name: 'plan_create', outcome })),
+    );
+    expect(tools.map((entry) => ('outcome' in entry ? entry.outcome : null))).toEqual([
+      '',
+      '',
+      'error not_found',
+      'succeeded, exit code 0',
+    ]);
+    const run = {
+      events: [
+        event(1, 'tool', { name: 'plan_create', result: 'ok', outcome: outcomes[0] }),
+        event(2, 'tool', { name: 'python', result: '1', outcome: outcomes[3] }),
+      ],
+    } as never;
+    const body = render(ChatRun, { props: { run } }).body;
+    expect(body).not.toContain('no state recorded');
+    const summaries = [...body.matchAll(/<summary>(.*?)<\/summary>/g)].map((m) =>
+      (m[1] ?? '').replace(/<!--.*?-->/g, '').replace(/<\/?code>/g, ''),
+    );
+    expect(summaries).toEqual(['plan_create', 'python: succeeded, exit code 0']);
   });
 
   it('takes no field of the wrong type, and says how a run stopped', () => {

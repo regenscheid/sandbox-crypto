@@ -198,7 +198,10 @@ def test_an_abandoned_approach_is_rejected_with_its_reopen_condition(ledger: Led
         (
             ({**APPROACH, "links": watching("I-1")["links"]}, "watch for its reopen condition"),
             (watching("I-1", condition="None"), "is none, so it watches nothing"),
-            (watching("new:t"), "points to no task"),
+            (
+                watching("new:t"),
+                "cannot point to T-1, a task: it points to an issue, an assumption, a claim",
+            ),
             ({**NEW["claim"], "links": watching("I-1")["links"]}, "holds no reopen_on link"),
         )
     ):

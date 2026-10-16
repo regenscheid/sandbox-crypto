@@ -246,12 +246,33 @@ def _archived(
             (project, anchor.call, scope.session, scope.session, scope.run, scope.run, CANDIDATES),
         ).fetchall()
     seen = [r for r in rows if scope.sees(r[3], r[4], r[0])]
+    if not seen and anchor.call is not None and _MESSAGE_ID.fullmatch(anchor.call):
+        # A tool result's message ID, where its call ID was meant: it names that result.
+        # Models read the ID in the result's header, and the call ID only in the history.
+        by_id = db.execute(
+            "SELECT message_id,kind,length(content),session,run FROM archive_messages "
+            "WHERE project=? AND message_id=?",
+            (project, anchor.call),
+        ).fetchall()
+        seen = [r for r in by_id if scope.sees(r[3], r[4], r[0])]
+        if seen and seen[0][1] != "tool_result":
+            raise refused(
+                f"{anchor.call} is the ID of a {seen[0][1]} message, not of a tool result: "
+                f'anchor it as {{"message": "{anchor.call}"}}, or anchor a tool result by '
+                "its call ID or its own message ID"
+            )
     own = [r for r in seen if scope.run is not None and run_id_of(r[4]) == scope.run]
     found = own or seen
     name = anchor.message or f"tool result of call {anchor.call}"
     if not found:
         where = "this project" if scope.session is None else "what this run may see"
-        raise refused(f"no archive message {name} in {where}")
+        hint = (
+            " (it looks like a message ID, and none is visible; a call is anchored by "
+            'its call ID, a message by {"message": …})'
+            if anchor.call is not None and _MESSAGE_ID.fullmatch(anchor.call)
+            else ""
+        )
+        raise refused(f"no archive message {name} in {where}{hint}")
     if len(found) > 1:
         raise refused(
             f"call {anchor.call} has a tool result in more than one run: anchor on the "

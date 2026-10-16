@@ -405,10 +405,16 @@ export function foldText(data: Record<string, unknown>): string {
   );
 }
 
-/** A tool call's outcome in a few words: its state, error kind and exit code. */
+/**
+ * A tool call's outcome in a few words: its state, error kind and exit code. A tool with
+ * no state to record (a plan or ledger call, a connector's tool) says nothing, not that
+ * it recorded none, which read as a fault in every transcript.
+ */
 function outcomeText(value: unknown): string {
   const outcome = record(value);
-  const parts = [text(outcome['state']) || 'no state recorded'];
+  const parts: string[] = [];
+  const state = text(outcome['state']);
+  if (state) parts.push(state);
   if (outcome['error']) parts.push(`error ${String(outcome['error'])}`);
   if (typeof outcome['exit_code'] === 'number') parts.push(`exit code ${outcome['exit_code']}`);
   return parts.join(', ');
