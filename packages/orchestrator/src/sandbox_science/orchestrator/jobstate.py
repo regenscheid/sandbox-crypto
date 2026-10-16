@@ -19,6 +19,7 @@ from typing import cast
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ExecutionContext
 
 from .control import ControlStore, store_path
+from .pricing import CostSource, source_of
 from .watcher_prompt import (
     MAX_PROVENANCE_BYTES,
     WatcherProvenance,
@@ -254,15 +255,25 @@ class JobState:
         input_tokens: int | None,
         output_tokens: int | None,
         cost: float | None = None,
+        cost_source: CostSource | None = None,
     ) -> None:
-        """The call's outcome, what it used and, as the gateway reported it, cost: the
-        project's cost and its daily limit count it (run-service spec RS-6a)."""
+        """The call's outcome, what it used and cost, with where the cost came from (the
+        gateway, or its model information): the project's cost and its daily limit count
+        it (run-service spec RS-6a)."""
         with self.control.write() as tx:
             db = tx.sql
             db.execute(
                 """UPDATE job_watcher_calls SET outcome=?,model=?,input_tokens=?,output_tokens=?,
-                cost=? WHERE id=?""",
-                (outcome, model, input_tokens, output_tokens, cost, call),
+                cost=?,cost_source=? WHERE id=?""",
+                (
+                    outcome,
+                    model,
+                    input_tokens,
+                    output_tokens,
+                    cost,
+                    source_of(cost, cost_source),
+                    call,
+                ),
             )
 
     def last_check(self, context: ExecutionContext, job: str) -> float | None:

@@ -25,6 +25,7 @@ from typing import Any, Final, cast
 
 from sandbox_science.orchestrator.documents.agent_text import newlines
 from sandbox_science.orchestrator.model import ChatModel, Message, ModelError, ToolSpec
+from sandbox_science.orchestrator.pricing import CostSource
 
 from .index import cut, marker
 from .packs import SHORT, TOPIC, VARIABLE, Snapshot, plain_text, topic_name
@@ -187,6 +188,7 @@ class Derived:
     cached: bool = False
     tokens: tuple[int | None, int | None] = (None, None)
     cost: float | None = None
+    cost_source: CostSource | None = None
 
     def report(self, alias: str) -> dict[str, Any]:
         """The import report's ``derived``: every item marked as the pass's (SK-32)."""
@@ -274,6 +276,7 @@ async def derive(model: ChatModel, snap: Snapshot, alias: str) -> Derived:
         turn.model or alias,
         tokens=(turn.input_tokens, turn.output_tokens),
         cost=turn.cost,
+        cost_source=turn.cost_source,
     )
 
 

@@ -12,6 +12,21 @@ const ROLES: Record<RoleCost['role'], string> = {
 };
 
 /**
+ * Where the project's cost total came from: as the gateway reported it, and, when its
+ * model info priced calls it reported no cost for (lab 43, B2), how much of the last
+ * 24 hours' and of all of it was priced so.
+ */
+export function costSource(cost: ModelCost): string {
+  const total = cost.model_info_total ?? null;
+  if (total === null) return 'as the gateway reported it';
+  const day = cost.model_info_last_day ?? 0;
+  return (
+    `as the gateway reported it or its model info priced it ` +
+    `(${formatCost(day)} and ${formatCost(total)} of it priced from the model info)`
+  );
+}
+
+/**
  * The project's model cost by role, a line for each role whose calls the gateway priced:
  * the main agent's runs, delegated runs, the reviewer, the job watcher (lab 40, B5), the
  * skills' embeddings and the import's model pass.

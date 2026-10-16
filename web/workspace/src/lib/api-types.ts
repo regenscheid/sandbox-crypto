@@ -783,11 +783,13 @@ export interface MessageListing {
   environment: EnvironmentState | null;
 }
 
-/** What the project's model calls cost, as the gateway reported it, in its currency (LiteLLM's is USD); null where it reported none. Calls it gave no cost for count for nothing: nothing is estimated. */
+/** What the project's model calls cost, in the gateway's currency (LiteLLM's is USD): as the gateway reported it, or priced from its model information when it reported none (lab 43, B2); null where neither gave a cost. Calls without one count for nothing here: nothing is estimated. */
 export interface ModelCost {
   last_day: number | null;
   total: number | null;
   by_role: RoleCost[];
+  model_info_last_day: number | null;
+  model_info_total: number | null;
 }
 
 /** A Python distribution that pip or uv installed beside the Conda packages. */

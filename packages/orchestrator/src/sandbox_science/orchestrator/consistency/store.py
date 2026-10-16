@@ -38,6 +38,7 @@ from sandbox_science.orchestrator.documents.errors import (
     DocumentError,
 )
 from sandbox_science.orchestrator.documents.project_macros import head, response_view
+from sandbox_science.orchestrator.pricing import CostSource, source_of
 from sandbox_science.orchestrator.projects import ProjectError, recorded
 from sandbox_science.orchestrator.session_plans import SessionPlans
 
@@ -1777,9 +1778,11 @@ class ReviewStore:
         output_tokens: int | None,
         owner: str,
         cost: float | None = None,
+        cost_source: CostSource | None = None,
     ) -> None:
-        """What the call used and, as the gateway reported it, cost: the project's cost
-        and its daily limit count it (run-service spec RS-6a)."""
+        """What the call used and cost, with where the cost came from (the gateway, or
+        its model information): the project's cost and its daily limit count it
+        (run-service spec RS-6a)."""
         if any(
             value is not None and (type(value) is not int or not 0 <= value <= 1000000000)
             for value in (input_tokens, output_tokens)
@@ -1791,7 +1794,8 @@ class ReviewStore:
             updated = db.execute(
                 (
                     "UPDATE review_calls SET "
-                    "input_tokens=?,output_tokens=?,resolved_model=?,cost=?,answered=1 "
+                    "input_tokens=?,output_tokens=?,resolved_model=?,cost=?,cost_source=?,"
+                    "answered=1 "
                     "WHERE seq=? AND project=? AND review_id=? AND answered=0"
                 ),
                 (
@@ -1799,6 +1803,7 @@ class ReviewStore:
                     output_tokens,
                     clipped(model, 256) if model else None,
                     cost,
+                    source_of(cost, cost_source),
                     call,
                     project,
                     review,

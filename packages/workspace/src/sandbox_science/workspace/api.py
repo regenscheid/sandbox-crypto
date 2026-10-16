@@ -139,9 +139,10 @@ class RoleCost(Contract):
 
 
 class ModelCost(Contract):
-    """What the project's model calls cost, as the gateway reported it, in its currency
-    (LiteLLM's is USD); null where it reported none. Calls it gave no cost for count for
-    nothing: nothing is estimated."""
+    """What the project's model calls cost, in the gateway's currency (LiteLLM's is USD):
+    as the gateway reported it, or priced from its model information when it reported
+    none (lab 43, B2); null where neither gave a cost. Calls without one count for
+    nothing here: nothing is estimated."""
 
     last_day: float | None
     """Runs that started in the last 24 hours, and the reviewer's and job watcher's calls
@@ -151,6 +152,11 @@ class ModelCost(Contract):
     by_role: list[RoleCost]
     """The same by role, for each role the gateway priced a call of: main, delegated,
     reviewer, watcher, in that order."""
+    model_info_last_day: float | None = None
+    """The part of ``last_day`` priced from the gateway's model information; null when
+    none was."""
+    model_info_total: float | None = None
+    """The part of ``total`` priced from the gateway's model information."""
 
 
 class ProjectView(ProjectFacts):
@@ -264,6 +270,8 @@ def _project(store: ProjectStore, project_id: str) -> ProjectView:
             RoleCost(role=role, last_day=day.get(role), total=total)
             for role, total in every.items()
         ],
+        model_info_last_day=runs.model_info_cost(project_id, datetime.now(UTC) - WINDOW),
+        model_info_total=runs.model_info_cost(project_id),
     )
     return ProjectView(**facts, sessions=sessions, environments=environments, model_cost=cost)
 

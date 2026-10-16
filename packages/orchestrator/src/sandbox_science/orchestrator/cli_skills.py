@@ -20,6 +20,7 @@ from .control import ControlError
 from .control.errors import INVALID_REQUEST
 from .documents import USER
 from .model import OpenAICompatibleModel
+from .pricing import GATEWAY
 from .projects import ProjectError, ProjectStore
 from .skills import SkillSettings, SkillStore, from_archive, from_git, snapshot
 from .skills.builtin import builtin_pack
@@ -162,11 +163,15 @@ async def _derive(
             file=sys.stderr,
         )
         if error.cost is not None:  # the gateway answered, and charged for it
-            store.add_metadata_call(args.project, snap.sha256, alias, (None, None), error.cost)
+            store.add_metadata_call(
+                args.project, snap.sha256, alias, (None, None), error.cost, GATEWAY
+            )
         return error
     finally:
         await model.close()
-    store.add_metadata_call(args.project, snap.sha256, made.model, made.tokens, made.cost)
+    store.add_metadata_call(
+        args.project, snap.sha256, made.model, made.tokens, made.cost, made.cost_source
+    )
     for item in made.dropped:
         print(f"warning: the pass's {item['kind']} was dropped: {item['reason']}", file=sys.stderr)
     return made
