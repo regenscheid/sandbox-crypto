@@ -64,6 +64,20 @@ def _texts(limit: int) -> object:
     return BeforeValidator(partial(_text, limit=limit))
 
 
+def _optional(value: object, *, limit: int) -> object:
+    """A text only some results hold, such as a blocked one's obstacle: left blank, it is
+    absent. A model that fills every field of the shape writes "" for one that does not
+    apply, and the correction then asked for a text that only a blocked result may hold
+    (lab 42, B6)."""
+    if isinstance(value, str) and not value.strip():
+        return None
+    return _text(value, limit=limit)
+
+
+def _optional_texts(limit: int) -> object:
+    return BeforeValidator(partial(_optional, limit=limit))
+
+
 Item = Annotated[str, _texts(1000)]
 _ITEMS = Field(default=(), max_length=10)
 
@@ -106,8 +120,8 @@ class CheckResult(StrictContract):
     verdict: Literal["confirmed", "refuted", "inconclusive"]
     summary: Annotated[str, _texts(8000)]
     coverage: Coverage
-    refutation: Annotated[str, _texts(2000)] | None = None
-    obstacle: Annotated[str, _texts(1000)] | None = None
+    refutation: Annotated[str | None, _optional_texts(2000)] = None
+    obstacle: Annotated[str | None, _optional_texts(1000)] = None
     deviations: tuple[Item, ...] = _ITEMS
     open_questions: tuple[Item, ...] = _ITEMS
 
@@ -168,7 +182,7 @@ class TaskResult(StrictContract):
 
     status: Literal["complete", "partial", "blocked"]
     summary: Annotated[str, _texts(8000)]
-    obstacle: Annotated[str, _texts(1000)] | None = None
+    obstacle: Annotated[str | None, _optional_texts(1000)] = None
     deviations: tuple[Item, ...] = _ITEMS
     open_questions: tuple[Item, ...] = _ITEMS
     dismissals: tuple[Dismissal, ...] = Field(default=(), max_length=10)
