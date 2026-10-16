@@ -89,6 +89,8 @@ class _Running:
     done: Enriched | None = None
     saving: asyncio.Task[None] | None = None
     kept: tuple[Archived, FoldRecord] | None = None
+    asked: int = 0
+    """The tokens each enrichment call is sent, estimated: what a cancelled call counts."""
 
 
 class Folder(TurnHook):
@@ -303,6 +305,7 @@ class Folder(TurnHook):
         record, rows = found
         per_token = self.per_token(transcript)
         running = _Running(record, tuple(rows))
+        running.asked = self.tokens(transcript)
         running.task = asyncio.create_task(
             self._enrich(running, self.model, list(transcript.sent), self.specs(), per_token)
         )
@@ -321,10 +324,25 @@ class Folder(TurnHook):
         cancelled, so a fold is kept or not, never half."""
         assert self.geometry is not None  # noqa: S101 - set at the first call
         share = int(self.geometry.record * per_token)
-        running.done = await enrich(
-            model, sent, specs, running.record, running.rows, share=share, exists=self.exists
-        )
-        self.spent += [usage.model_dump(mode="json") for usage in running.done.calls]
+
+        def spent(usage: ModelUsage) -> None:  # counted as each call returns
+            self.spent.append(usage.model_dump(mode="json"))
+
+        try:
+            running.done = await enrich(
+                model,
+                sent,
+                specs,
+                running.record,
+                running.rows,
+                share=share,
+                exists=self.exists,
+                spent=spent,
+            )
+        except Exception as error:  # the fold stands, skeleton-only
+            _log.warning("the enrichment of run %s failed: %r", self.run, error)
+            failed = f"it failed ({type(error).__name__})"
+            running.done = Enriched(running.record, (), failed)
 
         async def save() -> None:
             assert running.done is not None  # noqa: S101 - set above
@@ -340,6 +358,7 @@ class Folder(TurnHook):
         assert running is not None  # noqa: S101 - the caller checked
         assert running.task is not None  # noqa: S101 - every running fold has its task
         began = self.clock.monotonic()
+        await self._event({"state": "waiting"})
         with contextlib.suppress(Exception):
             await asyncio.wait_for(asyncio.shield(running.task), self.wait)
         running.task.cancel()
@@ -360,7 +379,7 @@ class Folder(TurnHook):
             await self._applied(transcript, before, running.kept, running.rows, running.done)
             return
         if running.done is None:
-            self.spent.append({"cancelled": True})
+            self.spent.append(_cancelled(running))
             done = Enriched(running.record, (), "it was not ready")
         else:
             done = replace(
@@ -461,7 +480,7 @@ class Folder(TurnHook):
         running = self.running
         if running is not None and running.task is not None and running.kept is None:
             running.task.cancel()  # the run ended: so does its fold (CM-24a)
-            self.spent.append({"cancelled": True})
+            self.spent.append(_cancelled(running))
         if self.geometry is None:
             return None
         found: Json = {
@@ -478,6 +497,13 @@ class Folder(TurnHook):
         if self.stopped is not None:
             found |= {"stopped": self.stopped, "detail": self.detail}
         return found
+
+
+def _cancelled(running: _Running) -> Json:
+    """The usage of an enrichment call cancelled before it returned, which the gateway
+    never reported: its input estimated, as the view it was sent, and so marked (RS-6a);
+    its cost unknown."""
+    return {"cancelled": True, "estimated": True, "input_tokens": running.asked, "cost": None}
 
 
 def span(units: Sequence[Unit], shape: Geometry, per_token: float) -> int:

@@ -102,11 +102,14 @@ class FoldRecord:
         if self.markers:
             lines.append("Markers:")
             lines += [f"- {marker_line(marker, fold)}" for marker in self.markers]
-        lines.append(
-            f"Narrative: {self.narrative}"
-            if self.narrative
-            else "Narrative: none (a skeleton-only fold)."
-        )
+        if self.narrative:
+            # The run's model wrote it: every line quoted, so none reads as the record's.
+            lines.append(
+                "Narrative, written by the run's model, its values checked by code; quoted:"
+            )
+            lines += [f"> {line}" for line in self.narrative.splitlines()]
+        else:
+            lines.append("Narrative: none (a skeleton-only fold).")
         if self.keys:
             shown = "; ".join(f"{flat(key)} ({at})" for key, at in self.keys)
             lines.append("Search keys: " + shown)

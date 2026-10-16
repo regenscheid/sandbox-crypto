@@ -11,14 +11,17 @@ that object, has no narrative, or whose narrative passes a quarter of the record
 share fails the attempt; the one retry sets ``tool_choice`` to ``none`` after a tool
 call. Two failures leave the record skeleton-only.
 
-Code checks the answer it keeps. A search key that does not occur in the span word for
-word is dropped. Every number in the narrative must occur in the span, both written in
-one form: digits without separators, and powers as ``2^80`` however written (``2^{80}``,
-``2**80``, ``2⁸⁰``); each hexadecimal string of eight or more characters, DOI, ePrint ID
-and archive ID must occur in it too, and a ledger handle must occur or exist. Any other
-is replaced by a marker naming a search key. Hidden characters are removed, and a line
-that looks like the platform's framing of the state block, fold records or message
-headers is quoted, with a backslash before it.
+Code checks the answer it keeps. A search key that no message of the span holds word
+for word is dropped. Every number in the narrative must occur in the span, both read
+as the ledger's provenance reads them (``provenance.numbers``): signs, separators,
+decimals, powers however written (``2^-99``, ``2^{80}``, ``2**80``, ``2⁸⁰``),
+scientific notation (``9.9e-7``, ``1e9``) and numbers with units (``512bit``); each
+hexadecimal string of eight or more characters, DOI, ePrint ID and archive ID must
+occur in it too, and a ledger handle must occur, as a whole token, or exist. Any other
+is replaced by a marker naming a search key. Hidden characters are removed, a line that
+looks like the platform's own (a message header, a framing, a record's labels or marker
+lines, the lines that mark the user's words) gets a backslash before it, and the record
+shows every line of the narrative quoted, as the run's model's.
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Final, cast
 
+from sandbox_science.orchestrator.ledger.provenance import numbers
 from sandbox_science.orchestrator.model import (
     ChatModel,
     GatewayModel,
@@ -47,15 +51,15 @@ from .record import FoldRecord
 Json = dict[str, Any]
 
 ATTEMPTS: Final = 2
-_SUPERSCRIPTS: Final = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹", "0123456789")
 _VALUES: Final = re.compile(
     r"(?P<message>msg-[0-9a-f]{16})"
     r"|(?P<doi>\b10\.\d{4,9}/[^\s\"'<>\\]*[^\s\"'<>\\.,;:)\]])"
     r"|(?P<eprint>(?<![\w/])(?:19|20)\d\d/\d{3,5}(?![\w/]))"
-    r"|(?P<handle>\b(?:REF|[ICRADT])-\d+\b)"
+    r"|(?P<handle>(?<![\w-])(?:REF|[ICRADT])-\d+(?![\w-]))"
     r"|(?P<hex>(?<![\w-])(?=[0-9A-Fa-f]*\d)(?=[0-9A-Fa-f]*[A-Fa-f])[0-9A-Fa-f]{8,}(?![\w-]))"
-    r"|(?P<power>(?<![\w.,])\d[\d,]*(?:\s*\^\s*\{\s*\d+\s*\}|\s*\^\s*\d+|\s*\*\*\s*\d+|[⁰¹²³⁴⁵⁶⁷⁸⁹]+))"
-    r"|(?P<number>(?<![\w.,\-])\d[\d,]*(?:\.\d+)?(?![\w]))"
+    # Any token a number begins: its sign, separators, decimals, exponent, power (2^-99,
+    # 2^{-128}, 2**80, 2⁸⁰), scientific notation (9.9e-7) and unit (512bit).
+    r"|(?P<number>(?<![\w.])[-+\u2212]?\d(?:[\w.,^{}*⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺]|[-+](?=\d))*)"
 )
 _FRAMINGS: Final = (
     STATE_BLOCK.text[:40],
@@ -63,7 +67,17 @@ _FRAMINGS: Final = (
     FOLD_REGION.text[:40],
     FOLD_ENRICH.text[:40],
     "--- fold ",
+    "--- The user's own words",
+    "--- End of the user's own words",
+    "--- msg-",
+    "--- run ",
+    "Outline:",
+    "Markers:",
+    "Narrative",
+    "Search keys:",
 )
+_MARKER: Final = re.compile(r"-\s*(?:decision|caveat|read|failures)\s*:", re.IGNORECASE)
+"""A line that begins like one of a record's marker lines."""
 
 
 @dataclass(frozen=True)
@@ -85,10 +99,12 @@ async def enrich(
     *,
     share: int,
     exists: Callable[[str], bool] | None = None,
+    spent: Callable[[ModelUsage], None] | None = None,
 ) -> Enriched:
     """``record``, the span ``rows``'s as code built it, enriched by ``model`` after the
     run's ``view``, within ``share`` characters without its markers (CM-19, CM-20);
-    ``exists`` says whether a ledger handle exists."""
+    ``exists`` says whether a ledger handle exists, and ``spent`` takes each call's usage
+    as it returns, so that a fold cancelled later still counts its calls."""
     limits = (
         f"The narrative takes at most {share // 4:,} characters, and the keys at most "
         f"{share // 10:,} in all. The span:\n"
@@ -102,9 +118,13 @@ async def enrich(
             turn = await caller.complete([*view, asked], specs)
         except ModelError as error:
             calls.append(ModelUsage(cost=error.cost))
+            if spent is not None:
+                spent(calls[-1])
             failed.append(f"the call failed ({type(error).__name__})")
             continue
         calls.append(_usage(turn))
+        if spent is not None:
+            spent(calls[-1])
         if turn.tool_calls:
             failed.append("it called a tool")
             if isinstance(model, GatewayModel):
@@ -138,10 +158,13 @@ def check(
     if len(narrative) > share // 4:
         return None, f"its narrative passed {share // 4:,} characters"
     keys = dict(record.keys)
-    found = _numbers(span)
+    found = numbers(span)
     for key in cast(list[object], answer.get("keys") or []):
-        if isinstance(key, str) and key.strip() and key in span and key not in keys:
-            keys[key] = next(row.message_id for row in rows if key in row.entry.text)
+        if isinstance(key, str) and key.strip() and key not in keys:
+            # A key is text a message of the span holds; a message's ID is not.
+            holder = next((row.message_id for row in rows if key in row.entry.text), None)
+            if holder is not None:
+                keys[key] = holder
     kept: list[tuple[str, str]] = []
     used = 0
     for key, at in keys.items():
@@ -163,37 +186,25 @@ def _checked(
     exists: Callable[[str], bool] | None,
 ) -> str:
     value, kind = match.group(0), match.lastgroup
-    if kind in ("power", "number"):
-        known = _form(value) in found
+    tail = ""
+    if kind == "number":  # a sentence's punctuation after it is not part of it
+        stripped = value.rstrip(".,")
+        value, tail = stripped, value[len(stripped) :]
+        known = numbers(value) <= found
+        if known and value[0] in "-\u2212":  # a sign is part of the value: the span says it
+            digits = re.escape(value[1:])
+            known = re.search(rf"(?<![\w.])[-\u2212]\s?{digits}(?![\w.])", span) is not None
     elif kind == "handle":
-        known = value in span or (exists is not None and exists(value))
+        within = re.search(rf"(?<![\w-]){re.escape(value)}(?![\w-])", span) is not None
+        known = within or (exists is not None and exists(value))
     else:
         known = value in span
     if known:
-        return value
+        return value + tail
     if not keys:
         return "[a value not in the span]"
     near = max(keys, key=lambda key: len(_common(key[0], value)))[0]
-    return f'[a value not in the span; search "{near}"]'
-
-
-def _numbers(text: str) -> set[str]:
-    """Every number and power in ``text``, each in one form."""
-    return {
-        _form(match.group(0))
-        for match in _VALUES.finditer(text)
-        if match.lastgroup in ("power", "number")
-    }
-
-
-def _form(value: str) -> str:
-    """A number without separators; a power as ``base^exponent``."""
-    plain = re.sub(r"\s", "", value).replace(",", "")
-    if found := re.fullmatch(r"(\d+(?:\.\d+)?)([⁰¹²³⁴⁵⁶⁷⁸⁹]+)", plain):
-        return f"{found.group(1)}^{found.group(2).translate(_SUPERSCRIPTS)}"
-    if found := re.fullmatch(r"(\d+(?:\.\d+)?)(?:\^\{?(\d+)\}?|\*\*(\d+))", plain):
-        return f"{found.group(1)}^{found.group(2) or found.group(3)}"
-    return plain
+    return f'[a value not in the span; search "{near}"]{tail}'
 
 
 def _common(a: str, b: str) -> str:
@@ -214,10 +225,16 @@ def _visible(text: str) -> str:
 
 
 def _quoted(text: str) -> str:
-    """``text`` with a backslash before each line that looks like the platform's own
-    framing: a message header, a fold record's or the state block's."""
+    """``text`` with a backslash before each line that looks like the platform's own:
+    a message header, the framing of the state block, the digest, the fold region or the
+    enrichment, a fold record's labels and marker lines, or the lines that mark the
+    user's own words (CM-20, CM-F15). The record renders every line of the narrative
+    quoted besides (``FoldRecord.text``)."""
     lines = escape(text).splitlines(keepends=True)
-    return "".join(f"\\{line}" if line.lstrip().startswith(_FRAMINGS) else line for line in lines)
+    return "".join(
+        f"\\{line}" if line.lstrip().startswith(_FRAMINGS) or _MARKER.match(line.lstrip()) else line
+        for line in lines
+    )
 
 
 def _object(text: str) -> Json | None:
