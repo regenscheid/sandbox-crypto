@@ -308,6 +308,14 @@ class SkillTool:
                 self.loaded[skill] = self.held[skill] = sha256
                 self.chars += chars
 
+    def refit(self, bodies: Mapping[str, tuple[str, int]]) -> None:
+        """After a fold rebuilt the run's view: the bodies it still holds are loaded and
+        count toward the run's limit; one it no longer holds loads whole again
+        (docs/specs/context-management.md, CM-29b)."""
+        self.loaded = {skill: sha256 for skill, (sha256, _) in bodies.items()}
+        self.held = dict(self.loaded)
+        self.chars = sum(chars for _, chars in bodies.values())
+
     def _load(self, names: list[str]) -> tuple[str, dict[str, Any]]:
         """Each name's body, or why it is not loaded; a name that names no skill costs
         the call only that name, unless it is the only one."""

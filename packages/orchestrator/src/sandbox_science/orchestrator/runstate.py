@@ -66,7 +66,9 @@ PAGE: Final = 200
 """The most messages or events one read returns."""
 
 MessageState = Literal["queued", "delivered", "refused", "held"]
-EventKind = Literal["started", "user", "model", "assistant", "tool", "notice", "waiting", "stopped"]
+EventKind = Literal[
+    "started", "user", "model", "assistant", "tool", "notice", "waiting", "stopped", "fold"
+]
 
 
 class ChatMessage(Contract):

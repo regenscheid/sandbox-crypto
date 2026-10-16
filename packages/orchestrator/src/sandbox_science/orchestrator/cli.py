@@ -79,6 +79,7 @@ from .harness import (
     closing,
     save,
 )
+from .history import CEILING
 from .jobstate import JobState
 from .loop import MAX_INPUT_CHARS, Interruption
 from .mathcheck import MathChecker
@@ -363,6 +364,9 @@ def _harness(
             min_isolation_tier=None if args.allow_unisolated else args.min_isolation_tier,
             max_turns=args.max_turns,
             max_input_chars=args.max_input_chars,
+            ceiling=getattr(args, "context_ceiling", CEILING),
+            chunk=getattr(args, "fold_chunk", None),
+            input_limit=getattr(args, "input_limit", None),
             watcher_calls_per_hour=args.watcher_calls_per_hour,
             watcher_first_check=args.watcher_first_check,
             watcher_interval=args.watcher_interval,
@@ -465,9 +469,25 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
     command.add_argument(
         "--max-input-chars",
         type=int,
-        default=MAX_INPUT_CHARS,
-        help="stop the run cleanly (context_limit) before MAIN is sent a longer conversation "
-        f"(default {MAX_INPUT_CHARS:,})",
+        help="stop the run cleanly (context_limit) before it is sent a longer conversation "
+        f"(default {MAX_INPUT_CHARS:,} for a run that does not fold; none for a main run "
+        "with a state directory, which folds within its ceiling)",
+    )
+    command.add_argument(
+        "--context-ceiling",
+        type=int,
+        default=CEILING,
+        help="MAIN's ceiling in tokens, capped by the model's input limit: its view folds "
+        f"at three quarters of it (default {CEILING:,})",
+    )
+    command.add_argument(
+        "--fold-chunk", type=int, help="the tokens a fold takes (default max(50,000, 0.2 C))"
+    )
+    command.add_argument(
+        "--input-limit",
+        type=int,
+        help="MAIN's model's input limit in tokens, without its output, where the gateway's "
+        "model information gives none",
     )
     command.add_argument(
         "--watcher-model",
@@ -607,8 +627,11 @@ def _check_agent(parser: argparse.ArgumentParser, args: argparse.Namespace) -> N
         parser.error("--thinking-replay needs an alias with --api ALIAS=messages")
     if getattr(args, "skills_embedding_model", None) is not None and args.model_url is None:
         parser.error("--skills-embedding-model needs --model-url")
-    if args.max_input_chars < 1:
+    if args.max_input_chars is not None and args.max_input_chars < 1:
         parser.error("--max-input-chars must be at least 1")
+    for flag in ("context_ceiling", "fold_chunk", "input_limit"):
+        if (value := getattr(args, flag, None)) is not None and value < 1:
+            parser.error(f"--{flag.replace('_', '-')} must be at least 1")
     mcp = (args.mcp_proxy, args.mcp_token_file, args.mcp_project)
     if (any(value is not None for value in mcp) and any(value is None for value in mcp)) or (
         args.mcp_proxy is None and args.mcp_server

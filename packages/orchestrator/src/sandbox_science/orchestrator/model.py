@@ -581,6 +581,34 @@ class ModelGateway:
         as the LiteLLM proxy serves it, its ``supports_function_calling``): an alias it
         does not describe, or whose answer is not a yes or a no, is left out; ``None``
         when it cannot be asked (PD-30)."""
+        described = await self._described()
+        if described is None:
+            return None
+        capable: dict[str, bool] = {}
+        for name, info in described:
+            calls = info.get("supports_function_calling")
+            if isinstance(calls, bool):
+                # An alias several deployments serve can call tools when any of them can.
+                capable[name] = capable.get(name, False) or calls
+        return capable
+
+    async def input_limits(self) -> dict[str, int] | None:
+        """Each described alias's input limit, without its output (``max_input_tokens``;
+        docs/specs/context-management.md, CM-27): the least of its deployments'; ``None``
+        when the gateway cannot be asked."""
+        described = await self._described()
+        if described is None:
+            return None
+        limits: dict[str, int] = {}
+        for name, info in described:
+            found = info.get("max_input_tokens")
+            if type(found) is int and found > 0:
+                limits[name] = min(limits.get(name, found), found)
+        return limits
+
+    async def _described(self) -> list[tuple[str, dict[str, object]]] | None:
+        """Each model the gateway describes (``GET /model/info``): its alias and its
+        information; ``None`` when it cannot be asked."""
         try:
             async with self._shared().get(
                 f"{self.base_url}/model/info",
@@ -601,19 +629,15 @@ class ModelGateway:
             return None
         if not isinstance(found, list):
             return None
-        capable: dict[str, bool] = {}
+        described: list[tuple[str, dict[str, object]]] = []
         for item in cast(list[object], found):
             if not isinstance(item, dict):
                 continue
             entry = cast(dict[str, object], item)
             name, info = entry.get("model_name"), entry.get("model_info")
-            if not isinstance(name, str) or not isinstance(info, dict):
-                continue
-            calls = cast(dict[str, object], info).get("supports_function_calling")
-            if isinstance(calls, bool):
-                # An alias several deployments serve can call tools when any of them can.
-                capable[name] = capable.get(name, False) or calls
-        return capable
+            if isinstance(name, str) and isinstance(info, dict):
+                described.append((name, cast(dict[str, object], info)))
+        return described
 
     async def close(self) -> None:
         if self._session is not None:

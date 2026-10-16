@@ -350,10 +350,37 @@ export function stoppedText(data: Record<string, unknown>): string {
   const failure = text(data['failure']);
   // A reason this view has no words for yet, such as one a new release records, is shown
   // as the run recorded it.
-  const said = Object.hasOwn(STOPPED, stopped)
+  let said = Object.hasOwn(STOPPED, stopped)
     ? STOPPED[stopped]!
     : `The run stopped: ${visible(stopped.replaceAll('_', ' ')) || 'no reason recorded'}.`;
+  // A run that folds says why it could not make room (context management, CM-43 to CM-45).
+  const reason = text(data['reason']);
+  if (stopped === 'context_limit' && reason) {
+    const detail = text(data['detail']);
+    said += ` Reason: ${visible(reason)}${detail ? `: ${visible(detail)}` : ''}.`;
+  }
   return failure ? `${said} Failure: ${visible(failure)}.` : said;
+}
+
+/** A fold of the run's view (context management, CM-46), as a line. */
+export function foldText(data: Record<string, unknown>): string {
+  const state = text(data['state']);
+  const span = list(data['span']).map(String);
+  const positions = span.length === 2 ? ` positions ${span[0]} to ${span[1]}` : '';
+  if (state === 'started') return `A fold of${positions} started; its narrative is being written.`;
+  if (state === 'waited')
+    return `The view reached its wall and waited ${String(data['seconds'])} s for the running fold.`;
+  if (state === 'rejected')
+    return `A fold of${positions} was rejected: ${visible(text(data['reason']))}.`;
+  const freed = typeof data['freed'] === 'number' ? data['freed'].toLocaleString('en-US') : '?';
+  const how = state === 'applied' ? 'with its narrative' : 'skeleton-only';
+  const reason = text(data['reason']);
+  return (
+    `Folded${positions}, ${how}: about ${freed} tokens freed, ${String(data['stubs'] ?? 0)} results stubbed.` +
+    (reason && state !== 'applied'
+      ? ` ${visible(reason.replace(/^skeleton-only: /, 'The narrative failed: '))}.`
+      : '')
+  );
 }
 
 /** A tool call's outcome in a few words: its state, error kind and exit code. */
@@ -440,6 +467,8 @@ export function chatEntries(events: readonly RunEvent[]): ChatEntry[] {
           : 'The wait for jobs ended.',
         problem: false,
       });
+    } else if (kind === 'fold') {
+      entries.push({ kind: 'note', seq, text: foldText(data), problem: false });
     } else if (kind === 'stopped') {
       const stopped = text(data['stopped']);
       entries.push({

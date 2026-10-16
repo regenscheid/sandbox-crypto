@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: MIT
 """The session view a main run starts from (docs/specs/context-management.md, CM-25,
-CM-28 to CM-30, CM-29a to CM-29c): CM-F2, CM-F17, CM-F24, CM-F28 and CM-F29, as far as
-step (e1) builds them, before folds. Runs go through ``cli.main`` against the in-process
-worker and the scripted gateway; views are also built from archives written through the
-archive's own API."""
+CM-28 to CM-30, CM-29a to CM-29c): CM-F2, CM-F17, CM-F24, CM-F28 and CM-F29, the
+view's part of them; the folds themselves are ``test_history_folds.py``'s. Runs go
+through ``cli.main`` against the in-process worker and the scripted gateway; views are
+also built from archives written through the archive's own API."""
 
 from __future__ import annotations
 
@@ -23,16 +23,21 @@ from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.documents.tool import REQUESTS_TASK
 from sandbox_science.orchestrator.history import (
     Archive,
+    Archived,
     Entry,
+    FoldRecord,
+    Geometry,
     HistoryTool,
     View,
     body,
     session_view,
     settle,
 )
-from sandbox_science.orchestrator.history.view import ABORTED, SHARE, WORDS
+from sandbox_science.orchestrator.history.record import FORMAT
+from sandbox_science.orchestrator.history.view import ABORTED
 from sandbox_science.orchestrator.notices import (
     DIGEST,
+    FOLD_REGION,
     KERNEL_LINES,
     REDELIVERED,
     SKILLS_WORDS,
@@ -47,7 +52,6 @@ from sandbox_science.orchestrator.tokens import (
     total_input,
     view_tokens,
 )
-from sandbox_science.orchestrator.worker_client import dump
 
 from .loop_harness import PROJECT, SESSION, TASK, Harness, Reply, call, own
 from .loop_harness import gateway as gateway
@@ -96,6 +100,51 @@ def answered(archive: Archive, run: str, *results: str) -> None:
         archive.append(PROJECT, SESSION, run, result)
 
 
+SHAPE = Geometry(ceiling=10**7, prompt=0, chunk=10**6, scale=1.0)
+"""A geometry under which nothing these tests write is trimmed."""
+
+
+def shape(words: int) -> Geometry:
+    """A geometry whose user's words take ``words`` characters at a character a token."""
+    return Geometry(ceiling=words * 10, prompt=0, chunk=50_000, scale=1.0)
+
+
+def fold_through(archive: Archive, last: int, run: str = "folder") -> str:
+    """A fold record of the session's messages up to position ``last``, archived."""
+    rows: list[Archived] = []
+    while not rows or (rows[-1].position < last and len(rows) % 200 == 0):
+        start = rows[-1].position + 1 if rows else 1
+        rows += archive.messages(PROJECT, SESSION, start=start, end=last)
+    rows = [row for row in rows if row.parent is None]
+    record = FoldRecord(
+        level=1,
+        first=(rows[0].position, rows[0].message_id),
+        last=(rows[-1].position, rows[-1].message_id),
+        runs=tuple(dict.fromkeys(row.run for row in rows)),
+        dates=(rows[0].created, rows[-1].created),
+        skeleton=("An outline.",),
+        markers=(),
+        keys=(),
+    )
+    entry = Entry(
+        "user",
+        "fold",
+        record.text("this record", whole=True),
+        source="folds",
+        native=record.stored(),
+        native_format=FORMAT,
+    )
+    return archive.append(PROJECT, SESSION, run, entry).message_id
+
+
+def last_position(archive: Archive) -> int:
+    page, start = archive.messages(PROJECT, SESSION), 1
+    while len(page) == 200:
+        start = page[-1].position + 1
+        page = archive.messages(PROJECT, SESSION, start=start)
+    return page[-1].position
+
+
 async def test_a_run_starts_from_its_sessions_view(harness: Harness) -> None:
     """CM-F17, CM-29, CM-29c: a second run's view holds the first run's messages as
     they were sent, its cell and its result among them, after a line naming the kernel
@@ -117,7 +166,7 @@ async def test_a_run_starts_from_its_sessions_view(harness: Harness) -> None:
     assert isinstance(summary, dict)
     assert summary["parts"] == len(view) + 1
     assert summary["positions"] == [1, len(view)]
-    assert summary["left_out"] is None
+    assert summary["folded"] is None
     assert summary["kernel_lines"] == [kernel_line["content"]]  # CM-46
     # Each part's tokens at the session's characters per token, rounded up.
     assert summary["tokens"] >= estimate(summary["chars"], summary["chars_per_token"])
@@ -169,33 +218,35 @@ async def test_each_call_measures_its_view_and_a_model_calibrates_its_own(
     assert summary["chars_per_token"] == round(chars_per_token(calls[:2]), 3)
 
 
-async def test_the_oldest_messages_are_left_out_and_the_users_words_kept(
+async def test_folded_messages_leave_the_view_and_the_users_words_stay(
     archive: Archive,
 ) -> None:
-    """CM-F2, CM-26, CM-30, until folds: a view past its share leaves out its oldest
-    messages, and its state block keeps the user's words from them, oldest first; past
-    their share the oldest become one-line pointers, never the newest; a long message
-    shows its head and tail; every message the view holds is whole or named."""
-    budget = 40_000
+    """CM-F2, CM-17, CM-26, CM-30: folded messages are shown only as their fold record,
+    in the fold region after the state block, which keeps the user's words from them,
+    oldest first; past their share the oldest become one-line pointers, never the newest;
+    a long message shows its head and tail; every message the view holds is whole or
+    named."""
     first = said(archive, "run-1", CONSTRAINT, "m-1")
     answered(archive, "run-1", "x" * 6_000)
     olds = [said(archive, f"run-{n}", f"Note {n}: " + "y" * 900, f"m-{n}") for n in (2, 3, 4)]
     long = said(archive, "run-5", "z" * 30_000 + " END-OF-LONG", "m-5")
     answered(archive, "run-5", "w" * 6_000)
+    end = last_position(archive)
+    fold = fold_through(archive, end)
     last = said(archive, "run-6", "The latest question.", "m-6")
     answered(archive, "run-6", "v" * 3_000)
-    view = session_view(archive, CONTEXT, budget=budget)
+    view = session_view(archive, CONTEXT, geometry=shape(4_000), per_token=1.0)
     settled = await settle(view, archive, CONTEXT, run="run-7", kernels=None)
-    block, *kept = settled.parts
+    block, region, *kept = settled.parts
     text = body(str(block.message["content"]))
-    # The newest messages are whole in the raw tail; what went before is named.
     assert [p.row.message_id for p in kept if p.row and p.row.entry.kind == "user"] == [last]
-    assert sum(len(dump(p.message)) for p in kept) <= budget * (SHARE - WORDS)
-    assert view.left_out == (1, kept[0].row.position - 1 if kept[0].row else 0)
-    assert text.startswith(STATE_BLOCK.text + "Left out: the messages at positions 1 to ")
+    assert (view.folded, view.folds, view.folds_left_out) == ((1, end), (fold,), ())
+    assert text.startswith(f"{STATE_BLOCK.text}Folded: the messages at positions 1 to {end}. ")
+    assert region.kind == "fold_region"
+    assert str(region.message["content"]).startswith(FOLD_REGION.text + f"--- fold {fold} ")
     words = text[text.index("--- The user's own words ---") :]
-    assert len(words) <= budget * WORDS + 200
-    # The oldest became pointers; the newest left out is shown, a long one as head and tail.
+    assert len(words) <= 4_000 + 200
+    # The oldest became pointers; the newest folded is shown, a long one as head and tail.
     (pointer,) = [line for line in words.splitlines() if line.startswith(f"--- {first} ")]
     assert pointer.endswith(
         f'{len(CONSTRAINT)} characters, beginning "{CONSTRAINT}"; history_read returns it whole ---'
@@ -216,8 +267,13 @@ async def test_a_pointer_reads_back_whole(archive: Archive) -> None:
     for n in range(2, 8):
         said(archive, f"run-{n}", f"Later {n}. " + "r" * 3_000, f"m-{n}")
         answered(archive, f"run-{n}", "s" * 5_000)
+    fold_through(archive, last_position(archive))
     view = await settle(
-        session_view(archive, CONTEXT, budget=40_000), archive, CONTEXT, run="r", kernels=None
+        session_view(archive, CONTEXT, geometry=shape(4_000), per_token=1.0),
+        archive,
+        CONTEXT,
+        run="r",
+        kernels=None,
     )
     assert f"--- {first} · user message · " in str(view.parts[0].message["content"])
     tool = HistoryTool(archive, CONTEXT, run="r", delegated=False)
@@ -291,7 +347,7 @@ def test_a_body_or_a_notice_left_out_of_the_view_counts_for_nothing(archive: Arc
     answered(archive, "run-1", load)
     archive.append(PROJECT, SESSION, "run-1", Entry("user", "notice", "x", source="skills"))
     assert given([load]) == {"ss/alpha": ("a" * 64, len("SS-MARKER-ALPHA-1"))}
-    whole = session_view(archive, CONTEXT, budget=10**6)
+    whole = session_view(archive, CONTEXT, geometry=SHAPE)
     assert whole.loaded == {}  # the result's source is shell here, not the skills tool
     skills = Entry("tool", "tool_result", load, source="skills", call_id="run-2-c0")
     calls = {
@@ -306,116 +362,51 @@ def test_a_body_or_a_notice_left_out_of_the_view_counts_for_nothing(archive: Arc
     listed = SKILLS_WORDS.text + '{"skills":[{"id":"ss/beta"}]}'
     shown = Entry("user", "notice", listed, source="skills")
     archive.append(PROJECT, SESSION, "run-2", shown)
-    view = session_view(archive, CONTEXT, budget=10**6)
+    view = session_view(archive, CONTEXT, geometry=SHAPE)
     assert view.loaded == {"ss/alpha": ("a" * 64, len("SS-MARKER-ALPHA-1"))}
     assert view.discovered == {"ss/beta"}
     answered(archive, "run-3", *["p" * 9_000] * 4)
-    cut = session_view(archive, CONTEXT, budget=40_000)
-    assert cut.left_out is not None
+    fold_through(archive, last_position(archive) - 5)  # through run 2
+    cut = session_view(archive, CONTEXT, geometry=SHAPE)
+    assert cut.folded is not None
     assert (cut.loaded, cut.discovered) == ({}, frozenset())
-
-
-async def test_a_run_whose_session_outgrew_its_share_starts_from_a_state_block(
-    harness: Harness,
-) -> None:
-    """CM-26, CM-30, until folds: a run whose session's messages pass its view's share
-    begins with an archived state block that names what it left out and keeps the user's
-    words from it; the run's context limit still stops a run that does not fit."""
-    output = "printf '%.0s0123456789' $(seq 1 3000)"
-    await harness.run("run-1", [Reply(calls=[call("shell", script=output)] * 2), Reply("Printed.")])
-    small = await harness.run("run-2", [], status=3, max_input_chars=30_000)
-    assert small.stopped == "context_limit"
-    block = small.messages[1]
-    assert str(block["content"]).split("\n", 1)[0].endswith(" \u00b7 state block]")
-    text = body(str(block["content"]))
-    summary = cast(Json, small.summaries["view"])
-    assert isinstance(summary, dict)
-    assert str(summary["state_block"]).startswith("msg-")
-    # Run 1's task, the user's latest words, is kept whole though its calls are left out,
-    # and so is the newest unit, its answer.
-    kept = summary["kept_apart"]
-    assert text == f"{STATE_BLOCK.text}Left out: the messages at positions 2 to 5. "
-    assert str(small.messages[2]["content"]).startswith(f"[{kept} \u00b7 task]")
-    assert body(str(small.messages[2]["content"])) == TASK
-    assert small.messages[3]["content"] == "Printed."
 
 
 # The review of #454.
 
 
-async def test_the_users_words_keep_their_tenth_however_many_there_are(
+async def test_the_users_words_keep_their_share_however_many_there_are(
     archive: Archive,
 ) -> None:
-    """CM-30: with about 2,000 of the user's messages left out, even their one-line
+    """CM-30: with about 2,000 of the user's messages folded, even their one-line
     pointers pass the words' share; the oldest become one line naming the range, which
-    the history tools find, and the words keep to their tenth of the input."""
-    budget = 100_000
+    the history tools find, and the words keep to their share."""
     ids = [
         said(archive, f"run-{n // 20}", f"Note {n}: " + "y" * 60, f"m-{n}") for n in range(2_000)
     ]
+    fold_through(archive, 1_990)
     answered(archive, "run-100", "w" * 20_000)
-    view = session_view(archive, CONTEXT, budget=budget)
-    assert view.kept_apart is None  # the latest message is among the newest kept
+    view = session_view(archive, CONTEXT, geometry=shape(10_000), per_token=1.0)
     shown = [p.row.message_id for p in view.parts if p.row and p.row.entry.kind == "user"]
-    assert shown == ids[-len(shown) :]
-    out = ids[: -len(shown)]
+    assert shown == ids[1_990:]
+    out = ids[:1_990]
     words = view.words or ""
-    assert len(words) <= budget * WORDS + 100  # its framing lines
+    assert len(words) <= 10_000 + 100  # its framing lines
     lines = [line for line in words.splitlines() if line.startswith("--- ")]
     gone = int(lines[1].split()[1].replace(",", ""))
     assert lines[1] == (
         f"--- {gone:,} earlier messages, {ids[0]} to {ids[gone - 1]}; history_search and "
         "history_read find them ---"
     )
-    # Then one line for each message after them, and the newest left out whole.
+    # Then one line for each message after them, and the newest folded whole.
     pointers = lines[2:-2]
     assert [line.split()[1] for line in pointers] == out[gone:-1]
     newest = archive.message(PROJECT, out[-1])
-    assert lines[-2] == f"--- {out[-1]} · user message · {newest.created} ---"
+    assert lines[-2] == f"--- {out[-1]} \u00b7 user message \u00b7 {newest.created} ---"
     assert f"{newest.entry.content}\n--- End of the user's own words ---" in words
     found = HistoryTool(archive, CONTEXT, run="r", delegated=False)
     text, _ = await found.call("history_read", {"message": ids[0]})
     assert json.loads(text)["text"] == "Note 0: " + "y" * 60
-
-
-def test_the_newest_unit_and_the_users_latest_message_are_always_kept(
-    archive: Archive,
-) -> None:
-    """CM-26, until folds: a newest unit larger than the view's room is kept whole, the
-    context limit the backstop; and so is the user's latest message, though messages
-    after it are left out."""
-    said(archive, "run-1", "Old words.", "m-1")
-    answered(archive, "run-1", "a" * 1_000)
-    question = said(archive, "run-2", "The question.", "m-2")
-    answered(archive, "run-2", "b" * 30_000)
-    answered(archive, "run-3", "c" * 30_000)
-    view = session_view(archive, CONTEXT, budget=40_000)
-    kinds = [(p.kind, p.row.run if p.row else None) for p in view.parts]
-    assert kinds == [("user", "run-2"), ("assistant", "run-3"), ("tool_result", "run-3")]
-    assert view.left_out == (1, 6)
-    assert view.kept_apart == question
-    assert view.shown == {"m-2": question, "m-1": view.shown["m-1"]}
-    assert "Old words." in (view.words or "")
-    assert "The question." not in (view.words or "")
-    # Without a message from the user before it, the newest unit alone.
-    alone = session_view(archive, CONTEXT, budget=10_000)
-    assert [p.kind for p in alone.parts] == ["user", "assistant", "tool_result"]
-
-
-async def test_the_state_block_names_what_it_kept_apart(archive: Archive) -> None:
-    said(archive, "run-1", "Old words.", "m-1")
-    question = said(archive, "run-2", "The question.", "m-2")
-    answered(archive, "run-2", "b" * 30_000)
-    answered(archive, "run-3", "c" * 30_000)
-    settled = await settle(
-        session_view(archive, CONTEXT, budget=40_000), archive, CONTEXT, run="r", kernels=None
-    )
-    text = body(str(settled.parts[0].message["content"]))
-    assert text.startswith(
-        f"{STATE_BLOCK.text}Left out: the messages at positions 1 to 4, but for the user's "
-        f"latest message, {question}, which is kept. "
-    )
-    assert settled.summary()["kept_apart"] == question
 
 
 def test_results_are_paired_with_their_calls_by_id_within_each_run(archive: Archive) -> None:
@@ -441,7 +432,7 @@ def test_results_are_paired_with_their_calls_by_id_within_each_run(archive: Arch
     add("run-1", calls("c1"))
     add("run-1", result("c1", "again"))
     add("run-2", calls("c1"))  # its result never came
-    view = session_view(archive, CONTEXT, budget=10**6)
+    view = session_view(archive, CONTEXT, geometry=SHAPE)
     sent = [
         (m["role"], m.get("tool_call_id"), body(str(m.get("content") or ""))) for m in view.messages
     ]
@@ -490,11 +481,11 @@ def test_the_users_words_are_the_records_first_and_never_a_stand_in_task(
 ) -> None:
     """CM-30, RS-10: the words from runs before the archive come first, as ``earlier``
     reads them for the runs the archive lacks; the stand-in task of a run started for
-    comments is not the user's words, nor the user's latest message."""
+    comments is not the user's words."""
     archive.append(PROJECT, SESSION, "run-1", Entry("user", "task", REQUESTS_TASK))
     said(archive, "run-1", "An earlier message.", "m-1")
-    latest = said(archive, "run-1", "The latest message.", "m-2")
     answered(archive, "run-1", "a" * 30_000)
+    fold_through(archive, last_position(archive))
     archive.append(PROJECT, SESSION, "run-2", Entry("user", "task", REQUESTS_TASK))
     answered(archive, "run-2", "b" * 30_000)
     asked: list[list[str]] = []
@@ -504,13 +495,13 @@ def test_the_users_words_are_the_records_first_and_never_a_stand_in_task(
         return [(run, "user message", f"Said in {run}.") for run in runs]
 
     view = session_view(
-        archive, CONTEXT, budget=40_000, runs=["run-0", "run-1", "run-2"], earlier=earlier
+        archive, CONTEXT, geometry=SHAPE, runs=["run-0", "run-1", "run-2"], earlier=earlier
     )
     assert asked == [["run-0"]]
-    assert (view.unarchived, view.recorded, view.kept_apart) == (1, 1, latest)
+    assert (view.unarchived, view.recorded) == (1, 1)
     words = view.words or ""
     assert REQUESTS_TASK not in words
-    assert words.index("--- run run-0 · user message ---\nSaid in run-0.") < words.index(
+    assert words.index("--- run run-0 \u00b7 user message ---\nSaid in run-0.") < words.index(
         "An earlier message."
     )
 

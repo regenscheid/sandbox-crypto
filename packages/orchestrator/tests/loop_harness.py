@@ -304,6 +304,8 @@ class Reply:
     retry_after: str | None = None
     cost: str | None = None
     """The call's cost, as LiteLLM's proxy reports it in ``x-litellm-response-cost``."""
+    tokens: int | None = None
+    """The prompt tokens the gateway reports for the call; by default, its messages' count."""
 
 
 def call(name: str, /, **arguments: Any) -> tuple[str, Json]:
@@ -324,6 +326,11 @@ class Gateway:
     capable: dict[str, bool] | None = None
     """Whether each alias can call tools, as ``GET /model/info`` says; without it that
     answers 404."""
+    per_token: float | None = None
+    """With it, each chat completion reports its request's characters, tools included,
+    divided by it as its prompt tokens, unless its reply scripts them."""
+    limits: dict[str, int] | None = None
+    """Each alias's ``max_input_tokens``, as ``GET /model/info`` says."""
     routed: dict[str, list[Reply]] = field(default_factory=dict[str, list[Reply]])
     """Delegated runs' answers by a text their brief holds, for runs that call the model
     at once, such as a child and its own child; others answer from ``delegated``."""
@@ -459,7 +466,7 @@ class Gateway:
         return web.json_response({"object": "list", "data": data})
 
     async def model_info(self, request: web.Request) -> web.Response:
-        if self.capable is None and self.served is None:
+        if self.capable is None and self.served is None and self.limits is None:
             return web.Response(status=404, text="not found")
         assert request.headers.get("Authorization") == f"Bearer {API_KEY}"
         data = [
@@ -469,6 +476,10 @@ class Gateway:
         data += [
             {"model_name": alias, "litellm_params": {"model": model}, "model_info": {}}
             for alias, model in (self.served or {}).items()
+        ]
+        data += [
+            {"model_name": alias, "model_info": {"max_input_tokens": limit}}
+            for alias, limit in (self.limits or {}).items()
         ]
         return web.json_response({"data": data})
 
@@ -535,7 +546,16 @@ class Gateway:
             {
                 "model": f"scripted-{alias}",
                 "choices": [{"message": message, "finish_reason": "stop"}],
-                "usage": {"prompt_tokens": len(messages), "completion_tokens": self.numbered},
+                "usage": {
+                    "prompt_tokens": (
+                        reply.tokens
+                        if reply.tokens is not None
+                        else len(messages)
+                        if self.per_token is None
+                        else int(len(json.dumps(body)) / self.per_token)
+                    ),
+                    "completion_tokens": self.numbered,
+                },
             },
             headers=priced,
         )

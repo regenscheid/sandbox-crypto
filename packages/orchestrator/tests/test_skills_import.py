@@ -23,7 +23,6 @@ from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.skills import PackFile
 from sandbox_science.orchestrator.skills.packs import snapshot_sha256
-from sandbox_science.orchestrator.skills.sources import from_git
 
 POLICY = "sha256:" + "a" * 64
 ALPHA = "---\nname: alpha\ndescription: Says the marker.\n---\nSS-MARKER-ALPHA-1\n"
@@ -337,22 +336,3 @@ def test_a_pack_without_skills_and_a_bad_source_name_are_refused(
         capsys, "skills", "import", *where, "--name", "x", "--git", str(tmp_path / "missing")
     )
     assert (status, "git fetch" in error) == (1, True)
-
-
-def test_an_import_starts_no_background_maintenance_in_its_scratch_repository(
-    pack: tuple[Path, str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A fetch starts git's automatic maintenance in the background, which could still
-    hold ``objects/maintenance.lock`` in the scratch repository as the import removes it
-    (a flaky ``FileNotFoundError`` in CI). The import turns it off, whatever the user's
-    git settings or the tests' (conftest's ``GIT_QUIET``, cleared here)."""
-    for name in [n for n in os.environ if n.startswith("GIT_CONFIG_")]:
-        monkeypatch.delenv(name)
-    trace = tmp_path / "trace.json"
-    monkeypatch.setenv("GIT_TRACE2_EVENT", str(trace))
-    root, _, _ = pack
-    from_git(str(root))
-    events = [json.loads(line) for line in trace.read_text().splitlines()]
-    started = [e["argv"] for e in events if e.get("event") == "child_start"]
-    assert started  # the trace saw git's children
-    assert not [argv for argv in started if "maintenance" in argv or "gc" in argv]

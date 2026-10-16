@@ -340,6 +340,7 @@ class EventLog(TurnHook):
             "stopped",
             {
                 "stopped": record.stopped,
+                **_context_stop(record),
                 "failure": record.failure,
                 "final_text": record.final_text,
                 "record": self.chat.run,
@@ -431,6 +432,15 @@ class EventLog(TurnHook):
                 "usage": used.model_dump(mode="json") if used is not None else None,
             },
         )
+
+
+def _context_stop(record: RunRecord) -> dict[str, Any]:
+    """Why a run that folds stopped for its context, as its folds say (CM-43 to CM-45)."""
+    folds = record.summaries.get("folds")
+    if record.stopped != "context_limit" or not isinstance(folds, dict):
+        return {}
+    found = cast(dict[str, Any], folds)
+    return {"reason": found.get("stopped"), "detail": found.get("detail")}
 
 
 def tool_outcome(record: Mapping[str, Any]) -> dict[str, JsonValue]:

@@ -30,7 +30,7 @@ from sandbox_science.orchestrator.delegation.records import (
     Ending,
 )
 from sandbox_science.orchestrator.documents import USER
-from sandbox_science.orchestrator.history import Archive, body, session_view
+from sandbox_science.orchestrator.history import Archive, body, geometry, session_view
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.memory import ProjectMemory
 from sandbox_science.orchestrator.notices import (
@@ -276,7 +276,9 @@ async def test_a_check_starts_fresh_and_its_outcome_reaches_its_parent(
         assert events[0].kind == "started"
         assert events[0].data["role"] == "delegated"
         assert events[-1].kind == "stopped"
-        view = session_view(Archive(store.control), delegating.context(), budget=10**6)
+        view = session_view(
+            Archive(store.control), delegating.context(), geometry=geometry(600_000, 0)
+        )
     finally:
         store.close()
     assert {part.row.run for part in view.parts if part.row} == {name(root)}

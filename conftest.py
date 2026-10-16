@@ -23,21 +23,6 @@ LEFTOVER_GRACE = 10.0
 """Seconds a module's processes get to end after its last test, before they count."""
 
 
-GIT_QUIET = {"maintenance.auto": "false", "gc.auto": "0"}
-"""Git settings for every git the tests run: no automatic maintenance or garbage
-collection, which git starts in the background after a commit or a fetch and which could
-still be writing in a test's repository as its temporary directory is removed."""
-
-
-def pytest_configure(config: pytest.Config) -> None:
-    if "GIT_CONFIG_COUNT" in os.environ:
-        return  # the runner's own settings stand; the skill imports quiet theirs anyway
-    os.environ["GIT_CONFIG_COUNT"] = str(len(GIT_QUIET))
-    for index, (key, value) in enumerate(GIT_QUIET.items()):
-        os.environ[f"GIT_CONFIG_KEY_{index}"] = key
-        os.environ[f"GIT_CONFIG_VALUE_{index}"] = value
-
-
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     integration = os.environ.get("SS_INTEGRATION") == "1"
     live = bool(os.environ.get("SS_LIVE_GATEWAY"))

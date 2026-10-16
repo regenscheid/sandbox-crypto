@@ -56,16 +56,20 @@ from .delegation.models import ModelChoice
 from .delegation.outcome import Outcome, Target, result_of
 from .delegation.records import DelegationRecords
 from .delegation.tracks import TrackTools, grant
-from .digest import SHARE, Digest, constraints_block, render
+from .digest import Digest, constraints_block, render
 from .documents import DocumentError, DocumentStore, DocumentTool
 from .documents.tool import REQUESTS_TASK, WorkRequests
 from .file_settings import ProjectFiles
 from .history import (
+    CEILING,
     Archive,
+    Folder,
     HistoryTool,
     RunArchive,
     View,
     ViewMeter,
+    ceiling,
+    geometry,
     recorded_words,
     session_view,
     settle,
@@ -119,6 +123,9 @@ Snapshot = tuple[int, tuple[MemoryEntry, ...]]
 """The project memory at a version: the version and its accepted entries in order."""
 
 _log = logging.getLogger(__name__)
+FOLDING_CHARS: Final = 1 << 40
+"""A folding run's character limit, by default: none that a run reaches; its ceiling
+is in tokens."""
 
 KERNEL_CLOSE_SECONDS: Final = 20.0
 """How long a delegated run's end waits for the worker to stop its kernels; the next
@@ -179,8 +186,17 @@ class Settings:
     min_isolation_tier: int | None = 3
     """``None`` accepts a worker with any isolation, for development."""
     max_turns: int = 30
-    max_input_chars: int = MAX_INPUT_CHARS
-    """The longest conversation MAIN is sent; a longer one stops the run."""
+    max_input_chars: int | None = None
+    """The longest conversation a run is sent, in characters; a longer one stops the
+    run. ``None``: ``MAX_INPUT_CHARS`` for a run that does not fold, and none for a main
+    run with stores, which folds within its ceiling in tokens."""
+    ceiling: int = CEILING
+    """MAIN's ceiling in tokens, before the model's input limit caps it (CM-27)."""
+    chunk: int | None = None
+    """MAIN's chunk in tokens; ``None`` for max(50,000, 0.2 C)."""
+    input_limit: int | None = None
+    """MAIN's model's input limit in tokens, without its output, where the gateway's
+    model information gives none."""
     watcher_calls_per_hour: int = 60
     watcher_first_check: float = 300
     watcher_interval: float = 1800
@@ -484,6 +500,8 @@ class Harness:
         """The MCP proxy and the servers behind it whose tools runs are offered."""
         self.delegated = delegated or main
         self.gateway = gateway
+        self._limits_seen: dict[str, int] | None = None
+        """The input limits the gateway's model information gave, read once."""
 
     def role(self, request: RunRequest) -> Role:
         """The model a run calls: the delegated role's for a delegated run, or the one
@@ -527,7 +545,8 @@ class Harness:
             async with AsyncExitStack() as stack:
                 with interruption.protect():
                     memory = await self.memory(admitted)
-                    view = await self._view(admitted)
+                    folder = await self._folder(admitted)
+                    view = folder.view if folder is not None else await self._task_view(admitted)
                     if view is not None:
                         # The session's view is the earlier conversation (CM-29).
                         request = dataclasses.replace(admitted.request, history=view.messages)
@@ -568,6 +587,10 @@ class Harness:
                         hooks = (*hooks, *await self._chat_hooks(admitted, chat, discovery))
                     if view is not None:
                         hooks = (*hooks, ViewMeter(view))
+                    if folder is not None and chat is not None:
+                        hooks = (*hooks, folder)
+                        folder.events = functools.partial(chat.write, "fold")
+                        folder.refit = functools.partial(_refit, toolbox, discovery)
                     log = None
                     if self.stores is not None and chat is not None:
                         # Each message is kept in the session's archive as it is added (CM-4).
@@ -589,7 +612,7 @@ class Harness:
                         history=request.history,
                         stop=stop,
                         max_turns=request.max_turns or self.settings.max_turns,
-                        max_input_chars=self.settings.max_input_chars,
+                        max_input_chars=self._input_chars(folding=folder is not None),
                         system=(
                             SYSTEM_PROMPT
                             if request.parent is None
@@ -603,6 +626,7 @@ class Harness:
                         memory=for_run(*memory) if memory is not None else None,
                         role=request.role,
                         log=log,
+                        folds=folder,
                     )
         except BaseException as error:
             if transcript is not None and user_cancelled(error, stop):
@@ -626,37 +650,38 @@ class Harness:
             limits=self._limits(admitted.request),
         )
 
-    async def _view(self, admitted: Admitted) -> View | None:
-        """A main run's view of its session, with stores (CM-29): the earlier messages of
-        its session from the archive, which it starts with, after a state block that
-        holds the research-state digest (CM-16, CM-26). A delegated task starts with the
-        user's standing constraints alone, and a check with nothing (CM-37a)."""
+    async def _folder(self, admitted: Admitted) -> Folder | None:
+        """A main run's folds, with stores (CM-24, CM-29), holding the view of its session
+        it starts with: the earlier messages of its session from the archive, folded as
+        its records say, after a state block that holds the research-state digest
+        (CM-16, CM-26); ``None`` for any other run."""
         stores, request, context = self.stores, admitted.request, admitted.context
-        if stores is None:
+        if stores is None or request.parent is not None:
             return None
         project, session = context.project_id, context.session_id
         archive = Archive(stores.projects.control, clock=self.clock)
         name = run_name(admitted.started_at, admitted.run_id)
-        if request.parent is not None:
-            block = await threaded(self._task_block, stores, project, session, request)
-            if block is None:
-                return None
-            return await settle(
-                View(digest=block), archive, context, run=name, kernels=None,
-                parent=request.parent, clock=self.clock,
-            )  # fmt: skip
         calls = await threaded(stores.projects.usage, project, session, self.main.alias)
-        runs = await threaded(stores.projects.runs, project, session)
+        entries = await threaded(stores.projects.runs, project, session)
+        runs = [entry.name for entry in entries if entry.role == "main"]
+        earlier = functools.partial(recorded_words, stores.projects, stores.runs, project, session)
+        settings = self.settings
+        limit = settings.input_limit
+        if limit is None and self.gateway is not None:
+            if self._limits_seen is None:
+                self._limits_seen = await self.gateway.input_limits() or {}
+            limit = self._limits_seen.get(self.main.alias)
+        top = ceiling(settings.ceiling, input_limit=limit)
+        start = geometry(top, 0, settings.chunk)  # the system message is not known yet
+        per_token = chars_per_token(calls)
         view = await threaded(
             session_view,
             archive,
             context,
-            budget=self.settings.max_input_chars,
-            per_token=chars_per_token(calls),
-            runs=[entry.name for entry in runs if entry.role == "main"],
-            earlier=functools.partial(
-                recorded_words, stores.projects, stores.runs, project, session
-            ),
+            geometry=start,
+            per_token=per_token,
+            runs=runs,
+            earlier=earlier,
         )
         kernels = None
         if view.cells:  # whether the kernels its cells ran in still run (CM-29c)
@@ -664,13 +689,55 @@ class Harness:
                 kernels = (await self.client.observe_kernels(context)).kernels
             except Exception as error:  # unknown, then: the run goes on
                 _log.warning("the kernels could not be observed for the view: %r", error)
-        found = await threaded(self._digest, stores, project, session)
+        digest = functools.partial(self._digest, stores, project, session)
+        found = await threaded(digest, int(start.digest * per_token))
         view = dataclasses.replace(view, digest=found)
-        return await settle(view, archive, context, run=name, kernels=kernels, clock=self.clock)
+        view = await settle(view, archive, context, run=name, kernels=kernels, clock=self.clock)
+        return Folder(
+            archive,
+            context,
+            run=name,
+            view=view,
+            start=start,
+            ceiling=top,
+            chunk=settings.chunk,
+            calls=calls,
+            runs=runs,
+            earlier=earlier,
+            kernels=kernels,
+            digest=digest,
+            clock=self.clock,
+        )
 
-    def _digest(self, stores: Stores, project: str, session: str) -> str | None:
-        """The research-state digest a main run's state block holds (CM-16), within its
-        share of the run's input; ``None`` when the research state is empty."""
+    async def _task_view(self, admitted: Admitted) -> View | None:
+        """A delegated task's view, with stores: the user's standing constraints alone; a
+        check's, nothing (CM-37a)."""
+        stores, request, context = self.stores, admitted.request, admitted.context
+        if stores is None or request.parent is None:
+            return None
+        project, session = context.project_id, context.session_id
+        block = await threaded(self._task_block, stores, project, session, request)
+        if block is None:
+            return None
+        archive = Archive(stores.projects.control, clock=self.clock)
+        name = run_name(admitted.started_at, admitted.run_id)
+        return await settle(
+            View(digest=block), archive, context, run=name, kernels=None,
+            parent=request.parent, clock=self.clock,
+        )  # fmt: skip
+
+    def _input_chars(self, *, folding: bool) -> int:
+        """The longest conversation a run is sent, in characters: the setting's, or by
+        default ``MAX_INPUT_CHARS`` for a run that does not fold and no limit of its own
+        for one that does, whose ceiling is in tokens (CM-27)."""
+        if self.settings.max_input_chars is not None:
+            return self.settings.max_input_chars
+        return FOLDING_CHARS if folding else MAX_INPUT_CHARS
+
+    def _digest(self, stores: Stores, project: str, session: str, budget: int) -> str | None:
+        """The research-state digest a main run's state block holds (CM-16), within
+        ``budget`` characters, its third of the state block (CM-27); ``None`` when the
+        research state is empty."""
         digest = Digest(
             Ledger(stores.documents),
             plans=SessionPlans(stores.documents),
@@ -678,9 +745,7 @@ class Harness:
             delegations=DelegationRecords(stores.documents, clock=self.clock),
         )
         try:
-            body = render(
-                digest.sections(project, session), int(self.settings.max_input_chars * SHARE)
-            ).text
+            body = render(digest.sections(project, session), budget).text
         except DocumentError as error:  # a project the ledger does not know yet
             _log.warning("no digest for %s/%s: %s", project, session, error)
             return None
@@ -707,7 +772,13 @@ class Harness:
         """The limits a run runs under, as its record keeps them (PD-29)."""
         found: dict[str, JsonValue] = {
             "max_turns": request.max_turns or self.settings.max_turns,
-            "max_input_chars": self.settings.max_input_chars,
+            "max_input_chars": (
+                None
+                if self.settings.max_input_chars is None
+                and self.stores is not None
+                and request.parent is None
+                else self._input_chars(folding=False)
+            ),
         }
         if request.tokens is not None:
             found["tokens"] = request.tokens
@@ -1104,6 +1175,16 @@ class Harness:
                 delegated=delegated,
             ),
         )
+
+
+def _refit(toolbox: Toolbox, discovery: SkillDiscovery | None, view: View) -> None:
+    """After a fold: the skill bodies the rebuilt view still holds are loaded, and the
+    skills its discovery notices showed are shown; others load and show again (CM-29b)."""
+    if toolbox.skills is not None:
+        toolbox.skills.refit(view.loaded)
+    if discovery is not None:
+        discovery.shown.clear()
+        discovery.shown.update(view.discovered)
 
 
 def _skills(
