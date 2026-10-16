@@ -49,6 +49,7 @@ from typing import Any, Final, Literal, cast
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.control.errors import INVALID_REQUEST, NOT_FOUND
+from sandbox_science.orchestrator.documents.store import DocumentStore
 from sandbox_science.orchestrator.messages import MESSAGES, thoughts
 from sandbox_science.orchestrator.model import AssistantMessage
 
@@ -312,8 +313,11 @@ class Archived:
 class Archive:
     """The sessions' archive in one control store, which its owner closes."""
 
-    def __init__(self, control: ControlStore, *, clock: Clock = SYSTEM_CLOCK) -> None:
-        self.control, self.clock = control, clock
+    def __init__(self, store: ControlStore | DocumentStore, *, clock: Clock = SYSTEM_CLOCK) -> None:
+        """``store``: the control store, or a document store, whose control store it
+        reads, as the workspace holds one."""
+        self.control = store if isinstance(store, ControlStore) else store.control
+        self.clock = clock
 
     def append(
         self,

@@ -460,6 +460,22 @@ export interface LedgerChangeAnswer {
   flags_reopened: string[];
 }
 
+/** An archived message, read whole (CM-3, CM-34). */
+export interface ArchivedMessage {
+  message: string;
+  session: string;
+  position: number;
+  run: string;
+  parent: string | null;
+  created: string;
+  role: string;
+  kind: string;
+  source: string | null;
+  call_id: string | null;
+  /** Its content as the run added it, then an answer's tool calls, one JSON object a line. */
+  text: string;
+}
+
 export const api = {
   projectMacros: (project: string) => get<MacroContext>(`/projects/${part(project)}/macros`),
   changeMacros: (project: string, value: Record<string, unknown>) =>
@@ -476,6 +492,8 @@ export const api = {
   /** The session's runs, running ones included, and its delegations (PD-42). */
   runTree: (project: string, session: string) =>
     get<RunTree>(`/projects/${part(project)}/sessions/${part(session)}/tree`),
+  message: (project: string, message: string) =>
+    get<ArchivedMessage>(`/projects/${part(project)}/messages/${part(message)}`),
   run: (project: string, session: string, run: string) =>
     get<RunRecord>(`/projects/${part(project)}/sessions/${part(session)}/runs/${part(run)}`),
   documents: (project: string) =>

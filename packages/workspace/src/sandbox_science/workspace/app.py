@@ -59,6 +59,7 @@ from . import (
     kernels,
     ledger,
     memory,
+    messages,
     plan_edits,
     plans,
     project_settings,
@@ -341,6 +342,7 @@ def create_app(
         frontier,
         memory,
         skills,
+        messages,
     ):
         feature.add_routes(app)
     app.router.add_post("/api/v0/logout", logout)

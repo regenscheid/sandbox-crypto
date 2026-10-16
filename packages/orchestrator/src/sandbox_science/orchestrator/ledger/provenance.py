@@ -270,24 +270,30 @@ def check(
     where: str,
 ) -> None:
     """Refuse ``where``, a revision or work record of ``basis`` with ``anchors`` and the
-    evidence it holds, when its basis is not borne out: a ``user_quoted`` one quotes no
-    message of the user's verbatim; an ``observed`` one has no observation, holds a
-    number, in ``texts``, that none of its observations does, or digits the check cannot
-    read."""
+    evidence it holds, when its basis is not borne out: a ``user_quoted`` one has no
+    quote, or a quote that is not the user's words verbatim; another holds a quote its
+    message does not; an ``observed`` one has no observation, holds a number, in
+    ``texts``, that none of its observations does, or digits the check cannot read."""
+    quoted = [a for a in anchors if "quote" in a]
     if basis == "user_quoted":
-        quoted = [a for a in anchors if a.get("kind") in _USERS and "quote" in a]
+        # Every quote, not one of them: a real quote must not carry invented ones.
+        failed = next((a for a in quoted if not _users_quote(db, project, a)), None)
+        if not quoted or failed is not None:
+            which = "" if failed is None else f" ({failed['message']} does not hold its quote)"
+            raise refused(
+                f"{where} is user_quoted: it anchors on a message the user wrote (a chat "
+                "message, a run's task from the user's messages, or a comment's request), "
+                f"with a quote of at least {MIN_QUOTE} characters of it (or all of a shorter "
+                f"one), word for word, and every quote it has is one{which}"
+            )
+    else:
         for anchor in quoted:
-            quote = _lines(anchor["quote"])
-            for said in map(_lines, users_words(db, project, anchor["message"])):
-                wanted = min(MIN_QUOTE, len(said.strip()))
-                if len(quote.strip()) >= wanted and quote in said:
-                    return
-        raise refused(
-            f"{where} is user_quoted: it anchors on a message the user wrote (a chat "
-            "message, a run's task from the user's messages, or a comment's request), with "
-            f"a quote of at least {MIN_QUOTE} characters of it (or all of a shorter one), "
-            "word for word"
-        )
+            # Elsewhere a quote says only that its text appears where it points.
+            if _lines(anchor["quote"]) not in _lines(_quoted_text(db, project, anchor)):
+                raise refused(
+                    f"{where} quotes {anchor['message']}, which does not hold those words: "
+                    "quote it word for word, or leave the quote out"
+                )
     if basis != "observed":
         return
     seen = _observations(db, project, anchors, held)
@@ -316,6 +322,31 @@ def check(
 
 _USERS: Final = ("user", "task", "comment")
 """The archive's kinds that can hold the user's own words."""
+
+
+def _users_quote(db: sqlite3.Connection, project: str, anchor: Json) -> bool:
+    """Whether ``anchor`` is on the user's own words and its quote is found in them."""
+    if anchor.get("kind") not in _USERS:
+        return False
+    quote = _lines(anchor["quote"])
+    for said in map(_lines, users_words(db, project, anchor["message"])):
+        wanted = min(MIN_QUOTE, len(said.strip()))
+        if len(quote.strip()) >= wanted and quote in said:
+            return True
+    return False
+
+
+def _quoted_text(db: sqlite3.Connection, project: str, anchor: Json) -> str:
+    """The text an anchor's quote is looked for in: the user's words of a message that
+    holds them, or the message as archived, a tool result's range only."""
+    if anchor.get("kind") in _USERS:
+        return "\n\n".join(users_words(db, project, anchor["message"]))
+    row = db.execute(
+        "SELECT content FROM archive_messages WHERE project=? AND message_id=?",
+        (project, anchor["message"]),
+    ).fetchone()
+    text = (row[0] if row is not None else None) or ""
+    return text[anchor["start"] : anchor["end"]] if "start" in anchor else text
 
 
 def users_words(db: sqlite3.Connection, project: str, message: str) -> list[str]:

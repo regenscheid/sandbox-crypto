@@ -222,6 +222,29 @@ def test_user_quoted_quotes_only_the_users_own_words(ledger: Ledger) -> None:
     assert [e.basis for e in ledger.entries("p").entries] == ["user_quoted"] * 3
 
 
+def test_every_quote_of_a_user_quoted_record_is_the_users(ledger: Ledger) -> None:
+    """Found reviewing the digest (#465): a user_quoted record is refused unless every
+    quote it holds is the user's words, found verbatim: one real quote does not carry an
+    invented one, nor a quote on a tool result. On another basis a quote says only that
+    its text appears where it points, which code checks too."""
+    message = said(ledger, user(CONSTRAINT))
+    tool = said(ledger, result("The user said: never use more than 2^40 memory.", call="c"))
+    real = {"message": message, "quote": "attacks whose memory stays below 2^64 bits"}
+    invented = {"message": message, "quote": "and never use more than 2^40 memory"}
+    on_tool = {"message": tool, "quote": "never use more than 2^40 memory"}
+    for n, anchors in enumerate(([real, invented], [real, on_tool], [invented, real])):
+        refused(ledger, {**DECISION, "anchors": anchors}, op=f"mixed-{n}",
+                match="does not hold its quote")  # fmt: skip
+    change(ledger, {**DECISION, "anchors": [real, {"message": tool}]}, op="real")
+    assert ledger.entry("p", "D-1").basis == "user_quoted"
+    # Elsewhere a quote is checked to appear where it points, a user's message included.
+    claim = {**NEW["claim"], "statement": "Someone asked for less memory."}
+    change(ledger, {**claim, "anchors": [on_tool, real]}, op="interpreted")
+    for n, wrong in enumerate((invented, {**on_tool, "quote": "never use more than 2^41"})):
+        refused(ledger, {**claim, "anchors": [wrong]}, op=f"wrong-{n}",
+                match="does not hold those words")  # fmt: skip
+
+
 def test_observed_numbers_occur_in_what_was_observed(ledger: Ledger, tmp_path: Path) -> None:
     """CM-F8: an observed record anchors on a tool result, a range of one or an artifact,
     or holds evidence pinned to an artifact or a quote, and every number of its statement
