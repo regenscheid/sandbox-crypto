@@ -381,6 +381,7 @@ async def _complete(model: ChatModel, toolbox: Toolbox, transcript: Transcript) 
             output_tokens=reply.output_tokens,
             characters=size + answered,
             cost=reply.cost,
+            cost_source=reply.cost_source,
             gateway_version=reply.gateway_version,
             thinking_replay=(reply.thinking_replay or "")[:300] or None,
         )

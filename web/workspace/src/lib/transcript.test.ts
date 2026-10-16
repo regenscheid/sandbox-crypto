@@ -150,6 +150,21 @@ describe("a run's model usage", () => {
       '1 model call, 5 input and 0 output tokens, some counts not reported by the gateway',
     );
   });
+  it("says which costs were priced from the gateway's model info", () => {
+    const call = { model: 'm', input_tokens: 10, output_tokens: 2 };
+    expect(
+      usageLine([
+        { ...call, cost: 0.01, cost_source: 'gateway' },
+        { ...call, cost: 0.02, cost_source: 'model_info' },
+        { ...call, cost: null },
+      ]),
+    ).toBe(
+      "3 model calls (m), 30 input and 6 output tokens, $0.03 for the 2 calls with a known cost, 1 of them priced from the gateway's model info",
+    );
+    expect(usageLine([{ ...call, cost: 0.02, cost_source: 'model_info' }])).toBe(
+      "1 model call (m), 10 input and 2 output tokens, $0.02, priced from the gateway's model info",
+    );
+  });
   it('adds what the gateway said the calls cost, and invents none', () => {
     const call = { model: 'm', input_tokens: 10, output_tokens: 2 };
     expect(
@@ -159,7 +174,7 @@ describe("a run's model usage", () => {
       ]),
     ).toBe('2 model calls (m), 20 input and 4 output tokens, $0.51');
     expect(usageLine([{ ...call, cost: 0.00042 }, { ...call, cost: null }, call])).toBe(
-      '3 model calls (m), 30 input and 6 output tokens, $0.00042 for the 1 calls the gateway gave a cost for',
+      '3 model calls (m), 30 input and 6 output tokens, $0.00042 for the 1 calls with a known cost',
     );
     expect(usageLine([call])).toBe('1 model call (m), 10 input and 2 output tokens');
   });

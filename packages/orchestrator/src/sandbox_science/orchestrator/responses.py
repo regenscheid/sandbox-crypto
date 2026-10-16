@@ -26,14 +26,16 @@ as the API's input items:
 Each request sets ``store: false``, asks for ``reasoning.encrypted_content`` explicitly,
 and never sets ``truncation``, which would drop the oldest items silently. Functions are
 declared with ``strict: false``, as chat completions takes them. A response that failed
-is an error, a context limit if it says so; one cut short says ``length``. Usage is
-OpenAI's, whose ``input_tokens`` already counts the cached tokens (CM-28).
+is an error, a context limit if it says so, and tried again when it says the upstream is
+overloaded; one cut short says ``length``. Usage is OpenAI's, whose ``input_tokens``
+already counts the cached tokens (CM-28). LiteLLM prices no call on this route (lab 43,
+B2): its cost comes from the gateway's model information (``pricing``).
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, Final, cast
 
 from .model import (
@@ -43,11 +45,14 @@ from .model import (
     Message,
     ModelError,
     ModelTurn,
+    OverloadedError,
     ToolCall,
     ToolSpec,
+    overloaded,
     reported_cost,
 )
 from .pairing import CALL, OUTPUT, Item, paired
+from .pricing import Tokens, responses_tokens
 
 RESPONSES: Final = "responses"
 """The native format of this client's answers: a response, as the gateway sent it."""
@@ -67,6 +72,9 @@ class ResponsesModel(GatewayModel):
     PREFIX = ("instructions", "tools", "input")
     resolved: str | None = None
     """The model this client's alias last answered as."""
+
+    def _tokens(self, usage: Mapping[str, object]) -> Tokens | None:
+        return responses_tokens(usage)
 
     async def complete(self, messages: Sequence[Message], tools: Sequence[ToolSpec]) -> ModelTurn:
         model = self.resolved or newest(messages, self.model)
@@ -230,6 +238,8 @@ def parse_response(text: str, priced: str | None = None) -> ModelTurn:
         said = f"the model's response failed: {str(fields.get('message', ''))[:300]}"
         if fields.get("code") == "context_length_exceeded":
             raise ContextLimitError(said)
+        if overloaded(fields):  # tried again, as a 529 is (lab 43, B3)
+            raise OverloadedError(said)
         raise ModelError(said)
     try:
         output = data["output"]

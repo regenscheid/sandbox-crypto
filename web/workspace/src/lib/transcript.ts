@@ -196,7 +196,8 @@ export function describeResult(result: string | undefined, record?: ToolRecord):
 /**
  * A run's model calls and tokens in one line, such as "3 model calls (model-a), 1,200
  * input and 340 output tokens"; null for a record with no usage (older records). Counts
- * the gateway left out are said to be missing rather than counted as zero.
+ * the gateway left out are said to be missing rather than counted as zero, and so are
+ * costs; a cost the gateway did not report but priced from its model info says so.
  */
 export function usageLine(usage: readonly ModelUsage[] | undefined): string | null {
   if (!usage || usage.length === 0) return null;
@@ -207,13 +208,17 @@ export function usageLine(usage: readonly ModelUsage[] | undefined): string | nu
   const calls = `${usage.length} model ${usage.length === 1 ? 'call' : 'calls'}`;
   const priced = usage.filter((call) => typeof call.cost === 'number');
   const spent = priced.reduce((sum, call) => sum + (call.cost ?? 0), 0);
+  const listed = priced.filter((call) => call.cost_source === 'model_info').length;
   const cost =
     priced.length === 0
       ? ''
       : `, ${formatCost(spent)}` +
-        (priced.length < usage.length
-          ? ` for the ${priced.length} calls the gateway gave a cost for`
-          : '');
+        (priced.length < usage.length ? ` for the ${priced.length} calls with a known cost` : '') +
+        (listed === 0
+          ? ''
+          : listed === priced.length
+            ? ", priced from the gateway's model info"
+            : `, ${listed} of them priced from the gateway's model info`);
   return (
     `${calls}${models.length ? ` (${models.join(', ')})` : ''}, ` +
     `${total('input_tokens')} input and ${total('output_tokens')} output tokens` +

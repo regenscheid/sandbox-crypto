@@ -130,6 +130,8 @@ class Fake:
     version: str | None = VERSION
     forwards_beta: bool = True
     """Passes ``anthropic-beta`` on, which LiteLLM 1.102.1 is not known to do."""
+    undisplayed: str = "thinking.display: Input should be 'summarized' or 'omitted'"
+    """How the API refuses ``display: "updates"`` without its beta."""
     rebound: bool = False
     """Takes every thinking block sent back for one bound to another conversation."""
     drops: bool = False
@@ -211,7 +213,7 @@ class Fake:
         """Why Anthropic's API would refuse the request, if it would."""
         thinking = body.get("thinking", {})
         if thinking.get("display") == "updates" and UPDATES_BETA not in betas:
-            return "thinking.display: Input should be 'summarized' or 'omitted'"
+            return self.undisplayed
         if "block_binding" in thinking and BINDING_BETA not in betas:
             return "thinking.block_binding: Extra inputs are not permitted"
         deferred = {t["name"] for t in body.get("tools", []) if t.get("defer_loading")}
@@ -532,11 +534,23 @@ async def test_a_binding_refusal_is_answered_again_without_thinking(fake: Fake) 
     assert [t.thinking_replay for t in turns[1:]] == [refusal, refusal]  # for the run
 
 
-async def test_a_gateway_that_drops_the_beta_header_gets_summaries(fake: Fake) -> None:
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        "thinking.display: Input should be 'summarized' or 'omitted'",
+        # Anthropic's own, as lab 43 got it through LiteLLM 1.102.1 without the beta (B4).
+        "thinking.adaptive.display: Input should be 'summarized', 'omitted'",
+        "thinking.enabled.display: Extra inputs are not permitted",
+    ],
+)
+async def test_a_gateway_that_drops_the_beta_header_gets_summaries(
+    fake: Fake, refusal: str
+) -> None:
     """CM-F31's risk: when the gateway does not pass ``anthropic-beta`` on, the API
-    refuses ``display: "updates"``; the client asks again for summaries, and keeps to
-    them, rather than failing every call on the alias."""
+    refuses ``display: "updates"``, naming the field by its path; the client asks again
+    for summaries, and keeps to them, rather than failing every call on the alias."""
     fake.forwards_beta = False
+    fake.undisplayed = refusal
     model = claude(fake)
     try:
         _, turns = await converse(model, [LOOKING, DONE], fake)

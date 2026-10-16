@@ -161,8 +161,13 @@ class ModelUsage(Contract):
     """What the call sent and received, in characters: the spend of a call without
     token counts is a quarter of it."""
     cost: float | None = Field(default=None, ge=0, allow_inf_nan=False)
-    """What the call cost, as the gateway reported it, in its currency (LiteLLM's is
-    USD); null when it reported none. It is never estimated."""
+    """What the call cost, in the gateway's currency (LiteLLM's is USD): as the gateway
+    reported it, or priced from the gateway's model information (``cost_source``); null
+    when neither gives it. It is never estimated."""
+    cost_source: Literal["gateway", "model_info"] | None = None
+    """Where ``cost`` came from: ``gateway``, reported by it, or ``model_info``, priced
+    from the gateway's model information, its own price list, at the call's tokens (lab
+    43, B2); null with no cost, and in older records, whose costs the gateway reported."""
     gateway_version: str | None = Field(default=None, max_length=128)
     """The gateway's version, as its ``x-litellm-version`` header named it
     (docs/specs/context-management.md, CM-39); null when it sent none."""

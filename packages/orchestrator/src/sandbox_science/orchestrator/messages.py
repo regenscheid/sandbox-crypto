@@ -61,6 +61,7 @@ from .model import (
     reported_cost,
 )
 from .pairing import ABORTED, CALL, OUTPUT, Item, paired
+from .pricing import Tokens, messages_tokens
 
 _log = logging.getLogger(__name__)
 
@@ -93,9 +94,13 @@ _OLDER: Final = re.compile(
 _UNBOUND: Final = ("bound to a different conversation", "signature` in `thinking` block")
 """How Anthropic refuses thinking sent back whose history changed, or that it cannot
 read: its documented recovery is the request again without thinking."""
-_UNDISPLAYED: Final = ("thinking.display", UPDATES_BETA, "anthropic-beta")
+_UNDISPLAYED: Final = re.compile(
+    rf"thinking(?:\.\w+)*\.display\b|{re.escape(UPDATES_BETA)}|anthropic-beta"
+)
 """How a refusal of ``display: "updates"`` reads, when the gateway does not pass the
-beta header on."""
+beta header on: Anthropic's names the field by its path, "thinking.adaptive.display:
+Input should be 'summarized', 'omitted'" (lab 43, B4), or another path to ``display``
+within ``thinking``; or the refusal names the beta."""
 _THINKING: Final = frozenset({"thinking", "redacted_thinking"})
 _FINISH: Final = {
     "end_turn": "stop",
@@ -231,6 +236,9 @@ class MessagesModel(GatewayModel):
         self.replay = replay
         self._served: _Served | None = None
 
+    def _tokens(self, usage: Mapping[str, object]) -> Tokens | None:
+        return messages_tokens(usage)
+
     async def complete(self, messages: Sequence[Message], tools: Sequence[ToolSpec]) -> ModelTurn:
         served = await self._serving()
         why_not = self._why_not(messages)
@@ -246,7 +254,7 @@ class MessagesModel(GatewayModel):
                 # history, and replay off for the rest of the run (CM-39).
                 why_not = off = "the API refused the thinking sent back as bound elsewhere"
                 _log.warning("thinking replay is off for the rest of the run: %s", said)
-            elif served.updates and any(mark in said for mark in _UNDISPLAYED):
+            elif served.updates and _UNDISPLAYED.search(said):
                 # The gateway did not pass the beta on: summaries from now on (CM-F31).
                 self._served = served = replace(served, updates=False)
                 _log.warning(

@@ -52,7 +52,6 @@ from .projects import ModelUsage, RunRecord
 from .runstate import (
     MAX_EVENT_BYTES,
     PAGE,
-    WINDOW,
     ChatMessage,
     EventKind,
     RunState,
@@ -187,9 +186,9 @@ class ModelBudget(TurnHook):
         state, project = self.chat.state, self.chat.context.project_id
         limit = await threaded(state.cost_limit, project)
         if limit is not None:
-            # Its own calls are among the project's: their events are written as they return.
-            spent = await threaded(state.model_cost, project, self.chat.clock.now() - WINDOW)
-            if spent is not None and spent >= limit:
+            # Its own calls are among the project's: their events are written as they
+            # return. A call without a known cost counts the limit as reached (lab 43, B2).
+            if await threaded(state.over_cost_limit, project, self.chat.clock.now()):
                 return "budget"
             own = sum(usage.cost or 0 for usage in run.usage)
             if self.share is not None and own > 0 and own >= self.share * limit:
