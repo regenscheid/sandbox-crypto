@@ -97,13 +97,25 @@ async def test_the_page_shows_what_the_configured_pass_derived_as_runs_get_it(
         (snap,) = {
             entry.snapshot for entry in store.effective("p1").entries if entry.source == "ss"
         }
-        derived = {"topics": {"Counting": ["beta"]}, "entry": ["alpha"]}
+        derived = {
+            "topics": {"Counting": ["beta"]},
+            "entry": ["alpha"],
+            "bindings": {"SS_DATA": "alpha", "OTHER_DIR": ""},
+        }
         store.add_metadata(snap, "pass", VERSION, "m", derived, [])
     finally:
         documents.close()
     for alias, topic, entry in (("pass", "Counting", True), (None, None, False)):
         client = await workspace(aiohttp_client, pinned, static_dir, skills_metadata=alias)
         found = ProjectSkills.model_validate(await (await client.get(BASE)).json())
+        await client.close()
         ids = {skill.id: skill for skill in found.effective}
         assert (ids["ss/beta"].topic, ids["ss/alpha"].entry) == (topic, entry)
-        await client.close()
+        if alias is None:
+            assert found.bindings == []
+            continue
+        (bound,) = found.bindings
+        assert (bound.source, bound.set) == ("ss", {"SS_DATA": "alpha"})
+        (held,) = bound.held
+        assert held.variable == "OTHER_DIR"
+        assert held.reason.startswith("not namespaced to the pack (SS_)")

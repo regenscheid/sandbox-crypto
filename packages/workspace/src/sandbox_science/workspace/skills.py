@@ -87,14 +87,33 @@ class SkillSettingsView(Contract):
     overrides: dict[str, JsonValue]
 
 
+class HeldBinding(Contract):
+    """A derived binding the project's runs do not set, and why (SK-31)."""
+
+    variable: str
+    path: str
+    reason: str
+
+
+class SourceBindings(Contract):
+    """A pinned source's derived bindings: those the project's runs set, namespaced to
+    the pack or approved, and those held (SK-31, SK-33)."""
+
+    source: str
+    set: dict[str, str]
+    held: list[HeldBinding]
+
+
 class ProjectSkills(Contract):
-    """A project's skills: its settings, its pins and the skills a run is given now."""
+    """A project's skills: its settings, its pins, the skills a run is given now and its
+    derived bindings."""
 
     project_id: Identifier
     observed_at: AwareDatetime
     settings: SkillSettingsView
     pins: list[SkillPinView]
     effective: list[SkillView]
+    bindings: list[SourceBindings]
 
 
 class SkillSettingsChange(Contract):
@@ -150,12 +169,22 @@ def _read(store: DocumentStore, project: str, alias: str | None) -> dict[str, ob
         )
         for entry in skills.effective(project, derived=derived).entries
     ]
+    bound = skills.bindings(project, derived)
+    bindings = [
+        SourceBindings(
+            source=source,
+            set=bound.set.get(source, {}),
+            held=[HeldBinding.model_validate(item) for item in bound.held.get(source, [])],
+        )
+        for source in sorted({*bound.set, *bound.held})
+    ]
     return ProjectSkills(
         project_id=project,
         observed_at=datetime.now(UTC),
         settings=_settings(skills.settings(project)),
         pins=pins,
         effective=effective,
+        bindings=bindings,
     ).model_dump(mode="json")
 
 

@@ -29,6 +29,8 @@ export interface Derived {
   entry: string[];
   descriptions: [string, string][];
   bindings: [string, string][];
+  /** Bindings not namespaced to the pack: held until a project's user approves them. */
+  held: { variable: string; path: string; reason: string }[];
   dropped: number;
 }
 
@@ -62,6 +64,11 @@ export function reportView(report: Record<string, unknown>, project: string): Re
           visible(name),
           word(path),
         ]),
+        held: list(pass.held).map((raw) => ({
+          variable: word(record(raw).variable),
+          path: word(record(raw).path),
+          reason: word(record(raw).reason),
+        })),
         dropped: list(pass.dropped).length,
       }
     : null;
@@ -167,11 +174,13 @@ export function runSkills(run: Pick<RunRecord, 'tools' | 'summaries' | 'delivere
   return { discoveries, uses };
 }
 
-/** The user's overrides of what imports' passes derive (SK-33): each skill's fields, and
- * each source's bindings taken away. */
+/** The user's overrides of what imports' passes derive (SK-33): each skill's fields, each
+ * source's bindings taken away and approved, and its own prefix (SK-31). */
 export function overridesView(overrides: Record<string, unknown>): {
   skills: { skill: string; fields: string[] }[];
   unbound: { source: string; variables: string[] }[];
+  approved: { source: string; variables: string[] }[];
+  prefixes: { source: string; prefix: string }[];
 } {
   const skills = Object.entries(record(overrides.skills)).map(([skill, raw]) => ({
     skill: visible(skill),
@@ -183,11 +192,21 @@ export function overridesView(overrides: Record<string, unknown>): {
         : `${visible(field)}: ${typeof value === 'string' ? visible(value) : visible(JSON.stringify(value))}`,
     ),
   }));
-  const unbound = Object.entries(record(overrides.unbound)).map(([source, variables]) => ({
+  const bySource = (value: unknown) =>
+    Object.entries(record(value)).map(([source, variables]) => ({
+      source: visible(source),
+      variables: strings(variables),
+    }));
+  const prefixes = Object.entries(record(overrides.prefixes)).map(([source, prefix]) => ({
     source: visible(source),
-    variables: strings(variables),
+    prefix: word(prefix),
   }));
-  return { skills, unbound };
+  return {
+    skills,
+    unbound: bySource(overrides.unbound),
+    approved: bySource(overrides.approved),
+    prefixes,
+  };
 }
 
 /** Skill IDs, one a line, as the settings form takes them. */
