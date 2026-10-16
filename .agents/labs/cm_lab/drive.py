@@ -41,13 +41,14 @@ import shutil
 import sqlite3
 import subprocess
 import sys
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from sandbox_science.contracts import (
     EnvironmentState,
+    ErrorKind,
     ExecutionContext,
     ListFilesRequest,
     ReadFileRequest,
@@ -61,7 +62,7 @@ from sandbox_science.orchestrator.history.geometry import geometry
 from sandbox_science.orchestrator.messages import MAX_TOKENS
 from sandbox_science.orchestrator.model import ModelGateway
 from sandbox_science.orchestrator.projects import ProjectStore, ensure_environment, environment_id
-from sandbox_science.orchestrator.worker_client import WorkerClient
+from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 
 from . import scenario, sources
 
@@ -124,8 +125,27 @@ def step_argv(
     return [*argv, *extra, task]
 
 
-def _run(argv: list[str], log: Path) -> int:
+def recovered(store: ProjectStore, project: str, session: str, task: str, transcript: Path) -> bool:
+    """Whether ``transcript`` is kept: as the run wrote it, or written now from the run's
+    record in the store, when the session's last main run was ``task``'s but its
+    transcript could not be written. Running the step again would put its message in the
+    session twice."""
+    if transcript.exists():
+        return True
+    runs = [entry for entry in store.runs(project, session) if entry.role == "main"]
+    if not runs:
+        return False
+    record = store.run(project, session, runs[-1].name)
+    if record.task != task:
+        return False
+    transcript.parent.mkdir(parents=True, exist_ok=True)
+    transcript.write_text(record.to_json())
+    return True
+
+
+def _run(argv: list[str], log: Path, transcript: Path) -> int:
     log.parent.mkdir(parents=True, exist_ok=True)
+    transcript.parent.mkdir(parents=True, exist_ok=True)
     with log.open("ab") as out:
         return subprocess.run(argv, stdout=out, stderr=subprocess.STDOUT, check=False).returncode  # noqa: S603
 
@@ -168,6 +188,19 @@ async def _ready(
     raise SystemExit(f"environment {context.environment_id} is not ready after ten minutes")
 
 
+async def patiently[T](call: Callable[[], Awaitable[T]], tries: int = 12) -> T:
+    """``call``, tried again while the worker says its executor is unavailable: a sandbox
+    suspended while idle, or starting again (lab round 1, after S01)."""
+    for attempt in range(tries):
+        try:
+            return await call()
+        except WorkerAPIError as error:
+            if error.kind is not ErrorKind.UNAVAILABLE or attempt == tries - 1:
+                raise
+            await asyncio.sleep(10)
+    raise AssertionError("unreachable")
+
+
 async def write_files(
     client: WorkerClient, context: ExecutionContext, files: dict[str, bytes]
 ) -> None:
@@ -177,7 +210,7 @@ async def write_files(
             path=path,
             content_b64=base64.b64encode(data).decode(),
         )
-        await client.write_file(request)
+        await patiently(lambda request=request: client.write_file(request))
 
 
 async def read_workspace(client: WorkerClient, context: ExecutionContext) -> dict[str, bytes]:
@@ -186,7 +219,8 @@ async def read_workspace(client: WorkerClient, context: ExecutionContext) -> dic
     pending = ["."]
     while pending:
         here = pending.pop()
-        listing = await client.list_files(ListFilesRequest(context=context, path=here))
+        asked = ListFilesRequest(context=context, path=here)
+        listing = await patiently(lambda asked=asked: client.list_files(asked))
         for entry in listing.entries:
             path = entry.name if here == "." else f"{here}/{entry.name}"
             if entry.type == "directory" and not entry.name.startswith(SKIPPED_DIRS):
@@ -199,9 +233,8 @@ async def read_workspace(client: WorkerClient, context: ExecutionContext) -> dic
 async def _read(client: WorkerClient, context: ExecutionContext, path: str) -> bytes:
     data, offset = b"", 0
     while True:
-        part = await client.read_file(
-            ReadFileRequest(context=context, path=path, offset=offset, length=CHUNK)
-        )
+        asked = ReadFileRequest(context=context, path=path, offset=offset, length=CHUNK)
+        part = await patiently(lambda asked=asked: client.read_file(asked))
         data += base64.b64decode(part.content_b64)
         offset = len(data)
         if part.eof:
@@ -242,29 +275,44 @@ def pick_snapshot(manifest: Sequence[dict[str, Any]], ceiling: int) -> dict[str,
 
 def clone(snapshot: Path, target: Path, project: str, session: str, environment: str) -> None:
     """The snapshot's store as the arm's, its session in ``environment``: the arm's own
-    sandbox, so arms never share a workspace."""
+    sandbox, so arms never share a workspace. The session keeps the shape the seed gave
+    it (a session keeps whether it has an environment of its own: lab round 1): when it
+    ran in the project's, the arm's project gets ``environment`` as its own."""
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(snapshot, target)
     with sqlite3.connect(target) as db:
+        found = db.execute(
+            "SELECT dedicated FROM sessions WHERE project_id = ? AND session_id = ?",
+            (project, session),
+        ).fetchone()
+        if found is None:
+            raise SystemExit(f"the snapshot has no session {project}/{session}")
         db.execute(
-            "UPDATE sessions SET environment_id = ?, dedicated = 1 "
-            "WHERE project_id = ? AND session_id = ?",
+            "UPDATE sessions SET environment_id = ? WHERE project_id = ? AND session_id = ?",
             (environment, project, session),
         )
-        if db.total_changes != 1:
-            raise SystemExit(f"the snapshot has no session {project}/{session}")
+        if not found[0]:
+            db.execute(
+                "UPDATE projects SET default_environment_id = ? WHERE project_id = ?",
+                (environment, project),
+            )
+
+
+FREED = 1.6
+"""What a fold frees, in chunks: its span, and the old tool output it stubs. Lab round 1
+measured 1.5 to 1.8 (74,000 to 90,000 tokens at C = 250,000, 210,000 at 600,000)."""
 
 
 def forecast(start: int, ceiling: int, growth: Sequence[int], prompt: int = 30_000) -> list[int]:
     """The folds each live step makes, roughly: the view grows by each step's tokens, and
-    a fold takes a chunk whenever it passes the trigger."""
+    a fold frees ``FREED`` chunks whenever it passes the trigger."""
     shape = geometry(ceiling, prompt)
     tokens, folds = start, []
     for added in growth:
         tokens += added
         made = 0
         while tokens > shape.trigger:
-            tokens -= int(0.85 * shape.chunk)  # the chunk, less its record
+            tokens -= int(FREED * shape.chunk)
             made += 1
         folds.append(made)
     return folds
@@ -280,11 +328,13 @@ def growth() -> list[int]:
 
 LONG = 272_000
 """A view past this many tokens is priced at the gateway's long-context rates."""
-CALLS_PER_ARM = 80
-"""An arm's calls: about five a live step, and the folds' enrichment calls."""
-SEED_CALLS = 60
-OUTPUT_PER_CALL = 2_500
-"""Each call's output, its reasoning included."""
+CALLS_PER_ARM = 170
+"""An arm's calls, as lab round 1's seed measured them: about 7.5 a step, 15 to 20 a step
+that reads 20 pages (plans, extraction, ledger), and the folds' enrichment calls."""
+SEED_CALLS = 250
+"""The seed's: 195 in its first 16 steps, to 300,000 tokens."""
+OUTPUT_PER_CALL = 400
+"""Each call's output, its reasoning included: 325 on average in the seed."""
 
 
 @dataclass(frozen=True)
@@ -404,20 +454,21 @@ async def seed(lab: Lab, alias: str, session: str, target: int, budget: float) -
     store = ProjectStore(lab.layout.control)
     async with lab.client() as client:
         context = await _ready(client, store, lab.project, session)
-        if not manifest:
+        if not store.runs(lab.project, session):  # the sources, before the first run only
             await write_files(client, context, sources.files())
         for step in scenario.SEED:
             transcript = home / "runs" / f"{step.id}.json"
-            if not transcript.exists():
+            if not recovered(store, lab.project, session, step.message, transcript):
                 within(lab.lab, budget, sorted((home / "runs").glob("*.json")), "the seed")
                 argv = step_argv(
                     lab.base, state_dir=lab.layout.control, project=lab.project,
                     session=session, alias=alias, ceiling=scenario.FOLDING_OFF,
                     transcript=transcript, task=step.message, folding_off=True,
                 )  # fmt: skip
-                code = _run(argv, home / "logs" / f"{step.id}.log")
-                if not transcript.exists():
+                code = _run(argv, home / "logs" / f"{step.id}.log", transcript)
+                if not recovered(store, lab.project, session, step.message, transcript):
                     raise SystemExit(f"{step.id} kept no transcript (exit {code}); see its log")
+            if all(kept["step"] != step.id for kept in manifest):
                 snapshot = home / "snapshots" / step.id
                 backup(lab.layout.control / FILE_NAME, snapshot / FILE_NAME)
                 files = keep_files(lab.lab, await read_workspace(client, context))
@@ -451,7 +502,7 @@ def runnable(name: str, *, proposed: bool) -> scenario.Arm:
     """The arm ``name``, if this round may run it."""
     chosen = scenario.ARM_BY_NAME[name]
     if chosen.deferred:
-        raise SystemExit(f"{name} is deferred: this round runs no Claude model")
+        raise SystemExit(f"{name} is not in this round: {chosen.deferred}")
     if chosen.proposed and not proposed:
         raise SystemExit(f"{name} is beyond the base plan: run it with --proposed once confirmed")
     return chosen
@@ -507,7 +558,7 @@ async def arm(
             meta_path.write_text(json.dumps(meta, indent=1))
         for step in scenario.LIVE:
             transcript = home / "runs" / f"{step.id}.json"
-            if transcript.exists():
+            if recovered(store, lab.project, session, step.message, transcript):
                 continue
             within(lab.lab, budget, sorted((home / "runs").glob("*.json")), name)
             later = {path: sources.LATER[path]() for path in step.stage}
@@ -517,7 +568,9 @@ async def arm(
                 ceiling=chosen.ceiling, transcript=transcript, task=step.message,
                 skeleton_only=chosen.skeleton_only, extra=meta["extra"],
             )  # fmt: skip
-            code = _run(argv, home / "logs" / f"{step.id}.log")
+            code = _run(argv, home / "logs" / f"{step.id}.log", transcript)
+            if not recovered(store, lab.project, session, step.message, transcript):
+                raise SystemExit(f"{name} {step.id} kept no transcript (exit {code}); see its log")
             print(
                 f"{name} {step.id}: exit {code}, view {view_tokens(transcript) if transcript.exists() else 0:,}"
             )
@@ -549,7 +602,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             help="USD, as calls report it (default: the seed's cap, or the arm's)",
         )
         if name == "seed":
-            command.add_argument("--target", type=int, default=int(scenario.SEED_SHARE * 600_000))
+            command.add_argument("--target", type=int, default=scenario.SEED_TARGET)
         else:
             command.add_argument("--arm", required=True, choices=sorted(scenario.ARM_BY_NAME))
             command.add_argument(
