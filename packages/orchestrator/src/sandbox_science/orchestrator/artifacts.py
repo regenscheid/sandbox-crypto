@@ -548,6 +548,14 @@ class ArtifactInventory:
             raise DocumentError(INTERNAL, "stored artifact revision identity differs")
         return result
 
+    def revision(self, project: str, artifact: str, number: int) -> ArtifactRevision:
+        """One revision of an artifact of the project, by its number."""
+        self._scope(project)
+        if self.documents.control.missing:
+            raise DocumentError(NOT_FOUND, "no artifact inventory")
+        with self.documents.control.read() as tx:
+            return self._revision(tx.sql, project, artifact, number)
+
     def resolve(self, project: str, link: ArtifactLink) -> ArtifactRevision:
         """Resolve latest in one snapshot, returning an exact pinned revision."""
         self._scope(project)

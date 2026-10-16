@@ -126,6 +126,7 @@ from .skills.discovery import SkillDiscovery
 from .skills.embeddings import SkillVectors
 from .tokens import chars_per_token
 from .tools import HARNESS_TOOL_NAMES, Toolbox, ToolOutcome
+from .view_image import ImageViewer
 from .worker_client import WorkerAPIError, WorkerClient
 
 _IDENTIFIER: TypeAdapter[str] = TypeAdapter(Identifier)
@@ -214,6 +215,9 @@ class Settings:
     """Whether MAIN's folds are skeleton-only, without the enrichment call: the control
     arm (docs/specs/context-management.md, question 4)."""
     fold_alias: str | None = None
+    image_aliases: frozenset[str] = frozenset()
+    """Aliases the deployment declares accept images, whatever the gateway says
+    (``view_image``; docs/specs/figures.md, FG-33)."""
     """The alias whose model writes MAIN's folds' narratives; ``None`` for MAIN's own,
     which reads the run's view from the prompt cache (CM-19)."""
     watcher_calls_per_hour: int = 60
@@ -1122,6 +1126,15 @@ class Harness:
                 jobs=jobs,
                 connectors=connectors,
             )
+        accepts, why = await self._images(alias)
+        viewer = None
+        if accepts:
+            viewer = ImageViewer(ArtifactInventory(stores.documents), context)
+
+            async def forget() -> None:
+                viewer.close()
+
+            on_close(forget)
         documents = DocumentTool(stores.documents, context, run_id=run_id, role=role, alias=alias)
         if chat is not None:
             chat.requests = documents.requests_waiting
@@ -1274,7 +1287,25 @@ class Harness:
                 run=run_name(admitted.started_at, admitted.run_id),
                 delegated=delegated,
             ),
+            images=viewer,
+            image_offer={"offered": accepts, "why": why},
         )
+
+    async def _images(self, alias: str) -> tuple[bool, str]:
+        """Whether a run on ``alias`` is offered ``view_image``, and why (FG-33): the
+        deployment declares the alias, or the gateway says every deployment of it accepts
+        images. An alias the gateway does not describe, or a gateway that cannot say,
+        is not offered it."""
+        if alias in self.settings.image_aliases:
+            return True, "declared"
+        if self.gateway is None:
+            return False, "no_gateway"
+        accepts = await self.gateway.image_input()
+        if accepts is None:
+            return False, "gateway_did_not_answer"
+        if alias not in accepts:
+            return False, "not_described"
+        return accepts[alias], "gateway" if accepts[alias] else "gateway_says_no"
 
 
 def _learned(projects: ProjectStore, project: str, session: str, alias: str) -> int | None:

@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, Final, Literal, Protocol, TypeVar, cast
 
 from .hooks import RESPONSE_ROUNDS, Appended, MessageLog, Notice, Point, TurnHook
+from .images import IMAGE
 from .memory_prompt import MemoryGiven
 from .model import (
     GATEWAY_BUDGET,
@@ -515,6 +516,7 @@ async def _run_task(
                 transcript.pending = reply.text
                 continue
             return transcript
+        viewed: list[tuple[Notice, str]] = []
         for call in reply.tool_calls:
             transcript.phase = "tool"
             outcome = await toolbox.call(
@@ -534,6 +536,14 @@ async def _run_task(
                 await hook.observe_tool(transcript, outcome.record)
             if on_tool is not None:
                 await on_tool(call.name, call.arguments, outcome)
+            if outcome.image is not None:
+                viewed.append(outcome.image)
+        # Images go after all of the turn's results, in framed messages of their own
+        # whose token each client turns into its API's image (docs/specs/figures.md, FG-37).
+        for notice, token in viewed:
+            await _append(transcript, _message(notice), Appended("notice", notice=notice))
+            transcript.messages[-1] = {**transcript.messages[-1], IMAGE: token}
+        viewed.clear()
         if toolbox.revision != revision:
             # Connector tools loaded: every later model call carries their schemas.
             revision = toolbox.revision
@@ -671,6 +681,8 @@ async def run_task(
                         transcript.summaries[hook.name] = summary
                 if toolbox.connectors is not None:
                     transcript.summaries["connectors"] = toolbox.connectors.summary()
+                if toolbox.image_offer is not None:
+                    transcript.summaries["view_image"] = toolbox.image_offer
                 if toolbox.skills is not None:
                     first = transcript.usage[0].model if transcript.usage else None
                     if (started := toolbox.skills.summary(first)) is not None:
