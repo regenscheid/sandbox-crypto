@@ -65,6 +65,12 @@ export interface WindowActions {
    * none.
    */
   earlier: WindowActions | null;
+  /**
+   * Earlier runs' calls whose results the reviewed run's view of its session held, each
+   * under its run, as context for an answer that says what an earlier run did (CR-2 as
+   * amended by the context management spec); null when there are none.
+   */
+  earlierRuns: WindowActions | null;
 }
 
 /** The actions item's window, in words, for the item list; empty for another item. */
@@ -90,15 +96,17 @@ export function actionsOf(text: string): WindowActions | null {
   const payload = record(parsed);
   if (!Array.isArray(payload.actions)) return null;
   const window = partOf(payload);
-  const earlier = record(payload.earlier);
-  return {
-    ...window,
-    earlier: Array.isArray(earlier.actions) ? { ...partOf(earlier), earlier: null } : null,
+  const part = (raw: unknown): WindowActions | null => {
+    const found = record(raw);
+    return Array.isArray(found.actions)
+      ? { ...partOf(found), earlier: null, earlierRuns: null }
+      : null;
   };
+  return { ...window, earlier: part(payload.earlier), earlierRuns: part(payload.earlier_runs) };
 }
 
 /** One part of the item, the window's or the earlier windows': its actions and documents. */
-function partOf(payload: Record<string, unknown>): Omit<WindowActions, 'earlier'> {
+function partOf(payload: Record<string, unknown>): Omit<WindowActions, 'earlier' | 'earlierRuns'> {
   const runs: RunActions[] = [];
   for (const raw of Array.isArray(payload.actions) ? payload.actions : []) {
     const action = record(raw);

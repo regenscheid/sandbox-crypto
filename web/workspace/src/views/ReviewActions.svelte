@@ -4,7 +4,8 @@
      calls that change something in order, each
      with its tool, target, outcome, a refused or failed one marked, and what it made,
      leading there where the workspace has a page; then the blocks each document revision
-     changed; and apart, labelled as background, the reviewed run's earlier windows.
+     changed; and apart, labelled as background, the reviewed run's earlier windows, and,
+     as context, the earlier runs' calls its view held.
      Agents' arguments are shown as text, each character a person may not see as its code
      point. Only props, so a test renders it on the server. -->
 <script lang="ts">
@@ -102,6 +103,17 @@
         that says what it did earlier, not under review here.
       </p>
       {@render part(actions.earlier, "those windows'", 'It changed nothing in them.')}
+    </section>
+  {/if}
+  {#if actions.earlierRuns}
+    <section class="earlier" aria-label="Earlier runs, as context">
+      <h4>Earlier runs, as context</h4>
+      <p class="context">
+        Calls of earlier runs whose results the reviewed run's view of the session held, each under
+        its run: context for an answer that says what an earlier run did, not under review here. A
+        refused or failed call is no record that it happened.
+      </p>
+      {@render part(actions.earlierRuns, "those runs'", 'They changed nothing.')}
     </section>
   {/if}
 </section>
