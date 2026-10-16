@@ -6,7 +6,11 @@ checker (``npm run build:math`` writes ``dist-math/figures``), run as the math c
 does (``mathcheck``): a fresh process per batch, bounded input, output, time and memory,
 the launcher's and bundle's bytes pinned for the batch. A chart arrives with its pinned
 data's text; the process reads no other file and reaches no address. No text selects
-code, a path or an address.
+code, a path or an address. Node's permission
+model holds the process to reading its own temporary directory (no other file, child
+process or worker), it evaluates no strings as code, and the launcher removes its
+network clients before the bundle loads (security review of #513, M3); a Node without
+the permission model checks nothing.
 """
 
 from __future__ import annotations
@@ -14,6 +18,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
+import re
 import tempfile
 from pathlib import Path
 from typing import Final, Literal, Self
@@ -39,6 +45,20 @@ HEAP: Final = 512
 """MiB of V8 old space: a chart may read 100,000 rows."""
 ENGINE: Final = "vega-lite 6.4.3, vega 6.4.0"
 """The frame's versions (FG-15), which the bundle must report."""
+NODE: Final = (22, 13)
+"""The first Node whose permission model is ``--permission`` (23.0 to 23.4 lack it)."""
+NO_PERMISSIONS: Final = "the figure checker needs Node 22.13 or newer, for its permission model"
+
+_log = logging.getLogger(__name__)
+
+
+def permitted(said: str) -> bool:
+    """Whether ``node --version`` names a Node with the ``--permission`` flag."""
+    found = re.fullmatch(r"v(\d+)\.(\d+)\.\d+\s*", said)
+    if found is None:
+        return False
+    version = (int(found[1]), int(found[2]))
+    return version >= NODE and not (23, 0) <= version < (23, 5)
 
 
 class Chart(Contract):
@@ -113,6 +133,30 @@ class FigureChecker:
         self.node, self.launcher, self.bundle = node.resolve(), launcher.resolve(), bundle.resolve()
         self.timeout = timeout
         self._slots = asyncio.Semaphore(2)
+        self._permitted: bool | None = None
+
+    async def _node_refusal(self) -> str | None:
+        """Why the operator's Node cannot check: it could not be asked its version, or it
+        lacks the permission model, when the checker fails closed. Asked once, and again
+        only when it could not be asked."""
+        if self._permitted is None:
+            try:
+                async with asyncio.timeout(5):
+                    process = await asyncio.create_subprocess_exec(
+                        str(self.node),
+                        "--version",
+                        stdin=asyncio.subprocess.DEVNULL,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.DEVNULL,
+                        env={"LANG": "C.UTF-8"},
+                    )
+                    said, _ = await process.communicate()
+            except (OSError, TimeoutError):
+                return "figure checker unavailable"
+            self._permitted = permitted(said[:64].decode("ascii", "replace"))
+            if not self._permitted:
+                _log.warning("%s: %s says %r", NO_PERMISSIONS, self.node, said[:64])
+        return None if self._permitted else NO_PERMISSIONS
 
     def version(self) -> str:
         """The bundle's and launcher's digest, which a result is kept for."""
@@ -124,6 +168,8 @@ class FigureChecker:
         """Each chart's result, in input order; duplicate IDs are refused."""
         if len({chart.id for chart in charts}) != len(charts):
             raise ValueError("a figure batch repeats an ID")
+        if charts and (refusal := await self._node_refusal()) is not None:
+            return [unavailable(chart.id, refusal) for chart in charts]
         found: dict[str, FigureCheck] = {}
         batches: list[list[Chart]] = [[]]
         size = 2
@@ -158,7 +204,8 @@ class FigureChecker:
             return [unavailable(chart.id, reason) for chart in batch], started
 
         try:
-            async with asyncio.timeout(self.timeout), self._slots:
+            # The deadline starts once a slot is held, not while waiting for one.
+            async with self._slots, asyncio.timeout(self.timeout):
                 bundle = bounded_file(self.bundle, MAX_BUNDLE)
                 launcher = bounded_file(self.launcher, 65_536)
                 started = True
@@ -175,10 +222,15 @@ class FigureChecker:
                         data,
                         MAX_OUTPUT * len(batch),
                         heap=HEAP,
+                        flags=(
+                            "--permission",
+                            f"--allow-fs-read={pinned}",
+                            "--disallow-code-generation-from-strings",
+                        ),
                     )
             answers = _ANSWERS.validate_json(output)
             if [a.id for a in answers] != [c.id for c in batch] or any(
-                a.engine != ENGINE or tuple(map(int, a.runtime.split(".")[:2])) < (22, 12)
+                a.engine != ENGINE or tuple(map(int, a.runtime.split(".")[:2])) < NODE
                 for a in answers
             ):
                 raise ValueError("figure checker answered another batch or version")

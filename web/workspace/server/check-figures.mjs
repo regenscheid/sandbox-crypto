@@ -42,6 +42,10 @@ for (const input of batch) {
 }
 // The bundle is operator configuration, never a document or model-supplied path.
 if (process.argv.length !== 3) throw new Error('figure bundle path required');
+// Node's permission model, which the orchestrator turns on, bounds files, child processes
+// and workers but not the network: the bundle gets no client for it (review of #513, M3).
+for (const name of ['fetch', 'WebSocket', 'EventSource']) delete globalThis[name];
+if (typeof globalThis.fetch !== 'undefined') throw new Error('fetch could not be removed');
 const { checkFigure } = await import(pathToFileURL(resolve(process.argv[2])).href);
 const answers = [];
 for (const input of batch) {
