@@ -19,7 +19,7 @@ import struct
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from typing import Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 
 from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.control.errors import CONFLICT, INVALID_REQUEST, NOT_FOUND
@@ -41,6 +41,9 @@ from .packs import (
     topic_name,
 )
 from .sources import Fetched
+
+if TYPE_CHECKING:
+    from sandbox_science.orchestrator.documents import DocumentStore
 
 REPORT_ITEMS: Final = 200
 """Items a report lists of each kind; it counts the rest."""
@@ -151,6 +154,11 @@ class SkillStore:
 
     def __init__(self, control: ControlStore) -> None:
         self.control = control
+
+    @classmethod
+    def of(cls, documents: DocumentStore) -> SkillStore:
+        """The skills kept in the documents' control store, as the workspace reads them."""
+        return cls(documents.control)
 
     def add(
         self,

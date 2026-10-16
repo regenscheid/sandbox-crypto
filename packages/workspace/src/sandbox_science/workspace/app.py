@@ -64,6 +64,7 @@ from . import (
     project_settings,
     provisioning,
     reviews,
+    skills,
 )
 from .context import CONTEXT, WorkspaceContext, json_body, listener, own_hosts
 from .errors import json_error
@@ -339,6 +340,7 @@ def create_app(
         ledger,
         frontier,
         memory,
+        skills,
     ):
         feature.add_routes(app)
     app.router.add_post("/api/v0/logout", logout)

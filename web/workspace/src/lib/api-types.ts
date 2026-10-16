@@ -929,6 +929,15 @@ export interface ProjectSession {
   runs: number;
 }
 
+/** A project's skills: its settings, its pins and the skills a run is given now. */
+export interface ProjectSkills {
+  project_id: string;
+  observed_at: string;
+  settings: SkillSettingsView;
+  pins: SkillPinView[];
+  effective: SkillView[];
+}
+
 /** A project in the list, with how many sessions it has. */
 export interface ProjectSummary {
   project_id: string;
@@ -1211,6 +1220,58 @@ export interface SessionView {
   dedicated: boolean;
   opened_at: string;
   closed_at: string | null;
+}
+
+/** An import of a pack: where it came from, and its report. */
+export interface SkillImportView {
+  import_id: number;
+  source: string;
+  kind: string;
+  origin: string;
+  ref: string | null;
+  commit: string | null;
+  archive_sha256: string | null;
+  created: string;
+  report: Record<string, JsonValue>;
+}
+
+/** A source pinned in the project, at its revision, with the import it pins; for the built-in skills, those a pack's skill of the same name leaves out; and the user's overrides of this source's skills (SK-33). */
+export interface SkillPinView {
+  source: string;
+  revision: number;
+  skills: string[];
+  left_out: string[];
+  user_set: Record<string, JsonValue> | null;
+  pinned: SkillImportView;
+}
+
+/** The user's change of the always-loaded and excluded skills, at ``expected``. */
+export interface SkillSettingsChange {
+  expected: number;
+  always: string[];
+  excluded: string[];
+}
+
+/** The project's skill settings and overrides, at their revision (0: never set). */
+export interface SkillSettingsView {
+  revision: number;
+  always: string[];
+  excluded: string[];
+  overrides: Record<string, JsonValue>;
+}
+
+/** A skill a run is given, with its short description and topic, and who set them (``derived`` by the import's pass, or ``user``). */
+export interface SkillView {
+  id: string;
+  source: string;
+  name: string;
+  description: string;
+  revision: string;
+  short: string | null;
+  topic: string | null;
+  entry: boolean;
+  short_by: string | null;
+  topic_by: string | null;
 }
 
 /** How far the project's sessions read one source of a reference (CM-12, LG-15), as the read register put its reads together: ``whole``, ``partial`` (with the pages, byte ranges or character ranges ``covered``), ``abstract_only``, ``preview_only``, or ``unknown`` when the reading tool says nothing of it. */

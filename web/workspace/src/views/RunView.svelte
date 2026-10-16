@@ -7,6 +7,7 @@
   import HiddenBanner from './HiddenBanner.svelte';
   import { stoppedText } from '../lib/chat';
   import { entries, usageLine } from '../lib/transcript';
+  import RunSkills from './RunSkills.svelte';
   import ToolCall from './ToolCall.svelte';
 
   let { run }: { run: RunRecord } = $props();
@@ -48,6 +49,8 @@
     {/if}
   </dd>
 </dl>
+
+<RunSkills {run} />
 
 {#if run.stopped === 'error'}
   <p class="problem">Partial transcript. No final answer was recorded.</p>
