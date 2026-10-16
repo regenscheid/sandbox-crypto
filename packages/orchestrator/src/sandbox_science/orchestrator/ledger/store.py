@@ -317,6 +317,19 @@ class Ledger:
             next_after=found[-1]["entry_id"] if len(rows) > limit else None,
         )
 
+    def mark(self, project: str) -> tuple[int, int]:
+        """A mark of ``project``'s ledger that any change moves: its revisions' count and
+        newest row. A store without a ledger yet has (0, 0)."""
+        if self.control.missing:
+            return (0, 0)
+        with self.control.read() as tx:
+            count, newest = tx.sql.execute(
+                "SELECT count(*), coalesce(max(r.rowid), 0) FROM ledger_revisions r "
+                "JOIN ledger_entries e ON e.entry_id = r.entry_id WHERE e.project = ?",
+                (project,),
+            ).fetchone()
+        return (int(count), int(newest))
+
     def history(
         self, project: str, reference: str, *, before: int | None = None, limit: int = 50
     ) -> EntryHistory:

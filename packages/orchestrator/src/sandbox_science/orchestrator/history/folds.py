@@ -72,6 +72,7 @@ from .skeleton import skeleton
 from .view import Earlier, Unit, View, session_view, settle, spanned
 
 if TYPE_CHECKING:
+    from sandbox_science.orchestrator.digest import Rendered
     from sandbox_science.orchestrator.loop import Transcript
     from sandbox_science.orchestrator.model import ChatModel, ToolSpec
     from sandbox_science.orchestrator.projects import ModelUsage
@@ -86,6 +87,14 @@ BREAKER: Final = 3
 WAIT: Final = 600.0
 """The longest wait, in seconds, for a running fold past the hard wall (CM-24)."""
 PLAN_CHANGES: Final = PLAN_NAMES - {"plan_read"}
+CONSOLIDATE: Final = (
+    ". The session holds more current decisions than its view can show. Consolidate "
+    "them, in the GUI or with the ledger command: record one decision that replaces "
+    "several, reversing them with a reason that sums them up, or reverse those that no "
+    "longer matter; reversed decisions' lines retire. Until then, or until the role's "
+    "ceiling is raised, the session's messages are held."
+)
+"""What a ``research_state`` stop tells the user to do (CM-45)."""
 
 
 @dataclass
@@ -124,10 +133,11 @@ class Folder(TurnHook):
         runs: Sequence[str] = (),
         earlier: Earlier | None = None,
         kernels: Sequence[KernelInfo] | None = None,
-        digest: Callable[[int], str | None] | None = None,
+        digest: Callable[[int], Rendered | str | None] | None = None,
         model: ChatModel | None = None,
         exists: Callable[[str], bool] | None = None,
         judge: Judge | None = None,
+        consolidating: bool = False,
         wait: float = WAIT,
         clock: Clock = SYSTEM_CLOCK,
         patience: float = PATIENCE,
@@ -152,6 +162,9 @@ class Folder(TurnHook):
         )
         self.model, self.exists, self.wait, self.digest = model, exists, wait, digest
         self.judge = judge
+        self.consolidating = consolidating
+        """A consolidation run's: every current decision in one line, never a stop for
+        them (CM-45)."""
         self.clock, self.patience = clock, patience
         self.events: Callable[[Json], Awaitable[None]] | None = None
         self.refit: Callable[[View], None] | None = None
@@ -214,7 +227,9 @@ class Folder(TurnHook):
         if self.geometry is None:
             per_token = self.per_token(transcript)
             system = len(dump([transcript.messages[0]])) + transcript.tools_chars
-            found = geometry(self.ceiling, estimate(system, per_token), self.chunk)
+            found = geometry(
+                self.ceiling, estimate(system, per_token), self.chunk, self.start.shares
+            )
             self.geometry = found
             if (why := found.refused()) is not None:
                 return self._stop("start", why)
@@ -222,6 +237,8 @@ class Folder(TurnHook):
                 await self._rebuild(transcript)  # the budgets shrink with λ
         if self.running is not None and self.running.kept is not None:
             await self._finish(transcript, self.tokens(transcript))
+        if self.view.stop is not None:  # before any fold, merge or call (CM-45)
+            return self._research_state()
         wall, size = self.geometry.wall, self.tokens(transcript)
         if size > wall and self.running is not None:
             await self._wait(transcript, size)
@@ -238,12 +255,16 @@ class Folder(TurnHook):
                 running.task.cancel()
             await self._finish(transcript, size)
             size = self.tokens(transcript)
+        if self.view.stop is not None:
+            return self._research_state()
         if size > self.geometry.trigger and self.running is None and not self.tripped:
             if self.model is None:
                 await self._fold(transcript, size)
             else:
                 await self._begin(transcript)
             size = self.tokens(transcript)
+        if self.view.stop is not None:
+            return self._research_state()
         if self.running is None and size <= wall:
             due, over = self._due(transcript)
             await self._over(over)
@@ -252,6 +273,8 @@ class Folder(TurnHook):
             elif due:
                 await self._begin_merge(transcript, due)
             size = self.tokens(transcript)
+        if self.view.stop is not None:  # decisions the view cannot show (CM-45)
+            return self._research_state()
         if size <= wall:
             return True
         if self.tripped:
@@ -285,7 +308,7 @@ class Folder(TurnHook):
             taken.append(self.learned)
         if self.geometry is None or not taken or max(taken) >= self.geometry.ceiling:
             return
-        capped = geometry(max(taken), self.geometry.prompt, self.chunk)
+        capped = geometry(max(taken), self.geometry.prompt, self.chunk, self.start.shares)
         if capped.refused() is not None:  # a report too small to be the model's limit
             return
         self.geometry, self.capped = capped, max(taken)
@@ -297,6 +320,10 @@ class Folder(TurnHook):
 
     async def model_returned(self, run: RunView) -> None:
         self.overflows = 0
+
+    def _research_state(self) -> bool:
+        assert self.view.stop is not None  # noqa: S101 - the callers checked
+        return self._stop("research_state", self.view.stop + CONSOLIDATE)
 
     def _stop(self, reason: str, detail: str) -> bool:
         self.stopped, self.detail = reason, detail
@@ -513,7 +540,7 @@ class Folder(TurnHook):
         self.folds.append(made)
         await self._event({**made, "calls": calls} if calls else made)
 
-    def _view(self, per_token: float) -> View:
+    def _view(self, per_token: float, digest: Rendered | None = None) -> View:
         assert self.geometry is not None  # noqa: S101 - set at the first call
         return session_view(
             self.archive,
@@ -523,7 +550,20 @@ class Folder(TurnHook):
             runs=self.runs,
             earlier=self.earlier,
             judge=self.judge,
+            digest=digest,
+            consolidating=self.consolidating,
         )
+
+    def _digested(self, per_token: float) -> Rendered | None:
+        """The research state within its budget, as the state block renders it."""
+        if self.digest is None or self.geometry is None:
+            return None
+        found = self.digest(int(self.geometry.digest * per_token))
+        if isinstance(found, str):
+            from sandbox_science.orchestrator.digest import Rendered  # no cycle
+
+            return Rendered(found)
+        return found
 
     def _due(self, transcript: Transcript) -> tuple[list[tuple[str, FoldRecord]], bool]:
         """The records to merge now, oldest first (CM-21), and whether the region would
@@ -638,10 +678,8 @@ class Folder(TurnHook):
         """The view rebuilt from the archive, sent from now on, its state block with the
         research state as it is now (CM-26)."""
         per_token = self.per_token(transcript)
-        view = await threaded(self._view, per_token)
-        if self.digest is not None and self.geometry is not None:
-            budget = int(self.geometry.digest * per_token)
-            view = replace(view, digest=await threaded(self.digest, budget))
+        digest = await threaded(self._digested, per_token)
+        view = await threaded(self._view, per_token, digest)
         view = await settle(
             view,
             self.archive,
@@ -657,6 +695,25 @@ class Folder(TurnHook):
             self.rebuilds.append({"call": transcript.turns, **view.summary()})
         if self.refit is not None:
             self.refit(view)
+        await self._rendered(view)
+
+    async def _rendered(self, view: View) -> None:
+        """A ``fold`` event for each step that kept the region within its bound: a spill,
+        a growth past its budget, a shortening of decisions (CM-21b, CM-46)."""
+        found = view.bounded
+        if found is None or self.geometry is None:
+            return
+        if "spilled" in found.steps:
+            spilled: Json = {"state": "spilled", "spill": view.spilled}
+            if found.spilled:
+                spilled["handles"] = list(found.spilled)
+            await self._event(spilled)
+        if "grown" in found.steps:
+            await self._event(
+                {"state": "grown", "chars": found.size, "budget_tokens": self.geometry.region}
+            )
+        if found.shortened:
+            await self._event({"state": "shortened", "decisions": list(found.shortened)})
 
     async def _event(self, data: Json) -> None:
         if self.events is not None:

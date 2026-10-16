@@ -56,7 +56,7 @@ from .delegation.models import ModelChoice
 from .delegation.outcome import Outcome, Target, result_of
 from .delegation.records import DelegationRecords
 from .delegation.tracks import TrackTools, grant
-from .digest import Digest, constraints_block, render
+from .digest import Digest, Rendered, constraints_block, render
 from .documents import DocumentError, DocumentStore, DocumentTool
 from .documents.tool import REQUESTS_TASK, WorkRequests
 from .file_settings import ProjectFiles
@@ -80,6 +80,7 @@ from .history import (
     session_view,
     settle,
 )
+from .history.geometry import DEFAULT_SHARES, Shares
 from .hooks import TurnHook
 from .jobs import JobTools
 from .jobstate import JobState
@@ -205,6 +206,9 @@ class Settings:
     input_limit: int | None = None
     """MAIN's model's input limit in tokens, without its output, where the gateway's
     model information gives none."""
+    shares: Shares = DEFAULT_SHARES
+    """The view's shares of C: the user's words', the digest's and the fold region's
+    (CM-27); the labs set small ones to force overviews and pointers."""
     skeleton_only: bool = False
     """Whether MAIN's folds are skeleton-only, without the enrichment call: the control
     arm (docs/specs/context-management.md, question 4)."""
@@ -265,6 +269,9 @@ class RunRequest:
     them in the record."""
     parent: str | None = None
     """A delegated run's parent: the name its record will be kept under (PD-32)."""
+    consolidate: bool = False
+    """A consolidation run after a ``research_state`` stop (CM-45): its view shows every
+    current decision in one line, and it is told to propose how to consolidate them."""
     delegation: str | None = None
     """A delegated run's delegation (``Harness.run_child``)."""
     memory_version: int | None = None
@@ -684,9 +691,11 @@ class Harness:
         earlier = functools.partial(recorded_words, stores.projects, stores.runs, project, session)
         settings = self.settings
         top = await self._ceiling()
-        start = geometry(top, 0, settings.chunk)  # the system message is not known yet
+        start = geometry(top, 0, settings.chunk, settings.shares)  # no system message yet
         per_token = chars_per_token(calls)
         ledger = Ledger(stores.documents)
+        digest = functools.partial(self._digest, stores, project, session)
+        found = await threaded(digest, int(start.digest * per_token))
         # Which folded markers are retired, by the ledger and the read register (CM-21a).
         judge = Judge(
             ledger_entries(ledger, project),
@@ -703,6 +712,8 @@ class Harness:
             runs=runs,
             earlier=earlier,
             judge=judge,
+            digest=found,
+            consolidating=request.consolidate,
         )
         kernels = None
         if view.cells:  # whether the kernels its cells ran in still run (CM-29c)
@@ -710,9 +721,6 @@ class Harness:
                 kernels = (await self.client.observe_kernels(context)).kernels
             except Exception as error:  # unknown, then: the run goes on
                 _log.warning("the kernels could not be observed for the view: %r", error)
-        digest = functools.partial(self._digest, stores, project, session)
-        found = await threaded(digest, int(start.digest * per_token))
-        view = dataclasses.replace(view, digest=found)
         view = await settle(view, archive, context, run=name, kernels=kernels, clock=self.clock)
 
         def exists(handle: str) -> bool:
@@ -738,6 +746,7 @@ class Harness:
             model=self._narrator(),
             exists=exists,
             judge=judge,
+            consolidating=request.consolidate,
             clock=self.clock,
         )
         # The ceiling a context error capped, carried to later runs: this service's, or
@@ -810,10 +819,11 @@ class Harness:
             return self.settings.max_input_chars
         return FOLDING_CHARS if folding else MAX_INPUT_CHARS
 
-    def _digest(self, stores: Stores, project: str, session: str, budget: int) -> str | None:
+    def _digest(self, stores: Stores, project: str, session: str, budget: int) -> Rendered | None:
         """The research-state digest a main run's state block holds (CM-16), within
-        ``budget`` characters, its third of the state block (CM-27); ``None`` when the
-        research state is empty."""
+        ``budget`` characters, its third of the state block (CM-27), framed, with the
+        handles and lines it shows, which the fold region's short forms are checked
+        against (CM-21b); ``None`` when the research state is empty."""
         ledger = Ledger(stores.documents)
         digest = Digest(
             ledger,
@@ -823,11 +833,13 @@ class Harness:
             delegations=DelegationRecords(stores.documents, clock=self.clock),
         )
         try:
-            body = render(digest.sections(project, session), budget).text
+            found = render(digest.sections(project, session), budget)
         except DocumentError as error:  # a project the ledger does not know yet
             _log.warning("no digest for %s/%s: %s", project, session, error)
             return None
-        return DIGEST.text + "\n" + body if body else None
+        if not found.text:
+            return None
+        return dataclasses.replace(found, text=DIGEST.text + "\n" + found.text)
 
     def _task_block(
         self, stores: Stores, project: str, session: str, request: RunRequest

@@ -577,8 +577,11 @@ async def test_markers_that_alone_pass_the_region_are_not_merged_again_and_again
     for _ in range(3):
         assert await made.before_call(transcript)
     assert made.folds == []
-    assert [e["state"] for e in events] == ["region_over_budget"]
+    # Since step (f2b), the caveats spill instead (CM-21b), and the region fits.
+    assert [e["state"] for e in events] == ["spilled", "region_over_budget"]
     assert cast(Json, made.summary())["region_over_budget"] == 1
+    assert made.view.bounded is not None
+    assert made.view.bounded.size <= int(start.region)
 
 
 async def test_a_fold_due_while_a_merge_runs_builds_the_merge_by_code(archive: Archive) -> None:

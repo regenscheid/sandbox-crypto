@@ -236,6 +236,20 @@ FOLD_OVERVIEW: Final = Framing(
     "messages, word for word. Leave proposals empty. ",
 )
 """An overview's update (docs/specs/context-management.md, CM-21)."""
+CONSOLIDATION: Final = Framing(
+    "consolidation",
+    "sandbox-consolidation-1",
+    "Platform instruction, apart from the research state above: this session's current "
+    "decisions no longer fit its view, so its runs stopped, and the user's earlier "
+    "messages wait until the decisions change. The fold region shows every current "
+    "decision of the session in one line; ledger_read returns each whole. Before you "
+    "answer the user's message, propose to the user how to consolidate them: one decision "
+    "that replaces several, reversing them with a reason that sums them up, or reversing "
+    "those that no longer matter. Record no change the user has not approved, but that "
+    "you may reverse decisions you recorded yourself, under the ledger's usual rules.",
+)
+"""A consolidation run's instruction, after a ``research_state`` stop (CM-45; the
+coordinator's decision of 2026-10-16)."""
 REDELIVERED: Final = Framing(
     "redelivered",
     "sandbox-notice-redelivered-1",
@@ -275,4 +289,5 @@ FRAMINGS: Final = (
     FOLD_REGION,
     FOLD_ENRICH,
     FOLD_OVERVIEW,
+    CONSOLIDATION,
 )

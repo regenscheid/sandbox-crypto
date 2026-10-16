@@ -33,6 +33,8 @@ LABELS: Final = (
     "Markers:",
     "Parts:",
     "Retired markers",
+    "spilled:",
+    "Spilled marker lines",
     "Narrative",
     "Search keys:",
     "Session record, written by the platform",
@@ -96,12 +98,18 @@ class FoldRecord:
         )
 
     def text(
-        self, fold: str, *, whole: bool = False, retired: Mapping[int, str] | None = None
+        self,
+        fold: str,
+        *,
+        whole: bool = False,
+        retired: Mapping[int, str] | None = None,
+        block: Sequence[str] | None = None,
     ) -> str:
         """The record as text: as the view shows it, or ``whole``, as the archive keeps
         it, with the IDs of each tool's failed calls listed. ``retired`` names the
         markers retired now, by their index, each with why (CM-21a): those are shown
-        as an index line only."""
+        as an index line only. ``block``, when given, are the marker lines as the region
+        renders them within its bound, in place of the markers (CM-21b)."""
         (start, first), (end, last) = self.first, self.last
         lines = [
             f"--- fold {fold} · level {self.level} · positions {start} to {end} "
@@ -117,6 +125,9 @@ class FoldRecord:
             lines += ["Outline:", *(guarded(line) for line in self.skeleton)]
         gone = {i: why for i, why in (retired or {}).items() if 0 <= i < len(self.markers)}
         current = [m for i, m in enumerate(self.markers) if i not in gone]
+        if block is not None:
+            lines += block
+            current, gone = [], {}
         if current:
             lines.append("Markers:")
             lines += [f"- {marker_line(marker, fold)}" for marker in current]
