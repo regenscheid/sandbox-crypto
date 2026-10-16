@@ -176,6 +176,39 @@ def test_the_labs_config_needs_nothing_added_by_hand(home: Path, tmp_path: Path)
     assert [(s.id, s.dedicated) for s in project.sessions] == [("a", False)]
 
 
+def test_the_labs_config_sets_the_skills(home: Path, tmp_path: Path) -> None:
+    """Lab 42, B8: the lab added [skills], its packs and the project's skills by hand."""
+    script = Path(__file__).parents[3] / ".agents/labs/launcher_config.py"
+    out = tmp_path / "lab" / "sandbox-science.toml"
+    done = subprocess.run(
+        [
+            sys.executable, "-I", str(script), str(out), "--state-dir", str(tmp_path / "state"),
+            "--project", "lab42",
+            "--skills-pack", "crypto=https://github.com/OWNER/crypto-analysis-skills@098013c5",
+            "--skills-pack", "mine=git@git.example:owner/mine",
+            "--skills-embedding-model", "embed", "--skills-metadata-model", "pass",
+        ],
+        capture_output=True, text=True, check=False, env={**os.environ, "HOME": str(home)},
+    )  # fmt: skip
+    assert done.returncode == 0, done.stderr
+    config = load_config(out)
+    packs = config.skills.packs
+    assert (packs["crypto"].git, packs["crypto"].ref) == (
+        "https://github.com/OWNER/crypto-analysis-skills",
+        "098013c5",
+    )
+    assert (packs["mine"].git, packs["mine"].ref) == ("git@git.example:owner/mine", None)
+    assert (config.skills.embedding_model, config.skills.metadata_model) == ("embed", "pass")
+    (project,) = config.projects
+    assert project.skills == ("crypto", "mine")
+    refused = subprocess.run(
+        [sys.executable, "-I", str(script), str(out), "--state-dir", "s", "--skills-pack", "x"],
+        capture_output=True, text=True, check=False, env={**os.environ, "HOME": str(home)},
+    )  # fmt: skip
+    assert refused.returncode == 2
+    assert "a pack is NAME=GIT[@REF]" in refused.stderr
+
+
 def test_the_examples_mcp_proxy_works_uncommented(home: Path, tmp_path: Path) -> None:
     example = Path(__file__).parents[3] / "examples" / "sandbox-science.toml"
     lines = example.read_text().splitlines()
