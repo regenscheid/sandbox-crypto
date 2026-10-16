@@ -3,7 +3,7 @@
   import { api } from '../lib/api';
   import { formatCost, formatTime } from '../lib/format';
   import { costByRole } from '../lib/modelCost';
-  import { documentHref, ledgerHref, memoryHref, sessionHref } from '../lib/router';
+  import { documentHref, ledgerHref, memoryHref, sessionHref, skillsHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
   import ProjectFiles from './ProjectFiles.svelte';
   import ProjectMacros from './ProjectMacros.svelte';
@@ -66,6 +66,10 @@
     {:catch error}
       <ErrorMessage {error} />
     {/await}
+  </p>
+  <p>
+    <a href={skillsHref(projectId)}>The project's skills</a>: the packs it pins, their import
+    reports, and the skills a run is given.
   </p>
   <ProjectFiles {projectId} />
 

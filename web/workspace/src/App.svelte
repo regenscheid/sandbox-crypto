@@ -11,6 +11,7 @@
   import LedgerBoard from './views/LedgerBoard.svelte';
   import LedgerEntryView from './views/LedgerEntryView.svelte';
   import MemoryPage from './views/MemoryPage.svelte';
+  import SkillsPage from './views/SkillsPage.svelte';
   import IssueList from './views/IssueList.svelte';
   import ProjectList from './views/ProjectList.svelte';
   import ProjectView from './views/ProjectView.svelte';
@@ -95,6 +96,10 @@
     {:else if route.view === 'memory'}
       {#key route.project}
         <MemoryPage projectId={route.project} />
+      {/key}
+    {:else if route.view === 'skills'}
+      {#key route.project}
+        <SkillsPage projectId={route.project} />
       {/key}
     {:else if route.view === 'ledger'}
       {#key route.project}

@@ -52,6 +52,7 @@ export type Route =
       page: number | null;
     }
   | { view: 'memory'; project: string }
+  | { view: 'skills'; project: string }
   | { view: 'ledger'; project: string }
   | { view: 'issues'; project: string }
   | { view: 'entry'; project: string; entry: string; revision: number | null }
@@ -87,6 +88,7 @@ export function parseRoute(hash: string): Route {
   if (project === null) return { view: 'missing' };
   if (parts.length === 2) return { view: 'project', project };
   if (parts.length === 3 && parts[2] === 'memory') return { view: 'memory', project };
+  if (parts.length === 3 && parts[2] === 'skills') return { view: 'skills', project };
   if (parts[2] === 'ledger') return ledgerRoute(project, parts.slice(3));
   if (parts[2] === 'files' && parts.length === 5) {
     const [session, run] = [decoded(parts[3]!), decoded(parts[4]!)];
@@ -226,6 +228,10 @@ export function pdfHref(
 
 export function memoryHref(project: string): string {
   return `${projectHref(project)}/memory`;
+}
+
+export function skillsHref(project: string): string {
+  return `${projectHref(project)}/skills`;
 }
 
 export function ledgerHref(project: string): string {

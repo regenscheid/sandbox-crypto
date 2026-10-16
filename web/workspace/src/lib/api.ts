@@ -26,11 +26,14 @@ import type {
   MemoryProposals,
   ProjectAnswer,
   ProjectListing,
+  ProjectSkills,
   ProjectView,
   RunEntry,
   RunTree,
   SessionDetail,
   SessionView,
+  SkillSettingsChange,
+  SkillSettingsView,
   ViewerLink,
 } from './api-types';
 import type { ArtifactFilter, ArtifactGroup, FileSettings } from './artifactFiles';
@@ -160,6 +163,11 @@ export interface RunRecord {
   };
   /** Each answered model call's usage, in order; older records have none. */
   usage?: ModelUsage[];
+  /** The run's hooks' summaries by hook name, such as `skills` (its discoveries and
+   * start loads); older records have none. */
+  summaries?: Record<string, Json>;
+  /** The notice IDs a model call saw, by hook name. */
+  delivered?: Record<string, Json>;
   messages: Message[];
   tools: ToolRecord[];
 }
@@ -665,6 +673,12 @@ export const api = {
   /** The project memory's accepted entries in order, and the bound agents receive. */
   memory: (project: string) =>
     get<MemoryAnswer>(`/projects/${part(project)}/memory`, { maxBytes: MEMORY_MAX_BYTES }),
+  /** The project's skills: its settings, its pins with their imports' reports, and the
+   * skills a run is given now. */
+  skills: (project: string) => get<ProjectSkills>(`/projects/${part(project)}/skills`),
+  /** The user's change of the always-loaded and excluded skills, at `expected`. */
+  changeSkillSettings: (project: string, change: SkillSettingsChange) =>
+    post<SkillSettingsView>(`/projects/${part(project)}/skills/settings`, change),
   /** The proposals that wait for the user, oldest first. */
   memoryProposals: (project: string) =>
     get<MemoryProposals>(`/projects/${part(project)}/memory/proposals`, {
