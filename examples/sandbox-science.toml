@@ -21,6 +21,10 @@ name = "sandbox-orchestrator"
 reviewer = "sandbox-orchestrator"
 watcher = "sandbox-orchestrator"
 delegated = "sandbox-orchestrator"
+# Aliases the run service calls through the gateway's /v1/responses, GPT's Responses API
+# with its reasoning sent back; the others take /chat/completions. None until the labs
+# confirm it.
+# responses_api = ["sandbox-orchestrator"]
 # Only the run service reads this file; keep it mode 600.
 api_key_file = "~/.config/sandbox-science/secrets/litellm-harness.key"
 

@@ -293,6 +293,23 @@ def test_the_run_service_takes_the_review_limits_the_config_sets(
     assert "--review-token-budget" not in parts.harness_argv(unset, Layout(unset.state_dir))
 
 
+def test_the_run_service_calls_the_aliases_the_config_names_through_responses(
+    make_config: Any, commands: Path
+) -> None:
+    """CM-40, CM-41: each alias ``responses_api`` names goes to the run service, which
+    calls it through ``/v1/responses``; with none, as by default, every alias keeps chat
+    completions. An empty alias is refused."""
+    model = {"delegated": "child", "responses_api": ["sandbox-orchestrator", "child"]}
+    config = load_config(make_config({"bin_dir": str(commands), "model": model}))
+    harness = parts.harness_argv(config, Layout(config.state_dir))
+    named = [harness[i + 1] for i, flag in enumerate(harness) if flag == "--responses-api"]
+    assert named == ["sandbox-orchestrator", "child"]
+    plain = load_config(make_config({"bin_dir": str(commands)}))
+    assert "--responses-api" not in parts.harness_argv(plain, Layout(plain.state_dir))
+    with pytest.raises(LauncherError, match="responses_api"):
+        load_config(make_config({"model": {"responses_api": [""]}}))
+
+
 def fake_node(directory: Path, version: str) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     node = directory / "node"

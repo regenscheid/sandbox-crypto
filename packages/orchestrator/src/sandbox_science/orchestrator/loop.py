@@ -19,6 +19,7 @@ from .hooks import RESPONSE_ROUNDS, Appended, MessageLog, Notice, Point, TurnHoo
 from .memory_prompt import MemoryGiven
 from .model import (
     GATEWAY_BUDGET,
+    AssistantMessage,
     ChatModel,
     ContextLimitError,
     GatewayBudgetError,
@@ -446,17 +447,8 @@ async def _run_task(
             else:
                 await _out_of_room(hooks, transcript)
             return transcript
-        assistant: Message = {"role": "assistant", "content": reply.text}
-        if reply.tool_calls:
-            assistant["tool_calls"] = [
-                {
-                    "id": call.id,
-                    "type": "function",
-                    "function": {"name": call.name, "arguments": call.arguments},
-                }
-                for call in reply.tool_calls
-            ]
-        await _append(transcript, assistant, Appended("assistant", reply=reply))
+        # The answer as a chat message, carrying the gateway's answer for its adapter.
+        await _append(transcript, AssistantMessage(reply), Appended("assistant", reply=reply))
         await _model_returned(hooks, transcript)
         if not reply.tool_calls:
             if await _closing(hooks, transcript, reply.text):

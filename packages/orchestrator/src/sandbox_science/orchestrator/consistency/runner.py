@@ -15,7 +15,14 @@ from sandbox_science.contracts.model import Contract
 from sandbox_science.orchestrator.aio import threaded
 from sandbox_science.orchestrator.documents.errors import DocumentError
 from sandbox_science.orchestrator.memory_prompt import MemoryGiven
-from sandbox_science.orchestrator.model import ChatModel, Message, ModelError, ToolCall, ToolSpec
+from sandbox_science.orchestrator.model import (
+    AssistantMessage,
+    ChatModel,
+    Message,
+    ModelError,
+    ToolCall,
+    ToolSpec,
+)
 
 from .citations import record_citation
 from .findings import Findings
@@ -421,16 +428,9 @@ class ReviewerRunner:
                     "at most 128,000.",
                 )
                 return
-            assistant: Message = {"role": "assistant", "content": content}
-            if reply.tool_calls:
-                assistant["tool_calls"] = [
-                    {
-                        "id": c.id,
-                        "type": "function",
-                        "function": {"name": c.name, "arguments": c.arguments},
-                    }
-                    for c in reply.tool_calls
-                ]
+            # With the gateway's answer, which GPT's adapter sends back (CM-40).
+            assistant = AssistantMessage(reply)
+            assistant["content"] = content
             messages.append(assistant)
             await asyncio.to_thread(
                 self.store.record,

@@ -90,6 +90,7 @@ from .model import (
     ScriptedModel,
 )
 from .projects import ProjectError, ProjectStore, run_name
+from .responses import ResponsesModel
 from .runstate import RunState
 from .service import POLL_SECONDS, RunService
 from .skills.embeddings import Embedder, SkillVectors
@@ -120,8 +121,12 @@ def _gateway(
     max_tokens: int | None = None,
     max_response_bytes: int = MAX_RESPONSE_BYTES,
 ) -> ChatModel:
+    """The client for ``alias``: GPT's Responses API for an alias ``--responses-api``
+    names (CM-40), and chat completions for any other (CM-41)."""
     key = read_secret(args.api_key_file)
-    return OpenAICompatibleModel(
+    responses = alias in getattr(args, "responses_api", ())
+    kind = ResponsesModel if responses else OpenAICompatibleModel
+    return kind(
         args.model_url, alias, key, max_tokens=max_tokens, max_response_bytes=max_response_bytes
     )
 
@@ -136,7 +141,7 @@ def _role(script: Path | None, flag: str, alias: str, gateway: Callable[[], Chat
 
 
 async def _close(model: ChatModel) -> None:
-    if isinstance(model, OpenAICompatibleModel):
+    if isinstance(model, OpenAICompatibleModel | ResponsesModel):
         await model.close()
 
 
@@ -275,7 +280,11 @@ def _harness(
     gateway = None
     if getattr(args, "model_url", None) is not None:
         # The aliases a delegation chooses, and the list it checks them in (PD-28, PD-30).
-        gateway = ModelGateway(args.model_url, read_secret(args.api_key_file))
+        gateway = ModelGateway(
+            args.model_url,
+            read_secret(args.api_key_file),
+            responses=frozenset(getattr(args, "responses_api", ())),
+        )
         closing(stack, interruption, gateway.close)
     vectors = None
     if (embedding := getattr(args, "skills_embedding_model", None)) is not None:
@@ -382,6 +391,15 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
         "redirects are not followed",
     )
     command.add_argument("--model", default="main", help="model alias")
+    command.add_argument(
+        "--responses-api",
+        action="append",
+        default=[],
+        metavar="ALIAS",
+        help="a model alias, in any role, called through the gateway's /v1/responses "
+        "(GPT's Responses API, with its reasoning sent back) rather than /chat/completions; "
+        "repeat for more",
+    )
     command.add_argument(
         "--skills-embedding-model",
         type=embedding_alias,
@@ -534,6 +552,8 @@ def _check_agent(parser: argparse.ArgumentParser, args: argparse.Namespace) -> N
         parser.error("--delegated-script needs --delegated-model")
     if args.model_url is not None and args.api_key_file is None:
         parser.error("--model-url needs --api-key-file")
+    if args.responses_api and args.model_url is None:
+        parser.error("--responses-api needs --model-url")
     if getattr(args, "skills_embedding_model", None) is not None and args.model_url is None:
         parser.error("--skills-embedding-model needs --model-url")
     if args.max_input_chars < 1:

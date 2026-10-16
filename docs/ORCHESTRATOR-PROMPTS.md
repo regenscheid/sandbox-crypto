@@ -74,7 +74,9 @@ What each input does:
   of a mechanical finding.
 - **Model adapter.** [model.py](../packages/orchestrator/src/sandbox_science/orchestrator/model.py)
   is provider-neutral, with OpenAI-compatible tool calls, an optional token limit and
-  a bounded response. MAIN retries a rate limit or an unavailable upstream up to three
+  a bounded response; the aliases a deployment names go through GPT's Responses API
+  instead ([responses.py](../packages/orchestrator/src/sandbox_science/orchestrator/responses.py),
+  CM-40), the same messages rendered as its items. MAIN retries a rate limit or an unavailable upstream up to three
   times and stops with `context_limit` past `--max-input-chars`; compaction is not built.
 - **Run records.** Saved runs keep the rendered messages and the prompt provenance;
   failed runs keep fixed failure metadata and partial outcomes
