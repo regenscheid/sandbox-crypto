@@ -266,20 +266,18 @@ def _override(store: SkillStore, args: argparse.Namespace) -> SkillSettings:
 
 
 def _unconfirmed(store: SkillStore, source: str, variables: list[str], prefix: str | None) -> None:
-    """Refuse an approval of a binding not namespaced to ``source`` without ``--confirm``,
-    saying what is known of each (SK-31): a pack's file under a variable some tool reads
-    runs as that tool."""
+    """Refuse any approval without ``--confirm``, saying what is known of each variable
+    (SK-31): a pack's file under a variable some tool reads runs as that tool. A variable
+    is approved only when a run holds it, and this cannot tell which a run holds: under
+    the source's namespace, it is still held where the environment's ``PATH`` has a command
+    of that name (``sh`` for ``SH_``), which only a run's staging asks the worker."""
     imports = store.imports()
     others = {allow.namespace(i.source) for i in imports if i.source != source}
     names, _ = allow.granted(source, prefix, others)
     latest = next((i for i in imports if i.source == source), None)
     derived = cast(dict[str, Any], latest.report.get("derived", {})) if latest else {}
     paths = cast(dict[str, str], derived.get("bindings", {}))
-    unasked = [
-        v
-        for v in dict.fromkeys(variables)
-        if not v.startswith(tuple(names)) and not allow.forbidden(v)  # the store refuses those
-    ]
+    unasked = [v for v in dict.fromkeys(variables) if not allow.forbidden(v)]  # store refuses
     if not unasked:
         return
     for variable in unasked:
