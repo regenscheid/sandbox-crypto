@@ -36,6 +36,7 @@ from sandbox_science.orchestrator.notices import (
     REVIEW_FINDINGS,
 )
 from sandbox_science.orchestrator.projects import recorded
+from sandbox_science.orchestrator.view_image import ImageViewer
 
 from .actions import action_of
 from .archived import held_calls, places
@@ -261,6 +262,7 @@ class ReviewController:
         connectors: Collection[str] = (),
         earlier: int = 0,
         archived_as: str | None = None,
+        images: ImageViewer | None = None,
     ) -> None:
         """``memory`` is the project memory the reviewer is given: the one the reviewed
         run was given when it started (PM-8). ``connectors`` are the MCP servers the run's
@@ -288,6 +290,9 @@ class ReviewController:
         self.persistent = persistent
         self.author_alias = author_alias
         self.memory = memory
+        self.images = images
+        """The viewer each review gets a fresh copy of, when the reviewer's model accepts
+        images (docs/specs/figures.md, FG-39)."""
         self.connectors = frozenset(connectors)
         self.last_counts: Json | None = None
         self.documents_complete = True
@@ -502,7 +507,13 @@ class ReviewController:
             self.review_ids.append(review)
             self.task = asyncio.create_task(
                 ReviewerRunner(
-                    self.store, *self.scope, review, self.owner, self.model, memory=self.memory
+                    self.store,
+                    *self.scope,
+                    review,
+                    self.owner,
+                    self.model,
+                    memory=self.memory,
+                    images=self.images.fresh() if self.images is not None else None,
                 ).run()
             )
         return review

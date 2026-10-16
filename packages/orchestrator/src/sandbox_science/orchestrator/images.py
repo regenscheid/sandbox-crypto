@@ -35,6 +35,14 @@ Message = dict[str, Any]
 class Image:
     media_type: str
     data: bytes
+    width: int = 0
+    height: int = 0
+
+    @property
+    def tokens(self) -> int:
+        """About what a model counts the image as: a token for every 750 pixels, the
+        rule the providers publish, for a budget's estimate before the call reports."""
+        return -(-self.width * self.height // 750)
 
     @property
     def base64(self) -> str:
@@ -79,6 +87,11 @@ def carried(messages: Sequence[Message]) -> dict[int, Image]:
                 if len(found) == IN_VIEW:
                     break
     return found
+
+
+def tokens(messages: Sequence[Message]) -> int:
+    """About the tokens the images the next call carries count as."""
+    return sum(image.tokens for image in carried(messages).values())
 
 
 def chat(messages: Sequence[Message]) -> list[Message]:
