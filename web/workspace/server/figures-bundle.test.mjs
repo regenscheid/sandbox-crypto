@@ -40,3 +40,28 @@ test('the figure frame holds its own code and the chart libraries, with their no
   expect(page).not.toContain('data:');
   expect(page).toMatch(/<script type="module" crossorigin src="\/figures\/assets\/[\w-]+\.js">/);
 }, 60000);
+
+test("the figure checker holds the frame's chart code and libraries, with its launcher", async () => {
+  const result = await build({
+    logLevel: 'silent',
+    configFile: resolve(root, 'vite.figurecheck.config.ts'),
+    build: { write: false },
+  });
+  const output = Array.isArray(result) ? result.flatMap((r) => r.output) : result.output;
+  expect(output.map((item) => item.fileName).sort()).toEqual([
+    'LICENSE-Sandbox-Science.txt',
+    'THIRD-PARTY-NOTICES.txt',
+    'check-figures.mjs',
+    'figurecheck.mjs',
+    'license-manifest.json',
+  ]);
+  const ids = output.flatMap((item) => (item.type === 'chunk' ? item.moduleIds : []));
+  const own = ids.map((id) => id.replaceAll('\\', '/')).filter((id) => !id.includes('/node_modules/'));
+  // The same rules and run as the frame's (FG-20): no page, worker or sanitizer.
+  for (const id of own.filter((id) => !id.includes('\0')))
+    expect(id).toMatch(/\/src\/figures\/(figurecheck|vegaChart|chart|protocol)\.ts$/);
+  const report = JSON.parse(output.find((item) => item.fileName === 'license-manifest.json').source);
+  expect(report.distribution).toBe('figure-checker');
+  const versions = Object.fromEntries(report.packages.map((item) => [item.name, item.version]));
+  expect(versions).toMatchObject({ vega: '6.4.0', 'vega-lite': '6.4.3', 'vega-interpreter': '2.3.2' });
+}, 60000);

@@ -20,6 +20,7 @@
     "svelte.config.js",
     "vite.math.config.ts",
     "vite.viewer.config.ts",
-    "vite.figures.config.ts"
+    "vite.figures.config.ts",
+    "vite.figurecheck.config.ts"
   ]
 }

@@ -40,9 +40,14 @@ const EXPRESSIONS = new Set([
 /** The Vega-Lite major version the frame draws (FG-15). */
 export const VEGA_LITE_MAJOR = 6;
 
-/** Why a chart is not drawn, as one of the protocol's codes. */
+/** Why a chart is not drawn, as one of the protocol's codes, with the library's message
+ * when a library refused it, which the figure check reports (FG-21) and the frame does not
+ * send. */
 export class Refusal extends Error {
-  constructor(readonly code: FigureCode) {
+  constructor(
+    readonly code: FigureCode,
+    readonly detail?: string,
+  ) {
     super(code);
   }
 }

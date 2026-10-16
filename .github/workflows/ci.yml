@@ -149,5 +149,8 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: npm run build:math
-      - run: uv run pytest -q packages/orchestrator/tests/test_mathcheck.py
+      # The skill's charts pass the figure check at the pinned versions (FG-31).
+      - run: uv run pytest -q packages/orchestrator/tests/test_mathcheck.py packages/orchestrator/tests/test_figurecheck.py
         working-directory: .
+        env:
+          SS_REQUIRE_FIGURE_CHECK: "1"

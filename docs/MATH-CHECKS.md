@@ -35,7 +35,9 @@ React-derived Apache helper attribution and glyph-derived SVG attribution with
 the full primary Apache/OFL texts. No external font/CSS assets or Svelte runtime
 are shipped. Missing/changed license inputs, uncovered origins/files or a
 mismatched emitted file fail the build. The manifest hashes all other files;
-the existing copier entry point verifies the final directory. See
+the existing copier entry point verifies the final directory. The same command
+builds the figure checker beside it, in `dist-math/figures`, with notices of its own
+([figures](specs/figures.md#the-figure-check-as-built)). See
 [primary inputs](../web/workspace/licenses/README.md). It uses the GUI's existing
 dependency lockfile; no second KaTeX installation is introduced. Renderer and
 launcher runtime bytes are unchanged by the notice emission.
