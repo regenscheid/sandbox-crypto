@@ -15,7 +15,7 @@ Choose a chart for a recorded table and a common encoding: bars, lines, points, 
 
 ## Data first
 
-A chart reads only recorded files: write the numbers to a CSV, TSV or JSON file with `write_file`, or from your script, and name that file in the chart. A chart holds no data of its own: inline values are refused, so every plotted value can be traced to a file and the run that wrote it. The one exception is a generated sequence of at most 10,000 values, which records no measurement.
+A chart reads only recorded files: write the numbers to a CSV, TSV or JSON file with `write_file`, or from your script, and name that file in the chart. A chart holds no data of its own: inline values are refused, so its data come only from recorded files and the runs that wrote them. The one exception is a generated sequence of at most 10,000 values, which records no measurement. Derive values from the data in the chart only as far as a reader can follow: a unit conversion or a ratio, not numbers typed into an expression.
 
 ## Paths
 

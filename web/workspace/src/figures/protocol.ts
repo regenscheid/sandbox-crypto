@@ -36,6 +36,7 @@ export const CODES = [
   'address',
   'version',
   'invalid',
+  'time',
 ] as const;
 export type FigureCode = (typeof CODES)[number];
 
@@ -51,6 +52,7 @@ export const CODE_TEXT: Record<Exclude<FigureCode, ''>, string> = {
   address: 'the chart names an address that is not one of its pinned files, an image or a link',
   version: 'the chart names a Vega-Lite version other than 6',
   invalid: 'the chart is not a Vega-Lite specification that compiles',
+  time: 'the chart took longer to draw than a page allows',
 };
 
 export interface FigureStatus {

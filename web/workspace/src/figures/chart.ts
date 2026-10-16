@@ -8,7 +8,7 @@
  * answers only the chart's pinned files, from their capabilities, within the data limits.
  */
 import type { FigureCode } from './protocol';
-import { MAX_SOURCE } from './protocol';
+import { CODES, MAX_SOURCE } from './protocol';
 
 /** A chart's limits (FG-17). */
 export const MAX_DATA_BYTES = 8 * 1024 * 1024;
@@ -34,6 +34,10 @@ function checkData(data: { [key: string]: Json }, pinned: ReadonlySet<string>): 
   if ('graticule' in data || 'sphere' in data) throw new Refusal('inline_data');
   if ('url' in data && !(typeof data['url'] === 'string' && pinned.has(data['url'])))
     throw new Refusal('address');
+  const format = data['format'];
+  const type = isObject(format) ? format['type'] : undefined;
+  if (type !== undefined && !['csv', 'tsv', 'dsv', 'json'].includes(String(type)))
+    throw new Refusal('invalid');
   const sequence = data['sequence'];
   if (sequence !== undefined) {
     if (!isObject(sequence)) throw new Refusal('invalid');
@@ -90,42 +94,55 @@ export function checkedChart(source: string, paths: readonly string[]): { [key: 
   return spec;
 }
 
-/** The rows of a data file Vega will read, as its format or extension says: a JSON
- * array's items, or the lines of a CSV or TSV after its header. */
-export function rows(text: string, path: string): number {
-  if (/\.json$/i.test(path) || /^\s*[[{]/.test(text)) {
-    try {
-      const data: unknown = JSON.parse(text);
-      return Array.isArray(data) ? data.length : 1;
-    } catch {
-      return 0; // Vega's own reader says why
-    }
-  }
-  const lines = text.split(/\r?\n/).filter((line) => line.trim() !== '');
-  return Math.max(0, lines.length - 1);
-}
-
 /** What the loader fetches a pinned file with, as the frame does. */
 export type Fetch = (capability: string) => Promise<string>;
 
 /**
+ * The first refusal a chart met while Vega ran it (review of #500, M2). Vega catches what
+ * its loader, its readers and its expression functions throw, says "Loading failed", and
+ * draws on without the data; so each of them notes its refusal here, and the chart is
+ * refused after the run.
+ */
+export class Refusals {
+  first: Refusal | null = null;
+
+  /** Note `error` as a refusal (anything else as `fallback`), and give it back to throw. */
+  note(error: unknown, fallback: FigureCode = 'refused'): Refusal {
+    const refusal = error instanceof Refusal ? error : new Refusal(fallback);
+    this.first ??= refusal;
+    return refusal;
+  }
+
+  /** Throw the first refusal noted, if any. */
+  check(): void {
+    if (this.first !== null) throw this.first;
+  }
+}
+
+/**
  * The loader Vega reads with (FG-15): a data path the chart pins is read from its
  * capability; any other address, an image or a link is refused. Data are at most 8 MiB in
- * all and 100,000 rows in each file.
+ * all; the readers bound each file's rows. Every refusal is noted in `refusals`.
  */
-export function chartLoader(files: ReadonlyMap<string, string>, read: Fetch) {
+export function chartLoader(files: ReadonlyMap<string, string>, read: Fetch, refusals: Refusals) {
   let bytes = 0;
-  const refuse = () => Promise.reject(new Refusal('address'));
+  const refuse = () => Promise.reject(refusals.note(new Refusal('address')));
   return {
     async sanitize(uri: string, options?: { context?: string }) {
-      if (options?.context !== 'dataflow' || !files.has(uri)) throw new Refusal('address');
+      if (options?.context !== 'dataflow' || !files.has(uri))
+        throw refusals.note(new Refusal('address'));
       return { href: uri };
     },
     async load(uri: string, options?: { context?: string }) {
       await this.sanitize(uri, { context: options?.context ?? 'dataflow' });
-      const text = await read(files.get(uri)!);
+      let text: string;
+      try {
+        text = await read(files.get(uri)!);
+      } catch (error) {
+        throw refusals.note(error);
+      }
       bytes += new TextEncoder().encode(text).length;
-      if (bytes > MAX_DATA_BYTES || rows(text, uri) > MAX_ROWS) throw new Refusal('size');
+      if (bytes > MAX_DATA_BYTES) throw refusals.note(new Refusal('size'));
       return text;
     },
     http: refuse,
@@ -158,6 +175,11 @@ export function markCount(scene: unknown): number {
  */
 export function delimited(text: string, delimiter: string): Record<string, string>[] {
   const rows: string[][] = [];
+  const push = (row: string[]) => {
+    if (row.some((value) => value !== '')) rows.push(row);
+    // The header and at most MAX_ROWS rows, whatever ends their lines.
+    if (rows.length > MAX_ROWS + 1) throw new Refusal('size');
+  };
   let row: string[] = [];
   let field = '';
   let quoted = false;
@@ -176,18 +198,91 @@ export function delimited(text: string, delimiter: string): Record<string, strin
     } else if (char === '\n' || char === '\r') {
       if (char === '\r' && text[at + 1] === '\n') at++;
       row.push(field);
-      rows.push(row);
+      push(row);
       row = [];
       field = '';
     } else field += char;
   }
-  if (field !== '' || row.length) rows.push([...row, field]);
-  const [header = [], ...body] = rows.filter((found) => found.some((value) => value !== ''));
+  if (field !== '' || row.length) push([...row, field]);
+  const [header = [], ...body] = rows;
   return body.map((values) => {
     const entry: Record<string, string> = {};
     header.forEach((name, index) => {
       entry[name] = values[index] ?? '';
     });
     return entry;
+  });
+}
+
+/** A JSON file's data as Vega reads it, at `format.property` when given (a dotted path),
+ * at most MAX_ROWS items (review of #500, L1). */
+export function jsonRows(text: string, property?: string): unknown {
+  let data: unknown = JSON.parse(text);
+  for (const key of property ? property.split('.') : []) {
+    data =
+      data !== null && typeof data === 'object'
+        ? (data as Record<string, unknown>)[key]
+        : undefined;
+  }
+  if (Array.isArray(data) && data.length > MAX_ROWS) throw new Refusal('size');
+  return data;
+}
+
+/** A `sequence(start, stop, step)` in an expression, within the bound a data `sequence`
+ * has (review of #500, L2). */
+export function boundedSequence(start: number, stop?: number, step = 1): number[] {
+  if (stop === undefined) [start, stop] = [0, start];
+  const count = step === 0 ? Infinity : Math.ceil((stop - start) / step);
+  if (!(count <= MAX_SEQUENCE)) throw new Refusal('size');
+  return Array.from({ length: Math.max(0, count) }, (_, index) => start + index * step);
+}
+
+/** How long the frame lets a chart's worker run before ending it (FG-17): less than the
+ * page gives the frame, so the frame says why. */
+export const CHART_MILLISECONDS = 4000;
+
+/** What the frame needs of a worker. */
+export interface ChartWorker {
+  postMessage(message: unknown): void;
+  terminate(): void;
+  onmessage: ((event: { data: unknown }) => void) | null;
+  onerror: ((event: unknown) => void) | null;
+}
+
+/**
+ * A chart drawn by `worker` within `limit` milliseconds (review of #500, M1): its SVG and
+ * name, or a `Refusal` with the worker's code. Past the limit, or on any answer, the
+ * worker is terminated, so a chart that would run on cannot.
+ */
+export function drawnInWorker(
+  worker: ChartWorker,
+  message: { source: string; paths: string[]; capabilities: string[] },
+  limit = CHART_MILLISECONDS,
+): Promise<{ svg: string; name: string | null }> {
+  return new Promise((resolve, reject) => {
+    const finish = (outcome: () => void) => {
+      clearTimeout(timer);
+      worker.onmessage = worker.onerror = null;
+      worker.terminate();
+      outcome();
+    };
+    const timer = setTimeout(() => finish(() => reject(new Refusal('time'))), limit);
+    worker.onerror = () => finish(() => reject(new Refusal('unreadable')));
+    worker.onmessage = (event) => {
+      const answer = event.data as { ok?: unknown; svg?: unknown; name?: unknown; code?: unknown };
+      finish(() => {
+        if (answer?.ok === true && typeof answer.svg === 'string')
+          resolve({ svg: answer.svg, name: typeof answer.name === 'string' ? answer.name : null });
+        else
+          reject(
+            new Refusal(
+              CODES.includes(answer?.code as FigureCode) && answer.code !== ''
+                ? (answer.code as FigureCode)
+                : 'unreadable',
+            ),
+          );
+      });
+    };
+    worker.postMessage(message);
   });
 }

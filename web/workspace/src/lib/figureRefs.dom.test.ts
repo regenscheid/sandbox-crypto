@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import Markdown from './Markdown.svelte';
 import {
   chartPaths,
+  placeCharts,
   FIGURES_PER_TEXT,
   pinView,
   placeReferences,
@@ -201,6 +202,33 @@ describe('a chart in text', () => {
   it('names its data paths in order', () => {
     expect(chartPaths(CHART)).toEqual(['data/t.csv', 'data/u.csv']);
     expect(chartPaths('{not json')).toEqual([]);
+  });
+
+  it('takes one pin for each occurrence, and never another chart’s (review of #500, L3)', () => {
+    const twice = JSON.stringify({
+      data: { url: 'data/t.csv' },
+      layer: [{ data: { url: 'data/t.csv' } }],
+    });
+    const once = JSON.stringify({ data: { url: 'data/t.csv' } });
+    const code = (source: string, block?: string) =>
+      `<pre><code class="language-vega-lite"${block ? ` data-block="${block}"` : ''}>${source.replaceAll('<', '&lt;')}</code></pre>`;
+    const pins = [
+      data('data/t.csv', { block: 'b1', artifact: 'art-1', revision: 1 }),
+      data('data/t.csv', { block: 'b1', artifact: 'art-1', revision: 1 }),
+      data('data/t.csv', { block: 'b2', artifact: 'art-1', revision: 2 }),
+    ];
+    // In order, as chat and ledger texts have them: the second chart gets the third pin.
+    const chat = document.createElement('div');
+    chat.innerHTML = code(twice) + code(once);
+    const [first, second] = placeCharts(chat, pins);
+    expect(first!.data.map((file) => file.revision)).toEqual([1, 1]);
+    expect(second!.data.map((file) => file.revision)).toEqual([2]);
+    // In a document, by block, whatever the order of the pins.
+    const document_ = document.createElement('div');
+    document_.innerHTML = code(once, 'b2') + code(twice, 'b1');
+    const [own, other] = placeCharts(document_, pins);
+    expect(own!.data.map((file) => file.revision)).toEqual([2]);
+    expect(other!.data.map((file) => file.revision)).toEqual([1, 1]);
   });
 
   it('is drawn in the figure frame from the data its text pins, its source offered', async () => {

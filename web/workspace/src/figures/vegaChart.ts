@@ -3,25 +3,44 @@
  * A Vega-Lite chart drawn to SVG (docs/specs/figures.md, FG-15): its text checked by the
  * chart's rules (chart.ts), compiled to Vega, its expressions run by Vega's interpreter
  * (`vega-interpreter`), never by generated code, its data read only through the
- * platform's loader, at most 20,000 marks. Delimited data are read by the frame's own
- * reader, since Vega's builds each row with generated code, which the frame's CSP refuses.
- * Apart from the page, so a test draws a chart and checks that no code was generated.
+ * platform's loader, at most 20,000 marks. Delimited and JSON data are read by the frame's
+ * own readers, which bound their rows; Vega's delimited reader builds each row with
+ * generated code, which the frame's CSP refuses. A refusal Vega would swallow, from the
+ * loader, a reader or an expression's `sequence`, refuses the chart after the run (review
+ * of #500, M2). It runs in the frame's worker (chartWorker.ts), which the frame ends at
+ * the time limit. Apart from the page, so a test draws a chart and checks that no code
+ * was generated.
  */
 import * as vega from 'vega';
-import { parse, View } from 'vega';
+import { expressionFunction, parse, View } from 'vega';
 import { expressionInterpreter } from 'vega-interpreter';
 import { compile } from 'vega-lite';
 import {
+  boundedSequence,
   chartLoader,
   checkedChart,
   delimited,
+  jsonRows,
   MAX_MARKS,
   markCount,
   Refusal,
+  Refusals,
   type Fetch,
 } from './chart';
 
-type Reader = ((data: unknown, format?: { delimiter?: string }) => object[]) & {
+/** The refusals of the chart running now; a worker runs one chart at a time. */
+let running = new Refusals();
+
+/** Run `read` for Vega, noting a refusal it throws so the chart is refused after. */
+function noted<T>(read: () => T): T {
+  try {
+    return read();
+  } catch (error) {
+    throw running.note(error, 'unreadable');
+  }
+}
+
+type Reader = ((data: unknown, format?: { delimiter?: string; property?: string }) => unknown) & {
   responseType?: string;
 };
 const formats = (vega as unknown as { formats: (name: string, reader: Reader) => void }).formats;
@@ -31,10 +50,17 @@ for (const [name, delimiter] of [
   ['dsv', null],
 ] as const) {
   const reader: Reader = (data, format) =>
-    delimited(String(data), delimiter ?? format?.delimiter ?? ',');
+    noted(() => delimited(String(data), delimiter ?? format?.delimiter ?? ','));
   reader.responseType = 'text';
   formats(name, reader);
 }
+const json: Reader = (data, format) =>
+  noted(() => jsonRows(typeof data === 'string' ? data : JSON.stringify(data), format?.property));
+json.responseType = 'text';
+formats('json', json);
+expressionFunction('sequence', (...args: number[]) =>
+  noted(() => boundedSequence(args[0]!, args[1], args[2])),
+);
 
 /** A chart's SVG, before sanitizing, and its accessible name; or a `Refusal`. */
 export async function chartSvg(
@@ -43,6 +69,8 @@ export async function chartSvg(
   read: Fetch,
 ): Promise<{ svg: string; name: string | null }> {
   const spec = checkedChart(source, [...files.keys()]);
+  running = new Refusals();
+  const refusals = running;
   let runtime;
   try {
     runtime = parse(compile(spec as never).spec, undefined, { ast: true });
@@ -51,18 +79,21 @@ export async function chartSvg(
   }
   const view = new View(runtime, {
     expr: expressionInterpreter,
-    loader: chartLoader(files, read) as never,
+    loader: chartLoader(files, read, refusals) as never,
     renderer: 'none',
     hover: false,
   });
   try {
     await view.runAsync();
+    refusals.check();
     const scene = view.scenegraph() as unknown as { root: unknown };
     if (markCount(scene.root) > MAX_MARKS) throw new Refusal('size');
+    const svg = await view.toSVG();
+    refusals.check();
     const name = [spec['description'], spec['title']].find((value) => typeof value === 'string');
-    return { svg: await view.toSVG(), name: typeof name === 'string' ? name : null };
+    return { svg, name: typeof name === 'string' ? name : null };
   } catch (error) {
-    throw error instanceof Refusal ? error : new Refusal('invalid');
+    throw refusals.first ?? (error instanceof Refusal ? error : new Refusal('invalid'));
   } finally {
     view.finalize();
   }

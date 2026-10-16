@@ -132,7 +132,8 @@ export interface PlacedChart {
   drawn: boolean;
 }
 
-/** The data paths a chart's text names (`data.url`), in order; none if it is not JSON. */
+/** The data paths a chart's text names (`data.url`), each occurrence in order, as the
+ * server pins each (review of #500, L3); none if it is not JSON. */
 export function chartPaths(source: string): string[] {
   const found: string[] = [];
   const walk = (value: unknown): void => {
@@ -140,7 +141,7 @@ export function chartPaths(source: string): string[] {
     else if (value !== null && typeof value === 'object') {
       for (const [key, item] of Object.entries(value)) {
         const url = (item as { url?: unknown } | null)?.url;
-        if (key === 'data' && typeof url === 'string' && !found.includes(url)) found.push(url);
+        if (key === 'data' && typeof url === 'string') found.push(url);
         walk(item);
       }
     }
@@ -155,22 +156,35 @@ export function chartPaths(source: string): string[] {
 
 /**
  * Give each `vega-lite` fence in `root` a place of its own (FG-1, FG-15), with the pins of
- * the data paths it names, matched in order; a text's first `FIGURES_PER_TEXT` figures,
- * counting `before` already placed, are drawn at once.
+ * the data paths it names, one for each occurrence, in order: in a document, only its own
+ * block's pins, so one chart never takes another's (review of #500, L3). A text's first
+ * `FIGURES_PER_TEXT` figures, counting `before` already placed, are drawn at once.
  */
 export function placeCharts(root: HTMLElement, pins: readonly Pin[], before = 0): PlacedChart[] {
-  const byPath = new Map<string, Pin[]>();
+  const queues = new Map<string, Pin[]>();
+  const key = (block: string | null, path: string) => `${block ?? ''}\u0000${path}`;
   for (const pin of pins) {
     if (text(pin.kind) !== 'chart_data') continue;
-    byPath.set(text(pin.path), [...(byPath.get(text(pin.path)) ?? []), pin]);
+    for (const block of new Set([null, typeof pin.block === 'string' ? pin.block : null])) {
+      const at = key(block, text(pin.path));
+      queues.set(at, [...(queues.get(at) ?? []), pin]);
+    }
   }
+  const taken = new Set<Pin>();
+  const next = (block: string | null, path: string): Pin | undefined => {
+    const queue = queues.get(key(block, path)) ?? [];
+    const found = queue.find((pin) => !taken.has(pin));
+    if (found) taken.add(found);
+    return found;
+  };
   const placed: PlacedChart[] = [];
   for (const code of root.querySelectorAll('pre > code.language-vega-lite')) {
     const source = code.textContent ?? '';
+    const block = code.closest('[data-block]')?.getAttribute('data-block') ?? null;
     const data: ChartData[] = [];
     const broken: { path: string; reason: string }[] = [];
     for (const path of chartPaths(source)) {
-      const view = pinView(byPath.get(path)?.shift() ?? { path, unresolved: 'no_file' });
+      const view = pinView(next(block, path) ?? { path, unresolved: 'no_file' });
       if (view.shown === 'broken') broken.push({ path, reason: view.reason ?? '' });
       else
         data.push({ path, artifact: view.artifact, revision: view.revision, sha256: view.sha256 });
