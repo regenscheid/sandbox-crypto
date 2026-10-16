@@ -18,7 +18,7 @@
     imageSource,
     MAX_FRAME_HEIGHT,
   } from '../lib/figures';
-  import { figureStatus } from '../figures/protocol';
+  import { CODE_TEXT, figureStatus } from '../figures/protocol';
 
   let {
     projectId,
@@ -85,7 +85,8 @@
     if (event.origin !== origin) return;
     const status = figureStatus(event.data);
     if (status === null) return;
-    if (status.status === 'error') return end(status.reason || 'the figure could not be drawn');
+    // The frame's words never reach the page: only a code, in the workspace's words.
+    if (status.status === 'error') return end(CODE_TEXT[status.code || 'unreadable']);
     height = Math.min(MAX_FRAME_HEIGHT, Math.max(20, status.height));
     end(null);
   }

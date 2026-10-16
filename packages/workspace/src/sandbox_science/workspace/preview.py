@@ -83,9 +83,39 @@ STYLED: Final = web.ResponseKey("styled", bool)
 libraries write ``<style>`` elements and style attributes, and an HTML figure (FG-14)."""
 SVG: Final = "image/svg+xml"
 HTML: Final = "text/html"
-_SVG_START: Final = re.compile(
-    r"(?:\s|<\?xml[^>]*\?>|<!--.*?-->|<!DOCTYPE\s+svg[^>\[]*>)*<svg[\s>/]", re.S | re.I
-)
+_SPACE: Final = " \t\r\n"
+
+
+def svg_begins(text: str) -> bool:
+    """Whether ``text`` begins as an SVG: past whitespace, an XML declaration, comments and
+    an SVG doctype without an internal subset, ``<svg``. A linear scan: each step only
+    moves forward, by ``str.find`` (review of #492, H1: a regular expression with a lazy
+    comment inside a repeated group backtracked for hours on 40 comments, holding the
+    interpreter's lock, and froze every listener)."""
+    at, end = 0, len(text)
+    doctype = False
+    while True:
+        while at < end and text[at] in _SPACE:
+            at += 1
+        if text.startswith("<?xml", at):
+            close = text.find("?>", at + 5)
+        elif text.startswith("<!--", at):
+            close = text.find("-->", at + 4)
+        elif text[at : at + 9].upper() == "<!DOCTYPE" and not doctype:
+            close = text.find(">", at + 9)
+            declared = text[at + 9 : close] if close >= 0 else ""
+            name = declared.lstrip(_SPACE)
+            if "[" in declared or name[:3].lower() != "svg" or name[3:4] not in ("", *_SPACE):
+                return False
+            doctype = True
+        else:
+            break
+        if close < 0:
+            return False
+        at = close + (2 if text.startswith("<?", at) else 3 if text.startswith("<!--", at) else 1)
+    return text[at : at + 4].lower() == "<svg" and text[at + 4 : at + 5] in (*_SPACE, ">", "/")
+
+
 _SOF: Final = frozenset(
     {*range(0xC0, 0xC4), *range(0xC5, 0xC8), *range(0xC9, 0xCC), 0xCD, 0xCE, 0xCF}
 )
@@ -144,7 +174,7 @@ def text_problem(media_type: str, data: bytes) -> tuple[int, str] | None:
         return NOT_ITS_TYPE
     if "\x00" in text:
         return NOT_ITS_TYPE
-    if media_type == SVG and not _SVG_START.match(text.removeprefix("\ufeff")[:65536]):
+    if media_type == SVG and not svg_begins(text.removeprefix("\ufeff")):
         return NOT_ITS_TYPE
     return None
 

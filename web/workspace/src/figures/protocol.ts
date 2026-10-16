@@ -4,9 +4,9 @@
  * and the workspace's page. The frame accepts one message, from the workspace's origin
  * and its parent window only, in an exact shape: the figure's kind, a fence's text, and
  * one capability for each pinned file the figure shows or reads. It sends back only its
- * size and a status: `rendered`, or an error with its reason or the limit passed. The
- * workspace accepts only that shape, from that frame's window. Nothing here touches the
- * DOM; the frame's page is `main.ts`.
+ * size and a status: `rendered`, or an error with one of a fixed set of codes, which the
+ * workspace words itself, so no text from the frame reaches the workspace's page (review
+ * of #492, L2). The workspace accepts only that shape, from that frame's window.
  */
 
 /** The kinds the frame draws now; Vega-Lite and Mermaid come with F5 and F6. */
@@ -21,13 +21,25 @@ export interface FigureRequest {
   capabilities: string[];
 }
 
+/** Why a figure was not drawn, as the frame says it; empty when it was. */
+export const CODES = ['', 'refused', 'type', 'size', 'unreadable', 'framing'] as const;
+export type FigureCode = (typeof CODES)[number];
+
+/** Each code in the workspace's words. */
+export const CODE_TEXT: Record<Exclude<FigureCode, ''>, string> = {
+  refused: 'the preview origin refused the file, or its link expired',
+  type: 'the file is not the type it should be',
+  size: 'the figure is larger than a page draws',
+  unreadable: 'the figure could not be read or drawn',
+  framing: 'the frame was not opened by this workspace',
+};
+
 export interface FigureStatus {
   type: 'figure-status';
   status: 'rendered' | 'error';
   width: number;
   height: number;
-  /** Why it failed, or the limit it passed; empty when rendered. */
-  reason: string;
+  code: FigureCode;
 }
 
 /** A capability's one spelling: its payload and its MAC, unpadded base64url. */
@@ -69,36 +81,37 @@ export function accepted(
   return figureRequest(event.data);
 }
 
-/** A status the frame sends: its size, bounded, and the reason cut short. */
+/** A status the frame sends: its size, bounded, and why when it failed. */
 export function statusMessage(
   status: FigureStatus['status'],
   width: number,
   height: number,
-  reason = '',
+  code: FigureCode = '',
 ): FigureStatus {
-  const size = (value: number) => (Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0);
+  const size = (value: number) =>
+    Number.isFinite(value) ? Math.min(100_000, Math.max(0, Math.round(value))) : 0;
   return {
     type: 'figure-status',
     status,
     width: size(width),
     height: size(height),
-    reason: reason.slice(0, 300),
+    code: status === 'rendered' ? '' : code || 'unreadable',
   };
 }
 
 /** A message's data as a frame's status, only in the exact shape; null otherwise. */
 export function figureStatus(data: unknown): FigureStatus | null {
   if (data === null || typeof data !== 'object' || Array.isArray(data)) return null;
-  if (!exact(data, ['type', 'status', 'width', 'height', 'reason'])) return null;
+  if (!exact(data, ['type', 'status', 'width', 'height', 'code'])) return null;
   const found = data as Record<string, unknown>;
-  const { status, width, height, reason } = found;
+  const { status, width, height, code } = found;
   if (found['type'] !== 'figure-status' || (status !== 'rendered' && status !== 'error'))
     return null;
   const sized = (value: unknown) =>
     typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 100_000;
-  if (!sized(width) || !sized(height) || typeof reason !== 'string' || reason.length > 300)
-    return null;
-  return statusMessage(status, width as number, height as number, reason);
+  if (!sized(width) || !sized(height) || !CODES.includes(code as FigureCode)) return null;
+  if ((status === 'rendered') !== (code === '')) return null;
+  return statusMessage(status, width as number, height as number, code as FigureCode);
 }
 
 /** The workspace's origin from the frame's URL fragment (`#w=<origin>`); null unless it
@@ -113,18 +126,4 @@ export function frameWorkspace(hash: string): string | null {
   } catch {
     return null;
   }
-}
-
-/** Every link, `href` and event attribute removed from what a library drew, before it is
- * shown (FG-14): a figure links nowhere and runs nothing. */
-export function inert(root: Element): void {
-  for (const element of [root, ...root.querySelectorAll('*')]) {
-    for (const name of element.getAttributeNames()) {
-      const lower = name.toLowerCase();
-      if (lower.startsWith('on') || lower === 'href' || lower.endsWith(':href') || lower === 'src')
-        element.removeAttribute(name);
-    }
-  }
-  for (const link of root.querySelectorAll('a, script, foreignObject, iframe, object, embed'))
-    link.replaceWith(...(link.localName === 'a' ? link.childNodes : []));
 }

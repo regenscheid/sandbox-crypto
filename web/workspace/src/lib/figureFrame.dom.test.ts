@@ -7,7 +7,7 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import FigureFrame from '../views/FigureFrame.svelte';
-import { inert } from '../figures/protocol';
+import { sanitized } from '../figures/sanitize';
 import { Slots } from './figures';
 
 const SHA = 'ab'.repeat(32);
@@ -90,7 +90,7 @@ const status = (fields: Record<string, unknown> = {}) => ({
   status: 'rendered',
   width: 600,
   height: 320,
-  reason: '',
+  code: '',
   ...fields,
 });
 
@@ -146,7 +146,7 @@ describe('an SVG in the figure frame', () => {
     const frame = target.querySelector('iframe')!;
     window.dispatchEvent(
       new MessageEvent('message', {
-        data: status({ status: 'error', reason: HOSTILE }),
+        data: status({ status: 'error', code: 'size' }),
         origin: PREVIEW,
         source: framed,
       }),
@@ -226,14 +226,48 @@ describe('the frames a page draws at once', () => {
 });
 
 describe('what a library drew', () => {
-  it('links nowhere and runs nothing once made inert', () => {
-    const root = document.createElement('div');
-    root.innerHTML =
-      '<svg xmlns:xlink="http://www.w3.org/1999/xlink" onload="x()"><a href="https://evil.example" xlink:href="javascript:x()"><text onclick="y()">label</text></a>' +
-      '<image href="https://evil.example/i.png"/><script>x()</script><foreignObject><iframe src="https://evil.example"></iframe></foreignObject></svg>';
-    inert(root);
-    const html = root.innerHTML;
-    expect(html).toContain('label');
-    expect(html).not.toMatch(/href|onload|onclick|<script|<a\b|foreignObject|iframe|evil/i);
+  const NS = 'xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"';
+  // Review of #492, L1: each bypass the reviewer listed, and the old sanitizer's cases.
+  const BYPASSES: [string, RegExp][] = [
+    [`<svg ${NS}><set attributeName="href" to="javascript:alert(1)"/></svg>`, /<set|javascript/i],
+    [`<svg ${NS}><a id="l"><text>x</text></a><animate xlink:href="#l" attributeName="href" values="javascript:alert(1)"/></svg>`, /<animate|javascript|<a\b/i],
+    [`<svg ${NS}><animateMotion dur="1s"/><animateTransform attributeName="transform"/></svg>`, /animate/i],
+    [`<svg ${NS}><rect style="fill:url(https://evil.example/x)"/></svg>`, /evil|url\(/i],
+    [`<svg ${NS}><rect fill="url('https://evil.example/x')" style="fill:red;background:url(&quot;https://evil.example&quot;)"/></svg>`, /evil|url/i],
+    [`<svg ${NS}><style>@import url(https://evil.example/x.css);</style></svg>`, /<style|@import|evil/i],
+    [`<svg ${NS}><rect style="fill:\\75 rl(https://evil.example)"/></svg>`, /evil/i],
+    [`<svg ${NS}><text srcset="https://evil.example/a.png 1x" poster="https://evil.example/p.png" background="https://evil.example/b.png">x</text></svg>`, /srcset|poster|background|evil/i],
+    [`<svg ${NS}><foreignObject><form action="https://evil.example"><button formaction="https://evil.example">x</button></form></foreignObject></svg>`, /action|evil|<form|foreignObject/i],
+    [`<svg ${NS}><foreignObject><meta http-equiv="refresh" content="0;url=https://evil.example"/></foreignObject></svg>`, /<meta|evil|foreignObject/i],
+    [`<svg ${NS} onload="x()"><a href="https://evil.example" xlink:href="javascript:x()"><text onclick="y()">label</text></a></svg>`, /href|onload|onclick|<a\b|evil/i],
+    [`<svg ${NS}><image href="https://evil.example/i.png"/><use href="https://evil.example/s.svg#x"/><feImage href="https://evil.example"/></svg>`, /<image|<use|feImage|evil/i],
+    [`<svg ${NS}><script>x()</script><foreignObject><iframe src="https://evil.example"></iframe></foreignObject></svg>`, /script|foreignObject|iframe|evil/i],
+    [`<svg ${NS}><link rel="stylesheet" href="https://evil.example"/><base href="https://evil.example/"/></svg>`, /<link|<base|evil/i],
+    [`<svg ${NS}><!-- note --><?xml-stylesheet href="https://evil.example"?><rect/></svg>`, /note|xml-stylesheet|evil/i],
+    ['<html><body><img src="https://evil.example"/></body></html>', /img|evil|html/i],
+    ['<svg><rect/></svg>', /rect/i], // no SVG namespace: not an SVG, nothing kept
+  ]; // prettier-ignore
+
+  it.each(BYPASSES)('drops what could link, load or run: %s', (markup, gone) => {
+    const holder = document.createElement('div');
+    holder.append(sanitized(markup, document));
+    expect(holder.innerHTML).not.toMatch(gone);
+  });
+
+  it('keeps a drawing, its plain styles and its references within itself', () => {
+    const drawn = sanitized(
+      `<svg ${NS} viewBox="0 0 10 10"><defs><linearGradient id="g"><stop offset="0" stop-color="#36c"/></linearGradient></defs>` +
+        '<g aria-label="bars"><rect width="4" height="8" fill="url(#g)" style="fill:#36c"/><text x="1" y="9">label</text></g></svg>',
+      document,
+    );
+    const holder = document.createElement('div');
+    holder.append(drawn);
+    const rect = holder.querySelector('rect')!;
+    expect(rect.ownerDocument).toBe(document);
+    expect(rect.getAttribute('style')).toBe('fill:#36c');
+    expect(rect.getAttribute('fill')).toBe('url(#g)');
+    expect(holder.textContent).toContain('label');
+    expect(holder.querySelector('g')?.getAttribute('aria-label')).toBe('bars');
+    expect(holder.querySelector('stop')?.getAttribute('stop-color')).toBe('#36c');
   });
 });

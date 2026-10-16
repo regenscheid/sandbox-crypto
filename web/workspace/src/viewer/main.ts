@@ -115,11 +115,7 @@ async function show(index: number): Promise<void> {
 function go(index: number): void {
   show(index).catch(() => {
     status.textContent = `Page ${index} could not be drawn.`;
-    if (figureFor)
-      window.parent.postMessage(
-        statusMessage('error', 0, 0, 'the page could not be drawn'),
-        figureFor,
-      );
+    if (figureFor) window.parent.postMessage(statusMessage('error', 0, 0, 'unreadable'), figureFor);
   });
 }
 
@@ -186,7 +182,7 @@ async function open(): Promise<void> {
   } catch {
     status.textContent = 'The PDF could not be opened: the link may have expired. Open it again.';
     if (params.figure) {
-      const failed = statusMessage('error', 0, 0, 'the PDF could not be opened');
+      const failed = statusMessage('error', 0, 0, 'refused');
       window.parent.postMessage(failed, params.workspace);
     }
     return;

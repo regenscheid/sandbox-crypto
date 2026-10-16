@@ -10,6 +10,7 @@ Files are published through the inventory's public methods, as the harness does.
 from __future__ import annotations
 
 import struct
+import time
 import zlib
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,7 @@ from sandbox_science.workspace.preview import (
     image_problem,
     jpeg_size,
     png_size,
+    svg_begins,
     text_problem,
 )
 
@@ -204,11 +206,40 @@ async def test_an_svg_and_an_html_figure_are_served_inert(origins, files) -> Non
     assert (await viewer.get(f"/file/{fake['capability']}")).status == 415
 
 
+def test_the_svg_check_is_linear_on_hostile_prologs() -> None:
+    """Review of #492, H1: thousands of comments, unclosed ones and long doctypes are
+    checked in a time that grows with their length only."""
+    hostile = [
+        "<!---->" * 200_000 + "<svg/>",
+        "<!--" * 200_000,
+        "<!-- -" * 200_000 + "<svg/>",
+        "<?xml" + " " * 1_000_000,
+        "<!DOCTYPE svg" + " a" * 500_000,
+        " " * 2_000_000 + "<svg/>",
+    ]
+    start = time.monotonic()
+    found = [svg_begins(text) for text in hostile]
+    assert time.monotonic() - start < 2.0
+    assert found == [True, False, False, False, False, True]
+    assert text_problem("image/svg+xml", ("<!---->" * 200_000 + "<svg/>").encode()) is None
+
+
 def test_text_figures_are_utf8_and_an_svg_begins_as_one() -> None:
     assert text_problem("image/svg+xml", SVG_BYTES) is None
     assert text_problem("image/svg+xml", "\ufeff<svg>".encode()) is None
     assert text_problem("image/svg+xml", b"<!DOCTYPE svg PUBLIC 'x'><svg/>") is None
-    for bad in (HTML, b"<!DOCTYPE html><svg/>", b"\x89PNG", b"<svgx/>", b"<svg\x00/>"):
+    assert text_problem("image/svg+xml", b"<!-- a --><!DOCTYPE svg>\n<!-- b -->\n<SVG>") is None
+    for bad in (
+        HTML,
+        b"<!DOCTYPE html><svg/>",
+        b"<!DOCTYPE svg [<!ENTITY x 'y'>]><svg/>",
+        b"<!DOCTYPE svg><!DOCTYPE svg><svg/>",
+        b"<!DOCTYPE svgx><svg/>",
+        b"\x89PNG",
+        b"<svgx/>",
+        b"<svg\x00/>",
+        b"<!-- <svg/>",
+    ):
         assert text_problem("image/svg+xml", bad) is not None, bad
     assert text_problem("text/html", HTML) is None
     assert text_problem("text/html", b"\xff\xfe<html>") is not None

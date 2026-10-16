@@ -77,17 +77,30 @@ describe('the status the workspace takes', () => {
       status: 'rendered',
       width: 640,
       height: 481,
-      reason: '',
+      code: '',
     });
     expect(figureStatus(rendered)).toEqual(rendered);
-    expect(statusMessage('error', NaN, -3, 'x'.repeat(400)).reason).toHaveLength(300);
+    const failed = statusMessage('error', NaN, -3, 'size');
+    expect(failed).toEqual({
+      type: 'figure-status',
+      status: 'error',
+      width: 0,
+      height: 0,
+      code: 'size',
+    });
+    expect(figureStatus(failed)).toEqual(failed);
+    expect(statusMessage('error', 1, 1).code).toBe('unreadable');
     for (const bad of [
       { ...rendered, extra: true },
       { ...rendered, status: 'drawn' },
       { ...rendered, height: 1e9 },
       { ...rendered, height: '480' },
       { ...rendered, width: 1.5 },
-      { ...rendered, reason: '<script>'.repeat(100) },
+      // Words from the frame never reach the page: only a code from the fixed set.
+      { ...rendered, code: '<script>alert(1)</script>' },
+      { ...rendered, code: 'size' }, // a code with `rendered`
+      { ...failed, code: '' }, // an error without one
+      { ...rendered, reason: 'x' },
       { type: 'figure-status', status: 'rendered' },
     ])
       expect(figureStatus(bad)).toBeNull();
