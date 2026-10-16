@@ -11,7 +11,7 @@
  */
 import type { EntrySummary, EntryView, SourceRead, Standing, WorkRecord } from './api-types';
 import { type LinkTarget, statusText } from './ledger';
-import { documentHref, ENTRY_NAME, ledgerEntryHref } from './router';
+import { documentHref, ENTRY_NAME, ledgerEntryHref, MESSAGE_ID, messageHref } from './router';
 import { visible } from './text';
 
 export const STANDING_WORDS: Record<Standing['label'], string> = {
@@ -184,7 +184,8 @@ export function anchorView(project: string, anchor: Record<string, unknown>): An
     const range = start === null || end === null ? '' : `, characters ${start}–${end}`;
     return {
       text: visible(`${what ?? 'message'} ${message}${range}`),
-      href: null,
+      // The anchored message read whole, from the session's archive (CM-3).
+      href: MESSAGE_ID.test(message) ? messageHref(project, message) : null,
       quote: text(anchor.quote) === null ? null : visible(String(anchor.quote)),
     };
   }

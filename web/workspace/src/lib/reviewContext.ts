@@ -17,6 +17,8 @@ import {
   ENTRY_NAME,
   findingHref,
   ledgerEntryHref,
+  MESSAGE_ID,
+  messageHref,
   runHref,
   sessionHref,
   treeHref,
@@ -120,6 +122,21 @@ export interface ItemView {
   links: LinkTarget[];
 }
 
+/**
+ * The archived message an item's locator names by its place (CR-14 as amended by the
+ * context management spec), as a link to it read whole; null when it names none.
+ */
+export function archivedLink(project: string, locator: Evidence['locator']): LinkTarget | null {
+  const place = record(locator['archive']);
+  const message = named(place.id);
+  if (message === null || !MESSAGE_ID.test(message)) return null;
+  const position = count(place.position);
+  return {
+    text: `the archived message${position === null ? '' : `, position ${position}`}`,
+    href: messageHref(project, message),
+  };
+}
+
 /** An artifact item's path, or else its artifact and revision. */
 function artifactText(locator: Evidence['locator']): string {
   const path = named(locator['path']);
@@ -168,6 +185,14 @@ export function describeItem(
       links: session ? [{ text: 'the session', href: sessionHref(project, session) }] : [],
     };
   }
+  const archived = archivedLink(project, locator);
+  if (item.kind === 'transcript' && archived !== null) {
+    return {
+      mark: "A message of the reviewed run, as the session's archive keeps it:",
+      text: '',
+      links: [archived],
+    };
+  }
   const ran = named(locator['delegation']);
   if ((item.kind === 'execution' || item.kind === 'action') && ran !== null) {
     const what =
@@ -180,7 +205,10 @@ export function describeItem(
           ? `An execution of delegation ${visible(ran)}'s run, chosen for its outcome, as context:`
           : `What delegation ${visible(ran)}'s run did, as context:`,
       text: visible(what),
-      links: session ? [{ text: 'the run tree', href: treeHref(project, session) }] : [],
+      links: [
+        ...(session ? [{ text: 'the run tree', href: treeHref(project, session) }] : []),
+        ...(archived === null ? [] : [{ ...archived, text: 'the tool result it came back as' }]),
+      ],
     };
   }
   const output = record(locator['output_of']);

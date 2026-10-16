@@ -53,6 +53,7 @@ export type Route =
     }
   | { view: 'memory'; project: string }
   | { view: 'skills'; project: string }
+  | { view: 'message'; project: string; message: string }
   | { view: 'ledger'; project: string }
   | { view: 'issues'; project: string }
   | { view: 'entry'; project: string; entry: string; revision: number | null }
@@ -89,6 +90,10 @@ export function parseRoute(hash: string): Route {
   if (parts.length === 2) return { view: 'project', project };
   if (parts.length === 3 && parts[2] === 'memory') return { view: 'memory', project };
   if (parts.length === 3 && parts[2] === 'skills') return { view: 'skills', project };
+  if (parts.length === 4 && parts[2] === 'messages') {
+    const message = parts[3]!;
+    return MESSAGE_ID.test(message) ? { view: 'message', project, message } : { view: 'missing' };
+  }
   if (parts[2] === 'ledger') return ledgerRoute(project, parts.slice(3));
   if (parts[2] === 'files' && parts.length === 5) {
     const [session, run] = [decoded(parts[3]!), decoded(parts[4]!)];
@@ -224,6 +229,14 @@ export function pdfHref(
 ) {
   const base = `${projectHref(project)}/artifacts/${encodeURIComponent(artifact)}/revisions/${revision}/${sha256}`;
   return page === undefined ? base : `${base}/pages/${page}`;
+}
+
+/** An archived message's ID: `msg-` and 16 hexadecimal digits (CM-3). */
+export const MESSAGE_ID = /^msg-[0-9a-f]{16}$/;
+
+/** One archived message of the project, read whole. */
+export function messageHref(project: string, message: string): string {
+  return `${projectHref(project)}/messages/${encodeURIComponent(message)}`;
 }
 
 export function memoryHref(project: string): string {
