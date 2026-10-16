@@ -79,9 +79,11 @@ UNINDEXED: Final = frozenset({SEARCH, READ})
 they would answer each search with the searches made before it."""
 
 HEADER: Final = re.compile(r"\[(msg-[0-9a-f]{16}) · [^\]\n]*\]\n")
-_LOOKALIKE: Final = re.compile(r"(?:\W|_)*?\[\s*msg\s*-", re.IGNORECASE)
-"""A header as a reader may take it: after any characters that are not letters or digits,
-``[``, ``msg`` and a dash, with any spaces between them."""
+_LOOKALIKE: Final = re.compile(r"\[\s*msg\s*-", re.IGNORECASE)
+"""A header as a reader may take it: ``[``, ``msg`` and a dash, with any spaces between
+them."""
+_FIRST: Final = re.compile(r"[^\W_]")
+"""A line's first letter or digit."""
 _UNSAFE: Final = re.compile(r"[^A-Za-z0-9_.:-]")
 _PLACE: Final = ("project", "message_id", "session", "position", "run", "parent", "created")
 _FIELDS: Final = (
@@ -121,20 +123,35 @@ def escape(text: str) -> str:
     only the platform's headers read as headers (CM-4a). A line looks like one when, read
     as compatibility characters (NFKC: a fullwidth bracket is a bracket) without invisible
     formatting characters, and with any dash taken for a hyphen, it begins with ``[msg-``
-    after punctuation, spaces or quote markers, in any case and with any spaces inside.
-    Every line break Python knows ends a line."""
+    after punctuation, spaces or quote markers, however many, in any case and with any
+    spaces inside. Every line break Python knows ends a line. Known limits: a combining
+    mark on a letter of ``msg``, or a letter from another script that looks like one,
+    such as a Cyrillic em, is not caught."""
     return "".join(
         f"\\{line}" if _header_like(line) else line for line in text.splitlines(keepends=True)
     )
 
 
 def _header_like(line: str) -> bool:
-    shown = "".join(
+    # What comes before the first letter or digit, however long, counts only from its
+    # last bracket on, so no run of spaces or punctuation can push a header out of view.
+    first = _FIRST.search(line)
+    start = len(line) if first is None else first.start()
+    lead = _shown(line[:start])
+    bracket = lead.rfind("[")
+    if bracket < 0:
+        return False
+    return _LOOKALIKE.match(lead[bracket:] + _shown(line[start : start + 256])) is not None
+
+
+def _shown(text: str) -> str:
+    """``text`` as a reader sees it: compatibility characters (NFKC), without invisible
+    formatting characters, and any dash a hyphen."""
+    return "".join(
         "-" if char == "\u2212" or unicodedata.category(char) == "Pd" else char
-        for char in unicodedata.normalize("NFKC", line[:256])
+        for char in unicodedata.normalize("NFKC", text)
         if unicodedata.category(char) != "Cf"
     )
-    return _LOOKALIKE.match(shown) is not None
 
 
 def body(content: str) -> str:
