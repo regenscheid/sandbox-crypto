@@ -656,6 +656,13 @@ def test_the_marker_kinds_cm_18_names(archive: Archive) -> None:
     assert "evidence on C-3 is a finite test, scoped to: n below 2^20" in texts
     assert "evidence on C-3 (proof) is scoped to: prime fields only" in texts
     assert f"check dlg-1 of C-3 ended inconclusive (in {rows[4].message_id})" in texts
+    # What decides whether each is current (CM-21a): IDs, handles, revisions, never text.
+    fields = [{k: v for k, v in m.items() if k not in ("text", "subject")} for m in record.markers]
+    assert {"kind": "read", "source": ["pdf", "a" * 64], "at": rows[1].message_id} in fields
+    at = rows[2].message_id  # the change's result
+    assert {"kind": "caveat", "evidence": ["finite_test", "n below 2^20"], "entry": "C-3",
+            "at": at, "revision": 2} in fields  # fmt: skip
+    assert {"kind": "caveat", "check": "dlg-1", "at": rows[4].message_id, "entry": "C-3"} in fields
 
 
 def test_a_cut_skeleton_keeps_the_users_lines_and_ledger_changes() -> None:
@@ -782,8 +789,14 @@ async def test_thirty_folds_in_the_steady_state_never_trip_the_breaker(archive: 
             assert sum(len(dump(row.chat())) for row in taken) / 4 >= 25_000
             assert fold["freed"] > 0
     assert (run.made.weak, run.made.stopped) == (0, None)
-    assert all(fold["freed"] > 0.1 * 126_000 for fold in run.made.folds)
-    assert run.made.view.folds_left_out  # the region filled: the oldest left out
+    folds = [fold for fold in run.made.folds if "parts" not in fold]
+    assert all(fold["freed"] > 0.1 * 126_000 for fold in folds)
+    # The first-level records reached 0.4 of a chunk and were merged by code, there being
+    # no model, so the region keeps within its budget and leaves none out (CM-21, CM-21c).
+    assert not run.made.view.folds_left_out
+    merges = [fold for fold in run.made.folds if "parts" in fold]
+    assert [(fold["level"], fold["state"]) for fold in merges] == [(2, "code_merge")]
+    assert next(record.level for _, record in run.made.view.records) == 2
     assert run.made.view.folded is not None
 
 

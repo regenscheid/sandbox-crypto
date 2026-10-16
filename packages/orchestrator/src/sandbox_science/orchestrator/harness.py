@@ -65,12 +65,16 @@ from .history import (
     Archive,
     Folder,
     HistoryTool,
+    Judge,
+    Register,
     RunArchive,
     View,
     ViewMeter,
     ceiling,
     geometry,
+    ledger_entries,
     recorded_words,
+    register_reads,
     session_view,
     settle,
 )
@@ -679,6 +683,11 @@ class Harness:
         top = await self._ceiling()
         start = geometry(top, 0, settings.chunk)  # the system message is not known yet
         per_token = chars_per_token(calls)
+        ledger = Ledger(stores.documents)
+        # Which folded markers are retired, by the ledger and the read register (CM-21a).
+        judge = Judge(
+            ledger_entries(ledger, project), register_reads(Register(archive.control), project)
+        )
         view = await threaded(
             session_view,
             archive,
@@ -687,6 +696,7 @@ class Harness:
             per_token=per_token,
             runs=runs,
             earlier=earlier,
+            judge=judge,
         )
         kernels = None
         if view.cells:  # whether the kernels its cells ran in still run (CM-29c)
@@ -698,7 +708,6 @@ class Harness:
         found = await threaded(digest, int(start.digest * per_token))
         view = dataclasses.replace(view, digest=found)
         view = await settle(view, archive, context, run=name, kernels=kernels, clock=self.clock)
-        ledger = Ledger(stores.documents)
 
         def exists(handle: str) -> bool:
             try:
@@ -722,6 +731,7 @@ class Harness:
             digest=digest,
             model=self._narrator(),
             exists=exists,
+            judge=judge,
             clock=self.clock,
         )
         # The ceiling a context error capped, carried to later runs: this service's, or

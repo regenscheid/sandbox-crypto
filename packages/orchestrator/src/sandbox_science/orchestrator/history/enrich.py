@@ -33,6 +33,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Final, cast
 
+from sandbox_science.orchestrator.aio import threaded
 from sandbox_science.orchestrator.ledger.provenance import numbers
 from sandbox_science.orchestrator.model import (
     ChatModel,
@@ -42,7 +43,7 @@ from sandbox_science.orchestrator.model import (
     ModelTurn,
     ToolSpec,
 )
-from sandbox_science.orchestrator.notices import FOLD_ENRICH
+from sandbox_science.orchestrator.notices import FOLD_ENRICH, Framing
 from sandbox_science.orchestrator.projects import ModelUsage
 
 from .archive import Archived, escape
@@ -84,16 +85,20 @@ async def enrich(
     share: int,
     exists: Callable[[str], bool] | None = None,
     spent: Callable[[ModelUsage], None] | None = None,
+    framing: Framing = FOLD_ENRICH,
+    shown: str | None = None,
 ) -> Enriched:
     """``record``, the span ``rows``'s as code built it, enriched by ``model`` after the
     run's ``view``, within ``share`` characters without its markers (CM-19, CM-20);
     ``exists`` says whether a ledger handle exists, and ``spent`` takes each call's usage
-    as it returns, so that a fold cancelled later still counts its calls."""
+    as it returns, so that a fold cancelled later still counts its calls. An overview's
+    update has its own ``framing`` and is ``shown`` its parts' narratives (CM-21)."""
     limits = (
         f"The narrative takes at most {share // 4:,} characters, and the keys at most "
         f"{share // 10:,} in all. The span:\n"
     )
-    asked = {"role": "user", "content": FOLD_ENRICH.text + limits + record.text("(this span)")}
+    content = framing.text + limits + (shown or record.text("(this span)"))
+    asked = {"role": "user", "content": content}
     calls: list[ModelUsage] = []
     failed: list[str] = []
     caller = model
@@ -114,7 +119,10 @@ async def enrich(
             if isinstance(model, GatewayModel):
                 caller = model.choosing("none")
             continue
-        found, why = check(turn.text or "", record, rows, share=share, exists=exists)
+        # A span, an overview's above all, can be millions of characters: off the loop.
+        found, why = await threaded(
+            check, turn.text or "", record, rows, share=share, exists=exists
+        )
         if found is not None:
             return Enriched(found, tuple(calls))
         failed.append(why)

@@ -31,6 +31,8 @@ LABELS: Final = (
     "--- run ",
     "Outline:",
     "Markers:",
+    "Parts:",
+    "Retired markers",
     "Narrative",
     "Search keys:",
     "Session record, written by the platform",
@@ -62,7 +64,11 @@ class FoldRecord:
     stubs: tuple[str, ...] = ()
     narrative: str | None = None
     state: str = "skeleton_only"
-    """``skeleton_only``, or ``applied`` for a fold with its narrative."""
+    """``skeleton_only``, ``applied`` for a fold or overview with its narrative, or
+    ``code_merge`` for an overview code merged without a model call (CM-21c)."""
+    parts: tuple[str, ...] = ()
+    """An overview's parts, the records it merged, oldest first, by their archive IDs
+    (CM-21); none for a first-level fold."""
 
     def stored(self) -> bytes:
         return json.dumps(asdict(self), ensure_ascii=False, separators=(",", ":")).encode()
@@ -86,26 +92,44 @@ class FoldRecord:
             stubs=tuple(data["stubs"]),
             narrative=data.get("narrative"),
             state=str(data.get("state") or "skeleton_only"),
+            parts=tuple(str(part) for part in data.get("parts") or ()),
         )
 
-    def text(self, fold: str, *, whole: bool = False) -> str:
+    def text(
+        self, fold: str, *, whole: bool = False, retired: Mapping[int, str] | None = None
+    ) -> str:
         """The record as text: as the view shows it, or ``whole``, as the archive keeps
-        it, with the IDs of each tool's failed calls listed."""
+        it, with the IDs of each tool's failed calls listed. ``retired`` names the
+        markers retired now, by their index, each with why (CM-21a): those are shown
+        as an index line only."""
         (start, first), (end, last) = self.first, self.last
         lines = [
             f"--- fold {fold} · level {self.level} · positions {start} to {end} "
             f"({first} to {last}) · runs {', '.join(self.runs)} · "
             f"{self.dates[0]} to {self.dates[1]} ---",
-            "Outline:",
-            *(guarded(line) for line in self.skeleton),
         ]
-        if self.markers:
+        if self.parts:
+            lines.append(
+                f"Parts: {', '.join(self.parts)}; history_read returns each whole, with "
+                "its outline."
+            )
+        if self.skeleton or not self.parts:
+            lines += ["Outline:", *(guarded(line) for line in self.skeleton)]
+        gone = {i: why for i, why in (retired or {}).items() if 0 <= i < len(self.markers)}
+        current = [m for i, m in enumerate(self.markers) if i not in gone]
+        if current:
             lines.append("Markers:")
-            lines += [f"- {marker_line(marker, fold)}" for marker in self.markers]
+            lines += [f"- {marker_line(marker, fold)}" for marker in current]
+        if gone:
+            lines.append("Retired markers, kept as an index; history_read returns each:")
+            lines += [f"- {retired_line(self.markers[i], why)}" for i, why in sorted(gone.items())]
         if self.narrative:
             # The run's model wrote it: every line quoted, so none reads as the record's.
             lines.append(
-                "Narrative, written by the run's model, its values checked by code; quoted:"
+                "Narrative, its parts' as the run's model wrote them, each cut by code to its "
+                "head; quoted:"
+                if self.state == "code_merge"
+                else "Narrative, written by the run's model, its values checked by code; quoted:"
             )
             lines += [f"> {line}" for line in self.narrative.splitlines()]
         else:
@@ -135,6 +159,14 @@ def marker_line(marker: Mapping[str, Any], fold: str) -> str:
             f"or timed out; their IDs are in fold {fold}"
         )
     return f"{flat(str(marker.get('kind')))}: {flat(str(marker.get('text')))}"
+
+
+def retired_line(marker: Mapping[str, Any], why: str) -> str:
+    """A retired marker as its index line: its kind and subject, what retired it, and
+    the message it came from (CM-21a), on one line."""
+    kind, subject = flat(str(marker.get("kind"))), flat(str(marker.get("subject")))
+    came = f" (from {flat(str(marker['at']))})" if marker.get("at") else ""
+    return f"{kind}: {subject} → retired: {flat(why)}{came}"
 
 
 def flat(text: str) -> str:

@@ -26,8 +26,11 @@ archive have no messages in it: their tasks and the user's chat messages they de
 as their saved records keep them, come first among those words (RS-10's earlier
 conversation, as far as the user's words go).
 
-Until overviews are built (step f2), a fold region over its budget leaves out its
-oldest records, which the state block names and ``history_read`` returns whole.
+The region shows each record from its stored form, a record an overview merged only as
+that overview (CM-21), and each record's markers current, or retired as an index line,
+as code decides at each rebuild (``markers``, CM-21a). Until markers spill (step f2b), a
+region still over its budget after merges leaves out its oldest records, which the state
+block names and ``history_read`` returns whole.
 ``ViewMeter`` measures the view before each call and keeps, in the run's record, its
 parts at the start, its kernel lines, and each call's estimate beside what the gateway
 reported.
@@ -54,7 +57,8 @@ from sandbox_science.orchestrator.worker_client import dump
 from .archive import PAGE, Archive, Archived, Entry, escape
 from .geometry import Geometry
 from .log import PATIENCE, patiently
-from .record import FoldRecord, marker_line, stub
+from .markers import Judge
+from .record import FoldRecord, marker_line, retired_line, stub
 
 if TYPE_CHECKING:
     from sandbox_science.orchestrator.projects import ProjectStore
@@ -105,9 +109,17 @@ class View:
     folds: tuple[str, ...] = ()
     """The fold records the region shows, oldest first."""
     folds_left_out: tuple[str, ...] = ()
-    """The oldest fold records, left out of a region over its budget until overviews."""
+    """The oldest fold records, left out of a region over its budget until spills."""
     markers_left_out: tuple[str, ...] = ()
-    """Their marker lines, which the state block keeps until overviews (CM-21b)."""
+    """Their marker lines, which the state block keeps until spills (CM-21b)."""
+    records: tuple[tuple[str, FoldRecord], ...] = ()
+    """The records the region would show whole, those left out among them, oldest
+    first: none an overview merged."""
+    retired: Mapping[str, Mapping[int, str]] = field(default_factory=dict[str, Mapping[int, str]])
+    """The markers each record shown renders as retired, by their index, with why
+    (CM-21a)."""
+    wanted: int = 0
+    """The characters the region would take with every record in ``records``."""
     folded: tuple[int, int] | None = None
     """The first and last positions the folds cover."""
     stubs: tuple[str, ...] = ()
@@ -148,6 +160,7 @@ class View:
             "folded": list(self.folded) if self.folded else None,
             "folds": list(self.folds),
             "folds_left_out": list(self.folds_left_out),
+            "retired": {fold: sorted(found) for fold, found in self.retired.items()},
             "stubs": list(self.stubs),
             "unarchived_runs": self.unarchived,
             "recorded_messages": self.recorded,
@@ -170,19 +183,29 @@ def session_view(
     per_token: float = DEFAULT_CHARS,
     runs: Sequence[str] = (),
     earlier: Earlier | None = None,
+    judge: Judge | None = None,
 ) -> View:
     """The session's view under ``geometry``; ``runs`` are the session's main runs with
     saved records, which tells those from before the archive, and ``earlier`` reads the
-    user's messages from their records. It changes nothing: ``settle`` archives its
-    state block and adds its kernel lines."""
+    user's messages from their records; ``judge`` decides which markers are retired, by
+    the ledger and the read register when it has them. It changes nothing: ``settle``
+    archives its state block and adds its kernel lines."""
     rows = _rows(archive, context)
-    records = [(row, found) for row in rows if (found := FoldRecord.of(row)) is not None]
-    end = max((found.last[0] for _, found in records), default=0)
+    every = [(row, found) for row in rows if (found := FoldRecord.of(row)) is not None]
+    merged = {part for _, found in every for part in found.parts}
+    # By the span each covers: an overview is archived after the records it merged.
+    records = sorted(
+        ((row, found) for row, found in every if row.message_id not in merged),
+        key=lambda pair: pair[1].first[0],
+    )
+    gone = (judge or Judge()).retired([(row.message_id, found) for row, found in every])
+    retired = {row.message_id: gone[row.message_id] for row, _ in records if row.message_id in gone}
+    end = max((found.last[0] for _, found in every), default=0)
     folded = [row for row in rows if row.position <= end and row.entry.kind != "fold"]
     raw = [row for row in rows if row.position > end and row.entry.kind != "fold"]
-    stubs = {at for _, found in records for at in found.stubs}
+    stubs = {at for _, found in every for at in found.stubs}
     units = [_stubbed(unit, stubs) for unit in _units(raw)]
-    region, shown_folds, left = _region(records, int(geometry.region * per_token))
+    region, shown_folds, left, wanted = _region(records, int(geometry.region * per_token), retired)
     kept = [part for unit in units for part in unit]
     archived = {row.run for row in rows}
     before = [run for run in runs if run not in archived]
@@ -210,7 +233,12 @@ def session_view(
         region=region,
         folds=shown_folds,
         folds_left_out=left,
-        markers_left_out=_left_markers(records, left, int(geometry.region * per_token) // 4),
+        markers_left_out=_left_markers(
+            records, left, int(geometry.region * per_token) // 4, retired
+        ),
+        records=tuple((row.message_id, found) for row, found in records),
+        retired=retired,
+        wanted=wanted,
         folded=(folded[0].position, end) if folded else None,
         stubs=tuple(p.row.message_id for p in kept if p.kind == "stub" and p.row),
         words=words if folded or before or left else None,
@@ -224,36 +252,56 @@ def session_view(
 
 
 def _region(
-    records: Sequence[tuple[Archived, FoldRecord]], budget: int
-) -> tuple[Part | None, tuple[str, ...], tuple[str, ...]]:
+    records: Sequence[tuple[Archived, FoldRecord]],
+    budget: int,
+    retired: Mapping[str, Mapping[int, str]],
+) -> tuple[Part | None, tuple[str, ...], tuple[str, ...], int]:
     """The fold region within ``budget`` characters, the records it shows and those it
-    leaves out: the oldest, until overviews are built, but never the newest."""
-    texts = [(row.message_id, escape(found.text(row.message_id))) for row, found in records]
+    leaves out: the oldest, until spills are built, but never the newest; and the
+    characters it would take whole, which tells the folds to merge (CM-21)."""
+    texts = [
+        (row.message_id, escape(found.text(row.message_id, retired=retired.get(row.message_id))))
+        for row, found in records
+    ]
+    wanted = sum(len(t) + 2 for _, t in texts)
     start = 0
     while start < len(texts) - 1 and sum(len(t) + 2 for _, t in texts[start:]) > budget:
         start += 1
     if not texts:
-        return None, (), ()
+        return None, (), (), 0
     content = FOLD_REGION.text + "\n\n".join(text for _, text in texts[start:])
     region = Part("fold_region", {"role": "user", "content": content})
-    return region, tuple(at for at, _ in texts[start:]), tuple(at for at, _ in texts[:start])
+    shown = tuple(at for at, _ in texts[start:])
+    return region, shown, tuple(at for at, _ in texts[:start]), wanted
 
 
 def _left_markers(
-    records: Sequence[tuple[Archived, FoldRecord]], left: Sequence[str], budget: int
+    records: Sequence[tuple[Archived, FoldRecord]],
+    left: Sequence[str],
+    budget: int,
+    retired: Mapping[str, Mapping[int, str]] | None = None,
 ) -> tuple[str, ...]:
     """The marker lines of the records ``left`` out, within ``budget`` characters, a
-    quarter of the region's: failure aggregates give way first, then the oldest lines;
-    the last line says how many gave way and how to read them whole."""
-    found = [
-        (marker.get("kind") == "failures", marker_line(marker, row.message_id), row.message_id)
-        for row, record in records
-        if row.message_id in left
-        for marker in record.markers
-    ]
+    quarter of the region's, retired ones as their index lines: failure aggregates give
+    way first, then retired markers, then caveats and reads, and decision lines last,
+    the oldest first in each (CM-21b); the last line says how many gave way and how to
+    read them whole."""
+    found: list[tuple[int, str, str]] = []
+    for row, record in records:
+        if row.message_id not in left:
+            continue
+        gone_here = (retired or {}).get(row.message_id, {})
+        for index, marker in enumerate(record.markers):
+            if index in gone_here:
+                line, rank = retired_line(marker, gone_here[index]), 1
+            else:
+                line = marker_line(marker, row.message_id)
+                kind = marker.get("kind")
+                rank = 0 if kind == "failures" else 3 if kind == "decision" else 2
+            found.append((rank, line, row.message_id))
     total = sum(len(line) + 3 for _, line, _ in found)
     gone: set[int] = set()
-    for index in sorted(range(len(found)), key=lambda i: (not found[i][0], i)):
+    for index in sorted(range(len(found)), key=lambda i: (found[i][0], i)):
         if total <= budget:
             break
         gone.add(index)
@@ -335,7 +383,7 @@ async def settle(
             folded = f"Folded: the messages at positions {first} to {last}. "
         if view.folds_left_out:
             folded += (
-                f"Left out until overviews are built: the fold records "
+                f"Left out of the fold region, over its budget: the fold records "
                 f"{', '.join(view.folds_left_out)}, which history_read returns whole"
             )
             folded += (
@@ -415,6 +463,16 @@ class ViewMeter(TurnHook):
 
     def summary(self) -> object | None:
         return {**self.view.summary(), "calls": self.calls}
+
+
+def spanned(archive: Archive, context: ExecutionContext, first: int, last: int) -> list[Archived]:
+    """The session's main runs' messages at positions ``first`` to ``last``, as a view
+    holds them: neither fold records nor state blocks."""
+    return [
+        row
+        for row in _rows(archive, context)
+        if first <= row.position <= last and row.entry.kind != "fold"
+    ]
 
 
 def _rows(archive: Archive, context: ExecutionContext) -> list[Archived]:
