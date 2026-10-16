@@ -27,9 +27,13 @@ control arm of question 4), every fold is skeleton-only and applied at once.
 When the session's last main run was on another model whose ceiling was larger, the
 run refits the view to its own geometry before its first call (CM-31): it folds, then
 merges, until the view is under the trigger, each fold's and merge's narrative written
-by the earlier model, which waits for it, or skeleton-only and by code when that model
-is not available. A view still over the wall then stops the run (``irreducible``): the
-switch is refused.
+by the earlier model, which waits for it, at most ``WAIT`` in all, then skeleton-only
+and by code, as when that model is not available; each step is a ``fold`` event. A view
+still over the wall then stops the run: the switch is refused, ``research_state`` when
+the session's decisions are what does not fit, ``irreducible`` otherwise; the record
+keeps the refusal, so the next run refits from the earlier model again. A model changed
+behind the same alias is not seen as a switch: the view catches up by the ordinary
+folds at the next safe points.
 
 Records merge into overviews (CM-21, ``overview``): the first-level records, once three
 or more total 0.4 of a chunk, and the region's two oldest while it would pass its
@@ -178,6 +182,8 @@ class Folder(TurnHook):
         """A consolidation run's: every current decision in one line, never a stop for
         them (CM-45)."""
         self.switched, self.former = switched, former
+        self.deadline: float | None = None
+        """When the refit stops waiting for the earlier model's calls (CM-31)."""
         self.refitted: Json | None = None
         """The refit on a switch of model, as the run's record keeps it (CM-31)."""
         self.clock, self.patience = clock, patience
@@ -407,10 +413,13 @@ class Folder(TurnHook):
             await self._settled(transcript, running, before)
 
     async def _settled(self, transcript: Transcript, running: _Running, before: int) -> None:
-        """``running`` waited for, then applied."""
+        """``running`` waited for, at most until the refit's deadline, then applied: as
+        archived if it was ready, or as code built it."""
         if running.task is not None:
+            left = None if self.deadline is None else self.deadline - self.clock.monotonic()
             with contextlib.suppress(Exception):
-                await running.task
+                await asyncio.wait_for(asyncio.shield(running.task), max(0.0, left or 0.0))
+            running.task.cancel()
         await self._finish(transcript, before)
 
     async def _switch(self, transcript: Transcript) -> bool:
@@ -427,32 +436,50 @@ class Folder(TurnHook):
             return True
         before = size = self.tokens(transcript)
         await self._event({"state": "refit", "from": alias, "ceiling": ceiling, "tokens": size})
-        while size > self.geometry.trigger:
-            if self.former is not None:
-                await self._begin(transcript, self.former, now=True)
+        self.deadline = self.clock.monotonic() + self.wait
+        while size > self.geometry.trigger and self.view.stop is None:
+            if self._former() is not None:
+                await self._begin(transcript, self._former(), now=True)
             else:
                 await self._fold(transcript, size)
-            if (after := self.tokens(transcript)) >= size:
+            after = self.tokens(transcript)
+            await self._event({"state": "refit_step", "step": "fold", "tokens": after})
+            if after >= size:
                 break
             size = after
-        while due := self._due(transcript)[0]:
+        while self.view.stop is None and (due := self._due(transcript)[0]):
             count = len(self.view.records)
-            if self.former is not None:
-                await self._begin_merge(transcript, due, self.former, now=True)
+            if self._former() is not None:
+                await self._begin_merge(transcript, due, self._former(), now=True)
             else:
                 await self._merge(transcript, size)
+            size = self.tokens(transcript)
+            await self._event({"state": "refit_step", "step": "merge", "tokens": size})
             if len(self.view.records) >= count:
                 break
+        self.deadline = None
         size = self.tokens(transcript)
         self.refitted = {"from": alias, "ceiling": ceiling, "before": before, "after": size}
-        if size <= self.geometry.wall:
+        if size <= self.geometry.wall and self.view.stop is None:
             return True
+        self.refitted["refused"] = True  # the next run refits from the earlier model again
+        refused = (
+            f"the switch from {alias}, whose ceiling was {ceiling:,} tokens, to this model's "
+            f"{self.geometry.ceiling:,} is refused: "
+        )
+        if self.view.stop is not None:  # the session's decisions are what does not fit
+            return self._stop("research_state", refused + self.view.stop + CONSOLIDATE)
         return self._stop(
             "irreducible",
-            f"the switch from {alias}, whose ceiling was {ceiling:,} tokens, to this model's "
-            f"{self.geometry.ceiling:,} is refused: refitted, the view is still {size:,} "
-            f"tokens, past the wall of {self.geometry.wall:,}",
+            refused + f"refitted, the view is still {size:,} tokens, past the wall of "
+            f"{self.geometry.wall:,}",
         )
+
+    def _former(self) -> ChatModel | None:
+        """The earlier model while the refit has time for its calls; none after."""
+        if self.deadline is not None and self.clock.monotonic() >= self.deadline:
+            return None
+        return self.former
 
     async def _enrich(
         self,

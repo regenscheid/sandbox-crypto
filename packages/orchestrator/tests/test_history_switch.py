@@ -6,13 +6,21 @@ the scripted gateway; no real gateway is called."""
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
-from sandbox_science.orchestrator.history import Archive, Entry, Folder, geometry, session_view
+from sandbox_science.orchestrator.history import (
+    Archive,
+    Entry,
+    Folder,
+    FoldRecord,
+    geometry,
+    session_view,
+)
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.projects import ProjectStore
 
@@ -105,3 +113,73 @@ async def test_the_harness_names_the_earlier_model_of_the_session(harness: Harne
     assert (refit["from"], refit["ceiling"]) == ("delegated", 400_000)
     again = await harness.run("run-3", [Reply("Third.")], options=ENRICHED)
     assert "refit" not in folds(again)
+
+
+# #485's review.
+
+
+class Silent:
+    """A model that never answers."""
+
+    async def complete(self, messages: Any, tools: Any) -> Any:
+        await asyncio.sleep(3600)
+
+
+async def test_the_refit_waits_for_the_earlier_model_at_most_its_wait(archive: Archive) -> None:
+    """The refit waits for the earlier model's calls at most ``WAIT`` in all, then folds
+    skeleton-only; each step is a ``fold`` event."""
+    for n in range(60):
+        worked(archive, "earlier", n, 4_000)
+    made, transcript, events = switching(archive, 60_000, Silent())
+    made.wait = 0.2
+    assert await asyncio.wait_for(made.before_call(transcript), 30)
+    assert made.geometry is not None
+    assert made.tokens(transcript) <= made.geometry.trigger
+    assert {fold["state"] for fold in made.folds} <= {"skeleton_only", "code_merge"}
+    steps = [event for event in events if event["state"] == "refit_step"]
+    assert steps
+    assert all(isinstance(step["tokens"], int) for step in steps)
+
+
+async def test_a_switch_refused_for_the_decisions_stops_with_research_state(
+    archive: Archive,
+) -> None:
+    decisions = [
+        {"kind": "decision", "subject": f"D-{n}", "text": f"D-{n} → rejected: " + "why " * 60,
+         "status": "rejected", "entry": f"D-{n}"}
+        for n in range(1_000)
+    ]  # fmt: skip
+    row = archive.append(PROJECT, SESSION, "earlier", Entry("user", "user", "Decisions."))
+    record = FoldRecord(level=1, first=(row.position, row.message_id),
+                        last=(row.position, row.message_id), runs=("earlier",),
+                        dates=(row.created, row.created), skeleton=(),
+                        markers=tuple(decisions), keys=())  # fmt: skip
+    entry = Entry("user", "fold", record.text("this record", whole=True), source="folds",
+                  native=record.stored(), native_format="sandbox-fold-1")  # fmt: skip
+    archive.append(PROJECT, SESSION, "folder", entry)
+    made, transcript, _ = switching(archive, 60_000, None)
+    assert not await made.before_call(transcript)
+    assert made.stopped == "research_state"
+    assert made.detail is not None
+    assert made.detail.startswith("the switch from larger, whose ceiling was 400,000 tokens")
+    assert cast(Json, made.summary())["refit"]["refused"] is True
+
+
+async def test_a_refused_switch_is_named_again_by_the_next_run(harness: Harness) -> None:
+    """A run that refused a switch keeps it in its record, so the next run on the new
+    alias refits from the earlier model again and names the switch when it stops."""
+    await harness.run("run-1", [], options=["--context-ceiling", "400000", "--model",
+                                            "delegated"], delegated=[Reply("First.")])  # fmt: skip
+    store = ProjectStore(harness.state)
+    try:
+        Archive(store.control).append(
+            PROJECT, SESSION, "seed", Entry("user", "user", "x" * 500_000)
+        )
+    finally:
+        store.close()
+    for run in ("run-2", "run-3"):
+        record = await harness.run(run, [], status=3, options=ENRICHED)
+        found = folds(record)
+        assert (found["refit"]["from"], found["refit"]["refused"]) == ("delegated", True)
+        assert found["stopped"] == "irreducible"
+        assert str(found["detail"]).startswith("the switch from delegated")

@@ -24,7 +24,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final, Protocol, cast
+from typing import Any, Final, Protocol, cast
 
 from pydantic import JsonValue, TypeAdapter, ValidationError
 
@@ -1295,7 +1295,9 @@ def _switched(
     projects: ProjectStore, project: str, session: str, alias: str
 ) -> tuple[str, int] | None:
     """The alias and the ceiling of the session's last main run that folded, when it was
-    on another alias than ``alias``, as its record keeps them (CM-31)."""
+    on another alias than ``alias``, as its record keeps them (CM-31); or, when that run
+    refused a switch, the alias and ceiling it refused to switch from, so that every run
+    names the switch until one on the new alias goes on."""
     for entry in reversed(projects.runs(project, session)):
         if entry.role != "main":
             continue
@@ -1308,6 +1310,12 @@ def _switched(
         found = shape.get("ceiling") if isinstance(shape, dict) else None
         if type(found) is not int:
             continue
+        refit = cast(dict[str, Any], folds).get("refit") if isinstance(folds, dict) else None
+        if isinstance(refit, dict) and cast(dict[str, Any], refit).get("refused"):
+            earlier = cast(dict[str, Any], refit).get("from")
+            size = cast(dict[str, Any], refit).get("ceiling")
+            if isinstance(earlier, str) and type(size) is int and earlier != alias:
+                return earlier, size
         return (record.alias, found) if record.alias and record.alias != alias else None
     return None
 
