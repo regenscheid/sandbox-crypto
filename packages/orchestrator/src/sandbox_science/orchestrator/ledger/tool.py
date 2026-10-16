@@ -75,20 +75,12 @@ LEDGER_EFFECTS: Final[dict[str, Effect]] = {
 """The ledger tools that only read; the others are effects, which the plan fence gates."""
 
 LINK_RULES: Final = (
-    "answers: a claim or result to an issue; assumes: a claim, result or decision to an "
-    "assumption (not to a claim: use builds_on), pinned to its revision; builds_on: a claim, "
-    "result or issue to a claim or result (not to a reference: cite it with source_claim "
-    "evidence); restates, compares_to and supersedes: a claim or result to a claim or "
-    "result; dominates: a result to a result; split_into: an issue to an issue; affects: a "
-    "decision to any entry; concerns: an issue to any entry, finding or document block; "
-    "reopen_on: a decision to an issue, assumption, claim or result"
+    "targets by kind: assumes an assumption (for a claim use builds_on); builds_on a claim or "
+    "result (a reference is cited by source_claim evidence); answers and split_into an issue; "
+    "restates, compares_to, supersedes and dominates a claim or result"
 )
 """What each kind of link joins (LG-5), as the change tool says it."""
 
-_SHA256 = {
-    "type": "string",
-    "description": "Optional: left out, the revision's own is pinned; one given must be it",
-}
 _ENTRY = {"type": "string", "description": "An entry's handle (such as C-12) or ID"}
 _LINK = {
     "type": "object",
@@ -101,8 +93,7 @@ _LINK = {
         "decision's reopen_on links name what its reopen condition watches: an open issue "
         "that states the condition as a question, or an assumption, claim or result whose "
         "change would matter; when it is resolved or changes, the decision is flagged. "
-        "The kind and the target's type decide what may link, never the target's status: "
-        + LINK_RULES
+        "Only the kind and the target's type decide what may link, not its status; " + LINK_RULES
     ),
     "properties": {
         "kind": {
@@ -136,8 +127,8 @@ _EVIDENCE = {
     "description": (
         "Evidence for the entry: its role, its type, a scope note saying what it covers, "
         "and one pinned target: entry (with revision, its current one by default), "
-        "artifact with revision (its sha256 is optional: left out, the revision's own is pinned; "
-        "one you give must match it, 64 lowercase hex digits; find_artifacts gives an "
+        "artifact with revision (sha256 is optional, best left out: the revision's own is "
+        "pinned; find_artifacts gives an "
         "artifact's ID, revision and SHA-256 by its path, in any run), document with revision, "
         "block and optionally math (a span), or review. An independent_check names the "
         "revision of this entry it checked as checked; its target can be delegation: the "
@@ -171,7 +162,7 @@ _EVIDENCE = {
         "revision": {"type": "integer"},
         "block": {"type": "string"},
         "math": {"type": "string"},
-        "sha256": _SHA256,
+        "sha256": {"type": "string"},
         "checked": {"type": "integer"},
         "scope": {"type": "string"},
         "quote": {
@@ -237,7 +228,7 @@ _FIELDS = {
             "properties": {
                 "artifact_id": {"type": "string"},
                 "revision": {"type": "integer"},
-                "sha256": _SHA256,
+                "sha256": {"type": "string"},
             },
             "required": ["artifact_id", "revision"],
             "additionalProperties": False,
@@ -282,7 +273,7 @@ _ANCHORS = {
             "entry": {"type": "string"},
             "revision": {"type": "integer", "minimum": 1},
             "block": {"type": "string"},
-            "sha256": _SHA256,
+            "sha256": {"type": "string"},
         },
         "additionalProperties": False,
     },
