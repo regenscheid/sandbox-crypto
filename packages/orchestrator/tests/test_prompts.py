@@ -63,7 +63,7 @@ HOSTILE = "Authorization: Bearer test-secret-prompt-not-a-credential"
 # Each installed version and the SHA-256 of its UTF-8 text. Changing a text means a new
 # version: add it here, and keep the old version's entry for its records.
 GOLDEN = {
-    "sandbox-main-7": "1a3c48d787b054d5d75069e7035b0a4522a47344689cff923664cdc47c754c39",
+    "sandbox-main-8": "fab9723a832cba959c383278e4c720631553315870d1bb7122e2698f75a7c88f",
     "sandbox-main-plan-1": "efb031b0fab2b9855dc3c9adcb869108dd835b725f878b977eec9ba118feb866",
     "sandbox-stock-intake-1": "e846770bc153995c6da1c87cca1913400d0008f3983361246d04d9b9a94f45ab",
     "sandbox-stock-literature-2": (
@@ -129,7 +129,7 @@ GOLDEN = {
     ),
     "sandbox-kernel-lines-1": "99de31152145fd974d443f21919e252f90f922b3c961e183522d98c46c79c246",
     "sandbox-fold-region-3": "b844c1fa240b73328d646cb1304caff16d5114ebee7b6c4a0ddf75a886e6cf00",
-    "sandbox-fold-enrich-1": "6601065ee53a95822f9eee6451390322b1f429965fc37821bc7ac8d74f3a5ac2",
+    "sandbox-fold-enrich-2": "6c66a8694849373c6d7eecc23158e6c2b1862fb8afae640c660f20634876d37b",
     "sandbox-fold-overview-1": ("55cf72856d831930c9953d972e16f2da74626f4972e3b787a32d49378efe23cd"),
 }
 

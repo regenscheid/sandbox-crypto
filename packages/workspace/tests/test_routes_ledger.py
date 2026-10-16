@@ -671,3 +671,50 @@ async def test_a_frontiers_history_through_the_workspace(
         await (await client.get(url + "/key-recovery/past", params={"at": later})).json()
     )
     assert [(len(g.best), g.more) for g in past.past.groups] == [(1, 1)]
+
+
+async def test_the_user_accepts_and_dismisses_fold_proposals(
+    aiohttp_client: ClientFactory, seeded: Path, static_dir: Path
+) -> None:
+    """CM-15: the session's waiting proposals list; the user accepts one with the user's
+    authority, again without effect, and dismisses another with a reason; same-origin."""
+    from sandbox_science.orchestrator.history import Entry
+    from sandbox_science.orchestrator.ledger.proposals import FoldProposals
+
+    documents = DocumentStore(store_path(seeded))
+    try:
+        said = Archive(documents.control).append(
+            "p1", "a", "run-1", Entry("user", "user", "Try the small primes first.")
+        )
+        question = {"op": "issue", "kind": "question", "title": "Small primes?",
+                    "statement": "Do the small primes suffice?",
+                    "anchors": [{"message": said.message_id}]}  # fmt: skip
+        found = FoldProposals(Ledger(documents)).propose(
+            "p1", "a", "run-1", said.message_id, [said], [question, question]
+        )
+        assert found["kept"] == 2
+    finally:
+        documents.close()
+    client = await workspace(aiohttp_client, seeded, static_dir)
+    url = "/api/v0/projects/p1/sessions/a/proposals"
+    listed = (await (await client.get(url)).json())["proposals"]
+    first, second = (p["proposal_id"] for p in listed)
+    accepted = url + f"/{first}/accepted"
+    body = {"operation_id": "accept-1"}
+    response = await client.post(accepted, json=body, headers=origin(client))
+    assert response.status == 200, await response.text()
+    assert (await response.json())["handles"] == ["I-2"]
+    again = await client.post(accepted, json={"operation_id": "accept-2"}, headers=origin(client))
+    assert (await again.json())["replayed"] is True
+    entry = LedgerEntry.model_validate(await (await client.get(BASE + "/I-2")).json()).entry
+    assert (entry.author["kind"], entry.basis) == ("user", "user")
+    dismissed = url + f"/{second}/dismissed"
+    assert (await client.post(dismissed, json={"reason": "Same."})).status == 403
+    response = await client.post(dismissed, json={"reason": "Same."}, headers=origin(client))
+    assert (await response.json())["state"] == "dismissed"
+    assert (await (await client.get(url)).json())["proposals"] == []
+    await error_of(
+        await client.post(url + "/prop-x/accepted", json=body, headers=origin(client)),
+        400,
+        "invalid_request",
+    )

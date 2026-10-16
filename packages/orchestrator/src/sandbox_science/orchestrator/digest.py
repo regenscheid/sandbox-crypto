@@ -24,8 +24,11 @@ what a delegated task gets (CM-37a): a constraint an agent recorded shows the us
 checked words and its statement marked as the agent's, without its reason. A check gets
 nothing.
 
-Not built yet: fold proposals (section 8, step f3), and among the open items the review
-findings, jobs and approvals a session waits for, and recorded artifacts in the index.
+The folds' proposals waiting for the session (CM-15) are listed in section 8, each with
+its basis and the fold that proposed it, to accept or dismiss with ``ledger_proposals``;
+they are not the ledger's and settle nothing. Not built yet: among the open items the
+review findings, jobs and approvals a session waits for, and recorded artifacts in the
+index.
 """
 
 from __future__ import annotations
@@ -41,6 +44,7 @@ from sandbox_science.orchestrator.delegation.records import Delegation, Delegati
 from sandbox_science.orchestrator.documents import DocumentError
 from sandbox_science.orchestrator.history.reads import reference_reads
 from sandbox_science.orchestrator.ledger.models import MIN_QUOTE, EntrySummary, EntryView
+from sandbox_science.orchestrator.ledger.proposals import FoldProposals
 from sandbox_science.orchestrator.ledger.provenance import users_words
 from sandbox_science.orchestrator.ledger.store import Ledger
 from sandbox_science.orchestrator.questions import Questions
@@ -147,8 +151,9 @@ class Digest:
         plans: SessionPlans | None = None,
         questions: Questions | None = None,
         delegations: DelegationRecords | None = None,
+        proposals: FoldProposals | None = None,
     ) -> None:
-        self.ledger, self.plans = ledger, plans
+        self.ledger, self.plans, self.proposals = ledger, plans, proposals
         self.questions, self.delegations = questions, delegations
         self._listed: dict[tuple[str, str], list[EntrySummary]] = {}
         self.unread: dict[str, int] = {}
@@ -266,6 +271,7 @@ class Digest:
             "findings": lambda s: self._findings(s, project, session),
             "sources": lambda s: self._sources(s, project, session),
             "open": lambda s: self._items(s, found["index"], project, session),
+            "proposals": lambda s: self._proposals(s, project, session),
         }
         for key, gather in gatherers.items():
             try:
@@ -418,6 +424,15 @@ class Digest:
             mark = " (current)" if step.step_id == current else ""
             lines.append(Line(f"{step.step_id}{mark} {status} {_clip(step.title)}{note}", True))
         section.lines = lines
+
+    def _proposals(self, section: Section, project: str, session: str) -> None:
+        """The folds' proposals waiting for this session, oldest first: what each proposes,
+        its basis, and the fold that proposed it (CM-15)."""
+        section.hint = "ledger_proposals"
+        for found in self.proposals.waiting(project, session) if self.proposals else ():
+            text = _clip(found.proposal.summary())
+            tag = _tag(found.proposal.basis)
+            section.lines.append(Line(f"{found.proposal_id} {text} {tag} (fold {found.fold})"))
 
     def _items(self, waiting: Section, index: Section, project: str, session: str) -> None:
         waiting.hint = index.hint = "delegation_status and the chat"

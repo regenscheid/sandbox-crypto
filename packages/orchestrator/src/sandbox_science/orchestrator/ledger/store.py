@@ -1112,7 +1112,7 @@ class Ledger:
             basis, anchors = self._sources(
                 db, project, item.basis, item.anchors or [], author, pinned, provenance
             )
-            if author.kind != "user" and provenance is None:
+            if author.kind != "user" and not _platforms(provenance):
                 rests = [c for c in cited if "work" not in c]
                 if not anchors and not rests:
                     raise anchoring.refused(
@@ -2591,7 +2591,7 @@ class Ledger:
         p.basis, p.anchors = self._sources(
             db, project, p.change.basis, p.change.anchors or [], author, pinned, provenance_
         )
-        if author.kind == "user" or provenance_ is not None:
+        if author.kind == "user" or _platforms(provenance_):
             return
         held = self._final_evidence(db, p)
         needs = (
@@ -3347,6 +3347,13 @@ def _agent_evidence(item: EvidenceInput, where: str) -> EvidenceInput:
         text = agent_text(item.quote.text, f"{where} quote")
         update["quote"] = item.quote.model_copy(update={"text": text})
     return item.model_copy(update=update) if update else item
+
+
+def _platforms(provenance: Json | None) -> bool:
+    """Whether a mutation is a record the platform makes for an agent, anchored by it: an
+    import's line or a delegation's outcome. A fold proposal's accepted is checked as the
+    acceptor's own (CM-15)."""
+    return provenance is not None and ("file" in provenance or "delegation" in provenance)
 
 
 def _labelled(error: DocumentError, provenance: Json | None) -> DocumentError:

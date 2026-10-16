@@ -82,6 +82,7 @@ from .hooks import TurnHook
 from .jobs import JobTools
 from .jobstate import JobState
 from .ledger import Ledger
+from .ledger.proposals import FoldProposals
 from .ledger.tool import LedgerTool
 from .loop import (
     MAX_INPUT_CHARS,
@@ -745,6 +746,8 @@ class Harness:
             self._learned[alias] = cap
 
         made.on_cap = learn
+        # A fold's proposals are checked against its span and kept apart (CM-15).
+        made.propose = functools.partial(FoldProposals(ledger).propose, project, session, name)
         return made
 
     async def _ceiling(self) -> int:
@@ -806,8 +809,10 @@ class Harness:
         """The research-state digest a main run's state block holds (CM-16), within
         ``budget`` characters, its third of the state block (CM-27); ``None`` when the
         research state is empty."""
+        ledger = Ledger(stores.documents)
         digest = Digest(
-            Ledger(stores.documents),
+            ledger,
+            proposals=FoldProposals(ledger),
             plans=SessionPlans(stores.documents),
             questions=Questions(stores.documents, clock=self.clock),
             delegations=DelegationRecords(stores.documents, clock=self.clock),

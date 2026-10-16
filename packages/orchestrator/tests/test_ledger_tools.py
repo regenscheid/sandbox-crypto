@@ -229,6 +229,7 @@ async def test_the_tool_table_offers_reads_as_reads_and_gates_changes(ledger: Le
         "ledger_import": "effect",
         "ledger_frontier": "read",
         "ledger_category": "effect",
+        "ledger_proposals": "effect",
     }
     change = json.dumps({"reason": "Planned.", "changes": [TASK]})
     refused = await toolbox.call(ToolCall("c1", "ledger_change", change), "op", gates=(Fence(),))
