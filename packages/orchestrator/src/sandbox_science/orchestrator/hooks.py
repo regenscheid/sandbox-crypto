@@ -147,6 +147,12 @@ class RunView(Protocol):
         ...
 
     @property
+    def since(self) -> int:
+        """The calls made before the view was last rebuilt: ``usage[since:]`` are those
+        that measured it as it is."""
+        ...
+
+    @property
     def offered(self) -> Mapping[str, AbstractSet[str]]:
         """Each source's notice IDs in the conversation, delivered or not."""
         ...
@@ -163,7 +169,8 @@ class RunView(Protocol):
 
     @property
     def size(self) -> int:
-        """What the next model call would send, in characters, tool schemas included."""
+        """What the next model call would send, in characters, tool schemas included:
+        after a fold, the view it rebuilt and what was added since."""
         ...
 
     @property

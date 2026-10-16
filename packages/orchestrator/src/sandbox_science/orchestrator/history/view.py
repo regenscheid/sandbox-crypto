@@ -1,33 +1,33 @@
 # SPDX-License-Identifier: MIT
-"""A main run's view of its session as it starts (docs/specs/context-management.md,
-CM-25 to CM-30, CM-29a to CM-29c): what its model calls see before its own messages.
+"""A main run's view of its session (docs/specs/context-management.md, CM-17, CM-24 to
+CM-30, CM-29a to CM-29c): what its model calls see after the system message, built from
+the archive at the run's start and again at each fold.
 
 The view holds the session's main runs' messages from the archive, as they were sent:
 their tasks, the user's messages, notices, answers, tool calls and results, and the
 delegation outcomes they received; never a delegated run's own messages, nor a state
-block sent before. Each call is followed by its result, found by its call ID within its
-run; a call without one, as an interrupted run leaves, gets one saying it was aborted,
-and a result without its call is left out (CM-29a). A line before each earlier run's
-part names the kernels its cells used and whether each runs now (CM-29c). The skills
-whose bodies the view holds count as loaded, and those its discovery notices showed as
-shown (CM-29b). The user's chat messages whose text the view holds are ``shown``: one
-delivered again is answered where it first appeared (CM-29a, RS-12).
+block sent before. Its folds replace their spans: the messages up to the newest fold's
+end are shown only as the fold records, in one user-role message after the state block
+(the fold region), and the messages after it are the raw tail, but for the tool results
+a fold turned into stubs. Each call in the raw tail is followed by its result, found by
+its call ID within its run; a call without one, as an interrupted run leaves, gets one
+saying it was aborted, and a result without its call is left out (CM-29a). A line before
+each earlier run's part names the kernels its cells used and whether each runs now
+(CM-29c). The skills whose bodies the raw tail holds count as loaded, and those its
+discovery notices showed as shown (CM-29b). The user's chat messages whose text the view
+holds are ``shown``: one delivered again is answered where it first appeared (CM-29a,
+RS-12).
 
-Folds are not built yet. Until they are, a view that would pass ``SHARE`` of the run's
-input leaves out its oldest messages at a boundary that splits no call from its results,
-but always keeps its newest unit and the user's latest message; and a state block,
-archived and sent first, says so and keeps the user's own words from them within
-``WORDS`` of the input: a long one as its head and tail, the oldest, past that share,
-as one line each, which ``history_read`` returns whole, and the oldest of those, past it
-still, as one line for all (CM-26, CM-30). The run's context limit still stops a run
-whose view does not fit.
+The state block, archived and sent first, keeps the user's own words from the folded
+messages within their share (CM-26, CM-30): a long one as its head and tail, the
+oldest, past that share, as one line each, which ``history_read`` returns whole, and the
+oldest of those, past it still, as one line for all. A session's runs from before the
+archive have no messages in it: their tasks and the user's chat messages they delivered,
+as their saved records keep them, come first among those words (RS-10's earlier
+conversation, as far as the user's words go).
 
-A session's runs from before the archive have no messages in it. Their tasks and the
-user's chat messages they delivered, as their saved records keep them, join the user's
-words in the state block (RS-10's earlier conversation, as far as the user's words go).
-
-``View.parts`` are what folds will work on: each message with its archive row (ID,
-position, run), its characters and, at ``View.per_token``, its tokens (CM-28).
+Until overviews are built (step f2), a fold region over its budget leaves out its
+oldest records, which the state block names and ``history_read`` returns whole.
 ``ViewMeter`` measures the view before each call and keeps, in the run's record, its
 parts at the start, its kernel lines, and each call's estimate beside what the gateway
 reported.
@@ -44,15 +44,17 @@ from typing import TYPE_CHECKING, Any, Final, cast
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ExecutionContext, KernelInfo
 from sandbox_science.orchestrator.documents.tool import REQUESTS_TASK
 from sandbox_science.orchestrator.hooks import Point, RunView, TurnHook
-from sandbox_science.orchestrator.notices import KERNEL_LINES, STATE_BLOCK, requests
+from sandbox_science.orchestrator.notices import FOLD_REGION, KERNEL_LINES, STATE_BLOCK, requests
 from sandbox_science.orchestrator.projects import ProjectError
 from sandbox_science.orchestrator.skills.discovery import shown_in
 from sandbox_science.orchestrator.skills.tool import given
 from sandbox_science.orchestrator.tokens import DEFAULT_CHARS, estimate, view_tokens
 from sandbox_science.orchestrator.worker_client import dump
 
-from .archive import PAGE, Archive, Archived, Entry
+from .archive import PAGE, Archive, Archived, Entry, escape
+from .geometry import Geometry
 from .log import PATIENCE, patiently
+from .record import FoldRecord, marker_line, stub
 
 if TYPE_CHECKING:
     from sandbox_science.orchestrator.projects import ProjectStore
@@ -61,10 +63,6 @@ if TYPE_CHECKING:
 Json = dict[str, Any]
 _log = logging.getLogger(__name__)
 
-SHARE: Final = 0.5
-"""The share of a run's input, in characters, that its view takes at most, until folds."""
-WORDS: Final = 0.1
-"""The share of a run's input the state block's copy of the user's words takes at most."""
 ABORTED: Final = (
     "(No result: the run that made this call ended before it returned, so whether the "
     "call ran, and what it did, is unknown.)"
@@ -76,6 +74,8 @@ Said = tuple[str, str, str]
 """A message of the user's that a run's saved record keeps: the run, a label, its text."""
 Earlier = Callable[[Sequence[str]], Sequence[Said]]
 """The user's messages that the named runs' saved records keep, oldest first."""
+Unit = tuple["Part", ...]
+"""Messages that go together: an answer with its calls' results, or one message."""
 
 
 @dataclass(frozen=True)
@@ -93,16 +93,25 @@ class Part:
 
 @dataclass(frozen=True)
 class View:
-    """A run's view as it starts."""
+    """A run's view: before ``settle``, its raw tail; after, all it sends."""
 
     parts: tuple[Part, ...] = ()
     per_token: float = DEFAULT_CHARS
     """The characters per token of the session's recent calls on the run's model."""
-    left_out: tuple[int, int] | None = None
-    """The first and last positions of the messages the view leaves out."""
-    kept_apart: str | None = None
-    """The user's latest message, kept apart from the newest messages the view keeps,
-    though messages near it are left out."""
+    units: tuple[Unit, ...] = ()
+    """The raw tail, unit by unit, as the next fold chooses its span from it."""
+    region: Part | None = None
+    """The fold region: the records shown, in one message."""
+    folds: tuple[str, ...] = ()
+    """The fold records the region shows, oldest first."""
+    folds_left_out: tuple[str, ...] = ()
+    """The oldest fold records, left out of a region over its budget until overviews."""
+    markers_left_out: tuple[str, ...] = ()
+    """Their marker lines, which the state block keeps until overviews (CM-21b)."""
+    folded: tuple[int, int] | None = None
+    """The first and last positions the folds cover."""
+    stubs: tuple[str, ...] = ()
+    """The tool results the raw tail shows as stubs."""
     words: str | None = None
     """The state block's text, before it is archived (``settle``)."""
     digest: str | None = None
@@ -129,14 +138,17 @@ class View:
         return sum(estimate(part.chars, self.per_token) for part in self.parts)
 
     def summary(self) -> Json:
-        """The view as the run's record keeps it: its parts by archive ID and position,
-        and its kernel lines as they were sent (CM-46)."""
-        rows = [part.row for part in self.parts if part.row is not None]
+        """The view as the run's record keeps it (CM-46): its parts, the state block's
+        archive ID, the fold records it shows and leaves out, its stubs, the raw tail's
+        first and last positions, and its kernel lines as they were sent."""
+        rows = [part.row for unit in self.units for part in unit if part.row is not None]
         return {
             "parts": len(self.parts),
             "positions": [rows[0].position, rows[-1].position] if rows else None,
-            "left_out": list(self.left_out) if self.left_out else None,
-            "kept_apart": self.kept_apart,
+            "folded": list(self.folded) if self.folded else None,
+            "folds": list(self.folds),
+            "folds_left_out": list(self.folds_left_out),
+            "stubs": list(self.stubs),
             "unarchived_runs": self.unarchived,
             "recorded_messages": self.recorded,
             "aborted_calls": sum(part.kind == "aborted" for part in self.parts),
@@ -154,39 +166,28 @@ def session_view(
     archive: Archive,
     context: ExecutionContext,
     *,
-    budget: int,
+    geometry: Geometry,
     per_token: float = DEFAULT_CHARS,
     runs: Sequence[str] = (),
     earlier: Earlier | None = None,
 ) -> View:
-    """The session's view for a main run whose input may hold ``budget`` characters;
-    ``runs`` are the session's main runs with saved records, which tells those from
-    before the archive, and ``earlier`` reads the user's messages from their records. It
-    changes nothing: ``settle`` archives its state block and adds its kernel lines."""
+    """The session's view under ``geometry``; ``runs`` are the session's main runs with
+    saved records, which tells those from before the archive, and ``earlier`` reads the
+    user's messages from their records. It changes nothing: ``settle`` archives its
+    state block and adds its kernel lines."""
     rows = _rows(archive, context)
-    units = _units(rows)
-    sizes = [sum(part.chars for part in unit) for unit in units]
-    start = 0
-    if sum(sizes) > budget * SHARE:
-        room, start = int(budget * (SHARE - WORDS)), len(units)
-        while start > 0 and sizes[start - 1] <= room:
-            room -= sizes[start - 1]
-            start -= 1
-        start = min(start, len(units) - 1)  # the newest unit, always; the limit stops it
-    latest = next((i for i in reversed(range(len(units))) if _from_user(units[i][0])), None)
-    apart = latest if latest is not None and latest < start else None
-    kept = [part for i, unit in enumerate(units) if i >= start or i == apart for part in unit]
-    cut = [
-        part.row
-        for i, unit in enumerate(units[:start])
-        if i != apart
-        for part in unit
-        if part.row is not None
-    ]
+    records = [(row, found) for row in rows if (found := FoldRecord.of(row)) is not None]
+    end = max((found.last[0] for _, found in records), default=0)
+    folded = [row for row in rows if row.position <= end and row.entry.kind != "fold"]
+    raw = [row for row in rows if row.position > end and row.entry.kind != "fold"]
+    stubs = {at for _, found in records for at in found.stubs}
+    units = [_stubbed(unit, stubs) for unit in _units(raw)]
+    region, shown_folds, left = _region(records, int(geometry.region * per_token))
+    kept = [part for unit in units for part in unit]
     archived = {row.run for row in rows}
     before = [run for run in runs if run not in archived]
     recorded = list(earlier(before)) if earlier is not None and before else []
-    words, quoted = _words(cut, int(budget * WORDS), recorded)
+    words, quoted = _words(folded, int(geometry.words * per_token), recorded)
     shown = {
         str(row.entry.refs[0]): row.message_id
         for row in [*[part.row for part in kept if part.row], *quoted]
@@ -199,22 +200,88 @@ def session_view(
             used = cells.setdefault(part.row.run, [])
             if kernel is not None and kernel not in used:
                 used.append(kernel)
-    texts = [part.row.entry for part in kept if part.row is not None]
+    texts = [p.row.entry for p in kept if p.row is not None and p.kind != "stub"]
     results = [e.content or "" for e in texts if e.kind == "tool_result" and e.source == "skills"]
     notices = [e.content or "" for e in texts if e.kind == "notice" and e.source == "skills"]
-    first = units[apart][0].row if apart is not None else None
     return View(
         parts=tuple(kept),
         per_token=per_token,
-        left_out=(cut[0].position, cut[-1].position) if cut else None,
-        kept_apart=first.message_id if first is not None and cut else None,
-        words=words if cut or before else None,
+        units=tuple(units),
+        region=region,
+        folds=shown_folds,
+        folds_left_out=left,
+        markers_left_out=_left_markers(records, left, int(geometry.region * per_token) // 4),
+        folded=(folded[0].position, end) if folded else None,
+        stubs=tuple(p.row.message_id for p in kept if p.kind == "stub" and p.row),
+        words=words if folded or before or left else None,
         unarchived=len(before),
         recorded=len(recorded),
         shown=shown,
         loaded=given(results),
         discovered=frozenset(shown_in(notices)),
         cells={run: tuple(found) for run, found in cells.items() if found},
+    )
+
+
+def _region(
+    records: Sequence[tuple[Archived, FoldRecord]], budget: int
+) -> tuple[Part | None, tuple[str, ...], tuple[str, ...]]:
+    """The fold region within ``budget`` characters, the records it shows and those it
+    leaves out: the oldest, until overviews are built, but never the newest."""
+    texts = [(row.message_id, escape(found.text(row.message_id))) for row, found in records]
+    start = 0
+    while start < len(texts) - 1 and sum(len(t) + 2 for _, t in texts[start:]) > budget:
+        start += 1
+    if not texts:
+        return None, (), ()
+    content = FOLD_REGION.text + "\n\n".join(text for _, text in texts[start:])
+    region = Part("fold_region", {"role": "user", "content": content})
+    return region, tuple(at for at, _ in texts[start:]), tuple(at for at, _ in texts[:start])
+
+
+def _left_markers(
+    records: Sequence[tuple[Archived, FoldRecord]], left: Sequence[str], budget: int
+) -> tuple[str, ...]:
+    """The marker lines of the records ``left`` out, within ``budget`` characters, a
+    quarter of the region's: failure aggregates give way first, then the oldest lines;
+    the last line says how many gave way and how to read them whole."""
+    found = [
+        (marker.get("kind") == "failures", marker_line(marker, row.message_id), row.message_id)
+        for row, record in records
+        if row.message_id in left
+        for marker in record.markers
+    ]
+    total = sum(len(line) + 3 for _, line, _ in found)
+    gone: set[int] = set()
+    for index in sorted(range(len(found)), key=lambda i: (not found[i][0], i)):
+        if total <= budget:
+            break
+        gone.add(index)
+        total -= len(found[index][1]) + 3
+    kept = tuple(line for index, (_, line, _) in enumerate(found) if index not in gone)
+    if not gone:
+        return kept
+    spilled = [found[index][2] for index in sorted(gone)]
+    first, last = spilled[0], spilled[-1]  # in the records' order, oldest first
+    named = first if first == last else f"{first} to {last}"
+    return (
+        *kept,
+        f"{len(gone)} more marker lines, of the records {named}, are left out here; "
+        "history_read returns each record whole",
+    )
+
+
+def _stubbed(unit: Sequence[Part], stubs: set[str]) -> Unit:
+    """A unit with its results that folds stubbed shown as stubs."""
+    calls = {
+        str(call.get("id")): call
+        for call in (unit[0].row.entry.tool_calls if unit[0].row is not None else ())
+    }
+    return tuple(
+        Part("stub", stub(part.row, calls.get(str(part.row.entry.call_id))), part.row)
+        if part.row is not None and part.row.message_id in stubs
+        else part
+        for part in unit
     )
 
 
@@ -253,25 +320,30 @@ async def settle(
     clock: Clock = SYSTEM_CLOCK,
 ) -> View:
     """``view`` as ``run`` sends it: its state block, if it has one, archived and first,
-    tried again while the store is busy, and a line before each earlier run's part that
-    ran cells, with whether each of their kernels is among ``kernels``, those running now
-    (``None``: unknown). The state block holds the research-state digest too, when the
-    view has one; a delegated run's (``parent``) holds what CM-37a gives it."""
+    tried again while the store is busy; its fold region; and its raw tail, with a line
+    before each earlier run's part that ran cells, saying whether each of their kernels
+    is among ``kernels``, those running as ``run`` started (``None``: unknown). A
+    rebuild during ``run`` adds none before its own part. The state block holds the
+    research-state digest too, when the view has one; a delegated run's (``parent``)
+    holds what CM-37a gives it."""
     parts: list[Part] = []
     text = ""
     if view.words is not None:
-        left = ""
-        if view.left_out is not None:
-            first, last = view.left_out
-            kept = next(
-                (p.row for p in view.parts if p.row and p.row.message_id == view.kept_apart), None
+        folded = ""
+        if view.folded is not None:
+            first, last = view.folded
+            folded = f"Folded: the messages at positions {first} to {last}. "
+        if view.folds_left_out:
+            folded += (
+                f"Left out until overviews are built: the fold records "
+                f"{', '.join(view.folds_left_out)}, which history_read returns whole"
             )
-            apart = (
-                f", but for the user's latest message, {view.kept_apart}, which is kept"
-                if kept is not None and first < kept.position < last
-                else ""
+            folded += (
+                "; their marker lines, as code built them:\n"
+                + "".join(f"- {line}\n" for line in view.markers_left_out)
+                if view.markers_left_out
+                else ". "
             )
-            left = f"Left out: the messages at positions {first} to {last}{apart}. "
         before = ""
         if view.unarchived:
             before = (
@@ -284,7 +356,7 @@ async def settle(
                     else ". "
                 )
             )
-        text = STATE_BLOCK.text + left + before + view.words
+        text = STATE_BLOCK.text + folded + before + view.words
     if view.digest:
         text = f"{text}\n\n{view.digest}" if text else view.digest
     if text:
@@ -293,11 +365,13 @@ async def settle(
             archive, context, run, entry, parent=parent, patience=patience, clock=clock
         )
         parts.append(Part("state_block", row.chat(), row))
+    if view.region is not None:
+        parts.append(view.region)
     running = None if kernels is None else {(k.kernel_id, k.generation) for k in kernels}
     current: str | None = None
     for part in view.parts:
         name = part.row.run if part.row is not None else current
-        if name is not None and name != current and name in view.cells:
+        if name is not None and name not in (current, run) and name in view.cells:
             used = [{**kernel, "now": _now(kernel, running)} for kernel in view.cells[name]]
             line = KERNEL_LINES.text + dump({"run": name, "kernels": used})
             parts.append(Part("kernels", {"role": "user", "content": line}))
@@ -327,7 +401,7 @@ class ViewMeter(TurnHook):
 
     def tokens(self, run: RunView) -> int:
         """The view's tokens before the run's next call."""
-        return view_tokens(run.size, run.usage, self.view.per_token)
+        return view_tokens(run.size, run.usage[run.since :], self.view.per_token)
 
     async def notices(self, point: Point, run: RunView) -> Sequence[Any]:
         if point == "turn":
@@ -344,7 +418,8 @@ class ViewMeter(TurnHook):
 
 
 def _rows(archive: Archive, context: ExecutionContext) -> list[Archived]:
-    """The session's main runs' archived messages, but their state blocks, in order."""
+    """The session's main runs' archived messages, fold records among them, but their
+    state blocks, in order."""
     found: list[Archived] = []
     start = 1
     while True:
@@ -381,15 +456,6 @@ def _units(rows: Sequence[Archived]) -> list[list[Part]]:
                 unit.append(Part(found.entry.kind, found.chat(), found))
         units.append(unit)
     return units
-
-
-def _from_user(part: Part) -> bool:
-    """Whether a unit's first part holds the user's own words: a message, or a task that
-    is not the stand-in for comments."""
-    entry = part.row.entry if part.row is not None else None
-    if entry is None or entry.kind not in ("task", "user"):
-        return False
-    return entry.kind == "user" or entry.content != REQUESTS_TASK
 
 
 @dataclass(frozen=True)

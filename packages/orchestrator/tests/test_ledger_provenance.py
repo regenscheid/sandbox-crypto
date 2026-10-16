@@ -462,9 +462,8 @@ def test_a_store_of_the_version_before_shows_no_basis(tmp_path: Path) -> None:
         documents.close()
     target = tmp_path / "old"
     target.mkdir()
-    older_store(
-        tmp_path / "current" / "control.sqlite3", target / "control.sqlite3", migrations.VERSION - 1
-    )
+    before = 50  # the version before 51, which keeps bases and anchors
+    older_store(tmp_path / "current" / "control.sqlite3", target / "control.sqlite3", before)
     ProjectStore(target).close()
     documents = DocumentStore(store_path(target))
     try:

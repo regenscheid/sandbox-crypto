@@ -66,6 +66,7 @@ LABELS: Final = {
     "outcome": "delegation outcome",
     "tool_result": "tool result",
     "state_block": "state block",
+    "fold": "fold record",
 }
 """Each kind of message the platform writes, as its header names it."""
 KINDS: Final = (*LABELS, "assistant")
@@ -210,10 +211,12 @@ class Entry:
     @property
     def searched(self) -> str | None:
         """The text the indexes cover: ``text``, less the retrievals' calls and results
-        and the state blocks, which copy what the indexes cover, and with the text of a
-        Claude answer's thinking blocks that it does not hold, its reasoning summaries
-        (CM-38)."""
-        if self.kind == "state_block" or (self.kind == "tool_result" and self.source in UNINDEXED):
+        and the state blocks and fold records, which copy what the indexes cover, and
+        with the text of a Claude answer's thinking blocks that it does not hold, its
+        reasoning summaries (CM-38)."""
+        if self.kind in ("state_block", "fold") or (
+            self.kind == "tool_result" and self.source in UNINDEXED
+        ):
             return None
         text = self._text(UNINDEXED)
         if self.native_format == MESSAGES and self.native is not None:

@@ -2747,6 +2747,19 @@ def _provenance(schema: Schema) -> None:
         schema.execute(f"ALTER TABLE {table} ADD COLUMN anchors TEXT CHECK ({anchors})")
 
 
+def _fold_events(schema: Schema) -> None:
+    """Version 52: a run's folds are run events of kind ``fold``
+    (docs/specs/context-management.md, CM-46). The table is made again with the wider
+    CHECK, its rows, indexes and triggers as they were."""
+    (create,) = schema.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='run_events'"
+    ).fetchone()
+    old = "'waiting', 'stopped'))"
+    if create.count(old) != 1:
+        raise ControlError(INTERNAL, "the run_events table is not as version 51 left it")
+    rebuild(schema, "run_events", create.replace(old, "'waiting', 'stopped', 'fold'))", 1))
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -2798,6 +2811,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _adapter_state,
     _read_register,
     _provenance,
+    _fold_events,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

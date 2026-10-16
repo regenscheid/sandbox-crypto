@@ -5,22 +5,23 @@ import ChatWaiting from '../views/ChatWaiting.svelte';
 import type { EnvironmentState, EventPage, MessageListing } from './api-types';
 import { ApiError } from './http';
 import {
+  chatEntries,
   ChatFeed,
+  foldText,
   forgetMessage,
-  MAX_MESSAGE_BYTES,
   HELD_EVERY,
   INTERRUPTED_POLLS,
+  MAX_MESSAGE_BYTES,
   MAX_RUNS,
   messageBytes,
-  chatEntries,
   messageState,
   PAGE,
   pendingMessages,
   sendMessage,
   startingText,
   stoppedText,
-  tokensText,
   thinking,
+  tokensText,
   type ChatMessage,
   type RunEvent,
 } from './chat';
@@ -422,6 +423,30 @@ describe('the transcript of a run', () => {
     expect(stoppedText({ stopped: 'answer_discarded' })).toBe('The run stopped: answer discarded.');
     expect(stoppedText({ stopped: 'fence\u202Eveto' })).toBe('The run stopped: fence⟦U+202E⟧veto.');
     expect(stoppedText({ stopped: '' })).toBe('The run stopped: no reason recorded.');
+    expect(
+      stoppedText({ stopped: 'context_limit', reason: 'breaker', detail: 'three weak folds' }),
+    ).toBe('The run stopped at its context limit. Reason: breaker: three weak folds.');
+    // A fold of the run's view, as it went (context management, CM-46).
+    expect(foldText({ state: 'started', span: [1, 40] })).toBe(
+      'A fold of positions 1 to 40 started; its narrative is being written.',
+    );
+    expect(foldText({ state: 'applied', span: [1, 40], freed: 12000, stubs: 3 })).toBe(
+      'Folded positions 1 to 40, with its narrative: about 12,000 tokens freed, 3 results stubbed.',
+    );
+    expect(
+      foldText({
+        state: 'skeleton_only',
+        span: [1, 40],
+        freed: 9000,
+        stubs: 0,
+        reason: 'skeleton-only: it called a tool',
+      }),
+    ).toBe(
+      'Folded positions 1 to 40, skeleton-only: about 9,000 tokens freed, 0 results stubbed. The narrative failed: it called a tool.',
+    );
+    expect(foldText({ state: 'waited', seconds: 2.5 })).toBe(
+      'The view reached its wall and waited 2.5 s for the running fold.',
+    );
     // A run that stops for something newer of the user's does not say it waited for a message.
     expect(stoppedText({ stopped: 'user_message' })).toBe(
       'The run stopped without an answer: a newer message of yours comes first, and the next run takes it up.',

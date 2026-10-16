@@ -13,7 +13,7 @@ from contextlib import (
     contextmanager,
 )
 from dataclasses import dataclass, field
-from typing import Any, Final, Literal, TypeVar, cast
+from typing import Any, Final, Literal, Protocol, TypeVar, cast
 
 from .hooks import RESPONSE_ROUNDS, Appended, MessageLog, Notice, Point, TurnHook
 from .memory_prompt import MemoryGiven
@@ -173,6 +173,30 @@ class Transcript:
     """Each hook source's notice IDs in the messages, delivered or not."""
     log: MessageLog | None = field(default=None, repr=False)
     """Keeps each message the run adds, which then begins with its ID header."""
+    folds: Folds | None = field(default=None, repr=False)
+    """Folds the conversation at its safe points (docs/specs/context-management.md)."""
+    rebuilt: list[Message] | None = field(default=None, repr=False)
+    """The view a fold rebuilt, sent after the system message in place of the messages
+    before ``base``; ``None`` until a fold."""
+    base: int = field(default=0, repr=False)
+    since: int = 0
+    """The calls made before the view was last rebuilt (``usage[since:]`` measure it)."""
+    overflowed: bool = field(default=False, repr=False)
+    """Whether the last model call was refused for the conversation's length."""
+
+    @property
+    def sent(self) -> list[Message]:
+        """What the next model call sends: the system message, the view a fold rebuilt,
+        if one did, and the messages added since."""
+        if self.rebuilt is None:
+            return self.messages
+        return [self.messages[0], *self.rebuilt, *self.messages[self.base :]]
+
+    def rebuild(self, view: Sequence[Message]) -> None:
+        """Send ``view`` after the system message from now on, in place of everything
+        the conversation holds now (a fold, CM-24): a rebuild, after which the view's
+        size is estimated afresh until a call reports (CM-28)."""
+        self.rebuilt, self.base, self.since = list(view), len(self.messages), len(self.usage)
 
     @property
     def turns_left(self) -> int:
@@ -185,7 +209,7 @@ class Transcript:
     @property
     def size(self) -> int:
         """What the next model call would send, in characters."""
-        return len(dump(self.messages)) + self.tools_chars
+        return len(dump(self.sent)) + self.tools_chars
 
     def has_room(self, notices: Sequence[Notice] = ()) -> bool:
         """Whether another model call can be made, with these notices added."""
@@ -202,6 +226,21 @@ class Transcript:
         self.failure = self.failure or phase
         self.stopped = "error"
         self.final_text = self.answer = None
+
+
+class Folds(Protocol):
+    """What folds a run's conversation (docs/specs/context-management.md, CM-24, CM-43)."""
+
+    async def before_call(self, transcript: Transcript) -> bool:
+        """At a safe point before a model call: fold if the view needs it. ``False``
+        when the view has no room for the call however it folds: the run then stops as
+        when it is out of room (``context_limit``)."""
+        ...
+
+    async def overflow(self, transcript: Transcript) -> bool:
+        """After the gateway refused a call for its length: whether a fold made room for
+        one more try."""
+        ...
 
 
 def _message(notice: Notice) -> Message:
@@ -361,11 +400,12 @@ async def _complete(model: ChatModel, toolbox: Toolbox, transcript: Transcript) 
         _log.warning("the conversation, %d characters, exceeds the run's budget", size)
         return None
     transcript.phase = "model"
+    transcript.overflowed = False
     try:
-        reply = await model.complete(transcript.messages, toolbox.specs)
+        reply = await model.complete(transcript.sent, toolbox.specs)
     except ContextLimitError as error:
         _log.warning("the conversation, %d characters, exceeds the model's: %s", size, error)
-        reply = None
+        reply, transcript.overflowed = None, True
     except GatewayBudgetError as error:
         _log.warning("the model gateway refused the call for its budget: %s", error)
         transcript.halted, reply = GATEWAY_BUDGET, None
@@ -446,7 +486,17 @@ async def _run_task(
             return transcript
         await _notices(hooks, "turn", transcript)
         transcript.turns = turn + 1
-        if (reply := await _complete(model, toolbox, transcript)) is None:
+        folds = transcript.folds
+        if folds is not None and not await folds.before_call(transcript):
+            await _out_of_room(hooks, transcript)
+            return transcript
+        reply = await _complete(model, toolbox, transcript)
+        # A context error folds once and tries once more; the fold engine says when not.
+        while reply is None and transcript.overflowed and folds is not None:
+            if not await folds.overflow(transcript):
+                break
+            reply = await _complete(model, toolbox, transcript)
+        if reply is None:
             if transcript.halted is not None:  # the gateway's budget is spent
                 await _halt(hooks, transcript, transcript.halted)
             else:
@@ -542,6 +592,7 @@ async def run_task(
     memory: MemoryGiven | None = None,
     role: str = "main",
     log: MessageLog | None = None,
+    folds: Folds | None = None,
 ) -> Transcript:
     """Run a task, keeping an active originating-run lease while it waits or computes.
 
@@ -555,7 +606,8 @@ async def run_task(
     the user's: the run ends ``cancelled``, with what it observed, instead of raising.
     ``memory`` is the project memory the run is given, which its record pins, and
     ``role`` the run's role, which its prompt pins name. ``log`` keeps each message the
-    run adds as it adds it, the task first: the session's archive.
+    run adds as it adds it, the task first: the session's archive. ``folds`` folds the
+    conversation at its safe points.
     """
     if max_input_chars < 1:
         raise ValueError("max_input_chars must be at least 1")
@@ -588,6 +640,7 @@ async def run_task(
                     prompt_provenance=pins,
                     messages=[{"role": "system", "content": text}, *history],
                     log=log,
+                    folds=folds,
                 )
                 try:
                     await _run_task(

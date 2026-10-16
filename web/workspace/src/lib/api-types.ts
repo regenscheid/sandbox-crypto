@@ -1189,7 +1189,7 @@ export interface RunEntry {
 export interface RunEvent {
   seq: number;
   at: string;
-  kind: "started" | "user" | "model" | "assistant" | "tool" | "notice" | "waiting" | "stopped";
+  kind: "started" | "user" | "model" | "assistant" | "tool" | "notice" | "waiting" | "stopped" | "fold";
   data: Record<string, JsonValue>;
 }
 

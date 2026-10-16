@@ -119,8 +119,8 @@ GOLDEN = {
     ),
     "sandbox-skills-index-3": ("2daecc293895a53af16ac5cab4ebeb65dd527199da04a86f569cda0d89962601"),
     "sandbox-skills-pass-1": ("c1959f76747a1361f5e9ebe5b97c4b675c3fe45037c28e3dc1513a8fc56ff0b6"),
-    "sandbox-state-block-1": "d024a897ddd73fcd38c34b6d095fbbdbb255b955bd3f90c0d1cc2414e29b11f1",
-    "sandbox-digest-1": "c301f4f87ec1e4602d09dd527a5fd2eafa860fd7c8472bf758abb875b2cad75a",
+    "sandbox-state-block-2": "c32d80a06a317c3faa60cc2a997fa4040b1f75479f4e00995dce3afcdf6c27c1",
+    "sandbox-digest-2": "6e3a9bb129ea96671d73d6fd7e5f066451184232ae2278bc78b3e4d3f6a082ca",
     "sandbox-task-constraints-1": (
         "5c0a224ad9bba6d3803ebf613e5b4df51e0341425b6f7e8b95244294d9f81681"
     ),
@@ -128,6 +128,7 @@ GOLDEN = {
         "706f5ef5f1441a5194177af083185c8eb53cf9f9b31cfd7bb5609d3e666b4726"
     ),
     "sandbox-kernel-lines-1": "99de31152145fd974d443f21919e252f90f922b3c961e183522d98c46c79c246",
+    "sandbox-fold-region-1": "b2fdf489b90e27f086eb29e784b5b6cf2cad9f47f9d71e52c63ab9f3c32f231a",
 }
 
 

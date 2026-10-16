@@ -292,6 +292,11 @@ class GatewayModel(ABC):
         self._retries, self._backoff, self._clock = retries, backoff, clock
         self._prices = prices or PriceList(self.base_url, api_key, clock=clock)
 
+    @property
+    def max_output(self) -> int | None:
+        """The most tokens an answer may take, as the calls ask for, if they ask."""
+        return self._max_tokens
+
     async def close(self) -> None:
         if self._owns_session and self._session is not None:
             await self._session.close()
@@ -498,6 +503,19 @@ def gateway_model(
     )
 
 
+@dataclass(frozen=True)
+class Limits:
+    """A model's limits as the gateway describes them: ``input``, its
+    ``max_input_tokens``; ``output``, its ``max_output_tokens``; and its provider."""
+
+    input: int
+    output: int | None
+    provider: str | None
+    model: str | None = None
+    """The model the gateway calls for it (``litellm_params.model``), which names its
+    family, as ``bedrock/anthropic.claude-...`` does."""
+
+
 class ModelGateway:
     """The deployment's model gateway, for runs whose alias is chosen as they start, as
     a delegated run's is (plans-and-delegation spec, PD-28, PD-30): a model for an
@@ -581,6 +599,44 @@ class ModelGateway:
         as the LiteLLM proxy serves it, its ``supports_function_calling``): an alias it
         does not describe, or whose answer is not a yes or a no, is left out; ``None``
         when it cannot be asked (PD-30)."""
+        described = await self._described()
+        if described is None:
+            return None
+        capable: dict[str, bool] = {}
+        for name, info in described:
+            calls = info.get("supports_function_calling")
+            if isinstance(calls, bool):
+                # An alias several deployments serve can call tools when any of them can.
+                capable[name] = capable.get(name, False) or calls
+        return capable
+
+    async def input_limits(self) -> dict[str, Limits] | None:
+        """Each described alias's limits (docs/specs/context-management.md, CM-27): its
+        ``max_input_tokens``, the least of its deployments', its ``max_output_tokens``,
+        and its provider, which says whether the input limit is a window that input and
+        output share; ``None`` when the gateway cannot be asked."""
+        described = await self._described()
+        if described is None:
+            return None
+        limits: dict[str, Limits] = {}
+        for name, info in described:
+            found, output = info.get("max_input_tokens"), info.get("max_output_tokens")
+            if type(found) is not int or found <= 0:
+                continue
+            known = limits.get(name)
+            if known is None or found < known.input:
+                provider, model = info.get("litellm_provider"), info.get("litellm_model")
+                limits[name] = Limits(
+                    found,
+                    output if type(output) is int and output > 0 else None,
+                    provider if isinstance(provider, str) else None,
+                    model if isinstance(model, str) else None,
+                )
+        return limits
+
+    async def _described(self) -> list[tuple[str, dict[str, object]]] | None:
+        """Each model the gateway describes (``GET /model/info``): its alias and its
+        information; ``None`` when it cannot be asked."""
         try:
             async with self._shared().get(
                 f"{self.base_url}/model/info",
@@ -601,19 +657,21 @@ class ModelGateway:
             return None
         if not isinstance(found, list):
             return None
-        capable: dict[str, bool] = {}
+        described: list[tuple[str, dict[str, object]]] = []
         for item in cast(list[object], found):
             if not isinstance(item, dict):
                 continue
             entry = cast(dict[str, object], item)
             name, info = entry.get("model_name"), entry.get("model_info")
-            if not isinstance(name, str) or not isinstance(info, dict):
-                continue
-            calls = cast(dict[str, object], info).get("supports_function_calling")
-            if isinstance(calls, bool):
-                # An alias several deployments serve can call tools when any of them can.
-                capable[name] = capable.get(name, False) or calls
-        return capable
+            if isinstance(name, str) and isinstance(info, dict):
+                params = entry.get("litellm_params")
+                called = (
+                    cast(dict[str, object], params).get("model")
+                    if isinstance(params, dict)
+                    else None
+                )
+                described.append((name, {**cast(dict[str, object], info), "litellm_model": called}))
+        return described
 
     async def close(self) -> None:
         if self._session is not None:
