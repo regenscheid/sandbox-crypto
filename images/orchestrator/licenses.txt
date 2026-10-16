@@ -1,7 +1,7 @@
 # The licenses in the orchestrator image, one SPDX expression per line: its Conda packages, the
-# harness's own packages (MIT) and the Ubuntu packages (LicenseRef-Ubuntu-archive). build.sh
-# joins them into the image's org.opencontainers.image.licenses label; the build fails when they
-# differ from the image's.
+# harness's own packages (MIT, and MIT AND Apache-2.0) and the Ubuntu packages
+# (LicenseRef-Ubuntu-archive). build.sh joins them into the image's
+# org.opencontainers.image.licenses label; the build fails when they differ from the image's.
 # Not permissive, and accepted as the base distribution's runtime libraries (docs/IMAGES.md):
 # GPL-3.0-only (readline, ld_impl) and GPL-3.0-only WITH GCC-exception-3.1 (the GCC runtime).
 0BSD
