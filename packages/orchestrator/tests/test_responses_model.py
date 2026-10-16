@@ -10,6 +10,8 @@ synthetic. Retries sleep on a clock that only records the waits.
 from __future__ import annotations
 
 import copy
+import hashlib
+import itertools
 import json
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -21,6 +23,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 
 from sandbox_science.orchestrator import cli
+from sandbox_science.orchestrator.consistency.models import ReviewConfig
 from sandbox_science.orchestrator.history import Archive
 from sandbox_science.orchestrator.model import (
     CHAT_COMPLETIONS,
@@ -30,16 +33,29 @@ from sandbox_science.orchestrator.model import (
     Message,
     ModelError,
     ModelGateway,
+    ModelTurn,
     OpenAICompatibleModel,
     ToolSpec,
+    cached_for,
     gateway_model,
     prefix_digest,
+    session_cache_key,
 )
 from sandbox_science.orchestrator.pairing import ABORTED
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.responses import RESPONSES, ResponsesModel
 
-from .loop_harness import API_KEY, GATEWAY_VERSION, PROJECT, SESSION, Harness, Reply, call
+from .loop_harness import (
+    API_KEY,
+    GATEWAY_VERSION,
+    PROJECT,
+    SESSION,
+    Harness,
+    Reply,
+    Reviewer,
+    call,
+    start_job,
+)
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
@@ -586,7 +602,9 @@ async def test_a_view_rebuilt_from_the_archive_sends_the_request_the_run_sent(
     ]
     tools = [ToolSpec(t["name"], t["description"], t["parameters"]) for t in last["tools"]]
     found.script = [Reply("Done."), Reply("Done.")]
-    model = ResponsesModel(found.url, "main", API_KEY, clock=Waits())
+    # Made for the session, as the run's was: its key is in the bytes.
+    model = cached_for(ResponsesModel(found.url, "main", API_KEY, clock=Waits()), PROJECT, SESSION)
+    assert isinstance(model, ResponsesModel)
     try:
         await model.complete(view, tools)
         assert found.raw[-1] == found.raw[2]
@@ -651,3 +669,145 @@ def input_bytes(raw: bytes) -> bytes:
     start = text.index("[", text.index('"input"'))
     _, end = json.JSONDecoder().raw_decode(text, start)
     return text[start:end].encode()
+
+
+def parts(raw: bytes) -> tuple[str, str, list[str]]:
+    """A request as the cache sees it, in the order it renders it: the tools, the
+    instructions, and each input item, each as the text that arrived."""
+    body = cast(Json, json.loads(raw))
+    return (
+        json.dumps(body["tools"]),
+        json.dumps(body["instructions"]),
+        [json.dumps(item) for item in body["input"]],
+    )
+
+
+def only_grew(raws: Sequence[bytes]) -> None:
+    """CM-32: each request is the one before it, byte for byte, with items added at the
+    end: the same tools and instructions, every earlier item unchanged and in place."""
+    assert len(raws) > 1
+    for before, after in itertools.pairwise(raws):
+        (tools, instructions, items), (tools2, instructions2, items2) = parts(before), parts(after)
+        assert (tools2, instructions2) == (tools, instructions)
+        assert items2[: len(items)] == items
+        assert len(items2) > len(items)
+        assert input_bytes(after).startswith(input_bytes(before)[:-1])
+
+
+async def test_a_runs_requests_only_grow_whatever_the_platform_adds_between_calls(
+    harness: Harness,
+) -> None:
+    """CM-32 on the wire: a run with a plan, a job, a comment and a review arriving
+    between its calls, closing rounds, a tool call and parallel calls sends, call after
+    call, the tools and instructions it began with and every item it sent before, in
+    place; notices and results only ever follow. A call cached on the one before it
+    would be read from the prompt cache; nothing early in a request changes."""
+    options = ["--api", "main=responses"]
+    await harness.run(
+        "run-job", [Reply(calls=[start_job()]), Reply("A job is running.")], options=options
+    )
+    # Parallel calls, their results all after them, in one run.
+    parallel = [call("shell", script="echo a"), call("shell", script="echo b")]
+    found = harness.gateway
+    before = len(found.raw)
+    await harness.run(
+        "run-2", [Reply(calls=parallel), Reply(calls=parallel), Reply("Done.")], options=options
+    )
+    assert len(found.raw) - before == 3
+    only_grew(found.raw[before:])
+    await harness.math_finding()
+    harness.configure_reviews(ReviewConfig())
+    harness.gateway.reviewer = Reviewer(flags=1)
+
+    async def arrive() -> None:
+        harness.user_plan()
+        await harness.end_job()
+        harness.work_request()
+
+    first = len(found.raw)
+    await harness.run(
+        "run-1",
+        [
+            Reply("Answer 1.", before=arrive),
+            Reply(calls=[call("plan_read")]),
+            Reply("Answer 2."),
+            Reply("Answer 3, done."),
+            Reply("Answer 4."),
+        ],
+        reviewer=True,
+        options=options,
+    )
+    assert len(found.raw) - first == 5
+    only_grew(found.raw[first:])
+    keys = {json.loads(raw).get("prompt_cache_key") for raw in found.raw}
+    assert keys == {session_cache_key(PROJECT, SESSION)}
+
+
+async def test_every_call_of_a_session_sends_the_sessions_cache_key(harness: Harness) -> None:
+    """CM-32: the gateway routes a call to a prompt cache by its first tokens, which every
+    session of a deployment shares (the system message). A session's calls, whichever of
+    its runs makes them, send one ``prompt_cache_key`` of their own, so that each session
+    keeps to one cache. The key is a digest, not the session's IDs."""
+    options = ["--api", "main=responses"]
+    await harness.run("run-1", [Reply(calls=[call("shell", script="echo 1")]), Reply("Done.")],
+                      options=options)  # fmt: skip
+    await harness.run("run-2", [Reply("Again.")], options=options)
+    found = harness.gateway
+    keys = [json.loads(raw)["prompt_cache_key"] for raw in found.raw]
+    assert len(keys) == 3
+    assert set(keys) == {session_cache_key(PROJECT, SESSION)}
+    assert keys[0] == "ss-" + hashlib.sha256(f"{PROJECT}\0{SESSION}".encode()).hexdigest()[:32]
+    for body in found.responses:
+        wire(body)
+
+
+def test_a_sessions_key_is_its_own_stable_and_short() -> None:
+    key = session_cache_key("project", "session")
+    assert key == session_cache_key("project", "session")
+    assert len(key) <= 64
+    others = {
+        session_cache_key("project", "other"),
+        session_cache_key("other", "session"),
+        session_cache_key("projects", "ession"),  # the boundary is part of the key
+    }
+    assert key not in others
+    assert len(others) == 3
+
+
+async def test_a_model_made_for_a_session_sends_its_key_and_the_others_none(
+    fake: Fake, gpt: ResponsesModel
+) -> None:
+    """CM-32: the key is on the request but not in the digest of what the model was
+    given, which it does not change; the model it was made from sends none, its session
+    is shared, and a model that is not the gateway's is returned as it was."""
+    messages: list[Message] = [
+        {"role": "system", "content": SYSTEM},
+        {"role": "user", "content": TASK},
+    ]
+    keyed = cached_for(gpt, "p", "s")
+    assert isinstance(keyed, ResponsesModel)
+    assert keyed is not gpt
+    for _ in range(2):
+        fake.then(response(reasoning("1"), said("Hello.")))
+    keyed_turn = await keyed.complete(messages, TOOLS)
+    plain_turn = await gpt.complete(messages, TOOLS)
+    sent, unkeyed = fake.bodies
+    assert sent["prompt_cache_key"] == session_cache_key("p", "s")
+    assert "prompt_cache_key" not in unkeyed
+    assert (
+        keyed_turn.prefix == plain_turn.prefix == prefix_of(sent, "instructions", "tools", "input")
+    )
+    # The fold's retry without tools is the same session's.
+    fake.then(response(said("Fine.")))
+    await keyed.choosing("none").complete(messages, TOOLS)
+    assert fake.bodies[-1]["prompt_cache_key"] == sent["prompt_cache_key"]
+    assert fake.bodies[-1]["tool_choice"] == "none"
+    scripted = Scripted()
+    assert cached_for(scripted, "p", "s") is scripted
+
+
+class Scripted:
+    """A model that is not the gateway's."""
+
+    async def complete(self, messages: Sequence[Message], tools: Sequence[ToolSpec]) -> ModelTurn:
+        raise AssertionError("not called")

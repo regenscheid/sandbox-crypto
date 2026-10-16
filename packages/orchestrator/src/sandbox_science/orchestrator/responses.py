@@ -24,7 +24,10 @@ as the API's input items:
 - calls and outputs are then paired (``pairing``, CM-29a).
 
 Each request sets ``store: false``, asks for ``reasoning.encrypted_content`` explicitly,
-and never sets ``truncation``, which would drop the oldest items silently. Functions are
+and never sets ``truncation``, which would drop the oldest items silently. It sets no
+``previous_response_id``, which ``store: false`` rules out. A model made for a session
+(``cached_as``) sends the session's ``prompt_cache_key``, which routes the session's calls
+to one cache whatever else shares their first tokens (CM-32). Functions are
 declared with ``strict: false``, as chat completions takes them. A response that failed
 is an error, a context limit if it says so, and tried again when it says the upstream is
 overloaded; one cut short says ``length``. Usage is OpenAI's, whose ``input_tokens``
@@ -86,6 +89,8 @@ class ResponsesModel(GatewayModel):
             "store": False,
             "include": list(INCLUDE),
         }
+        if self._cache_key is not None:
+            body["prompt_cache_key"] = self._cache_key
         if instructions is not None:
             body["instructions"] = instructions
         if self._max_tokens is not None:
