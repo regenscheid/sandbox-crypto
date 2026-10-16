@@ -644,29 +644,36 @@ def score(bundles: Sequence[Json]) -> Json:
             "CM-P9": {"folds": repeats(session), "long_repeats": long_repeats(session)},
             "reported": reported(session),
         }
-    families: Json = {}
-    for family in sorted({session.family for session in sessions}):
-        mine = [s for s in sessions if s.family == family and not s.meta.get("skeleton_only")]
-        uses = [u for s in mine for u in caveat_uses(s)]
-        kept = sum(u["kept"] for u in uses)
-        folds = [f for s in mine for f in repeats(s)]
-        rise = sum(f["after"] - f["before"] for f in folds) / len(folds) if folds else None
-        families[family] = {
-            "CM-P8": {
-                "uses": len(uses),
-                "kept": kept,
-                "status": "not_reached"
-                if not uses
-                else ("pass" if kept >= 0.9 * len(uses) else "fail"),
-            },
-            "CM-P9": {
-                "folds": len(folds),
-                "mean_rise": rise,
-                "status": "not_reached" if rise is None else ("pass" if rise <= 1 else "fail"),
-                "long_repeats_to_check": sum(len(long_repeats(s)) for s in mine),
-            },
-        }
-    return {"sessions": per_session, "families": families}
+    enriched = [s for s in sessions if not s.meta.get("skeleton_only")]
+    families = {
+        family: aggregate([s for s in enriched if s.family == family])
+        for family in sorted({session.family for session in enriched})
+    }
+    # Round 1 runs one family on more than one model: each model's sessions apart too.
+    models = {
+        alias: aggregate([s for s in enriched if s.meta.get("alias") == alias])
+        for alias in sorted({str(s.meta.get("alias")) for s in enriched if s.meta.get("alias")})
+    }
+    return {"sessions": per_session, "families": families, "models": models}
+
+
+def aggregate(sessions: Sequence[Session]) -> Json:
+    """CM-P8 and CM-P9 over ``sessions``, as their bars are stated: across a family's."""
+    uses = [u for s in sessions for u in caveat_uses(s)]
+    kept = sum(u["kept"] for u in uses)
+    folds = [f for s in sessions for f in repeats(s)]
+    rise = sum(f["after"] - f["before"] for f in folds) / len(folds) if folds else None
+    p8 = "not_reached" if not uses else ("pass" if kept >= 0.9 * len(uses) else "fail")
+    return {
+        "sessions": [s.name for s in sessions],
+        "CM-P8": {"uses": len(uses), "kept": kept, "status": p8},
+        "CM-P9": {
+            "folds": len(folds),
+            "mean_rise": rise,
+            "status": "not_reached" if rise is None else ("pass" if rise <= 1 else "fail"),
+            "long_repeats_to_check": sum(len(long_repeats(s)) for s in sessions),
+        },
+    }
 
 
 def markdown(report: Json) -> str:
@@ -685,10 +692,10 @@ def markdown(report: Json) -> str:
         )
     lines += [
         "",
-        "| Family | CM-P8 kept | CM-P8 | CM-P9 mean rise | CM-P9 |",
+        "| Family or model | CM-P8 kept | CM-P8 | CM-P9 mean rise | CM-P9 |",
         "| --- | --- | --- | --- | --- |",
     ]
-    for family, found in report["families"].items():
+    for family, found in [*report["families"].items(), *report.get("models", {}).items()]:
         p8, p9 = found["CM-P8"], found["CM-P9"]
         rise = "n/a" if p9["mean_rise"] is None else f"{p9['mean_rise']:.2f}"
         lines.append(

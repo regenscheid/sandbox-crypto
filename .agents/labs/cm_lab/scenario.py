@@ -253,24 +253,41 @@ WORDS_OF_THE_PAST: Final = (
 
 @dataclass(frozen=True)
 class Arm:
-    """One session of the lab: its model family, ceiling and fold writer."""
+    """One session of the lab: its model family and model, ceiling, fold writer, and the
+    most it may spend, in USD as its calls report it."""
 
     name: str
     family: Literal["claude", "gpt"]
     ceiling: int
     skeleton_only: bool = False
+    model: Literal["primary", "second", "claude"] = "primary"
+    """Which alias runs it: the plan's primary GPT model, its second, or Claude's."""
+    budget: float = 0.0
+    proposed: bool = False
+    """Beyond the base plan: run only once the plan is confirmed (``arm --proposed``)."""
+    deferred: bool = False
+    """Not in this round: the owner's conditions leave Claude out (2026-10-16)."""
 
 
+# Round 1 runs on OpenAI models alone, through the gateway's arrcodex aliases, within
+# USD 500 in all, the seed included (the owner, 2026-10-16). Each cap is about what the
+# arm costs if half its input is read from the cache; ``drive.estimate`` gives the range.
 ARMS: Final = (
-    Arm("claude-250-a", "claude", 250_000),
-    Arm("claude-250-b", "claude", 250_000),
-    Arm("gpt-250-a", "gpt", 250_000),
-    Arm("gpt-250-b", "gpt", 250_000),
-    Arm("claude-600", "claude", 600_000),
-    Arm("gpt-600", "gpt", 600_000),
-    Arm("claude-250-skeleton", "claude", 250_000, skeleton_only=True),
-    Arm("gpt-250-skeleton", "gpt", 250_000, skeleton_only=True),
+    Arm("gpt-250-a", "gpt", 250_000, budget=20),
+    Arm("gpt-250-b", "gpt", 250_000, budget=20),
+    Arm("gpt-600", "gpt", 600_000, budget=80),
+    Arm("gpt-250-skeleton", "gpt", 250_000, skeleton_only=True, budget=20),
+    Arm("gpt-600-b", "gpt", 600_000, budget=80, proposed=True),
+    Arm("second-250", "gpt", 250_000, model="second", budget=35, proposed=True),
+    Arm("second-600", "gpt", 600_000, model="second", budget=150, proposed=True),
+    Arm("claude-250-a", "claude", 250_000, model="claude", deferred=True),
+    Arm("claude-250-b", "claude", 250_000, model="claude", deferred=True),
+    Arm("claude-600", "claude", 600_000, model="claude", deferred=True),
+    Arm("claude-250-skeleton", "claude", 250_000, True, model="claude", deferred=True),
 )
+SEED_BUDGET: Final = 30.0
+TOTAL_BUDGET: Final = 500.0
+"""The most the whole round may spend, seed included: no step starts past it."""
 ARM_BY_NAME: Final = {arm.name: arm for arm in ARMS}
 SEED_SHARE: Final = 0.70
 """Each arm starts from the last seed snapshot whose view was at most this share of its
