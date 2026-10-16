@@ -13,6 +13,7 @@ import type { EntryFlag, EntryView, SourceRead, Standing, WorkRecord } from './a
 import { hostileMarkup } from './approvalTesting';
 import { fieldRows } from './ledger';
 import {
+  acceptedLabel,
   anchorView,
   coveredText,
   provenanceView,
@@ -177,6 +178,36 @@ describe('where a revision comes from', () => {
     expect(html).toContain(words);
     expect(html).toContain("the user's words, quoted by the agent");
     expect(html).toContain('href="#/projects/p1/documents/doc-1/revisions/3/blocks/b4"');
+    expect(hostileMarkup(html)).toBe(false);
+  });
+});
+
+describe("a fold's proposal the user accepted", () => {
+  // CM-15: the ledger keeps the model's basis on the user's revision; the digest marks it.
+  const accepted = entry({
+    type: 'decision',
+    status: 'in_effect',
+    basis: 'observed',
+    anchors: [{ message: 'msg-0123456789abcdef', kind: 'tool_result' }],
+    author: { kind: 'user', user: 'user' },
+  });
+
+  it('is labelled accepted by the user, and is a standing constraint in effect', () => {
+    const view = provenanceView('p1', accepted);
+    expect(view.accepted && view.constraint).toBe(true);
+    expect(view.basis).toBe(
+      "[observed, accepted by the user]: written by a fold's model from folded messages",
+    );
+    expect(acceptedLabel(null)).toBe('[basis not recorded, accepted by the user]');
+    // The user's own words are the user's, never "accepted"; an agent's are the agent's.
+    expect(provenanceView('p1', { ...accepted, basis: 'user' }).accepted).toBe(false);
+    expect(provenanceView('p1', { ...accepted, author: { kind: 'agent' } }).accepted).toBe(false);
+    expect(provenanceView('p1', { ...accepted, status: 'proposed' }).constraint).toBe(false);
+    const html = render(ResearchState, { props: { projectId: 'p1', entry: accepted } }).body;
+    expect(html).toContain('<dt>Standing constraint</dt>');
+    expect(html).toContain("written by a fold's model, accepted by the user");
+    expect(html).toContain('[observed, accepted by the user]');
+    expect(html).toContain('href="#/projects/p1/messages/msg-0123456789abcdef"');
     expect(hostileMarkup(html)).toBe(false);
   });
 });

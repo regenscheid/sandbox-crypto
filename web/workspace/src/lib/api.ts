@@ -9,6 +9,7 @@
 import type {
   ArtifactListing,
   Category,
+  FoldProposalList,
   FrontierAnswer,
   FrontierCategories,
   FrontierCategory,
@@ -28,6 +29,7 @@ import type {
   ProjectListing,
   ProjectSkills,
   ProjectView,
+  ProposalView,
   RunEntry,
   RunTree,
   SessionDetail,
@@ -641,6 +643,28 @@ export const api = {
     post<LedgerChangeAnswer>(
       `/projects/${part(project)}/ledger/${part(entry)}/dominates/dropped`,
       drop,
+    ),
+  /** A session's fold proposals waiting (CM-15), oldest first. */
+  foldProposals: (project: string, session: string) =>
+    get<FoldProposalList>(`/projects/${part(project)}/sessions/${part(session)}/proposals`).then(
+      (found) => found.proposals,
+    ),
+  /** The user's acceptance of a fold's proposal, which the ledger records as the user's. */
+  acceptFoldProposal: (
+    project: string,
+    session: string,
+    proposal: string,
+    body: { operation_id: string },
+  ) =>
+    post<Record<string, Json>>(
+      `/projects/${part(project)}/sessions/${part(session)}/proposals/${part(proposal)}/accepted`,
+      body,
+    ),
+  /** The user's dismissal of a fold's proposal, with the reason. */
+  dismissFoldProposal: (project: string, session: string, proposal: string, reason: string) =>
+    post<ProposalView>(
+      `/projects/${part(project)}/sessions/${part(session)}/proposals/${part(proposal)}/dismissed`,
+      { reason },
     ),
   /** A page of an entry's revisions, newest first, before `before`. */
   ledgerHistory: (project: string, entry: string, before: number | null = null) =>

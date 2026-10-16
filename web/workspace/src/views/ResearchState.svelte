@@ -44,8 +44,12 @@
     {#if provenance.constraint}
       <dt>Standing constraint</dt>
       <dd>
-        A decision in effect on the user's words{#if quotes.length}; their words, as the platform
-          found them in their message:{/if}
+        {#if provenance.accepted}
+          A decision in effect, written by a fold's model, accepted by the user.
+        {:else}
+          A decision in effect on the user's words{#if quotes.length}; their words, as the platform
+            found them in their message:{/if}
+        {/if}
         {#each quotes as anchor, i (i)}<blockquote class="text">{anchor.quote}</blockquote>{/each}
       </dd>
     {/if}

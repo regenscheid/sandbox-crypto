@@ -155,7 +155,7 @@
     {#each earlier as run (run.run)}
       <details>
         <summary>Run <code>{run.run}</code>: {runState(run)}</summary>
-        <ChatRun {run} />
+        <ChatRun {run} {projectId} />
         {#each closedOf(run) as question (question.question_id)}
           <ChatQuestion {question} {now} answer={(body) => answer(question, body)} />
         {/each}
@@ -169,7 +169,7 @@
             onclick={() => cancel(current.run)}>Cancel run</button
           >{/if}
       </p>
-      <ChatRun run={current} />
+      <ChatRun run={current} {projectId} />
       {#each closedOf(current) as question (question.question_id)}
         <ChatQuestion {question} {now} answer={(body) => answer(question, body)} />
       {/each}

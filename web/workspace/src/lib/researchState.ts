@@ -218,19 +218,48 @@ export function anchorView(project: string, anchor: Record<string, unknown>): An
   return { text: visible(JSON.stringify(anchor)), href: null, quote: null };
 }
 
-/** A revision's basis and anchors, and whether it is the user's standing constraint. */
+const ACCEPTED_WORDS: Record<string, string> = {
+  user_quoted: 'user quoted',
+  observed: 'observed',
+  interpreted: 'interpreted',
+};
+
+/** A basis the user accepted from a fold's proposal, as the digest marks it: the words
+ * are the fold's model's, accepted by the user (CM-15). */
+export function acceptedLabel(basis: string | null): string {
+  return `[${(basis !== null && ACCEPTED_WORDS[basis]) || 'basis not recorded'}, accepted by the user]`;
+}
+
+/** Whether a revision or record is a fold's proposal the user accepted: the user's, with a
+ * basis not the user's own (the ledger keeps the proposal's). */
+export function acceptedFromFold(record: {
+  basis: string | null;
+  author?: Record<string, unknown>;
+}): boolean {
+  return record.author?.['kind'] === 'user' && record.basis !== null && record.basis !== 'user';
+}
+
+/** A revision's basis and anchors, and whether it is a standing constraint: one on the
+ * user's words, or a fold's proposal the user accepted (`accepted`). */
 export function provenanceView(
   project: string,
-  record: Pick<EntryView, 'basis' | 'anchors'> & Partial<Pick<EntryView, 'type' | 'status'>>,
-): { basis: string | null; anchors: AnchorView[]; constraint: boolean } {
-  const basis = record.basis === null ? null : (BASIS_WORDS[record.basis] ?? visible(record.basis));
+  record: Pick<EntryView, 'basis' | 'anchors'> &
+    Partial<Pick<EntryView, 'type' | 'status' | 'author'>>,
+): { basis: string | null; anchors: AnchorView[]; constraint: boolean; accepted: boolean } {
+  const accepted = acceptedFromFold(record);
+  const words = record.basis === null ? null : (BASIS_WORDS[record.basis] ?? visible(record.basis));
+  const basis = accepted
+    ? `${acceptedLabel(record.basis)}: written by a fold's model from folded messages`
+    : words;
   return {
     basis,
     anchors: record.anchors.map((anchor) => anchorView(project, anchor)),
-    // A decision in effect on the user's words is a standing constraint (CM-16).
+    accepted,
+    // A decision in effect on the user's words is a standing constraint (CM-16), and so is
+    // one the user accepted from a fold's proposal.
     constraint:
       record.type === 'decision' &&
       record.status === 'in_effect' &&
-      (record.basis === 'user' || record.basis === 'user_quoted'),
+      (record.basis === 'user' || record.basis === 'user_quoted' || accepted),
   };
 }
