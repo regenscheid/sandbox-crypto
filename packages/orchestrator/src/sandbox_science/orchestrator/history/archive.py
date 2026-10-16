@@ -49,6 +49,7 @@ from typing import Any, Final, Literal, cast
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.control.errors import INVALID_REQUEST, NOT_FOUND
+from sandbox_science.orchestrator.messages import MESSAGES, thoughts
 from sandbox_science.orchestrator.model import AssistantMessage
 
 Json = dict[str, Any]
@@ -206,10 +207,15 @@ class Entry:
     @property
     def searched(self) -> str | None:
         """The text the indexes cover: ``text``, less the retrievals' calls and results
-        and the state blocks, which copy what the indexes cover."""
+        and the state blocks, which copy what the indexes cover, and with the text of a
+        Claude answer's thinking blocks that it does not hold, its reasoning summaries
+        (CM-38)."""
         if self.kind == "state_block" or (self.kind == "tool_result" and self.source in UNINDEXED):
             return None
-        return self._text(UNINDEXED)
+        text = self._text(UNINDEXED)
+        if self.native_format == MESSAGES and self.native is not None:
+            text = "\n".join([text, *(t for t in thoughts(self.native) if t not in text)])
+        return text
 
     def _text(self, left_out: frozenset[str]) -> str:
         calls = [

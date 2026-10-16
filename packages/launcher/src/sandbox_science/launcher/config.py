@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import ipaddress
 import tomllib
+from datetime import date
 from pathlib import Path
 from typing import Annotated, Literal, Self, cast
 from urllib.parse import urlsplit
@@ -138,6 +139,21 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+ApiKind = Literal["chat", "responses", "messages"]
+"""The adapters the run service has (``--api ALIAS=KIND``)."""
+
+
+class ThinkingReplayConfig(_Strict):
+    """Claude's thinking sent back (docs/specs/context-management.md, CM-39), on the
+    gateway image a CM-F30 run verified: that image's digest as deployed, the version
+    its ``x-litellm-version`` header reports, the run's date and its ID."""
+
+    image: str = Field(min_length=1, max_length=256)
+    version: str = Field(min_length=1, max_length=256)
+    verified: date
+    run: str = Field(min_length=1, max_length=256)
+
+
 class ModelConfig(_Strict):
     url: str
     """The OpenAI-compatible gateway, such as LiteLLM."""
@@ -164,14 +180,19 @@ class ModelConfig(_Strict):
     """Seconds between check-ins; the run service's default (1,800) when unset."""
     delegated: str | None = Field(default=None, min_length=1)
     """The alias delegated runs call; the main agent's when unset."""
-    api: dict[Annotated[str, StringConstraints(min_length=1)], Literal["chat", "responses"]] = (
-        Field(default_factory=dict[str, Literal["chat", "responses"]])
+    api: dict[Annotated[str, StringConstraints(min_length=1)], ApiKind] = Field(
+        default_factory=dict[str, ApiKind]
     )
     """The gateway API the run service calls each alias through, in any role
-    (docs/specs/context-management.md, CM-41): ``chat`` (``/chat/completions``) or
+    (docs/specs/context-management.md, CM-41): ``chat`` (``/chat/completions``),
     ``responses`` (``/v1/responses``, GPT's Responses API, with its reasoning sent back,
-    CM-40). An alias it leaves out takes ``chat``, as every alias does by default, until
-    the labs confirm the others."""
+    CM-40) or ``messages`` (``/v1/messages``, Claude's Messages API with its progress
+    notes, CM-38). An alias it leaves out takes ``chat``, as every alias does by default,
+    until the labs confirm the others."""
+    thinking_replay: ThinkingReplayConfig | None = None
+    """Claude's thinking sent back on the gateway image a CM-F30 run verified (CM-39),
+    for the aliases ``api`` names ``messages``; off by default, until a LiteLLM release
+    with its thinking fixes passes it."""
     daily_cost_limit: float | None = Field(default=None, ge=0, le=1_000_000_000)
     """What each project's runs may cost over a rolling 24 hours, as the gateway reports
     it, in its currency (normally USD); ``up`` sets it for each project. Unset, as by
@@ -192,6 +213,12 @@ class ModelConfig(_Strict):
             "the model gateway's URL is https, or http on a loopback IP address such as "
             "127.0.0.1: the key would go to it in the clear"
         )
+
+    @model_validator(mode="after")
+    def _replay(self) -> Self:
+        if self.thinking_replay is not None and "messages" not in self.api.values():
+            raise ValueError('thinking_replay is for the aliases api names "messages"; none is')
+        return self
 
 
 class SessionConfig(_Strict):

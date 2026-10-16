@@ -23,10 +23,18 @@ watcher = "sandbox-orchestrator"
 delegated = "sandbox-orchestrator"
 # The gateway API each alias is called through: "chat" (/chat/completions, every alias's
 # by default) or "responses" (/v1/responses, GPT's Responses API with its reasoning sent
-# back). Leave it out until the labs confirm the others.
+# back), or "messages" (/v1/messages, Claude's Messages API with its progress
+# notes). Leave it out until the labs confirm the others.
 # api = { sandbox-orchestrator = "responses" }
 # Only the run service reads this file; keep it mode 600.
 api_key_file = "~/.config/sandbox-science/secrets/litellm-harness.key"
+# Claude's thinking sent back, once the CM-F30 run passes against the deployed gateway
+# image (a LiteLLM release with its thinking fixes), which this names; off without it.
+# [model.thinking_replay]
+# image = "sha256:<the image's digest>"
+# version = "<its x-litellm-version>"
+# verified = 2026-11-02
+# run = "<the CM-F30 run's ID>"
 
 [run_service]
 # The math checks on the documents' formulas: npm run build:math in web/workspace, and

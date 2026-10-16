@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import stat
 import threading
 import tomllib
@@ -309,6 +310,27 @@ def test_the_run_service_calls_each_alias_through_the_api_the_config_names(
     for wrong in ({"main": "carrier-pigeon"}, {"": "chat"}):
         with pytest.raises(LauncherError, match="api"):
             load_config(make_config({"model": {"api": wrong}}))
+
+
+def test_the_run_service_calls_claude_aliases_through_messages_with_the_replay_setting(
+    make_config: Any, commands: Path
+) -> None:
+    """CM-38, CM-39: an alias ``api`` names ``messages`` goes to the run service so,
+    with the thinking replay setting when there is one, off by default. A setting with
+    no Claude alias to use it is refused."""
+    replay = {"image": "sha256:" + "a" * 64, "version": "1.107.0", "verified": "2026-11-02",
+              "run": "cm-f30-1"}  # fmt: skip
+    model = {"api": {"sandbox-orchestrator": "messages"}, "thinking_replay": replay}
+    config = load_config(make_config({"bin_dir": str(commands), "model": model}))
+    harness = parts.harness_argv(config, Layout(config.state_dir))
+    named = [harness[i + 1] for i, flag in enumerate(harness) if flag == "--api"]
+    assert named == ["sandbox-orchestrator=messages"]
+    assert json.loads(harness[harness.index("--thinking-replay") + 1]) == replay
+    plain = load_config(make_config({"bin_dir": str(commands)}))
+    assert "--thinking-replay" not in parts.harness_argv(plain, Layout(plain.state_dir))
+    for unused in ({}, {"x": "responses"}):
+        with pytest.raises(LauncherError, match="thinking_replay"):
+            load_config(make_config({"model": {"api": unused, "thinking_replay": replay}}))
 
 
 def fake_node(directory: Path, version: str) -> Path:

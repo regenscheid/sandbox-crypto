@@ -481,6 +481,7 @@ async def test_a_run_rides_out_a_rate_limit_and_records_its_usage(harness: Harne
             "output_tokens": 1,
             "cost": None,
             "gateway_version": GATEWAY_VERSION,  # each call's, as the run record keeps it
+            "thinking_replay": None,  # chat completions sends no thinking back
         }
         for tokens in (first, last)
     ]
