@@ -120,11 +120,11 @@ def index(entries: Sequence[Entry], budget: int = BUDGET) -> tuple[list[str], Sh
     by the topics the import's pass found, or by pack, entry skills keeping a description;
     then the groups with their counts, by topic or, past the budget, by pack, and as many
     packs as fit; the counts never pass the budget."""
-    lines = [_line(e, _shown(e)) for e in entries]
+    lines = [_line(e, shown(e)) for e in entries]
     if _size(lines) <= budget:
         return lines, "none"
     for keep in _CUTS:
-        lines = [_line(e, cut(_shown(e), keep)) for e in entries]
+        lines = [_line(e, cut(shown(e), keep)) for e in entries]
         if _size(lines) <= budget:
             return lines, "descriptions"
     groups: dict[str, list[str]] = {}
@@ -133,7 +133,7 @@ def index(entries: Sequence[Entry], budget: int = BUDGET) -> tuple[list[str], Sh
             continue  # listed with its description
         group = f"{entry.source} · {entry.topic}" if entry.topic else entry.source
         groups.setdefault(group, []).append(entry.name)
-    named = [_line(e, cut(_shown(e), ENTRY_CUT)) for e in entries if e.entry]
+    named = [_line(e, cut(shown(e), ENTRY_CUT)) for e in entries if e.entry]
     named += [f"- {group}: {', '.join(names)}" for group, names in groups.items()]
     if _size(named) <= budget:
         return named, "topics" if any(entry.topic for entry in entries) else "names"
@@ -158,8 +158,12 @@ def index(entries: Sequence[Entry], budget: int = BUDGET) -> tuple[list[str], Sh
     return kept, "counts"
 
 
-def _shown(entry: Entry) -> str:
-    """A skill's description in the index: the pass's short one, marked, for one too long."""
+def shown(entry: Entry) -> str:
+    """A skill's description as the index and notices give it: the user's own, set in the
+    project's settings; else the pass's short one, marked, for one too long; else the
+    pack's (SK-33)."""
+    if entry.short and entry.short_by == "user":
+        return entry.short
     return f"(derived) {entry.short}" if entry.short else entry.description
 
 

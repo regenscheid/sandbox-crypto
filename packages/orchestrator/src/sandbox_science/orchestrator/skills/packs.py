@@ -23,7 +23,9 @@ from markdown_it import MarkdownIt
 from markdown_it.token import Token
 
 from sandbox_science.orchestrator.documents.agent_text import (
+    CHIPS,
     hidden_characters,
+    is_hidden,
     newlines,
     visible,
 )
@@ -36,6 +38,12 @@ MAX_BODY_BYTES: Final = 64 * 1024
 MAX_FRONT_MATTER: Final = 16 * 1024
 MAX_DESCRIPTION: Final = 1024
 MAX_METADATA_BYTES: Final = 16 * 1024
+SHORT: Final = 300
+"""A skill's short description, derived or the user's, at most."""
+TOPIC: Final = 60
+"""A topic's name, derived or the user's, at most."""
+VARIABLE: Final = re.compile(r"[A-Z][A-Z0-9_]{1,63}")
+"""An environment variable a binding names."""
 NAME: Final = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?")
 """A skill's name, and a source's: lowercase letters, digits and inner hyphens."""
 _FRONT: Final = re.compile(r"---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)(.*)", re.DOTALL)
@@ -235,6 +243,28 @@ def _targets(tokens: list[Token]) -> list[str]:
             elif child.type == "image" and isinstance(src := child.attrs.get("src"), str):
                 found.append(src)
     return found
+
+
+def plain_text(value: object) -> str:
+    """Text the pass derives or the user sets, without control, hidden or look-alike
+    characters, on one line."""
+    if not isinstance(value, str):
+        return ""
+    kept = "".join(
+        char
+        for char in value
+        if not is_hidden(char)
+        and ord(char) not in CHIPS[2]
+        and (char.isprintable() or char.isspace())
+    )
+    return " ".join(kept.split())
+
+
+def topic_name(value: object) -> str:
+    """A topic's name, without what could pass for the index's own notation: brackets,
+    slashes, colons and a leading list mark."""
+    text = re.sub(r"[\[\]()/:·]", " ", plain_text(value))
+    return " ".join(text.split()).lstrip("-\u2013\u2014*\u2022 ").strip()
 
 
 def snapshot_sha256(files: tuple[PackFile, ...]) -> str:

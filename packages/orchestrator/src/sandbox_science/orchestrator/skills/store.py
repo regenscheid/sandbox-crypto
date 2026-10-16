@@ -16,8 +16,8 @@ import json
 import re
 import sqlite3
 import struct
-from collections.abc import Collection, Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, Final, cast
 
@@ -26,13 +26,32 @@ from sandbox_science.orchestrator.control.errors import CONFLICT, INVALID_REQUES
 from sandbox_science.orchestrator.documents.models import Author
 
 from .builtin import BUILTIN, DELEGATING, PLATFORM, ROLES
-from .packs import NAME, Snapshot, body, broken_links, hidden, served, snapshot
+from .packs import (
+    NAME,
+    SHORT,
+    TOPIC,
+    VARIABLE,
+    Snapshot,
+    body,
+    broken_links,
+    hidden,
+    plain_text,
+    served,
+    snapshot,
+    topic_name,
+)
 from .sources import Fetched
 
 REPORT_ITEMS: Final = 200
 """Items a report lists of each kind; it counts the rest."""
 MAX_LOADED: Final = 100_000
 """Characters of skill text one run is given, those loaded at its start included (SK-39)."""
+MAX_OVERRIDDEN: Final = 500
+"""Skills a project overrides, and bindings it takes away, at most each (SK-33)."""
+OVERRIDES_BYTES: Final = 131072
+"""The overrides as JSON, at most as the control store keeps them (version 45)."""
+USER_SET_BYTES: Final = 262144
+"""The projects' overrides an import's report lists, at most as JSON; it counts the rest."""
 MAX_ALWAYS: Final = 20
 MAX_EXCLUDED: Final = 500
 SETTINGS_BYTES: Final = {"always": 16384, "excluded": 65536}
@@ -70,6 +89,9 @@ class Pin:
     changes: dict[str, Any] | None = None
     """When a pin just moved: the revision it left, and the skills added, removed and
     changed since (SK-28)."""
+    user_set: dict[str, Any] | None = None
+    """The project's overrides of what the pass derived for this source's skills, and the
+    bindings it may not have, as the user set them (SK-33)."""
 
 
 @dataclass(frozen=True)
@@ -89,6 +111,8 @@ class Entry:
     """The topic the pass put the skill in."""
     entry: bool = False
     """Whether the pass found that the skill routes work to its pack's others."""
+    short_by: str | None = None
+    """Who wrote ``short``: ``derived`` by the pass, or ``user`` in the settings."""
 
     @property
     def qualified(self) -> str:
@@ -114,6 +138,10 @@ class SkillSettings:
     revision: int
     always: tuple[str, ...] = ()
     excluded: tuple[str, ...] = ()
+    overrides: dict[str, Any] = field(default_factory=dict[str, Any])
+    """The user's overrides of what the import's pass derives (SK-33): ``skills``, each
+    qualified ID's ``description``, ``topic`` and ``entry``, and ``unbound``, each
+    source's derived bindings it may not have."""
 
 
 class SkillStore:
@@ -168,6 +196,11 @@ class SkillStore:
                 report["changes"] = {"since": latest.import_id, **_changes(db, latest, snapshot)}
             if derived is not None:
                 report["derived"] = derived
+            user, more = _user_set(db, source, {skill.name for skill in snapshot.skills})
+            if user:
+                report["user_set"] = user  # by project: what overrides the pass (SK-33)
+            if more:
+                report["user_set_more"] = more  # projects whose overrides did not fit
             if source == BUILTIN:
                 # Each project's built-in skills that a pinned pack's of the same name
                 # leaves out of its runs (SK-4).
@@ -315,16 +348,20 @@ class SkillStore:
                     "ORDER BY name",
                     (found.snapshot,),
                 ):
-                    entry = Entry(
-                        pin.source,
-                        name,
-                        served(description),
-                        body,
-                        found.snapshot,
-                        revision,
-                        served(shorts[name]) if name in shorts else None,
-                        served(topics[name]) if name in topics else None,
-                        name in entries_of,
+                    entry = _overridden(
+                        Entry(
+                            pin.source,
+                            name,
+                            served(description),
+                            body,
+                            found.snapshot,
+                            revision,
+                            served(shorts[name]) if name in shorts else None,
+                            served(topics[name]) if name in topics else None,
+                            name in entries_of,
+                            "derived" if name in shorts else None,
+                        ),
+                        settings.overrides,
                     )
                     roles = ROLES.get(name, ("main",)) if pin.source == BUILTIN else None
                     if entry.qualified in settings.excluded or (
@@ -536,7 +573,8 @@ class SkillStore:
                     CONFLICT, f"the skill settings are at revision {current.revision}"
                 )
             db.execute(
-                "INSERT INTO project_skill_settings VALUES(?,?,?,?,?,?) ON CONFLICT(project) DO "
+                "INSERT INTO project_skill_settings(project,revision,always,omitted,author,"
+                "changed) VALUES(?,?,?,?,?,?) ON CONFLICT(project) DO "
                 "UPDATE SET revision=excluded.revision,always=excluded.always,"
                 "omitted=excluded.omitted,author=excluded.author,changed=excluded.changed",
                 (
@@ -549,6 +587,75 @@ class SkillStore:
                 ),
             )
             return _settings(db, project)
+
+    def set_overrides(
+        self,
+        project: str,
+        author: Author,
+        expected: int,
+        *,
+        skills: Mapping[str, Mapping[str, object]],
+        unbound: Mapping[str, Sequence[str]],
+    ) -> SkillSettings:
+        """The user's overrides of what the pass derives, in place of the project's
+        current ones, read at ``expected`` (SK-33): for each skill by qualified ID a
+        ``description``, ``topic`` or ``entry``, and for each source the derived bindings
+        its skills may not have. They win over what any pass derives, and survive pins."""
+        if author.kind != "user":
+            raise ControlError(INVALID_REQUEST, "only the user overrides skills")
+        kept: dict[str, dict[str, object]] = {}
+        for skill, fields in skills.items():
+            source, _, name = skill.partition("/")
+            if not (NAME.fullmatch(source) and NAME.fullmatch(name)):
+                raise ControlError(INVALID_REQUEST, f"{skill[:80]!r} is not a source/name ID")
+            if fields:
+                kept[skill] = _fields(skill, fields)
+        bound: dict[str, list[str]] = {}
+        for source, variables in unbound.items():
+            _source(source)
+            if variables:
+                if any(not VARIABLE.fullmatch(v) for v in variables):
+                    raise ControlError(INVALID_REQUEST, f"{source}'s bindings name no variable")
+                bound[source] = sorted(set(variables))
+        if len(kept) > MAX_OVERRIDDEN or sum(len(v) for v in bound.values()) > MAX_OVERRIDDEN:
+            raise ControlError(INVALID_REQUEST, f"at most {MAX_OVERRIDDEN} of each are overridden")
+        overrides = {"skills": kept, "unbound": bound}
+        if len(text := json.dumps(overrides)) > OVERRIDES_BYTES:
+            raise ControlError(INVALID_REQUEST, f"the overrides pass {OVERRIDES_BYTES:,} bytes")
+        with self.control.write() as tx:
+            db = tx.sql
+            if not db.execute("SELECT 1 FROM projects WHERE project_id=?", (project,)).fetchone():
+                raise ControlError(NOT_FOUND, f"there is no project {project!r}")
+            if (current := _settings(db, project).revision) != expected:
+                raise ControlError(CONFLICT, f"the skill settings are at revision {current}")
+            db.execute(
+                "INSERT INTO project_skill_settings(project,revision,always,omitted,author,"
+                "changed,overrides) VALUES(?,?,'[]','[]',?,?,?) ON CONFLICT(project) DO "
+                "UPDATE SET revision=excluded.revision,overrides=excluded.overrides,"
+                "author=excluded.author,changed=excluded.changed",
+                (project, expected + 1, author.model_dump_json(), _now(), text),
+            )
+            return _settings(db, project)
+
+    def bindings(self, project: str, derived: tuple[str, str] | None) -> dict[str, dict[str, str]]:
+        """Each pinned source's bindings the pass of ``derived``, an alias and version,
+        found, less those the project's overrides take away (SK-30, SK-33)."""
+        if self.control.missing or derived is None:
+            return {}
+        with self.control.read() as tx:
+            db = tx.sql
+            unbound = cast(
+                dict[str, list[str]], _settings(db, project).overrides.get("unbound", {})
+            )
+            found: dict[str, dict[str, str]] = {}
+            for pin in _pins(db, project):
+                given = cast(
+                    dict[str, str], _derived(db, pin.pinned.snapshot, derived).get("bindings", {})
+                )
+                kept = {k: v for k, v in given.items() if k not in unbound.get(pin.source, [])}
+                if kept:
+                    found[pin.source] = kept
+        return found
 
     def pins(self, project: str) -> list[Pin]:
         """The project's pins, by source."""
@@ -576,13 +683,39 @@ def unpack(blob: bytes) -> list[float]:
     return list(struct.unpack(f"<{len(blob) // 4}f", blob))
 
 
+def _fields(skill: str, fields: Mapping[str, object]) -> dict[str, object]:
+    """A skill's overrides, checked: a description and a topic as derived text is, and
+    whether it is an entry skill."""
+    unknown = set(fields) - {"description", "topic", "entry"}
+    if unknown:
+        raise ControlError(INVALID_REQUEST, f"no override {sorted(unknown)[0]!r} for {skill}")
+    kept: dict[str, object] = {}
+    if "description" in fields:
+        text = plain_text(fields["description"])
+        if not 0 < len(text) <= SHORT:
+            raise ControlError(INVALID_REQUEST, f"{skill}'s description is 1 to {SHORT} characters")
+        kept["description"] = text
+    if "topic" in fields:
+        text = topic_name(fields["topic"])
+        if not 0 < len(text) <= TOPIC:
+            raise ControlError(INVALID_REQUEST, f"{skill}'s topic is 1 to {TOPIC} characters")
+        kept["topic"] = text
+    if "entry" in fields:
+        if not isinstance(fields["entry"], bool):
+            raise ControlError(INVALID_REQUEST, f"{skill}'s entry is true or false")
+        kept["entry"] = fields["entry"]
+    return kept
+
+
 def _settings(db: sqlite3.Connection, project: str) -> SkillSettings:
     row = db.execute(
-        "SELECT revision,always,omitted FROM project_skill_settings WHERE project=?", (project,)
+        "SELECT revision,always,omitted,overrides FROM project_skill_settings WHERE project=?",
+        (project,),
     ).fetchone()
     if row is None:
         return SkillSettings(project, 0)
-    return SkillSettings(project, row[0], tuple(json.loads(row[1])), tuple(json.loads(row[2])))
+    always, omitted = tuple(json.loads(row[1])), tuple(json.loads(row[2]))
+    return SkillSettings(project, row[0], always, omitted, json.loads(row[3]))
 
 
 def _source(source: str) -> None:
@@ -711,7 +844,64 @@ def _pins(db: sqlite3.Connection, project: str, source: str | None = None) -> li
             else pin
             for pin in pins
         ]
+        overrides = _settings(db, project).overrides
+        pins = [
+            replace(pin, user_set=found)
+            if (found := _of_source(overrides, pin.source, set(pin.skills)))
+            else pin
+            for pin in pins
+        ]
     return pins
+
+
+def _of_source(overrides: dict[str, Any], source: str, names: set[str]) -> dict[str, Any]:
+    """``source``'s overrides: its skills' and its bindings', with those of skills its
+    snapshot lacks named apart (kept for a later import that has them)."""
+    skills = {
+        skill: fields
+        for skill, fields in cast(dict[str, Any], overrides.get("skills", {})).items()
+        if skill.partition("/")[0] == source
+    }
+    found: dict[str, Any] = {}
+    if present := {k: v for k, v in skills.items() if k.partition("/")[2] in names}:
+        found["skills"] = present
+    if absent := sorted(k for k in skills if k.partition("/")[2] not in names):
+        found["kept_for_absent_skills"] = absent
+    if unbound := cast(dict[str, list[str]], overrides.get("unbound", {})).get(source):
+        found["unbound"] = unbound
+    return found
+
+
+def _user_set(db: sqlite3.Connection, source: str, names: set[str]) -> tuple[dict[str, Any], int]:
+    """For an import's report: each project's overrides of ``source``'s skills, as many
+    as fit in ``USER_SET_BYTES``, and how many projects' more there are."""
+    found: dict[str, Any] = {}
+    size = more = 0
+    for project, text in db.execute(
+        "SELECT project,overrides FROM project_skill_settings ORDER BY project"
+    ).fetchall():
+        if of := _of_source(json.loads(text), source, names):
+            size += len(json.dumps(of))
+            if size > USER_SET_BYTES:
+                more += 1
+            else:
+                found[project] = of
+    return found, more
+
+
+def _overridden(entry: Entry, overrides: dict[str, Any]) -> Entry:
+    """``entry`` with the user's overrides, which win over what the pass derived."""
+    fields = cast(dict[str, Any], overrides.get("skills", {})).get(entry.qualified)
+    if not fields:
+        return entry
+    changed: dict[str, Any] = {}
+    if "description" in fields:
+        changed |= {"short": served(fields["description"]), "short_by": "user"}
+    if "topic" in fields:
+        changed["topic"] = served(fields["topic"])
+    if "entry" in fields:
+        changed["entry"] = bool(fields["entry"])
+    return replace(entry, **changed)
 
 
 def _displaced(db: sqlite3.Connection, project: str, names: set[str]) -> list[str]:

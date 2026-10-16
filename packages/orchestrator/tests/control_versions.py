@@ -44,6 +44,9 @@ TEXT_MATH = migrations.BASELINE + 14
 BUILTIN_SKILLS = migrations.BASELINE + 40
 """The version that let an import be of the built-in skills and tied the name to them."""
 
+SKILL_OVERRIDES = migrations.BASELINE + 43
+"""The version that added the projects' overrides of what the import's pass derives."""
+
 EMPTY_SHA = "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
 """The SHA-256 of ``{}``, the empty macro setting."""
 
