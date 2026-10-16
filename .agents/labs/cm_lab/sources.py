@@ -40,7 +40,8 @@ def hexdigits(label: str, count: int) -> str:
 
 
 # The curve: fictional, and not derived from any real curve (each file says so).
-P_FIELD: Final = digits("cm-lab p", 135)
+P_FIELD: Final = digits("cm-lab p", 134) + "7"
+"""Odd, as a prime field's p must be: round 1's ended in 6, which an agent noticed."""
 ORDER: Final = digits("cm-lab order", 135)
 GENERATOR_X: Final = digits("cm-lab generator x", 135)
 TWIST_OLD_BITS: Final = 132
@@ -86,7 +87,7 @@ LITERALS: Final = (
     Literal("eprint_b", "2031/1186", ("eprint", "source b", "b.pdf")),
     Literal("doi_c", "10.5555/kst.2031.044", ("doi", "source c", "c.pdf")),
     Literal("parameter_set", "K7-448-t3", ("parameter set", "parameters", "curve")),
-    Literal("generator_x", GENERATOR_X, ("base point", "generator", "x =", "x:", "x-coord")),
+    Literal("generator_x", GENERATOR_X, ("base point", "generator", "x coordinate", "x =")),
     Literal("rho_iterations", "2^61.37", ("iteration",)),
     Literal("fingerprint", hexdigits("cm-lab fingerprint", 16), ("fingerprint",)),
     Literal("seed", "0x" + hexdigits("cm-lab seed", 12), ("seed",)),

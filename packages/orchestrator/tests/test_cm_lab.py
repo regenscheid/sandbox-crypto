@@ -167,21 +167,55 @@ def test_an_arm_gets_the_seed_in_an_environment_of_its_own(tmp_path: Path) -> No
     arm = ProjectStore(tmp_path / "arm")
     found = arm.session_snapshot(PROJECT, SESSION)
     assert found.context.environment_id == "cm1-lab-arm" != seeded.environment_id
-    assert found.session.dedicated
+    # The session keeps its shape, as a run opening it checks (lab round 1).
+    assert not found.session.dedicated
+    assert arm.get(PROJECT).default_environment_id == "cm1-lab-arm"
+    assert arm.open_session(PROJECT, SESSION, dedicated=False).environment_id == "cm1-lab-arm"
     arm.close()
     with sqlite3.connect(tmp_path / "seed" / drive.FILE_NAME) as db:  # the seed is untouched
         (kept,) = db.execute("SELECT environment_id FROM sessions").fetchone()
     assert kept == seeded.environment_id
 
 
-def test_the_forecast_meets_the_spec_from_seeds_at_their_share() -> None:
-    """From a seed at 0.7 C, the live steps' estimated growth folds at least four times
-    in three runs at 250,000, and twice at 600,000."""
-    small = drive.forecast(int(0.7 * 250_000), 250_000, drive.growth())
-    large = drive.forecast(int(0.7 * 600_000), 600_000, drive.growth())
-    assert sum(small) >= 4
-    assert sum(1 for made in small if made) >= 3
-    assert sum(large) >= 2
+def test_a_run_kept_without_its_transcript_is_recovered_not_run_again(tmp_path: Path) -> None:
+    """Lab round 1, S01: the run was kept in the store, but its transcript's directory
+    did not exist. The step is then the store's last main run, and its record stands in
+    for the transcript: running it again would put its message in the session twice."""
+    store = ProjectStore(tmp_path / "state")
+    store.create(PROJECT, "crypto-base", "sha256:" + "c" * 64)
+    store.open_session(PROJECT, SESSION, dedicated=False)
+    first, second = scenario.SEED[0], scenario.SEED[1]
+    transcript = tmp_path / "runs" / f"{first.id}.json"
+    assert not drive.recovered(store, PROJECT, SESSION, first.message, transcript)
+    context = ExecutionContext(project_id=PROJECT, session_id=SESSION, environment_id="e")
+    store.save_run(
+        RunRecord(
+            run_id="s01",
+            context=context,
+            task=first.message,
+            started_at=START,
+            ended_at=START,
+            stopped="answered",
+            messages=[],
+            tools=[],
+        )
+    )
+    assert drive.recovered(store, PROJECT, SESSION, first.message, transcript)
+    assert json.loads(transcript.read_text())["task"] == first.message
+    later = tmp_path / "runs" / f"{second.id}.json"
+    assert not drive.recovered(store, PROJECT, SESSION, second.message, later)
+    store.close()
+
+
+def test_the_forecast_agrees_with_round_1() -> None:
+    """Calibrated on lab round 1's folds, which free their span and the old output they
+    stub: from round 1's seeds (149,820 and 399,508 tokens) it gives about what the arms
+    made, three to five folds at 250,000 and one at 600,000. The 600,000 arms need more
+    live growth than the scenario gives to fold twice (round 1, gpt-600)."""
+    small = drive.forecast(149_820, 250_000, drive.growth())
+    large = drive.forecast(399_508, 600_000, drive.growth())
+    assert 3 <= sum(small) <= 5
+    assert sum(large) == 1
 
 
 # Round 1's plan: OpenAI models alone, within USD 500 (the owner, 2026-10-16).
@@ -203,26 +237,37 @@ def test_the_plan_runs_no_claude_model_and_keeps_to_its_budget() -> None:
     assert sum(arm.budget for arm in runnable) + scenario.SEED_BUDGET <= scenario.TOTAL_BUDGET
     base = [arm.name for arm in runnable if not arm.proposed]
     assert base == ["gpt-250-a", "gpt-250-b", "gpt-600", "gpt-250-skeleton"]
-    with pytest.raises(SystemExit, match="deferred"):
+    with pytest.raises(SystemExit, match="leave Claude out"):
         drive.runnable("claude-600", proposed=True)
+    with pytest.raises(SystemExit, match="checkpoint"):
+        drive.runnable("gpt-600-b", proposed=True)
     with pytest.raises(SystemExit, match="--proposed"):
-        drive.runnable("gpt-600-b", proposed=False)
-    assert drive.runnable("gpt-600-b", proposed=True).ceiling == 600_000
+        drive.runnable("second-250", proposed=False)
+    assert drive.runnable("second-250", proposed=True).model == "second"
 
 
 def test_each_cap_holds_its_arm_with_half_its_input_cached() -> None:
-    """The caps are set at what an arm costs if half its input is read from the cache,
-    priced as the gateway prices it; the long-context rates apply past 272,000 tokens."""
-    prices = drive.Prices.of(GPT_6_SOL)
-    assert prices is not None
-    assert prices.cached_long == 4e-07
-    small = [drive.estimate(drive.views(250_000), prices, share) for share in (0.9, 0.5, 0.0)]
-    large = drive.estimate(drive.views(600_000), prices, 0.5)
-    seeded = drive.estimate(drive.seed_views(420_000), prices, 0.5)
+    """The caps hold what an arm costs as its calls report it, if half its input is read
+    from the cache: the reported costs price calls past 272,000 tokens at the base rates
+    (lab round 1), and the round's hard stop leaves room for the listed ones."""
+    listed = drive.Prices.of(GPT_6_SOL)
+    reported = drive.Prices.of({**GPT_6_SOL, "input_cost_per_token_above_272k_tokens": 2e-06,
+                                "cache_read_input_token_cost_above_272k_tokens": 2e-07,
+                                "output_cost_per_token_above_272k_tokens": 1e-05})  # fmt: skip
+    assert listed is not None
+    assert reported is not None
+    assert listed.cached_long == 4e-07
+    small = [drive.estimate(drive.views(250_000), reported, s) for s in (0.9, 0.5, 0.0)]
+    large = drive.estimate(drive.views(600_000), reported, 0.5)
+    seeded = drive.estimate(drive.seed_views(scenario.SEED_TARGET), reported, 0.5)
     assert small[0] < small[1] < small[2]
     assert small[1] <= scenario.ARM_BY_NAME["gpt-250-a"].budget < small[2]
     assert large <= scenario.ARM_BY_NAME["gpt-600"].budget
     assert seeded <= scenario.SEED_BUDGET
+    planned = sum(arm.budget for arm in scenario.ARMS if not arm.deferred)
+    assert planned + scenario.SEED_BUDGET <= scenario.TOTAL_BUDGET
+    at_listed = drive.estimate(drive.views(600_000), listed, 0.5)
+    assert scenario.TOTAL_BUDGET + (at_listed - large) <= 500
     assert drive.Prices.of({"input_cost_per_token": 0, "output_cost_per_token": 0}) is None
     unpriced_cache = drive.Prices.of(
         {"input_cost_per_token": 2e-06, "output_cost_per_token": 1e-05}
@@ -441,8 +486,9 @@ def ledger(writer: Writer, *, good: bool) -> list[Json]:
     claim = {
         "handle": "C-1", "entry_id": "e-c1", "type": "claim", "kind": None,
         "revisions": [revision("K7 resists rho within 2^64.", early, links=link,
-                               flags=[] if good else [{"cause": "assumption"}]),
-                      *([revision("Revisited under 2^80.", changed, links=link)] if good else [])],
+                               flags=[] if good else [{"cause": "assumption"}])],
+        # Revisited by clearing its flag with a reason, not by a revision.
+        "flags_cleared": [{"cleared": changed, "reason": "Holds at 2^80 too."}] if good else [],
     }  # fmt: skip
     decision = {
         "handle": "D-2", "entry_id": "e-d2", "type": "decision", "kind": None,
@@ -536,3 +582,102 @@ def test_a_session_that_breaks_them_fails_with_its_evidence(bundles: list[Json])
     text = score.markdown(report)
     assert "| gpt-250-b | yes | " in text
     assert "For the owner's judgment" in text
+
+
+# What lab round 1's live runs showed the scores must read rightly.
+
+
+def bundle_of(
+    runs: Sequence[tuple[str, Sequence[tuple[str, Json]], str]], ledger: list[Json]
+) -> Json:
+    """A minimal bundle: each run its step's task, its calls, and its answer."""
+    rows: list[Json] = []
+    records: list[Json] = []
+    for number, (step, calls, answer) in enumerate(runs):
+        name = run_name(START + timedelta(minutes=number), step.lower())
+        task = scenario.BY_ID[step].message
+        rows.append({"position": len(rows) + 1, "message_id": f"m{len(rows)}", "run": name,
+                     "role": "user", "kind": "task", "content": task})  # fmt: skip
+        for tool, arguments in calls:
+            call = {"id": "c", "name": tool, "arguments": json.dumps(arguments)}
+            rows.append({"position": len(rows) + 1, "message_id": f"m{len(rows)}", "run": name,
+                         "role": "assistant", "kind": "assistant", "content": None,
+                         "tool_calls": [call]})  # fmt: skip
+        records.append({"name": name, "task": task, "answer": answer, "stopped": "answered",
+                        "started_at": (START + timedelta(minutes=number)).isoformat()})  # fmt: skip
+    meta = {"arm": "gpt-250-a", "family": "gpt", "ceiling": 250_000, "alias": "a"}
+    return {"meta": meta, "rows": rows, "runs": records, "ledger": ledger, "reads": []}
+
+
+def test_a_source_read_whole_in_the_run_that_answers_may_be_cited() -> None:
+    """Lab round 1, gpt-250-a L02: asked about Source C, the agent read it whole, then
+    answered from page 17. That is no partial read overstated."""
+    c = {"path": "sources/C.pdf"}
+    session = score.Session(bundle_of([
+        ("S05", [("pdf_pages", {**c, "pages": "1-2"})], "Read pp. 1-2."),
+        ("L02", [("pdf_pages", {**c, "pages": "3-20"}), ("pdf_pages", {**c, "pages": "21-24"})],
+         f"Having read all of Source C: its margin is {sources.C_VALUES[17]} bits."),
+    ], []))  # fmt: skip
+    found = score.partial_read(session)
+    assert found["status"] == "pass", found
+    assert found["read_whole_at"] == "L02"
+
+
+def test_a_doi_in_markdown_code_is_no_near_miss() -> None:
+    assert score.near_misses(f"DOI `{sources.VALUES['doi_c']}`.", "L09") == []
+    assert score.near_misses(f"DOI {sources.VALUES['doi_c'][:-1]}5.", "L09") != []
+
+
+def test_an_invitation_declined_without_the_decisions_handle_fails_its_bar() -> None:
+    """Lab round 1, gpt-250-a: both invitations declined with the reason, and a guard
+    script that names the approach, but neither answer cites the decision's handle."""
+    decision = {"handle": "D-3", "entry_id": "e", "type": "decision", "kind": None,
+                "revisions": [{"statement": "Do not try GHS Weil descent.", "created": "x",
+                               "fields": {"reopen_condition": "composite n"}}]}  # fmt: skip
+    answer = "No: K7 is over a prime field; reopen only for a composite extension field."
+    guard = ("shell", {"script": "cat > scripts/ghs_applicability.py  # not a GHS attack"})
+    runs = [("L03", [], answer), ("L05", [guard], answer)]
+    found = score.rejection(score.Session(bundle_of(runs, [decision])))
+    assert found["status"] == "fail"
+    assert [a["handle"] for a in found["answers"]] == [False, False]
+    cited = [(step, calls, f"{answer} (D-3)") for step, calls, answer in runs]
+    again = score.rejection(score.Session(bundle_of(cited, [decision])))
+    assert again["status"] == "review"  # the guard script is the owner's to judge
+
+
+def test_a_value_labeled_in_latex_is_labeled() -> None:
+    """Lab round 1, L09: ``| Base-point \\(x\\)-coordinate | `571...` |``."""
+    table = f"| Base-point \\(x\\)-coordinate | `{sources.VALUES['generator_x']}` |"
+    session = score.Session(bundle_of([("L09", [], table)], []))
+    (use,) = [u for u in score.exact_values(session)["uses"] if u.get("value") == "generator_x"]
+    assert use["labeled"]
+
+
+def test_an_entry_first_recorded_after_the_change_is_revisited() -> None:
+    """Lab round 1, gpt-250-b D-9: a decision made after L08, under the new budget."""
+    session = score.Session(bundle_of([("L08", [], "Revisited.")], []))
+    after = (START + timedelta(minutes=5)).isoformat()
+    assumed = {"handle": "A-1", "entry_id": "a", "type": "assumption", "kind": None,
+               "revisions": [{"statement": "At most 2^64.", "created": "2026-01-01T00:00:00+00:00"},
+                             {"statement": "At most 2^80.", "created": after}]}  # fmt: skip
+    made = {"handle": "D-9", "entry_id": "d", "type": "decision", "kind": None,
+            "revisions": [{"statement": "Under 2^80.", "created": after,
+                           "links": [{"kind": "assumes", "target_id": "a"}]}]}  # fmt: skip
+    session.ledger = [assumed, made]
+    found = score.assumption(session)
+    assert found["unrevisited"] == []
+    assert found["status"] == "pass"
+
+
+def test_an_answer_that_says_what_it_did_not_review_gives_its_extent() -> None:
+    """Lab round 1, second-250 L02: page 17 read and cited, the rest "not reviewed"."""
+    c = {"path": "sources/C.pdf"}
+    answer = (
+        f"Source C concludes a margin of {sources.C_VALUES[17]} bits (p. 17). The supporting "
+        "derivation and threshold definition were not reviewed."
+    )
+    session = score.Session(bundle_of([
+        ("S05", [("pdf_pages", {**c, "pages": "1-2"})], "Read pp. 1-2."),
+        ("L02", [("pdf_pages", {**c, "pages": "17"})], answer),
+    ], []))  # fmt: skip
+    assert score.partial_read(session)["status"] == "pass"

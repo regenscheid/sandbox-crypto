@@ -2,6 +2,8 @@
 
 The acceptance condition of context management's first build ([spec](../../docs/specs/context-management.md), "Continuity probes" and "Changes from the study's tests"): the probes CM-P1 to CM-P9, at about 250,000 tokens and at the default 600,000, with the skeleton-only control arm. This file is the kit's runbook. **Run it only once steps (f2b) and (f3) are merged**: without overviews and fold proposals, the retention boundaries the spec forces cannot happen.
 
+**Round 1 ran on 2026-10-16:** [lab 44's report](../docs/agent-reports/babbage-openshell-lab-44-2026-10-16.md) has its scores, folds, costs and bugs. The arms and costs below are what it ran and measured.
+
 **The owner's conditions for this round (2026-10-16):** USD 500 in all, the seed included; OpenAI models through the gateway's `arrcodex` aliases only; no Claude model. The spec asks for both families, so the Claude arms are kept below as deferred, for a later round.
 
 ## The kit
@@ -51,16 +53,18 @@ The gateway's `arrcodex` aliases, as its model information gave them on 2026-10-
 
 ## The arms
 
+The plan as confirmed at the seed's checkpoint (option 1): the seed extended to about 400,000 tokens, five arms, and the hard stop at USD 380 reported, so that the gateway's listed long-context rates, which the reported costs did not apply, also stay within USD 500.
+
 | Arm | Model | Ceiling | Folds | Cap (USD) | Why |
 | --- | --- | --- | --- | --- | --- |
-| `gpt-250-a`, `gpt-250-b` | primary | 250,000 | enriched | 20 each | The probes, two sessions (λ = 1 with a 30,000-token system message) |
-| `gpt-600` | primary | 600,000 | enriched | 80 | The configuration that will run (CM-27) |
-| `gpt-250-skeleton` | primary | 250,000 | `--skeleton-only-folds` | 20 | The control arm (decided question 4): whether enrichment helps at all |
-| `gpt-600-b` | primary | 600,000 | enriched | 80 | *Proposed*: a second session at the configuration that will run, which otherwise rests on one |
-| `second-250`, `second-600` | second | 250,000, 600,000 | enriched | 35, 150 | *Proposed*: the same probes on another model, so a result is not one model's alone |
+| `gpt-250-a`, `gpt-250-b` | primary | 250,000 | enriched | 40 each | The probes, two sessions (λ = 1 with a 30,000-token system message); `gpt-250-b` with the region cap (below) |
+| `gpt-600` | primary | 600,000 | enriched | 100 | The configuration that will run (CM-27) |
+| `gpt-250-skeleton` | primary | 250,000 | `--skeleton-only-folds` | 40 | The control arm (decided question 4): whether enrichment helps at all |
+| `second-250` | second | 250,000 | enriched | 80 | The same probes on another model, so a result is not one model's alone (`--proposed`) |
+| `gpt-600-b`, `second-600` | | 600,000 | | | *Dropped* at the seed's checkpoint: at the calls a run takes, they would not fit the budget. The driver refuses them |
 | `claude-250-a`, `-b`, `claude-600`, `claude-250-skeleton` | Claude | as GPT's | | | *Deferred*: no Claude model this round. The driver refuses them |
 
-The seed's cap is USD 30. The caps add up to 435, within the round's 500; the driver also refuses to start any step once the seed and the arms together have spent 500. A proposed arm runs only with `arm --proposed`, once the plan is confirmed. Each cap is about what its arm costs if half its input is read from the cache (below).
+The seed's cap is USD 65. The caps add up to 365, under the round's hard stop of 380: the driver refuses to start any step once the seed and the arms together have spent it. A proposed arm runs only with `arm --proposed`.
 
 Each arm is a store of its own (a copy of the seed's) and an environment of its own: the ledger belongs to a project, so arms in one store would share it. Every run is `sandbox-science-harness run` with the run service's own options, as the launcher builds them, plus the arm's `--model`, `--context-ceiling` and, for the control, `--skeleton-only-folds`.
 
@@ -78,28 +82,29 @@ The lab runs on babbage, as [lab 43](../docs/agent-reports/babbage-openshell-lab
 2. **Up.** `sandbox-science up --config "$LAB/sandbox-science.toml"` in its own shell, as the README says. Nothing posts to the GUI's chat: the driver runs each step itself, and the run service never sees a queued message for these sessions.
 3. **Preflight.** `$D preflight --config "$LAB/sandbox-science.toml" --primary arrcodex-gpt-6-sol --second arrcodex-gpt-daybreak-blue --recording arrcodex-gpt-6-sol`. It prints each alias's window and prices, each arm's C and estimated cost, and the caps' sum, and exits 1 on a problem: an alias the gateway does not describe, one with no window or no prices, one not sent through `responses`, a capped C, or caps over the budget.
 4. **Seed.** `$D seed --config ... --lab "$CM" --alias arrcodex-gpt-6-sol`. It writes the sources into the seed session's workspace, then runs S01 to S20 with folding off, stopping once the view passes 420,000 tokens, or at its cap. It prints each step's view. If the seed ends short of its target (a warning), add bulk steps to `scenario.SEED` and run it again: it resumes after the last kept transcript.
-5. **Check the prices.** Before any arm: compare the seed's reported cost (`spent` over `$CM/seed/runs`) with its estimate (about $10 if 90% of input is cached, $26 if half, $45 if none). Near the last figure means the gateway does not price cache reads for the alias: every cap would then stop its arm early. Stop, and re-plan with the coordinator.
+5. **Check the prices.** Before any arm: compare the seed's reported cost (`spent` over `$CM/seed/runs`) with the same tokens at the uncached price. Round 1's was about half of it ($35 against $68 at 300,000 tokens): cache reads were priced, for about a third of the calls. A cost near the uncached price means the gateway does not price cache reads for the alias: every cap would then stop its arm early. Stop, and re-plan with the coordinator.
 6. **Forecast.** `$D forecast --lab "$CM"` gives each arm's seed and its expected folds. Each 250,000 arm should show at least four folds in three runs, and each 600,000 arm at least two. If one does not, add live bulk before spending on the arms.
-7. **Arms.** `$D arm --config ... --lab "$CM" --arm gpt-250-a --alias arrcodex-gpt-6-sol`, and so on: the base plan's four first, then, once confirmed, the proposed ones with `--proposed` (`second-*` with `--alias arrcodex-gpt-daybreak-blue`). At most three at a time (each has its own sandbox). `--budget` overrides an arm's cap. Each arm's runs resume after the last kept transcript; its logs are in `$CM/arms/<arm>/logs`. A run that ends in an error keeps its transcript and is scored as it ended. A step whose run kept no transcript runs again when the arm resumes: read its log first.
+7. **Arms.** `$D arm --config ... --lab "$CM" --arm gpt-250-a --alias arrcodex-gpt-6-sol --extra=--words-share --extra=0.01 --extra=--region-share --extra=0.02 --extra=--digest-share --extra=0.01`, and so on: the base plan's four first, then the proposed one with `--proposed` (`second-250` with `--alias arrcodex-gpt-daybreak-blue`). Round 1 gave `gpt-250-b` alone `--extra=--region-cap-share --extra=0.03` as well, so the other 250,000 session stayed clean for the gating probes; no arm reached a `research_state` stop. At most three at a time (each has its own sandbox). `--budget` overrides an arm's cap. Each arm's runs resume after the last kept transcript; its logs are in `$CM/arms/<arm>/logs`. A run that ends in an error keeps its transcript and is scored as it ended. A step whose run kept no transcript runs again when the arm resumes: read its log first.
 8. **Export and score.** `$D export --lab "$CM" --arm <arm>` for each, then `.venv/bin/python -I .agents/labs/cm_score.py "$CM"/arms/*/bundle.json --out "$CM/report"`. `report.md` has the tables, per family and per model, and the owner's checklist; `report.json` has the evidence for every status.
 9. **Report.** As the README's "Reports" says: `.agents/docs/agent-reports/babbage-openshell-lab-N-<date>.md`, with the scores, each `review` item settled by the owner, the costs and the teardown.
 
 ## Expected cost and time
 
-Most input is cache reads: each call sends the view, which grows slowly. `preflight` estimates each session from about 80 calls (60 for the seed), their views spread between 0.45 C and 0.75 C (the seed's growing to 420,000), 2,500 output tokens each, and the gateway's prices, at 90%, 50% and none of the input read from the cache. On 2026-10-16:
+`preflight` estimates each session from the calls round 1 measured: about 170 an arm and 250 for a 400,000-token seed (7 to 10 a step, 15 to 20 a step that reads 20 pages: the model plans, pilots, extracts with code, publishes and records), their views spread between 0.45 C and 0.75 C, 400 output tokens a call, and the gateway's prices, at 90%, 50% and none of the input read from the cache. About a third of round 1's calls were read from the cache.
 
-| Session | Model | 90% cached | 50% | None | Cap |
+Round 1, as the calls reported their costs (the reported costs priced every call at the base rates; the last column doubles each call past 272,000 tokens, as the listed long-context rates would):
+
+| Session | Model | Calls | Reported | At listed rates | Cap |
 | --- | --- | --- | --- | --- | --- |
-| The seed | gpt-6-sol | $10 | $26 | $45 | $30 |
-| `gpt-250-a`, `gpt-250-b`, `gpt-250-skeleton` | gpt-6-sol | $7 each | $15 each | $26 each | $20 each |
-| `gpt-600` | gpt-6-sol | $25 | $66 | $118 | $80 |
-| **Base plan** | | **$56** | **$137** | **$241** | **$170** |
-| `gpt-600-b` (proposed) | gpt-6-sol | $25 | $66 | $118 | $80 |
-| `second-250` (proposed) | daybreak-blue | $13 | $30 | $52 | $35 |
-| `second-600` (proposed) | daybreak-blue | $50 | $132 | $235 | $150 |
-| **All proposed too** | | **$144** | **$365** | **$646** | **$435** |
+| The seed (to 399,508 tokens) | gpt-6-sol | 255 | $61.24 | $93.52 | $65 |
+| `gpt-250-a`, `gpt-250-b`, `gpt-250-skeleton` | gpt-6-sol | 147 to 166 | $28.31, $30.69, $30.90 | the same | $40 each |
+| `gpt-600` | gpt-6-sol | 153 | $62.81 | $115.57 | $100 |
+| `second-250` | daybreak-blue | 157 | $64.00 | the same | $80 |
+| **All** | | 1,037 | **$277.95** | **$362.99** | $365 |
 
-The 600,000 arms pay the long-context rates on most calls. Time: about 2 hours for the seed, 1.5 to 3 hours per arm; with three arms at once, a working day for the base plan, another half day for the proposed arms.
+Time: about 40 minutes for the seed and 45 to 60 minutes an arm, with three at once: about an hour and a half in all.
+
+**The folds.** A fold frees its span and the old tool output it stubs: 1.5 to 1.8 chunks in round 1, which `forecast` now assumes. From round 1's seeds that gives three folds at 250,000 and one at 600,000, as the arms made (3 to 5, and 1). The 600,000 arms need more live growth than the scenario gives to fold twice; the spec's bar for them was not met.
 
 ## Deferred: the Claude arms
 

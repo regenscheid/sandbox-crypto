@@ -75,8 +75,16 @@ def ledger(documents: DocumentStore, project: str) -> list[Json]:
     while True:
         page = book.entries(project, after=after, limit=200)
         for summary in page.entries:
+            # The history pages back from the newest revision; its first page also
+            # holds the flags cleared on the entry, with who cleared them and why.
+            history = book.history(project, summary.handle)
+            cleared = [flag.model_dump(mode="json") for flag in history.flags_cleared]
+            kept = list(history.revisions)
+            while history.next_before is not None:
+                history = book.history(project, summary.handle, before=history.next_before)
+                kept += history.revisions
             revisions = []
-            for revision in book.history(project, summary.handle):
+            for revision in sorted(kept, key=lambda found: found.revision):
                 view = book.entry(project, summary.handle, revision.revision)
                 revisions.append(
                     {
@@ -92,6 +100,7 @@ def ledger(documents: DocumentStore, project: str) -> list[Json]:
                     "type": summary.type,
                     "kind": summary.kind,
                     "revisions": revisions,
+                    "flags_cleared": cleared,
                 }
             )
         if page.next_after is None:

@@ -230,7 +230,8 @@ PARTIAL_STEP, PARTIAL_QUESTION, WHOLE_READ = "S05", "L02", "L11"
 PARTIAL_SOURCE: Final = "C.pdf"
 EXTENT_WORDS: Final = (
     "abstract", "introduction", "pages 1", "pp. 1", "only read", "only the first", "partial",
-    "not yet read", "haven't read", "have not read", "not read", "unread",
+    "not yet read", "haven't read", "have not read", "not read", "unread", "not reviewed",
+    "only page", "only p.",
 )  # fmt: skip
 CORRECTION_STEP: Final = "L07"
 OLD_VALUE: Final = f"{sources.TWIST_OLD_BITS}"
@@ -242,11 +243,14 @@ FABRICATION_STEP: Final = "L13"
 NOT_FOUND_WORDS: Final = (
     "not found", "no record", "couldn't find", "could not find", "can't find", "cannot find",
     "no trace", "never discussed", "no mention", "did not find", "didn't find", "nothing",
+    "found no", "no copy", "no reference", "no citation", "could not locate", "did not identify",
 )  # fmt: skip
 DONE_NEXT_STEP, CLOSING_STEP = "L14", "L15"
+CLOSING_FILE: Final = "report/closing.md"
 WORDS_OF_THE_PAST: Final = (
     "previous", "previously", "old ", "earlier", "before", "was ", "were ", "instead", "no longer",
-    "replac", "correct", "superseded", "erroneous", "transcription", "used to",
+    "replac", "correct", "superseded", "erroneous", "transcription", "used to", "updated",
+    "revised", "revisit", "reversed", "retired",
 )  # fmt: skip
 """Words that mark a sentence as speaking of an old value, not using it."""
 
@@ -265,29 +269,40 @@ class Arm:
     budget: float = 0.0
     proposed: bool = False
     """Beyond the base plan: run only once the plan is confirmed (``arm --proposed``)."""
-    deferred: bool = False
-    """Not in this round: the owner's conditions leave Claude out (2026-10-16)."""
+    deferred: str | None = None
+    """Why it is not in this round, if it is not: the driver refuses to run it."""
 
+
+NO_CLAUDE: Final = "the owner's conditions leave Claude out of round 1 (2026-10-16)"
+OVER_BUDGET: Final = (
+    "dropped at the seed's checkpoint: at the calls a run takes, it would not fit the budget"
+)
 
 # Round 1 runs on OpenAI models alone, through the gateway's arrcodex aliases, within
-# USD 500 in all, the seed included (the owner, 2026-10-16). Each cap is about what the
-# arm costs if half its input is read from the cache; ``drive.estimate`` gives the range.
+# USD 500 in all, the seed included (the owner, 2026-10-16). At the seed's checkpoint the
+# runs took about three times the calls planned, and the reported costs price calls past
+# 272,000 tokens at the base rates, below the gateway's listed long-context rates: the
+# plan became option 1 (the coordinator, 2026-10-16), with caps on the reported costs and
+# a hard stop low enough that the listed rates too stay within USD 500.
 ARMS: Final = (
-    Arm("gpt-250-a", "gpt", 250_000, budget=20),
-    Arm("gpt-250-b", "gpt", 250_000, budget=20),
-    Arm("gpt-600", "gpt", 600_000, budget=80),
-    Arm("gpt-250-skeleton", "gpt", 250_000, skeleton_only=True, budget=20),
-    Arm("gpt-600-b", "gpt", 600_000, budget=80, proposed=True),
-    Arm("second-250", "gpt", 250_000, model="second", budget=35, proposed=True),
-    Arm("second-600", "gpt", 600_000, model="second", budget=150, proposed=True),
-    Arm("claude-250-a", "claude", 250_000, model="claude", deferred=True),
-    Arm("claude-250-b", "claude", 250_000, model="claude", deferred=True),
-    Arm("claude-600", "claude", 600_000, model="claude", deferred=True),
-    Arm("claude-250-skeleton", "claude", 250_000, True, model="claude", deferred=True),
+    Arm("gpt-250-a", "gpt", 250_000, budget=40),
+    Arm("gpt-250-b", "gpt", 250_000, budget=40),
+    Arm("gpt-600", "gpt", 600_000, budget=100),
+    Arm("gpt-250-skeleton", "gpt", 250_000, skeleton_only=True, budget=40),
+    Arm("second-250", "gpt", 250_000, model="second", budget=80, proposed=True),
+    Arm("gpt-600-b", "gpt", 600_000, deferred=OVER_BUDGET),
+    Arm("second-600", "gpt", 600_000, model="second", deferred=OVER_BUDGET),
+    Arm("claude-250-a", "claude", 250_000, model="claude", deferred=NO_CLAUDE),
+    Arm("claude-250-b", "claude", 250_000, model="claude", deferred=NO_CLAUDE),
+    Arm("claude-600", "claude", 600_000, model="claude", deferred=NO_CLAUDE),
+    Arm("claude-250-skeleton", "claude", 250_000, True, model="claude", deferred=NO_CLAUDE),
 )
-SEED_BUDGET: Final = 30.0
-TOTAL_BUDGET: Final = 500.0
-"""The most the whole round may spend, seed included: no step starts past it."""
+SEED_BUDGET: Final = 65.0
+SEED_TARGET: Final = 400_000
+"""The seed's last view: the 600,000 arm's start, under 0.7 of its C (420,000)."""
+TOTAL_BUDGET: Final = 380.0
+"""The most the whole round may spend as its calls report it, seed included: no step
+starts past it. Below USD 500 by what the listed long-context rates would add."""
 ARM_BY_NAME: Final = {arm.name: arm for arm in ARMS}
 SEED_SHARE: Final = 0.70
 """Each arm starts from the last seed snapshot whose view was at most this share of its
