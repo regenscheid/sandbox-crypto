@@ -32,6 +32,7 @@ from sandbox_science.orchestrator.documents.models import Author
 from sandbox_science.orchestrator.history.reads import reference_reads
 from sandbox_science.orchestrator.hooks import Effect
 from sandbox_science.orchestrator.model import ToolSpec
+from sandbox_science.orchestrator.recording import FileRecorder, Written
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 
 from .models import (
@@ -226,6 +227,48 @@ _FIELDS = {
     },
     "additionalProperties": False,
 }
+_BASIS = {
+    "type": "string",
+    "enum": ["user_quoted", "observed", "interpreted"],
+    "description": (
+        "Where it comes from: user_quoted, what the user said (anchor the user's message "
+        "with a quote of at least 20 characters of it, word for word); observed, what a tool "
+        "result, an artifact or a source's text shows (anchor it there: every number must "
+        "occur in it); interpreted (the default), your own reading or inference"
+    ),
+}
+_ANCHORS = {
+    "type": "array",
+    "maxItems": 16,
+    "description": (
+        "Where it comes from, besides this call: needed to create an entry, change its "
+        "statement or fields, or put a decision in effect, reject or reverse it, and for "
+        "every work record, unless its evidence or references already show it"
+    ),
+    "items": {
+        "type": "object",
+        "description": (
+            "One of: message (an archive ID, msg-…, from a message's header; quote for the "
+            "user's words), call (a tool call's ID, for its result; start and end for a "
+            "range of its output), artifact with revision, document with revision and "
+            "block, or entry (with revision)"
+        ),
+        "properties": {
+            "message": {"type": "string"},
+            "call": {"type": "string"},
+            "quote": {"type": "string"},
+            "start": {"type": "integer", "minimum": 0},
+            "end": {"type": "integer", "minimum": 0},
+            "artifact": {"type": "string"},
+            "document": {"type": "string"},
+            "entry": {"type": "string"},
+            "revision": {"type": "integer", "minimum": 1},
+            "block": {"type": "string"},
+            "sha256": {"type": "string"},
+        },
+        "additionalProperties": False,
+    },
+}
 _WORK = {
     "type": "object",
     "description": (
@@ -275,6 +318,8 @@ _WORK = {
             },
         },
         "part_of": {"type": "string", "description": "A work record's ID, or new:<key>"},
+        "basis": _BASIS,
+        "anchors": _ANCHORS,
     },
     "required": ["entry", "tried", "ending"],
     "additionalProperties": False,
@@ -311,6 +356,8 @@ _CHANGE = {
         "links": {"type": "array", "items": _LINK, "maxItems": 64},
         "evidence": {"type": "array", "items": _EVIDENCE, "maxItems": 32},
         "evidence_removed": {"type": "array", "items": {"type": "string"}, "maxItems": 32},
+        "basis": _BASIS,
+        "anchors": _ANCHORS,
     },
     "additionalProperties": False,
 }
@@ -638,6 +685,9 @@ class LedgerTool:
         self.ledger, self.context, self.run_id = ledger, context, run_id
         self.role, self.alias, self.read = role, alias, read
         self.budget = output_chars
+        self.recorder: FileRecorder | None = None
+        """Records a results file as an artifact revision when an import finds it is none
+        yet, so the import is anchored on one (CM-9)."""
 
     def author(self, call_id: str | None, model: str | None) -> Author:
         return Author(
@@ -963,6 +1013,32 @@ class LedgerTool:
         shown["more"] = more
         return _dump(shown)
 
+    async def _recorded(self, path: str, digest: str, author: Author) -> Json:
+        """The artifact revision at ``path`` that holds ``digest``, recorded now when the
+        file is none yet (CM-9; the coordinator, 2026-10-16): an import is observed only
+        when the file is an execution's output, and anchored on that revision. Nothing
+        when the project records no files, or the file could not be recorded."""
+        if self.recorder is None:
+            return {}
+        publisher = self.recorder.publisher
+        for attempt in range(2):
+            try:
+                found, _, _ = await publisher.find(path=path)
+            except DocumentError:
+                return {}
+            for revision in found:
+                if revision.reference.sha256 == digest and not revision.deleted:
+                    return {
+                        "artifact": revision.reference.artifact_id,
+                        "revision": revision.reference.revision,
+                    }
+            if attempt == 0:
+                call = author.tool_call or "ledger_import"
+                await self.recorder.record(
+                    Written(paths=(path,)), tool_call=call, model=author.model, operation=call
+                )
+        return {}
+
     async def _import(self, args: _Import, author: Author) -> str:
         """Check every line of a results file, then apply them all, or none (LG-41)."""
         if self.read is None:
@@ -1000,6 +1076,7 @@ class LedgerTool:
             "file": content.path,
             "sha256": digest,
             "environment": self.context.environment_id,
+            **await self._recorded(content.path, digest, author),
         }
         results = await asyncio.to_thread(
             self.ledger.apply,

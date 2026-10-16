@@ -16,11 +16,11 @@ import pytest
 from sandbox_science.orchestrator.consistency.actions import action_of
 from sandbox_science.orchestrator.consistency.controller import ReviewController
 from sandbox_science.orchestrator.consistency.store import ReviewStore
-from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
+from .ledger_support import AnchoredLedger as Ledger
 from .test_consistency import MAIN, context_for, dispatch
 from .test_consistency import store as store
 

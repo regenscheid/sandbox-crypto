@@ -14,9 +14,9 @@ import pytest
 
 from sandbox_science.orchestrator.delegation.prompt import CHECK_PROMPT, TASK_PROMPT
 from sandbox_science.orchestrator.documents import USER, Author, DocumentError
-from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.loop import SYSTEM_PROMPT
 
+from .ledger_support import AnchoredLedger as Ledger
 from .test_consistency import store as store
 from .test_ledger import DELEGATED, MAIN, NEW, change
 from .test_ledger_decisions import assessed, claimed, decide, obstructing, status

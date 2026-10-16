@@ -14,8 +14,8 @@ import pytest
 from sandbox_science.orchestrator.consistency.ledger import ingest_ledger
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import USER, Author
-from sandbox_science.orchestrator.ledger import Ledger
 
+from .ledger_support import AnchoredLedger as Ledger
 from .test_consistency import MAIN, anchor, dispatch, feed
 from .test_consistency import store as store
 

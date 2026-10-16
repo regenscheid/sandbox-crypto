@@ -959,7 +959,7 @@ class Harness:
             parent_run=admitted.request.parent,
             delegation=admitted.request.delegation,
         )
-        jobs.recorder = recorder
+        jobs.recorder = ledger.recorder = recorder
         math_checks = MathController(
             review_store, context.project_id, context.session_id, run_id, checker=self.checker
         )

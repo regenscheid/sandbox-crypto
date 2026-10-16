@@ -290,7 +290,12 @@ async def test_a_task_that_found_nothing_ran_out_of_ideas(delegating: Harness) -
 
 async def test_a_task_that_made_entries_produced_them(delegating: Harness) -> None:
     issue = an_issue(delegating)
-    made = {"type": "task", "title": "Recheck", "statement": "Recheck for p = 2."}
+    made = {
+        "type": "task",
+        "title": "Recheck",
+        "statement": "Recheck for p = 2.",
+        "anchors": [{"entry": issue}],
+    }
     task = call("delegate", task="Break it down.", issue=issue)
     await delegating.run(
         "root",

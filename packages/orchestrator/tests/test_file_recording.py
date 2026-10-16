@@ -14,7 +14,7 @@ from typing import Any, cast
 import pytest
 import pytest_asyncio
 
-from sandbox_science.contracts import ErrorKind, WriteFileRequest
+from sandbox_science.contracts import ErrorKind, ReadFileRequest, WriteFileRequest
 from sandbox_science.contracts.artifact_inventory import ArtifactRevision
 from sandbox_science.contracts.worker import TERMINAL_STATES
 from sandbox_science.orchestrator import recording as recording_module
@@ -357,3 +357,54 @@ async def test_code_reaches_the_shared_area_the_file_tools_name(recording: Recor
     missing = await recording.call("read_file", path="shared/local.txt")
     assert "session" not in missing.text
     assert "shared/papers/p.txt" in recording.heads()
+
+
+async def test_an_import_is_anchored_on_its_files_revision(
+    recording: Recording, tmp_path: Path
+) -> None:
+    """M2 of #457's review (CM-9, the coordinator's decision): a results file a call wrote
+    is imported as observed, anchored on the revision the call recorded and the line; a
+    file no call recorded is recorded at import and imported as interpreted on it."""
+    from sandbox_science.orchestrator.ledger import Ledger
+    from sandbox_science.orchestrator.ledger.tool import LedgerTool
+    from sandbox_science.orchestrator.projects import ProjectStore
+
+    projects = ProjectStore(tmp_path)
+    projects.create("p1", "minimal", "sha256:" + "a" * 64)
+    projects.open_session("p1", "s1", dedicated=False)
+    projects.close()
+    client = recording.toolbox.client
+    ledgers = LedgerTool(
+        Ledger(recording.files.documents), CONTEXT, run_id="run1", role="main",
+        read=client.read_file,
+    )  # fmt: skip
+    ledgers.recorder = recording.recorder
+
+    def line(n: int) -> str:
+        change = {"type": "issue", "title": f"Order {n}", "statement": f"Is the order {n}?"}
+        return json.dumps({"operation_id": f"op-{n}", "reason": "Ran.", "changes": [change]})
+
+    async def imported(path: str, n: int) -> tuple[str | None, list[dict[str, Any]]]:
+        read = await client.read_file(ReadFileRequest(context=CONTEXT, path=path))
+        text, _ = await ledgers.call(
+            "ledger_import", {"path": path, "sha256": read.sha256}, operation=f"import-{n}",
+            call_id=f"import-{n}", model="m",
+        )  # fmt: skip
+        assert json.loads(text).get("lines") == 1, text
+        view = ledgers.ledger.entry("p1", f"I-{n}")
+        return view.basis, view.anchors
+
+    await recording.shell(f"echo '{line(1)}' > ran.jsonl")
+    head = recording.heads()["sessions/s1/ran.jsonl"]
+    assert await imported("ran.jsonl", 1) == (
+        "observed",
+        [{"artifact": head.reference.artifact_id, "revision": 1, "line": 1,
+          "sha256": head.reference.sha256}],
+    )  # fmt: skip
+    data = base64.b64encode(f"{line(2)}\n".encode()).decode()
+    await client.write_file(WriteFileRequest(context=CONTEXT, path="put.jsonl", content_b64=data))
+    assert "sessions/s1/put.jsonl" not in recording.heads()
+    basis, anchors = await imported("put.jsonl", 2)
+    put = recording.heads()["sessions/s1/put.jsonl"]
+    assert put.publication.execution_id is None
+    assert (basis, anchors[0]["artifact"]) == ("interpreted", put.reference.artifact_id)

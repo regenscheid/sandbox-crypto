@@ -45,6 +45,7 @@ from sandbox_science.orchestrator.documents.project_macros import head as macro_
 from sandbox_science.orchestrator.projects import ProjectError, recorded, run_id_of
 
 from . import evidence, flags, frontier, gate, standing
+from . import provenance as anchoring
 from .models import (
     DECIDED,
     FIELDS,
@@ -59,6 +60,7 @@ from .models import (
     STATUSES,
     THIS_SESSION,
     WORK_HOLDERS,
+    AnchorInput,
     Category,
     CategoryDefinition,
     CategoryPage,
@@ -113,8 +115,8 @@ _ID: Final = re.compile(r"entry-[0-9a-f]{24}")
 _HANDLE: Final = re.compile(r"(I|C|R|A|D|T|REF)-([1-9][0-9]{0,8})")
 _TYPES: Final = {prefix: kind for kind, prefix in PREFIXES.items()}
 _REVISION: Final = (
-    "SELECT r.revision,r.title,r.status,r.statement,r.fields,r.author,r.reason,r.created "
-    "FROM ledger_revisions r WHERE r.entry_id=? AND r.revision=?"
+    "SELECT r.revision,r.title,r.status,r.statement,r.fields,r.author,r.reason,r.created,"
+    "r.basis,r.anchors FROM ledger_revisions r WHERE r.entry_id=? AND r.revision=?"
 )
 _CURRENT: Final = (
     "FROM ledger_links l JOIN ledger_entries e ON e.entry_id=l.entry_id AND l.revision=e.head "
@@ -184,6 +186,9 @@ class _Planned:
     evidence: list[EvidenceLink] | None = None
     """The new revision's evidence links; None keeps the revision before's."""
     changed: list[str] = field(default_factory=list[str])
+    basis: str | None = None
+    """Where the new revision comes from (CM-9)."""
+    anchors: list[Json] = field(default_factory=list[Json])
 
 
 class Ledger:
@@ -245,6 +250,7 @@ class Ledger:
                 head=row.head,
                 author=json.loads(found[5]),
                 reason=found[6],
+                anchors=json.loads(found[9] or "[]"),
             )
 
     def entries(
@@ -276,7 +282,7 @@ class Ledger:
             rows = db.execute(
                 "SELECT e.entry_id,e.project,e.type,e.number,e.origin,e.head,"
                 "r.revision,r.title,r.status,r.statement,r.fields,r.author,r.reason,r.created,"
-                "EXISTS(SELECT 1 FROM ledger_evidence v WHERE v.entry_id=e.entry_id "
+                "r.basis,EXISTS(SELECT 1 FROM ledger_evidence v WHERE v.entry_id=e.entry_id "
                 "AND v.revision=e.head),"
                 "(SELECT count(*) FROM ledger_flags f WHERE f.entry_id=e.entry_id "
                 "AND f.cleared IS NULL) "
@@ -290,10 +296,10 @@ class Ledger:
                     **self._summary(
                         _Row(*r[:6]),
                         r[6:],
-                        None if r[2] not in ("claim", "result") else not r[14],
+                        None if r[2] not in ("claim", "result") else not r[15],
                         standing.of_entry(db, r[0], r[2], r[4], r[8], json.loads(r[10]), r[6]),
                     ),
-                    "open_flags": r[15],
+                    "open_flags": r[16],
                 }
                 for r in rows[:limit]
             ]
@@ -316,7 +322,7 @@ class Ledger:
             rows = db.execute(
                 "SELECT r.revision,r.title,r.status,r.statement,r.author,r.reason,"
                 "r.operation_id,r.created,r.provenance,(SELECT p.statement FROM ledger_revisions p "
-                "WHERE p.entry_id=r.entry_id AND p.revision=r.revision-1) "
+                "WHERE p.entry_id=r.entry_id AND p.revision=r.revision-1),r.basis,r.anchors "
                 "FROM ledger_revisions r WHERE r.entry_id=? AND r.revision<? "
                 "ORDER BY r.revision DESC LIMIT ?",
                 (row.entry_id, before or row.head + 1, limit + 1),
@@ -352,6 +358,8 @@ class Ledger:
                 operation_id=r[6],
                 provenance=None if r[8] is None else json.loads(r[8]),
                 created=r[7],
+                basis=r[10],
+                anchors=json.loads(r[11] or "[]"),
             )
             for r in rows[:limit]
         ]
@@ -884,6 +892,12 @@ class Ledger:
                 for cited in work.references:
                     if cited.document and cited.revision and cited.block:
                         blocks.append((cited.document, cited.revision, cited.block, None))
+            for anchor in [
+                *(a for c in mutation.changes for a in c.anchors or ()),
+                *(a for w in mutation.work or () for a in w.anchors or ()),
+            ]:
+                if anchor.document and anchor.revision and anchor.block:
+                    blocks.append((anchor.document, anchor.revision, anchor.block, None))
             try:
                 pinned.update(self._blocks(project, blocks))
             except DocumentError as error:
@@ -938,6 +952,8 @@ class Ledger:
                 )
         self._check_links(db, planned)
         self._check_research(db, project, planned, author)
+        for p in planned:
+            self._provenance(db, project, p, author, pinned, provenance)
         self._check_dominates(db, project, planned, role)
         self._check_quotes(db, planned)
         self._check_published(db, planned)
@@ -1084,6 +1100,19 @@ class Ledger:
                         "the entry the work it assesses is on",
                     )
             cited = [self._cited(db, project, ref, named, pinned) for ref in item.references]
+            basis, anchors = self._sources(
+                db, project, item.basis, item.anchors or [], author, pinned, provenance
+            )
+            if author.kind != "user" and provenance is None:
+                rests = [c for c in cited if "work" not in c]
+                if not anchors and not rests:
+                    raise anchoring.refused(
+                        f"{where} names no anchor: a message by its ID, a tool result by its "
+                        "call, an artifact, a document block or an entry revision, or a "
+                        "reference to a delegation, an artifact or a document"
+                    )
+                observed = [*anchors, *(c for c in cited if "artifact" in c)]
+                anchoring.check(db, project, basis, observed, [], [item.tried], where)
             record = new_id("work")
             if item.key is not None:
                 if item.key in named:
@@ -1095,9 +1124,9 @@ class Ledger:
             db.execute(
                 "INSERT INTO ledger_work(record_id,position,project,entry_id,entry_revision,"
                 "tried,ending,detail,refs,part_of,assesses,verdict,author,reason,"
-                "operation_id,provenance,created) VALUES(?,"
+                "operation_id,provenance,created,basis,anchors) VALUES(?,"
                 "(SELECT coalesce(max(position),0)+1 FROM ledger_work),"
-                "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     record,
                     project,
@@ -1115,6 +1144,8 @@ class Ledger:
                     mutation.operation_id,
                     None if provenance is None else json.dumps(provenance, sort_keys=True),
                     now,
+                    basis,
+                    provenance_json(anchors),
                 ),
             )
             self.events.append(
@@ -1183,9 +1214,9 @@ class Ledger:
             record = new_id("work")
             db.execute(
                 "INSERT INTO ledger_work(record_id,position,project,entry_id,entry_revision,"
-                "tried,ending,detail,refs,author,reason,operation_id,provenance,created) "
-                "VALUES(?,(SELECT coalesce(max(position),0)+1 FROM ledger_work),"
-                "?,?,?,?,'reopened',?,'[]',?,?,?,?,?)",
+                "tried,ending,detail,refs,author,reason,operation_id,provenance,created,"
+                "basis,anchors) VALUES(?,(SELECT coalesce(max(position),0)+1 FROM ledger_work),"
+                "?,?,?,?,'reopened',?,'[]',?,?,?,?,?,'interpreted',?)",
                 (
                     record,
                     project,
@@ -1198,6 +1229,11 @@ class Ledger:
                     mutation.operation_id,
                     None if provenance is None else json.dumps(provenance, sort_keys=True),
                     now.isoformat(),
+                    provenance_json(
+                        []
+                        if decider is None
+                        else [{"entry": decider.entry_id, "revision": decider.revision}]
+                    ),
                 ),
             )
             self.events.append(
@@ -1328,7 +1364,8 @@ class Ledger:
             row = self._find(db, project, reference)
             found = db.execute(
                 "SELECT record_id,position,entry_revision,tried,ending,detail,refs,part_of,"
-                "author,reason,operation_id,provenance,created,assesses,verdict FROM ledger_work "
+                "author,reason,operation_id,provenance,created,assesses,verdict,basis,anchors "
+                "FROM ledger_work "
                 "WHERE entry_id=? AND position<? ORDER BY position DESC LIMIT ?",
                 (row.entry_id, before or 2**62, limit + 1),
             ).fetchall()
@@ -1366,6 +1403,8 @@ class Ledger:
                     created=r[12],
                     standing=standing.of_work(r[4], detail.get("limit"), r[0], settled),
                     decision=handle(detail["decision"]) if "decision" in detail else None,
+                    basis=r[15],
+                    anchors=json.loads(r[16] or "[]"),
                 )
                 for r in found[:limit]
             ]
@@ -1394,7 +1433,9 @@ class Ledger:
         row = self._find(db, project, change.entry)
         if role == "delegated" and (
             not change.evidence
-            or change.model_dump(exclude_none=True, exclude={"entry", "expected", "evidence"})
+            or change.model_dump(
+                exclude_none=True, exclude={"entry", "expected", "evidence", "basis", "anchors"}
+            )
         ):
             # LG-13: a delegated agent adds evidence, and changes nothing else.
             raise _refused("a delegated agent creates entries and adds evidence, nothing else")
@@ -1596,7 +1637,8 @@ class Ledger:
         statement = self._statement(db, row, p.statement, author)
         db.execute(
             "INSERT INTO ledger_revisions(entry_id,revision,title,status,statement,fields,"
-            "author,reason,operation_id,provenance,created) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            "author,reason,operation_id,provenance,created,basis,anchors) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 row.entry_id,
                 row.head,
@@ -1609,6 +1651,8 @@ class Ledger:
                 mutation.operation_id,
                 None if provenance is None else json.dumps(provenance, sort_keys=True),
                 now.isoformat(),
+                p.basis,
+                provenance_json(p.anchors),
             ),
         )
         held = p.evidence
@@ -2476,6 +2520,93 @@ class Ledger:
                     INVALID_REQUEST, f"{p.row.handle} holds split_into links only while split"
                 )
 
+    def _sources(
+        self,
+        db: sqlite3.Connection,
+        project: str,
+        basis: str | None,
+        anchors: list[AnchorInput],
+        author: Author,
+        pinned: dict[evidence.Block, str],
+        provenance_: Json | None,
+    ) -> tuple[str, list[Json]]:
+        """The basis and resolved anchors of a revision or work record (CM-9): the user's
+        are the user's; an import's are anchored on its results file's line, observed when
+        the file is an artifact revision an execution produced and interpreted otherwise;
+        a check's outcome is observed, anchored on its delegation; an agent's are what it
+        names, where it may look, ``interpreted`` by default, and never the user's own."""
+
+        def find(reference: str) -> tuple[str, int]:
+            row = self._find(db, project, reference)
+            return row.entry_id, row.head
+
+        def block(name: str, revision: int, block: str) -> str:
+            return pinned[(name, revision, block, None)]
+
+        kept = anchoring.resolve(db, project, anchors, block, find, _scope(db, project, author))
+        if author.kind == "user":
+            return "user", kept
+        if provenance_ is not None and "file" in provenance_:
+            artifact, revision = provenance_.get("artifact"), provenance_.get("revision")
+            digest = str(provenance_.get("sha256"))
+            executed = None
+            if isinstance(artifact, str) and isinstance(revision, int):
+                executed = anchoring.executed(db, project, artifact, revision, digest)
+            if executed is None:
+                line = {k: provenance_.get(k) for k in ("file", "sha256", "line")}
+                return "interpreted", [line, *kept]
+            line = {"artifact": artifact, "revision": revision, "sha256": digest}
+            line["line"] = provenance_.get("line")
+            return ("observed" if executed else "interpreted"), [line, *kept]
+        if provenance_ is not None and "delegation" in provenance_:
+            return "observed", [{"delegation": provenance_["delegation"]}, *kept]
+        if basis == "user":
+            raise anchoring.refused(
+                "an agent's record is never the user's own: record what the user said as "
+                "user_quoted, with a quote of the user's message"
+            )
+        return basis or "interpreted", kept
+
+    def _provenance(
+        self,
+        db: sqlite3.Connection,
+        project: str,
+        p: _Planned,
+        author: Author,
+        pinned: dict[evidence.Block, str],
+        provenance_: Json | None,
+    ) -> None:
+        """Set ``p``'s basis and anchors (CM-9), refusing an agent's change that needs an
+        anchor and names none, whose evidence included, or whose basis its anchors do not
+        bear out."""
+        p.basis, p.anchors = self._sources(
+            db, project, p.change.basis, p.change.anchors or [], author, pinned, provenance_
+        )
+        if author.kind == "user" or provenance_ is not None:
+            return
+        held = self._final_evidence(db, p)
+        needs = (
+            p.created
+            or {"statement", "fields"} & set(p.changed)
+            or (
+                p.row.type == "decision"
+                and "status" in p.changed
+                and p.status in ("in_effect", "rejected", "reversed")
+            )
+        )
+        if needs and not p.anchors and not held:
+            raise anchoring.refused(
+                f"{p.row.handle} names no anchor: a message by its ID, a tool result by its "
+                "call, an artifact, a document block or an entry revision, or evidence it holds"
+            )
+        statement = p.statement
+        if statement is None and not p.created:
+            latest = TEXTS.latest(db, p.row.entry_id)
+            text = None if latest is None else TEXTS.read(db, p.row.entry_id, latest[0])
+            statement = "" if text is None else text["body"]
+        texts = [statement or "", *anchoring.values(p.fields)]
+        anchoring.check(db, project, p.basis or "", p.anchors, held, texts, p.row.handle)
+
     def _check_research(
         self, db: sqlite3.Connection, project: str, planned: list[_Planned], author: Author
     ) -> None:
@@ -2764,6 +2895,7 @@ class Ledger:
             "title": revision[1],
             "status": revision[2],
             "updated": revision[7],
+            "basis": revision[8],
         }
 
     @staticmethod
@@ -3030,6 +3162,10 @@ def _dropped(p: _Planned, kind: str) -> list[EntryLink]:
     ]
 
 
+def provenance_json(anchors: list[Json]) -> str:
+    return json.dumps(anchors, sort_keys=True, ensure_ascii=False)
+
+
 def _unsettles(before: Json, after: Json) -> bool:
     """Whether fields ``after`` change what a decision on the entry rested on: anything
     but caveats added. A caveat qualifies a settled entry; dropping one strengthens it."""
@@ -3117,6 +3253,25 @@ def _rests_on(db: sqlite3.Connection, issue: str, claim: str) -> bool:
             (decider.fields["assessment"], claim),
         ).fetchone()
         is not None
+    )
+
+
+def _scope(db: sqlite3.Connection, project: str, author: Author) -> anchoring.Scope:
+    """Where ``author``'s anchors on the archive may point (CM-37, PD-13): an agent's,
+    its own session; a delegated agent's, its own run and the messages its brief names."""
+    if author.kind != "agent" or author.session_id is None:
+        return anchoring.Scope()
+    if author.role != "delegated":
+        return anchoring.Scope(session=author.session_id, run=author.run_id)
+    inputs: frozenset[str] = frozenset()
+    for run, brief in db.execute(
+        "SELECT run,brief FROM delegations WHERE project_id=? AND session_id=?",
+        (project, author.session_id),
+    ):
+        if author.run_id is not None and run_id_of(run) == author.run_id:
+            inputs = anchoring.briefed(brief)
+    return anchoring.Scope(
+        session=author.session_id, run=author.run_id, delegated=True, inputs=inputs
     )
 
 

@@ -16,11 +16,11 @@ import pytest
 from sandbox_science.orchestrator.consistency.controller import source_of
 from sandbox_science.orchestrator.consistency.ledger import ingest_ledger
 from sandbox_science.orchestrator.consistency.store import ReviewStore, dump
-from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.tools import format_pdf
 from sandbox_science.testing.pdfs import make_pdf
 from sandbox_science.worker import pdfhelper
 
+from .ledger_support import AnchoredLedger as Ledger
 from .test_consistency import MAIN, dispatch
 from .test_consistency import store as store
 from .test_ledger import REFERENCE_FIELDS

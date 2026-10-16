@@ -61,6 +61,8 @@ const entry = (evidence: EvidenceLink[]): EntryView => ({
   kind: null,
   session: null,
   standing: null,
+  basis: null,
+  anchors: [],
   origin: 'published',
   revision: 3,
   head: 3,

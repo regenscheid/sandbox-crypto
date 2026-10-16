@@ -197,6 +197,53 @@ class EvidenceInput(Contract):
     """With ``entry`` naming a reference: what the claim or result quotes from it."""
 
 
+Basis = Literal["user", "user_quoted", "observed", "interpreted"]
+"""Where a revision or work record comes from (CM-9): the user's own change; an agent's
+record of what the user said; of what the platform observed; or of its own reading."""
+MAX_ANCHORS: Final = 16
+
+
+class AnchorInput(Contract):
+    """A place a revision or work record comes from (CM-9), besides the change's own tool
+    call: an archive message by its ID (``message``, with ``quote`` for words of the
+    user's), or a tool result by its call (``call``), whole or the characters ``start`` to
+    ``end`` of its output; an artifact revision (``artifact``, ``revision``, optionally
+    its ``sha256``); a document block at a revision (``document``, ``revision``,
+    ``block``); or an entry revision (``entry``, ``revision`` defaulting to its current
+    one). A PDF passage is anchored as a quote evidence link (LG-8)."""
+
+    message: Annotated[str, Field(pattern=r"^msg-[0-9a-f]{16}$")] | None = None
+    call: Annotated[str, Field(min_length=1, max_length=512)] | None = None
+    quote: Annotated[str, Field(min_length=1, max_length=2000)] | None = None
+    start: Annotated[int, Field(ge=0, strict=True)] | None = None
+    end: Annotated[int, Field(ge=0, strict=True)] | None = None
+    artifact: Identifier | None = None
+    document: Identifier | None = None
+    entry: Reference | None = None
+    revision: Annotated[int, Field(ge=1, le=999999999, strict=True)] | None = None
+    block: Identifier | None = None
+    sha256: Sha256 | None = None
+
+    @model_validator(mode="after")
+    def _one(self) -> Self:
+        named = [self.message, self.call, self.artifact, self.document, self.entry]
+        if sum(value is not None for value in named) != 1:
+            raise ValueError("an anchor names one message, call, artifact, document or entry")
+        if (self.artifact is not None or self.document is not None) and self.revision is None:
+            raise ValueError("an artifact or document anchor names its revision")
+        if (self.document is not None) != (self.block is not None):
+            raise ValueError("a document anchor names its block")
+        if self.quote is not None and self.message is None:
+            raise ValueError("a quote is of a message")
+        if (self.start is not None or self.end is not None) and (
+            self.message is None and self.call is None
+        ):
+            raise ValueError("a range is of a tool result's output")
+        if self.sha256 is not None and self.artifact is None:
+            raise ValueError("only an artifact anchor names a SHA-256")
+        return self
+
+
 ClaimKind = Literal["lemma", "theorem", "observation", "counterexample", "negative_result", "other"]
 IssueKind = Literal["question", "hypothesis", "idea", "experiment", "contradiction", "reproduction"]
 """What an issue records (CM-10); ``reproduction`` is a failed reproduction."""
@@ -320,6 +367,9 @@ class EntryChange(Contract):
     """Evidence links to add; the entry keeps those it holds."""
     evidence_removed: list[Identifier] | None = Field(default=None, max_length=32)
     """The IDs of evidence links to remove."""
+    basis: Basis | None = None
+    """Where the revision comes from (CM-9); ``interpreted`` when none is named."""
+    anchors: list[AnchorInput] | None = Field(default=None, max_length=MAX_ANCHORS)
 
 
 WorkEnding = Literal["limit", "obstruction_claimed", "produced", "assessment", "reopened"]
@@ -383,6 +433,9 @@ class WorkInput(Contract):
     verdict: Verdict | None = None
     references: list[WorkReference] = Field(default_factory=list[WorkReference], max_length=16)
     part_of: Reference | None = None
+    basis: Basis | None = None
+    """Where the record comes from (CM-9); ``interpreted`` when none is named."""
+    anchors: list[AnchorInput] | None = Field(default=None, max_length=MAX_ANCHORS)
 
     @model_validator(mode="after")
     def _ending(self) -> Self:
@@ -589,6 +642,9 @@ class EntrySummary(Contract):
     """A decision's session, when it is meant for that session only (CM-10)."""
     standing: Standing | None = None
     """At its current revision, how the research state labels it (CM-11)."""
+    basis: Basis | None = None
+    """Where the revision shown comes from (CM-9); none when it was written before
+    bases were recorded."""
 
 
 class EntryView(EntrySummary):
@@ -611,6 +667,8 @@ class EntryView(EntrySummary):
     head: int
     author: dict[str, Any]
     reason: str
+    anchors: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]])
+    """Where the revision shown comes from, as the record keeps it (CM-9)."""
 
 
 class EntryPage(Contract):
@@ -629,6 +687,8 @@ class EntryRevision(Contract):
     provenance: dict[str, Any] | None
     """Where the change came from, such as a results file's line (LG-41)."""
     created: str
+    basis: Basis | None = None
+    anchors: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]])
 
 
 class EntryHistory(Contract):
@@ -698,6 +758,8 @@ class WorkRecord(Contract):
     issue."""
     decision: str | None = None
     """For a reopening, the handle of the decision that had made the issue obstructed."""
+    basis: Basis | None = None
+    anchors: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]])
 
 
 class WorkPage(Contract):
