@@ -31,6 +31,7 @@ const report = {
     entry: ['alpha'],
     descriptions: { beta: 'Counts​ lines.' },
     bindings: { DATA: 'data/' },
+    held: [{ variable: 'DATA', path: 'data/', reason: 'not namespaced‮' }],
     dropped: [{ skill: 'gamma' }],
   },
 };
@@ -66,6 +67,9 @@ describe('reportView', () => {
     expect(view.derived?.by).toBe('small-1 (alias fast), cached');
     expect(view.derived?.descriptions).toEqual([['beta', 'Counts⟦U+200B⟧ lines.']]);
     expect(view.derived?.dropped).toBe(1);
+    expect(view.derived?.held).toEqual([
+      { variable: 'DATA', path: 'data/', reason: 'not namespaced⟦U+202E⟧' },
+    ]);
   });
 
   it('takes a report without a pass or with odd fields', () => {
@@ -190,12 +194,16 @@ describe('the skills page', () => {
     const view = overridesView({
       skills: { 'ss/alpha': { description: 'Short.', entry: true } },
       unbound: { ss: ['DATA'] },
+      approved: { ss: ['LIBFOO_DIR'] },
+      prefixes: { ss: 'LIBFOO_' },
     });
     expect(view.skills).toEqual([
       { skill: 'ss/alpha', fields: ['description: Short.', 'an entry skill'] },
     ]);
     expect(view.unbound).toEqual([{ source: 'ss', variables: ['DATA'] }]);
-    expect(overridesView({})).toEqual({ skills: [], unbound: [] });
+    expect(view.approved).toEqual([{ source: 'ss', variables: ['LIBFOO_DIR'] }]);
+    expect(view.prefixes).toEqual([{ source: 'ss', prefix: 'LIBFOO_' }]);
+    expect(overridesView({})).toEqual({ skills: [], unbound: [], approved: [], prefixes: [] });
   });
 
   it('takes skill IDs one a line, once each', () => {

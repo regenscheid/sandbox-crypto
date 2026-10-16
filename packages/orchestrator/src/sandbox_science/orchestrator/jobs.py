@@ -232,6 +232,8 @@ class JobTools:
     ) -> None:
         """``memory`` reads the project memory the watcher is given, as it is at each
         check (PM-8)."""
+        self.bindings: Callable[[], dict[str, str]] | None = None
+        """The run's skill bindings, as its jobs carry them (SK-16)."""
         if watcher is not None and (not watcher_alias or state is None):
             raise ValueError("a watcher requires its own alias and durable job state")
         for interval in (
@@ -320,8 +322,9 @@ class JobTools:
                 ErrorKind.UNSUPPORTED,
                 "waking a detached session needs the future harness scheduler",
             )
+        bindings = self.bindings() if self.bindings is not None else {}
         request = JobRequest.model_validate(
-            {"operation_id": operation, "context": self.context, **args}
+            {"operation_id": operation, "context": self.context, **args, "bindings": bindings}
         )
         if request.wake_session:
             raise WorkerAPIError(

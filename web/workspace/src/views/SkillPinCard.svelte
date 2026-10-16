@@ -104,6 +104,14 @@
           {/each}
         </ul>
       {/if}
+      {#if report.derived.held.length}
+        <h4>Held bindings</h4>
+        <ul>
+          {#each report.derived.held as item (item.variable)}
+            <li><code>{item.variable}</code> = <code>{item.path}</code>: {item.reason}</li>
+          {/each}
+        </ul>
+      {/if}
       {#if report.derived.dropped}
         <p class="muted">{report.derived.dropped} derived items were dropped as unfit.</p>
       {/if}

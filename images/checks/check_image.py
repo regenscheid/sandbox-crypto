@@ -377,6 +377,11 @@ class Checks:
         expect(entry.pw_name == "sandbox", f"uid 1000 is {entry.pw_name!r}, not 'sandbox'")
         expect(entry.pw_dir == "/sandbox", f"the sandbox account's home is {entry.pw_dir}")
         expect(os.environ.get("HOME") == "/sandbox", f"HOME is {os.environ.get('HOME')}")
+        # Git finds no bare repository by itself, such as one a skill pack is shaped as.
+        system = os.environ.get("GIT_CONFIG_SYSTEM")
+        expect(system == "/etc/gitconfig", f"GIT_CONFIG_SYSTEM is {system}")
+        config = Path("/etc/gitconfig").read_text()
+        expect("bareRepository = explicit" in config, "git's safe.bareRepository is not explicit")
         return f"uid=1000({entry.pw_name}) gid=1000 home={entry.pw_dir}"
 
     def filesystem(self) -> str:

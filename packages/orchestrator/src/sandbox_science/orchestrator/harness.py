@@ -102,7 +102,15 @@ from .memory import MemoryEntry, ProjectMemory
 from .memory_prompt import for_reviewer, for_run, for_watcher
 from .memory_tools import MemoryTool
 from .messages import MessagesModel
-from .model import ChatModel, GatewayModel, Limits, Message, ModelError, ModelGateway
+from .model import (
+    ChatModel,
+    GatewayModel,
+    Limits,
+    Message,
+    ModelError,
+    ModelGateway,
+    cached_for,
+)
 from .notices import DIGEST, TASK_CONSTRAINTS
 from .plan_tools import PlanTools
 from .projects import (
@@ -124,6 +132,7 @@ from .skills.builtin import builtin_pack
 from .skills.derive import VERSION as PASS_VERSION
 from .skills.discovery import SkillDiscovery
 from .skills.embeddings import SkillVectors
+from .skills.staging import Stager
 from .tokens import chars_per_token
 from .tools import HARNESS_TOOL_NAMES, Toolbox, ToolOutcome
 from .view_image import ImageViewer
@@ -542,6 +551,12 @@ class Harness:
             raise ModelError(f"no model gateway serves {request.alias!r}")
         return Role(self.gateway.model(request.alias), request.alias)
 
+    def _model(self, admitted: Admitted) -> ChatModel:
+        """The model a run calls (``role``), calling as its session, so that all of the
+        session's calls share one prompt cache (CM-32)."""
+        context = admitted.context
+        return cached_for(self.role(admitted.request).model, context.project_id, context.session_id)
+
     async def run(self, request: RunRequest, sink: RunSink) -> Finished:
         """Admit the run (``admit``), then run it (``start``)."""
         projects = self.stores.projects if self.stores is not None else None
@@ -634,7 +649,7 @@ class Harness:
                             clock=self.clock,
                         )
                     transcript = await run_task(
-                        self.role(request).model,
+                        self._model(admitted),
                         toolbox,
                         None if request.queued else request.task,
                         run_id=admitted.run_id,
@@ -740,7 +755,7 @@ class Harness:
         switched = await threaded(_switched, stores.projects, project, session, self.main.alias)
         former = None
         if switched is not None and self.gateway is not None and not settings.skeleton_only:
-            former = self.gateway.model(switched[0])
+            former = cached_for(self.gateway.model(switched[0]), project, session)
         made = Folder(
             archive,
             context,
@@ -754,12 +769,13 @@ class Harness:
             earlier=earlier,
             kernels=kernels,
             digest=digest,
-            model=self._narrator(),
+            model=self._narrator(project, session),
             exists=exists,
             judge=judge,
             consolidating=request.consolidate,
             switched=switched,
             former=former,
+            carried=await threaded(_carried, stores.projects, project, session),
             clock=self.clock,
         )
         # The ceiling a context error capped, carried to later runs: this service's, or
@@ -797,15 +813,19 @@ class Harness:
             return ceiling(settings.ceiling, window=found.input, max_output=output or found.output)
         return ceiling(settings.ceiling, input_limit=found.input)
 
-    def _narrator(self) -> ChatModel | None:
+    def _narrator(self, project: str, session: str) -> ChatModel | None:
         """The model that writes MAIN's folds' narratives: the setting's alias through
         the gateway, or MAIN's own; none for skeleton-only folds, or for a model that is
-        not the gateway's, as a scripted one, whose answers are the run's (CM-19)."""
+        not the gateway's, as a scripted one, whose answers are the run's (CM-19). It
+        calls as the session does, so that it reads the run's view from the same prompt
+        cache (CM-32)."""
         if self.settings.skeleton_only:
             return None
         if self.settings.fold_alias is not None and self.gateway is not None:
-            return self.gateway.model(self.settings.fold_alias)
-        return self.main.model if isinstance(self.main.model, GatewayModel) else None
+            return cached_for(self.gateway.model(self.settings.fold_alias), project, session)
+        if isinstance(self.main.model, GatewayModel):
+            return cached_for(self.main.model, project, session)
+        return None
 
     async def _task_view(self, admitted: Admitted) -> View | None:
         """A delegated task's view, with stores: the user's standing constraints alone; a
@@ -1168,6 +1188,9 @@ class Harness:
             delegates=delegates,
             derived=self.derived,
         )
+        if skills is not None:
+            # A loaded skill's helpers are staged in the session's environment (SK-16).
+            skills.stager = Stager(self.client, context, skills.store, self.derived)
         if skills is not None and self.vectors is not None:
             # Reads the vectors the store has; the gateway's work goes on in the background.
             await skills.use(self.vectors, context.project_id, clock=self.clock)
@@ -1321,6 +1344,24 @@ def _learned(projects: ProjectStore, project: str, session: str, alias: str) -> 
         folds = record.summaries.get("folds")
         capped = folds.get("capped") if isinstance(folds, dict) else None
         return capped if record.alias == alias and type(capped) is int else None
+    return None
+
+
+def _carried(projects: ProjectStore, project: str, session: str) -> tuple[str, str] | None:
+    """The session's last main run that began folding, and the fold it kept for the next
+    run's start (``summaries.folds.kept``, CM-24a), if it kept one."""
+    for entry in reversed(projects.runs(project, session)):
+        if entry.role != "main":
+            continue
+        try:
+            record = projects.run(project, session, entry.name)
+        except ProjectError:
+            return None
+        folds = record.summaries.get("folds")
+        if not isinstance(folds, dict):  # it stopped before its first call
+            continue
+        kept = folds.get("kept")
+        return (entry.name, kept) if isinstance(kept, str) else None
     return None
 
 

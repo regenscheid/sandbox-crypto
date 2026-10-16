@@ -151,6 +151,7 @@ class Folder(TurnHook):
         consolidating: bool = False,
         switched: tuple[str, int] | None = None,
         former: ChatModel | None = None,
+        carried: tuple[str, str] | None = None,
         wait: float = WAIT,
         clock: Clock = SYSTEM_CLOCK,
         patience: float = PATIENCE,
@@ -164,7 +165,8 @@ class Folder(TurnHook):
         ledger handle exists; ``judge`` decides which markers are retired; ``switched``
         names the alias and the ceiling of the session's last main run when it was on
         another model, and ``former`` that model, which writes the refit's narratives
-        (CM-31). ``events``
+        (CM-31). ``carried`` names the earlier run that kept a fold, and that fold, which
+        this run applies at its start (CM-24a): the run lists it among its folds. ``events``
         writes a ``fold`` event, ``refit`` tells the skills what a rebuilt view holds
         (CM-29b), and ``specs`` gives the tools the run sends; the harness sets them once
         it has made them."""
@@ -215,6 +217,25 @@ class Folder(TurnHook):
         self.propose: Callable[[str, Sequence[Archived], Sequence[object]], Json] | None = None
         """Checks and keeps the proposals of the fold archived as its first argument, over
         the span of the second (CM-15); what they came to. The harness sets it."""
+        if carried is not None:
+            self._carry(*carried)
+
+    def _carry(self, earlier: str, fold: str) -> None:
+        """List the fold ``earlier``'s run kept, which this run's view starts with, among
+        this run's folds, marked ``carried`` with that run: it enters no other run's
+        count, and its calls were counted by the run that made it (CM-46)."""
+        for found, record in self.view.records:
+            if found == fold:
+                self.folds.append(
+                    {
+                        "fold": fold,
+                        "level": record.level,
+                        "span": [record.first[0], record.last[0]],
+                        "state": record.state,
+                        "stubs": len(record.stubs),
+                        "carried": earlier,
+                    }
+                )
 
     @property
     def tripped(self) -> bool:

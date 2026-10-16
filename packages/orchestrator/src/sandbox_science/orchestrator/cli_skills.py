@@ -22,7 +22,7 @@ from .documents import USER
 from .model import OpenAICompatibleModel
 from .pricing import GATEWAY
 from .projects import ProjectError, ProjectStore
-from .skills import SkillSettings, SkillStore, from_archive, from_git, snapshot
+from .skills import SkillSettings, SkillStore, allow, from_archive, from_git, snapshot
 from .skills.builtin import builtin_pack
 from .skills.derive import ANSWER_TOKENS, VERSION, Derived, PassError, derive
 from .skills.embeddings import (
@@ -104,6 +104,15 @@ def _import(store: SkillStore, args: argparse.Namespace) -> dict[str, Any]:
         )
     for warning in found.report.get("warnings", []):
         print(f"warning: {warning}", file=sys.stderr)
+    if held := cast(dict[str, Any], found.report.get("derived", {})).get("held"):
+        # The user's, not the model's: a load's answer names held bindings without this.
+        print(
+            f"note: {len(held)} derived bindings are held until a project's user approves "
+            f"them: {', '.join(item['variable'] for item in held)}; skills override "
+            f"--project P --source {args.name} --approve VARIABLE says what is known of one, "
+            "and --confirm then approves it",
+            file=sys.stderr,
+        )
     shown = asdict(found)
     shown["unchanged"] = same
     if isinstance(derived, PassError):
@@ -190,15 +199,18 @@ def _override(store: SkillStore, args: argparse.Namespace) -> SkillSettings:
     ``--expected`` names the settings' revision read (SK-33): for ``--skill``, a
     ``--description``, ``--topic`` and ``--entry`` or ``--not-entry`` to set, and
     ``--clear`` to give back to the pass; for ``--source``, ``--unbind`` and ``--rebind``
-    of its derived bindings. A change without ``--expected`` is refused, naming the
-    revision and the overrides it would make."""
+    of its derived bindings, ``--approve`` and ``--unapprove`` of those not namespaced to
+    the pack, and ``--prefix`` or ``--no-prefix`` for its own namespace (SK-31). A change
+    without ``--expected`` is refused, naming the revision and the overrides it would make."""
     current = store.settings(args.project)
+    lists = {
+        key: {k: list(v) for k, v in cast(dict[str, Any], current.overrides.get(key, {})).items()}
+        for key in ("unbound", "approved")
+    }
     skills = {
         k: dict(v) for k, v in cast(dict[str, Any], current.overrides.get("skills", {})).items()
     }
-    unbound = {
-        k: list(v) for k, v in cast(dict[str, Any], current.overrides.get("unbound", {})).items()
-    }
+    prefixes = dict(cast(dict[str, str], current.overrides.get("prefixes", {})))
     given = {
         "description": args.description,
         "topic": args.topic,
@@ -215,21 +227,71 @@ def _override(store: SkillStore, args: argparse.Namespace) -> SkillSettings:
         for key in args.clear or ():
             for field in ("description", "topic", "entry") if key == "all" else (key,):
                 fields.pop(field, None)
-    if args.unbind or args.rebind:
+    pairs = (("unbound", args.unbind, args.rebind), ("approved", args.approve, args.unapprove))
+    for key, adding, taking in pairs:
+        if adding or taking:
+            if args.source is None:
+                raise ControlError(INVALID_REQUEST, "bindings and prefixes need --source")
+            changing = True
+            names = set(lists[key].get(args.source, [])) | set(adding or ())
+            lists[key][args.source] = sorted(names - set(taking or ()))
+    if args.prefix is not None or args.no_prefix:
         if args.source is None:
-            raise ControlError(INVALID_REQUEST, "--unbind and --rebind need --source")
+            raise ControlError(INVALID_REQUEST, "bindings and prefixes need --source")
         changing = True
-        names = set(unbound.get(args.source, [])) | set(args.unbind or ())
-        unbound[args.source] = sorted(names - set(args.rebind or ()))
+        if args.prefix is not None:
+            prefixes[args.source] = args.prefix
+        else:
+            prefixes.pop(args.source, None)
+    if args.approve and not args.confirm:
+        _unconfirmed(store, cast(str, args.source), args.approve, prefixes.get(args.source))
     if args.expected is None:
         if changing:
+            then = {"skills": skills, **lists, "prefixes": prefixes}
             raise ControlError(
                 INVALID_REQUEST,
                 f"give --expected {current.revision}, the settings' revision, to change them: "
-                f"overrides then {json.dumps({'skills': skills, 'unbound': unbound})}",
+                f"overrides then {json.dumps(then)}",
             )
         return current
-    return store.set_overrides(args.project, USER, args.expected, skills=skills, unbound=unbound)
+    return store.set_overrides(
+        args.project,
+        USER,
+        args.expected,
+        skills=skills,
+        unbound=lists["unbound"],
+        approved=lists["approved"],
+        prefixes=prefixes,
+    )
+
+
+def _unconfirmed(store: SkillStore, source: str, variables: list[str], prefix: str | None) -> None:
+    """Refuse an approval of a binding not namespaced to ``source`` without ``--confirm``,
+    saying what is known of each (SK-31): a pack's file under a variable some tool reads
+    runs as that tool."""
+    imports = store.imports()
+    others = {allow.namespace(i.source) for i in imports if i.source != source}
+    names, _ = allow.granted(source, prefix, others)
+    latest = next((i for i in imports if i.source == source), None)
+    derived = cast(dict[str, Any], latest.report.get("derived", {})) if latest else {}
+    paths = cast(dict[str, str], derived.get("bindings", {}))
+    unasked = [
+        v
+        for v in dict.fromkeys(variables)
+        if not v.startswith(tuple(names)) and not allow.forbidden(v)  # the store refuses those
+    ]
+    if not unasked:
+        return
+    for variable in unasked:
+        print(
+            f"approval: {allow.about(variable, source, names, paths.get(variable))}",
+            file=sys.stderr,
+        )
+    raise ControlError(
+        INVALID_REQUEST,
+        f"give --confirm to approve {', '.join(unasked)}, having read what is known of "
+        f"{'it' if len(unasked) == 1 else 'them'}",
+    )
 
 
 def _settings(store: SkillStore, args: argparse.Namespace) -> SkillSettings:
@@ -343,6 +405,21 @@ def add_parser(commands: Any) -> None:
     override.add_argument("--source", help="the pack whose derived bindings change")
     override.add_argument("--unbind", action="append", metavar="VARIABLE")
     override.add_argument("--rebind", action="append", metavar="VARIABLE")
+    override.add_argument(
+        "--approve",
+        action="append",
+        metavar="VARIABLE",
+        help="set a derived binding not namespaced to the pack (repeat)",
+    )
+    override.add_argument(
+        "--confirm",
+        action="store_true",
+        help="approve a binding not namespaced to the pack, having read what --approve says",
+    )
+    override.add_argument("--unapprove", action="append", metavar="VARIABLE")
+    named = override.add_mutually_exclusive_group()
+    named.add_argument("--prefix", help="the pack's own namespace, such as CAS_")
+    named.add_argument("--no-prefix", action="store_true", help="the source's name alone")
     listed = actions.add_parser(
         "list", parents=[common], help="the imports, a source's, or a project's pins"
     )

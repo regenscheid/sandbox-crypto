@@ -26,6 +26,7 @@ from sandbox_science.orchestrator.control.errors import CONFLICT, INVALID_REQUES
 from sandbox_science.orchestrator.documents.models import Author
 from sandbox_science.orchestrator.pricing import CostSource, source_of
 
+from . import allow
 from .builtin import BUILTIN, DELEGATING, PLATFORM, ROLES
 from .packs import (
     NAME,
@@ -146,8 +147,18 @@ class SkillSettings:
     excluded: tuple[str, ...] = ()
     overrides: dict[str, Any] = field(default_factory=dict[str, Any])
     """The user's overrides of what the import's pass derives (SK-33): ``skills``, each
-    qualified ID's ``description``, ``topic`` and ``entry``, and ``unbound``, each
-    source's derived bindings it may not have."""
+    qualified ID's ``description``, ``topic`` and ``entry``; ``unbound``, each source's
+    derived bindings it may not have; ``approved``, each source's derived bindings set
+    though not namespaced to the pack; and ``prefixes``, each source's own namespace."""
+
+
+@dataclass(frozen=True)
+class Bound:
+    """A project's derived bindings by source: those its runs set, and those held, each
+    with its path and why (SK-31, SK-33)."""
+
+    set: dict[str, dict[str, str]]
+    held: dict[str, list[dict[str, str]]]
 
 
 class SkillStore:
@@ -206,7 +217,17 @@ class SkillStore:
             if latest is not None:
                 report["changes"] = {"since": latest.import_id, **_changes(db, latest, snapshot)}
             if derived is not None:
-                report["derived"] = derived
+                # The bindings a project sets only once its user approves them (SK-31).
+                given = cast(dict[str, str], derived.get("bindings", {}))
+                rows = db.execute("SELECT DISTINCT source FROM skill_imports").fetchall()
+                others = {allow.namespace(s) for (s,) in rows}
+                names, refused = allow.granted(source, None, others - {allow.namespace(source)})
+                held = [
+                    {"variable": variable, "path": path, "reason": why}
+                    for variable, path in sorted(given.items())
+                    if (why := allow.held(variable, source, names=names, refused=refused))
+                ]
+                report["derived"] = {**derived, "held": held} if held else derived
             user, more = _user_set(db, source, {skill.name for skill in snapshot.skills})
             if user:
                 report["user_set"] = user  # by project: what overrides the pass (SK-33)
@@ -414,6 +435,17 @@ class SkillStore:
             ).fetchone()
         return None if row is None else bytes(row[0])
 
+    def manifest(self, snapshot: str) -> list[tuple[str, str, int, bool]]:
+        """A snapshot's files by path: each with its SHA-256, size and whether it is
+        executable, as staging writes and checks them (SK-16)."""
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT f.path,f.blob,length(b.content),f.executable FROM skill_files f "
+                "JOIN skill_blobs b ON b.sha256=f.blob WHERE f.snapshot=? ORDER BY f.path",
+                (snapshot,),
+            ).fetchall()
+        return [(path, blob, size, bool(executable)) for path, blob, size, executable in rows]
+
     def served_body(self, entry: Entry) -> str:
         """A skill's body as a run is given it (``served``)."""
         content = self.file(entry.snapshot, f"{entry.name}/SKILL.md") or b""
@@ -612,11 +644,14 @@ class SkillStore:
         *,
         skills: Mapping[str, Mapping[str, object]],
         unbound: Mapping[str, Sequence[str]],
+        approved: Mapping[str, Sequence[str]] | None = None,
+        prefixes: Mapping[str, str] | None = None,
     ) -> SkillSettings:
         """The user's overrides of what the pass derives, in place of the project's
         current ones, read at ``expected`` (SK-33): for each skill by qualified ID a
-        ``description``, ``topic`` or ``entry``, and for each source the derived bindings
-        its skills may not have. They win over what any pass derives, and survive pins."""
+        ``description``, ``topic`` or ``entry``; for each source the derived bindings its
+        skills may not have, those set though not namespaced to the pack, and a prefix of
+        its own (SK-31). They win over what any pass derives, and survive pins."""
         if author.kind != "user":
             raise ControlError(INVALID_REQUEST, "only the user overrides skills")
         kept: dict[str, dict[str, object]] = {}
@@ -626,16 +661,19 @@ class SkillStore:
                 raise ControlError(INVALID_REQUEST, f"{skill[:80]!r} is not a source/name ID")
             if fields:
                 kept[skill] = _fields(skill, fields)
-        bound: dict[str, list[str]] = {}
-        for source, variables in unbound.items():
+        bound, allowed = _variables(unbound), _variables(approved or {})
+        if never := sorted(v for vs in allowed.values() for v in vs if allow.forbidden(v)):
+            raise ControlError(INVALID_REQUEST, f"{never[0]} is never set, approved or not")
+        named: dict[str, str] = {}
+        for source, prefix in (prefixes or {}).items():
             _source(source)
-            if variables:
-                if any(not VARIABLE.fullmatch(v) for v in variables):
-                    raise ControlError(INVALID_REQUEST, f"{source}'s bindings name no variable")
-                bound[source] = sorted(set(variables))
-        if len(kept) > MAX_OVERRIDDEN or sum(len(v) for v in bound.values()) > MAX_OVERRIDDEN:
+            if why := allow.prefix_refused(prefix):
+                raise ControlError(INVALID_REQUEST, why)
+            named[source] = prefix
+        counts = (len(kept), *(sum(map(len, v.values())) for v in (bound, allowed)))
+        if max(counts) > MAX_OVERRIDDEN:
             raise ControlError(INVALID_REQUEST, f"at most {MAX_OVERRIDDEN} of each are overridden")
-        overrides = {"skills": kept, "unbound": bound}
+        overrides = {"skills": kept, "unbound": bound, "approved": allowed, "prefixes": named}
         if len(text := json.dumps(overrides)) > OVERRIDES_BYTES:
             raise ControlError(INVALID_REQUEST, f"the overrides pass {OVERRIDES_BYTES:,} bytes")
         with self.control.write() as tx:
@@ -653,24 +691,47 @@ class SkillStore:
             )
             return _settings(db, project)
 
-    def bindings(self, project: str, derived: tuple[str, str] | None) -> dict[str, dict[str, str]]:
+    def bindings(
+        self, project: str, derived: tuple[str, str] | None, tools: Collection[str] = ()
+    ) -> Bound:
         """Each pinned source's bindings the pass of ``derived``, an alias and version,
-        found, less those the project's overrides take away (SK-30, SK-33)."""
+        found: those the project's runs set, namespaced to the pack or approved, and those
+        held, with why, as the rest are, and those the project's overrides take away
+        (SK-30, SK-31, SK-33). A namespace is refused when it is a tool's (``tools``
+        names the environment's commands, when known), or would claim another pinned
+        source's; a variable two sources bind is held for both. The deny-list is checked
+        again: a pass of an older list may have kept what this one refuses."""
+        found = Bound({}, {})
         if self.control.missing or derived is None:
-            return {}
+            return found
         with self.control.read() as tx:
             db = tx.sql
-            unbound = cast(
-                dict[str, list[str]], _settings(db, project).overrides.get("unbound", {})
-            )
-            found: dict[str, dict[str, str]] = {}
-            for pin in _pins(db, project):
-                given = cast(
+            overrides = _settings(db, project).overrides
+            prefixes = cast(dict[str, str], overrides.get("prefixes", {}))
+            given = {
+                pin.source: cast(
                     dict[str, str], _derived(db, pin.pinned.snapshot, derived).get("bindings", {})
                 )
-                kept = {k: v for k, v in given.items() if k not in unbound.get(pin.source, [])}
-                if kept:
-                    found[pin.source] = kept
+                for pin in _pins(db, project)
+            }
+        spaces = {s: {allow.namespace(s), *([prefixes[s]] if s in prefixes else [])} for s in given}
+        named: dict[str, list[str]] = {}
+        for source, variables in given.items():
+            for variable in variables:
+                named.setdefault(variable, []).append(source)
+        for source, variables in given.items():
+            others = {name for other, names in spaces.items() if other != source for name in names}
+            names, refused = allow.granted(source, prefixes.get(source), others, tools)
+            for variable, path in sorted(variables.items()):
+                why = _held(overrides, source, variable, names, refused)
+                if why is None and len(named[variable]) > 1:
+                    also = ", ".join(s for s in named[variable] if s != source)
+                    why = f"{also} binds it too: held for each"
+                if why is None:
+                    found.set.setdefault(source, {})[variable] = path
+                else:
+                    item = {"variable": variable, "path": path, "reason": why}
+                    found.held.setdefault(source, []).append(item)
         return found
 
     def pins(self, project: str) -> list[Pin]:
@@ -721,6 +782,32 @@ def _fields(skill: str, fields: Mapping[str, object]) -> dict[str, object]:
             raise ControlError(INVALID_REQUEST, f"{skill}'s entry is true or false")
         kept["entry"] = fields["entry"]
     return kept
+
+
+def _variables(lists: Mapping[str, Sequence[str]]) -> dict[str, list[str]]:
+    """Variables by source, checked, without empty lists."""
+    found: dict[str, list[str]] = {}
+    for source, variables in lists.items():
+        _source(source)
+        if variables:
+            if any(not VARIABLE.fullmatch(v) for v in variables):
+                raise ControlError(INVALID_REQUEST, f"{source}'s bindings name no variable")
+            found[source] = sorted(set(variables))
+    return found
+
+
+def _held(
+    overrides: dict[str, Any],
+    source: str,
+    variable: str,
+    names: Sequence[str],
+    refused: Sequence[str],
+) -> str | None:
+    """Why the project does not set ``source``'s derived binding of ``variable``."""
+    if variable in cast(dict[str, list[str]], overrides.get("unbound", {})).get(source, []):
+        return "taken away by the project's overrides"
+    approved = cast(dict[str, list[str]], overrides.get("approved", {})).get(source, [])
+    return allow.held(variable, source, names=names, refused=refused, approved=approved)
 
 
 def _settings(db: sqlite3.Connection, project: str) -> SkillSettings:
@@ -883,8 +970,9 @@ def _of_source(overrides: dict[str, Any], source: str, names: set[str]) -> dict[
         found["skills"] = present
     if absent := sorted(k for k in skills if k.partition("/")[2] not in names):
         found["kept_for_absent_skills"] = absent
-    if unbound := cast(dict[str, list[str]], overrides.get("unbound", {})).get(source):
-        found["unbound"] = unbound
+    for key in ("unbound", "approved", "prefixes"):
+        if mine := cast(dict[str, Any], overrides.get(key, {})).get(source):
+            found["prefix" if key == "prefixes" else key] = mine
     return found
 
 

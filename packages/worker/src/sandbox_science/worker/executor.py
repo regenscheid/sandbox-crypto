@@ -35,6 +35,7 @@ import os
 import platform
 import re
 import secrets
+import shutil
 import signal
 import socket
 import stat
@@ -95,7 +96,9 @@ else:
     SHARED = sandbox_files.SHARED
     MAX_PATH_BYTES = sandbox_files.MAX_PATH_BYTES
 
-PROTOCOL = 1
+PROTOCOL = 2
+"""The executor's protocol with the worker: 2 takes skill bindings in executions, which the
+worker sends only to an executor of 2 or more (docs/specs/skills.md, SK-16)."""
 MAX_LINE = 16 * 1024 * 1024
 """The longest line the executor sends; the worker drops longer ones."""
 MAX_REQUEST = 64 * 1024 * 1024
@@ -143,6 +146,12 @@ MAX_SENTINELS = 8
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _SESSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_SOURCE_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?")
+_BINDING_RE = re.compile(r"[A-Z][A-Z0-9_]{1,63}")
+_COMMAND_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}")
+_BINDING_VALUE_RE = re.compile(r"[^\x00-\x20\x7f;]{1,4096}")
+"""A binding's value: a path, without whitespace, control characters or ``;``."""
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 Message = dict[str, Any]
 Send = Callable[[Message], Awaitable[None]]
@@ -320,6 +329,11 @@ class Running:
     package_operation: str = ""
     package_generation: int = -1
     controller: Callable[[], bool] | None = None
+    bindings: dict[str, str] = field(default_factory=dict[str, str])
+    """A cell's skill bindings, to say when its kernel holds others."""
+    bindings_dropped: tuple[str, ...] = ()
+    """The skill bindings left out as naming the environment's own variables, which the
+    result names for the run's notice."""
     """Seconds it waited for package commands before it started; its time limit covers them."""
 
 
@@ -359,6 +373,10 @@ class Kernel:
     """The run whose own kernel this is; ``None`` for the session's."""
     retired: bool = field(default=False, kw_only=True)
     """Its run has ended: it is never started again (set under ``control``)."""
+    bindings: dict[str, str] = field(default_factory=dict[str, str], kw_only=True)
+    """The skill bindings its next start takes: the last cell's, the whole set (SK-16)."""
+    started_bindings: dict[str, str] = field(default_factory=dict[str, str], kw_only=True)
+    """The skill bindings it started with, which it keeps until it starts again."""
 
     @property
     def kernel_id(self) -> str:
@@ -413,9 +431,10 @@ class Kernel:
             async def spawn() -> None:
                 nonlocal leader, client
                 with sandbox_processes.starting_children():
-                    await manager.start_kernel(
-                        cwd=str(self.cwd), env={**self.env, sandbox_processes.OWNER: owner}
-                    )
+                    # The environment's own variables win over any binding (SK-16).
+                    env = {**self.bindings, **self.env, sandbox_processes.OWNER: owner}
+                    await manager.start_kernel(cwd=str(self.cwd), env=env)
+                    self.started_bindings = dict(self.bindings)
                     pid = getattr(manager.provisioner, "pid", None)
                     if (
                         isinstance(pid, int)
@@ -750,6 +769,8 @@ class Executor:
             "shared": self.op_shared,
             "remove": self.op_remove,
             "move": self.op_move,
+            "skills_check": self.op_skills_check,
+            "skills_put": self.op_skills_put,
         }
         handler = handlers.get(str(request.get("op")))
         try:
@@ -798,6 +819,28 @@ class Executor:
 
     def session(self, request: Message) -> str:
         return self.session_name(request.get("session"))
+
+    def bindings(
+        self, request: Message, env: Mapping[str, str]
+    ) -> tuple[dict[str, str], tuple[str, ...]]:
+        """The skill bindings an execution adds to the environment's variables ``env``, and
+        those left out as naming one of them (SK-16): the environment's value stands, and
+        the run is told, as one such binding would otherwise fail every execution of it."""
+        raw = request.get("bindings", {})
+        if not isinstance(raw, dict):
+            raise ToolError("invalid_request", "bindings must be an object")
+        found: dict[str, str] = {}
+        dropped: list[str] = []
+        for name, value in cast(dict[object, object], raw).items():
+            if not (isinstance(name, str) and _BINDING_RE.fullmatch(name)):
+                raise ToolError("invalid_request", f"invalid variable name {name!r}")
+            if not (isinstance(value, str) and _BINDING_VALUE_RE.fullmatch(value)):
+                raise ToolError("invalid_request", f"invalid value for {name}")
+            if name in env:
+                dropped.append(name)
+                continue
+            found[name] = value
+        return found, tuple(sorted(dropped))
 
     def session_name(self, session: object) -> str:
         if not isinstance(session, str) or not _SESSION_RE.fullmatch(session):
@@ -1384,15 +1427,18 @@ class Executor:
         execution = str(request.get("execution", ""))
         if is_job and re.fullmatch(r"exe-[0-9a-f]{24}", execution) is None:
             raise ToolError("invalid_request", "invalid job execution id")
+        env = self.environment(session)
+        bindings, dropped = self.bindings(request, env)
         running = self.accept(request, "job" if is_job else "shell")
         running.session = session
+        running.bindings_dropped = dropped
         await self.reply(request)
         running.task = self.spawn(
             self.run_shell(
                 running,
                 argv,
                 cwd,
-                self.environment(session),
+                bindings | env,
                 float(request.get("timeout", 120)),
                 int(request.get("limit", 1024 * 1024)),
             )
@@ -1543,6 +1589,8 @@ class Executor:
                 **written,
                 "running_kernels": await self.session_kernels(session),
             }
+            if running.bindings_dropped:
+                result["bindings_dropped"] = list(running.bindings_dropped)
             if not self.closing:
                 await self.event(
                     execution, "end", state=state, result=result, output_observations=observations
@@ -1721,8 +1769,13 @@ class Executor:
         code = request.get("code")
         if not isinstance(code, str):
             raise ToolError("invalid_request", "code must be a string")
+        # The cell's bindings are the whole set the kernel's next start takes; a running
+        # kernel keeps those it started with, and the result says so (SK-16).
+        bindings, dropped = self.bindings(request, kernel.env)
         running = self.accept(request, "cell")
         running.kernel = kernel
+        running.bindings = kernel.bindings = bindings
+        running.bindings_dropped = dropped
         await self.reply(request)
         running.task = self.spawn(
             self.run_cell(
@@ -1774,6 +1827,8 @@ class Executor:
                     running, kernel, code, timeout, limit, captures, outputs, msg_id=msg_id
                 )
                 result["state_lost"] = state_lost or result.get("state_lost", False)
+                if kernel.started_bindings != running.bindings:
+                    result["bindings_kept"] = True
                 result.update(await self.written(kernel.session, before))
                 result.update(await self.settle(running))
         except (asyncio.CancelledError, _NotStartedError):
@@ -1805,6 +1860,8 @@ class Executor:
                 sandbox_started=wall_started,
                 sandbox_ended=time.time(),
             )
+            if running.bindings_dropped:
+                result["bindings_dropped"] = list(running.bindings_dropped)
             if not self.closing:
                 observations = result.pop("output_observations", None)
                 await self.event(
@@ -2157,6 +2214,74 @@ class Executor:
             raise ToolError("invalid_request", "invalid capture ID")
         await self.captures.cancel(capture_id)
         await self.reply(request, capture_id=capture_id, cleaned=True)
+
+    def staged(self, request: Message) -> tuple[str, str]:
+        source, snapshot = request.get("source"), request.get("snapshot")
+        if not (isinstance(source, str) and _SOURCE_RE.fullmatch(source)):
+            raise ToolError("invalid_request", f"invalid source {source!r}")
+        if not (isinstance(snapshot, str) and _SHA256_RE.fullmatch(snapshot)):
+            raise ToolError("invalid_request", "snapshot must be a SHA-256")
+        return source, snapshot
+
+    async def op_skills_check(self, request: Message) -> None:
+        """Whether a pack is staged as the harness expects it, and with ``seal``, made
+        read-only once it is (docs/specs/skills.md, SK-16)."""
+        source, snapshot = self.staged(request)
+        raw = request.get("files", [])
+        items = cast(list[object], raw) if isinstance(raw, list) else []
+        files = [cast(Message, item) for item in items if isinstance(item, dict)]
+        if not isinstance(raw, list) or len(files) != len(items):
+            raise ToolError("invalid_request", "files must be a list of objects")
+        for item in files:
+            sandbox_files.check_relative(str(item.get("path")))
+        try:
+            found = await asyncio.to_thread(
+                sandbox_files.stage_check,
+                self.root,
+                source,
+                snapshot,
+                files,
+                request.get("seal") is True,
+            )
+        except OSError as exc:
+            raise sandbox_files.file_error(exc, f"{sandbox_files.STAGED}/{source}") from exc
+        raw = request.get("commands", [])
+        names = (
+            [n for n in cast(list[object], raw) if isinstance(n, str)][:256]
+            if isinstance(raw, list)
+            else []
+        )
+        path = self.tool_path()
+        found["commands"] = [
+            n for n in names if _COMMAND_RE.fullmatch(n) and shutil.which(n, path=path)
+        ]
+        await self.reply(request, **found)
+
+    async def op_skills_put(self, request: Message) -> None:
+        """Write a batch of a pack's files where its snapshot is staged (SK-16)."""
+        source, snapshot = self.staged(request)
+        raw = request.get("files", [])
+        files: list[tuple[str, bytes, bool]] = []
+        for item in cast(list[object], raw) if isinstance(raw, list) else []:
+            fields = cast(Message, item) if isinstance(item, dict) else {}
+            path = sandbox_files.check_relative(str(fields.get("path")))
+            try:
+                content = base64.b64decode(str(fields.get("content_b64", "")), validate=True)
+            except ValueError as exc:
+                raise ToolError("invalid_request", f"{path}: content_b64 is not base64") from exc
+            files.append((path, content, fields.get("executable") is True))
+        try:
+            written = await asyncio.to_thread(
+                sandbox_files.stage_put,
+                self.root,
+                source,
+                snapshot,
+                request.get("reset") is True,
+                files,
+            )
+        except OSError as exc:
+            raise sandbox_files.file_error(exc, f"{sandbox_files.STAGED}/{source}") from exc
+        await self.reply(request, written=written)
 
     async def op_write(self, request: Message) -> None:
         path = request.get("path")

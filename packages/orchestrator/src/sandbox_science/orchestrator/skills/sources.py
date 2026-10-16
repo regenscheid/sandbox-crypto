@@ -398,15 +398,31 @@ def _unwrapped(entries: list[_Entry]) -> list[_Entry]:
 
 def _plain(path: str) -> bool:
     """A relative path of plain names: no control, format, bidirectional or zero-width
-    character, no backslash, no empty, dot, dot-dot or ``.git`` name, and bounded."""
+    character, no backslash, no empty, dot, dot-dot or ``.git`` name, in any case, and
+    bounded."""
     parts = path.split("/")
     return (
         len(path.encode(errors="replace")) <= 1024
         and not _CONTROL.search(path)
         and not hidden_characters(path)
-        and all(part not in ("", ".", "..", ".git") for part in parts)
+        and all(part.casefold() not in ("", ".", "..", ".git") for part in parts)
         and all(len(part.encode(errors="replace")) <= 255 for part in parts)
     )
+
+
+GIT_NAMES: Final = frozenset({"head", "commondir", "gitdir", "config.worktree"})
+"""Files that make a folder a git directory, or point git at one, compared case-folded as
+``.git`` is: git finds a repository by a folder's ``HEAD``, and one split in two by its
+``commondir``, ``gitdir`` and ``config.worktree`` (re-checks of #493 and #486)."""
+
+
+def _git_file(paths: set[str]) -> str | None:
+    """A path of ``paths`` named as one of git's own files (``GIT_NAMES``), or ``None``:
+    git run in or below a staged pack would take its folder for a repository, and run what
+    its ``core.fsmonitor``, ``core.sshCommand`` or hooks name. A split layout, ``HEAD``
+    and ``commondir`` in one folder and ``config`` in the other, ran ``core.fsmonitor``
+    under git 2.53, so every such name is refused, not only ``HEAD`` beside ``config``."""
+    return next((p for p in sorted(paths) if p.rpartition("/")[2].casefold() in GIT_NAMES), None)
 
 
 def _root(root: str) -> str:
@@ -454,6 +470,13 @@ def _select(
         chosen.append(replace(entry, path=path))
     if len(chosen) > MAX_FILES or sum(entry.size for entry in chosen) > MAX_PACK_BYTES:
         raise ControlError(INVALID_REQUEST, "the pack has over 4,096 files or 32 MiB")
+    if (named := _git_file(seen)) is not None:
+        raise ControlError(
+            INVALID_REQUEST,
+            f"{named[:200]} is named as one of git's own files (HEAD, commondir, gitdir, "
+            "config.worktree): git run in its folder would read a config and hooks there, "
+            "so the pack is refused",
+        )
     if not chosen:
         raise ControlError(NOT_FOUND, f"no files in {root or 'the pack'}")
     return chosen, tuple(skipped), root, tuple(warnings)

@@ -145,8 +145,10 @@ def test_bindings_the_user_takes_away_are_not_had(
     projects = ProjectStore(state)
     try:
         store = SkillStore(projects.control)
-        assert store.bindings("p", PASS) == {"ss": {"SS_TEST_SKILLS": ""}}
-        assert store.bindings("p", None) == {}  # no pass configured: none
+        assert store.bindings("p", PASS).set == {"ss": {"SS_TEST_SKILLS": ""}}
+        (held,) = store.bindings("p", PASS).held["ss"]
+        assert held["reason"] == "taken away by the project's overrides"
+        assert store.bindings("p", None).set == {}  # no pass configured: none
     finally:
         projects.close()
     status, listed = _cli(capsys, state, "list", "--project", "p")
@@ -155,7 +157,7 @@ def test_bindings_the_user_takes_away_are_not_had(
     status, _ = _cli(capsys, state, *unbind, "--expected", "1", "--rebind", "SS_SCRIPTS")
     projects = ProjectStore(state)
     try:
-        assert SkillStore(projects.control).bindings("p", PASS)["ss"]["SS_SCRIPTS"] == "alpha"
+        assert SkillStore(projects.control).bindings("p", PASS).set["ss"]["SS_SCRIPTS"] == "alpha"
     finally:
         projects.close()
 

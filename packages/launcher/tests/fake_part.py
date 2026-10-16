@@ -13,7 +13,7 @@ Every step goes in the file ``FAKE_JOURNAL`` names, one line each, and ``FAKE_PA
 - ``child-stays``: it starts a child in its own session, which outlives it.
 - ``suspend-busy``: the worker suspends nothing, as for sandboxes in use.
 - ``suspend-slow``: the worker takes 20 s to answer a suspension.
-- ``old-protocol``: the worker speaks protocol 4.
+- ``old-protocol``: the worker speaks protocol 5.
 
 The harness's ``skills`` commands answer as for a control store with no import and no
 pin: ``import`` and ``pin`` answer an import at the commit ``c`` * 40 with one skill.
@@ -90,7 +90,7 @@ def worker_api(settings: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             data = json.dumps(body).encode()
             self.send_response(status)
             self.send_header(
-                "X-Worker-Protocol", "4" if behaviour == "old-protocol" else str(PROTOCOL_VERSION)
+                "X-Worker-Protocol", "5" if behaviour == "old-protocol" else str(PROTOCOL_VERSION)
             )
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))

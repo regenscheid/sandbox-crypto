@@ -41,7 +41,7 @@ from sandbox_science.orchestrator.history.geometry import input_limit
 from sandbox_science.orchestrator.history.reads import Read, Register
 from sandbox_science.orchestrator.history.skeleton import _fit
 from sandbox_science.orchestrator.loop import Transcript
-from sandbox_science.orchestrator.model import Limits
+from sandbox_science.orchestrator.model import Limits, session_cache_key
 from sandbox_science.orchestrator.notices import FOLD_ENRICH, FOLD_REGION, STATE_BLOCK
 from sandbox_science.orchestrator.projects import ModelUsage, ProjectStore, RunRecord, run_name
 from sandbox_science.orchestrator.runstate import RunState
@@ -1023,6 +1023,32 @@ async def test_a_fold_enriched_while_the_run_goes_on_is_applied_by_the_wall(
     assert states[-1] == "applied"
 
 
+async def test_a_fold_enrichment_reads_the_prompt_cache_of_the_run_it_follows(
+    harness: Harness,
+) -> None:
+    """CM-19, CM-32: through the Responses API the enrichment call sends the run's
+    instructions, tools, input and cache key, byte for byte as the run's request
+    before it did, and then the one instruction: the gateway can read all of the run's
+    view from the cache the run wrote."""
+    harness.gateway.per_token = 4.0
+    seed(harness, 13)
+    outputs = Reply(calls=[("shell", {"script": PRINT}), ("shell", {"script": PRINT})])
+    options = [*ENRICHED, "--api", "main=responses"]
+    record = await harness.run("run-1", [outputs, Reply("Done.")], options=options)
+    (made,) = folds(record)["folds"]
+    assert made["state"] == "applied"
+    found = harness.gateway
+    (at,) = found.enriching
+    asked = found.responses[at]
+    before = next(b for i, b in enumerate(found.responses) if i != at)  # the run's first call
+    for field in ("instructions", "tools", "model", "tool_choice", "prompt_cache_key"):
+        assert asked[field] == before[field], field
+    assert asked["prompt_cache_key"] == session_cache_key(PROJECT, SESSION)
+    assert asked["input"][:-1] == before["input"]
+    assert str(asked["input"][-1]["content"]).startswith(FOLD_ENRICH.text)
+    assert json.dumps(asked["input"][:-1]) == json.dumps(before["input"])
+
+
 async def test_a_failed_enrichment_is_tried_once_more_then_the_fold_is_skeleton_only(
     harness: Harness,
 ) -> None:
@@ -1080,6 +1106,16 @@ async def test_a_fold_ready_when_its_run_ends_is_kept_for_the_next_run(
     after = await harness.run("run-2", [Reply("Again.")], options=ENRICHED)
     view = cast(Json, after.summaries["view"])
     assert view["folds"] == [folds(first)["kept"]]
+    # The run that applies it at its start lists it, marked as carried from the run that
+    # kept it, so that the fold is in some run's record (CM-46); its calls stay the first
+    # run's, and the third run, which kept nothing, carries nothing.
+    assert [
+        (fold["fold"], fold["carried"]) for fold in cast(list[Json], folds(after)["folds"])
+    ] == [(folds(first)["kept"], name(first))]
+    assert folds(after)["calls"] == []
+    assert "kept" not in folds(after)
+    third = await harness.run("run-3", [Reply("Once more.")], options=ENRICHED)
+    assert folds(third)["folds"] == []
     region = next(
         str(m["content"]) for m in harness.gateway.main[0] if FOLD_REGION.text in str(m["content"])
     )
