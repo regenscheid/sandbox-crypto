@@ -297,6 +297,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         preview.capabilities,
         workspace_origin=lambda: preview.workspace_origin,
         viewer_dir=args.static / "viewer",
+        figures_dir=args.static / "figures",
         check_host=own_host if is_loopback(preview_host) else lambda request: True,
     )
     try:

@@ -25,6 +25,7 @@ import {
   pdfBox,
   viewerParams,
 } from './anchor';
+import { statusMessage } from '../figures/protocol';
 import './viewer.css';
 
 GlobalWorkerOptions.workerSrc = workerUrl;
@@ -54,6 +55,8 @@ let labels: string[] | null = null;
 let current = 1;
 let shown: { container: HTMLElement; viewport: PageViewport } | null = null;
 let rendering = 0;
+/** In the figure mode, the workspace's origin, to which the frame sends its size. */
+let figureFor: string | null = null;
 
 async function show(index: number): Promise<void> {
   if (!pdf) return;
@@ -61,7 +64,9 @@ async function show(index: number): Promise<void> {
   const generation = ++rendering;
   const page = await pdf.getPage(current);
   if (generation !== rendering) return;
-  const scale = SCALES[scaleIndex]!;
+  // A figure is fitted to the frame's width; otherwise the zoom chosen.
+  const width = page.getViewport({ scale: 1 }).width;
+  const scale = figureFor ? Math.min(4, document.body.clientWidth / width) : SCALES[scaleIndex]!;
   const viewport = page.getViewport({ scale });
   const container = document.createElement('div');
   container.className = 'page';
@@ -99,12 +104,22 @@ async function show(index: number): Promise<void> {
   smaller.disabled = scaleIndex === 0;
   larger.disabled = scaleIndex === SCALES.length - 1;
   status.textContent = '';
+  if (figureFor)
+    window.parent.postMessage(
+      statusMessage('rendered', viewport.width, viewport.height),
+      figureFor,
+    );
 }
 
 /** Show a page, saying so when it cannot be drawn rather than failing silently. */
 function go(index: number): void {
   show(index).catch(() => {
     status.textContent = `Page ${index} could not be drawn.`;
+    if (figureFor)
+      window.parent.postMessage(
+        statusMessage('error', 0, 0, 'the page could not be drawn'),
+        figureFor,
+      );
   });
 }
 
@@ -152,6 +167,11 @@ async function open(): Promise<void> {
     status.textContent = 'This viewer opens only inside the workspace that made its link.';
     return;
   }
+  if (params.figure) {
+    // One page, fitted, without the controls; its size goes to the workspace only.
+    document.body.classList.add('figure');
+    figureFor = params.workspace;
+  }
   try {
     pdf = await getDocument({
       url: `/pdf/${params.capability}`,
@@ -165,6 +185,10 @@ async function open(): Promise<void> {
     }).promise;
   } catch {
     status.textContent = 'The PDF could not be opened: the link may have expired. Open it again.';
+    if (params.figure) {
+      const failed = statusMessage('error', 0, 0, 'the PDF could not be opened');
+      window.parent.postMessage(failed, params.workspace);
+    }
     return;
   }
   labels = await pdf.getPageLabels().catch(() => null);

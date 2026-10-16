@@ -1,0 +1,19 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: MIT -->
+<!--
+  The figure frame, served only by the preview origin (docs/specs/figures.md, FG-14). It
+  takes one figure from the workspace's window and fetches nothing but that figure's files
+  from its own origin.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Figure</title>
+  </head>
+  <body>
+    <main id="figure" role="img"></main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

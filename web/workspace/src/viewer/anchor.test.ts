@@ -26,7 +26,14 @@ describe('the URL fragment the workspace mints', () => {
       capability: CAPABILITY,
       workspace: 'http://127.0.0.1:8200',
       page: null,
+      figure: false,
     });
+    // The figure mode (FG-12): one page fitted to the frame, its size sent to the workspace.
+    const figure = viewerParams(`${fragment(CAPABILITY, 'http://127.0.0.1:8200')}&m=figure`);
+    expect(figure?.figure).toBe(true);
+    expect(viewerParams(`${fragment(CAPABILITY, 'http://127.0.0.1:8200')}&m=x`)?.figure).toBe(
+      false,
+    );
   });
 
   test('names the page to open at, a number from 1, or none', () => {

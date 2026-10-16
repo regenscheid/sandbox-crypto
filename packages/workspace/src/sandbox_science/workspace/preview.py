@@ -8,10 +8,13 @@ FG-12, FG-13). This application serves only the viewer's bundle, PDF bytes and f
 files, each for a capability the workspace minted: an HMAC-SHA-256, under a key made when
 the process starts and kept only in memory, over the project, the artifact, the revision,
 its SHA-256 and an expiry. A figure file is served only as the type it is recorded as and
-only when its first bytes are that type's: a PNG or a JPEG of at most 8 MiB and 50
-megapixels by its header. It has no API and no login, and it never reads a cookie: the
-browser sends the workspace's cookie to every port on the host, and a request with it gets
-exactly what one without it gets.
+only when its first bytes are that type's, at most 8 MiB: a PNG or a JPEG of at most 50
+megapixels by its header, for a page's ``<img>``; an SVG, which the figure frame
+(``/figures/``) fetches and shows as an image, so it runs no script and loads nothing; and
+an HTML file, the page of a frame the workspace makes without scripts, which its CSP's
+``sandbox`` enforces too (FG-14). It has no API and no login, and it never reads a cookie:
+the browser sends the workspace's cookie to every port on the host, and a request with it
+gets exactly what one without it gets.
 """
 
 from __future__ import annotations
@@ -75,6 +78,14 @@ SANDBOXED: Final = web.ResponseKey("sandboxed", bool)
 """Marks a response whose CSP also says ``sandbox``: the PDF bytes and figure files."""
 EMBEDDED: Final = web.ResponseKey("embedded", bool)
 """Marks an image a workspace page shows in an ``<img>``: another origin may load it."""
+STYLED: Final = web.ResponseKey("styled", bool)
+"""Marks a response whose CSP allows inline styles: the figure frame's page, whose
+libraries write ``<style>`` elements and style attributes, and an HTML figure (FG-14)."""
+SVG: Final = "image/svg+xml"
+HTML: Final = "text/html"
+_SVG_START: Final = re.compile(
+    r"(?:\s|<\?xml[^>]*\?>|<!--.*?-->|<!DOCTYPE\s+svg[^>\[]*>)*<svg[\s>/]", re.S | re.I
+)
 _SOF: Final = frozenset(
     {*range(0xC0, 0xC4), *range(0xC5, 0xC8), *range(0xC9, 0xCC), 0xCD, 0xCE, 0xCF}
 )
@@ -117,6 +128,25 @@ def jpeg_size(data: bytes) -> tuple[int, int] | None:
 
 IMAGES: Final = {"image/png": png_size, "image/jpeg": jpeg_size}
 """The figure files a page shows as images, each with how its header is read (FG-12)."""
+FIGURE_FILES: Final = frozenset({*IMAGES, SVG, HTML})
+"""Every type the preview origin serves as a figure file."""
+
+
+NOT_ITS_TYPE: Final = (415, "This file's bytes are not the type it is recorded as.")
+
+
+def text_problem(media_type: str, data: bytes) -> tuple[int, str] | None:
+    """Why an SVG or an HTML file is not served; ``None`` when it is (FG-13): it is not
+    UTF-8 text without a NUL, or an SVG does not begin, past its prolog, with ``<svg``."""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return NOT_ITS_TYPE
+    if "\x00" in text:
+        return NOT_ITS_TYPE
+    if media_type == SVG and not _SVG_START.match(text.removeprefix("\ufeff")[:65536]):
+        return NOT_ITS_TYPE
+    return None
 
 
 def image_problem(media_type: str, data: bytes) -> tuple[int, str] | None:
@@ -124,7 +154,7 @@ def image_problem(media_type: str, data: bytes) -> tuple[int, str] | None:
     its first bytes are not its type's, or it passes the size limits."""
     size = IMAGES[media_type](data)
     if size is None:
-        return 415, "This file's bytes are not the image type it is recorded as."
+        return NOT_ITS_TYPE
     width, height = size
     if not width or not height or width * height > MAX_IMAGE_PIXELS:
         return 413, "This image is larger than a page shows."
@@ -211,15 +241,16 @@ class Preview:
     """The workspace's origin, the only one that may frame the viewer."""
 
 
-def preview_policy(workspace_origin: str) -> str:
+def preview_policy(workspace_origin: str, *, styled: bool = False) -> str:
     """The preview origin's CSP (PV-2): its own scripts, styles, worker, fonts and
-    connections only, framed only by the workspace."""
+    connections only, framed only by the workspace. ``styled`` also allows inline styles,
+    for the figure frame and an HTML figure (FG-14); never ``'unsafe-eval'``."""
     return "; ".join(
         (
             "default-src 'none'",
             "script-src 'self'",
             "worker-src 'self'",
-            "style-src 'self'",
+            "style-src 'self' 'unsafe-inline'" if styled else "style-src 'self'",
             "font-src 'self'",
             "img-src 'self' data: blob:",
             "connect-src 'self'",
@@ -254,6 +285,7 @@ def create_preview_app(
     *,
     workspace_origin: Callable[[], str],
     viewer_dir: Path | None = None,
+    figures_dir: Path | None = None,
     check_host: Callable[[web.Request], bool] = own_host,
 ) -> web.Application:
     """The preview origin's application. ``workspace_origin`` names the origin allowed to
@@ -263,6 +295,7 @@ def create_preview_app(
     inventory = ArtifactInventory(documents)
     reads = asyncio.Semaphore(CONCURRENT_READS)
     viewer = viewer_dir.resolve() if viewer_dir is not None and viewer_dir.is_dir() else None
+    figures = figures_dir.resolve() if figures_dir is not None and figures_dir.is_dir() else None
 
     @web.middleware
     async def guard(request: web.Request, handler: Handler) -> web.StreamResponse:
@@ -273,7 +306,7 @@ def create_preview_app(
         return await handler(request)
 
     async def secure(request: web.Request, response: web.StreamResponse) -> None:
-        policy = preview_policy(workspace_origin())
+        policy = preview_policy(workspace_origin(), styled=STYLED in response)
         if SANDBOXED in response:
             policy += "; sandbox"
         response.headers.update(
@@ -343,50 +376,68 @@ def create_preview_app(
         return answer
 
     async def figure_file(request: web.Request) -> web.StreamResponse:
-        """A pinned figure file for a page's ``<img>`` (FG-12, FG-13): as the type it is
-        recorded as, only when its first bytes are that type's, within the limits."""
+        """A pinned figure file (FG-12 to FG-14): as the type it is recorded as, only when
+        its first bytes are that type's, within the limits. A PNG or a JPEG is for a page's
+        ``<img>``; an SVG for the figure frame, which fetches it; an HTML file is the page
+        of a frame without scripts, which its CSP's ``sandbox`` keeps too."""
         if (found := checked(request, "file")) is None:
             return web.Response(status=403, text="This link is not valid, or has expired.")
 
-        def read() -> web.Response:
+        def read() -> tuple[web.Response, str]:
             reference = reference_of(found)
-            if reference.media_type not in IMAGES:
-                return web.Response(status=415, text="This file is not shown as an image.")
+            media = reference.media_type
+            return answer_of(reference, media), media
+
+        def answer_of(reference: ArtifactRevisionRef, media: str) -> web.Response:
+            if media not in FIGURE_FILES:
+                return web.Response(status=415, text="This file is not shown as a figure.")
             if reference.size > MAX_IMAGE_BYTES:
-                return web.Response(status=413, text="This image is larger than a page shows.")
+                return web.Response(status=413, text="This file is larger than a page shows.")
             bound = min(MAX_IMAGE_BYTES, inventory.limits.artifact_bytes)
             data = inventory.content(found.project, reference, max_bytes=bound)
-            if (problem := image_problem(reference.media_type, data)) is not None:
+            checks = image_problem if media in IMAGES else text_problem
+            if (problem := checks(media, data)) is not None:
                 return web.Response(status=problem[0], text=problem[1])
+            # An HTML figure is a frame's page; anything else, opened directly, downloads.
+            shown = "inline" if media == HTML else "attachment"
+            kind = f"{media}; charset=utf-8" if media in (HTML, SVG) else media
             return web.Response(
-                body=data,
-                headers={
-                    hdrs.CONTENT_TYPE: reference.media_type,
-                    hdrs.CONTENT_DISPOSITION: "attachment",
-                },
+                body=data, headers={hdrs.CONTENT_TYPE: kind, hdrs.CONTENT_DISPOSITION: shown}
             )
 
         try:
             async with reads:
-                answer = await asyncio.to_thread(read)
+                answer, media = await asyncio.to_thread(read)
         except DocumentError:
             return web.Response(status=404, text="This file is not available.")
         answer[SANDBOXED] = True
-        if answer.status == 200:
+        if answer.status == 200 and media in IMAGES:
             answer[EMBEDDED] = True
+        if answer.status == 200 and media == HTML:
+            answer[STYLED] = True
+        return answer
+
+    async def figures_file(request: web.Request) -> web.StreamResponse:
+        """The figure frame's bundle (FG-14), served like the viewer's, its page allowed
+        inline styles."""
+        answer = bundle_file(figures, request)
+        answer[STYLED] = True
         return answer
 
     async def viewer_file(request: web.Request) -> web.StreamResponse:
+        return bundle_file(viewer, request)
+
+    def bundle_file(bundle: Path | None, request: web.Request) -> web.FileResponse:
         segments = _segments(request.match_info["path"])
-        if viewer is None or segments is None:
+        if bundle is None or segments is None:
             raise web.HTTPNotFound()
-        path = viewer.joinpath(*segments) if segments else viewer / "index.html"
+        path = bundle.joinpath(*segments) if segments else bundle / "index.html"
         try:
             found = path.resolve(strict=True)
         except (OSError, RuntimeError):
             raise web.HTTPNotFound() from None
         content_type = VIEWER_TYPES.get(found.suffix.lower())
-        if not found.is_relative_to(viewer) or not found.is_file() or content_type is None:
+        if not found.is_relative_to(bundle) or not found.is_file() or content_type is None:
             raise web.HTTPNotFound()
         return web.FileResponse(found, headers={hdrs.CONTENT_TYPE: content_type})
 
@@ -395,4 +446,5 @@ def create_preview_app(
     app.router.add_get("/pdf/{capability:.+}", pdf)  # any spelling gets the same refusal
     app.router.add_get("/file/{capability:.+}", figure_file)
     app.router.add_get("/viewer/{path:.*}", viewer_file)
+    app.router.add_get("/figures/{path:.*}", figures_file)
     return app
