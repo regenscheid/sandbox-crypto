@@ -17,6 +17,10 @@ Routes (docs/specs/pdf-viewer.md, PV-4):
   origin; an SVG in the figure frame, which is given the capability; an HTML file as the
   page of a frame without scripts; a PDF in the viewer's figure mode. Any other file is
   shown as a link.
+- ``GET /api/v0/projects/{project}/figures/chart?data=ARTIFACT:REVISION:SHA256`` (each data
+  file a chart pins, in its order, at most 16) answers the figure frame's URL and a
+  capability for each file, a CSV, TSV or JSON file of at most 8 MiB, 8 MiB in all, for
+  the frame to read the chart's data (FG-15, FG-17).
 
 All read through the orchestrator's ``ArtifactInventory``; none writes.
 """
@@ -24,6 +28,7 @@ All read through the orchestrator's ``ArtifactInventory``; none writes.
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Final, Literal
 from urllib.parse import urlencode
@@ -38,7 +43,7 @@ from sandbox_science.orchestrator.projects import ProjectError
 
 from . import api
 from .context import CONTEXT, identifier, json_answer
-from .preview import CAPABILITY_SECONDS, HTML, IMAGES, MAX_IMAGE_BYTES, PDF, SVG, Preview
+from .preview import CAPABILITY_SECONDS, DATA, HTML, IMAGES, MAX_IMAGE_BYTES, PDF, SVG, Preview
 
 PREVIEW: Final = web.AppKey("preview", Preview)
 _IDENTIFIER: Final = TypeAdapter[str](Identifier)
@@ -98,11 +103,25 @@ class FigureLink(Contract):
     media_type: str
 
 
+class ChartLink(Contract):
+    """The figure frame's URL for a chart, and a capability for each of its data files, in
+    the order asked, until ``expires_at``."""
+
+    url: str
+    capabilities: list[str]
+    expires_at: datetime
+
+
+MAX_CHART_FILES: Final = 16
+_PINNED: Final = re.compile(r"([A-Za-z0-9][A-Za-z0-9._-]{0,127}):([1-9][0-9]{0,8}):([0-9a-f]{64})")
+
+
 def add_routes(app: web.Application) -> None:
     base = "/api/v0/projects/{project}/artifacts"
     app.router.add_get(base, listing)
     app.router.add_get(base + "/{artifact}/revisions/{revision}/viewer", viewer)
     app.router.add_get(base + "/{artifact}/revisions/{revision}/figure", figure)
+    app.router.add_get("/api/v0/projects/{project}/figures/chart", chart)
 
 
 async def listing(request: web.Request) -> web.Response:
@@ -228,6 +247,51 @@ async def figure(request: web.Request) -> web.Response:
         answer = FigureLink(
             kind=kind, url=url, capability=given, expires_at=expires, media_type=media
         )
+        return api.dumps(answer.model_dump(mode="json"))
+
+    return json_answer(await asyncio.to_thread(mint))
+
+
+async def chart(request: web.Request) -> web.Response:
+    """The figure frame for a chart and its data files' capabilities (FG-15, FG-17)."""
+    project = identifier(request, "project")
+    named = request.query.getall("data", [])
+    if set(request.query) - {"data"} or len(named) > MAX_CHART_FILES:
+        raise ProjectError(
+            ErrorKind.INVALID_REQUEST, f"a chart names at most {MAX_CHART_FILES} data files"
+        )
+    pinned = [_PINNED.fullmatch(item) for item in named]
+    if any(found is None for found in pinned):
+        raise ProjectError(ErrorKind.INVALID_REQUEST, "data is ARTIFACT:REVISION:SHA256")
+    preview = request.app.get(PREVIEW)
+    if preview is None or not preview.origin:
+        raise ProjectError(ErrorKind.UNAVAILABLE, "the preview origin is off on this server")
+
+    def mint() -> str:
+        context = request.app[CONTEXT]
+        context.projects.get(project)
+        inventory = ArtifactInventory(context.documents)
+        total = 0
+        capabilities: list[str] = []
+        for found in pinned:
+            assert found is not None  # noqa: S101 - checked above
+            artifact, revision, sha256 = found.group(1), int(found.group(2)), found.group(3)
+            link = ArtifactLink(
+                artifact_id=artifact, project_id=project, mode="pinned", revision=revision,
+                sha256=sha256,
+            )  # fmt: skip
+            reference = inventory.resolve(project, link).reference
+            if reference.media_type not in DATA:
+                raise ProjectError(ErrorKind.UNSUPPORTED, "a chart reads CSV, TSV or JSON files")
+            total += reference.size
+            if total > MAX_IMAGE_BYTES:
+                raise ProjectError(ErrorKind.UNSUPPORTED, "the chart's data pass 8 MiB")
+            capabilities.append(
+                preview.capabilities.mint(project, artifact, revision, sha256, "file")
+            )
+        expires = datetime.now(UTC) + timedelta(seconds=CAPABILITY_SECONDS)
+        url = f"{preview.origin}/figures/#{urlencode({'w': preview.workspace_origin})}"
+        answer = ChartLink(url=url, capabilities=capabilities, expires_at=expires)
         return api.dumps(answer.model_dump(mode="json"))
 
     return json_answer(await asyncio.to_thread(mint))

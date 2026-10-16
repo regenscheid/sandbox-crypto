@@ -7,6 +7,7 @@
  * request, and the browser adds the `Origin` header the server requires of a POST.
  */
 import type {
+  ChartLink,
   FigureLink,
   ArtifactListing,
   Category,
@@ -554,6 +555,18 @@ export const api = {
   fileSettings: (project: string) => get<FileSettings>(`/projects/${part(project)}/files/settings`),
   changeFileSettings: (project: string, value: Record<string, unknown>) =>
     post<FileSettings>(`/projects/${part(project)}/files/settings`, value),
+  /** The figure frame's URL for a chart, and a capability for each data file it pins, in
+   * order, for 10 minutes (FG-15). */
+  chartLink: (project: string, data: { artifact: string; revision: number; sha256: string }[]) =>
+    get<ChartLink>(
+      `/projects/${part(project)}/figures/chart` +
+        (data.length
+          ? '?' +
+            new URLSearchParams(
+              data.map((file) => ['data', `${file.artifact}:${file.revision}:${file.sha256}`]),
+            )
+          : ''),
+    ),
   /** One PNG or JPEG revision's URL on the preview origin, for 10 minutes (FG-13). */
   figureLink: (project: string, artifact: string, revision: number, sha256: string) =>
     get<FigureLink>(

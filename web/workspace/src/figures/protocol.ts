@@ -3,14 +3,15 @@
  * The figure frame's message protocol (docs/specs/figures.md, FG-14), shared by the frame
  * and the workspace's page. The frame accepts one message, from the workspace's origin
  * and its parent window only, in an exact shape: the figure's kind, a fence's text, and
- * one capability for each pinned file the figure shows or reads. It sends back only its
+ * one capability for each pinned file the figure shows or reads, with the path the text
+ * names it by (a chart's `data.url`). It sends back only its
  * size and a status: `rendered`, or an error with one of a fixed set of codes, which the
  * workspace words itself, so no text from the frame reaches the workspace's page (review
  * of #492, L2). The workspace accepts only that shape, from that frame's window.
  */
 
-/** The kinds the frame draws now; Vega-Lite and Mermaid come with F5 and F6. */
-export const KINDS = ['svg'] as const;
+/** The kinds the frame draws now; Mermaid comes with F6. */
+export const KINDS = ['svg', 'vega-lite'] as const;
 export type FigureKind = (typeof KINDS)[number];
 
 export interface FigureRequest {
@@ -18,11 +19,24 @@ export interface FigureRequest {
   kind: FigureKind;
   /** A fence's text; empty for a file. */
   source: string;
+  /** The path the text names each file by, in the order of `capabilities`. */
+  paths: string[];
   capabilities: string[];
 }
 
 /** Why a figure was not drawn, as the frame says it; empty when it was. */
-export const CODES = ['', 'refused', 'type', 'size', 'unreadable', 'framing'] as const;
+export const CODES = [
+  '',
+  'refused',
+  'type',
+  'size',
+  'unreadable',
+  'framing',
+  'inline_data',
+  'address',
+  'version',
+  'invalid',
+] as const;
 export type FigureCode = (typeof CODES)[number];
 
 /** Each code in the workspace's words. */
@@ -32,6 +46,11 @@ export const CODE_TEXT: Record<Exclude<FigureCode, ''>, string> = {
   size: 'the figure is larger than a page draws',
   unreadable: 'the figure could not be read or drawn',
   framing: 'the frame was not opened by this workspace',
+  inline_data:
+    'the chart holds data of its own: a chart reads a recorded file, or makes a sequence',
+  address: 'the chart names an address that is not one of its pinned files, an image or a link',
+  version: 'the chart names a Vega-Lite version other than 6',
+  invalid: 'the chart is not a Vega-Lite specification that compiles',
 };
 
 export interface FigureStatus {
@@ -58,17 +77,26 @@ const exact = (value: object, keys: readonly string[]): boolean => {
 /** A message's data as a figure request, only in the exact shape; null otherwise. */
 export function figureRequest(data: unknown): FigureRequest | null {
   if (data === null || typeof data !== 'object' || Array.isArray(data)) return null;
-  if (!exact(data, ['type', 'kind', 'source', 'capabilities'])) return null;
+  if (!exact(data, ['type', 'kind', 'source', 'paths', 'capabilities'])) return null;
   const found = data as Record<string, unknown>;
-  const { kind, source, capabilities } = found;
+  const { kind, source, paths, capabilities } = found;
   if (found['type'] !== 'figure' || !KINDS.includes(kind as FigureKind)) return null;
   if (typeof source !== 'string' || source.length > MAX_SOURCE) return null;
   if (!Array.isArray(capabilities) || capabilities.length > MAX_CAPABILITIES) return null;
   if (!capabilities.every((c): c is string => typeof c === 'string' && CAPABILITY.test(c)))
     return null;
+  if (!Array.isArray(paths) || paths.length !== capabilities.length) return null;
+  if (!paths.every((p): p is string => typeof p === 'string' && p.length <= 4096)) return null;
   // An SVG file is drawn from its one capability, with no text of its own.
   if (kind === 'svg' && (capabilities.length !== 1 || source !== '')) return null;
-  return { type: 'figure', kind: kind as FigureKind, source, capabilities: [...capabilities] };
+  if (kind === 'vega-lite' && source === '') return null;
+  return {
+    type: 'figure',
+    kind: kind as FigureKind,
+    source,
+    paths: [...paths],
+    capabilities: [...capabilities],
+  };
 }
 
 /** The request a message carries, if the workspace's origin sent it from the parent. */

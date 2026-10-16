@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: MIT
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
+import { licenseNotices } from './server/license-notices.mjs';
 
 // The figure frame: a page of its own, served only by the preview origin under /figures/
 // (docs/specs/figures.md, FG-14). It is built after the GUI, into the GUI's dist/figures.
-// It ships no third-party code yet: Vega-Lite and Mermaid come with F5 and F6, with their
-// notices.
+// Its third-party code (Vega, Vega-Lite and their d3 dependencies) ships with the notices
+// the license manifest lists for it.
 export default defineConfig({
   root: fileURLToPath(new URL('./src/figures', import.meta.url)),
   base: '/figures/',
   publicDir: false,
+  plugins: [licenseNotices('figures', fileURLToPath(new URL('.', import.meta.url)))],
   build: {
     outDir: fileURLToPath(new URL('./dist/figures', import.meta.url)),
     emptyOutDir: true,

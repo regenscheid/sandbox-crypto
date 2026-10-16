@@ -14,6 +14,9 @@ import {
   type FigureCode,
   type FigureRequest,
 } from './protocol';
+import { Refusal } from './chart';
+import { chartSvg } from './vegaChart';
+import { sanitized } from './sanitize';
 import { framedBy } from '../viewer/anchor';
 import './figures.css';
 
@@ -24,12 +27,6 @@ let taken = false;
 /** The largest figure drawn, in CSS pixels a side and canvas pixels in all. */
 const MAX_SIDE = 4096;
 const MAX_CANVAS_PIXELS = 2 ** 24;
-
-class Refusal extends Error {
-  constructor(readonly code: FigureCode) {
-    super(code);
-  }
-}
 
 function answer(status: 'rendered' | 'error', code: FigureCode = ''): void {
   if (workspace === null) return;
@@ -57,7 +54,7 @@ async function file(capability: string, type: string): Promise<Blob> {
  * the browser never repaints it. The canvas is fitted to the frame's width, each side at
  * most 4,096 CSS pixels, and its pixels at most 2^24 at the screen's ratio.
  */
-async function draw(request: FigureRequest): Promise<void> {
+async function drawSvg(request: FigureRequest): Promise<void> {
   const blob = await file(request.capabilities[0]!, 'image/svg+xml');
   const image = new Image();
   const url = URL.createObjectURL(blob);
@@ -86,6 +83,31 @@ async function draw(request: FigureRequest): Promise<void> {
   } finally {
     URL.revokeObjectURL(url);
   }
+}
+
+/** A data file's text, from its capability, as a chart reads it. */
+async function dataText(capability: string): Promise<string> {
+  const response = await fetch(`/file/${capability}`, {
+    credentials: 'omit',
+    cache: 'no-store',
+    redirect: 'error',
+  });
+  if (!response.ok) throw new Refusal(response.status === 413 ? 'size' : 'refused');
+  return response.text();
+}
+
+/** A chart (FG-15, chart.ts), its drawing sanitized before it is shown; its accessible
+ * name is its description or title (FG-18). */
+async function drawChart(request: FigureRequest): Promise<void> {
+  const files = new Map(request.paths.map((path, index) => [path, request.capabilities[index]!]));
+  const { svg, name } = await chartSvg(request.source, files, dataText);
+  const drawn = sanitized(svg, document);
+  if (name !== null) figure.setAttribute('aria-label', name);
+  figure.replaceChildren(drawn);
+}
+
+function draw(request: FigureRequest): Promise<void> {
+  return request.kind === 'vega-lite' ? drawChart(request) : drawSvg(request);
 }
 
 if (workspace === null || !framedBy(workspace, location.ancestorOrigins)) {

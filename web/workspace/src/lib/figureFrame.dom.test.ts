@@ -110,7 +110,7 @@ describe('an SVG in the figure frame', () => {
     expect(frame.getAttribute('src')).toBe(`${PREVIEW}/figures/#w=x`);
     frame.dispatchEvent(new Event('load'));
     expect(vi.mocked(framed.postMessage).mock.calls).toEqual([
-      [{ type: 'figure', kind: 'svg', source: '', capabilities: [CAP] }, PREVIEW],
+      [{ type: 'figure', kind: 'svg', source: '', paths: [''], capabilities: [CAP] }, PREVIEW],
     ]);
     // Another window, another origin or another shape is ignored.
     window.dispatchEvent(

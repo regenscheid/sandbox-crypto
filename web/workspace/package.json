@@ -29,7 +29,10 @@
     "katex": "0.18.9",
     "markdown-it": "15.0.2",
     "pdfjs-dist": "6.3.289",
-    "svelte": "5.57.1"
+    "svelte": "5.57.1",
+    "vega": "6.4.0",
+    "vega-interpreter": "2.3.2",
+    "vega-lite": "6.4.3"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "7.3.1",

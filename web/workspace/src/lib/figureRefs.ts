@@ -113,3 +113,72 @@ export function placeReferences(root: HTMLElement, pins: readonly Pin[]): Placed
   }
   return placed;
 }
+
+/** A chart's data file, as its pin names it, for the figure frame (FG-15). */
+export interface ChartData {
+  path: string;
+  artifact: string;
+  revision: number;
+  sha256: string;
+}
+
+/** A chart fence placed in the rendered text. */
+export interface PlacedChart {
+  target: HTMLElement;
+  source: string;
+  data: ChartData[];
+  /** Its data paths that are not pinned, each with why: the chart is not drawn. */
+  broken: { path: string; reason: string }[];
+  drawn: boolean;
+}
+
+/** The data paths a chart's text names (`data.url`), in order; none if it is not JSON. */
+export function chartPaths(source: string): string[] {
+  const found: string[] = [];
+  const walk = (value: unknown): void => {
+    if (Array.isArray(value)) value.forEach(walk);
+    else if (value !== null && typeof value === 'object') {
+      for (const [key, item] of Object.entries(value)) {
+        const url = (item as { url?: unknown } | null)?.url;
+        if (key === 'data' && typeof url === 'string' && !found.includes(url)) found.push(url);
+        walk(item);
+      }
+    }
+  };
+  try {
+    walk(JSON.parse(source));
+  } catch {
+    return [];
+  }
+  return found;
+}
+
+/**
+ * Give each `vega-lite` fence in `root` a place of its own (FG-1, FG-15), with the pins of
+ * the data paths it names, matched in order; a text's first `FIGURES_PER_TEXT` figures,
+ * counting `before` already placed, are drawn at once.
+ */
+export function placeCharts(root: HTMLElement, pins: readonly Pin[], before = 0): PlacedChart[] {
+  const byPath = new Map<string, Pin[]>();
+  for (const pin of pins) {
+    if (text(pin.kind) !== 'chart_data') continue;
+    byPath.set(text(pin.path), [...(byPath.get(text(pin.path)) ?? []), pin]);
+  }
+  const placed: PlacedChart[] = [];
+  for (const code of root.querySelectorAll('pre > code.language-vega-lite')) {
+    const source = code.textContent ?? '';
+    const data: ChartData[] = [];
+    const broken: { path: string; reason: string }[] = [];
+    for (const path of chartPaths(source)) {
+      const view = pinView(byPath.get(path)?.shift() ?? { path, unresolved: 'no_file' });
+      if (view.shown === 'broken') broken.push({ path, reason: view.reason ?? '' });
+      else
+        data.push({ path, artifact: view.artifact, revision: view.revision, sha256: view.sha256 });
+    }
+    const target = root.ownerDocument.createElement('span');
+    target.className = 'figure-ref';
+    code.parentElement!.replaceWith(target);
+    placed.push({ target, source, data, broken, drawn: before + placed.length < FIGURES_PER_TEXT });
+  }
+  return placed;
+}

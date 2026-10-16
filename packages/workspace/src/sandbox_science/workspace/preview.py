@@ -158,7 +158,9 @@ def jpeg_size(data: bytes) -> tuple[int, int] | None:
 
 IMAGES: Final = {"image/png": png_size, "image/jpeg": jpeg_size}
 """The figure files a page shows as images, each with how its header is read (FG-12)."""
-FIGURE_FILES: Final = frozenset({*IMAGES, SVG, HTML})
+DATA: Final = frozenset({"text/csv", "text/tab-separated-values", "application/json"})
+"""A chart's data files, which the figure frame reads for Vega (FG-4, FG-15)."""
+FIGURE_FILES: Final = frozenset({*IMAGES, SVG, HTML, *DATA})
 """Every type the preview origin serves as a figure file."""
 
 
@@ -430,7 +432,7 @@ def create_preview_app(
                 return web.Response(status=problem[0], text=problem[1])
             # An HTML figure is a frame's page; anything else, opened directly, downloads.
             shown = "inline" if media == HTML else "attachment"
-            kind = f"{media}; charset=utf-8" if media in (HTML, SVG) else media
+            kind = f"{media}; charset=utf-8" if media in (HTML, SVG, *DATA) else media
             return web.Response(
                 body=data, headers={hdrs.CONTENT_TYPE: kind, hdrs.CONTENT_DISPOSITION: shown}
             )

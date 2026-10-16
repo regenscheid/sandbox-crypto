@@ -130,6 +130,13 @@ export interface CategoryRevised {
   changed: string[];
 }
 
+/** The figure frame's URL for a chart, and a capability for each of its data files, in the order asked, until ``expires_at``. */
+export interface ChartLink {
+  url: string;
+  capabilities: string[];
+  expires_at: string;
+}
+
 /** A message the user wrote to a session (RS-4). */
 export interface ChatMessage {
   message_id: string;

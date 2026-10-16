@@ -18,26 +18,32 @@
     imageSource,
     MAX_FRAME_HEIGHT,
   } from '../lib/figures';
-  import { CODE_TEXT, figureStatus } from '../figures/protocol';
+  import { CODE_TEXT, figureStatus, type FigureRequest } from '../figures/protocol';
+  import type { ChartData } from '../lib/figureRefs';
 
   let {
     projectId,
-    artifact,
-    revision,
-    sha256,
+    artifact = '',
+    revision = 0,
+    sha256 = '',
+    chart = null,
     alt,
     limit = DRAW_MILLISECONDS,
   }: {
     projectId: string;
-    artifact: string;
-    revision: number;
-    sha256: string;
+    artifact?: string;
+    revision?: number;
+    sha256?: string;
+    /** A chart's text and the data files it pins, in the order it names them (FG-15). */
+    chart?: { source: string; data: ChartData[] } | null;
     alt: string;
     limit?: number;
   } = $props();
   let near = $state<HTMLElement>();
   let frame = $state<HTMLIFrameElement>();
-  let link = $state<FigureLink | null>(null);
+  let link = $state<{ kind: FigureLink['kind'] | 'chart'; url: string } | null>(null);
+  /** The one request the figure frame is sent, once it has loaded. */
+  let request: FigureRequest | null = null;
   let origin: string | null = null;
   let problem = $state<string | null>(null);
   let drawn = $state(false);
@@ -59,7 +65,30 @@
   async function start(): Promise<void> {
     release = await drawing.acquire();
     try {
-      const found = await api.figureLink(projectId, artifact, revision, sha256);
+      let found: { kind: FigureLink['kind'] | 'chart'; url: string };
+      if (chart !== null) {
+        const minted = await api.chartLink(projectId, chart.data);
+        found = { kind: 'chart', url: minted.url };
+        const paths = chart.data.map((file) => file.path);
+        request = {
+          type: 'figure',
+          kind: 'vega-lite',
+          source: chart.source,
+          paths,
+          capabilities: minted.capabilities,
+        };
+      } else {
+        const minted = await api.figureLink(projectId, artifact, revision, sha256);
+        found = minted;
+        if (minted.kind === 'svg' && minted.capability)
+          request = {
+            type: 'figure',
+            kind: 'svg',
+            source: '',
+            paths: [''],
+            capabilities: [minted.capability],
+          };
+      }
       origin = imageSource(found.url) === null ? null : new URL(found.url).origin;
       if (origin === null || found.kind === 'image') return end('the server gave no usable frame');
       timer = setTimeout(() => end(`not drawn within ${limit / 1000} seconds`), limit);
@@ -74,10 +103,7 @@
   function loaded(): void {
     if (!link || !frame?.contentWindow || origin === null) return;
     if (link.kind === 'html') return end(null);
-    if (link.kind === 'svg' && link.capability) {
-      const request = { type: 'figure', kind: 'svg', source: '', capabilities: [link.capability] };
-      frame.contentWindow.postMessage(request, origin);
-    }
+    if (request !== null) frame.contentWindow.postMessage(request, origin);
   }
 
   function heard(event: MessageEvent): void {

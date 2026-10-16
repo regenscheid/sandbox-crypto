@@ -73,11 +73,11 @@ function fontStatements(bytes) {
  * Build notices from actual emitted module/asset origins; unknown origins require review.
  * @param {string} root
  * @param {import('rolldown').OutputBundle} bundle
- * @param {'gui' | 'math' | 'viewer'} distribution
+ * @param {'gui' | 'math' | 'viewer' | 'figures'} distribution
  * @param {string} sourceRoot what the bundle's relative names are relative to
  */
 export function collectNotices(root, bundle, distribution = 'gui', sourceRoot = root) {
-  if (!['gui', 'math', 'viewer'].includes(distribution)) throw new Error('Unknown notice distribution');
+  if (!['gui', 'math', 'viewer', 'figures'].includes(distribution)) throw new Error('Unknown notice distribution');
   root = realpathSync(root);
   const manifest = JSON.parse(readFileSync(resolve(root, 'licenses/manifest.json'), 'utf8'));
   const lock = JSON.parse(readFileSync(resolve(root, 'package-lock.json'), 'utf8'));
@@ -111,9 +111,12 @@ export function collectNotices(root, bundle, distribution = 'gui', sourceRoot = 
       if (pinned) checkedBytes(resolve(root, name), pinned);
     }
     if (name.startsWith('node_modules/')) {
-      const match = /^node_modules\/((?:@[^/]+\/)?[^/]+)\//.exec(name);
-      const packageName = match?.[1];
-      if (!packageName || !manifest.packages[packageName] || name.includes('/node_modules/')) {
+      // A package another one needs at its own version sits in that one's node_modules;
+      // the manifest names it by that place, such as `vega-lite/node_modules/vega-expression`.
+      const match = /^node_modules\/((?:@[^/]+\/)?[^/]+)\/(?:node_modules\/((?:@[^/]+\/)?[^/]+)\/)?/.exec(name);
+      const packageName = match?.[2] ? `${match[1]}/node_modules/${match[2]}` : match?.[1];
+      const rest = match ? name.slice(match[0].length) : '';
+      if (!packageName || !manifest.packages[packageName] || rest.includes('node_modules/')) {
         throw new Error(`Uncovered bundled package: ${name}`);
       }
       packages.add(packageName);
@@ -201,7 +204,8 @@ export function collectNotices(root, bundle, distribution = 'gui', sourceRoot = 
       throw new Error('The PDF.js files shipped differ from the license manifest\'s list');
     }
   }
-  const title = { gui: 'workspace GUI', math: 'isolated math checker', viewer: 'workspace PDF viewer' };
+  const title = { gui: 'workspace GUI', math: 'isolated math checker', viewer: 'workspace PDF viewer',
+    figures: 'workspace figure frame' };
   const sections = [`Third-party notices for the Sandbox Science ${title[distribution]}.\n` +
     'Includes runtime helpers and complete upstream notice files; some upstream files also cover build-only code.\n'];
   const packageRecords = [];
@@ -209,7 +213,8 @@ export function collectNotices(root, bundle, distribution = 'gui', sourceRoot = 
     const approved = manifest.packages[name];
     const installed = JSON.parse(readFileSync(resolve(root, `node_modules/${name}/package.json`), 'utf8'));
     const locked = lock.packages[`node_modules/${name}`];
-    if (!approved || !locked || installed.name !== name || installed.version !== approved.version ||
+    if (!approved || !locked || installed.name !== name.split('/node_modules/').at(-1) ||
+        installed.version !== approved.version ||
         installed.license !== approved.license || locked.version !== approved.version || locked.license !== approved.license) {
       throw new Error(`Bundled package license/version mismatch: ${name}`);
     }
@@ -285,7 +290,7 @@ export function collectNotices(root, bundle, distribution = 'gui', sourceRoot = 
 
 /**
  * Include checked runtime and asset notices.
- * @param {'gui' | 'math' | 'viewer'} distribution
+ * @param {'gui' | 'math' | 'viewer' | 'figures'} distribution
  * @param {string} [gui] the GUI's directory, when the build's root is below it
  * @returns {import('vite').Plugin}
  */

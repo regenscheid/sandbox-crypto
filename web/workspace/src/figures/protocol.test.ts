@@ -14,7 +14,7 @@ import {
 
 const CAP = `${'a'.repeat(40)}.${'b'.repeat(43)}`;
 const WORKSPACE = 'http://127.0.0.1:8200';
-const request = { type: 'figure', kind: 'svg', source: '', capabilities: [CAP] };
+const request = { type: 'figure', kind: 'svg', source: '', paths: [''], capabilities: [CAP] };
 
 describe('the request the frame takes', () => {
   test('is the exact shape, and nothing else', () => {
@@ -26,17 +26,36 @@ describe('the request the frame takes', () => {
       { ...request, extra: 1 },
       { ...request, type: 'other' },
       { ...request, kind: 'html' }, // an HTML file is never drawn by this page
-      { ...request, kind: 'vega-lite' }, // not yet (F5)
+      { ...request, kind: 'mermaid' }, // not yet (F6)
+      { ...request, kind: 'vega-lite' }, // a chart has its text
       { ...request, source: 'x' }, // an SVG file has no text of its own
-      { ...request, capabilities: [] },
-      { ...request, capabilities: [CAP, CAP] },
+      { ...request, capabilities: [], paths: [] },
+      { ...request, capabilities: [CAP, CAP], paths: ['', ''] },
+      { ...request, paths: [] }, // a path for each capability
+      { ...request, paths: [5] },
       { ...request, capabilities: ['javascript:alert(1)'] },
       { ...request, capabilities: [`../${CAP}`] },
       { ...request, capabilities: [`${CAP}?x=1`] },
       { ...request, capabilities: Array(MAX_CAPABILITIES + 1).fill(CAP) },
-      { type: 'figure', kind: 'svg', source: '' },
+      { type: 'figure', kind: 'svg', source: '', capabilities: [CAP] },
     ])
       expect(figureRequest(bad)).toBeNull();
+  });
+
+  test('takes a chart with its text and each pinned file by its path', () => {
+    const chart = {
+      type: 'figure',
+      kind: 'vega-lite',
+      source: '{"mark": "bar"}',
+      paths: ['data/t.csv', 'shared/u.json'],
+      capabilities: [CAP, CAP],
+    };
+    expect(figureRequest(chart)).toEqual(chart);
+    expect(figureRequest({ ...chart, paths: [], capabilities: [] })).toEqual({
+      ...chart,
+      paths: [],
+      capabilities: [],
+    });
   });
 
   test('comes from the workspace origin and the parent window only', () => {

@@ -16,8 +16,9 @@
 -->
 <script lang="ts">
   import { flushSync, getContext, mount, unmount } from 'svelte';
+  import FigureChart from '../views/FigureChart.svelte';
   import FigureRef from '../views/FigureRef.svelte';
-  import { placeReferences, type Pin } from './figureRefs';
+  import { placeCharts, placeReferences, type Pin } from './figureRefs';
   import type { Mismatch } from './attach';
   import { renderDocument, renderMarkdown, textState, whenMathTime } from './markdown';
   import type { DocumentInput } from './markdown';
@@ -92,13 +93,19 @@
   $effect(() => {
     void rendered.html;
     const target = element;
-    if (!target || !pins.length || projectId === null) return;
-    const shown = placeReferences(target, pins).map((placed) =>
+    if (!target || projectId === null) return;
+    const references = pins.length ? placeReferences(target, pins) : [];
+    const shown = references.map((placed) =>
       mount(FigureRef, {
         target: placed.target,
         props: { projectId, pin: placed.pin, alt: placed.alt, drawn: placed.drawn, repin },
       }),
     );
+    // A chart fence is drawn where it is written, from the data its text pins (FG-15).
+    for (const placed of placeCharts(target, pins, references.length))
+      shown.push(
+        mount(FigureChart, { target: placed.target, props: { projectId, chart: placed } }),
+      );
     return () => {
       for (const figure of shown) void unmount(figure);
     };
