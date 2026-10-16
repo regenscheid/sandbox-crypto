@@ -767,7 +767,13 @@ class ReviewStore:
             shown.append(EvidenceItem("plan", dump(planned[0]), encoded, digest(encoded), 1))
         grants: dict[str, Json] = {}
         admitted: dict[int, FindingGroup] = {}
-        reserved = SnapshotBudget(share=1 if kind == "confirmation" else 2)
+        # The plan item counts within the findings' share, so that a confirmation's
+        # findings, which may take the whole snapshot, leave room for it.
+        reserved = SnapshotBudget(
+            size=sum(item.size for item in shown),
+            items=len(shown),
+            share=1 if kind == "confirmation" else 2,
+        )
         for index, row in enumerate(findings[:MAX_SNAPSHOT_FINDINGS]):
             group = self._finding_group(project, session, row, grants)
             if reserved.fits(group):
@@ -779,19 +785,16 @@ class ReviewStore:
         if kind == "confirmation":
             selected_end, pinned = window.watermark, []
         else:
-            room = (
-                MAX_SNAPSHOT_BYTES - reserved.size - sum(item.size for item in shown),
-                MAX_SNAPSHOT_ITEMS - reserved.items - len(shown),
-            )
+            room = (MAX_SNAPSHOT_BYTES - reserved.size, MAX_SNAPSHOT_ITEMS - reserved.items)
             with self.documents.control.read() as tx:
                 selected_end, pinned = self._feed_items(
                     tx.sql, project, session, window, earlier, room
                 )
-        pinned += shown
         budget = SnapshotBudget(
             size=sum(item.size for item in pinned) + reserved.size,
             items=len(pinned) + reserved.items,
         )
+        pinned += shown
         for index, row in enumerate(findings[:MAX_SNAPSHOT_FINDINGS]):
             if index in admitted:
                 continue
@@ -967,8 +970,11 @@ class ReviewStore:
         size, end = 0, window.watermark
         batch: tuple[str, int, int, int, int, int] | None = None
         """The batch being read: its keys' prefix, and the window as it stood before it."""
+        # A raw source's row is passed over without reading its payload, which may be
+        # 256 KiB: it takes no item and only moves the window's end.
         for seq, key, kind, locator, payload, sha, complete in db.execute(
-            "SELECT seq,source_key,kind,locator,payload,sha256,complete FROM review_feed "
+            "SELECT seq,source_key,kind,locator,CASE WHEN kind='source' AND source_key NOT "
+            "GLOB 'quoted:*' THEN '' ELSE payload END,sha256,complete FROM review_feed "
             "WHERE project=? AND session=? AND seq>? AND seq<=? ORDER BY seq",
             (project, session, window.watermark, window.end),
         ):
@@ -978,8 +984,8 @@ class ReviewStore:
             raw = kind == "source" and not key.startswith("quoted:")
             folded = raw or kind == "action"
             item = None if folded else EvidenceItem(kind, locator, payload, sha, complete)
-            # Room is kept for the actions item, at most half an item; the plan item's
-            # is outside ``room``.
+            # Room is kept for the actions item, at most half an item; the plan item
+            # counts within the findings' share, outside ``room``.
             full = (
                 len(actions) >= MAX_ACTIONS
                 if kind == "action"

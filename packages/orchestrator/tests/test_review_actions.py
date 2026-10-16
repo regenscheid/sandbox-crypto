@@ -546,9 +546,14 @@ async def test_a_terminal_review_holds_the_runs_actions_in_its_earlier_windows(
 DELEGATION = "dlg-" + "1" * 24
 
 
-def delegated(documents: Any, tools: list[dict[str, Any]], summary: str) -> None:
+def delegated(
+    documents: Any,
+    tools: list[dict[str, Any]],
+    summary: str,
+    brief: str = "Factor the twist order.",
+) -> None:
     """Run author-1 of session s, and its delegation ``DELEGATION``, a task run task-1
-    whose tool records are ``tools``, ended with ``summary``."""
+    asked ``brief``, whose tool records are ``tools``, ended with ``summary``."""
     from datetime import UTC, datetime, timedelta
 
     from sandbox_science.orchestrator.delegation.records import (
@@ -571,7 +576,7 @@ def delegated(documents: Any, tools: list[dict[str, Any]], summary: str) -> None
         )  # fmt: skip
         records.start("p", "s", Delegation.model_validate(
             {"delegation_id": DELEGATION, "parent": parent, "run": child, "kind": "task",
-             "brief": {"task": "Factor the twist order."},
+             "brief": {"task": brief},
              "started_at": start.isoformat()}))  # fmt: skip
         records.end("p", "s", DELEGATION, Ending(
             "returned", "answered", summary,
@@ -688,6 +693,75 @@ async def test_a_busy_delegated_runs_review_holds_its_decisive_executions(store:
 
 
 @pytest.mark.asyncio
+async def test_an_input_every_call_echoes_does_not_decide_the_choice(store: Any) -> None:
+    """The recheck of #449: every cell printed the modulus N, which the brief gives and
+    the summary restates, so every execution matched and cell 20, the one that printed the
+    factor, was left out. Numbers are read from the result and report themselves, those
+    the brief states are left out, and each stated number holds the latest execution that
+    prints it; a factor grouped in LaTeX is read as one number."""
+    reviews, documents, _ = store
+    modulus, factor = "1234567890123456789012345678901234567891", "98765432109876543211"
+    tools = [cell(n, f"N = {modulus}\nresidue {n:05d}\n") for n in range(150)]
+    tools[20] = cell(20, f"N = {modulus}\nfactor {factor}\n")
+    grouped = r"98765\,43210\,98765\,43211"
+    delegated(documents, tools, f"N = {modulus} has the factor ${grouped}$.", f"Factor {modulus}.")
+    controller = ReviewController(
+        reviews, context_for(reviews), run_id="author-1", model=None, alias=None
+    )
+    await controller.safe_point([])
+    review = dispatch(reviews)
+    held = {
+        i["locator"]["execution"] for i in evidence(reviews, review) if i["kind"] == "execution"
+    }
+    assert {"exe-20", "exe-149"} <= held
+    assert len(held) == 100
+
+
+@pytest.mark.asyncio
+async def test_choosing_executions_makes_a_bounded_number_of_comparisons(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The recheck of #449: 150 outputs of 200 twenty-digit numbers each, against a
+    summary stating 300, held one safe point for 44 seconds. An outcome's numbers are
+    capped, an output's are a set matched exactly first, and the near comparisons have one
+    budget for the delegation."""
+    import random
+    import time
+
+    from sandbox_science.orchestrator.consistency.delegated import MAX_NEAR
+    from sandbox_science.orchestrator.consistency.numbers import distance
+
+    counted = 0
+
+    def counting(a: str, b: str, bound: int) -> int | None:
+        nonlocal counted
+        counted += 1
+        return distance(a, b, bound)
+
+    monkeypatch.setattr("sandbox_science.orchestrator.consistency.delegated.distance", counting)
+    draw = random.Random(7)  # noqa: S311 - test data, not secrets
+    reviews, documents, _ = store
+    stated = [str(draw.randrange(10**19, 10**20)) for _ in range(300)]
+    tools = [
+        cell(n, "\n".join(str(draw.randrange(10**19, 10**20)) for _ in range(200)))
+        for n in range(150)
+    ]
+    delegated(documents, tools, "Values: " + ", ".join(stated), "Compute the table.")
+    controller = ReviewController(
+        reviews, context_for(reviews), run_id="author-1", model=None, alias=None
+    )
+    began = time.monotonic()
+    await controller.safe_point([])
+    assert 0 < counted <= MAX_NEAR
+    assert time.monotonic() - began < 15
+    review = dispatch(reviews)
+    held = {
+        i["locator"]["execution"] for i in evidence(reviews, review) if i["kind"] == "execution"
+    }
+    assert "exe-149" in held
+
+
+@pytest.mark.asyncio
 async def test_a_delegations_batch_is_never_split_across_review_windows(store: Any) -> None:
     """The review of #449: 200 calls' actions counted against a window's 256 rows, and the
     outcome came last, so a review held executions and the run's relayed value but not the
@@ -780,8 +854,9 @@ def test_open_findings_keep_their_slots_before_feed_rows(
     from .test_consistency import claim, raise_finding
 
     reviews, _, _ = store
-    for n in range(3):
-        claim(reviews, f"The count is {16 + n}.", f"first-{n}")
+    for n in range(3):  # three messages, each its own place in the transcript
+        reviews.observe("p", "s", f"first-{n}", "transcript", {"run": "author-1", "message": n},
+                        {"role": "assistant", "content": f"The count is {16 + n}."})  # fmt: skip
     first = dispatch(reviews)
     claimed = reviews.manifest("p", "s", first)["evidence"]
     raised = [
@@ -789,14 +864,15 @@ def test_open_findings_keep_their_slots_before_feed_rows(
                       operation_id=f"finding-{n}", statement=f"The count is wrong ({n}).")
         for n, item in enumerate(claimed)
     ]  # fmt: skip
+    assert len({finding["finding_id"] for finding in raised}) == 3
     reviews.finish("p", "s", first, "owner", "findings", "Three findings.")
     for n in range(20):
         claim(reviews, f"Step {n} is done.", f"later-{n}")
     monkeypatch.setattr(storage, "MAX_SNAPSHOT_ITEMS", 16)
     review = dispatch(reviews)
     items = reviews.manifest("p", "s", review, limit=50)["evidence"]
-    held = {i["locator"]["finding"] for i in items if i["kind"] == "finding"}
-    assert held == {finding["finding_id"] for finding in raised}
+    held = [i["locator"]["finding"] for i in items if i["kind"] == "finding"]
+    assert sorted(held) == sorted(finding["finding_id"] for finding in raised)
     transcripts = [i for i in items if i["kind"] == "transcript"]
     assert 0 < len(transcripts) < 20
     assert not reviews.run("p", "s", review)["coverage_complete"]

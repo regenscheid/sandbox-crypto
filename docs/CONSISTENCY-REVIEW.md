@@ -13,9 +13,13 @@ pinned (as many as 8, copied whole as ledger pins are, `delegated` in the locato
 none makes a review due. Each execution is one item for each state its calls saw it
 in, bounded as the run's own are, naming the run, the delegation and the run its work
 was brought for (`for_run`). A busy run has more than a review holds: as many as 100
-come in, within 2 MiB, first those whose output holds a number the outcome states (as
-`numbers.py` reads numbers of 10 or more digits), or one within a hand-copying error of
-it, then the latest; the outcome says how many it holds and how many were left out
+come in, within 2 MiB. First, for each number the outcome's result and report state
+(as `numbers.py` reads numbers of 10 or more digits, at most 64) and its brief does not,
+so that an input every call prints matches none, the latest execution whose output
+prints it, or, when none does, the latest that prints one within a hand-copying error
+of it; then the latest. An output's numbers are matched as a set, exact matches first,
+and a delegation's choice makes at most 2,000 near comparisons, so it cannot stall the
+parent's safe point. The outcome says how many it holds and how many were left out
 (`executions`). An execution whose stdout or stderr was cut short brings the file the
 harness saved its whole output to, when the run recorded it with its content, copied
 whole as a ledger pin is (at most 64 KiB of text, as many as 8 a run), its locator
@@ -96,9 +100,10 @@ at most 256 KiB. Open findings take their items first, confirmation targets and
 rebuttals before the others, in as much as half of an author window's snapshot (all of a
 confirmation's), so that new work cannot crowd them out; the feed's next rows take what
 is left, and a finding that did not fit that half takes what they leave. Rows the
-`actions` item folds take no item, but a window lists at most 500 actions. The `plan`
-item is read in the same read as the window. Document reads pin an exact immutable
-revision and verify its digest.
+`actions` item folds take no item, but a window lists at most 500 actions; a raw source's
+row is passed over without reading its payload. The `plan` item is read in the same read
+as the window and counts within the findings' share. Document reads pin an exact
+immutable revision and verify its digest.
 Execution output is a bounded copied projection; mutable worker paths and job log files
 are references only. An agent's ledger revision brings in the artifact revisions its evidence pins, once in each review window and whichever session of the project wrote them (CR-14 as amended): text and JSON up to 64 KiB, copied whole and verified, as `artifact` items whose locator names the entry revision (`pinned_by`); they make no review due and are not the run's effects, and one that cannot be copied whole is left to the entry's evidence, so that it does not make coverage incomplete. A confirmation snapshot's changed entry revisions bring theirs too. So does, as context, what else the evidence that bears on an entry or checks it pins (lab 40's B3), at most 8 an entry revision: the document revision a proof's block is in, as a `document` item that names the blocks (`blocks`), which the reviewer reads by block; a delegation's outcome, as a `delegation` item (the brief, how it ended, the result with its verdict and status, what it read, the alias and models, and its report, its long texts at most 16,384 characters); and an entry at the revision pinned, as an `entry` item, never a `ledger` one, so that holding it is no review of it. Each names the entry revision that pins it (`pinned_by`); one that cannot be read or does not fit an item is left to the entry's evidence. The recorded sources of an entry's quotes come the same way (CR-4, `consistency/quotes.py`). When an agent's run calls `pdf_pages` or `pdf_search`, or the e-print server's `e-print-mcp_eprint_fulltext` through a connector the project configures, without an error, the review controller records the call and its result as a `source` observation that makes no review due: the tool, its arguments, and the result's structure. The call is the one the run executed (its name and arguments as the run's tool records keep them), and the transcript must name its ID once, with that name and those arguments, so that duplicate IDs attribute nothing. For a PDF, the SHA-256 and path the sandbox's helper reported and each line it returned, with page index, label and number, never the text formatted for the model; for an ePrint, the paper and date stamp from the result's header and the passages the server returned as matching, apart from the header (title, authors, abstract) and the query it echoes. A PDF quote is found in lines `first_line` to `last_line` of its page under the PDF's hash, spanning them; an ePrint quote inside one passage for that paper and date stamp (the echo is read in either quote style `repr` gives it, and is never a passage), and a quote the call sent, as its decoded strings, only in a passage that holds more than what was sent, so that a search for a phrase and then its quote works. White space reads as one space. A source's key begins with a digest of the PDF's hash or the paper's identifier, its mark, so each quote reads, by the feed's key index, at most the 50 newest records of its mark in the session reviewed, never the copies pinned beside entries. Raw sources are not review evidence: the transcript holds what the agent saw, and only a source a quote cites comes into a review, so a long read cut short that no quote cites leaves the coverage whole. The sources are found before the ledger's write and recorded once a window under a key that names the entry revision; a record the feed refuses is left out, and a page the feed refuses leaves the window's coverage incomplete without failing the run's safe points. A quote not found brings nothing, and its citation cannot be confirmed. The PDF tools print the PDF's full SHA-256 and its path escaped in their header.
 

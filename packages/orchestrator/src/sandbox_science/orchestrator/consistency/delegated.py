@@ -13,10 +13,11 @@ come in too. None of it makes a review due.
 The executions are the record an outcome's summary rests on (lab 42's B3): a task printed
 one value from Sage and its summary gave another, and a review that held only the
 summary took it as checked. A busy run has more than a review holds, so they are chosen:
-first those whose output holds a number the outcome states, or nearly, then the latest;
-the outcome says how many were left out. An execution whose output was cut short brings
-the file its whole output was saved to, when the run recorded it. Each names its run, its
-delegation and its place among the run's tool calls, which is where it is read from.
+first, for each number the outcome states and its brief does not, the latest whose output
+holds it, or nearly, then the latest; the outcome says how many were left out. An
+execution whose output was cut short brings the file its whole output was saved to, when
+the run recorded it. Each names its run, its delegation and its place among the run's tool
+calls, which is where it is read from.
 
 A delegation's observations are one batch, recorded in one change with the outcome first,
 which marks the delegation as recorded: a review window takes a batch whole or not at all
@@ -53,11 +54,20 @@ MAX_DELEGATED_BYTES: Final = 2 * 1024 * 1024
 fits one review's snapshot whole."""
 MAX_SAVED: Final = 8
 """The most saved outputs of executions cut short one delegated run brings."""
+MAX_STATED: Final = 64
+"""The most numbers of an outcome its executions are matched against."""
 MAX_HELD: Final = 200
-"""The most numbers of one execution's output compared with those its outcome states."""
+"""The most distinct numbers of one execution's output matched, the last it printed."""
+MAX_SCANNED: Final = 128 * 1024
+"""The characters at the end of each output stream its numbers are read from."""
+MAX_NEAR: Final = 2000
+"""The most near comparisons (edit distances) one delegation's choice makes."""
 MAX_RESULTS: Final = 8
 """The most result files one delegation brings into its parent's review."""
-CHOSEN: Final = "those whose output holds a number this outcome states, or nearly, then the latest"
+CHOSEN: Final = (
+    "for each number this outcome states and its brief does not, the latest whose output "
+    "holds it, or nearly; then the latest"
+)
 
 
 @dataclass(frozen=True)
@@ -200,9 +210,10 @@ def _chosen(
     """The executions a review holds of a delegated run's tool records ``tools``, by the
     number of the record each was read from, in the order the calls saw them, and how many
     it leaves out: each in each state its calls saw it, once; as many as
-    ``MAX_DELEGATED_EXECUTIONS`` within ``MAX_DELEGATED_BYTES``, first those whose output
-    holds a number ``outcome`` states, or nearly, then the latest, so that a busy run's
-    last, decisive ones are not the ones left out (the review of lab 42's B3)."""
+    ``MAX_DELEGATED_EXECUTIONS`` within ``MAX_DELEGATED_BYTES``. First, for each number
+    ``outcome`` states, the latest execution whose output holds it (``_decisive``), then
+    the latest, so that a busy run's last, decisive ones are not the ones left out (the
+    review of lab 42's B3)."""
     every: list[tuple[int, Json]] = []
     seen: set[str] = set()
     for number, call in enumerate(tools):
@@ -211,8 +222,10 @@ def _chosen(
             if identity not in seen:
                 seen.add(identity)
                 every.append((number, execution))
-    stated: set[str] = set(numbers(dump(outcome))) if outcome is not None else set()
-    order = sorted(range(len(every)), key=lambda i: (not _bears(every[i][1], stated), -i))
+    first = _decisive([execution for _, execution in every], outcome)
+    taken = set(first)
+    rest = [index for index in reversed(range(len(every))) if index not in taken]
+    order = [*first, *rest]
     picked: dict[int, tuple[Json, bool, dict[str, tuple[Json, Json]]]] = {}
     size = saved = 0
     for index in order:
@@ -241,22 +254,75 @@ def _chosen(
     return chosen, len(every) - len(picked)
 
 
-def _bears(execution: Json, stated: set[str]) -> bool:
-    """Whether ``execution``'s output holds one of the numbers ``stated``, or one within
-    the edits a number copied by hand is off by (``numbers.near``'s bound), its last two
-    digits included: p and p + 2 are the pair a misstated summary makes."""
+def _decisive(executions: list[Json], outcome: Json | None) -> list[int]:
+    """For each number ``outcome`` states, the latest of ``executions`` whose output
+    holds it, or, when none does, the latest that holds one within the edits a number
+    copied by hand is off by (``numbers.near``'s bound, its last two digits included: p
+    and p + 2 are the pair a misstated summary makes); their indices, once each, in the
+    order the numbers come.
+
+    The numbers are read from the outcome's result and report themselves, as many as
+    ``MAX_STATED``, leaving out those its brief states: an input every call prints, such
+    as the modulus, would match them all (the review of #449). An output's numbers are a
+    set, matched exactly first, and at most ``MAX_NEAR`` near comparisons are made in
+    all, so that a delegation with many numbers cannot stall its parent's safe point."""
+    if outcome is None:
+        return []
+    given = set(_stated(outcome.get("brief")))
+    told = _stated([outcome.get("result"), outcome.get("report")])
+    stated = [number for number in dict.fromkeys(told) if number not in given][:MAX_STATED]
     if not stated:
-        return False
+        return []
+    held = [_held(execution) for execution in executions]
+    found: dict[str, int] = {}
+    for index, lengths in enumerate(held):
+        for number in stated:
+            if number in lengths.get(len(number), ()):
+                found[number] = index  # the latest wins
+    near = MAX_NEAR
+    for number in (number for number in stated if number not in found):
+        if near <= 0:
+            break
+        bound = max(3, len(number) * 5 // 100)
+        lengths = range(len(number) - bound, len(number) + bound + 1)
+        for index in reversed(range(len(held))):
+            values = [value for length in lengths for value in held[index].get(length, ())]
+            compared = values[: max(near, 0)]
+            near -= len(compared)
+            if any(distance(number, value, bound) is not None for value in compared):
+                found[number] = index
+                break
+            if near <= 0:
+                break
+    return list(dict.fromkeys(found[number] for number in stated if number in found))
+
+
+def _stated(value: object) -> list[str]:
+    """The numbers of 10 or more digits the strings in ``value`` state, in order, read
+    through the separators that group digits; a whole number given as a number counts."""
+    if isinstance(value, str):
+        return numbers(value)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return numbers(str(value))
+    if isinstance(value, dict):
+        return [found for item in cast(Json, value).values() for found in _stated(item)]
+    if isinstance(value, list):
+        return [found for item in cast(list[Any], value) for found in _stated(item)]
+    return []
+
+
+def _held(execution: Json) -> dict[int, set[str]]:
+    """The distinct numbers an execution's output holds, by their length, read from the
+    last ``MAX_SCANNED`` characters of each stream, the last ``MAX_HELD`` it printed."""
     result = cast(Json, execution.get("result") or {})
     text = "\n".join(
-        str(cast(Json, result.get(stream) or {}).get("text", "")) for stream in ("stdout", "stderr")
+        str(cast(Json, result.get(stream) or {}).get("text", ""))[-MAX_SCANNED:]
+        for stream in ("stdout", "stderr")
     )
-    held = numbers(text)[:MAX_HELD]
-    return any(
-        distance(number, value, max(3, len(number) * 5 // 100)) is not None
-        for number in stated
-        for value in held
-    )
+    lengths: dict[int, set[str]] = {}
+    for number in list(dict.fromkeys(numbers(text)))[-MAX_HELD:]:
+        lengths.setdefault(len(number), set()).add(number)
+    return lengths
 
 
 def _saved_output(
