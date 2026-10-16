@@ -129,6 +129,7 @@ GOLDEN = {
     ),
     "sandbox-kernel-lines-1": "99de31152145fd974d443f21919e252f90f922b3c961e183522d98c46c79c246",
     "sandbox-fold-region-1": "b2fdf489b90e27f086eb29e784b5b6cf2cad9f47f9d71e52c63ab9f3c32f231a",
+    "sandbox-fold-enrich-1": "6601065ee53a95822f9eee6451390322b1f429965fc37821bc7ac8d74f3a5ac2",
 }
 
 

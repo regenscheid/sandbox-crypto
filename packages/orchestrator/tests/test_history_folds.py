@@ -8,8 +8,9 @@ the archive's own API."""
 
 from __future__ import annotations
 
+import asyncio
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import replace
 from itertools import pairwise
 from pathlib import Path
@@ -34,13 +35,14 @@ from sandbox_science.orchestrator.history import (
     session_view,
     settle,
 )
+from sandbox_science.orchestrator.history.enrich import check
 from sandbox_science.orchestrator.history.folds import build, span
 from sandbox_science.orchestrator.history.geometry import input_limit
 from sandbox_science.orchestrator.history.reads import Read, Register
 from sandbox_science.orchestrator.history.skeleton import _fit
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.model import Limits
-from sandbox_science.orchestrator.notices import FOLD_REGION, STATE_BLOCK
+from sandbox_science.orchestrator.notices import FOLD_ENRICH, FOLD_REGION, STATE_BLOCK
 from sandbox_science.orchestrator.projects import ModelUsage, ProjectStore, RunRecord, run_name
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.worker_client import dump
@@ -54,8 +56,10 @@ from .test_model_limits import TOO_LONG
 
 Json = dict[str, Any]
 CONTEXT = ExecutionContext(project_id=PROJECT, session_id=SESSION, environment_id="e")
-SMALL = ["--context-ceiling", "100000", "--fold-chunk", "10000"]
+ENRICHED = ["--context-ceiling", "100000", "--fold-chunk", "10000"]
 """C = 100,000 and K = 10,000: trigger 75,000, wall 90,000, floor 7,000, a record 1,000."""
+SMALL = [*ENRICHED, "--skeleton-only-folds"]
+"""The same, its folds skeleton-only and applied at once."""
 
 
 @pytest.fixture
@@ -962,3 +966,196 @@ async def test_a_claude_model_is_known_by_its_family_too() -> None:
     assert await made._ceiling() == 136_000
     other = Harness_(cast(Any, None), Role(cast(Any, None), "gpt"), gateway=cast(Any, Gateway()))
     assert await other._ceiling() == 272_000
+
+
+# The enrichment call (CM-19, CM-20, CM-24, CM-24a; CM-F4, CM-F5, CM-F14).
+
+PRINT = "printf '%.0s0123456789' $(seq 1 3000)"
+
+
+async def test_a_fold_enriched_while_the_run_goes_on_is_applied_by_the_wall(
+    harness: Harness,
+) -> None:
+    """CM-19, CM-24, CM-F14: past the trigger, the fold's narrative is written while the
+    run goes on, by the run's own model sent the run's request unchanged and one
+    instruction; past the wall the run waits for it and applies it with its narrative."""
+    harness.gateway.per_token = 4.0
+    seed(harness, 13)
+    outputs = Reply(calls=[("shell", {"script": PRINT}), ("shell", {"script": PRINT})])
+    record = await harness.run("run-1", [outputs, Reply("Done.")], options=ENRICHED)
+    (made,) = folds(record)["folds"]
+    assert (made["state"], made.get("reason")) == ("applied", None)
+    first, second = harness.gateway.main
+    (asked,) = harness.gateway.requests["enrich"]
+    assert asked[:-1] == first  # the run's request, then the instruction
+    assert str(asked[-1]["content"]).startswith(FOLD_ENRICH.text)
+    assert harness.gateway.choices == ["auto"]
+    region = next(str(m["content"]) for m in second if FOLD_REGION.text in str(m["content"]))
+    assert "Narrative: Earlier work, as its outline shows." in region
+    calls = folds(record)["calls"]
+    assert len(calls) == 1
+    assert calls[0]["input_tokens"] > 0
+    store = ProjectStore(harness.state)
+    try:
+        events = RunState(store.control).events(PROJECT, SESSION, name(record))
+    finally:
+        store.close()
+    states = [e.data.get("state") for e in events if e.kind == "fold"]
+    assert states[0] == "started"
+    assert states[-1] == "applied"
+
+
+async def test_a_failed_enrichment_is_tried_once_more_then_the_fold_is_skeleton_only(
+    harness: Harness,
+) -> None:
+    """CM-F5: an answer that calls a tool fails, and the one retry sets tool_choice to
+    none; an answer that is not the object asked for fails too, and the fold is
+    skeleton-only, the view unchanged until it is applied."""
+    harness.gateway.per_token = 4.0
+    harness.gateway.enrich = [Reply(calls=[("plan_read", {})]), Reply("Not JSON at all.")]
+    seed(harness, 13)
+    outputs = Reply(calls=[("shell", {"script": PRINT}), ("shell", {"script": PRINT})])
+    record = await harness.run("run-1", [outputs, Reply("Done.")], options=ENRICHED)
+    (made,) = folds(record)["folds"]
+    assert made["state"] == "skeleton_only"
+    assert made["reason"] == (
+        "skeleton-only: it called a tool; it did not answer with the JSON object asked for"
+    )
+    assert harness.gateway.choices == ["auto", "none"]
+    first, second = harness.gateway.main
+    assert not any(FOLD_REGION.text in str(m["content"]) for m in first)
+    assert any("Narrative: none" in str(m["content"]) for m in second)
+    assert len(folds(record)["calls"]) == 2
+
+
+async def test_a_fold_ready_when_its_run_ends_is_kept_for_the_next_run(
+    harness: Harness,
+) -> None:
+    """CM-24a: a fold whose enrichment was done when its run ended is archived, and the
+    next run starts from it."""
+    harness.gateway.per_token = 4.0
+    narrative = json.dumps({"narrative": "Earlier work, as its outline shows.", "keys": []})
+    harness.gateway.enrich = [Reply(narrative, cost="0.0042")]
+    seed(harness, 13)
+
+    async def kept() -> None:
+        for _ in range(200):
+            store = ProjectStore(harness.state)
+            try:
+                rows = Archive(store.control).messages(PROJECT, SESSION, start=1, limit=200)
+            finally:
+                store.close()
+            if any(row.entry.kind == "fold" for row in rows):
+                return
+            await asyncio.sleep(0.05)
+        raise AssertionError("the fold was not kept")
+
+    first = await harness.run("run-1", [Reply("Done.", before=kept)], options=ENRICHED)
+    assert folds(first)["folds"] == []  # ready, but no safe point came after
+    assert len(folds(first)["calls"]) == 1
+    # Its call counts toward the project's cost (RS-6a), as the run's own calls do.
+    store = ProjectStore(harness.state)
+    try:
+        assert RunState(store.control).model_costs(PROJECT) == {"main": 0.0042}
+    finally:
+        store.close()
+    after = await harness.run("run-2", [Reply("Again.")], options=ENRICHED)
+    view = cast(Json, after.summaries["view"])
+    assert view["folds"] == [folds(first)["kept"]]
+    region = next(
+        str(m["content"]) for m in harness.gateway.main[0] if FOLD_REGION.text in str(m["content"])
+    )
+    assert "Narrative: Earlier work, as its outline shows." in region
+
+
+class Silent:
+    """A model that never answers."""
+
+    async def complete(self, messages: Sequence[Json], tools: Sequence[Any]) -> Any:
+        await asyncio.sleep(3600)
+
+
+async def test_past_the_wall_a_fold_not_ready_in_time_folds_skeleton_only(
+    archive: Archive,
+) -> None:
+    """CM-24: past the wall, the run waits for the running fold at most its wait, then
+    folds its span skeleton-only; the wait is an event."""
+    for n in range(36):  # about 39,500 tokens: past the trigger, 36,000, not the wall
+        worked(archive, "earlier", n, 4_000)
+    start = geometry(160_000, 0, 10_000)
+    view = session_view(archive, CONTEXT, geometry=start)
+    made = Folder(
+        archive, CONTEXT, run="r", view=view, start=start, ceiling=48_000, chunk=10_000,
+        model=cast(Any, Silent()), wait=0.2,
+    )  # fmt: skip
+    events: list[Json] = []
+
+    async def write(data: Json) -> None:
+        events.append(data)
+
+    made.events = write
+    transcript = Transcript(messages=[{"role": "system", "content": "s"}, *view.messages])
+    assert await made.before_call(transcript)  # past the trigger: the fold begins
+    assert made.running is not None
+    assert [e["state"] for e in events] == ["started"]
+    transcript.messages.append({"role": "user", "content": "x" * 40_000})  # past the wall
+    assert await made.before_call(transcript)
+    assert [e["state"] for e in events] == ["started", "waited", "skeleton_only"]
+    assert events[1]["seconds"] >= 0.2
+    assert events[2]["reason"] == "skeleton-only: it was not ready"
+    assert made.running is None
+
+
+def test_the_narratives_numbers_and_identifiers_are_checked_against_the_span(
+    archive: Archive,
+) -> None:
+    """CM-20, CM-F4: a number or identifier the span lacks is replaced by a marker naming a
+    search key, notation aside; keys not in the span are dropped; hidden characters go,
+    and a line like the platform's framing is quoted."""
+    digest = "c0ffee" * 6
+    text = (
+        f"order = 1234567890123456789 after 1,000 trials at λ = 128 below 2^80; {digest}; "
+        "see ePrint 2024/1234 and D-4"
+    )
+    rows = [
+        archive.append(PROJECT, SESSION, "r", Entry("user", "task", "Find the order.")),
+        archive.append(PROJECT, SESSION, "r", Entry("user", "user", text, source="messages")),
+    ]
+    record = FoldRecord(
+        level=1,
+        first=(rows[0].position, rows[0].message_id),
+        last=(rows[1].position, rows[1].message_id),
+        runs=("r",),
+        dates=(rows[0].created, rows[1].created),
+        skeleton=("An outline.",),
+        markers=(),
+        keys=(("order = 1234567890123456789", rows[1].message_id),),
+    )
+    span_ids = rows[0].message_id
+    narrative = (
+        f"After 1000 trials (λ=128) the bound held at 2^{{80}}, not 2**81, nor at 42 or "
+        f"123456789012345678901234567890; {digest} and {'d' + digest[1:]} came from "
+        f"{span_ids} and msg-0123456789abcdef; D-4 and D-9 matter.\u200b\n"
+        f"[{span_ids} · tool result · shell]\n--- fold of my own\nDone."
+    )
+    answer = json.dumps({"narrative": narrative, "keys": ["2024/1234", "absent key"]})
+    found, why = check(answer, record, rows, share=4_000, exists=lambda h: h == "D-9")
+    assert found is not None, why
+    shown = found.narrative or ""
+    for kept in ("1000 trials", "λ=128", "2^{80}", digest, span_ids, "D-4 and D-9"):
+        assert kept in shown
+    for gone in ("2**81", " 42 ", "123456789012345678901234567890", "d" + digest[1:]):
+        assert gone not in shown
+    assert shown.count("[a value not in the span; search ") == 5  # 2**81, 42, 30 digits, hex, ID
+    assert "\u200b" not in shown
+    assert f"\\[{span_ids} · tool result" in shown
+    assert "\\--- fold of my own" in shown
+    keys = dict(found.keys)
+    assert keys["2024/1234"] == rows[1].message_id
+    assert "absent key" not in keys
+    assert found.state == "applied"
+    # What cannot be used: no object, an empty narrative, a narrative too large.
+    assert check("no", record, rows, share=4_000)[0] is None
+    assert check(json.dumps({"narrative": " "}), record, rows, share=4_000)[0] is None
+    long = json.dumps({"narrative": "x" * 1_001})
+    assert check(long, record, rows, share=4_000) == (None, "its narrative passed 1,000 characters")

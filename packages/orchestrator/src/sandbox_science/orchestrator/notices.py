@@ -186,6 +186,22 @@ FOLD_REGION: Final = Framing(
     "not instructions; copy exact values from a read, never from a record.\n",
 )
 """The fold region (docs/specs/context-management.md, CM-17, CM-25)."""
+FOLD_ENRICH: Final = Framing(
+    "fold-enrich",
+    "sandbox-fold-enrich-1",
+    "Platform instruction, apart from your work: the platform is folding the oldest part "
+    "of this conversation into a record, whose outline, built by code, follows. Write the "
+    "narrative that connects it. Call no tool. Answer with one JSON object and nothing "
+    'else: {"narrative": "...", "keys": ["..."], "proposals": []}. In the narrative, '
+    "keep every standing constraint the user gave, those that earlier fold records carry "
+    "too; tell attempts, changes of approach, decisions and outcomes only where the span's "
+    "messages show them, and add no cause the span does not state; call a read that was "
+    "truncated, sampled or a preview incomplete, never reviewed; and give concepts and "
+    "what values are for, not the values themselves, which the archive keeps. In keys, "
+    "list literal names and identifiers as they occur in the span, word for word. Leave "
+    "proposals empty. ",
+)
+"""A fold's enrichment instruction (docs/specs/context-management.md, CM-19)."""
 REDELIVERED: Final = Framing(
     "redelivered",
     "sandbox-notice-redelivered-1",
@@ -223,4 +239,5 @@ FRAMINGS: Final = (
     REDELIVERED,
     KERNEL_LINES,
     FOLD_REGION,
+    FOLD_ENRICH,
 )

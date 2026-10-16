@@ -198,6 +198,12 @@ class Settings:
     input_limit: int | None = None
     """MAIN's model's input limit in tokens, without its output, where the gateway's
     model information gives none."""
+    skeleton_only: bool = False
+    """Whether MAIN's folds are skeleton-only, without the enrichment call: the control
+    arm (docs/specs/context-management.md, question 4)."""
+    fold_alias: str | None = None
+    """The alias whose model writes MAIN's folds' narratives; ``None`` for MAIN's own,
+    which reads the run's view from the prompt cache (CM-19)."""
     watcher_calls_per_hour: int = 60
     watcher_first_check: float = 300
     watcher_interval: float = 1800
@@ -594,6 +600,7 @@ class Harness:
                         hooks = (*hooks, folder)
                         folder.events = functools.partial(chat.write, "fold")
                         folder.refit = functools.partial(_refit, toolbox, discovery)
+                        folder.specs = lambda: toolbox.specs
                     log = None
                     if self.stores is not None and chat is not None:
                         # Each message is kept in the session's archive as it is added (CM-4).
@@ -691,6 +698,15 @@ class Harness:
         found = await threaded(digest, int(start.digest * per_token))
         view = dataclasses.replace(view, digest=found)
         view = await settle(view, archive, context, run=name, kernels=kernels, clock=self.clock)
+        ledger = Ledger(stores.documents)
+
+        def exists(handle: str) -> bool:
+            try:
+                ledger.entry(project, handle)
+            except (DocumentError, ValueError):
+                return False
+            return True
+
         made = Folder(
             archive,
             context,
@@ -704,6 +720,8 @@ class Harness:
             earlier=earlier,
             kernels=kernels,
             digest=digest,
+            model=self._narrator(),
+            exists=exists,
             clock=self.clock,
         )
         # The ceiling a context error capped, carried to later runs: this service's, or
@@ -738,6 +756,16 @@ class Harness:
             output = model.max_output if isinstance(model, GatewayModel) else None
             return ceiling(settings.ceiling, window=found.input, max_output=output or found.output)
         return ceiling(settings.ceiling, input_limit=found.input)
+
+    def _narrator(self) -> ChatModel | None:
+        """The model that writes MAIN's folds' narratives: the setting's alias through
+        the gateway, or MAIN's own; none for skeleton-only folds, or for a model that is
+        not the gateway's, as a scripted one, whose answers are the run's (CM-19)."""
+        if self.settings.skeleton_only:
+            return None
+        if self.settings.fold_alias is not None and self.gateway is not None:
+            return self.gateway.model(self.settings.fold_alias)
+        return self.main.model if isinstance(self.main.model, GatewayModel) else None
 
     async def _task_view(self, admitted: Admitted) -> View | None:
         """A delegated task's view, with stores: the user's standing constraints alone; a

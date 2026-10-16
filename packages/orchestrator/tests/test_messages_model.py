@@ -397,6 +397,21 @@ async def test_requests_ask_for_progress_notes_on_the_models_that_have_them(fake
     assert fake.info_calls == 2  # once for each model
 
 
+async def test_a_call_that_may_not_call_the_tools_says_so(fake: Fake) -> None:
+    """CM-19: a fold's enrichment retry sets ``tool_choice`` to ``none``; the model the
+    run calls keeps sending none, which Claude reads as ``auto``."""
+    model = claude(fake)
+    try:
+        await converse(model, [Reply(text="Hello.")], fake)
+        assert "tool_choice" not in fake.bodies[-1]
+        await converse(model.choosing("none"), [Reply(text="Hello.")], fake)
+        assert fake.bodies[-1]["tool_choice"] == {"type": "none"}
+        await converse(model, [Reply(text="Hello.")], fake)
+        assert "tool_choice" not in fake.bodies[-1]
+    finally:
+        await model.close()
+
+
 async def test_with_replay_off_no_thinking_goes_back_and_notes_go_as_text_from_the_start(
     fake: Fake,
 ) -> None:

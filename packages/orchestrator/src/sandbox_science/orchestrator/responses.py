@@ -100,7 +100,7 @@ class ResponsesModel(GatewayModel):
                 }
                 for tool in tools
             ]
-            body["tool_choice"] = "auto"
+            body["tool_choice"] = self._tool_choice
         turn = await self._call(body, parse_response)
         if turn.model is not None:
             self.resolved = turn.model

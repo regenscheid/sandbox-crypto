@@ -11,13 +11,14 @@ fixed turns, for tests and for exercising the worker boundary without a model.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, ClassVar, Final, Protocol, cast
+from typing import Any, ClassVar, Final, Protocol, Self, cast
 
 import aiohttp
 
@@ -291,6 +292,17 @@ class GatewayModel(ABC):
         self._max_response_bytes = max_response_bytes
         self._retries, self._backoff, self._clock = retries, backoff, clock
         self._prices = prices or PriceList(self.base_url, api_key, clock=clock)
+        self._tool_choice = "auto"
+
+    def choosing(self, tool_choice: str) -> Self:
+        """This model, sending ``tool_choice`` with its tools: ``none`` for a call that
+        may not call them, as a fold's enrichment retry (docs/specs/context-management.md,
+        CM-19). It shares this one's session, which only this one closes."""
+        if self._session is None:
+            self._session = aiohttp.ClientSession()
+        other = copy.copy(self)
+        other._tool_choice, other._owns_session = tool_choice, False
+        return other
 
     @property
     def max_output(self) -> int | None:
@@ -453,7 +465,7 @@ class OpenAICompatibleModel(GatewayModel):
                 }
                 for tool in tools
             ]
-            body["tool_choice"] = "auto"
+            body["tool_choice"] = self._tool_choice
         return await self._call(body, _parse_completion)
 
 
