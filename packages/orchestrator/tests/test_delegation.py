@@ -30,7 +30,7 @@ from sandbox_science.orchestrator.delegation.records import (
     Ending,
 )
 from sandbox_science.orchestrator.documents import USER
-from sandbox_science.orchestrator.history import body
+from sandbox_science.orchestrator.history import Archive, body, session_view
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.memory import ProjectMemory
 from sandbox_science.orchestrator.notices import (
@@ -41,10 +41,9 @@ from sandbox_science.orchestrator.notices import (
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord, run_name
 from sandbox_science.orchestrator.prompts import PromptPins
 from sandbox_science.orchestrator.runstate import RunState
-from sandbox_science.orchestrator.service import earlier_conversation
 
 from .control_versions import older_store
-from .loop_harness import DELEGATED, PRIOR, PROJECT, SESSION, Harness, Reply, call
+from .loop_harness import DELEGATED, PRIOR, PROJECT, SESSION, Harness, Reply, call, own
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
@@ -180,7 +179,7 @@ def started(record: RunRecord) -> list[str]:
 
 def results(record: RunRecord) -> list[str]:
     """The record's tool results, in order."""
-    return [body(str(m["content"])) for m in record.messages if m["role"] == "tool"]
+    return [body(str(m["content"])) for m in own(record) if m["role"] == "tool"]
 
 
 def tools(record: RunRecord) -> tuple[str, ...]:
@@ -267,8 +266,9 @@ async def test_a_check_starts_fresh_and_its_outcome_reaches_its_parent(
     assert "answer" not in waited["delegations"][0]  # the result stands for it
     assert root.final_text == "C-1 holds: the check confirms it."
 
-    # The child's events were written under its root's lease, and the session's later
-    # conversation holds the root's task and answer, not the child's.
+    # The child's events were written under its root's lease, and the session's view
+    # holds the root's messages, the outcome as the root received it among them, and none
+    # of the child's (CM-29a).
     store = ProjectStore(delegating.state)
     try:
         runs = RunState(store.control)
@@ -276,10 +276,10 @@ async def test_a_check_starts_fresh_and_its_outcome_reaches_its_parent(
         assert events[0].kind == "started"
         assert events[0].data["role"] == "delegated"
         assert events[-1].kind == "stopped"
-        history = earlier_conversation(store, runs, PROJECT, SESSION, 100_000)
+        view = session_view(Archive(store.control), delegating.context(), budget=10**6)
     finally:
         store.close()
-    assert str(RESULT["summary"]) not in json.dumps(history)
+    assert {part.row.run for part in view.parts if part.row} == {name(root)}
 
 
 async def test_a_parent_cannot_answer_while_its_check_runs(delegating: Harness) -> None:

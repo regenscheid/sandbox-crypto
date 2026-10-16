@@ -20,7 +20,9 @@ from sandbox_science.contracts.worker import TERMINAL_STATES
 from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator.chat import RunChat, session_lease
 from sandbox_science.orchestrator.control import ControlError
+from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.jobstate import JobState
+from sandbox_science.orchestrator.notices import REDELIVERED
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.worker_client import WorkerClient
@@ -164,7 +166,13 @@ async def test_a_message_a_failed_call_saw_stays_queued(harness: Harness) -> Non
     (message,) = runs(harness).messages(PROJECT, SESSION)
     assert message.state == "queued"
     again = await harness.run("run-2", [Reply("It did.")])
-    assert user_text(harness.gateway.main[0][-1]) == "Did it work?"
+    # The failed run's view holds the message where it first arrived; the next run is
+    # told to answer it there rather than given it twice (CM-29a).
+    first = harness.gateway.main[0]
+    (shown,) = [m for m in first if m["role"] == "user" and "Did it work?" in str(m["content"])]
+    assert user_text(shown) == "Did it work?"
+    archive_id = str(shown["content"])[1:21]
+    assert body(str(first[-1]["content"])) == f'{REDELIVERED.text}"{archive_id}"'
     assert again.delivered["messages"] == ["m-1"]
 
 

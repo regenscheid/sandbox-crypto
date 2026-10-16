@@ -622,6 +622,31 @@ class ProjectStore:
                 f"the run list of {project_id}/{session_id} is damaged: {str(exc)[:300]}",
             ) from exc
 
+    def usage(
+        self, project_id: str, session_id: str, alias: str | None, *, runs: int = 10
+    ) -> list[ModelUsage]:
+        """The calls of the session's last ``runs`` saved runs on ``alias``, oldest first:
+        what calibrates a view's characters per token (docs/specs/context-management.md,
+        CM-28). A damaged entry is left out."""
+        self._checked(project_id, session_id)
+        if self._unmade():
+            return []
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT json_extract(record, '$.usage') FROM runs WHERE project_id = ? "
+                "AND session_id = ? AND json_extract(record, '$.alias') IS ? "
+                "ORDER BY name DESC LIMIT ?",
+                (project_id, session_id, alias, runs),
+            ).fetchall()
+        found: list[ModelUsage] = []
+        for (calls,) in reversed(rows):
+            for call in cast(list[object], json.loads(calls) if calls else []):
+                try:
+                    found.append(ModelUsage.model_validate(call))
+                except ValidationError:
+                    continue
+        return found
+
     def run(
         self, project_id: str, session_id: str, name: str, *, max_bytes: int | None = None
     ) -> RunRecord:

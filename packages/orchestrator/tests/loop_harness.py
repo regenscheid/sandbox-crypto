@@ -121,8 +121,17 @@ def _changes(result: object) -> bool:
 
 
 def shape(messages: Sequence[Message]) -> list[Shape]:
-    """Each message as (role, kind, detail): its framing and the notice IDs it carries."""
+    """Each message of a run's own as (role, kind, detail): its framing and the notice
+    IDs it carries. The view of the session's earlier runs that a run begins with, up to
+    its own task, is left out (CM-29)."""
     result: list[Shape] = []
+    tasks = [
+        index
+        for index, message in enumerate(messages)
+        if message["role"] == "user" and body(str(message.get("content"))) == TASK
+    ]
+    if tasks:
+        messages = [*messages[:1], *messages[tasks[-1] :]]
     for message in messages:
         role, content = str(message["role"]), message.get("content")
         if role in ("user", "tool"):  # after its archive header (CM-4a)
@@ -162,6 +171,14 @@ def user_text(message: Message) -> str:
     found = USER_HEADER.match(content)
     assert found is not None, content[:200]
     return content[found.end() :]
+
+
+def own(record: RunRecord) -> list[Message]:
+    """A run's own messages: its record's, without the view of its session's earlier
+    runs that it began with (CM-29)."""
+    view = record.summaries.get("view")
+    parts = int(cast(Json, view)["parts"]) if isinstance(view, dict) else 0
+    return [*record.messages[:1], *record.messages[1 + parts :]]
 
 
 def plans(planning: str, reread: bool) -> Shape:

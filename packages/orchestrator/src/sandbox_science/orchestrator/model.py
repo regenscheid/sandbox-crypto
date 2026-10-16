@@ -23,6 +23,8 @@ import aiohttp
 
 from sandbox_science.contracts.clock import SYSTEM_CLOCK, Clock
 
+from .tokens import total_input
+
 _log = logging.getLogger(__name__)
 
 Message = dict[str, Any]
@@ -650,7 +652,7 @@ def _parse_completion(text: str, priced: str | None = None) -> ModelTurn:
         tool_calls=tuple(calls),
         finish_reason=finish if isinstance(finish, str) else None,
         model=resolved if isinstance(resolved, str) else None,
-        input_tokens=_usage(data, "prompt_tokens"),
+        input_tokens=total_input(_usage_object(data), "chat_completions"),
         output_tokens=_usage(data, "completion_tokens"),
         cost=reported_cost(priced if priced is not None else _usage_value(data, "cost")),
     )
@@ -700,6 +702,11 @@ class ScriptedModel:
         if not self._turns:
             return ModelTurn(text="(the script has ended)", model="scripted")
         return self._turns.pop(0)
+
+
+def _usage_object(data: object) -> dict[str, object]:
+    usage = _object(data).get("usage")
+    return cast(dict[str, object], usage) if isinstance(usage, dict) else {}
 
 
 def _usage(data: object, key: str) -> int | None:

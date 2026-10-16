@@ -26,7 +26,7 @@ import math
 import posixpath
 import re
 from collections import Counter
-from collections.abc import Awaitable, Sequence
+from collections.abc import Awaitable, Iterable, Mapping, Sequence
 from typing import Any, Final, TypeVar, cast
 
 from sandbox_science.contracts.clock import SYSTEM_CLOCK, Clock
@@ -48,6 +48,11 @@ tuned (SK-34)."""
 MAX_READ: Final = 64 * 1024
 MAX_FOUND: Final = 8
 NAME: Final = "skills"
+_GIVEN: Final = re.compile(
+    r"^(\S+) at \S+, body SHA-256 ([0-9a-f]{64})[^\n]*\n<skill-(\w+)>\n(.*?)\n</skill-\3>",
+    re.MULTILINE | re.DOTALL,
+)
+"""A body as ``_load`` gives it: its head, then the body between its markers."""
 SPEC: Final = ToolSpec(
     NAME,
     "Search, load and read the skills the system message lists. search: words for the work, "
@@ -129,6 +134,8 @@ class SkillTool:
                 left.append(skill)
                 self.started.append({**item, "status": "over_budget"})
         self.given: SkillsGiven = give(skills, bodies, left, MAX_LOADED)
+        self.held: dict[str, str] = {}
+        """The skills whose bodies the run's view held as it started (``hold``)."""
         self.vectors: SkillVectors | None = None
         """With an embedding model: search and discovery compare by meaning too (SK-29)."""
         self.project: str | None = None
@@ -276,6 +283,15 @@ class SkillTool:
         record["found"] = [entry.qualified for entry, _, _ in found]
         return json.dumps(answer, ensure_ascii=False), record
 
+    def hold(self, bodies: Mapping[str, tuple[str, int]]) -> None:
+        """Count as loaded the bodies the run's view holds, whichever run loaded them
+        (docs/specs/context-management.md, CM-29b): loading one again gives the short
+        note (SK-12), and their characters count toward the run's limit (SK-39)."""
+        for skill, (sha256, chars) in bodies.items():
+            if self.loaded.get(skill) != sha256:
+                self.loaded[skill] = self.held[skill] = sha256
+                self.chars += chars
+
     def _load(self, names: list[str]) -> tuple[str, dict[str, Any]]:
         """Each name's body, or why it is not loaded; a name that names no skill costs
         the call only that name, unless it is the only one."""
@@ -381,6 +397,16 @@ class SkillTool:
         raise _RefusedError(
             "not_found", f"no skill {name[:200]!r} in this run's set; search for it"
         )
+
+
+def given(results: Iterable[str]) -> dict[str, tuple[str, int]]:
+    """The bodies the ``skills`` tool gave in these results, by skill: each one's body
+    SHA-256 and characters, the latest when one was given twice."""
+    found: dict[str, tuple[str, int]] = {}
+    for text in results:
+        for skill, sha256, _, body in _GIVEN.findall(text):
+            found[skill] = (sha256, len(body))
+    return found
 
 
 def _hashes(entry: Entry, served_text: str) -> dict[str, str]:

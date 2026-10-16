@@ -114,7 +114,17 @@ class _Search(_Args):
     start: _Position | None = Field(default=None, alias="from")
     end: _Position | None = Field(default=None, alias="to")
     kind: (
-        Literal["task", "user", "comment", "notice", "outcome", "assistant", "tool_result"] | None
+        Literal[
+            "task",
+            "user",
+            "comment",
+            "notice",
+            "outcome",
+            "tool_result",
+            "state_block",
+            "assistant",
+        ]
+        | None
     ) = None
     limit: Annotated[int, Field(strict=True, ge=1, le=30)] = 10
 

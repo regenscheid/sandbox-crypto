@@ -58,7 +58,7 @@ from .delegation.tracks import TrackTools, grant
 from .documents import DocumentError, DocumentStore, DocumentTool
 from .documents.tool import REQUESTS_TASK, WorkRequests
 from .file_settings import ProjectFiles
-from .history import Archive, HistoryTool, RunArchive
+from .history import Archive, HistoryTool, RunArchive, View, ViewMeter, session_view, settle
 from .hooks import TurnHook
 from .jobs import JobTools
 from .jobstate import JobState
@@ -97,6 +97,7 @@ from .skills.builtin import builtin_pack
 from .skills.derive import VERSION as PASS_VERSION
 from .skills.discovery import SkillDiscovery
 from .skills.embeddings import SkillVectors
+from .tokens import chars_per_token
 from .tools import HARNESS_TOOL_NAMES, Toolbox, ToolOutcome
 from .worker_client import WorkerAPIError, WorkerClient
 
@@ -510,7 +511,14 @@ class Harness:
             async with AsyncExitStack() as stack:
                 with interruption.protect():
                     memory = await self.memory(admitted)
+                    view = await self._view(admitted)
+                    if view is not None:
+                        # The session's view is the earlier conversation (CM-29).
+                        request = dataclasses.replace(admitted.request, history=view.messages)
+                        admitted = dataclasses.replace(admitted, request=request)
                     chat = self.chat(admitted)
+                    if chat is not None and view is not None:
+                        chat.shown = view.shown
                     delegations = await self._delegations(admitted, chat, memory)
                     toolbox = await self._toolbox(
                         admitted,
@@ -522,6 +530,8 @@ class Harness:
                     )
                     hooks = toolbox.turn_hooks()
                     request = admitted.request
+                    if view is not None and toolbox.skills is not None:
+                        toolbox.skills.hold(view.loaded)  # CM-29b
                     # Discovery shows the skills that match the task, and each message.
                     discovery = None
                     if toolbox.skills is not None:
@@ -530,6 +540,8 @@ class Harness:
                         stand_in = request.queued or request.task == REQUESTS_TASK
                         task = None if stand_in else request.task
                         discovery = SkillDiscovery(toolbox.skills, task, clock=self.clock)
+                        if view is not None:
+                            discovery.shown.update(view.discovered)
                         for hook in hooks:
                             if isinstance(hook, WorkRequests):
                                 hook.discover = functools.partial(
@@ -538,6 +550,8 @@ class Harness:
                         hooks = (*hooks, discovery)
                     if chat is not None:
                         hooks = (*hooks, *await self._chat_hooks(admitted, chat, discovery))
+                    if view is not None:
+                        hooks = (*hooks, ViewMeter(view))
                     log = None
                     if self.stores is not None and chat is not None:
                         # Each message is kept in the session's archive as it is added (CM-4).
@@ -594,6 +608,33 @@ class Harness:
             alias=self.role(admitted.request).alias,
             limits=self._limits(admitted.request),
         )
+
+    async def _view(self, admitted: Admitted) -> View | None:
+        """A main run's view of its session, with stores (CM-29): the earlier messages of
+        its session from the archive, which it starts with; ``None`` for any other run."""
+        stores, request, context = self.stores, admitted.request, admitted.context
+        if stores is None or request.parent is not None:
+            return None
+        project, session = context.project_id, context.session_id
+        archive = Archive(stores.projects.control, clock=self.clock)
+        calls = await threaded(stores.projects.usage, project, session, self.main.alias)
+        runs = await threaded(stores.projects.runs, project, session)
+        view = await threaded(
+            session_view,
+            archive,
+            context,
+            budget=self.settings.max_input_chars,
+            per_token=chars_per_token(calls),
+            runs=[entry.name for entry in runs if entry.role == "main"],
+        )
+        kernels = None
+        if view.cells:  # whether the kernels its cells ran in still run (CM-29c)
+            try:
+                kernels = (await self.client.observe_kernels(context)).kernels
+            except Exception as error:  # unknown, then: the run goes on
+                _log.warning("the kernels could not be observed for the view: %r", error)
+        name = run_name(admitted.started_at, admitted.run_id)
+        return await threaded(settle, view, archive, context, run=name, kernels=kernels)
 
     def _limits(self, request: RunRequest) -> dict[str, JsonValue]:
         """The limits a run runs under, as its record keeps them (PD-29)."""

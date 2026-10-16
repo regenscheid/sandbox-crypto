@@ -149,6 +149,11 @@ the packages. A failed or unavailable observation, or a kernel whose start revis
 is unknown, tells nothing, and the run goes on. Every execution result carries the
 same fact in `kernel_revision_notice`.
 
+A main run's view of its session also names, before each earlier run's part that ran
+cells, the kernels its cells used and whether each runs now, from the same observation
+taken as the run starts (`sandbox-kernel-lines-1`; [context
+management](specs/context-management.md), CM-29c).
+
 Older run records may hold a `kernel_notice_delivery` receipt from the durable
 inbox this check replaced; it is kept as read.
 

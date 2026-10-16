@@ -17,7 +17,8 @@ until it is stopped (RS-1). The service and the workspace share the control stor
   holds no lease, as one whose own close failed as it was cancelled;
 - starts a run for each session that has queued messages and no run (RS-6), within the
   project's model budget (RS-6a). The run's conversation begins with the session's
-  earlier tasks and answers (RS-10), then the messages queued once it holds the lease;
+  view, which the harness builds from the archive (RS-10 as amended, CM-29), then the
+  messages queued once it holds the lease;
 - starts a run in the same way for each session that has waiting work requests, the
   user's comments addressed to its main agent (LD-22), and no queued messages. Its
   conversation begins with the requests, as the run's hooks offer them. A request has
@@ -55,13 +56,12 @@ from .chat import SOURCE, session_lease
 from .control import ControlError
 from .control.errors import BUSY
 from .delegation.records import DelegationRecords
-from .documents import DocumentStore
 from .documents.annotations import Annotations
 from .documents.tool import REQUESTS_TASK, WorkRequests
 from .harness import Harness, RunRequest, admit, save
 from .hooks import TurnHook
-from .model import GATEWAY_BUDGET, Message
-from .projects import ProjectError, ProjectStore, run_name
+from .model import GATEWAY_BUDGET
+from .projects import ProjectError, run_name
 from .questions import INTERRUPTED, Questions
 from .runstate import RunState, head_and_tail
 from .tools import ToolOutcome
@@ -76,8 +76,6 @@ MAX_WAIT: Final = 900.0
 """The longest wait between a session's failing runs."""
 MAX_FAILURES: Final = 5
 """Failed runs in a row after which a session's messages are held."""
-HISTORY_CHARS: Final = 100_000
-"""The longest earlier conversation a run starts with: a quarter of its input (RS-10)."""
 
 
 class LogSink:
@@ -342,19 +340,9 @@ class RunService:
                 return False
             # The run is offered every request that waits, held or not.
             self.held.pop((project, session), None)
-            history = await threaded(
-                earlier_conversation,
-                stores.projects,
-                runs,
-                project,
-                session,
-                HISTORY_CHARS,
-                documents=stores.documents,
-            )
             request = dataclasses.replace(
                 admitted.request,
                 task="\n\n".join(message.text for message in queued) if queued else REQUESTS_TASK,
-                history=tuple(history),
                 message_ids=tuple(ids),
                 requests=not queued,
             )
@@ -390,98 +378,3 @@ def unanswered(hooks: Sequence[TurnHook]) -> set[str]:
         if isinstance(hook, WorkRequests):
             found |= hook.unanswered()
     return found
-
-
-def earlier_conversation(
-    projects: ProjectStore,
-    runs: RunState,
-    project: str,
-    session: str,
-    budget: int,
-    *,
-    documents: DocumentStore | None = None,
-) -> list[Message]:
-    """The session's earlier main runs as conversation (RS-10): each one's task, and the
-    user's words it delivered in the order they were written, then its answer, oldest
-    first. The user's words are the chat messages and, with ``documents``, the comments
-    addressed to the session (work requests, RS-6b), each after a line naming its
-    document. A run that delivered nothing is left out, and so are delegated runs, whose
-    outcomes reached their parents.
-
-    Within ``budget`` characters, the user's messages are kept as written and the agent's
-    answers give way first (lane K's triage, D3): the newest answers that fit are kept
-    whole, and each other answer is replaced by a line saying it was left out. When even
-    the user's messages do not fit, the oldest runs are left out whole, and a line says
-    how many."""
-    requests = None if documents is None else Annotations(documents)
-    turns: list[tuple[str, str]] = []  # newest first: each run's question and answer
-    used = left_out = 0
-    for entry in reversed(projects.runs(project, session)):
-        if entry.role != "main":
-            continue
-        if left_out:
-            left_out += 1
-            continue
-        record = projects.run(project, session, entry.name)
-        summary = record.summaries.get("messages")
-        initial = isinstance(summary, dict) and bool(summary.get("initial"))
-        said = runs.delivered_texts(project, session, entry.name)
-        comments = (
-            []
-            if requests is None
-            else [
-                (at, f"(A comment addressed to you on the document {document}:)\n{text}")
-                for at, document, text in requests.delivered_texts(project, session, record.run_id)
-            ]
-        )
-        said = sorted(said + comments, key=lambda item: item[0])
-        # A run started for comments alone has a stand-in task; its comments replace it.
-        no_task = initial or (bool(comments) and record.task == REQUESTS_TASK)
-        parts = ([] if no_task else [record.task]) + [text for _, text in said]
-        question = "\n\n".join(part for part in parts if part)
-        if not question:
-            continue
-        # The run's answer to the user, not the texts of the closing rounds after it
-        # (lab 42, B4); a record from before the answer was kept has its final text.
-        said = record.answer if record.answer is not None else record.final_text
-        answer = said or f"(The run ended without an answer: {record.stopped}.)"
-        least = len(question) + min(len(answer), len(_answer_left_out(answer)))
-        if used + least > budget:
-            left_out = 1
-            continue
-        used += least
-        turns.append((question, answer))
-    shown: list[tuple[str, str]] = []
-    for question, answer in turns:
-        short = _answer_left_out(answer)
-        more = len(answer) - min(len(answer), len(short))
-        if used + more <= budget:
-            used += more
-            shown.append((question, answer))
-        else:
-            shown.append((question, short))
-    found: list[Message] = []
-    if left_out:
-        runs_left = (
-            "oldest run of this session is left out, with the user's messages in it"
-            if left_out == 1
-            else f"{left_out} oldest runs of this session are left out, with the user's "
-            "messages in them"
-        )
-        found.append(
-            {
-                "role": "user",
-                "content": f"(The {runs_left}, to keep the earlier conversation within its size.)",
-            }
-        )
-    for question, answer in reversed(shown):
-        found += [{"role": "user", "content": question}, {"role": "assistant", "content": answer}]
-    return found
-
-
-def _answer_left_out(answer: str) -> str:
-    """What stands for an earlier answer left out so that the user's messages fit (RS-10)."""
-    return (
-        f"(The agent's answer here, of {len(answer)} characters, is left out to keep the "
-        "user's messages within the earlier conversation's size.)"
-    )

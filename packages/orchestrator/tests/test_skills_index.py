@@ -28,7 +28,7 @@ from sandbox_science.orchestrator.skills import Entry, SkillStore, from_git, sna
 from sandbox_science.orchestrator.skills import tool as skills_tool
 from sandbox_science.orchestrator.skills.index import FRAMING, index
 
-from .loop_harness import PROJECT, Harness, Reply, call
+from .loop_harness import PROJECT, Harness, Reply, call, own
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
@@ -95,7 +95,7 @@ def _skill_records(record: RunRecord) -> list[dict[str, Any]]:
 
 
 def _results(record: RunRecord) -> list[str]:
-    return [body(cast(str, m["content"])) for m in record.messages if m.get("role") == "tool"]
+    return [body(cast(str, m["content"])) for m in own(record) if m.get("role") == "tool"]
 
 
 async def test_the_index_lists_skills_without_bodies(harness: Harness, pack: Path) -> None:

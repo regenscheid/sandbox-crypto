@@ -24,9 +24,10 @@ the embedding is cancelled.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
-from collections.abc import Awaitable, Sequence
-from typing import Any, Final, TypeVar
+from collections.abc import Awaitable, Iterable, Sequence
+from typing import Any, Final, TypeVar, cast
 
 from sandbox_science.contracts.clock import SYSTEM_CLOCK, Clock
 from sandbox_science.orchestrator.hooks import Notice, Point, RunView, TurnHook
@@ -67,6 +68,26 @@ def matches(
         if (entry.qualified in by_words or meaning is not None) and entry.qualified not in skip
     ]
     return shown[:MAX_SHOWN]
+
+
+def shown_in(notices: Iterable[str]) -> set[str]:
+    """The skills these discovery notices, as their messages hold them, showed."""
+    found: set[str] = set()
+    for text in notices:
+        framing = next((f.text for f in (SKILLS, SKILLS_WORDS) if text.startswith(f.text)), None)
+        try:
+            payload: object = json.loads(text[len(framing) :]) if framing is not None else {}
+        except ValueError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        for key in ("skills", "entry"):
+            listed = cast(dict[str, object], payload).get(key)
+            for item in cast(list[object], listed) if isinstance(listed, list) else []:
+                skill = cast(dict[str, object], item).get("id") if isinstance(item, dict) else None
+                if isinstance(skill, str):
+                    found.add(skill)
+    return found
 
 
 def _listed(entry: Entry) -> dict[str, str]:

@@ -47,6 +47,7 @@ from .aio import threaded
 from .control import ControlError
 from .control.errors import CONFLICT
 from .hooks import Closing, Effect, Notice, Point, Refusal, RunView, TurnHook
+from .notices import REDELIVERED
 from .projects import ModelUsage, RunRecord
 from .runstate import (
     MAX_EVENT_BYTES,
@@ -109,6 +110,9 @@ class RunChat:
         self.poll, self.clock = poll, clock
         self.offered: set[str] = set()
         self.texts: dict[str, str] = {}
+        self.shown: Mapping[str, str] = {}
+        """The user's messages whose text the run's view holds already, by ID: each
+        one's archive ID (docs/specs/context-management.md, CM-29a)."""
 
     async def pending(self) -> list[ChatMessage]:
         """Queued messages this run has not offered yet, oldest first, every page."""
@@ -245,13 +249,19 @@ class UserMessages(TurnHook):
         found = await self.chat.pending()
         if found:
             await self.chat.offer(found)
+        shown = self.chat.shown
+        # A message the view already holds, as one an interrupted run received, is named,
+        # not repeated (CM-29a, RS-12); its delivery is acknowledged all the same.
         messages = tuple(
-            Notice(SOURCE, (message.message_id,), message.text, None, user=True)
+            Notice(SOURCE, (message.message_id,), REDELIVERED.text, shown[message.message_id])
+            if message.message_id in shown
+            else Notice(SOURCE, (message.message_id,), message.text, None, user=True)
             for message in found
         )
-        if messages and self.discover is not None:
+        fresh = [message for message in found if message.message_id not in shown]
+        if fresh and self.discover is not None:
             skills = await self.discover(
-                [message.text for message in found], [message.message_id for message in found]
+                [message.text for message in fresh], [message.message_id for message in fresh]
             )
             if skills is not None:
                 return (skills, *messages)
