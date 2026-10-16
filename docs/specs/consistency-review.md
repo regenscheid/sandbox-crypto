@@ -116,6 +116,8 @@ Terms:
 - CR-34. An orchestrator restart drops the reviews in progress. A review that fails or is dropped is dispatched again with its window, at most twice; after the third failure the window is listed in the session as unreviewed and the watermark moves past it (CScience reconciles dropped reviews with bounded recovery).
 - CR-35. Automatic review is on by default (D04, D35). Per project: thresholds, minimum interval, the hold of CR-15, bounds and the severity that interrupts. Each review records the configuration revision it ran under ([product](../PRODUCT.md): record the active configuration).
 
+  *Amended 2026-10-16 by the coordinator for lab 43's B6, which the owner can reverse:* with no reviewer configured (no reviewer alias), automatic review is off: no review is dispatched or recorded as failed, and the session's review list says so, recorded once until a review is dispatched again. A configured reviewer alias whose model is unavailable still fails its windows (CR-F10).
+
 ### Math findings
 
 *Added 2026-10-11 (D82).* A formula that KaTeX rejects goes back to the agent that wrote it as a finding, while the GUI shows its automatic repair meanwhile. These findings come from a mechanical check, not from a reviewer; they share the findings' records and lifecycle, with the differences below.

@@ -24,6 +24,8 @@ export interface ReviewPanel {
   unreviewed: Json[];
   /** Why the session's next review waits, when it does (lab 38). */
   waiting: Json;
+  /** Why the session's reviews are off, when they are (lab 43's B6). */
+  off: Json;
   findings: ListState<Finding, string>;
   checks: ListState<MathJob, string>;
   /** Sources waiting for math checks, from the checks' first page. */
@@ -47,6 +49,7 @@ export function emptyReviewPanel(): ReviewPanel {
     reviews: emptyList(),
     unreviewed: [],
     waiting: null,
+    off: null,
     findings: emptyList(),
     checks: emptyList(),
     queue: [],
@@ -99,6 +102,7 @@ export class ReviewBrowser {
           if (after !== null) return;
           panel.unreviewed = page.unreviewed;
           panel.waiting = page.waiting ?? null;
+          panel.off = page.off ?? null;
           const chosen = panel.selected;
           if (chosen)
             panel.selected =
