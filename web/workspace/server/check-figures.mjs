@@ -42,15 +42,26 @@ for (const input of batch) {
 }
 // The bundle is operator configuration, never a document or model-supplied path.
 if (process.argv.length !== 3) throw new Error('figure bundle path required');
+const bundle = pathToFileURL(resolve(process.argv[2])).href;
+const { stdout } = process;
+const exit = process.exit.bind(process);
+const runtime = process.versions.node;
 // Node's permission model, which the orchestrator turns on, bounds files, child processes
-// and workers but not the network: the bundle gets no client for it (review of #513, M3).
+// and workers but not the network: the bundle gets no client for it (review of #513, M3),
+// and no way to the built-in modules that are one, such as node:net and node:http, which
+// `process.getBuiltinModule` would give it. The bundle imports nothing and names no
+// `process`, `require` or `import()` (figures-bundle.test.mjs), so with the `process`
+// global gone no code it runs reaches a built-in module (review of #514, L).
 for (const name of ['fetch', 'WebSocket', 'EventSource']) delete globalThis[name];
-if (typeof globalThis.fetch !== 'undefined') throw new Error('fetch could not be removed');
-const { checkFigure } = await import(pathToFileURL(resolve(process.argv[2])).href);
+delete process.getBuiltinModule;
+delete globalThis.process;
+for (const name of ['fetch', 'WebSocket', 'EventSource', 'process', 'require', 'module'])
+  if (name in globalThis) throw new Error(`${name} could not be removed`);
+const { checkFigure } = await import(bundle);
 const answers = [];
 for (const input of batch) {
-  const answer = JSON.stringify({ ...(await checkFigure(input)), runtime: process.versions.node });
+  const answer = JSON.stringify({ ...(await checkFigure(input)), runtime });
   if (Buffer.byteLength(answer) > MAX_ANSWER) throw new Error('figure result too large');
   answers.push(answer);
 }
-process.stdout.write('[' + answers.join(',') + ']\n', () => process.exit(0));
+stdout.write('[' + answers.join(',') + ']\n', () => exit(0));
