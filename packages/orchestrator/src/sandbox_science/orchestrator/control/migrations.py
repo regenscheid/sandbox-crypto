@@ -2775,8 +2775,8 @@ def _fold_proposals(schema: Schema) -> None:
     until the main agent or the user accepts or dismisses each
     (docs/specs/context-management.md, CM-15): the typed operation as the fold's call gave
     it, its anchors as resolved, the fold and run that proposed it, and how it was decided.
-    A proposal is never deleted; it waits, is accepted with the mutation and result the
-    ledger wrote, or is dismissed with a reason."""
+    A proposal is never deleted; it waits, is accepted with the result the ledger wrote,
+    in the same change, or is dismissed with a reason."""
     json_text = "{0} IS NULL OR (json_valid({0}) AND length(CAST({0} AS BLOB)) <= {1})"
     for statement in (
         f"""CREATE TABLE fold_proposals (
@@ -2792,7 +2792,6 @@ def _fold_proposals(schema: Schema) -> None:
     anchors TEXT NOT NULL CHECK (json_valid(anchors) AND json_type(anchors) = 'array'
         AND length(CAST(anchors AS BLOB)) <= 65536),
     state TEXT NOT NULL CHECK (state IN ('waiting', 'accepted', 'dismissed')),
-    mutation TEXT CHECK ({json_text.format("mutation", 262144)}),
     result TEXT CHECK ({json_text.format("result", 65536)}),
     reason TEXT CHECK (reason IS NULL OR length(CAST(reason AS BLOB)) BETWEEN 1 AND 4096),
     decided_by TEXT CHECK ({json_text.format("decided_by", 4096)}),

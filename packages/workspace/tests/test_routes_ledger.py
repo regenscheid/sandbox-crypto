@@ -707,7 +707,13 @@ async def test_the_user_accepts_and_dismisses_fold_proposals(
     again = await client.post(accepted, json={"operation_id": "accept-2"}, headers=origin(client))
     assert (await again.json())["replayed"] is True
     entry = LedgerEntry.model_validate(await (await client.get(BASE + "/I-2")).json()).entry
-    assert (entry.author["kind"], entry.basis) == ("user", "user")
+    assert (entry.author["kind"], entry.basis) == ("user", "interpreted")
+    elsewhere = f"/api/v0/projects/p1/sessions/c/proposals/{second}/dismissed"
+    await error_of(
+        await client.post(elsewhere, json={"reason": "Same."}, headers=origin(client)),
+        404,
+        "not_found",
+    )
     dismissed = url + f"/{second}/dismissed"
     assert (await client.post(dismissed, json={"reason": "Same."})).status == 403
     response = await client.post(dismissed, json={"reason": "Same."}, headers=origin(client))

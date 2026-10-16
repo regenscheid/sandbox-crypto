@@ -215,8 +215,10 @@ authority or proof of provider behavior:
   impossible that the ledger has not settled ([context management](specs/context-management.md),
   CM-48); `sandbox-main-7` adds that a record names its basis and anchors, a
   standing constraint `user_quoted` with a quote of the user's message (CM-9);
-  `sandbox-main-8` adds that the main agent accepts or dismisses, with
-  `ledger_proposals`, the fold proposals its state block lists (CM-15). The
+  `sandbox-main-8` adds that the fold proposals the state block lists are a
+  model's, from folded messages that may hold untrusted content, and that the main
+  agent reads their anchors with `history_read` before it accepts one with
+  `ledger_proposals`, dismissing the others with a reason (CM-15). The
   delegated prompts follow (`sandbox-delegated-task-5`, CM-48a; `sandbox-delegated-check-6`,
   CM-48b). Task and tool messages are not pinned; the
   notice framings are.

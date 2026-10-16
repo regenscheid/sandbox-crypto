@@ -19,16 +19,21 @@ says how many it dropped. Nothing is written to the ledger.
 The main agent of the proposal's session, or the user, accepts one (``accept``) with
 their own authority: the ledger applies it as a mutation of theirs, with its basis and
 anchors checked again and the fold and proposal as its source, so a status that needs a
-decision still needs one and the gate still applies. The mutation is kept before it is
-applied, so that accepting again, with any operation ID, returns the first result and
-creates nothing (LG-31). Either may dismiss one with a reason. A waiting proposal
-changes no entry and settles nothing (the owner, 2026-10-15).
+decision still needs one and the gate still applies. The proposal is marked accepted in
+the ledger's own change, or nothing is written: so accepting again, with any operation ID
+and by either, returns the first result and creates nothing (LG-31), and a proposal
+dismissed meanwhile is never written. Either may dismiss one with a reason. The user's
+acceptance keeps the proposal's basis: its words are the model's, accepted by the user,
+not the user's own (the coordinator, 2026-10-16). A waiting proposal changes no entry and
+settles nothing (the owner, 2026-10-15). Its text is the model's, from untrusted content:
+its summary for the digest cannot pass for the platform's labels.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import sqlite3
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from typing import Annotated, Any, Final, Literal, Self
@@ -48,6 +53,7 @@ from sandbox_science.orchestrator.documents.models import Author
 
 from . import provenance
 from .models import (
+    DECIDED,
     MAX_ANCHORS,
     NO_CONDITION,
     AnchorInput,
@@ -56,6 +62,7 @@ from .models import (
     LinkInput,
     LinkKind,
     Mutation,
+    MutationResult,
     Note,
     Reference,
     Statement,
@@ -94,6 +101,7 @@ _IDS: Final = re.compile(
     r"|(?<![\w-])(?=[0-9A-Fa-f]*\d)(?=[0-9A-Fa-f]*[A-Fa-f])[0-9A-Fa-f]{8,}(?![\w-])"
 )
 _HANDLE: Final = re.compile(r"(?<![\w-])(?:REF|[ICRADT])-\d+(?![\w-])")
+_BRACKETS: Final = str.maketrans("[]", "()")
 _Handles = Annotated[list[Reference], Field(max_length=_HANDLES)]
 
 
@@ -149,8 +157,9 @@ class ProposalInput(Contract):
             "caveat": f"caveat on {self.entry}",
             "assumption": "assumption",
         }[self.op]
-        text = self.title or self.caveat or self.tried or ""
-        return f"{what}: {' '.join(text.split())[:200]}"
+        text = " ".join((self.title or self.caveat or self.tried or "").split())[:200]
+        # The model's text, which must not pass for the platform's labels.
+        return f"{what}: {text.translate(_BRACKETS)}"
 
 
 class ProposalView(Contract):
@@ -267,6 +276,14 @@ class FoldProposals:
                     raise DocumentError(INVALID_REQUEST, f"{where}: no entry {handle}") from None
                 if kind not in types:
                     raise DocumentError(INVALID_REQUEST, f"{where}: {handle} is a {kind}")
+                if field == "relied_on_by":  # its assumptions change with a decision only
+                    status = self.ledger.entry(project, handle).status
+                    if status in DECIDED or status in ("in_effect", "rejected", "reversed"):
+                        raise DocumentError(
+                            INVALID_REQUEST,
+                            f"{where}: {handle} is {status}, and gains an assumption only "
+                            "in a change that puts in effect a decision that affects it",
+                        )
         texts = [
             t
             for t in (found.title, found.statement, found.reason, found.reopen_condition,
@@ -339,75 +356,73 @@ class FoldProposals:
         return found
 
     def accept(self, project: str, proposal: str, operation_id: str, author: Author) -> Json:
-        """Apply ``proposal`` with ``author``'s authority, under ``operation_id``; the
-        first result again if it was accepted before."""
+        """Apply ``proposal`` with ``author``'s authority, under ``operation_id``, and mark
+        it accepted in the same change, or neither; the first result again if it was
+        accepted before, by anyone."""
         found = self._decider(project, proposal, author)
+        if found.state == "waiting":
+            mutation = self._mutation(project, found, operation_id)
+            made: Json = {}
+
+            def claim(db: sqlite3.Connection, results: list[MutationResult]) -> None:
+                (result,) = results
+                made.update(
+                    operation_id=result.operation_id,
+                    handles=[entry.handle for entry in result.entries],
+                    work=result.work,
+                )
+                if not self._decide(db, proposal, "accepted", author, result=made):
+                    raise DocumentError(CONFLICT, f"{proposal} was decided meanwhile")
+
+            source = {"fold": found.fold, "proposal": proposal}
+            try:
+                self.ledger.apply(project, [(mutation, source)], author, within=claim)
+                return made
+            except DocumentError:
+                found = self.get(project, proposal)  # a race lost writes nothing
+                if found.state == "waiting":
+                    raise
         if found.state == "dismissed":
             raise DocumentError(CONFLICT, f"{proposal} was dismissed: {found.reason}")
-        if found.state == "accepted":
-            return {**(found.result or {}), "replayed": True}
-        built = self._mutation(project, found, operation_id).model_dump_json()
-        with self.control.write() as tx:  # kept before it is applied: a retry applies it
-            tx.sql.execute(
-                "UPDATE fold_proposals SET mutation=? WHERE proposal_id=? AND state='waiting' "
-                "AND mutation IS NULL",
-                (built, proposal),
-            )
-            (kept,) = tx.sql.execute(
-                "SELECT mutation FROM fold_proposals WHERE proposal_id=?", (proposal,)
-            ).fetchone()
-        source = {"fold": found.fold, "proposal": proposal}
-        try:
-            (result,) = self.ledger.apply(
-                project, [(Mutation.model_validate_json(kept), source)], author
-            )
-        except DocumentError:
-            with self.control.write() as tx:  # nothing was written: built anew next time
-                tx.sql.execute(
-                    "UPDATE fold_proposals SET mutation=NULL WHERE proposal_id=? "
-                    "AND state='waiting'",
-                    (proposal,),
-                )
-            raise
-        made = {
-            "operation_id": result.operation_id,
-            "handles": [entry.handle for entry in result.entries],
-            "work": result.work,
-        }
-        self._decide(proposal, "accepted", author, result=made)
-        return made
+        return {**(found.result or {}), "replayed": True}
 
     def dismiss(self, project: str, proposal: str, reason: str, author: Author) -> ProposalView:
-        """Dismiss ``proposal`` with ``reason``; one dismissed already stays as it was."""
-        found = self._decider(project, proposal, author)
+        """Dismiss ``proposal`` with ``reason``; one dismissed already stays as it was, and
+        one accepted, even in a change still being written, is not dismissed."""
+        self._decider(project, proposal, author)
+        with self.control.write() as tx:
+            self._decide(tx.sql, proposal, "dismissed", author, reason=" ".join(reason.split()))
+        found = self.get(project, proposal)
         if found.state == "accepted":
             raise DocumentError(CONFLICT, f"{proposal} was accepted")
-        if found.state == "waiting":
-            self._decide(proposal, "dismissed", author, reason=" ".join(reason.split())[:4096])
-        return self.get(project, proposal)
+        return found
 
     def _decide(
         self,
+        db: sqlite3.Connection,
         proposal: str,
         state: str,
         author: Author,
         *,
         result: Json | None = None,
         reason: str | None = None,
-    ) -> None:
-        with self.control.write() as tx:
-            tx.sql.execute(
+    ) -> bool:
+        """Mark ``proposal`` decided, if it still waits; whether it did."""
+        return (
+            db.execute(
                 "UPDATE fold_proposals SET state=?,result=?,reason=?,decided_by=?,decided_at=? "
                 "WHERE proposal_id=? AND state='waiting'",
                 (
                     state,
                     None if result is None else json.dumps(result),
-                    reason,
+                    None if reason is None else reason[:4096],
                     author.model_dump_json(exclude_none=True),
                     self.now().isoformat(),
                     proposal,
                 ),
-            )
+            ).rowcount
+            == 1
+        )
 
     def _mutation(self, project: str, found: ProposalView, operation_id: str) -> Mutation:
         """The ledger change ``found`` proposes, against the entries as they read now; its

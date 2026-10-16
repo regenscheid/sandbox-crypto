@@ -872,11 +872,18 @@ class Ledger:
         return self.apply(project, [(mutation, provenance)], author)[0]
 
     def apply(
-        self, project: str, mutations: list[tuple[Mutation, Json | None]], author: Author
+        self,
+        project: str,
+        mutations: list[tuple[Mutation, Json | None]],
+        author: Author,
+        *,
+        within: Callable[[sqlite3.Connection, list[MutationResult]], None] | None = None,
     ) -> list[MutationResult]:
         """Apply several mutations in one change, all or none; each keeps its own
         operation ID and receipt. ``provenance`` names where a mutation came from, such
-        as the line of a results file (LG-41)."""
+        as the line of a results file (LG-41). ``within`` runs in the same change, after
+        them, and refuses it all by raising: so a fold's proposal is marked accepted, or
+        nothing is written (CM-15)."""
         role = self._authority(project, author)
         if role != "user":
             kept: list[tuple[Mutation, Json | None]] = []
@@ -920,6 +927,8 @@ class Ledger:
                     )
                 except DocumentError as error:
                     raise _labelled(error, provenance) from None
+            if within is not None:
+                within(tx.sql, results)
             return results
 
     def _apply(
@@ -2553,6 +2562,9 @@ class Ledger:
             return pinned[(name, revision, block, None)]
 
         kept = anchoring.resolve(db, project, anchors, block, find, _scope(db, project, author))
+        if author.kind == "user" and provenance_ is not None and "proposal" in provenance_:
+            # A fold's proposal the user accepts keeps its basis: its words are the model's.
+            return basis or "interpreted", kept
         if author.kind == "user":
             return "user", kept
         if provenance_ is not None and "file" in provenance_:

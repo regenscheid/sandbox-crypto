@@ -29,7 +29,8 @@ from aiohttp import web
 from pydantic import AwareDatetime, ConfigDict, Field, JsonValue, ValidationError
 
 from sandbox_science.contracts import Contract, ErrorKind, Identifier
-from sandbox_science.orchestrator.documents import USER, DocumentStore
+from sandbox_science.orchestrator.documents import USER, DocumentError, DocumentStore
+from sandbox_science.orchestrator.documents.errors import NOT_FOUND
 from sandbox_science.orchestrator.ledger import EntryHistory, EntryPage, EntryView, Ledger
 from sandbox_science.orchestrator.ledger.models import (
     MAX_CLEARED,
@@ -486,6 +487,7 @@ async def proposal_accepted(request: web.Request) -> web.Response:
     """POST …/proposals/{proposal}/accepted: the user accepts a fold's proposal, which the
     ledger records with the user's authority; again, its first result."""
     project, proposal = identifier(request, "project"), _proposal(request)
+    session = identifier(request, "session")
     raw = await json_body(request, "proposal JSON")
     try:
         value = AcceptRequest.model_validate(raw)
@@ -493,7 +495,8 @@ async def proposal_accepted(request: web.Request) -> web.Response:
         raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid acceptance") from None
 
     def accepted(store: DocumentStore) -> dict[str, object]:
-        return FoldProposals(Ledger(store)).accept(project, proposal, value.operation_id, USER)
+        proposals = _of_session(store, project, session, proposal)
+        return proposals.accept(project, proposal, value.operation_id, USER)
 
     return await documents.answer(request, accepted, writer=True)
 
@@ -501,6 +504,7 @@ async def proposal_accepted(request: web.Request) -> web.Response:
 async def proposal_dismissed(request: web.Request) -> web.Response:
     """POST …/proposals/{proposal}/dismissed: the user dismisses a fold's proposal."""
     project, proposal = identifier(request, "project"), _proposal(request)
+    session = identifier(request, "session")
     raw = await json_body(request, "proposal JSON")
     try:
         value = DismissRequest.model_validate(raw)
@@ -508,10 +512,18 @@ async def proposal_dismissed(request: web.Request) -> web.Response:
         raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid dismissal") from None
 
     def dismissed(store: DocumentStore) -> dict[str, object]:
-        found = FoldProposals(Ledger(store)).dismiss(project, proposal, value.reason, USER)
-        return found.model_dump(mode="json")
+        proposals = _of_session(store, project, session, proposal)
+        return proposals.dismiss(project, proposal, value.reason, USER).model_dump(mode="json")
 
     return await documents.answer(request, dismissed, writer=True)
+
+
+def _of_session(store: DocumentStore, project: str, session: str, proposal: str) -> FoldProposals:
+    """The store's proposals, once ``proposal`` is found to be ``session``'s."""
+    proposals = FoldProposals(Ledger(store))
+    if proposals.get(project, proposal).session != session:
+        raise DocumentError(NOT_FOUND, f"no fold proposal {proposal} in this session")
+    return proposals
 
 
 def _proposal(request: web.Request) -> str:
