@@ -420,6 +420,13 @@ export interface ExecutionContext {
   actor: string;
 }
 
+/** A pinned figure file's URL on the preview origin, and when it stops opening it. */
+export interface FigureLink {
+  url: string;
+  expires_at: string;
+  media_type: string;
+}
+
 /** A session's fold proposals waiting (CM-15), oldest first: each written by a model from folded material, which the user accepts or dismisses. */
 export interface FoldProposalList {
   proposals: ProposalView[];
