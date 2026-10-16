@@ -12,6 +12,7 @@ import pytest
 
 from sandbox_science.orchestrator.documents import USER, DocumentStore, store_path
 from sandbox_science.orchestrator.skills import SkillStore, snapshot
+from sandbox_science.orchestrator.skills.derive import VERSION
 from sandbox_science.orchestrator.skills.sources import Fetched, PackFile
 from sandbox_science.workspace.skills import ProjectSkills, SkillSettingsView
 
@@ -83,3 +84,26 @@ async def test_the_user_changes_the_skill_settings_at_their_revision(
     assert wrong.status == 400
     refused = await client.post(BASE + "/settings", json=body)
     assert refused.status == 403
+
+
+async def test_the_page_shows_what_the_configured_pass_derived_as_runs_get_it(
+    aiohttp_client: ClientFactory, pinned: Path, static_dir: Path
+) -> None:
+    """Lab 43, B5: with the alias runs are given (``--skills-metadata-model``), the
+    page's skills carry the pass's topics and entry skills; without it, none."""
+    documents = DocumentStore(store_path(pinned))
+    try:
+        store = SkillStore.of(documents)
+        (snap,) = {
+            entry.snapshot for entry in store.effective("p1").entries if entry.source == "ss"
+        }
+        derived = {"topics": {"Counting": ["beta"]}, "entry": ["alpha"]}
+        store.add_metadata(snap, "pass", VERSION, "m", derived, [])
+    finally:
+        documents.close()
+    for alias, topic, entry in (("pass", "Counting", True), (None, None, False)):
+        client = await workspace(aiohttp_client, pinned, static_dir, skills_metadata=alias)
+        found = ProjectSkills.model_validate(await (await client.get(BASE)).json())
+        ids = {skill.id: skill for skill in found.effective}
+        assert (ids["ss/beta"].topic, ids["ss/alpha"].entry) == (topic, entry)
+        await client.close()

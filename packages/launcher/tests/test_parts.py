@@ -153,6 +153,11 @@ def test_the_metadata_model_reaches_imports_with_the_project_that_pays(
     # Runs are given what that alias's pass derived, and no other's.
     harness = parts.harness_argv(config, Layout(config.state_dir))
     assert harness[harness.index("--skills-metadata-model") + 1] == "pass"
+    # The workspace's skills page shows the same pass's output (lab 43, B5).
+    page = parts.workspace_argv(config, Layout(config.state_dir))
+    assert page[page.index("--skills-metadata-model") + 1] == "pass"
+    plain = load_config(make_config({"bin_dir": str(commands)}))
+    assert "--skills-metadata-model" not in parts.workspace_argv(plain, Layout(plain.state_dir))
 
 
 def test_a_daily_cost_limit_is_set_for_each_project(make_config: Any, commands: Path) -> None:

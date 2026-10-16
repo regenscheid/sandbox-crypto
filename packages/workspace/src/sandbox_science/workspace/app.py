@@ -199,6 +199,7 @@ def create_app(
     job_state: JobState | None = None,
     timeouts: api.Timeouts = api.TIMEOUTS,
     preview: Preview | None = None,
+    skills_metadata: str | None = None,
 ) -> web.Application:
     """The workspace's application. ``check_host`` is off only for a listener that is not
     on loopback, where the names that reach it are not known. Without ``math_repair``,
@@ -208,7 +209,9 @@ def create_app(
     writer for explicit user changes. ``store`` and a ``document_store`` given must be
     read-only (``ValueError`` otherwise), since every view reads through them. The
     application closes ``job_worker``. With ``preview``, it lists published artifacts with
-    links that open a PDF in the viewer on the preview origin, and may frame that origin."""
+    links that open a PDF in the viewer on the preview origin, and may frame that origin.
+    With ``skills_metadata``, the alias of the import's pass, the skills page shows what
+    that pass derived, as runs are given it."""
     if not store.readonly:
         raise ValueError("the workspace's project store must be read-only")
     if document_store is not None and not document_store.readonly:
@@ -314,6 +317,8 @@ def create_app(
     app[api.MAX_RUN] = max_run_bytes
     app[documents.DOCUMENTS] = document_store
     app[documents.WRITER] = writer
+    if skills_metadata is not None:
+        app[skills.METADATA] = skills_metadata
     app[CONTEXT] = WorkspaceContext(
         projects=store,
         documents=document_store,

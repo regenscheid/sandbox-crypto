@@ -285,11 +285,14 @@ def workspace_argv(config: LauncherConfig, layout: Layout) -> list[str]:
         if model.reviewer
         else []
     )  # fmt: skip
+    # The skills page shows what the pass runs are given derived.
+    derived = config.skills.metadata_model
+    page = [] if derived is None else ["--skills-metadata-model", derived]
     return [
         str(commands(config) / WORKSPACE), "serve",
         "--state-dir", str(layout.control),
         "--static", str(workspace.static),
         "--listen", workspace.listen, "--preview-listen", workspace.preview(),
         "--worker", worker_url(config),
-        "--worker-token-file", str(layout.token("workspace-worker")), *repairs,
+        "--worker-token-file", str(layout.token("workspace-worker")), *repairs, *page,
     ]  # fmt: skip

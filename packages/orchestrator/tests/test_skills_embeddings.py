@@ -747,3 +747,49 @@ async def test_an_error_page_is_named_by_its_kind_not_quoted(
         await embedder.close()
     said = f"the gateway answered 524: a text/html page of {len(page):,} characters"
     assert str(refused.value) == said
+
+
+@pytest.mark.parametrize(
+    ("model", "cutoff", "ranked"),
+    [
+        ("arr-text-embedding-3-small", 0.34, "by words and meaning"),
+        ("embed-model-v1", SIMILAR, "by words; meaning compared but none close enough"),
+    ],
+)
+async def test_the_meaning_cutoff_follows_the_embedding_models_family(
+    skills: tuple[ProjectStore, SkillStore], model: str, cutoff: float, ranked: str
+) -> None:
+    """Lab 43, B1: ``text-embedding-3-small`` puts a paraphrase near 0.36, under the 0.45
+    that other models keep; its family's cutoff lets it through. When meaning was compared
+    and nothing came close, the answer says so rather than "by words and meaning"."""
+    projects, store = skills
+    space = Space(model, 3)
+    (snapshot_id,) = {entry.snapshot for entry in store.effective(PROJECT).entries}
+    store.add_vectors(snapshot_id, *space, {"alpha": [0.0, 1.0, 0.0], "beta": [1.0, 0.0, 0.0]})
+    store.saw_space(snapshot_id, "embed", *space)
+    query = [0.36, 0.0, (1 - 0.36**2) ** 0.5]  # 0.36 from beta, 0 from alpha
+    clock = FakeClock()
+    peer = _Peer(*(Embedded(space, [query], None) for _ in range(2)))
+    vectors = SkillVectors(peer, clock)
+    try:
+        tool = SkillTool(store, store.effective(PROJECT), role="main", alias="main")
+        await tool.use(vectors, PROJECT, clock=clock)
+        asked = "how many are there in what was written down"  # no skill's words
+        text, record = await tool.call({"action": "search", "query": asked}, call_id="c", model="m")
+        answer = json.loads(text)
+        assert answer["ranked"] == ranked
+        close = 1 if cutoff < 0.36 else 0
+        assert [item["id"] for item in answer["found"]] == ["ss/beta"] * close
+        searched = record["skills"]
+        assert (searched["scoring"], searched["cutoff"], searched["close"]) == (
+            "hybrid",
+            cutoff,
+            close,
+        )
+        found = SkillDiscovery(tool, None, clock=clock)
+        notice = await found.about([asked])
+        assert (notice is not None) == bool(close)
+        assert (found.records[0]["cutoff"], found.records[0]["close"]) == (cutoff, close)
+    finally:
+        await vectors.close()
+        projects.close()

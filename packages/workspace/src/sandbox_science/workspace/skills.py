@@ -24,11 +24,15 @@ from sandbox_science.contracts import Contract, ErrorKind, Identifier
 from sandbox_science.orchestrator.documents import USER, DocumentStore
 from sandbox_science.orchestrator.projects import ProjectError
 from sandbox_science.orchestrator.skills import SkillSettings, SkillStore
+from sandbox_science.orchestrator.skills.derive import VERSION as PASS_VERSION
 
 from . import documents
 from .context import json_body
 
 PATH: Final = "/api/v0/projects/{project}/skills"
+METADATA: Final = web.AppKey("skills_metadata", str)
+"""The alias of the import's pass whose topics, entry skills and short descriptions the
+page shows, as runs are given them (``--skills-metadata-model``)."""
 
 
 class SkillImportView(Contract):
@@ -115,8 +119,9 @@ def _settings(found: SkillSettings) -> SkillSettingsView:
     )
 
 
-def _read(store: DocumentStore, project: str) -> dict[str, object]:
+def _read(store: DocumentStore, project: str, alias: str | None) -> dict[str, object]:
     skills = SkillStore.of(store)
+    derived = None if alias is None else (alias, PASS_VERSION)
     pins = [
         SkillPinView(
             source=pin.source,
@@ -143,7 +148,7 @@ def _read(store: DocumentStore, project: str) -> dict[str, object]:
             short_by=entry.short_by,
             topic_by=entry.topic_by,
         )
-        for entry in skills.effective(project).entries
+        for entry in skills.effective(project, derived=derived).entries
     ]
     return ProjectSkills(
         project_id=project,
@@ -158,7 +163,8 @@ async def skills(request: web.Request) -> web.Response:
     if request.query:
         raise ProjectError(ErrorKind.INVALID_REQUEST, "the skills read takes no parameters")
     project = request.match_info["project"]
-    return await documents.answer(request, lambda store: _read(store, project))
+    alias = request.app.get(METADATA)
+    return await documents.answer(request, lambda store: _read(store, project, alias))
 
 
 async def settings(request: web.Request) -> web.Response:

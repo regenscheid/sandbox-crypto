@@ -8,8 +8,8 @@ waits for the score at most ``wait`` seconds of the run's clock. A message under
 ``MIN_WORDS`` distinct words is not scored, by words or by meaning, and waits for
 nothing. A skill is shown when it shares at least two of the message's words and scores
 at least half the best, or, once the run has its skills' vectors, when its meaning comes
-close (``tool.SIMILAR``); the message's embedding counts toward the wait. At most
-``MAX_SHOWN`` are shown, by name and description, in a notice framed by
+close (``SkillTool.cutoff``, by embedding model); the message's embedding counts toward
+the wait. At most ``MAX_SHOWN`` are shown, by name and description, in a notice framed by
 ``notices.SKILLS``, with the entry skills of their packs that the import's pass found. A
 skill the run was shown, in a notice a model call saw, or has loaded is not shown again;
 one in a notice the run dropped, as at a closing with no room for it, may be. Nothing is
@@ -64,7 +64,7 @@ def matches(
     by_words = {entry.qualified for entry, score in lexical if score >= best / 2}
     shown = [
         entry
-        for entry, _, meaning in hybrid(tool.skills.entries, text, similar or {})
+        for entry, _, meaning in hybrid(tool.skills.entries, text, similar or {}, tool.cutoff)
         if (entry.qualified in by_words or meaning is not None) and entry.qualified not in skip
     ]
     return shown[:MAX_SHOWN]
@@ -156,6 +156,7 @@ class SkillDiscovery(TurnHook):
                     why = f"failed: {error}"
                 if similar:  # only some packs compared by meaning: partial
                     record["scoring"] = "partial" if why else "hybrid"
+                    record.update(cutoff=self.tool.cutoff, close=self.tool.close(similar))
                 if why or not similar:
                     record["embedding"] = (why or "none")[:300]
             return await asyncio.to_thread(matches, self.tool, text, skip, similar)
