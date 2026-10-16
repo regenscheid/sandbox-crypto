@@ -652,6 +652,50 @@ async def test_tools_loaded_mid_run_are_deferred_and_announced(fake: Fake) -> No
     assert TOOLS_BETA not in fake.betas[0]
 
 
+async def test_a_view_rebuilt_after_a_tool_load_keeps_its_thinking(
+    fake: Fake, tmp_path: Any
+) -> None:
+    """CM-38, CM-39: what the adapter keeps of each call (``adapter_state``) is archived
+    with its answer, so answers rebuilt from the archive, sent by a new client, announce
+    a connector tool loaded mid-run where the run did, and their thinking still goes
+    back: the request is the one the run's own client sends."""
+    loaded = [SHELL, READ, SEARCH]
+    model = claude(fake, replay=SETTING)
+    try:
+        messages, turns = await converse(
+            model, [LOOKING, COUNTING], fake, tools=lambda n: TOOLS if n == 0 else loaded
+        )
+        fake.then(DONE)
+        await model.complete(messages, loaded)
+    finally:
+        await model.close()
+    live = fake.bodies[-1]
+    projects = ProjectStore(tmp_path / "state")
+    try:
+        projects.create("p1", "minimal", "sha256:" + "c" * 64)
+        projects.open_session("p1", "s1", dedicated=False)
+        archive = Archive(projects.control)
+        for turn in turns:
+            entry = entry_of(AssistantMessage.of(turn), Appended("assistant", reply=turn))
+            archive.append("p1", "s1", "run-1", entry)
+        rebuilt = iter(a.chat() for a in archive.messages("p1", "s1"))
+    finally:
+        projects.close()
+    view = [next(rebuilt) if m.get("role") == "assistant" else m for m in messages]
+    again = claude(fake, replay=SETTING)
+    try:
+        fake.then(DONE)
+        turn = await again.complete(view, loaded)
+    finally:
+        await again.close()
+    assert turn.thinking_replay == "on"
+    sent = fake.bodies[-1]
+    assert sent == live
+    assert [t["name"] for t in sent["tools"] if t.get("defer_loading")] == ["crypto_search"]
+    made = [json.loads(text)["content"] for text in fake.answered[:2]]
+    assert [sent["messages"][1]["content"], sent["messages"][4]["content"]] == made
+
+
 async def test_a_tool_change_the_model_cannot_take_is_a_rebuild(fake: Fake) -> None:
     """CM-38: on a model without mid-conversation tool changes, the tool list changes,
     and the thinking before the change no longer goes back; the thinking after it

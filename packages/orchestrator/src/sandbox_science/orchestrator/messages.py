@@ -40,7 +40,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
@@ -79,9 +78,6 @@ MAX_TOKENS: Final = 16_000
 does not stream must end within the client's timeout."""
 REPLAY_DAYS: Final = 30
 """How long a check of the gateway lets thinking replay stay on (CM-39)."""
-KEPT: Final = 4096
-"""The most calls whose ``Kept`` a client holds before an answer takes it; past it, the
-oldest go, and their answers' tools go back as they are, as after a rebuild."""
 MIN_THINKING: Final = 256
 """The least replayed thinking, in tokens, whose loss a call's input can show."""
 _UPDATES: Final = re.compile(r"claude-(?:fable-5(?:-1)?|mythos-5-1|opus-5-5|sonnet-5-5)(?![-.]?\d)")
@@ -156,14 +152,25 @@ class ThinkingReplay:
 
 @dataclass(frozen=True)
 class Kept:
-    """What this client keeps of a call for the requests that send its answer back:
-    the request's tools by name, and, when the call turned thinking replay off for the
-    rest of the run, why (CM-39). The client holds it by the answer's message ID, and the
-    answer, once read, holds it (``_Read``); an answer rebuilt from the archive has
-    none, and its tools then go as they are now."""
+    """What this adapter keeps of a call for the requests that send its answer back
+    (the answer's ``adapter_state``, archived with it): the request's tools by name, and,
+    when the call turned thinking replay off for the rest of the run, why (CM-39). An
+    answer without it, from before it was kept, sends the tools as they are now."""
 
     tools: tuple[str, ...]
     off: str | None = None
+
+    def state(self) -> dict[str, Any]:
+        return {"tools": list(self.tools), "off": self.off}
+
+    @classmethod
+    def of(cls, state: Mapping[str, Any] | None) -> Kept | None:
+        """The kept state an answer carries, if it is shaped as ``state`` makes it."""
+        tools, off = (state or {}).get("tools"), (state or {}).get("off")
+        listed = cast(list[object], tools) if isinstance(tools, list) else None
+        if listed is None or not all(isinstance(name, str) for name in listed):
+            return None
+        return cls(tuple(map(str, listed)), off if isinstance(off, str) else None)
 
 
 @dataclass(frozen=True)
@@ -223,9 +230,6 @@ class MessagesModel(GatewayModel):
         super().__init__(base_url, model, api_key, **options)
         self.replay = replay
         self._served: _Served | None = None
-        self._kept: OrderedDict[str, Kept] = OrderedDict()
-        """What each recent call kept of its request, by its message's ID, until the
-        request that sends the answer back takes it (``_read``)."""
 
     async def complete(self, messages: Sequence[Message], tools: Sequence[ToolSpec]) -> ModelTurn:
         served = await self._serving()
@@ -253,13 +257,10 @@ class MessagesModel(GatewayModel):
             turn, view, reading = await self._ask(messages, tools, served, why_not is None)
         if why_not is None and self.replay is not None:
             off = _turned_off(self.replay, turn, reading, view)
-        if reading.id is not None:
-            self._kept[reading.id] = Kept(tuple(tool.name for tool in tools), off)
-            while len(self._kept) > KEPT:
-                self._kept.popitem(last=False)
         return replace(
             turn,
             prefix=view.prefix,
+            adapter_state=Kept(tuple(tool.name for tool in tools), off).state(),
             thinking_replay="on" if why_not is None else f"off: {why_not}",
         )
 
@@ -270,7 +271,7 @@ class MessagesModel(GatewayModel):
         served: _Served,
         replay: bool,
     ) -> tuple[ModelTurn, _View, _Reading]:
-        view = _render(messages, tools, served, replay, self._kept)
+        view = _render(messages, tools, served, replay)
         view.body["model"] = self.model
         view.body["max_tokens"] = self._max_tokens or MAX_TOKENS
         reading = _Reading(served.updates)
@@ -291,7 +292,7 @@ class MessagesModel(GatewayModel):
         """Why this call sends no thinking back, if it does not."""
         if self.replay is None:
             return "no thinking replay setting"
-        records = (_read(message, self._kept).kept for message in messages)
+        records = (_read(message).kept for message in messages)
         turned = next((kept.off for kept in records if kept is not None and kept.off), None)
         return turned or self.replay.lapsed(self._clock.now().date())
 
@@ -346,19 +347,15 @@ class MessagesModel(GatewayModel):
 
 
 class _Reading:
-    """Reads a response as a turn, noting its message ID and whether the API said it
-    dropped thinking."""
+    """Reads a response as a turn, noting whether the API said it dropped thinking."""
 
     def __init__(self, notes: bool) -> None:
         self.notes = notes
         self.dropped = False
-        self.id: str | None = None
 
     def parse(self, text: str, priced: str | None = None) -> ModelTurn:
         try:
             data = _object(json.loads(text))
-            found = data.get("id")
-            self.id = found if isinstance(found, str) and found else None
             content = data["content"]
             if not isinstance(content, list):
                 raise TypeError("content is not a list")
@@ -423,7 +420,6 @@ def _render(
     tools: Sequence[ToolSpec],
     served: _Served,
     replay: bool,
-    records: OrderedDict[str, Kept],
 ) -> _View:
     """The request's body, without its model and length, and what the checks need."""
     conversation = _paired(messages)
@@ -432,7 +428,7 @@ def _render(
         first = _text(conversation.pop(0))
         system = [{"type": "text", "text": first}] if first else []
     by_name = {tool.name: tool for tool in tools}
-    reads = {id(m): _read(m, records) for m in conversation if m.get("role") == "assistant"}
+    reads = {id(m): _read(m) for m in conversation if m.get("role") == "assistant"}
     named = [read.kept.tools for read in reads.values() if read.kept is not None]
     base = named[0] if named else tuple(by_name)
     # Tools loaded during the run are deferred and announced, on the models that can,
@@ -578,9 +574,9 @@ def _assistant(
     return content
 
 
-def _read(message: Message, records: OrderedDict[str, Kept]) -> _Read:
+def _read(message: Message) -> _Read:
     """An answer of this API, read once: its response's content blocks, and what its
-    call kept, taken from ``records`` by its message ID; nothing for any other message."""
+    call kept (its ``adapter_state``); nothing for any other message."""
     if not isinstance(message, AssistantMessage) or message.native_format != MESSAGES:
         return _Read((), None)
     if not isinstance(message.read, _Read):
@@ -588,11 +584,10 @@ def _read(message: Message, records: OrderedDict[str, Kept]) -> _Read:
             data = _object(json.loads(message.native or b""))
         except (ValueError, TypeError, RecursionError):
             data = {}
-        content, found = data.get("content"), data.get("id")
+        content = data.get("content")
         listed = cast(list[object], content) if isinstance(content, list) else []
         blocks = tuple(cast(Json, b) for b in listed if isinstance(b, dict))
-        kept = records.pop(found, None) if isinstance(found, str) else None
-        message.read = _Read(blocks, kept)
+        message.read = _Read(blocks, Kept.of(message.adapter_state))
     return message.read
 
 
