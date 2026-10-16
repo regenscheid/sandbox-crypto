@@ -11,9 +11,13 @@ returned; a notice's source and IDs. Over its share, tool results are squeezed f
 then tool arguments, then answers' text, then delegation outcomes; user lines never.
 
 Marker lines come from the records, never from model text: each decision change with
-its reason and reopen condition, each caveat and each work record that ended at a limit,
-an obstruction claim or an inconclusive verdict, each sample whose saved file the span
-never read whole, and the failed or timed-out calls of each tool as one line. Search
+its reason and reopen condition; each caveat, each evidence scope note and each piece of
+evidence that is a finite test or a numerical experiment; each work record that ended at
+a limit, an obstruction claim or an inconclusive verdict, and each check that ended
+inconclusive; each source the read register says the span read only in part (or, from
+before the register, a sample whose saved file it never read whole); and the failed or
+timed-out calls of each tool as one line. A skeleton cut to its share keeps the user's
+lines and the ledger changes whole. Search
 keys are literals found in the span with the message that holds them: hashes, ePrint
 IDs, DOIs, numbers of 12 or more digits and ``name = value`` pairs.
 """
@@ -27,6 +31,7 @@ from dataclasses import dataclass, field
 from typing import Any, Final, cast
 
 from .archive import Archived
+from .reads import Read, merged, spans
 
 Json = dict[str, Any]
 
@@ -45,6 +50,8 @@ SQUEEZES: Final = ({"result": 0}, {"args": 10}, {"assistant": 30}, {"outcome": 4
 """What a skeleton over its share gives up, in order."""
 CHANGES: Final = frozenset({"ledger_change", "ledger_import", "memory_propose"})
 RETRIEVALS: Final = frozenset({"history_search", "history_read"})
+KEPT: Final = frozenset({"user", "change"})
+"""The items a skeleton keeps whole however it is cut."""
 FAILED: Final = frozenset({"failed", "timed_out", "cancelled", "lost", "error"})
 _KEYS: Final = (
     re.compile(r"(?<![\w-])[0-9a-fA-F]{32,}(?![\w-])"),  # hashes
@@ -86,16 +93,35 @@ class _Span:
     """The files the span read whole."""
 
 
-def skeleton(rows: Sequence[Archived], share: int, keys_share: int, per_token: float) -> Skeleton:
+def skeleton(
+    rows: Sequence[Archived],
+    share: int,
+    keys_share: int,
+    per_token: float,
+    reads: Sequence[tuple[str, Read]] = (),
+) -> Skeleton:
     """The skeleton of the span ``rows`` within ``share`` characters, its markers, and
     its search keys within ``keys_share`` characters; ``per_token`` turns budgets in
-    tokens into characters."""
+    tokens into characters, and ``reads`` are what the read register says the span's
+    messages read, each with its message (CM-12)."""
     span = _Span()
     results = {(row.run, row.entry.call_id): row for row in rows if row.entry.role == "tool"}
     for row in rows:
         _add(span, row, results)
-    for path, message in span.sampled.items():
-        if path not in span.read:
+    by_source: dict[tuple[str, str], list[tuple[str, Read]]] = {}
+    for at, read in reads:
+        by_source.setdefault((read.kind, read.source), []).append((at, read))
+    registered = {at for at, _ in reads}
+    for found in by_source.values():
+        read = merged(read for _, read in found)
+        if read is not None and read.extent != "whole":
+            name = read.label or read.source
+            covered = _covered_text(read)
+            extent = read.extent.replace("_", " ")
+            text = f"{name}: read {extent}{covered} (result {found[-1][0]}); not read whole"
+            span.markers.append({"kind": "read", "subject": name, "text": text})
+    for path, message in span.sampled.items():  # a sample from before the register
+        if path not in span.read and message not in registered:
             text = f"{path}: only a sample was shown (result {message}); not read whole"
             span.markers.append({"kind": "read", "subject": path, "text": text})
     for tool, ids in span.failed.items():
@@ -107,7 +133,8 @@ def skeleton(rows: Sequence[Archived], share: int, keys_share: int, per_token: f
             break
         budgets |= {kind: int(tokens * per_token) for kind, tokens in squeeze.items()}
         lines = [_line(item, budgets) for item in span.items]
-    return Skeleton(tuple(_fit(lines, share)), tuple(span.markers), _keys(rows, keys_share))
+    kept = [item.kind in KEPT for item in span.items]
+    return Skeleton(tuple(_fit(lines, share, kept)), tuple(span.markers), _keys(rows, keys_share))
 
 
 def _add(span: _Span, row: Archived, results: dict[tuple[str, str | None], Archived]) -> None:
@@ -122,6 +149,7 @@ def _add(span: _Span, row: Archived, results: dict[tuple[str, str | None], Archi
         span.items.append(_Item("notice", f"{at} notice from {entry.source}: {refs}"))
     elif entry.kind == "outcome":
         span.items.append(_Item("outcome", f"{at} delegation outcome", text=content))
+        _inconclusive(span, content, at)
     elif entry.role == "assistant":
         if content:
             span.items.append(_Item("assistant", f"{at} assistant", text=content))
@@ -141,6 +169,8 @@ def _call(span: _Span, name: str, args: str, result: Archived | None) -> None:
     if name in CHANGES:
         span.items.append(_Item("change", f"{at} {name}: {_change(span, args, found)}"))
         return
+    if name == "wait_delegations":
+        _inconclusive(span, text, at)
     if name in RETRIEVALS:
         ids = sorted(set(re.findall(r"msg-[0-9a-f]{16}", text)))
         shown = ", ".join(ids[:8]) + (f" and {len(ids) - 8} more" if len(ids) > 8 else "")
@@ -185,6 +215,16 @@ def _change(span: _Span, args: str, found: Json) -> str:
         for caveat in cast(list[object], fields.get("caveats") or []):
             text = f"caveat on {handle}: {caveat}"
             span.markers.append({"kind": "caveat", "subject": handle, "text": text})
+        for evidence in _objects(change.get("evidence")):
+            kind, scope = evidence.get("type"), evidence.get("scope")
+            if kind in ("finite_test", "numerical_experiment"):
+                text = f"evidence on {handle} is a {str(kind).replace('_', ' ')}"
+                text += f", scoped to: {scope}" if scope else ""
+            elif scope:
+                text = f"evidence on {handle} ({kind}) is scoped to: {scope}"
+            else:
+                continue
+            span.markers.append({"kind": "caveat", "subject": handle, "text": text})
     for work in _objects(asked.get("work")):
         ending, verdict = work.get("ending"), work.get("verdict")
         if ending in ("limit", "obstruction_claimed") or verdict == "inconclusive":
@@ -212,22 +252,73 @@ def _line(item: _Item, budgets: dict[str, int]) -> str:
     return f"{item.head}: {_cut(item.text, budget)}"
 
 
-def _fit(lines: list[str], share: int) -> list[str]:
-    """``lines`` within ``share`` even after every squeeze: the first and the last lines
-    that fit, with a line saying how many were left out between them."""
+def _fit(lines: list[str], share: int, kept: Sequence[bool] = ()) -> list[str]:
+    """``lines`` within ``share`` even after every squeeze: those ``kept`` says are kept
+    (the user's lines and ledger changes, never cut), and of the others the first and
+    the last that fit, alternately, with a line for each run of lines left out."""
     if sum(len(line) + 1 for line in lines) <= share:
         return lines
-    head: list[str] = []
-    tail: list[str] = []
-    room = share - 100
-    for first, last in zip(lines, reversed(lines), strict=True):
-        if len(first) + len(last) + 2 > room or len(head) + len(tail) >= len(lines):
+    keep = [bool(kept[i]) if i < len(kept) else False for i in range(len(lines))]
+    room = share - 100 - sum(len(line) + 1 for line, k in zip(lines, keep, strict=True) if k)
+    others = [i for i, k in enumerate(keep) if not k]
+    for index in (i for pair in zip(others, reversed(others), strict=True) for i in pair):
+        if keep[index]:
+            continue
+        if len(lines[index]) + 1 + 60 > room:
             break
-        head.append(first)
-        tail.append(last)
-        room -= len(first) + len(last) + 2
-    gone = len(lines) - len(head) - len(tail)
-    return [*head, f"[... {gone} lines left out; history_read reads the span ...]", *tail[::-1]]
+        keep[index] = True
+        room -= len(lines[index]) + 1 + 60
+    found: list[str] = []
+    gone = 0
+    for line, k in zip(lines, keep, strict=True):
+        if k:
+            if gone:
+                found.append(f"[... {gone} lines left out; history_read reads the span ...]")
+                gone = 0
+            found.append(line)
+        else:
+            gone += 1
+    if gone:
+        found.append(f"[... {gone} lines left out; history_read reads the span ...]")
+    return found
+
+
+def _covered_text(read: Read) -> str:
+    """What of a source a read covered, in a few words."""
+    detail = read.detail
+    if detail.get("pages"):
+        return f": pages {spans(cast(list[int], detail['pages']))} of {detail.get('of') or '?'}"
+    if detail.get("ranges"):
+        ranges = ", ".join(f"{a}-{b}" for a, b in detail["ranges"])
+        return f": bytes {ranges} of {detail.get('size') or '?'}"
+    return ""
+
+
+def _inconclusive(span: _Span, content: str, at: str) -> None:
+    """A marker for each check whose outcome ``content`` reports inconclusive."""
+    starts = [i for i in (content.find("{"), content.find("[")) if i >= 0]
+    if not starts:
+        return
+    try:  # the JSON after a notice's framing
+        found, _ = json.JSONDecoder().raw_decode(content, min(starts))
+    except ValueError:
+        return
+    stack: list[object] = [cast(object, found)]
+    while stack:
+        value = stack.pop()
+        if isinstance(value, dict):
+            item = cast(Json, value)
+            result = item.get("result") if isinstance(item.get("result"), dict) else item
+            if cast(Json, result).get("verdict") == "inconclusive":
+                subject = str(item.get("delegation_id") or item.get("delegation") or at)
+                target = cast(Json, item.get("target") or {}).get("handle")
+                of = f" of {target}" if target else ""
+                text = f"check {subject}{of} ended inconclusive (in {at})"
+                span.markers.append({"kind": "caveat", "subject": subject, "text": text})
+                continue
+            stack.extend(item.values())
+        elif isinstance(value, list):
+            stack.extend(cast(list[object], value))
 
 
 def _keys(rows: Sequence[Archived], share: int) -> tuple[tuple[str, str], ...]:

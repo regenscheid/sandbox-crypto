@@ -239,6 +239,10 @@ class MessagesModel(GatewayModel):
     def _tokens(self, usage: Mapping[str, object]) -> Tokens | None:
         return messages_tokens(usage)
 
+    @property
+    def max_output(self) -> int | None:
+        return self._max_tokens or MAX_TOKENS
+
     async def complete(self, messages: Sequence[Message], tools: Sequence[ToolSpec]) -> ModelTurn:
         served = await self._serving()
         why_not = self._why_not(messages)

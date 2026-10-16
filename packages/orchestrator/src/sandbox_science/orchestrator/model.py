@@ -292,6 +292,11 @@ class GatewayModel(ABC):
         self._retries, self._backoff, self._clock = retries, backoff, clock
         self._prices = prices or PriceList(self.base_url, api_key, clock=clock)
 
+    @property
+    def max_output(self) -> int | None:
+        """The most tokens an answer may take, as the calls ask for, if they ask."""
+        return self._max_tokens
+
     async def close(self) -> None:
         if self._owns_session and self._session is not None:
             await self._session.close()
@@ -498,6 +503,16 @@ def gateway_model(
     )
 
 
+@dataclass(frozen=True)
+class Limits:
+    """A model's limits as the gateway describes them: ``input``, its
+    ``max_input_tokens``; ``output``, its ``max_output_tokens``; and its provider."""
+
+    input: int
+    output: int | None
+    provider: str | None
+
+
 class ModelGateway:
     """The deployment's model gateway, for runs whose alias is chosen as they start, as
     a delegated run's is (plans-and-delegation spec, PD-28, PD-30): a model for an
@@ -592,18 +607,27 @@ class ModelGateway:
                 capable[name] = capable.get(name, False) or calls
         return capable
 
-    async def input_limits(self) -> dict[str, int] | None:
-        """Each described alias's input limit, without its output (``max_input_tokens``;
-        docs/specs/context-management.md, CM-27): the least of its deployments'; ``None``
-        when the gateway cannot be asked."""
+    async def input_limits(self) -> dict[str, Limits] | None:
+        """Each described alias's limits (docs/specs/context-management.md, CM-27): its
+        ``max_input_tokens``, the least of its deployments', its ``max_output_tokens``,
+        and its provider, which says whether the input limit is a window that input and
+        output share; ``None`` when the gateway cannot be asked."""
         described = await self._described()
         if described is None:
             return None
-        limits: dict[str, int] = {}
+        limits: dict[str, Limits] = {}
         for name, info in described:
-            found = info.get("max_input_tokens")
-            if type(found) is int and found > 0:
-                limits[name] = min(limits.get(name, found), found)
+            found, output = info.get("max_input_tokens"), info.get("max_output_tokens")
+            if type(found) is not int or found <= 0:
+                continue
+            known = limits.get(name)
+            if known is None or found < known.input:
+                provider = info.get("litellm_provider")
+                limits[name] = Limits(
+                    found,
+                    output if type(output) is int and output > 0 else None,
+                    provider if isinstance(provider, str) else None,
+                )
         return limits
 
     async def _described(self) -> list[tuple[str, dict[str, object]]] | None:

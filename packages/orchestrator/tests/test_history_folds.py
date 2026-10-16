@@ -18,6 +18,8 @@ import pytest
 
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator.control import ControlStore
+from sandbox_science.orchestrator.harness import Harness as Harness_
+from sandbox_science.orchestrator.harness import Role
 from sandbox_science.orchestrator.history import (
     Archive,
     Archived,
@@ -33,10 +35,14 @@ from sandbox_science.orchestrator.history import (
 )
 from sandbox_science.orchestrator.history.folds import build, span
 from sandbox_science.orchestrator.history.geometry import input_limit
+from sandbox_science.orchestrator.history.reads import Read, Register
+from sandbox_science.orchestrator.history.skeleton import _fit
 from sandbox_science.orchestrator.loop import Transcript
+from sandbox_science.orchestrator.model import Limits
 from sandbox_science.orchestrator.notices import FOLD_REGION, STATE_BLOCK
-from sandbox_science.orchestrator.projects import ProjectStore, RunRecord, run_name
+from sandbox_science.orchestrator.projects import ModelUsage, ProjectStore, RunRecord, run_name
 from sandbox_science.orchestrator.runstate import RunState
+from sandbox_science.orchestrator.worker_client import dump
 
 from .control_versions import older_store
 from .loop_harness import PROJECT, SESSION, Harness, Reply
@@ -133,9 +139,23 @@ def test_the_geometry_scales_its_budgets_on_small_ceilings_and_refuses_too_littl
 
 
 async def test_the_gateways_input_limit_caps_the_ceiling(harness: Harness) -> None:
-    harness.gateway.limits = {"main": 90_000}
+    harness.gateway.limits = {"main": {"max_input_tokens": 90_000, "max_output_tokens": 8_000}}
     record = await harness.run("run-1", [Reply("Hi.")])
-    assert folds(record)["geometry"]["ceiling"] == 90_000
+    assert folds(record)["geometry"]["ceiling"] == 90_000  # the output is not in it
+
+
+async def test_a_claude_models_window_is_shared_with_its_answer(harness: Harness) -> None:
+    """#459's review, M2, CM-27: a Claude model's ``max_input_tokens`` is a window input
+    and output share, so the answer's room comes off it."""
+    harness.gateway.limits = {
+        "main": {
+            "max_input_tokens": 200_000,
+            "max_output_tokens": 64_000,
+            "litellm_provider": "anthropic",
+        }
+    }
+    record = await harness.run("run-1", [Reply("Hi.")])
+    assert folds(record)["geometry"]["ceiling"] == 136_000
 
 
 async def test_a_run_whose_system_message_is_too_large_for_its_ceiling_does_not_start(
@@ -267,6 +287,7 @@ async def test_three_weak_folds_trip_the_breaker(archive: Archive) -> None:
         worked(archive, "earlier", n, 1_000)
     worked(archive, "earlier", 99, 600_000)  # the newest, which no fold may take
     made, transcript = folder(archive, 160_000, 2_000)
+    transcript.usage.append(ModelUsage(model="m"))  # the run has called: its folds count
     assert not await made.before_call(transcript)
     assert (made.weak, made.stopped) == (3, "breaker")
     assert len(made.folds) == 3
@@ -314,8 +335,9 @@ async def test_each_rebuild_renders_the_research_state_as_it_is_then(archive: Ar
     state["version"] = 3
     transcript.messages.append({"role": "user", "content": "More."})
     assert str(transcript.sent[1]["content"]) == block
-    # Still past the trigger: the next safe point folds, and renders it again.
+    # Past the trigger again: the next safe point folds, and renders it again.
     folded = len(made.folds)
+    transcript.messages.append({"role": "user", "content": "x" * 160_000})
     assert made.tokens(transcript) > made.geometry.trigger
     assert await made.before_call(transcript)
     assert len(made.folds) == folded + 1
@@ -495,3 +517,321 @@ def test_a_store_from_before_fold_events_keeps_its_events_and_takes_folds(
         ]
     finally:
         control.close()
+
+
+# The review of #459.
+
+
+async def test_a_large_archive_folds_to_fit_before_the_first_call(archive: Archive) -> None:
+    """#459's review, H1: the first run after folds were deployed sees its whole archive
+    raw. Folds before the run's first call catch up, each well under a tenth of so large
+    a view; they do not count toward the breaker, and the view ends under the wall."""
+    for n in range(200):
+        worked(archive, "earlier", n, 4_000)  # about 200,000 tokens, folded never
+    made, transcript = folder(archive, 160_000, 16_000)
+    assert made.tokens(transcript) > 200_000
+    assert await made.before_call(transcript)
+    assert made.geometry is not None
+    assert (made.weak, made.stopped) == (0, None)
+    assert made.tokens(transcript) <= made.geometry.wall
+    assert len(made.folds) >= 3
+
+
+async def test_a_gateway_that_cannot_be_asked_is_asked_again(tmp_path: Path) -> None:
+    """#459's review, M3: a failed lookup of the model's limits is not kept: the next
+    run's start asks again."""
+    asked: list[int] = []
+
+    class Gateway:
+        async def input_limits(self) -> dict[str, Limits] | None:
+            asked.append(1)
+            return None if len(asked) == 1 else {"main": Limits(90_000, None, None)}
+
+    made = Harness_(cast(Any, None), Role(cast(Any, None), "main"), gateway=cast(Any, Gateway()))
+    assert await made._ceiling() == 600_000
+    assert await made._ceiling() == 90_000
+    assert await made._ceiling() == 90_000
+    assert len(asked) == 2
+
+
+async def test_a_context_error_caps_the_ceiling_at_what_the_model_took(archive: Archive) -> None:
+    """#459's review, M3, CM-43: after a context error, the ceiling is at most the largest
+    input the model took in the run."""
+    for n in range(30):
+        worked(archive, "earlier", n, 4_000)
+    made, transcript = folder(archive, 160_000, 10_000)
+    assert await made.before_call(transcript)
+    transcript.usage.append(ModelUsage(model="m", input_tokens=40_000, output_tokens=10))
+    assert await made.overflow(transcript)
+    assert made.geometry is not None
+    assert made.geometry.ceiling == 40_000
+    assert cast(Json, made.summary())["capped"] == 40_000
+
+
+def recorded(archive: Archive, rows: list[Archived], markers: tuple[Json, ...]) -> str:
+    """A fold record of ``rows`` with ``markers``, archived; its ID."""
+    record = FoldRecord(
+        level=1,
+        first=(rows[0].position, rows[0].message_id),
+        last=(rows[-1].position, rows[-1].message_id),
+        runs=("earlier",),
+        dates=(rows[0].created, rows[-1].created),
+        skeleton=("An outline. " * 40,),
+        markers=markers,
+        keys=(),
+    )
+    entry = Entry("user", "fold", record.text("this record", whole=True), source="folds",
+                  native=record.stored(), native_format="sandbox-fold-1")  # fmt: skip
+    return archive.append(PROJECT, SESSION, "folder", entry).message_id
+
+
+async def test_a_record_left_out_of_the_region_keeps_its_markers(archive: Archive) -> None:
+    """#459's review, M4: a fold record the region leaves out, until overviews, keeps its
+    marker lines in the state block, so no decision or caveat is lost meanwhile."""
+    first = [archive.append(PROJECT, SESSION, "earlier", Entry("user", "task", "Look."))]
+    decision = {"kind": "decision", "subject": "D-4", "text": "D-4 → rejected: too slow"}
+    old = recorded(archive, first, (decision,))
+    second = [archive.append(PROJECT, SESSION, "earlier", Entry("user", "user", "More."))]
+    recorded(archive, second, ({"kind": "caveat", "subject": "C-2", "text": "only below 2^64"},))
+    view = session_view(archive, CONTEXT, geometry=Geometry(4_000, 0, 2_000, 1.0), per_token=1.0)
+    assert view.folds_left_out == (old,)
+    settled = await settle(view, archive, CONTEXT, run="r", kernels=None)
+    text = body(str(settled.parts[0].message["content"]))
+    assert f"the fold records {old}, which history_read returns whole; their marker lines" in text
+    assert "- decision: D-4 → rejected: too slow" in text
+
+
+def test_the_marker_kinds_cm_18_names(archive: Archive) -> None:
+    """#459's review, M5, CM-F9: a source the read register says the span read in part,
+    an evidence scope note, finite-test and numerical evidence, and a check that ended
+    inconclusive each make a marker; a source read whole makes none."""
+
+    def add(entry: Entry, reads: tuple[Read, ...] = ()) -> Archived:
+        return archive.append(PROJECT, SESSION, "r", entry, reads=reads)
+
+    def called(ident: str, tool: str, arguments: str) -> Json:
+        return {"id": ident, "type": "function", "function": {"name": tool, "arguments": arguments}}
+
+    change = {
+        "reason": "Measured",
+        "changes": [{"entry": "C-3", "expected": 1, "evidence": [
+            {"role": "supports", "type": "finite_test", "scope": "n below 2^20"},
+            {"role": "supports", "type": "proof", "scope": "prime fields only"},
+        ]}],
+    }  # fmt: skip
+    result = {"operation_id": "o", "entries": [
+        {"entry_id": "e", "handle": "C-3", "revision": 2, "status": "proposed", "created": False}
+    ]}  # fmt: skip
+    calls = (
+        called("c1", "pdf_pages", "{}"),
+        called("c2", "ledger_change", json.dumps(change)),
+        called("c3", "pdf_pages", "{}"),
+    )
+    partial = Read("pdf", "a" * 64, "partial", {"pages": [1, 2, 3], "of": 40}, label="paper.pdf")
+    whole = Read("pdf", "b" * 64, "partial", {"pages": [1], "of": 1}, label="note.pdf")
+    outcome = {"delegations": [{"delegation_id": "dlg-1", "target": {"handle": "C-3"},
+                                "result": {"verdict": "inconclusive"}}]}  # fmt: skip
+    rows = [
+        add(Entry("assistant", "assistant", None, tool_calls=calls)),
+        add(Entry("tool", "tool_result", "pages", source="pdf_pages", call_id="c1"), (partial,)),
+        add(Entry("tool", "tool_result", json.dumps(result), source="ledger_change", call_id="c2")),
+        add(Entry("tool", "tool_result", "page 1", source="pdf_pages", call_id="c3"), (whole,)),
+        add(Entry("user", "outcome", "Delegation outcomes: " + json.dumps(outcome),
+                  source="delegations", refs=("dlg-1",))),
+    ]  # fmt: skip
+    reads = Register(archive.control).of_messages(PROJECT, [row.message_id for row in rows])
+    record = build(rows, geometry(600_000, 30_000), 4.0, reads=reads)
+    assert record is not None
+    texts = [str(marker.get("text")) for marker in record.markers]
+    assert (
+        f"paper.pdf: read partial: pages 1-3 of 40 (result {rows[1].message_id}); not read whole"
+        in texts
+    )
+    assert not any(text.startswith("note.pdf") for text in texts)
+    assert "evidence on C-3 is a finite test, scoped to: n below 2^20" in texts
+    assert "evidence on C-3 (proof) is scoped to: prime fields only" in texts
+    assert f"check dlg-1 of C-3 ended inconclusive (in {rows[4].message_id})" in texts
+
+
+def test_a_cut_skeleton_keeps_the_users_lines_and_ledger_changes() -> None:
+    """#459's review: a skeleton over its share keeps every user line and ledger change,
+    and cuts only other lines, each run of them named."""
+    lines = [f"call {n} " + "x" * 200 for n in range(20)]
+    lines[10] = "user: the constraint"
+    lines[11] = "ledger_change: D-4 → rejected"
+    kept = [n in (10, 11) for n in range(20)]
+    fitted = _fit(lines, 1_500, kept)
+    assert "user: the constraint" in fitted
+    assert "ledger_change: D-4 → rejected" in fitted
+    assert sum(len(line) + 1 for line in fitted) <= 1_500 + 200
+    assert any(line.startswith("[... ") for line in fitted)
+
+
+def test_a_record_frees_tokens_only_against_its_span_as_sent(archive: Archive) -> None:
+    """#459's review: a record is no use if it is no smaller than its span as the view
+    sends it, stubs and all."""
+    rows = [archive.append(PROJECT, SESSION, "r", Entry("user", "task", "Look. " * 200))]
+    shape = geometry(600_000, 30_000)
+    assert build(rows, shape, 4.0) is not None
+    assert build(rows, shape, 4.0, sent=100) is None
+
+
+async def test_a_span_too_large_for_its_record_is_folded_smaller(archive: Archive) -> None:
+    """#459's review: a span whose record passes its share, as many ledger changes kept
+    whole make it, is built again of half its span until one fits."""
+    for n in range(12):
+        change = {"reason": f"Reason {n}: " + "r" * 300, "changes": []}
+        function = {"name": "ledger_change", "arguments": json.dumps(change)}
+        calls = ({"id": f"c{n}", "type": "function", "function": function},)
+        asked = Entry("assistant", "assistant", None, tool_calls=calls)
+        archive.append(PROJECT, SESSION, "earlier", asked)
+        result = json.dumps({"operation_id": "o", "entries": []})
+        done = Entry("tool", "tool_result", result, source="ledger_change", call_id=f"c{n}")
+        archive.append(PROJECT, SESSION, "earlier", done)
+    worked(archive, "earlier", 99, 40_000)
+    made, transcript = folder(archive, 160_000, 4_000)
+    made.geometry = made.start
+    assert await made._fold(transcript, made.tokens(transcript))
+    (fold,) = made.folds
+    assert fold["span"][1] - fold["span"][0] + 1 < 24  # fewer than the chunk's 12 calls
+
+
+# Fixtures at scale: a run's messages archived as it adds them, folded as it goes.
+
+
+class Run:
+    """A run on the archive: a folder from its session's view, and the messages it adds,
+    archived as the run's log keeps them and added to its transcript."""
+
+    def __init__(self, archive: Archive, name: str, made: Folder, system: int) -> None:
+        self.archive, self.name, self.made = archive, name, made
+        self.transcript = Transcript(
+            messages=[{"role": "system", "content": "s" * system}, *made.view.messages]
+        )
+        self.calls = 0
+
+    @classmethod
+    async def start(cls, archive: Archive, name: str, top: int, chunk: int, system: int) -> Run:
+        """A run as the harness starts one: from its session's view, settled."""
+        start = geometry(top, 0, chunk)
+        view = session_view(archive, CONTEXT, geometry=start)
+        view = await settle(view, archive, CONTEXT, run=name, kernels=None)
+        made = Folder(archive, CONTEXT, run=name, view=view, start=start, ceiling=top,
+                      chunk=chunk)  # fmt: skip
+        return cls(archive, name, made, system)
+
+    def add(self, entry: Entry) -> Archived:
+        row = self.archive.append(PROJECT, SESSION, self.name, entry)
+        self.transcript.messages.append(row.chat())
+        return row
+
+    def work(self, size: int, *, answered: bool = True) -> None:
+        """One call and, unless the run is interrupted, its result of ``size``."""
+        self.calls += 1
+        ident = f"{self.name}-{self.calls}"
+        function = {"name": "shell", "arguments": json.dumps({"n": self.calls})}
+        calls = ({"id": ident, "type": "function", "function": function},)
+        self.add(Entry("assistant", "assistant", f"Step {self.calls}.", tool_calls=calls))
+        if answered:
+            text = json.dumps({"state": "succeeded", "stdout": "0" * size})
+            self.add(Entry("tool", "tool_result", text, source="shell", call_id=ident))
+
+    async def safe_point(self) -> bool:
+        """A safe point before a model call, and the call made: it reports nothing, so the
+        view is estimated afresh, as the run's own calls count toward the breaker."""
+        found = await self.made.before_call(self.transcript)
+        self.transcript.usage.append(ModelUsage(model="m"))
+        return found
+
+
+def spans_of(archive: Archive) -> list[list[int]]:
+    rows: list[Archived] = []
+    start = 1
+    while True:
+        page = archive.messages(PROJECT, SESSION, start=start)
+        rows += page
+        if len(page) < 200:
+            break
+        start = page[-1].position + 1
+    return [[f.first[0], f.last[0]] for row in rows if (f := FoldRecord.of(row)) is not None]
+
+
+async def test_thirty_folds_in_the_steady_state_never_trip_the_breaker(archive: Archive) -> None:
+    """CM-F6's steady state, CM-27, CM-44: at C = 168,000 with 30,000 tokens of system
+    message and tools, λ is about 0.83; with the user's words and the fold region full,
+    every fold at the trigger takes at least 25,000 tokens and frees more than a tenth of
+    the view, through 30 folds, and the breaker never trips."""
+    run = await Run.start(archive, "run-1", 168_000, 50_000, 120_000)
+    await run.safe_point()
+    assert run.made.geometry is not None
+    assert round(run.made.geometry.scale, 2) == 0.83
+    while len(run.made.folds) < 30:
+        run.add(Entry("user", "user", "A note of mine. " * 160, source="messages", refs=("m",)))
+        for _ in range(8):
+            run.work(4_500)
+        before = len(run.made.folds)
+        assert await run.safe_point()
+        for fold in run.made.folds[before:]:
+            first, last = fold["span"]
+            taken = archive.messages(PROJECT, SESSION, start=first, end=last)
+            assert sum(len(dump(row.chat())) for row in taken) / 4 >= 25_000
+            assert fold["freed"] > 0
+    assert (run.made.weak, run.made.stopped) == (0, None)
+    assert all(fold["freed"] > 0.1 * 126_000 for fold in run.made.folds)
+    assert run.made.view.folds_left_out  # the region filled: the oldest left out
+    assert run.made.view.folded is not None
+
+
+async def test_a_session_with_an_interrupted_run_folds_without_losing_a_message(
+    archive: Archive,
+) -> None:
+    """CM-F1: across six runs, one interrupted midway, with a ceiling low enough for at
+    least five folds: every request stays under C; folds are contiguous and never
+    overlap; every message reads back whole by its ID; and the last view rebuilds from
+    the archive as its record names it."""
+    sizes: list[tuple[str, int]] = []
+    largest = 0
+    runs: list[Run] = []
+    for number in range(1, 7):
+        run = await Run.start(archive, f"run-{number}", 100_000, 10_000, 4_000)
+        runs.append(run)
+        task = run.add(Entry("user", "task", f"Task {number}."))
+        sizes.append((task.message_id, len(task.entry.content or "")))
+        for step in range(25):
+            run.work(4_500, answered=not (number == 3 and step == 6))
+            if number == 3 and step == 6:
+                break  # the run is interrupted during a call
+            assert await run.safe_point()
+            largest = max(largest, run.made.tokens(run.transcript))
+    assert largest <= 100_000
+    spans = spans_of(archive)
+    assert len(spans) >= 5
+    assert all(a[1] < b[0] for a, b in pairwise(spans))  # contiguous, never overlapping
+    folded = [position for first, last in spans for position in range(first, last + 1)]
+    assert len(folded) == len(set(folded))
+    for message, size in sizes:
+        assert len(archive.message(PROJECT, message).entry.content or "") == size
+    made = runs[-1].made
+    rebuilt = session_view(archive, CONTEXT, geometry=made.geometry or made.start)
+    last = made.rebuilds[-1]
+    assert list(rebuilt.folds) == last["folds"]
+    assert list(rebuilt.stubs) == last["stubs"]
+    # The interrupted call went into a fold, with no result: the record says so.
+    interrupted = archive.messages(PROJECT, SESSION, run="run-3")
+    assert any(row.position <= spans[-1][1] for row in interrupted)
+
+
+async def test_the_users_constraint_survives_twenty_runs_of_folds(archive: Archive) -> None:
+    """CM-F2: a constraint in run 1's first message is in every request after every
+    fold, byte for byte, in the raw tail or in the state block, through 20 runs."""
+    constraint = "Only attacks with memory below 2^64, please."
+    folds = 0
+    for number in range(1, 21):
+        run = await Run.start(archive, f"run-{number}", 100_000, 10_000, 4_000)
+        run.add(Entry("user", "task", constraint if number == 1 else f"Go on, part {number}."))
+        for _ in range(10):
+            run.work(4_500)
+            assert await run.safe_point()
+            assert constraint in json.dumps(run.transcript.sent, ensure_ascii=False)
+        folds += len(run.made.folds)
+    assert folds >= 10

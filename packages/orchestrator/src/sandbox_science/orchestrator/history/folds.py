@@ -44,6 +44,7 @@ from sandbox_science.orchestrator.worker_client import dump
 from .archive import Archive, Archived, Entry
 from .geometry import Geometry, geometry
 from .log import PATIENCE, patiently
+from .reads import Read, Register
 from .record import FORMAT, FoldRecord, stubbed
 from .skeleton import skeleton
 from .view import Earlier, Unit, View, session_view, settle
@@ -113,6 +114,8 @@ class Folder(TurnHook):
         """Why the run stopped for its context: ``start``, ``breaker``, ``overflow`` or
         ``irreducible``."""
         self.detail: str | None = None
+        self.capped: int | None = None
+        """The ceiling a context error capped at the largest input the model took."""
 
     @property
     def tripped(self) -> bool:
@@ -136,11 +139,11 @@ class Folder(TurnHook):
             if abs(found.scale - self.start.scale) > 1e-6:
                 await self._rebuild(transcript)  # the budgets shrink with λ
         wall, size = self.geometry.wall, self.tokens(transcript)
-        if size > self.geometry.trigger and not self.tripped:
+        while size > wall and await self._fold(transcript, size):
+            size = self.tokens(transcript)
+        if size > self.geometry.trigger:
             await self._fold(transcript, size)
             size = self.tokens(transcript)
-            while size > wall and await self._fold(transcript, size):
-                size = self.tokens(transcript)
         if size <= wall:
             return True
         if self.tripped:
@@ -149,9 +152,24 @@ class Folder(TurnHook):
 
     async def overflow(self, transcript: Transcript) -> bool:
         self.overflows += 1
+        self._cap(transcript)
         if self.overflows == 1 and await self._fold(transcript, self.tokens(transcript)):
             return True
         return self._stop("overflow", "the gateway refused the call for its length")
+
+    def _cap(self, transcript: Transcript) -> None:
+        """After a context error: the ceiling no larger than the largest input the model
+        took in this run, which it is known to take (CM-43)."""
+        taken = [usage.input_tokens for usage in transcript.usage if usage.input_tokens]
+        if self.geometry is None or not taken or max(taken) >= self.geometry.ceiling:
+            return
+        capped = geometry(max(taken), self.geometry.prompt, self.chunk)
+        if capped.refused() is not None:  # a report too small to be the model's limit
+            return
+        self.geometry, self.capped = capped, max(taken)
+        _log.warning(
+            "run %s caps its ceiling at %d tokens after a context error", self.run, max(taken)
+        )
 
     async def model_returned(self, run: RunView) -> None:
         self.overflows = 0
@@ -162,20 +180,28 @@ class Folder(TurnHook):
         return False
 
     async def _fold(self, transcript: Transcript, before: int) -> bool:
-        """One skeleton-only fold of the raw tail's oldest span, applied; whether one was."""
+        """One skeleton-only fold of the raw tail's oldest span, applied; whether one was.
+        A record too large for its share is built again of half its span, down to one
+        unit; one that still cannot be built changes nothing (CM-20)."""
         if self.tripped or self.geometry is None:
             return False
         shape, per_token = self.geometry, self.per_token(transcript)
         view = await threaded(self._view, per_token)
         taken = span(view.units, shape, per_token)
-        if not taken:
-            return False
-        rows = [part.row for unit in view.units[:taken] for part in unit if part.row is not None]
-        after = [part.row for unit in view.units[taken:] for part in unit if part.row is not None]
-        record = build(rows, shape, per_token)
+        record, rows = None, []
+        while taken:
+            rows = [p.row for unit in view.units[:taken] for p in unit if p.row is not None]
+            sent = sum(part.chars for unit in view.units[:taken] for part in unit)
+            reads = await threaded(self._reads, [row.message_id for row in rows])
+            record = build(rows, shape, per_token, sent=sent, reads=reads)
+            if record is not None or taken == 1:
+                break
+            taken = extend(view.units, max(1, taken // 2))
         if record is None:
-            await self._event({"state": "rejected", "span": _span(rows), "reason": "too large"})
+            if rows:
+                await self._event({"state": "rejected", "span": _span(rows), "reason": "too large"})
             return False
+        after = [part.row for unit in view.units[taken:] for part in unit if part.row is not None]
         record = replace(record, stubs=stubbed(after, view.stubs))
         entry = Entry(
             "user",
@@ -190,7 +216,9 @@ class Folder(TurnHook):
         )
         await self._rebuild(transcript)
         freed = before - self.tokens(transcript)
-        if freed < WEAK * before:
+        # Folds before the run's first call catch up on a session folded little or not at
+        # all, such as one from before folds: the breaker counts the run's own (CM-44).
+        if freed < WEAK * before and transcript.usage:
             self.weak += 1
         made = {
             "fold": row.message_id,
@@ -203,6 +231,9 @@ class Folder(TurnHook):
         self.folds.append(made)
         await self._event(made)
         return True
+
+    def _reads(self, messages: Sequence[str]) -> list[tuple[str, Read]]:
+        return Register(self.archive.control).of_messages(self.context.project_id, messages)
 
     def _view(self, per_token: float) -> View:
         assert self.geometry is not None  # noqa: S101 - set at the first call
@@ -252,6 +283,8 @@ class Folder(TurnHook):
             "rebuilds": self.rebuilds,
             "weak_folds": self.weak,
         }
+        if self.capped is not None:
+            found["capped"] = self.capped
         if self.stopped is not None:
             found |= {"stopped": self.stopped, "detail": self.detail}
         return found
@@ -275,9 +308,12 @@ def span(units: Sequence[Unit], shape: Geometry, per_token: float) -> int:
         for end, size in ends
         if abs(size - target) <= shape.chunk / 4 and _boundary(units, end)
     ]
-    taken = min(tasks or ends, key=lambda found: abs(found[1] - target))[0]
-    # A message positioned among the span's (a notice between a call and its result) goes
-    # with it: a fold covers every position up to its last.
+    return extend(units, min(tasks or ends, key=lambda found: abs(found[1] - target))[0])
+
+
+def extend(units: Sequence[Unit], taken: int) -> int:
+    """``taken`` units and any after them positioned among theirs (a notice between a
+    call and its result): a fold covers every position up to its last."""
     last = max(_positions(units[:taken]), default=0)
     while taken < len(units) and min(_positions(units[taken : taken + 1]), default=last) < last:
         last = max(last, *_positions(units[taken : taken + 1]))
@@ -306,13 +342,22 @@ def _span(rows: Sequence[Archived]) -> list[int]:
     return [rows[0].position, max(row.position for row in rows)] if rows else []
 
 
-def build(rows: Sequence[Archived], shape: Geometry, per_token: float) -> FoldRecord | None:
+def build(
+    rows: Sequence[Archived],
+    shape: Geometry,
+    per_token: float,
+    *,
+    sent: int | None = None,
+    reads: Sequence[tuple[str, Read]] = (),
+) -> FoldRecord | None:
     """A skeleton-only record of ``rows``, or ``None`` when it would pass a tenth of a
-    chunk without its markers, or free nothing (CM-20)."""
+    chunk without its markers, or free nothing (CM-20): be no smaller than the span as
+    the view sends it, ``sent`` characters, its stubs as stubs. ``reads`` are what the
+    read register says the span's messages read."""
     if not rows:
         return None
     share = int(shape.record * per_token)
-    made = skeleton(rows, share - share // 10 - 600, share // 10, per_token)
+    made = skeleton(rows, share - share // 10 - 600, share // 10, per_token, reads)
     first, last = rows[0], max(rows, key=lambda row: row.position)
     record = FoldRecord(
         level=1,
@@ -324,7 +369,7 @@ def build(rows: Sequence[Archived], shape: Geometry, per_token: float) -> FoldRe
         markers=made.markers,
         keys=made.keys,
     )
-    spanned = sum(len(dump(row.chat())) for row in rows)
+    spanned = sent if sent is not None else sum(len(dump(row.chat())) for row in rows)
     if record.chars > share or len(record.text("msg-" + "0" * 16)) >= spanned:
         return None
     return record

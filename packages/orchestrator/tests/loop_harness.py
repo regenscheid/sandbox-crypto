@@ -329,8 +329,9 @@ class Gateway:
     per_token: float | None = None
     """With it, each chat completion reports its request's characters, tools included,
     divided by it as its prompt tokens, unless its reply scripts them."""
-    limits: dict[str, int] | None = None
-    """Each alias's ``max_input_tokens``, as ``GET /model/info`` says."""
+    limits: dict[str, Json] | None = None
+    """Each alias's model information for its limits, as ``GET /model/info`` says, such
+    as ``max_input_tokens``."""
     routed: dict[str, list[Reply]] = field(default_factory=dict[str, list[Reply]])
     """Delegated runs' answers by a text their brief holds, for runs that call the model
     at once, such as a child and its own child; others answer from ``delegated``."""
@@ -478,8 +479,7 @@ class Gateway:
             for alias, model in (self.served or {}).items()
         ]
         data += [
-            {"model_name": alias, "model_info": {"max_input_tokens": limit}}
-            for alias, limit in (self.limits or {}).items()
+            {"model_name": alias, "model_info": info} for alias, info in (self.limits or {}).items()
         ]
         return web.json_response({"data": data})
 

@@ -259,6 +259,21 @@ class Register:
             )
         return [m for reads in grouped.values() if (m := merged(reads)) is not None]
 
+    def of_messages(self, project: str, messages: Sequence[str]) -> list[tuple[str, Read]]:
+        """What each of ``messages`` read, in order: its archived message's ID, and each
+        source it read (a fold's markers, CM-18)."""
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT message_id, kind, source, extent, detail, label FROM source_reads "
+                "WHERE project = ? AND message_id IN (SELECT value FROM json_each(?)) "
+                "ORDER BY rowid",
+                (project, json.dumps(list(messages))),
+            ).fetchall()
+        return [
+            (message, Read(kind, source, extent, cast(Json, json.loads(detail)), label=label))
+            for message, kind, source, extent, detail, label in rows
+        ]
+
     def unplaced(self, project: str, session: str) -> Json:
         """How many of a session's reads were connector reads no descriptor placed, of
         all its reads (CM-12a)."""

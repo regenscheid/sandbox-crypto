@@ -92,7 +92,8 @@ from .mathchecks.jobs import Checker
 from .memory import MemoryEntry, ProjectMemory
 from .memory_prompt import for_reviewer, for_run, for_watcher
 from .memory_tools import MemoryTool
-from .model import ChatModel, Message, ModelError, ModelGateway
+from .messages import MessagesModel
+from .model import ChatModel, GatewayModel, Limits, Message, ModelError, ModelGateway
 from .notices import DIGEST, TASK_CONSTRAINTS
 from .plan_tools import PlanTools
 from .projects import (
@@ -500,8 +501,8 @@ class Harness:
         """The MCP proxy and the servers behind it whose tools runs are offered."""
         self.delegated = delegated or main
         self.gateway = gateway
-        self._limits_seen: dict[str, int] | None = None
-        """The input limits the gateway's model information gave, read once."""
+        self._limits_seen: dict[str, Limits] | None = None
+        """The limits the gateway's model information gave, once it gave them."""
 
     def role(self, request: RunRequest) -> Role:
         """The model a run calls: the delegated role's for a delegated run, or the one
@@ -666,12 +667,7 @@ class Harness:
         runs = [entry.name for entry in entries if entry.role == "main"]
         earlier = functools.partial(recorded_words, stores.projects, stores.runs, project, session)
         settings = self.settings
-        limit = settings.input_limit
-        if limit is None and self.gateway is not None:
-            if self._limits_seen is None:
-                self._limits_seen = await self.gateway.input_limits() or {}
-            limit = self._limits_seen.get(self.main.alias)
-        top = ceiling(settings.ceiling, input_limit=limit)
+        top = await self._ceiling()
         start = geometry(top, 0, settings.chunk)  # the system message is not known yet
         per_token = chars_per_token(calls)
         view = await threaded(
@@ -708,6 +704,25 @@ class Harness:
             digest=digest,
             clock=self.clock,
         )
+
+    async def _ceiling(self) -> int:
+        """MAIN's ceiling C (CM-27): the role's, capped by the model's limit: the setting's
+        input limit, or the gateway's model information's. For a Claude model that is a
+        window input and output share, so the answer's room comes off it. A gateway that
+        cannot be asked is asked again at the next run's start."""
+        settings = self.settings
+        if settings.input_limit is not None:
+            return ceiling(settings.ceiling, input_limit=settings.input_limit)
+        if self.gateway is not None and self._limits_seen is None:
+            self._limits_seen = await self.gateway.input_limits()
+        found = (self._limits_seen or {}).get(self.main.alias)
+        if found is None:
+            return settings.ceiling
+        model = self.main.model
+        if isinstance(model, MessagesModel) or "anthropic" in (found.provider or ""):
+            output = model.max_output if isinstance(model, GatewayModel) else None
+            return ceiling(settings.ceiling, window=found.input, max_output=output or found.output)
+        return ceiling(settings.ceiling, input_limit=found.input)
 
     async def _task_view(self, admitted: Admitted) -> View | None:
         """A delegated task's view, with stores: the user's standing constraints alone; a

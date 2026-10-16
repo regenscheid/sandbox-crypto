@@ -54,7 +54,7 @@ from sandbox_science.orchestrator.worker_client import dump
 from .archive import PAGE, Archive, Archived, Entry, escape
 from .geometry import Geometry
 from .log import PATIENCE, patiently
-from .record import FoldRecord, stub
+from .record import FoldRecord, marker_line, stub
 
 if TYPE_CHECKING:
     from sandbox_science.orchestrator.projects import ProjectStore
@@ -106,6 +106,8 @@ class View:
     """The fold records the region shows, oldest first."""
     folds_left_out: tuple[str, ...] = ()
     """The oldest fold records, left out of a region over its budget until overviews."""
+    markers_left_out: tuple[str, ...] = ()
+    """Their marker lines, which the state block keeps until overviews (CM-21b)."""
     folded: tuple[int, int] | None = None
     """The first and last positions the folds cover."""
     stubs: tuple[str, ...] = ()
@@ -208,6 +210,12 @@ def session_view(
         region=region,
         folds=shown_folds,
         folds_left_out=left,
+        markers_left_out=tuple(
+            marker_line(marker, row.message_id)
+            for row, found in records
+            if row.message_id in left
+            for marker in found.markers
+        ),
         folded=(folded[0].position, end) if folded else None,
         stubs=tuple(p.row.message_id for p in kept if p.kind == "stub" and p.row),
         words=words if folded or before or left else None,
@@ -301,7 +309,13 @@ async def settle(
         if view.folds_left_out:
             folded += (
                 f"Left out until overviews are built: the fold records "
-                f"{', '.join(view.folds_left_out)}, which history_read returns whole. "
+                f"{', '.join(view.folds_left_out)}, which history_read returns whole"
+            )
+            folded += (
+                "; their marker lines, as code built them:\n"
+                + "".join(f"- {line}\n" for line in view.markers_left_out)
+                if view.markers_left_out
+                else ". "
             )
         before = ""
         if view.unarchived:
