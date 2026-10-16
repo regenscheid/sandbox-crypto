@@ -197,11 +197,35 @@ const boundedInterpreter = {
   },
 };
 
-/** A chart's SVG, before sanitizing, and its accessible name; or a `Refusal`. */
+/** A logger that says nothing: Vega-Lite's warnings and Vega's errors echo a chart's own
+ * text, and the refusals noted here carry no use for a stack trace; the check runs with
+ * bounded output, and the frame has no console to fill (security review of #513, M2). */
+interface Quiet {
+  level(): Quiet;
+  error(): Quiet;
+  warn(): Quiet;
+  info(): Quiet;
+  debug(): Quiet;
+}
+const quiet: Quiet = {
+  level: () => quiet,
+  error: () => quiet,
+  warn: () => quiet,
+  info: () => quiet,
+  debug: () => quiet,
+};
+
+/** A library's message, for the figure check (FG-21). */
+const said = (error: unknown): string | undefined =>
+  error instanceof Error ? error.message.slice(0, 500) : undefined;
+
+/** A chart's SVG, before sanitizing, and its accessible name; or a `Refusal`. The figure
+ * check (FG-19) also looks at the run's view, with `inspect`, before it is finalized. */
 export async function chartSvg(
   source: string,
   files: ReadonlyMap<string, string>,
   read: Fetch,
+  inspect?: (view: View, datasets: readonly string[]) => void,
 ): Promise<{ svg: string; name: string | null }> {
   const spec = checkedChart(source, [...files.keys()]);
   running = new Refusals();
@@ -210,17 +234,19 @@ export async function chartSvg(
   let runtime;
   let datasets: string[];
   try {
-    const compiled = compile(spec as never).spec;
+    const compiled = compile(spec as never, { logger: quiet as never }).spec;
     datasets = (compiled.data ?? []).map((data: { name: string }) => data.name);
     runtime = parse(compiled, undefined, { ast: true });
-  } catch {
-    throw new Refusal('invalid');
+  } catch (error) {
+    throw new Refusal('invalid', said(error));
   }
   const view = new View(runtime, {
     expr: boundedInterpreter,
     loader: chartLoader(files, read, refusals) as never,
     renderer: 'none',
     hover: false,
+    logger: quiet as never,
+    logLevel: vega.None,
   });
   try {
     await view.runAsync();
@@ -231,12 +257,15 @@ export async function chartSvg(
       return Array.isArray(values) ? values.length : 0;
     });
     checkDrawn(scene.root, rows);
+    inspect?.(view, datasets);
     const svg = checkSvg(await view.toSVG());
     refusals.check();
     const name = [spec['description'], spec['title']].find((value) => typeof value === 'string');
     return { svg, name: typeof name === 'string' ? name : null };
   } catch (error) {
-    throw refusals.first ?? (error instanceof Refusal ? error : new Refusal('invalid'));
+    throw (
+      refusals.first ?? (error instanceof Refusal ? error : new Refusal('invalid', said(error)))
+    );
   } finally {
     view.finalize();
   }

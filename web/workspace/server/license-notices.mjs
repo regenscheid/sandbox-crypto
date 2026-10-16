@@ -73,11 +73,13 @@ function fontStatements(bytes) {
  * Build notices from actual emitted module/asset origins; unknown origins require review.
  * @param {string} root
  * @param {import('rolldown').OutputBundle} bundle
- * @param {'gui' | 'math' | 'viewer' | 'figures'} distribution
+ * @param {'gui' | 'math' | 'viewer' | 'figures' | 'figure-check'} distribution
  * @param {string} sourceRoot what the bundle's relative names are relative to
  */
 export function collectNotices(root, bundle, distribution = 'gui', sourceRoot = root) {
-  if (!['gui', 'math', 'viewer', 'figures'].includes(distribution)) throw new Error('Unknown notice distribution');
+  if (!['gui', 'math', 'viewer', 'figures', 'figure-check'].includes(distribution)) {
+    throw new Error('Unknown notice distribution');
+  }
   root = realpathSync(root);
   const manifest = JSON.parse(readFileSync(resolve(root, 'licenses/manifest.json'), 'utf8'));
   const lock = JSON.parse(readFileSync(resolve(root, 'package-lock.json'), 'utf8'));
@@ -205,7 +207,7 @@ export function collectNotices(root, bundle, distribution = 'gui', sourceRoot = 
     }
   }
   const title = { gui: 'workspace GUI', math: 'isolated math checker', viewer: 'workspace PDF viewer',
-    figures: 'workspace figure frame' };
+    figures: 'workspace figure frame', 'figure-check': 'isolated figure checker' };
   const sections = [`Third-party notices for the Sandbox Science ${title[distribution]}.\n` +
     'Includes runtime helpers and complete upstream notice files; some upstream files also cover build-only code.\n'];
   const packageRecords = [];
@@ -261,10 +263,15 @@ export function collectNotices(root, bundle, distribution = 'gui', sourceRoot = 
   }
   const project = checkedBytes(resolve(root, '../../LICENSE'), manifest.projectLicenseSha256).toString('utf8');
   const notices = sections.join('\n\n');
+  // A checker ships with its launcher, which the manifest pins (the figure checker's
+  // beside the math checker's, in dist-math/figures).
+  const launcher = { math: manifest.mathLauncher, 'figure-check': manifest.figureLauncher }[distribution];
   const extra = distribution === 'math' ? {
     'LICENSE-KaTeX.txt': checkedBytes(resolve(root, 'node_modules/katex/LICENSE'),
       manifest.packages.katex.notices.LICENSE).toString('utf8'),
     'check-math.mjs': checkedBytes(resolve(root, 'server/check-math.mjs'), manifest.mathLauncher.sha256).toString('utf8'),
+  } : distribution === 'figure-check' ? {
+    'check-figures.mjs': checkedBytes(resolve(root, launcher.source), launcher.sha256).toString('utf8'),
   } : {};
   for (const [file, bytes] of Object.entries(extra)) {
     if (bundle[file]) throw new Error(`Notice distribution file collision: ${file}`);
@@ -279,8 +286,8 @@ export function collectNotices(root, bundle, distribution = 'gui', sourceRoot = 
     'THIRD-PARTY-NOTICES.txt': notices,
     'LICENSE-Sandbox-Science.txt': project,
     'license-manifest.json': JSON.stringify({ protocol: 1,
-      ...(distribution === 'math' ? { distribution: 'math-checker',
-        externalRuntime: { name: 'Node.js', providedBy: 'operator', builtins: manifest.mathLauncher.builtins } } : {}),
+      ...(launcher ? { distribution: distribution === 'math' ? 'math-checker' : 'figure-checker',
+        externalRuntime: { name: 'Node.js', providedBy: 'operator', builtins: launcher.builtins } } : {}),
       packages: packageRecords,
       fontAndSvgLicense: fontPaths.size || katexRuntime ? manifest.ofl : null,
       reactLicense: katexRuntime ? manifest.reactLicense : null,
@@ -290,7 +297,7 @@ export function collectNotices(root, bundle, distribution = 'gui', sourceRoot = 
 
 /**
  * Include checked runtime and asset notices.
- * @param {'gui' | 'math' | 'viewer' | 'figures'} distribution
+ * @param {'gui' | 'math' | 'viewer' | 'figures' | 'figure-check'} distribution
  * @param {string} [gui] the GUI's directory, when the build's root is below it
  * @returns {import('vite').Plugin}
  */
@@ -314,22 +321,37 @@ export function licenseNotices(distribution = 'gui', gui) {
   };
 }
 
-/** Verify the complete standalone distribution after Vite writes it. @param {string} root */
+/** Verify the complete standalone math distribution after Vite writes it; the figure
+ * checker's, in its `figures` directory, is verified on its own. @param {string} root */
 export function verifyMathDistribution(root) {
-  const directory = resolve(root, 'dist-math');
-  const expected = ['LICENSE-KaTeX.txt', 'LICENSE-Sandbox-Science.txt', 'THIRD-PARTY-NOTICES.txt',
-    'check-math.mjs', 'license-manifest.json', 'mathcheck.mjs'].sort();
-  const actual = readdirSync(directory).sort();
-  if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error('Uncovered math distribution files');
+  verifyChecker(root, 'dist-math', 'math-checker', 'check-math.mjs', ['LICENSE-KaTeX.txt', 'mathcheck.mjs']);
+}
+
+/** Verify the figure checker's distribution, beside the math checker's. @param {string} root */
+export function verifyFigureDistribution(root) {
+  verifyChecker(root, 'dist-math/figures', 'figure-checker', 'check-figures.mjs', ['figurecheck.mjs']);
+}
+
+/** @param {string} root @param {string} at @param {string} name @param {string} launcher
+ * @param {string[]} own */
+function verifyChecker(root, at, name, launcher, own) {
+  const directory = resolve(root, at);
+  const expected = ['LICENSE-Sandbox-Science.txt', 'THIRD-PARTY-NOTICES.txt', launcher,
+    'license-manifest.json', ...own].sort();
+  // The figure checker's own directory sits beside the math checker's files.
+  const actual = readdirSync(directory, { withFileTypes: true })
+    .filter(item => !(at === 'dist-math' && item.name === 'figures' && item.isDirectory()))
+    .map(item => item.name).sort();
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(`Uncovered ${name} distribution files`);
   const report = JSON.parse(readFileSync(resolve(directory, 'license-manifest.json'), 'utf8'));
-  if (report.protocol !== 1 || report.distribution !== 'math-checker' ||
+  if (report.protocol !== 1 || report.distribution !== name ||
       JSON.stringify(report.files.map(file => file.file).sort()) !==
         JSON.stringify(expected.filter(file => file !== 'license-manifest.json'))) {
-    throw new Error('Incomplete math distribution manifest');
+    throw new Error(`Incomplete ${name} distribution manifest`);
   }
   for (const file of report.files) checkedBytes(resolve(directory, file.file), file.sha256);
-  if (!readFileSync(resolve(directory, 'check-math.mjs')).equals(readFileSync(resolve(root, 'server/check-math.mjs')))) {
-    throw new Error('Math launcher differs from its project source');
+  if (!readFileSync(resolve(directory, launcher)).equals(readFileSync(resolve(root, 'server', launcher)))) {
+    throw new Error(`The ${name}'s launcher differs from its project source`);
   }
 }
 

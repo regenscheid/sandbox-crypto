@@ -15,7 +15,7 @@
     "format": "prettier --write src",
     "format:check": "prettier --check src",
     "test": "vitest run",
-    "build:math": "vite build --config vite.math.config.ts && node server/copy-math-licenses.mjs"
+    "build:math": "vite build --config vite.math.config.ts && vite build --config vite.figurecheck.config.ts && node server/copy-math-licenses.mjs"
   },
   "prettier": {
     "printWidth": 100,

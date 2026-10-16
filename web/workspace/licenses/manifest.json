@@ -572,6 +572,14 @@
       "node:url"
     ]
   },
+  "figureLauncher": {
+    "source": "server/check-figures.mjs",
+    "sha256": "ffed8c83109dc4cd93ed00d5fd4e41d5e7a69f4e66d89a1112e03430f1d07a28",
+    "builtins": [
+      "node:path",
+      "node:url"
+    ]
+  },
   "svelteEmbedded": {
     "source": "src/internal/shared/utils.js",
     "sha256": "799e9d1524b3c507bf3c381733340aa47377832604cdc56e4247156e5969fc37",

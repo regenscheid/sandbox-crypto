@@ -81,3 +81,12 @@ files fail the build. The checked launcher hash pins its existing external
 `node:path`/`node:url` imports; Node itself is operator-provided and is not copied.
 The renderer and launcher runtime behavior is unchanged. The GUI default
 collector output stays unchanged; no second license-text collection is introduced.
+
+The figure checker's build (`vite.figurecheck.config.ts`, the `figure-check`
+distribution) writes `dist-math/figures`: `figurecheck.mjs`, the unchanged
+`check-figures.mjs`, `LICENSE-Sandbox-Science.txt`, `THIRD-PARTY-NOTICES.txt` and
+`license-manifest.json`, which names the distribution `figure-checker`. The bundled
+packages are the figure frame's Vega, Vega-Lite and their dependencies, with the
+notices the manifest pins; `figureLauncher` pins the launcher's bytes and its
+`node:path`/`node:url` imports, and `copy-math-licenses.mjs` verifies this directory
+as it does the math checker's.

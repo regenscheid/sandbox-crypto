@@ -15,6 +15,7 @@ import os
 import signal
 import stat
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal, Self
@@ -155,6 +156,15 @@ async def _read(stream: asyncio.StreamReader | None, limit: int) -> bytes:
     return bytes(value)
 
 
+async def _discard(stream: asyncio.StreamReader | None) -> None:
+    """Read a pipe to its end and keep nothing: what a checker writes to stderr, such as a
+    library's warning that echoes the checked text, never fails its answer (security
+    review of #513, M2). The deadline bounds how long it may write."""
+    if stream is not None:
+        while await stream.read(4096):
+            pass
+
+
 async def _exchange(process: asyncio.subprocess.Process, data: bytes, limit: int) -> bytes:
     async def send() -> None:
         if process.stdin is None:
@@ -165,7 +175,7 @@ async def _exchange(process: asyncio.subprocess.Process, data: bytes, limit: int
 
     async with asyncio.TaskGroup() as group:
         stdout = group.create_task(_read(process.stdout, limit))
-        group.create_task(_read(process.stderr, 4096))
+        group.create_task(_discard(process.stderr))
         group.create_task(send())
     await process.wait()
     return stdout.result()
@@ -186,7 +196,7 @@ async def _reap(process: asyncio.subprocess.Process) -> None:
     await asyncio.gather(discard(process.stdout), discard(process.stderr), process.wait())
 
 
-def _code(path: Path, limit: int) -> bytes:
+def bounded_file(path: Path, limit: int) -> bytes:
     """Configuration must be an ordinary bounded file, never a blocking device/FIFO."""
     fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
     with os.fdopen(fd, "rb") as handle:
@@ -221,8 +231,8 @@ class MathChecker:
     def identity(self) -> dict[str, object]:
         """Pin bounded operator configuration before a durable check dispatch."""
         return {
-            "bundle_sha256": hashlib.sha256(_code(self.bundle, 8 * 1024 * 1024)).hexdigest(),
-            "launcher_sha256": hashlib.sha256(_code(self.launcher, 65_536)).hexdigest(),
+            "bundle_sha256": hashlib.sha256(bounded_file(self.bundle, 8 * 1024 * 1024)).hexdigest(),
+            "launcher_sha256": hashlib.sha256(bounded_file(self.launcher, 65_536)).hexdigest(),
             "engine": ENGINE,
             "options": OPTIONS,
             "node": str(self.node),
@@ -292,8 +302,8 @@ class MathChecker:
         try:
             async with asyncio.timeout(self.timeout):
                 async with self._slots:
-                    code = _code(self.bundle, 8 * 1024 * 1024)
-                    launcher_code = _code(self.launcher, 65_536)
+                    code = bounded_file(self.bundle, 8 * 1024 * 1024)
+                    launcher_code = bounded_file(self.launcher, 65_536)
                     bundle_digest = hashlib.sha256(code).hexdigest()
                     launcher_digest = hashlib.sha256(launcher_code).hexdigest()
                     # Pin the exact bytes for this batch even during an operator rollout.
@@ -327,34 +337,10 @@ class MathChecker:
         bundle: Path,
     ) -> list[MathCheck]:
         # This helper runs inside the caller's queue-inclusive deadline.
-        spawning = asyncio.create_task(
-            asyncio.create_subprocess_exec(
-                str(self.node),
-                "--max-old-space-size=96",
-                "--max-semi-space-size=4",
-                str(launcher),
-                str(bundle),
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env={"LANG": "C.UTF-8"},
-                cwd=launcher.parent,
-                start_new_session=True,
-            )
-        )
-        process, cancelled = await held(spawning)
-        if cancelled:
-            await held(asyncio.create_task(_reap(process)))
-            raise asyncio.CancelledError
         data = b"[" + b",".join(request.data for request in batch) + b"]"
-        try:
-            output = await _exchange(process, data, MAX_OUTPUT * len(batch))
-        finally:
-            _, cleanup_cancelled = await held(asyncio.create_task(_reap(process)))
-            if cleanup_cancelled:
-                raise asyncio.CancelledError
-        if process.returncode != 0:
-            raise ValueError("math checker process failed")
+        output = await run_checker(
+            self.node, launcher, bundle, data, MAX_OUTPUT * len(batch), heap=96
+        )
         answers = _ANSWERS.validate_json(output)
         if len(answers) != len(batch):
             raise ValueError("math checker answered another batch")
@@ -362,6 +348,51 @@ class MathChecker:
             _checked(request, answer, bundle_digest, launcher_digest)
             for request, answer in zip(batch, answers, strict=True)
         ]
+
+
+async def run_checker(
+    node: Path,
+    launcher: Path,
+    bundle: Path,
+    data: bytes,
+    limit: int,
+    *,
+    heap: int,
+    flags: Sequence[str] = (),
+) -> bytes:
+    """Run a pinned ``launcher`` with its ``bundle`` on ``data``, in a fresh process group
+    with ``heap`` MiB of V8 old space and Node's other ``flags``, and give back its output,
+    within ``limit`` bytes. The group is reaped however it ends; a failed process raises
+    ``ValueError``. The figure check (``figurecheck``) runs its batches here too."""
+    spawning = asyncio.create_task(
+        asyncio.create_subprocess_exec(
+            str(node),
+            f"--max-old-space-size={heap}",
+            "--max-semi-space-size=4",
+            *flags,
+            str(launcher),
+            str(bundle),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env={"LANG": "C.UTF-8"},
+            cwd=launcher.parent,
+            start_new_session=True,
+        )
+    )
+    process, cancelled = await held(spawning)
+    if cancelled:
+        await held(asyncio.create_task(_reap(process)))
+        raise asyncio.CancelledError
+    try:
+        output = await _exchange(process, data, limit)
+    finally:
+        _, cleanup_cancelled = await held(asyncio.create_task(_reap(process)))
+        if cleanup_cancelled:
+            raise asyncio.CancelledError
+    if process.returncode != 0:
+        raise ValueError("checker process failed")
+    return output
 
 
 def _checked(
