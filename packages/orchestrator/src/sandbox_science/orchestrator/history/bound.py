@@ -4,24 +4,30 @@ CM-21b).
 
 At each rebuild code renders each record from its stored form beside the new state
 block. A current marker takes its short form when the state block's digest holds the
-same information exactly: a decision whose line there has its status, its reason
-unclipped and its reopen condition; a caveat line or an evidence scope whose entry's line
-holds it. Otherwise it is shown in full. A retired marker is an index line.
+same information exactly, field by field as the digest recorded what its line shows
+(``Rendered.fields``): a decision's status, its reason and its reopen condition, each
+whole; a caveat line among its entry's caveats shown whole; an evidence type with its
+scope shown whole. Otherwise it is shown in full. A retired marker is an index line.
 
 When the region would pass its budget, code reduces it in CM-21b's order, stopping as
 soon as it fits (merges, step 1, are the folds'): it collapses each record's index of
 retired markers into a count by kind, oldest records first; spills retired markers and
 failure aggregates into a spill record, oldest records first; spills the current caveats
 and incomplete reads the digest does not show, those on entries the current plan step or
-an open question names last, the oldest first; then lets current decision lines grow
+an open question names last, and before them reads of sources an active reference
+cites, the oldest first; then lets current decision lines grow
 the region up to its cap (``Geometry.region_cap``); past it, shortens the least relevant
 of this session's decisions to one line each (those named last, the oldest first, the
 user's standing constraints never); and, if even those do not fit, says so, for the run
 to stop (CM-45, ``research_state``). One pointer line, at the region's end, names what
 was spilled and the spill record that ``history_read`` returns whole.
 
+A consolidation run, after a ``research_state`` stop (CM-45, the coordinator's decision of
+2026-10-16), shows every current decision in its one-line form, past the cap if need be,
+and never stops for them.
+
 Not built: reads in their short form (the digest names references, not the sources the
-register keys), and the priority of reads whose source a ledger entry cites.
+register keys).
 """
 
 from __future__ import annotations
@@ -43,6 +49,8 @@ SPILL: Final = "{spill}"
 INDEX: Final = "Retired markers, kept as an index; history_read returns each:"
 BRIEF: Final = 100
 """The characters of its reason a shortened decision line keeps."""
+NAMED: Final = 10
+"""The most handles the pointer line names; it counts the others."""
 
 
 @dataclass(frozen=True)
@@ -73,12 +81,21 @@ def bound(
     digest: Rendered | None,
     budget: int,
     cap: int,
+    *,
+    consolidating: bool = False,
 ) -> Bounded:
     """``records``, oldest first, rendered within ``budget`` characters, current decision
-    lines up to ``cap`` (CM-21b)."""
+    lines up to ``cap`` (CM-21b); ``consolidating``, every current decision in its one
+    line, whatever the cap (CM-45)."""
     plan = _Plan(records, retired, digest)
     wanted = total = plan.total()
     steps: dict[str, None] = {}
+    if consolidating:
+        for fold, index in plan.ranked(("decision",), everyone=True):
+            plan.brief(fold, index)
+        steps["consolidating"] = None
+        cap = max(cap, plan.total())
+        total = plan.total()
     if total > budget:  # 2: the indexes of retired markers collapse into counts
         for fold, _ in records:
             if plan.collapse(fold):
@@ -203,22 +220,31 @@ class _Plan:
         self.shortened.append(_subject(self.records[fold].markers[index]))
         self.sizes[fold] = self._size(fold)
 
-    def ranked(self, kinds: Sequence[str]) -> list[tuple[str, int]]:
+    def ranked(self, kinds: Sequence[str], *, everyone: bool = False) -> list[tuple[str, int]]:
         """The current markers of ``kinds`` shown in full, the least relevant first:
-        those on entries the plan's current step or an open question names last, the
-        oldest first; never a user's standing constraint."""
-        named = self.digest.named if self.digest is not None else frozenset[str]()
-        pinned = self.digest.pinned if self.digest is not None else frozenset[str]()
-        found: list[tuple[int, int, int, str]] = []
+        those on entries the plan's current step or an open question names last, reads
+        of sources an active reference cites before them, the oldest first; never a
+        user's standing constraint. ``everyone``: every current one, short ones too."""
+        digest = self.digest
+        named = digest.named if digest is not None else frozenset[str]()
+        pinned = digest.pinned if digest is not None else frozenset[str]()
+        cited = digest.cited if digest is not None else frozenset[tuple[str, str]]()
+        found: list[tuple[bool, bool, int, int, str]] = []
         for position, fold in enumerate(self.order):
             for index, marker in enumerate(self.records[fold].markers):
-                if self.modes[fold][index] != "full" or marker.get("kind") not in kinds:
+                mode = self.modes[fold][index]
+                if marker.get("kind") not in kinds:
+                    continue
+                if mode != "full" and not (everyone and mode == "short"):
                     continue
                 subject = _subject(marker)
-                if subject in pinned:
+                if subject in pinned and not everyone:
                     continue
-                found.append((subject in named, position, index, fold))
-        return [(fold, index) for _, _, index, fold in sorted(found)]
+                source = marker.get("source")
+                pair = cast(list[object], source) if isinstance(source, list) else []
+                read = len(pair) == 2 and (str(pair[0]), str(pair[1])) in cited
+                found.append((subject in named, read, position, index, fold))
+        return [(fold, index) for _, _, _, index, fold in sorted(found)]
 
     def least(self, count: int) -> list[str]:
         ranked = [_subject(self.records[f].markers[i]) for f, i in self.ranked(("decision",))]
@@ -310,7 +336,8 @@ class _Plan:
             parts.append(f"{retired} retired markers and {failures} failure aggregates")
         handles = list(dict.fromkeys(self.spilled_handles))
         if handles:
-            parts.append(f"the current caveats and reads on {', '.join(handles)}")
+            more = f" and {len(handles) - NAMED} more" if len(handles) > NAMED else ""
+            parts.append(f"the current caveats and reads on {', '.join(handles[:NAMED])}{more}")
         return f"spilled: {' and '.join(parts)} of {named} → history_read {SPILL}"
 
     def rendering(self) -> dict[str, Json]:
@@ -351,31 +378,35 @@ def _brief(marker: Mapping[str, Any]) -> str:
 
 def _short(marker: Mapping[str, Any], digest: Rendered | None) -> str | None:
     """The marker's short form, when the digest's line for its entry holds the same
-    information exactly; ``None`` otherwise."""
+    information exactly, field by field as the digest recorded it; ``None`` otherwise."""
     if digest is None:
         return None
     handle = flat(str(marker.get("entry") or ""))
-    line = digest.lines.get(handle) if handle else None
-    if line is None:
+    shown = digest.fields.get(handle) if handle else None
+    if shown is None:
         return None
-    kind, line = marker.get("kind"), flat(line)
+    kind = marker.get("kind")
     if kind == "decision":
         status, reason = marker.get("status"), marker.get("reason")
         if not isinstance(status, str) or not isinstance(reason, str):
             return None
-        held = f"({status})" in line and f"; reason: {flat(reason)}" in line
         reopen = marker.get("reopen")
-        if isinstance(reopen, str):
-            held = held and f"; reopen if: {flat(reopen)}" in line
+        held = (
+            shown.get("status") == status
+            and shown.get("reason") == flat(reason)
+            and shown.get("reopen") == (flat(reopen) if isinstance(reopen, str) else "")
+        )
         return f"decision: {handle} → {status}, in the state block" if held else None
     if kind != "caveat" or "work" in marker or "check" in marker:
         return None
-    if "caveat" in marker and flat(str(marker["caveat"])) in line:
-        return f"caveat: {handle}, its caveat in the state block"
+    if "caveat" in marker:
+        caveats = cast(frozenset[str], shown.get("caveats") or frozenset[str]())
+        held = flat(str(marker["caveat"])) in caveats
+        return f"caveat: {handle}, its caveat in the state block" if held else None
     evidence = marker.get("evidence")
     pair = cast(list[object], evidence) if isinstance(evidence, list) else []
     if len(pair) == 2:
-        kind_, scope = (flat(str(part or "")) for part in pair)
-        if kind_ in line and (not scope or scope in line):
+        held_pairs = cast(frozenset[tuple[str, str]], shown.get("evidence") or frozenset())
+        if (flat(str(pair[0])), flat(str(pair[1] or ""))) in held_pairs:
             return f"caveat: {handle}, its evidence in the state block"
     return None

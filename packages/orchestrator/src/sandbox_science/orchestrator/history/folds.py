@@ -137,6 +137,7 @@ class Folder(TurnHook):
         model: ChatModel | None = None,
         exists: Callable[[str], bool] | None = None,
         judge: Judge | None = None,
+        consolidating: bool = False,
         wait: float = WAIT,
         clock: Clock = SYSTEM_CLOCK,
         patience: float = PATIENCE,
@@ -161,6 +162,9 @@ class Folder(TurnHook):
         )
         self.model, self.exists, self.wait, self.digest = model, exists, wait, digest
         self.judge = judge
+        self.consolidating = consolidating
+        """A consolidation run's: every current decision in one line, never a stop for
+        them (CM-45)."""
         self.clock, self.patience = clock, patience
         self.events: Callable[[Json], Awaitable[None]] | None = None
         self.refit: Callable[[View], None] | None = None
@@ -233,6 +237,8 @@ class Folder(TurnHook):
                 await self._rebuild(transcript)  # the budgets shrink with λ
         if self.running is not None and self.running.kept is not None:
             await self._finish(transcript, self.tokens(transcript))
+        if self.view.stop is not None:  # before any fold, merge or call (CM-45)
+            return self._research_state()
         wall, size = self.geometry.wall, self.tokens(transcript)
         if size > wall and self.running is not None:
             await self._wait(transcript, size)
@@ -249,12 +255,16 @@ class Folder(TurnHook):
                 running.task.cancel()
             await self._finish(transcript, size)
             size = self.tokens(transcript)
+        if self.view.stop is not None:
+            return self._research_state()
         if size > self.geometry.trigger and self.running is None and not self.tripped:
             if self.model is None:
                 await self._fold(transcript, size)
             else:
                 await self._begin(transcript)
             size = self.tokens(transcript)
+        if self.view.stop is not None:
+            return self._research_state()
         if self.running is None and size <= wall:
             due, over = self._due(transcript)
             await self._over(over)
@@ -264,7 +274,7 @@ class Folder(TurnHook):
                 await self._begin_merge(transcript, due)
             size = self.tokens(transcript)
         if self.view.stop is not None:  # decisions the view cannot show (CM-45)
-            return self._stop("research_state", self.view.stop + CONSOLIDATE)
+            return self._research_state()
         if size <= wall:
             return True
         if self.tripped:
@@ -310,6 +320,10 @@ class Folder(TurnHook):
 
     async def model_returned(self, run: RunView) -> None:
         self.overflows = 0
+
+    def _research_state(self) -> bool:
+        assert self.view.stop is not None  # noqa: S101 - the callers checked
+        return self._stop("research_state", self.view.stop + CONSOLIDATE)
 
     def _stop(self, reason: str, detail: str) -> bool:
         self.stopped, self.detail = reason, detail
@@ -537,6 +551,7 @@ class Folder(TurnHook):
             earlier=self.earlier,
             judge=self.judge,
             digest=digest,
+            consolidating=self.consolidating,
         )
 
     def _digested(self, per_token: float) -> Rendered | None:

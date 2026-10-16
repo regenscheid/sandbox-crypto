@@ -41,13 +41,14 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, cast
 
+from .archive import PAGE
 from .record import FoldRecord, flat
 from .skeleton import failed, outcome_of
 
 if TYPE_CHECKING:
     from sandbox_science.orchestrator.ledger.store import Ledger
 
-    from .archive import Archived
+    from .archive import Archive, Archived
     from .reads import Register
 
 Json = dict[str, Any]
@@ -336,6 +337,42 @@ def _decision(
     if isinstance(reopen, str) and now.reopen is not None and flat(reopen) != now.reopen:
         return f"the reopen condition of {subject} changed (ledger_read {subject})"
     return None
+
+
+Decided = tuple[str, int, str]
+"""A decision as the ledger holds it: its handle, revision and status."""
+CURRENT: Final = frozenset({"proposed", "in_effect", "rejected"})
+"""A decision's statuses while its line is current (CM-21a)."""
+
+
+def current_decisions(
+    archive: Archive, ledger: Ledger, project: str, session: str
+) -> tuple[Decided, ...]:
+    """The session's current decisions: those its fold records' decision lines name, as
+    the ledger holds them now; what a ``research_state`` stop waits on to change (CM-45)."""
+    from .record import FoldRecord  # the archive's records
+
+    handles: set[str] = set()
+    start = 1
+    while True:
+        page = archive.messages(project, session, start=start)
+        for row in page:
+            if row.entry.kind == "fold" and (found := FoldRecord.of(row)) is not None:
+                handles |= {
+                    str(m.get("entry") or m.get("subject"))
+                    for m in found.markers
+                    if m.get("kind") == "decision"
+                }
+        if len(page) < PAGE:
+            break
+        start = page[-1].position + 1
+    entries = ledger_entries(ledger, project)  # an entry that cannot be read counts as none
+    held = {handle: entries(handle, None) for handle in sorted(handles)}
+    return tuple(
+        (handle, found.revision, found.status)
+        for handle, found in held.items()
+        if found is not None and found.status in CURRENT
+    )
 
 
 def ledger_entries(ledger: Ledger, project: str) -> Entries:

@@ -372,6 +372,7 @@ def _harness(
                 getattr(args, "words_share", 0.10),
                 getattr(args, "digest_share", 0.05),
                 getattr(args, "region_share", 0.15),
+                getattr(args, "region_cap_share", None),
             ),
             skeleton_only=getattr(args, "skeleton_only_folds", False),
             fold_alias=getattr(args, "fold_alias", None),
@@ -503,6 +504,13 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
             help=f"the share of C for {what}, before λ scales it (default {default}); the "
             "labs set small shares to force overviews, pointers and spills",
         )
+    command.add_argument(
+        "--region-cap-share",
+        type=float,
+        help="the share of C, before λ, that current decisions may grow the fold region to "
+        "(default: as far as the steady state allows); the labs set a small one to reach "
+        "the shortening of decisions and the research_state stop",
+    )
     command.add_argument(
         "--skeleton-only-folds",
         action="store_true",
@@ -661,7 +669,7 @@ def _check_agent(parser: argparse.ArgumentParser, args: argparse.Namespace) -> N
     for flag in ("context_ceiling", "fold_chunk", "input_limit"):
         if (value := getattr(args, flag, None)) is not None and value < 1:
             parser.error(f"--{flag.replace('_', '-')} must be at least 1")
-    for flag in ("words_share", "digest_share", "region_share"):
+    for flag in ("words_share", "digest_share", "region_share", "region_cap_share"):
         if (value := getattr(args, flag, None)) is not None and not 0 < value <= 0.5:
             parser.error(f"--{flag.replace('_', '-')} must be above 0 and at most 0.5")
     mcp = (args.mcp_proxy, args.mcp_token_file, args.mcp_project)

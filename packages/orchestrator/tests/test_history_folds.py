@@ -923,7 +923,8 @@ async def test_dropped_records_markers_keep_to_their_share(archive: Archive) -> 
     """The re-check of #459, M2: the marker lines of records left out of the region keep
     to a quarter of its share: failure aggregates give way first, then the oldest, and a
     last line counts them and says how to read them whole. Since step (f2b) a record is
-    left out only when outlines, not decisions, pass the region's budget."""
+    left out only when outlines, not decisions, pass the region's budget, and its
+    current decision lines are kept whole."""
     first = [archive.append(PROJECT, SESSION, "earlier", Entry("user", "task", "Look."))]
     decisions = tuple(
         {"kind": "decision", "subject": f"D-{n}", "text": f"D-{n} → rejected: " + "why " * 20}
@@ -937,12 +938,15 @@ async def test_dropped_records_markers_keep_to_their_share(archive: Archive) -> 
     view = session_view(archive, CONTEXT, geometry=shape, per_token=1.0)
     assert view.folds_left_out == (old,)
     lines = view.markers_left_out
-    assert sum(len(line) + 3 for line in lines[:-1]) <= 600 // 4
+    # The failure aggregate gives way; current decision lines never, whole past the
+    # budget (#482's review).
     assert not any(line.startswith("failures:") for line in lines)
-    assert "D-29 → rejected" in " ".join(lines)  # the newest kept, the oldest gone
-    assert "D-0 → rejected" not in " ".join(lines)
-    assert lines[-1].endswith(
-        f"of the records {old}, are left out here; history_read returns each record whole"
+    assert [line for line in lines if "→ rejected" in line] == [
+        f"decision: D-{n} → rejected: " + " ".join(["why"] * 20) for n in range(30)
+    ]
+    assert lines[-1] == (
+        f"1 more marker lines, of the records {old}, are left out here; history_read "
+        "returns each record whole"
     )
 
 

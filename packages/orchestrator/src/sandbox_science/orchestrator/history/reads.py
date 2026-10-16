@@ -343,6 +343,16 @@ def reference_reads(control: ControlStore, project: str, fields: Mapping[str, An
     """How far the project's sessions read a ``reference`` entry's sources (LG-15, as
     CM-12 amends it): its PDF, by its SHA-256 or its artifact revision's, and its ePrint,
     URL, NIST, arXiv and DOI identifiers, each as the register put its reads together."""
+    keys = reference_keys(control, project, fields)
+    if not keys:
+        return []
+    return [shown(read) for read in Register(control).sources(project, keys=keys)]
+
+
+def reference_keys(
+    control: ControlStore, project: str, fields: Mapping[str, Any]
+) -> list[tuple[str, str]]:
+    """A ``reference`` entry's sources as the register keys them, by kind."""
     from .descriptors import nist_key, paper_key, url_key  # which read this module's Read
 
     identifiers = cast(Json, fields.get("identifiers") or {})
@@ -368,6 +378,4 @@ def reference_reads(control: ControlStore, project: str, fields: Mapping[str, An
         sha256 = found[0] if found is not None else None
     if isinstance(sha256, str):
         keys.append(("pdf", sha256))
-    if not keys:
-        return []
-    return [shown(read) for read in Register(control).sources(project, keys=keys)]
+    return keys

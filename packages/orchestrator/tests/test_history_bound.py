@@ -16,11 +16,12 @@ import pytest
 
 from sandbox_science.orchestrator.digest import Rendered
 from sandbox_science.orchestrator.history import Archive, Entry, Folder, FoldRecord
-from sandbox_science.orchestrator.history.bound import bound
+from sandbox_science.orchestrator.history.bound import _short, bound
 from sandbox_science.orchestrator.history.folds import CONSOLIDATE
 from sandbox_science.orchestrator.history.geometry import Shares, geometry
 from sandbox_science.orchestrator.history.view import session_view, settle
 from sandbox_science.orchestrator.loop import Transcript
+from sandbox_science.orchestrator.notices import CONSOLIDATION
 from sandbox_science.orchestrator.projects import ProjectStore
 
 from .loop_harness import PROJECT, SESSION, Harness, Reply
@@ -67,37 +68,62 @@ def failures(tool: str, count: int) -> Json:
 # Short forms (CM-21b; CM-F18).
 
 
+def shows(**fields: Json) -> Rendered:
+    """A digest whose lines show these fields, by handle."""
+    return Rendered("…", fields=fields)
+
+
+D4 = {"status": "rejected", "reason": "too slow", "reopen": "I-1 is resolved"}
+
+
 def test_a_marker_is_short_only_while_the_digest_holds_the_same_exactly() -> None:
-    """CM-F18: D-4's marker is short while the digest's line holds its status, reason and
-    reopen condition, and in full again once D-4 leaves the digest or its line there says
-    something else; a caveat line is short while its entry's line holds it."""
+    """CM-F18: D-4's marker is short while the digest's line shows its status, reason and
+    reopen condition, each whole, and in full again once D-4 leaves the digest or its line
+    there shows something else; a caveat line is short while its entry's line shows it
+    whole among its caveats."""
     d4 = decided("D-4", reopen="I-1 is resolved")
     c3 = caveat("C-3", "below 2^64")
-    shown = Rendered(
-        "…",
-        lines={
-            "D-4": "D-4 (rejected) Index calculus; reason: too slow; reopen if: I-1 is resolved "
-            "[user] (ledger_read D-4)",
-            "C-3": "C-3 (proposed) A bound; caveats: below 2^64; n odd",
-        },
-    )
+    shown = shows(**{"D-4": D4, "C-3": {"status": "proposed", "caveats": frozenset({
+        "below 2^64", "n odd"}), "evidence": frozenset()}})  # fmt: skip
     records = [("F-1", record([d4, c3]))]
     found = bound(records, {}, shown, 10_000, 10_000)
     text = found.texts[0][1]
     assert "- decision: D-4 → rejected, in the state block" in text
     assert "- caveat: C-3, its caveat in the state block" in text
     assert found.rendering == {"F-1": {"short": [0, 1]}}
-    for lines in (
+    for fields in (
         {},  # D-4 left the digest
-        {"D-4": "D-4 (rejected) Index calculus; reason: too sl… [user] (ledger_read D-4)"},
-        {"D-4": "D-4 (in_effect) Index calculus; reason: too slow; reopen if: I-1 is resolved"},
+        {"D-4": {**D4, "reason": None}},  # its reason clipped there
+        {"D-4": {**D4, "status": "in_effect"}},
+        {"D-4": {**D4, "reopen": ""}},
     ):
-        again = bound(records, {}, Rendered("…", lines=lines), 10_000, 10_000)
+        again = bound(records, {}, shows(**fields), 10_000, 10_000)
         assert (
             "- decision: D-4 → rejected: too slow; reopen if I-1 is resolved" in again.texts[0][1]
         )
     # The stored record is the same throughout.
     assert records[0][1].markers == (d4, c3)
+
+
+def test_a_field_that_only_holds_the_markers_words_is_not_the_same() -> None:
+    """#482's review: "needs Y" is not "needs Y-prime, …"; the caveat "heuristic" is not
+    "not heuristic: proven …"; an evidence type named in a statement is not evidence."""
+    digest = shows(**{
+        "D-4": {"status": "rejected", "reason": "needs Y-prime, which REF-3 rules out",
+                "reopen": ""},
+        "C-2": {"status": "proposed", "caveats": frozenset({"not heuristic: proven for p < 2^20"}),
+                "evidence": frozenset()},
+        "C-5": {"status": "proposed", "caveats": frozenset(), "evidence": frozenset()},
+    })  # fmt: skip
+    markers = [
+        decided("D-4", "needs Y"),
+        caveat("C-2", "heuristic"),
+        {"kind": "caveat", "subject": "C-5", "text": "evidence on C-5 is a finite test",
+         "evidence": ["finite_test", "for p odd"], "entry": "C-5"},
+    ]  # fmt: skip
+    assert [_short(marker, digest) for marker in markers] == [None, None, None]
+    held = shows(**{"C-5": {"evidence": frozenset({("finite_test", "for p odd")})}})
+    assert _short(markers[2], held) == "caveat: C-5, its evidence in the state block"
 
 
 # Reductions (CM-21b; CM-F20, CM-F21).
@@ -242,8 +268,89 @@ def test_small_shares_scale_the_budgets_and_lambda_counts_them() -> None:
 
 
 async def test_the_shares_are_run_options(harness: Harness) -> None:
-    options = ["--words-share", "0.02", "--digest-share", "0.01", "--region-share", "0.03"]
+    options = ["--words-share", "0.02", "--digest-share", "0.01", "--region-share", "0.03",
+               "--region-cap-share", "0.04"]  # fmt: skip
     record = await harness.run("run-1", [Reply("Done.")], options=options)
-    assert folds(record)["geometry"]["shares"] == [0.02, 0.01, 0.03]
+    assert folds(record)["geometry"]["shares"] == [0.02, 0.01, 0.03, 0.04]
     with pytest.raises(SystemExit):
         await harness.run("run-2", [Reply("Done.")], options=["--region-share", "0.9"])
+
+
+# #482's review.
+
+
+def test_reads_of_cited_sources_spill_after_the_rest_and_the_pointer_counts_past_ten() -> None:
+    """A read whose source an active reference cites spills after the other caveats and
+    reads, before those named; the pointer line names at most ten handles and counts
+    the rest."""
+    read = {"kind": "read", "subject": "a.pdf", "text": "a.pdf: read partial: pages 1-3 of 40",
+            "source": ["pdf", "a" * 64]}  # fmt: skip
+    caveats = [caveat(f"C-{n}", "n odd " * 10) for n in range(14)]
+    records = [("F-1", record([read, *caveats]))]
+    digest = Rendered("…", cited=frozenset({("pdf", "a" * 64)}))
+    found = bound(records, {}, digest, 1, 100_000)
+    assert found.spilled[-1] == "a.pdf"  # the cited read last
+    assert found.pointer is not None
+    assert "C-0, C-1, C-2, C-3, C-4, C-5, C-6, C-7, C-8, C-9 and 5 more of F-1" in found.pointer
+
+
+def test_a_consolidation_run_shows_every_decision_in_one_line_and_never_stops() -> None:
+    """CM-45, the coordinator's decision of 2026-10-16: past a ``research_state`` stop,
+    a consolidation run's region shows every current decision in its one line, the
+    standing constraints too, whatever the cap, and does not stop for them."""
+    marks = [decided(f"D-{n}", "why " * 80) for n in range(6)]
+    records = [("F-1", record(marks))]
+    digest = Rendered("…", pinned=frozenset({"D-5"}))
+    assert bound(records, {}, digest, 450, 600).stop is not None
+    found = bound(records, {}, digest, 450, 600, consolidating=True)
+    assert found.stop is None
+    assert found.shortened == tuple(f"D-{n}" for n in range(6))
+    assert found.texts[0][1].count("(shortened; ledger_read D-") == 6
+
+
+async def test_a_consolidation_runs_state_block_asks_for_the_proposal(archive: Archive) -> None:
+    recorded(archive, [decided("D-1")], "One decision.")
+    worked(archive, "earlier", 1, 100)
+    view = session_view(archive, CONTEXT, geometry=geometry(20_000, 0, 4_000), per_token=1.0,
+                        consolidating=True)  # fmt: skip
+    settled = await settle(view, archive, CONTEXT, run="r", kernels=None)
+    block = str(settled.parts[0].message["content"])
+    assert CONSOLIDATION.text in block
+    region = next(str(p.message["content"]) for p in settled.parts if p.kind == "fold_region")
+    assert "- decision: D-1 → rejected: too slow (shortened; ledger_read D-1)" in region
+
+
+async def test_a_stopped_view_starts_no_enrichment(archive: Archive) -> None:
+    """#482's review: with decisions that do not fit, the run stops before any fold's or
+    merge's call, even past the trigger."""
+    recorded(archive, [decided(f"D-{n}", "why " * 60) for n in range(150)], "Decisions.")
+    for n in range(40):
+        worked(archive, "earlier", n, 4_000)
+    start = geometry(40_000, 0, 4_000)
+    view = session_view(archive, CONTEXT, geometry=start, per_token=1.0)
+    assert view.stop is not None
+    model = Counting()
+    made = Folder(archive, CONTEXT, run="r", view=view, start=start, ceiling=40_000,
+                  chunk=4_000, model=cast(Any, model))  # fmt: skip
+    made.per_token = lambda run: 1.0  # type: ignore[method-assign]
+    transcript = Transcript(messages=[{"role": "system", "content": "s"}, *view.messages])
+    assert not await made.before_call(transcript)
+    assert made.stopped == "research_state"
+    assert (made.running, model.calls, made.folds) == (None, 0, [])
+
+
+class Counting:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete(self, messages: Any, tools: Any) -> Any:
+        self.calls += 1
+        raise AssertionError("no enrichment while the view is stopped")
+
+
+def test_a_lab_can_cap_the_regions_growth_by_decisions() -> None:
+    small = Shares(region=0.02, cap=0.03)
+    shape = geometry(600_000, 30_000, None, small)
+    assert shape.region_cap == int(0.03 * 600_000 * shape.scale)
+    assert geometry(600_000, 30_000, None, Shares(region=0.02)).region_cap > 150_000
+    assert shape.summary()["shares"] == [0.10, 0.05, 0.02, 0.03]

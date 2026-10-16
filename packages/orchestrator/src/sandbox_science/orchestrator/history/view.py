@@ -50,7 +50,13 @@ from typing import TYPE_CHECKING, Any, Final, cast
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ExecutionContext, KernelInfo
 from sandbox_science.orchestrator.documents.tool import REQUESTS_TASK
 from sandbox_science.orchestrator.hooks import Point, RunView, TurnHook
-from sandbox_science.orchestrator.notices import FOLD_REGION, KERNEL_LINES, STATE_BLOCK, requests
+from sandbox_science.orchestrator.notices import (
+    CONSOLIDATION,
+    FOLD_REGION,
+    KERNEL_LINES,
+    STATE_BLOCK,
+    requests,
+)
 from sandbox_science.orchestrator.projects import ProjectError
 from sandbox_science.orchestrator.skills.discovery import shown_in
 from sandbox_science.orchestrator.skills.tool import given
@@ -134,6 +140,8 @@ class View:
     """The region's text, its pointer line waiting for the spill record's ID."""
     spilled: str | None = None
     """The archive ID of the spill record the region's pointer line names."""
+    consolidating: bool = False
+    """A consolidation run's view (CM-45): its state block asks for the proposal."""
     folded: tuple[int, int] | None = None
     """The first and last positions the folds cover."""
     stubs: tuple[str, ...] = ()
@@ -217,17 +225,22 @@ def session_view(
     earlier: Earlier | None = None,
     judge: Judge | None = None,
     digest: Rendered | None = None,
+    consolidating: bool = False,
 ) -> View:
     """The session's view under ``geometry``; ``runs`` are the session's main runs with
     saved records, which tells those from before the archive, and ``earlier`` reads the
     user's messages from their records; ``judge`` decides which markers are retired, by
     the ledger and the read register when it has them; ``digest`` is the state block's
-    research state, which the region's short forms are checked against (CM-21b). It
+    research state, which the region's short forms are checked against (CM-21b);
+    ``consolidating``, a consolidation run's, every current decision in one line (CM-45). It
     changes nothing: ``settle`` archives its state block and spill record and adds its
     kernel lines."""
     every_row = _rows(archive, context)
+    # A spill record already archived that holds the same lines, in whatever order.
     spills = {
-        row.entry.content or "": row.message_id for row in every_row if row.entry.kind == "spill"
+        _lines(row.entry.content or ""): row.message_id
+        for row in every_row
+        if row.entry.kind == "spill"
     }
     rows = [row for row in every_row if row.entry.kind != "spill"]
     every = [(row, found) for row in rows if (found := FoldRecord.of(row)) is not None]
@@ -245,9 +258,16 @@ def session_view(
     stubs = {at for _, found in every for at in found.stubs}
     units = [_stubbed(unit, stubs) for unit in _units(raw)]
     budget, cap = int(geometry.region * per_token), int(geometry.region_cap * per_token)
-    shaped = bound([(r.message_id, f) for r, f in records], retired, digest, budget, cap)
+    shaped = bound(
+        [(r.message_id, f) for r, f in records],
+        retired,
+        digest,
+        budget,
+        cap,
+        consolidating=consolidating,
+    )
     region, shown_folds, left, pending = _region(shaped, budget, cap)
-    spilled = spills.get(shaped.spill) if shaped.spill is not None else None
+    spilled = spills.get(_lines(shaped.spill)) if shaped.spill is not None else None
     if pending is not None and spilled is not None:  # archived at an earlier rebuild
         region = Part("fold_region", {"role": "user", "content": _pointed(pending, spilled)})
         pending = None
@@ -289,6 +309,7 @@ def session_view(
         pending=pending,
         spilled=spilled,
         digest=digest.text if digest is not None else None,
+        consolidating=consolidating,
         folded=(folded[0].position, end) if folded else None,
         stubs=tuple(p.row.message_id for p in kept if p.kind == "stub" and p.row),
         words=words if folded or before or left else None,
@@ -324,6 +345,10 @@ def _region(
     return Part("fold_region", {"role": "user", "content": content}), shown, left, None
 
 
+def _lines(text: str) -> frozenset[str]:
+    return frozenset(text.splitlines())
+
+
 def _pointed(pending: str, spill: str) -> str:
     """The region's text with its pointer line naming the spill record."""
     head, _, pointer = pending.rpartition("\n\n")
@@ -338,9 +363,9 @@ def _left_markers(
 ) -> tuple[str, ...]:
     """The marker lines of the records ``left`` out, within ``budget`` characters, a
     quarter of the region's, retired ones as their index lines: failure aggregates give
-    way first, then retired markers, then caveats and reads, and decision lines last,
-    the oldest first in each (CM-21b); the last line says how many gave way and how to
-    read them whole."""
+    way first, then retired markers, then caveats and reads, the oldest first in each;
+    current decision lines never, kept whole past the budget if need be (CM-21b); the
+    last line says how many gave way and how to read them whole."""
     found: list[tuple[int, str, str]] = []
     for row, record in records:
         if row.message_id not in left:
@@ -357,7 +382,7 @@ def _left_markers(
     total = sum(len(line) + 3 for _, line, _ in found)
     gone: set[int] = set()
     for index in sorted(range(len(found)), key=lambda i: (found[i][0], i)):
-        if total <= budget:
+        if total <= budget or found[index][0] == 3:
             break
         gone.add(index)
         total -= len(found[index][1]) + 3
@@ -462,6 +487,8 @@ async def settle(
         text = STATE_BLOCK.text + folded + before + view.words
     if view.digest:
         text = f"{text}\n\n{view.digest}" if text else view.digest
+    if view.consolidating:
+        text = f"{text}\n\n{CONSOLIDATION.text}" if text else CONSOLIDATION.text
     if text:
         entry = Entry("user", "state_block", text)
         row = await patiently(

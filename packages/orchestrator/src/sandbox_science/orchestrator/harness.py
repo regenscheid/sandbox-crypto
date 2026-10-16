@@ -269,6 +269,9 @@ class RunRequest:
     them in the record."""
     parent: str | None = None
     """A delegated run's parent: the name its record will be kept under (PD-32)."""
+    consolidate: bool = False
+    """A consolidation run after a ``research_state`` stop (CM-45): its view shows every
+    current decision in one line, and it is told to propose how to consolidate them."""
     delegation: str | None = None
     """A delegated run's delegation (``Harness.run_child``)."""
     memory_version: int | None = None
@@ -710,6 +713,7 @@ class Harness:
             earlier=earlier,
             judge=judge,
             digest=found,
+            consolidating=request.consolidate,
         )
         kernels = None
         if view.cells:  # whether the kernels its cells ran in still run (CM-29c)
@@ -742,6 +746,7 @@ class Harness:
             model=self._narrator(),
             exists=exists,
             judge=judge,
+            consolidating=request.consolidate,
             clock=self.clock,
         )
         # The ceiling a context error capped, carried to later runs: this service's, or

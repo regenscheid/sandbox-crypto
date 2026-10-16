@@ -12,7 +12,14 @@ from typing import Any
 import pytest
 
 from sandbox_science.orchestrator import digest as digest_module
-from sandbox_science.orchestrator.digest import Digest, Line, Section, constraints_block, render
+from sandbox_science.orchestrator.digest import (
+    Digest,
+    Line,
+    Section,
+    _wholes,
+    constraints_block,
+    render,
+)
 from sandbox_science.orchestrator.documents import (
     USER,
     Author,
@@ -392,3 +399,24 @@ def test_a_section_keeps_a_shorter_line_after_one_that_does_not_fit() -> None:
     assert rendered.shown == ("D-2",)
     assert rendered.left_out == ("D-1",)
     assert len(rendered.text) <= 120
+
+
+def test_the_digest_records_what_each_line_shows_field_by_field(state: Path) -> None:
+    """#482's review, CM-21b: for each handle it shows, the digest records the fields its
+    line shows, each whole or ``None`` where it clips it, which the fold region's short
+    forms are compared with; and the sources its references cite."""
+    documents = DocumentStore(store_path(state))
+    try:
+        rendered = render(Digest(Ledger(documents)).sections(PROJECT, SESSION), 20_000)
+    finally:
+        documents.close()
+    assert rendered.fields["D-4"] == {
+        "status": "rejected",
+        "reason": "Recorded as d4.",
+        "reopen": "Reopen if Y is available (I-1).",
+    }
+    assert rendered.fields["C-2"]["caveats"] == frozenset({"heuristic only"})
+    assert {"D-1", "D-2"} <= rendered.pinned
+    assert ("eprint", "2024/123") in rendered.cited
+    assert _wholes(["a" * 150, "b" * 150], 300) == {"a" * 150}
+    assert _wholes(["a" * 100, "b" * 100], 300) == {"a" * 100, "b" * 100}

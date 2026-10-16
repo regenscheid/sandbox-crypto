@@ -43,7 +43,7 @@ from typing import Any, Final, cast
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
 from sandbox_science.orchestrator.documents import DocumentError
-from sandbox_science.orchestrator.history.reads import reference_reads
+from sandbox_science.orchestrator.history.reads import reference_keys, reference_reads
 from sandbox_science.orchestrator.ledger.models import MIN_QUOTE, EntrySummary, EntryView
 from sandbox_science.orchestrator.ledger.proposals import FoldProposals
 from sandbox_science.orchestrator.ledger.provenance import users_words
@@ -108,6 +108,9 @@ class Line:
     handle: str | None = None
     pinned: bool = False
     """A line no later line of its section may displace: one of the user's constraints."""
+    fields: Mapping[str, Any] | None = None
+    """What the line shows of its entry, field by field, each whole or ``None`` where the
+    line clips it: what a fold record's marker is compared with (CM-21b)."""
 
 
 @dataclass
@@ -130,13 +133,38 @@ class Rendered:
     shown: tuple[str, ...] = ()
     left_out: tuple[str, ...] = ()
     lines: Mapping[str, str] = field(default_factory=dict[str, str])
-    """The line each handle shown has, as the digest shows it: what a fold record's
-    marker is compared with for its short form (CM-21b)."""
+    """The line each handle shown has, as the digest shows it."""
+    fields: Mapping[str, Mapping[str, Any]] = field(default_factory=dict[str, Mapping[str, Any]])
+    """For each handle shown, the fields its line shows (``Line.fields``): a fold record's
+    marker takes its short form only when they hold its own exactly (CM-21b)."""
+    cited: frozenset[tuple[str, str]] = frozenset()
+    """The sources, by kind and key, that an active reference cites: incomplete reads of
+    them rank above the rest when the fold region spills (CM-21b)."""
     named: frozenset[str] = frozenset()
     """The handles the plan and the open questions name: the markers on them come first
     among those the fold region keeps (CM-21b)."""
     pinned: frozenset[str] = frozenset()
     """The user's standing constraints, which are never shortened."""
+
+
+def _whole(text: str, limit: int) -> str | None:
+    """``text`` on one line as ``_clip`` shows it, or ``None`` when that clips it."""
+    flat = " ".join(text.split())
+    return flat if len(flat) <= limit else None
+
+
+def _wholes(items: Sequence[str], limit: int) -> set[str]:
+    """The ``items`` that ``_clip`` of their join with "; " shows whole."""
+    found: set[str] = set()
+    joined = " ".join("; ".join(items).split())
+    position = 0
+    for item in items:
+        flat = " ".join(item.split())
+        end = position + len(flat)
+        if len(joined) <= limit or end <= limit - 1:
+            found.add(flat)
+        position = end + 2
+    return found
 
 
 def _clip(text: str, limit: int = CLIP) -> str:
@@ -295,11 +323,16 @@ class Digest:
         if view.flags:
             causes = ", ".join(sorted({flag.cause for flag in view.flags}))
             text += f"; open flags: {causes}"
-        line = self._line(view, session, text)
+        reopen = fields.get("reopen_condition")
+        shown = {
+            "status": view.status,
+            "reason": _whole(view.reason, 200),
+            "reopen": _whole(str(reopen), 200) if reopen else "",
+        }
+        line = replace(self._line(view, session, text), fields=shown)
         if view.basis != "user_quoted":
             return line
-        said = self._quotes(project, view)
-        return Line(line.text + said, line.touched, line.updated, line.linked, line.handle)
+        return replace(line, text=line.text + self._quotes(project, view))
 
     def sections(self, project: str, session: str) -> list[Section]:
         """CM-16's sections for a main run of ``session``, as the stores hold them now; a
@@ -401,9 +434,19 @@ class Digest:
             caveats = cast(list[str], view.fields.get("caveats") or [])
             if caveats:
                 text += f"; caveats: {_clip('; '.join(caveats), 300)}"
+            whole = _wholes(scopes, 200)
+            held: dict[str, Any] = {
+                "status": view.status,
+                "caveats": frozenset(_wholes(caveats, 300)),
+                "evidence": frozenset(
+                    (str(e.type), " ".join((e.scope or "").split()))
+                    for e in view.evidence
+                    if not e.scope or " ".join(e.scope.split()) in whole
+                ),
+            }
             standing = summary.standing
             if standing is None:
-                plain.append(self._line(view, session, text))
+                plain.append(replace(self._line(view, session, text), fields=held))
                 continue
             text = f"[{standing.text}] {text}"
             if standing.scope:
@@ -412,7 +455,7 @@ class Digest:
                 text += f"; assumes {', '.join(standing.assumes)}"
             if standing.by:
                 text += f"; by {standing.by}"
-            labelled[standing.label].append(self._line(view, session, text))
+            labelled[standing.label].append(replace(self._line(view, session, text), fields=held))
         section.lines = [
             *(line for label in STANDINGS for line in _ordered(labelled[label])),
             *_ordered(plain),
@@ -431,7 +474,8 @@ class Digest:
                 of = f" of {covered['of']}" if covered.get("of") else ""
                 shown.append(f"{read['kind']} {read['extent']}{pages}{of}")
             text += f"; read: {'; '.join(shown)}" if shown else "; read: not in this project"
-            lines.append(self._line(view, session, text))
+            cites = frozenset(reference_keys(self.ledger.control, project, view.fields))
+            lines.append(replace(self._line(view, session, text), fields={"cites": cites}))
         section.lines, section.hint = _ordered(lines), "ledger_list with type reference"
 
     def _plan(self, section: Section, project: str, session: str) -> None:
@@ -529,6 +573,19 @@ def render(sections: Sequence[Section], budget: int) -> Rendered:
         tuple(line.handle for _, shown, _ in fitted for line in shown if line.handle),
         tuple(line.handle for _, _, left in fitted for line in left if line.handle),
         {line.handle: line.text for _, shown, _ in fitted for line in shown if line.handle},
+        {
+            line.handle: line.fields
+            for _, shown, _ in fitted
+            for line in shown
+            if line.handle and line.fields is not None
+        },
+        frozenset(
+            cited
+            for section in sections
+            if section.key == "sources"
+            for line in section.lines
+            for cited in cast(frozenset[tuple[str, str]], (line.fields or {}).get("cites", ()))
+        ),
         frozenset(named),
         frozenset(
             line.handle

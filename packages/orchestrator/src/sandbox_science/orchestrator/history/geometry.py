@@ -37,10 +37,14 @@ class Shares:
     words: float = 0.10
     digest: float = 0.05
     region: float = 0.15
+    cap: float | None = None
+    """How far current decisions may grow the region, as a share of C before λ; ``None``
+    for as far as the steady state allows (``Geometry.region_cap``)."""
 
     def __post_init__(self) -> None:
-        for name in ("words", "digest", "region"):
-            if not 0.0 < getattr(self, name) <= 0.5:
+        for name in ("words", "digest", "region", "cap"):
+            value = getattr(self, name)
+            if value is not None and not 0.0 < value <= 0.5:
                 raise ValueError(f"the {name} share must be above 0 and at most 0.5")
 
 
@@ -96,6 +100,8 @@ class Geometry:
         the system message and tools, the state block, the region, the raw floor and
         half a chunk stay under the trigger, so a useful fold still fits (CM-21b)."""
         room = self.trigger - self.prompt - self.state_block - self.floor - self.chunk // 2
+        if self.shares.cap is not None:  # a lab's: smaller, to reach the shortening
+            room = min(room, int(self.shares.cap * self.ceiling * self.scale))
         return max(self.region, room)
 
     @property
@@ -134,7 +140,14 @@ class Geometry:
             **(
                 {}
                 if self.shares == DEFAULT_SHARES
-                else {"shares": [self.shares.words, self.shares.digest, self.shares.region]}
+                else {
+                    "shares": [
+                        self.shares.words,
+                        self.shares.digest,
+                        self.shares.region,
+                        *([self.shares.cap] if self.shares.cap is not None else []),
+                    ]
+                }
             ),
         }
 

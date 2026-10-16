@@ -131,6 +131,7 @@ GOLDEN = {
     "sandbox-fold-region-3": "b844c1fa240b73328d646cb1304caff16d5114ebee7b6c4a0ddf75a886e6cf00",
     "sandbox-fold-enrich-2": "6c66a8694849373c6d7eecc23158e6c2b1862fb8afae640c660f20634876d37b",
     "sandbox-fold-overview-1": ("55cf72856d831930c9953d972e16f2da74626f4972e3b787a32d49378efe23cd"),
+    "sandbox-consolidation-1": ("d67d1fdf2583ba97951b057b2246ce1d458a60806edf9bf7a7545920cf33f20a"),
 }
 
 
