@@ -24,6 +24,7 @@ FindingStatus = Literal[
     "superseded",
     "inconclusive",
     "withdrawn",
+    "challenged",
 ]
 Category = Literal[
     "missing_action",

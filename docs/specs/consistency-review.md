@@ -70,6 +70,8 @@ Terms:
 - CR-15. A terminal review holds the turn's completion: the user sees the final message marked "review pending" (new). If a checkpoint review is running, the terminal review starts after it and absorbs the pending window.
 - CR-16. If the user sends a message while a terminal review is pending, the new turn starts at once. The review continues, and its findings reach the author at the first safe point of the new turn (new).
 
+  *Amended 2026-10-16 by the owner (the response-loop guard):* a finding the turn never delivered, as one the last review of its closing raised, reaches the session's next run as a count with a pointer to `review_findings` and the review panel, not as an interruption; that run goes on with its own task, and may follow the finding up (a check, a fix, a plan step) without being made to.
+
 ### Findings
 
 - CR-17. A finding records: ID; review ID and type; the reviewer run (alias, resolved model, rubric version), or for a `math` finding the math check; severity; category (CR-4, or `math`, CR-36; *amended 2026-10-11*; or `figure`, the [figures](figures.md) spec's FG-22, *amended 2026-10-16 by the owner*); a statement in Markdown with LaTeX (D25); one or more anchors (transcript entry, execution log range, artifact revision and block, source page or region); pinned evidence references; an optional suggested remedy; status; and every transition with actor, time and reason.
@@ -78,6 +80,8 @@ Terms:
 - CR-20. The reviewer sees the open findings and re-flags one instead of duplicating it. A new finding with the same category and anchors as an open one is turned into a re-flag (new).
 - CR-21. `fail` findings from a checkpoint review interrupt the author at the next safe point: after the current tool call, before the next model request. `warn` and `note` findings are not injected; the author is told how many exist and lists them with a tool. The user sees every finding at once (CScience).
 
+  *Amended 2026-10-16 by the owner (the response-loop guard):* a run is interrupted only by the `fail` findings that reviews of its own work raised or decided; the session's earlier findings reach it as counts (CR-16).
+
 ### Response and confirmation
 
 - CR-22. The author or the user responds to a finding with `fix`, which requires an explanation and references to the changed revisions or messages, or with `rebut`, an explanation with evidence. The explanation is shown to the user (CScience).
@@ -85,6 +89,8 @@ Terms:
 - CR-24. A `fix` moves the finding to `claimed fixed` and queues a confirmation review. The reviewer checks the finding, its evidence, the explanation and the referenced revisions, and confirms, rejects or cannot decide (CScience).
 - CR-25. Only a confirmation review or the user can mark a finding `confirmed fixed`, and the record shows which (user confirmation is new). The author MUST NOT be able to. *Amended 2026-10-11: for a `math` finding, the math check does it too, and the record says so (CR-38).*
 - CR-26. The next review evaluates a rebuttal. If it accepts it, the finding becomes `withdrawn`; if not, the finding stays `open` with the reviewer's reason and one more re-flag (new).
+
+  *Amended 2026-10-16 by the owner (the response-loop guard):* when the next review rejects a rebuttal that cites recorded evidence, the finding becomes `challenged` instead: both sides are recorded, the author's rebuttal stands and carries more weight than the reviewer's, and the reviewer's reason is visible context, not a block. No re-flag is counted and no round follows; a later review's matching finding adds to its record. The orchestrator is told, as context, at its next turn, and the user sees both sides in the review panel whenever they like; the user is not asked to decide. A rebuttal without evidence that is rejected stays as above.
 
 ### Outcomes
 
@@ -99,6 +105,7 @@ Terms:
   | `superseded` | The revisions it is anchored to were replaced; nothing was checked | Harness |
   | `inconclusive` | The reviewer could not decide from the evidence | Reviewer |
   | `withdrawn` | A rebuttal was accepted, or the user dismissed it | Reviewer, user |
+  | `challenged` | A rebuttal that cites recorded evidence was rejected by the reviewer: both sides stand, with no further round (amended 2026-10-16 by the owner) | Reviewer |
 
   Only `confirmed fixed` and `withdrawn` are resolved; the rest stay visible as unresolved. The user, or a later review with new evidence, can re-open `unaddressed`, `superseded` and `inconclusive` findings, and the author can still fix `open` and `unaddressed` ones in a later turn.
 
@@ -108,6 +115,8 @@ Terms:
 ### Bounded completion
 
 - CR-29. After a terminal review with `fail` findings, the author is resumed for a response round, followed by confirmation of claimed fixes; at most 2 rounds per turn (new defaults; CScience bounds its loop, and Claude Code caps consecutive stop-hook continuations). *Amended 2026-10-11: open `math` findings for the turn's work also start a response round, which hands them over together with the terminal review's findings (CR-37).*
+
+  *Amended 2026-10-16 by the owner (the response-loop guard):* only the open `fail` findings delivered to the run take it into a response round; a challenged finding (CR-26) and the session's earlier findings (CR-16) take none.
 - CR-30. A finding is re-flagged to the author at most twice; then it becomes `unaddressed` instead of being injected again (CScience keeps a re-flag count).
 - CR-31. Each review has a turn, time and cost budget. A review that reaches it ends `capped` and keeps the findings it recorded.
 - CR-32. When the bound is reached, `open` findings become `unaddressed`, `claimed fixed` findings stay unconfirmed, and the turn completes with a summary of findings by status and severity.

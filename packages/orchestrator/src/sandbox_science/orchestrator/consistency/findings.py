@@ -363,7 +363,7 @@ class Findings:
         if (
             notify
             and found["origin"] == "review"
-            and status == "open"
+            and status in ("open", "challenged")
             and SEVERITY_RANK[found["severity"]] <= SEVERITY_RANK[threshold]
         ):
             db.execute(
@@ -445,7 +445,9 @@ class Findings:
                     "anchors": anchors,
                     "remedy": value.remedy,
                 }
-                if self._response_pending(db, found):
+                if found["status"] == "challenged" or self._response_pending(db, found):
+                    # A challenged finding is settled for its rounds: a later review's
+                    # match is kept for the record, as one awaiting a decision is.
                     result = self._defer(db, review, found, assessment)
                     self.record_operation(
                         db, project, actor, value.operation_id, fingerprint, result
@@ -930,12 +932,20 @@ class Findings:
                     ),
                     (value.finding,),
                 ).fetchone()
-                if json.loads(latest[0]).get("action") != "rebut":
+                rebuttal = json.loads(latest[0])
+                if rebuttal.get("action") != "rebut":
                     raise DocumentError(
                         POLICY_DENIED, "there is no pending rebuttal in this finding"
                     )
                 status = "withdrawn" if value.decision == "accept_rebuttal" else "open"
-            reflag = value.decision in ("reject", "reject_rebuttal")
+                if value.decision == "reject_rebuttal" and rebuttal.get("anchors"):
+                    # A rebuttal with recorded evidence stands: the reviewer's rejection is
+                    # recorded beside it as a challenge, with no further round (the owner,
+                    # 2026-10-16; CR-26 as amended).
+                    status = "challenged"
+            reflag = value.decision == "reject" or (
+                value.decision == "reject_rebuttal" and status != "challenged"
+            )
             if reflag and found["reflags"] + 1 >= config.max_reflags:
                 status = "unaddressed"
             result = self.transition(

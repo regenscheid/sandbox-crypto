@@ -32,37 +32,61 @@ class FindingNotices:
         self.leases = LeasedNotices(store.documents.control, self.table, store.clock)
 
     def pending(
-        self, project: str, session: str, run: str, seen: set[str], *, max_chars: int = 20000
+        self,
+        project: str,
+        session: str,
+        run: str,
+        seen: set[str],
+        *,
+        max_chars: int = 20000,
+        raised_for: str | None = None,
     ) -> list[Json]:
+        """The notices to lease to ``run``. With ``raised_for``, a run's ID, the open
+        findings among them are only those the reviews of that run's work raised or
+        decided: the others reach it as counts (the owner, 2026-10-16; CR-16, CR-21 as
+        amended). Challenged findings only inform, and go to any run."""
         if len(seen) >= MAX_PER_RUN:
             return []
         self.store.scope(project, session)
 
         def notice(row: tuple[Any, ...]) -> Json:
-            finding, revision, severity, statement, review = row
-            return {
+            finding, revision, severity, statement, review, status, reason = row
+            found: Json = {
                 "notice_id": f"{finding}-r{revision}",
                 "finding": finding,
                 "revision": revision,
                 "severity": severity,
                 "review": review,
+                "status": status,
                 "statement": clipped(statement, 2048),
                 "detail": "Read review_finding_read for the full finding and evidence.",
             }
+            if status == "challenged":
+                found["challenge"] = clipped(str(reason or ""), 2048)
+            return found
 
         # The latest state is authoritative. A response made before delivery
         # makes the older open notice unnecessary, without hiding its history.
+        # A run is offered only the open findings reviews of its own work raised or
+        # decided, the rest reaching it as counts, and the challenged ones, which only
+        # inform (the owner, 2026-10-16; CR-16, CR-21, CR-26 as amended).
         return self.leases.offer(
             run,
             seen,
             batch=20,
             max_chars=max_chars,
-            select="""SELECT n.finding_id,n.revision,f.severity,f.statement,f.review_id
+            select="""SELECT n.finding_id,n.revision,f.severity,f.statement,f.review_id,
+                f.status,t.reason
                 FROM review_notices n JOIN review_findings f USING(finding_id)
+                JOIN review_transitions t ON t.finding_id=n.finding_id
+                AND t.revision=n.revision
                 WHERE n.project=? AND n.session=?
-                AND n.revision=f.revision AND f.status='open' AND f.category!='math'
+                AND n.revision=f.revision AND f.status IN ('open','challenged')
+                AND f.category!='math'
+                AND (f.status='challenged' OR ? IS NULL OR EXISTS(SELECT 1 FROM
+                review_runs r WHERE t.actor='review:'||r.review_id AND r.author_run=?))
                 AND {leased} ORDER BY n.rowid LIMIT ?""",
-            parameters=(project, session),
+            parameters=(project, session, raised_for, raised_for),
             project=notice,
         )
 

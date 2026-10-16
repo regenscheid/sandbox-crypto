@@ -1129,7 +1129,8 @@ async def test_completed_scientific_bound_survives_later_math_failure(stores, mo
     create(docs)
     await drain(reviews, ScriptedChecker())
     reviews.observe("p", "s", "science", "transcript", {}, {"role": "assistant", "content": "16"})
-    review = reviews.dispatch("p", "s", "terminal", author_run="old", owner="owner", alias=None)
+    # Raised on the run's own work, the finding is offered to it and bounded (CR-21, CR-29).
+    review = reviews.dispatch("p", "s", "terminal", author_run="partial", owner="owner", alias=None)
     evidence = reviews.manifest("p", "s", review)["evidence"][0]["evidence"]
     scientific = Findings(reviews).create(
         "p",

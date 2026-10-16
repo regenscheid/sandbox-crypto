@@ -26,8 +26,18 @@ class MathNotices(FindingNotices):
     table: NoticeTable = MATH
 
     def pending(
-        self, project: str, session: str, run: str, seen: set[str], *, max_chars: int = 20000
+        self,
+        project: str,
+        session: str,
+        run: str,
+        seen: set[str],
+        *,
+        max_chars: int = 20000,
+        raised_for: str | None = None,
     ) -> list[Json]:
+        """Math findings go to the run that answers them, whichever run's text they are
+        in (CR-37): ``raised_for`` does not narrow them."""
+        del raised_for
         if len(seen) >= MAX_PER_RUN:
             return []
         self.store.scope(project, session)

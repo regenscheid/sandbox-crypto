@@ -46,6 +46,7 @@ from .artifacts import ArtifactInventory
 from .chat import EventLog, ModelBudget, RunChat, SessionHeld, UserMessages
 from .connectors import Connectors, ProxyClient
 from .consistency.controller import ReviewController
+from .consistency.findings import Findings
 from .consistency.models import ReviewConfig
 from .consistency.store import ReviewStore
 from .control import ControlError
@@ -839,6 +840,7 @@ class Harness:
             plans=SessionPlans(stores.documents),
             questions=Questions(stores.documents, clock=self.clock),
             delegations=DelegationRecords(stores.documents, clock=self.clock),
+            findings=Findings(ReviewStore(stores.documents)),
         )
         try:
             found = render(digest.sections(project, session), budget)

@@ -30,7 +30,11 @@ from sandbox_science.orchestrator.hooks import (
 )
 from sandbox_science.orchestrator.memory_prompt import MemoryGiven
 from sandbox_science.orchestrator.model import ChatModel, Message, ToolSpec
-from sandbox_science.orchestrator.notices import REVIEW_COUNTS, REVIEW_FINDINGS
+from sandbox_science.orchestrator.notices import (
+    REVIEW_CHALLENGED,
+    REVIEW_COUNTS,
+    REVIEW_FINDINGS,
+)
 from sandbox_science.orchestrator.projects import recorded
 
 from .actions import action_of
@@ -520,7 +524,10 @@ class ReviewController:
         if self.role != "main":
             return []
         return await asyncio.to_thread(
-            self.notice_store.pending, *self.scope, self.run_id, self.seen
+            partial(self.notice_store.pending, raised_for=self.run_id),
+            *self.scope,
+            self.run_id,
+            self.seen,
         )
 
     async def _wait(self, task: asyncio.Task[None]) -> str | None:
@@ -842,7 +849,9 @@ class Reviews(TurnHook):
             return Closing()
         await controller.safe_point(run.messages)
         found = await self._pending()
-        return Closing("respond" if any(n.ids for n in found) else "accept", found)
+        # Only open findings delivered to this run take a round (CR-29 as amended).
+        respond = any(n.ids for n in found if n.framing == REVIEW_FINDINGS.text)
+        return Closing("respond" if respond else "accept", found)
 
     async def accept(self, run: RunView) -> None:
         controller, counts = self.controller, (self.result or {}).get("counts", {})
@@ -872,10 +881,15 @@ class Reviews(TurnHook):
         changed = bool(counts) and counts != controller.last_counts
         controller.last_counts = counts
         notices: list[Notice] = []
-        if found:
-            ids = tuple(str(notice["notice_id"]) for notice in found)
-            controller.seen.update(ids)
-            notices.append(Notice(self.name, ids, REVIEW_FINDINGS.text, found))
+        # Open findings ask for a response; challenged ones only inform (CR-26 as amended).
+        for framing, shown in (
+            (REVIEW_FINDINGS, [n for n in found if n.get("status") != "challenged"]),
+            (REVIEW_CHALLENGED, [n for n in found if n.get("status") == "challenged"]),
+        ):
+            if shown:
+                ids = tuple(str(notice["notice_id"]) for notice in shown)
+                controller.seen.update(ids)
+                notices.append(Notice(self.name, ids, framing.text, shown))
         if changed:
             notices.append(Notice(self.name, (), REVIEW_COUNTS.text, counts))
         return tuple(notices)
