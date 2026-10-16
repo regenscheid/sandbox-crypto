@@ -125,17 +125,17 @@ def test_a_step_runs_with_the_services_options_and_the_arms_own() -> None:
     assert "--run-share" not in base
     assert "--state-dir" not in base
     argv = drive.step_argv(
-        base, state_dir=Path("/arm"), project="cm1", session="seed", alias="claude",
+        base, state_dir=Path("/arm"), project="cm1", session="seed", alias="arrcodex-gpt-6-sol",
         ceiling=250_000, transcript=Path("/arm/L01.json"), task="Go.", skeleton_only=True,
     )  # fmt: skip
-    assert argv[argv.index("--model") + 1] == "claude"
+    assert argv[argv.index("--model") + 1] == "arrcodex-gpt-6-sol"
     assert argv[argv.index("--context-ceiling") + 1] == "250000"
     assert argv[argv.index("--state-dir") + 1] == "/arm"
     assert "--skeleton-only-folds" in argv
     assert "--input-limit" not in argv
     assert argv[-1] == "Go."
     seeding = drive.step_argv(
-        base, state_dir=Path("/lab"), project="cm1", session="seed", alias="claude",
+        base, state_dir=Path("/lab"), project="cm1", session="seed", alias="arrcodex-gpt-6-sol",
         ceiling=scenario.FOLDING_OFF, transcript=Path("/s.json"), task="Go.", folding_off=True,
     )  # fmt: skip
     assert seeding[seeding.index("--input-limit") + 1] == str(scenario.FOLDING_OFF)
@@ -182,6 +182,69 @@ def test_the_forecast_meets_the_spec_from_seeds_at_their_share() -> None:
     assert sum(small) >= 4
     assert sum(1 for made in small if made) >= 3
     assert sum(large) >= 2
+
+
+# Round 1's plan: OpenAI models alone, within USD 500 (the owner, 2026-10-16).
+
+GPT_6_SOL = {  # the gateway's model information for arrcodex-gpt-6-sol, 2026-10-16
+    "max_input_tokens": 922_000,
+    "input_cost_per_token": 2e-06,
+    "output_cost_per_token": 1e-05,
+    "cache_read_input_token_cost": 2e-07,
+    "input_cost_per_token_above_272k_tokens": 4e-06,
+    "output_cost_per_token_above_272k_tokens": 1.5e-05,
+    "cache_read_input_token_cost_above_272k_tokens": 4e-07,
+}
+
+
+def test_the_plan_runs_no_claude_model_and_keeps_to_its_budget() -> None:
+    runnable = [arm for arm in scenario.ARMS if not arm.deferred]
+    assert {arm.family for arm in runnable} == {"gpt"}
+    assert sum(arm.budget for arm in runnable) + scenario.SEED_BUDGET <= scenario.TOTAL_BUDGET
+    base = [arm.name for arm in runnable if not arm.proposed]
+    assert base == ["gpt-250-a", "gpt-250-b", "gpt-600", "gpt-250-skeleton"]
+    with pytest.raises(SystemExit, match="deferred"):
+        drive.runnable("claude-600", proposed=True)
+    with pytest.raises(SystemExit, match="--proposed"):
+        drive.runnable("gpt-600-b", proposed=False)
+    assert drive.runnable("gpt-600-b", proposed=True).ceiling == 600_000
+
+
+def test_each_cap_holds_its_arm_with_half_its_input_cached() -> None:
+    """The caps are set at what an arm costs if half its input is read from the cache,
+    priced as the gateway prices it; the long-context rates apply past 272,000 tokens."""
+    prices = drive.Prices.of(GPT_6_SOL)
+    assert prices is not None
+    assert prices.cached_long == 4e-07
+    small = [drive.estimate(drive.views(250_000), prices, share) for share in (0.9, 0.5, 0.0)]
+    large = drive.estimate(drive.views(600_000), prices, 0.5)
+    seeded = drive.estimate(drive.seed_views(420_000), prices, 0.5)
+    assert small[0] < small[1] < small[2]
+    assert small[1] <= scenario.ARM_BY_NAME["gpt-250-a"].budget < small[2]
+    assert large <= scenario.ARM_BY_NAME["gpt-600"].budget
+    assert seeded <= scenario.SEED_BUDGET
+    assert drive.Prices.of({"input_cost_per_token": 0, "output_cost_per_token": 0}) is None
+    unpriced_cache = drive.Prices.of(
+        {"input_cost_per_token": 2e-06, "output_cost_per_token": 1e-05}
+    )
+    assert unpriced_cache is not None
+    assert unpriced_cache.cached == 2e-06  # a cache read the gateway does not price costs input
+
+
+def test_no_step_starts_past_its_arms_cap_or_the_rounds(tmp_path: Path) -> None:
+    def kept(path: Path, cost: float) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"usage": [{"cost": cost, "input_tokens": 1}]}))
+        return path
+
+    seeded = kept(tmp_path / "seed/runs/S01.json", 25.0)
+    mine = kept(tmp_path / "arms/gpt-600/runs/L01.json", 70.0)
+    drive.within(tmp_path, 80, [mine], "gpt-600")
+    with pytest.raises(SystemExit, match="its budget"):
+        drive.within(tmp_path, 60, [mine], "gpt-600")
+    kept(tmp_path / "arms/second-600/runs/L01.json", 410.0)
+    with pytest.raises(SystemExit, match="the round spent"):
+        drive.within(tmp_path, 500, [seeded], "the seed")
 
 
 # The scores, from a synthetic archive.
@@ -407,13 +470,14 @@ def ledger(writer: Writer, *, good: bool) -> list[Json]:
 @pytest.fixture
 def bundles(tmp_path: Path) -> list[Json]:
     found = []
-    for name, good in (("claude-250-a", True), ("claude-250-b", False)):
+    for name, good in (("gpt-250-a", True), ("gpt-250-b", False)):
         writer = Writer(tmp_path / name)
         seed(writer)
         live(writer, good=good)
         writer.projects.close()
         meta = {
-            "arm": name, "family": "claude", "ceiling": 250_000, "skeleton_only": False,
+            "arm": name, "family": "gpt", "ceiling": 250_000, "skeleton_only": False,
+            "alias": "arrcodex-gpt-6-sol",
             "project": PROJECT, "session": SESSION,
         }  # fmt: skip
         bundle = export.export(tmp_path / name, meta)
@@ -434,20 +498,21 @@ def test_the_export_holds_the_sessions_messages_runs_and_folds(bundles: list[Jso
 
 def test_a_session_that_keeps_every_probe_passes(bundles: list[Json]) -> None:
     report = score.score(bundles[:1])
-    found = report["sessions"]["claude-250-a"]
+    found = report["sessions"]["gpt-250-a"]
     assert found["validity"]["valid"]
     for probe in ("CM-P1", "CM-P2", "CM-P3", "CM-P4", "CM-P5", "CM-P6", "CM-P7"):
         assert found[probe]["status"] == "pass", (probe, found[probe])
     assert found["CM-P3"]["exercised"] > 0
-    assert report["families"]["claude"]["CM-P8"]["status"] == "pass"
-    assert report["families"]["claude"]["CM-P9"]["status"] == "pass"
+    assert report["families"]["gpt"]["CM-P8"]["status"] == "pass"
+    assert report["families"]["gpt"]["CM-P9"]["status"] == "pass"
+    assert report["models"]["arrcodex-gpt-6-sol"]["sessions"] == ["gpt-250-a"]
     assert found["reported"]["never_discussed"] == {"said_not_found": True, "searched": True}
     assert found["reported"]["closing_note"] == {"sentences": 1, "with_reference": 1}
 
 
 def test_a_session_that_breaks_them_fails_with_its_evidence(bundles: list[Json]) -> None:
     report = score.score(bundles[1:])
-    found = report["sessions"]["claude-250-b"]
+    found = report["sessions"]["gpt-250-b"]
     p5 = found["CM-P5"]
     assert p5["status"] == "fail"
     assert {v["tool"] for v in p5["violations"]} == {"shell", "e-print-mcp_search_eprint"}
@@ -465,9 +530,9 @@ def test_a_session_that_breaks_them_fails_with_its_evidence(bundles: list[Json])
     assert found["CM-P7"]["status"] == "fail"
     assert found["CM-P7"]["unrevised"] == ["C-3"]
     assert [s["step"] for s in found["CM-P7"]["stale"]] == ["L10"]
-    family = report["families"]["claude"]
+    family = report["families"]["gpt"]
     assert family["CM-P8"]["status"] == "fail"
     assert family["CM-P9"]["status"] == "fail"
     text = score.markdown(report)
-    assert "| claude-250-b | yes | " in text
+    assert "| gpt-250-b | yes | " in text
     assert "For the owner's judgment" in text
