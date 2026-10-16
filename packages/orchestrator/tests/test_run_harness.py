@@ -97,6 +97,7 @@ async def test_a_run_with_stores_resolves_its_session_runs_and_is_saved(tmp_path
         "files",
         "messages",
         "events",
+        "view",  # the session's view as the run began, and its size before each call
     ]
     assert sink.notes[0].startswith("worker: pool p")
     assert (

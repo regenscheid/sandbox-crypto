@@ -17,7 +17,7 @@ from sandbox_science.orchestrator.history import Archive, Archived, Entry, Histo
 from sandbox_science.orchestrator.history.archive import CANDIDATES
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord, run_name
 
-from .loop_harness import PROJECT, SESSION, TASK, Harness, Reply, call
+from .loop_harness import PROJECT, SESSION, TASK, Harness, Reply, call, own
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
@@ -111,7 +111,7 @@ async def test_a_failed_runs_messages_read_whole_by_their_ids(harness: Harness, 
     ]
     reads = [call("history_read", message=a.message_id) for a in earlier]
     record = await harness.run("run-2", [Reply(calls=reads), Reply("Read them.")])
-    results = [json.loads(body(str(m["content"]))) for m in record.messages if m["role"] == "tool"]
+    results = [json.loads(body(str(m["content"]))) for m in own(record) if m["role"] == "tool"]
     for archived, read in zip(earlier, results, strict=True):
         assert read["message"]["message_id"] == archived.message_id
         assert read["text"] == archived.entry.text

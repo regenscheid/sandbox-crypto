@@ -61,6 +61,7 @@ LABELS: Final = {
     "notice": "notice",
     "outcome": "delegation outcome",
     "tool_result": "tool result",
+    "state_block": "state block",
 }
 """Each kind of message the platform writes, as its header names it."""
 KINDS: Final = (*LABELS, "assistant")
@@ -201,8 +202,9 @@ class Entry:
 
     @property
     def searched(self) -> str | None:
-        """The text the indexes cover: ``text``, less the retrievals' calls and results."""
-        if self.kind == "tool_result" and self.source in UNINDEXED:
+        """The text the indexes cover: ``text``, less the retrievals' calls and results
+        and the state blocks, which copy what the indexes cover."""
+        if self.kind == "state_block" or (self.kind == "tool_result" and self.source in UNINDEXED):
             return None
         return self._text(UNINDEXED)
 

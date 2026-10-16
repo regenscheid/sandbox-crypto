@@ -12,17 +12,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from datetime import UTC, datetime, timedelta
 
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.documents.annotations import Annotations
 from sandbox_science.orchestrator.documents.tool import REQUESTS_TASK
-from sandbox_science.orchestrator.history import body
-from sandbox_science.orchestrator.model import Message
+from sandbox_science.orchestrator.history import Archive, body
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.runstate import RunState
-from sandbox_science.orchestrator.service import earlier_conversation
 from sandbox_science.orchestrator.worker_client import WorkerClient
 from sandbox_science.testing import FakeClock, eventually
 
@@ -44,8 +41,6 @@ from .loop_harness import harness as harness
 from .loop_harness import worker as worker
 from .test_run_service import Gate, ended, names, post, runs, serving, states
 
-COMMENT = r"\(A comment addressed to you on the document [^:\s]+:\)\n"
-
 
 async def test_a_comment_to_an_idle_session_starts_a_run(harness: Harness) -> None:
     request = harness.work_request()
@@ -61,57 +56,34 @@ async def test_a_comment_to_an_idle_session_starts_a_run(harness: Harness) -> No
     assert events[0].data["message_ids"] == []
     assert "user" not in [e.kind for e in events]
     assert {"source": "requests", "ids": [request]} in [e.data for e in events]
-    # A later run sees it as an earlier turn: the comment, as the user's words, in place
-    # of the run's stand-in task (RS-10).
-    question, answer = _history(harness, 100_000)
-    assert re.fullmatch(COMMENT + r"Explain the result\.", str(question["content"]))
-    assert answer == {"role": "assistant", "content": "Explained."}
-    # Without the documents, the stand-in task is all it can show.
-    without = earlier_conversation(
-        ProjectStore(harness.state), runs(harness), PROJECT, SESSION, 100_000
-    )
-    assert without[0] == {"role": "user", "content": REQUESTS_TASK}
+    # The archive keeps it as the comment it is, naming its request (CM-3).
+    projects = ProjectStore(harness.state)
+    try:
+        kept = Archive(projects.control).messages(PROJECT, SESSION)
+    finally:
+        projects.close()
+    (comment,) = [row for row in kept if row.entry.kind == "comment"]
+    assert comment.entry.refs == (request,)
 
 
-async def test_a_comment_that_rode_along_is_kept_with_the_users_messages(
+async def test_a_comment_that_rode_along_is_in_the_next_runs_view(
     harness: Harness,
 ) -> None:
-    """A comment the run delivered with a message is the user's words in the earlier
-    conversation, in the order written, and gives way last, as the messages do (RS-10)."""
+    """A comment the run delivered with a message is in the next run's view, as it was
+    sent, before the message it was written before (CM-29)."""
     harness.work_request(body="Also check the bound in section 2.")
     post(harness, "m-1", "And a question.")
-    answer = "Both answered. " + "x" * 500
-    async with serving(harness, Reply(answer), Reply("Done.")):
+    async with serving(harness, Reply("Both answered."), Reply("Done.")):
         await ended(harness)
-        question, kept = _history(harness, 100_000)
-        assert re.fullmatch(
-            COMMENT + r"Also check the bound in section 2\.\n\nAnd a question\.",
-            str(question["content"]),
-        )
-        assert kept == {"role": "assistant", "content": answer}
-        tight, short = _history(harness, len(str(question["content"])) + 200)
-        assert tight == question
-        assert str(short["content"]).startswith("(The agent's answer here, of 515 characters")
         post(harness, "m-2", "One more.")
         await ended(harness, 2)
-    *_, last = harness.gateway.main
+    first, last = harness.gateway.main
+    earlier = [m for m in first if m["role"] != "system"]
     conversation = [m for m in last if m["role"] != "system"]
-    assert conversation[:2] == [question, kept]  # the service gives it to the next run
-
-
-def _history(harness: Harness, budget: int) -> list[Message]:
-    documents = harness.documents()
-    try:
-        return earlier_conversation(
-            ProjectStore(harness.state),
-            runs(harness),
-            PROJECT,
-            SESSION,
-            budget,
-            documents=documents,
-        )
-    finally:
-        documents.close()
+    assert conversation[: len(earlier)] == earlier
+    said = [body(str(m["content"])) for m in earlier]
+    comment = next(i for i, text in enumerate(said) if "Also check the bound" in text)
+    assert said.index("And a question.") > comment
 
 
 async def test_queued_messages_start_the_run_and_it_is_offered_the_requests(
