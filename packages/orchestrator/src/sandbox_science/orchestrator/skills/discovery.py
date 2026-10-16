@@ -30,7 +30,7 @@ from typing import Any, Final, TypeVar
 
 from sandbox_science.contracts.clock import SYSTEM_CLOCK, Clock
 from sandbox_science.orchestrator.hooks import Notice, Point, RunView, TurnHook
-from sandbox_science.orchestrator.notices import SKILLS
+from sandbox_science.orchestrator.notices import SKILLS, SKILLS_WORDS
 
 from .embeddings import EmbeddingError
 from .store import Entry
@@ -119,8 +119,8 @@ class SkillDiscovery(TurnHook):
         skip = self.shown | waiting | set(self.tool.loaded)
         text = "\n".join(texts)
         record: dict[str, Any] = {"answered": answered, "scoring": "lexical"}
-        if messages:
-            record["messages"] = list(messages)
+        if messages:  # the user's messages, or the comments' work requests, by their IDs
+            record["requests" if answered == "comment" else "messages"] = list(messages)
 
         async def score() -> list[Entry]:
             similar: dict[str, float] = {}
@@ -164,7 +164,9 @@ class SkillDiscovery(TurnHook):
         payload: dict[str, object] = {"skills": [_listed(entry) for entry in found]}
         if routes:
             payload["entry"] = [_listed(entry) for entry in routes]
-        return Notice(self.name, (notice,), SKILLS.text, payload)
+        # The framing says what was compared: words alone, or meaning too (lab 42).
+        framing = SKILLS if record["scoring"] in ("hybrid", "partial") else SKILLS_WORDS
+        return Notice(self.name, (notice,), framing.text, payload)
 
     async def _bounded(self, work: Awaitable[T]) -> T:
         """``work``'s result, or ``TimeoutError`` once ``wait`` seconds of the clock pass.

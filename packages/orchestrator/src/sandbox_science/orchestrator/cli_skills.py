@@ -154,7 +154,11 @@ async def _derive(
     try:
         made = await derive(model, snap, alias)
     except PassError as error:
-        print(f"warning: the pass over the catalog failed: {error}", file=sys.stderr)
+        print(
+            f"warning: the pass over the catalog failed: {error}; the same import again, or "
+            "sandbox-science skills update, runs it again",
+            file=sys.stderr,
+        )
         if error.cost is not None:  # the gateway answered, and charged for it
             store.add_metadata_call(args.project, snap.sha256, alias, (None, None), error.cost)
         return error

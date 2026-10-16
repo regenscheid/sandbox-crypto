@@ -203,7 +203,7 @@ class OpenAICompatibleModel:
                 allow_redirects=False,
             ) as response:
                 try:
-                    data = await _read_limited(response, self._max_response_bytes)
+                    data = await read_limited(response, self._max_response_bytes)
                 except ModelError as error:
                     if 200 <= response.status < 300:  # charged, though too long to read
                         error.cost = _cost(response.headers.get(COST_HEADER))
@@ -217,9 +217,8 @@ class OpenAICompatibleModel:
                 if 200 <= response.status < 300:
                     return text, response.headers.get(COST_HEADER)
                 status = response.status
-                error = ModelError(
-                    f"the model gateway returned {status}: {text[:300]}", status=status
-                )
+                said = gateway_said(text, response.content_type)
+                error = ModelError(f"the model gateway returned {status}: {said}", status=status)
                 # Before the retries: LiteLLM sends some budget refusals as 429s.
                 if 400 <= status < 500 and _budget_exceeded(text):
                     raise GatewayBudgetError(str(error), status=status)
@@ -272,7 +271,7 @@ class ModelGateway:
                 timeout=self._timeout,
                 allow_redirects=False,
             ) as response:
-                data = await _read_limited(response, self.LISTED_BYTES)
+                data = await read_limited(response, self.LISTED_BYTES)
                 if not 200 <= response.status < 300:
                     _log.warning("the model gateway lists no models: HTTP %s", response.status)
                     return None
@@ -303,7 +302,7 @@ class ModelGateway:
                 timeout=self._timeout,
                 allow_redirects=False,
             ) as response:
-                data = await _read_limited(response, self.LISTED_BYTES)
+                data = await read_limited(response, self.LISTED_BYTES)
                 if not 200 <= response.status < 300:
                     _log.warning("the model gateway describes no models: HTTP %s", response.status)
                     return None
@@ -398,8 +397,22 @@ def _context_exceeded(text: str) -> bool:
     )
 
 
-async def _read_limited(response: aiohttp.ClientResponse, limit: int) -> bytes:
-    """The answer's body, or a ModelError once it is larger than ``limit`` bytes."""
+def gateway_said(text: str, content_type: str | None = None) -> str:
+    """What a gateway's answer says, for an error's message: JSON or plain text cut to 300
+    characters; a page of another kind, such as a proxy's HTML error page, only by its
+    type and size (lab 42, B7)."""
+    kind = (content_type or "").partition(";")[0].strip().lower()
+    head = text.lstrip()[:1]
+    if kind == "application/json" or kind.endswith("+json") or head in ("{", "["):
+        return text[:300]
+    if kind in ("", "text/plain") and "<" not in text[:300]:
+        return text[:300]
+    return f"a {kind or 'non-JSON'} page of {len(text):,} characters"
+
+
+async def read_limited(response: aiohttp.ClientResponse, limit: int) -> bytes:
+    """The answer's body, read to its end, or a ModelError once it is larger than
+    ``limit`` bytes: a single read returns only what has arrived (lab 42, B1)."""
     if response.content_length is not None and response.content_length > limit:
         raise ModelError(f"the model gateway's answer is larger than {limit} bytes")
     chunks: list[bytes] = []
@@ -445,7 +458,7 @@ def _parse_completion(text: str, priced: str | None = None) -> ModelTurn:
                 ToolCall(str(call.get("id", "")), str(function.get("name", "")), arguments)
             )
     except (ValueError, KeyError, IndexError, TypeError, RecursionError) as exc:
-        raise ModelError(f"unexpected completion: {text[:300]}") from exc
+        raise ModelError(f"unexpected completion: {gateway_said(text)}") from exc
     content, finish = message.get("content"), choice.get("finish_reason")
     resolved = cast(dict[str, Any], data).get("model")
     return ModelTurn(

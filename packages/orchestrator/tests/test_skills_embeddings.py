@@ -31,7 +31,7 @@ from aiohttp.test_utils import TestServer
 
 from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator.documents import USER
-from sandbox_science.orchestrator.notices import SKILLS
+from sandbox_science.orchestrator.notices import SKILLS, SKILLS_WORDS
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.skills import Entry, SkillStore, from_git, snapshot
@@ -110,7 +110,8 @@ def _notices(messages: list[dict[str, Any]]) -> list[str]:
     return [
         cast(str, m["content"])
         for m in messages
-        if m.get("role") == "user" and cast(str, m["content"]).startswith(SKILLS.text)
+        if m.get("role") == "user"
+        and cast(str, m["content"]).startswith((SKILLS.text, SKILLS_WORDS.text))
     ]
 
 
@@ -211,10 +212,12 @@ async def test_no_run_waits_for_the_vectors_and_once_they_exist_meaning_counts(
     (shown,) = _notices(harness.gateway.main[0])
     assert "ss/beta" in shown
     assert "ss/alpha" not in shown
+    assert shown.startswith(SKILLS.text)  # meaning was compared: the framing says so
     (found,) = _summary(two)["discoveries"]
     assert found["scoring"] == "hybrid"
     assert [skill["id"] for skill in found["skills"]] == ["ss/beta"]
     answer = json.loads(cast(str, two.messages[-2]["content"]))
+    assert answer.pop("ranked") == "by words and meaning"
     assert answer["found"] == [
         {"id": "ss/beta", "description": "Counts the lines of the notes.", "meaning": 1.0}
     ]
@@ -251,9 +254,14 @@ async def test_a_failing_gateway_or_a_short_message_leaves_words(
     )
     (shown,) = _notices(harness.gateway.main[0])
     assert "ss/beta" in shown
+    assert shown.startswith(SKILLS_WORDS.text)  # words alone (lab 42): the framing says so
     (found,) = _summary(record)["discoveries"]
     assert found["scoring"] == "lexical"
     assert found["embedding"].startswith("failed: the gateway answered 500")
+    answer = json.loads(cast(str, record.messages[-2]["content"]))
+    assert answer["ranked"].startswith(
+        "by words alone: meaning could not be compared (failed: the gateway answered 500"
+    )
     (search,) = _searches(record)
     assert search["embedding"].startswith("failed: the gateway answered 500")
     assert search["found"] == ["ss/beta"]
@@ -695,3 +703,50 @@ async def test_the_embedder_refuses_answers_that_are_not_embeddings(
             await empty.embed(["one"])
     finally:
         await empty.close()
+
+
+async def test_a_large_answer_in_chunks_is_read_to_its_end() -> None:
+    """Lab 42, B1: a single read returns only what has arrived, so a real gateway's answer
+    of 64 vectors of 1,536, sent in 64 KiB writes, was cut and could not be parsed."""
+    vectors = [[((i * 7 + j) % 13 + 1) / 13.0 for j in range(1536)] for i in range(64)]
+    body = json.dumps(
+        {"model": "m", "data": [{"index": i, "embedding": v} for i, v in enumerate(vectors)]}
+    ).encode()
+    assert len(body) > 16 * 64 * 1024  # many writes, as the gateway sends it
+
+    async def chunked(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse(headers={"Content-Type": "application/json"})
+        await response.prepare(request)
+        for start in range(0, len(body), 64 * 1024):
+            await response.write(body[start : start + 64 * 1024])
+            await asyncio.sleep(0.005)
+        await response.write_eof()
+        return response
+
+    app = web.Application()
+    app.router.add_post("/embeddings", chunked)
+    async with TestServer(app) as server:
+        embedder = Embedder(str(server.make_url("/")).rstrip("/"), "embed", "test-key")
+        try:
+            got = await embedder.embed([f"text {i}" for i in range(64)])
+        finally:
+            await embedder.close()
+    assert got.space == Space("m", 1536)
+    assert len(got.vectors) == 64
+
+
+async def test_an_error_page_is_named_by_its_kind_not_quoted(
+    answers: tuple[str, list[web.Response]],
+) -> None:
+    """Lab 42, B7: a proxy's HTML error page (Cloudflare's 524) stays out of the message."""
+    url, queued = answers
+    page = '<!DOCTYPE html>\n<!--[if lt IE 7]> <html class="no-js"> <![endif]-->' + "x" * 900
+    queued.append(web.Response(status=524, text=page, content_type="text/html"))
+    embedder = Embedder(url, "embed", "test-key")
+    try:
+        with pytest.raises(EmbeddingError) as refused:
+            await embedder.embed(["one"])
+    finally:
+        await embedder.close()
+    said = f"the gateway answered 524: a text/html page of {len(page):,} characters"
+    assert str(refused.value) == said

@@ -57,7 +57,7 @@ from .control.errors import BUSY
 from .delegation.records import DelegationRecords
 from .documents import DocumentStore
 from .documents.annotations import Annotations
-from .documents.tool import WorkRequests
+from .documents.tool import REQUESTS_TASK, WorkRequests
 from .harness import Harness, RunRequest, admit, save
 from .hooks import TurnHook
 from .model import GATEWAY_BUDGET, Message
@@ -78,9 +78,6 @@ MAX_FAILURES: Final = 5
 """Failed runs in a row after which a session's messages are held."""
 HISTORY_CHARS: Final = 100_000
 """The longest earlier conversation a run starts with: a quarter of its input (RS-10)."""
-REQUESTS_TASK: Final = "(The user's comments addressed to this session, as work requests.)"
-"""The task a run started for work requests alone is recorded with, and that the
-session's later runs see in its place in the earlier conversation (RS-10)."""
 
 
 class LogSink:

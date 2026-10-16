@@ -484,3 +484,47 @@ async def test_a_project_not_made_yet_counts_nothing_and_says_so(
     said = capsys.readouterr()
     assert "there is no project 'later' yet" in said.err
     assert json.loads(said.out)["derived"]["entry"] == ["router"]
+
+
+async def test_the_pass_is_tried_once_more_after_a_gateway_timeout() -> None:
+    """Lab 42: the gateway's 524 failed the pass once; a 5xx or a timeout is tried again
+    once, and a second is the pass's failure."""
+    snap = _snap(FILES)
+    answer = ModelTurn(None, (ToolCall("c1", "skill_metadata", json.dumps(ANSWER)),))
+
+    class Flaky:
+        def __init__(self, *failures: Exception) -> None:
+            self.failures = list(failures)
+            self.calls = 0
+
+        async def complete(self, messages: object, tools: object) -> ModelTurn:
+            self.calls += 1
+            if self.failures:
+                raise self.failures.pop(0)
+            return answer
+
+    once = Flaky(ModelError("the model gateway returned 524: a text/html page", status=524))
+    assert (await derive(cast(Any, once), snap, "pass")).derived["entry"] == ["router"]
+    assert once.calls == 2
+    timed = Flaky(TimeoutError())
+    assert (await derive(cast(Any, timed), snap, "pass")).derived["entry"] == ["router"]
+    twice = Flaky(ModelError("524", status=524), ModelError("524 again", status=524))
+    with pytest.raises(PassError, match="524 again"):
+        await derive(cast(Any, twice), snap, "pass")
+    refused = Flaky(ModelError("400", status=400))
+    with pytest.raises(PassError):
+        await derive(cast(Any, refused), snap, "pass")
+    assert refused.calls == 1  # a refusal is not tried again
+
+
+def test_a_gateway_page_is_named_not_quoted() -> None:
+    """Lab 42, B7: the gateway's HTML error page stays out of messages and logs."""
+    from sandbox_science.orchestrator.model import gateway_said
+
+    page = "<!DOCTYPE html>\n<!--[if lt IE 7]> <html> " + "x" * 400
+    assert gateway_said(page, "text/html; charset=UTF-8") == (
+        f"a text/html page of {len(page):,} characters"
+    )
+    assert gateway_said(page) == f"a non-JSON page of {len(page):,} characters"
+    assert gateway_said('{"error": "budget"}', "application/json") == '{"error": "budget"}'
+    assert gateway_said("upstream timed out", "text/plain") == "upstream timed out"

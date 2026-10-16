@@ -263,3 +263,30 @@ def test_settings_check_the_cap_as_the_new_lists_make_the_set(projects: ProjectS
     store.set_settings("p", USER, 0, always=("ss/alpha",), excluded=("ss/beta",))
     with pytest.raises(ControlError, match="past the run's 100,000"):
         store.set_settings("p", USER, 1, always=("ss/alpha", "ss/beta"), excluded=())
+
+
+def test_the_chat_says_what_a_skills_call_did() -> None:
+    """Lab 42: the chat showed "no state recorded" for every skills call."""
+    from sandbox_science.orchestrator.chat import tool_outcome
+
+    def said(**record: object) -> object:
+        return tool_outcome({"skills": record})["state"]
+
+    loads = [
+        {"id": "ss/alpha", "status": "loaded"},
+        {"id": "ss/beta", "status": "loaded"},
+        {"id": "ss/gamma", "status": "over_budget"},
+        {"name": "nope", "status": "not_found"},
+    ]
+    assert said(action="load", status="ok", loads=loads) == (
+        "loaded ss/alpha, ss/beta; over budget ss/gamma; not found nope"
+    )
+    assert said(action="read", status="ok", path="alpha/notes.md") == "read alpha/notes.md"
+    assert said(
+        action="search", status="ok", found=["ss/a"], scoring="lexical", embedding="pending"
+    ) == ("found 1: ss/a (by words alone)")
+    assert tool_outcome({"skills": {"action": "read", "status": "not_in_set"}}) == {
+        "state": "refused",
+        "error": "not_in_set",
+        "exit_code": None,
+    }
