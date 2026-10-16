@@ -1,13 +1,17 @@
 # SPDX-License-Identifier: MIT
-"""The preview origin: a second listener that serves published PDFs to the viewer.
+"""The preview origin: a second listener that serves published PDFs to the viewer, and
+figure files to the workspace's pages.
 
-PDFs are untrusted content (docs/THREAT-MODEL.md, T6), so the viewer runs on an origin of
-its own (docs/specs/pdf-viewer.md, PV-1 to PV-3). This application serves only the
-viewer's bundle and PDF bytes for a capability the workspace minted: an HMAC-SHA-256,
-under a key made when the process starts and kept only in memory, over the project, the
-artifact, the revision, its SHA-256 and an expiry. It has no API and no login, and it
-never reads a cookie: the browser sends the workspace's cookie to every port on the host,
-and a request with it gets exactly what one without it gets.
+PDFs and figures are untrusted content (docs/THREAT-MODEL.md, T6), so they are served from
+an origin of their own (docs/specs/pdf-viewer.md, PV-1 to PV-3; docs/specs/figures.md,
+FG-12, FG-13). This application serves only the viewer's bundle, PDF bytes and figure
+files, each for a capability the workspace minted: an HMAC-SHA-256, under a key made when
+the process starts and kept only in memory, over the project, the artifact, the revision,
+its SHA-256 and an expiry. A figure file is served only as the type it is recorded as and
+only when its first bytes are that type's: a PNG or a JPEG of at most 8 MiB and 50
+megapixels by its header. It has no API and no login, and it never reads a cookie: the
+browser sends the workspace's cookie to every port on the host, and a request with it gets
+exactly what one without it gets.
 """
 
 from __future__ import annotations
@@ -29,7 +33,7 @@ from aiohttp import hdrs, web
 from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.contracts import Identifier
-from sandbox_science.contracts.artifact_inventory import ArtifactLink
+from sandbox_science.contracts.artifact_inventory import ArtifactLink, ArtifactRevisionRef
 from sandbox_science.orchestrator.artifacts import ArtifactInventory
 from sandbox_science.orchestrator.documents import DocumentError, DocumentStore
 
@@ -42,6 +46,9 @@ MAX_PDF_BYTES: Final = 64 * 1024 * 1024
 CONCURRENT_READS: Final = 4
 """PDFs read from the store at once; more wait, so no frame can tie up every thread."""
 PDF: Final = "application/pdf"
+MAX_IMAGE_BYTES: Final = 8 * 1024 * 1024
+MAX_IMAGE_PIXELS: Final = 50_000_000
+"""The largest image a page is given, in bytes and by its header's size (FG-13)."""
 VIEWER_TYPES: Final = {
     ".html": "text/html; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
@@ -60,7 +67,63 @@ _CAPABILITY: Final = re.compile(r"[A-Za-z0-9_-]{1,2048}\.[A-Za-z0-9_-]{43}")
 _SHA256: Final = frozenset("0123456789abcdef")
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 SANDBOXED: Final = web.ResponseKey("sandboxed", bool)
-"""Marks a response whose CSP also says ``sandbox``: the PDF bytes."""
+"""Marks a response whose CSP also says ``sandbox``: the PDF bytes and figure files."""
+EMBEDDED: Final = web.ResponseKey("embedded", bool)
+"""Marks an image a workspace page shows in an ``<img>``: another origin may load it."""
+_SOF: Final = frozenset(
+    {*range(0xC0, 0xC4), *range(0xC5, 0xC8), *range(0xC9, 0xCC), 0xCD, 0xCE, 0xCF}
+)
+"""JPEG's start-of-frame markers, which give the image's size."""
+
+
+def png_size(data: bytes) -> tuple[int, int] | None:
+    """A PNG's width and height from its header; ``None`` unless it starts as a PNG."""
+    if data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR" or len(data) < 24:
+        return None
+    return int.from_bytes(data[16:20]), int.from_bytes(data[20:24])
+
+
+def jpeg_size(data: bytes) -> tuple[int, int] | None:
+    """A JPEG's width and height from its first frame header; ``None`` unless it starts
+    as a JPEG and has one."""
+    if data[:3] != b"\xff\xd8\xff":
+        return None
+    at = 2
+    while at + 4 <= len(data):
+        if data[at] != 0xFF:
+            return None
+        marker = data[at + 1]
+        if marker == 0xFF:  # fill
+            at += 1
+            continue
+        if marker == 0x01 or 0xD0 <= marker <= 0xD8:  # markers without a length
+            at += 2
+            continue
+        length = int.from_bytes(data[at + 2 : at + 4])
+        if marker in _SOF:
+            if length < 7 or at + 9 > len(data):
+                return None
+            return int.from_bytes(data[at + 7 : at + 9]), int.from_bytes(data[at + 5 : at + 7])
+        if marker == 0xDA or length < 2:  # the scan begins before any frame header
+            return None
+        at += 2 + length
+    return None
+
+
+IMAGES: Final = {"image/png": png_size, "image/jpeg": jpeg_size}
+"""The figure files a page shows as images, each with how its header is read (FG-12)."""
+
+
+def image_problem(media_type: str, data: bytes) -> tuple[int, str] | None:
+    """Why an image is not served, as a status and a reason; ``None`` when it is (FG-13):
+    its first bytes are not its type's, or it passes the size limits."""
+    size = IMAGES[media_type](data)
+    if size is None:
+        return 415, "This file's bytes are not the image type it is recorded as."
+    width, height = size
+    if not width or not height or width * height > MAX_IMAGE_PIXELS:
+        return 413, "This image is larger than a page shows."
+    return None
 
 
 class CapabilityError(Exception):
@@ -206,12 +269,16 @@ def create_preview_app(
                 "Content-Security-Policy": policy,
                 "X-Content-Type-Options": "nosniff",
                 "Referrer-Policy": "no-referrer",
-                "Cross-Origin-Resource-Policy": "same-origin",
+                # An image the workspace's page loads comes from this other origin; only
+                # a capability, which the workspace minted for that page, opens it.
+                "Cross-Origin-Resource-Policy": "cross-origin"
+                if EMBEDDED in response
+                else "same-origin",
                 hdrs.CACHE_CONTROL: "no-store",
             }
         )
 
-    async def pdf(request: web.Request) -> web.StreamResponse:
+    def checked(request: web.Request) -> Capability | None:
         try:
             found = capabilities.check(request.match_info["capability"])
             _IDENTIFIER.validate_python(found.project, strict=True)
@@ -219,20 +286,28 @@ def create_preview_app(
             if len(found.sha256) != 64 or not set(found.sha256) <= _SHA256:
                 raise CapabilityError("malformed hash")
         except (CapabilityError, ValidationError, TypeError, ValueError):
+            return None
+        return found
+
+    def reference_of(found: Capability) -> ArtifactRevisionRef:
+        revision = inventory.resolve(
+            found.project,
+            ArtifactLink(
+                artifact_id=found.artifact,
+                project_id=found.project,
+                mode="pinned",
+                revision=found.revision,
+                sha256=found.sha256,
+            ),
+        )
+        return revision.reference
+
+    async def pdf(request: web.Request) -> web.StreamResponse:
+        if (found := checked(request)) is None:
             return web.Response(status=403, text="This link is not valid, or has expired.")
 
         def read() -> web.Response:
-            revision = inventory.resolve(
-                found.project,
-                ArtifactLink(
-                    artifact_id=found.artifact,
-                    project_id=found.project,
-                    mode="pinned",
-                    revision=found.revision,
-                    sha256=found.sha256,
-                ),
-            )
-            reference = revision.reference
+            reference = reference_of(found)
             if reference.media_type != PDF:
                 return web.Response(status=415, text="This artifact is not a PDF.")
             if reference.size > MAX_PDF_BYTES:
@@ -255,6 +330,40 @@ def create_preview_app(
         answer[SANDBOXED] = True
         return answer
 
+    async def figure_file(request: web.Request) -> web.StreamResponse:
+        """A pinned figure file for a page's ``<img>`` (FG-12, FG-13): as the type it is
+        recorded as, only when its first bytes are that type's, within the limits."""
+        if (found := checked(request)) is None:
+            return web.Response(status=403, text="This link is not valid, or has expired.")
+
+        def read() -> web.Response:
+            reference = reference_of(found)
+            if reference.media_type not in IMAGES:
+                return web.Response(status=415, text="This file is not shown as an image.")
+            if reference.size > MAX_IMAGE_BYTES:
+                return web.Response(status=413, text="This image is larger than a page shows.")
+            bound = min(MAX_IMAGE_BYTES, inventory.limits.artifact_bytes)
+            data = inventory.content(found.project, reference, max_bytes=bound)
+            if (problem := image_problem(reference.media_type, data)) is not None:
+                return web.Response(status=problem[0], text=problem[1])
+            return web.Response(
+                body=data,
+                headers={
+                    hdrs.CONTENT_TYPE: reference.media_type,
+                    hdrs.CONTENT_DISPOSITION: "attachment",
+                },
+            )
+
+        try:
+            async with reads:
+                answer = await asyncio.to_thread(read)
+        except DocumentError:
+            return web.Response(status=404, text="This file is not available.")
+        answer[SANDBOXED] = True
+        if answer.status == 200:
+            answer[EMBEDDED] = True
+        return answer
+
     async def viewer_file(request: web.Request) -> web.StreamResponse:
         segments = _segments(request.match_info["path"])
         if viewer is None or segments is None:
@@ -272,5 +381,6 @@ def create_preview_app(
     app = web.Application(middlewares=[guard])
     app.on_response_prepare.append(secure)
     app.router.add_get("/pdf/{capability:.+}", pdf)  # any spelling gets the same refusal
+    app.router.add_get("/file/{capability:.+}", figure_file)
     app.router.add_get("/viewer/{path:.*}", viewer_file)
     return app

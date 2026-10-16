@@ -7,6 +7,7 @@
  * request, and the browser adds the `Origin` header the server requires of a POST.
  */
 import type {
+  FigureLink,
   ArtifactListing,
   Category,
   FoldProposalList,
@@ -550,6 +551,12 @@ export const api = {
   fileSettings: (project: string) => get<FileSettings>(`/projects/${part(project)}/files/settings`),
   changeFileSettings: (project: string, value: Record<string, unknown>) =>
     post<FileSettings>(`/projects/${part(project)}/files/settings`, value),
+  /** One PNG or JPEG revision's URL on the preview origin, for 10 minutes (FG-13). */
+  figureLink: (project: string, artifact: string, revision: number, sha256: string) =>
+    get<FigureLink>(
+      `/projects/${part(project)}/artifacts/${part(artifact)}/revisions/${revision}/figure` +
+        `?sha256=${part(sha256)}`,
+    ),
   /** A link that opens one PDF revision in the viewer, for 10 minutes. */
   viewerLink: (project: string, artifact: string, revision: number, sha256: string) =>
     get<ViewerLink>(

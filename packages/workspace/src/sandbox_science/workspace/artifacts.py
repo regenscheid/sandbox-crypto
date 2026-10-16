@@ -11,8 +11,12 @@ Routes (docs/specs/pdf-viewer.md, PV-4):
 - ``GET /api/v0/projects/{project}/artifacts/{artifact}/revisions/{revision}/viewer
   ?sha256=HEX`` mints a capability for that exact revision of a PDF and answers the viewer's
   URL on the preview origin, which opens it for 10 minutes (PV-3).
+- ``GET …/artifacts/{artifact}/revisions/{revision}/figure?sha256=HEX`` mints one for that
+  exact revision of a PNG or JPEG of at most 8 MiB and answers its URL on the preview
+  origin, for a page's ``<img>`` (docs/specs/figures.md, FG-12, FG-13); any other file is
+  shown as a link.
 
-Both read through the orchestrator's ``ArtifactInventory``; neither writes.
+All read through the orchestrator's ``ArtifactInventory``; none writes.
 """
 
 from __future__ import annotations
@@ -32,7 +36,7 @@ from sandbox_science.orchestrator.projects import ProjectError
 
 from . import api
 from .context import CONTEXT, identifier, json_answer
-from .preview import CAPABILITY_SECONDS, PDF, Preview
+from .preview import CAPABILITY_SECONDS, IMAGES, MAX_IMAGE_BYTES, PDF, Preview
 
 PREVIEW: Final = web.AppKey("preview", Preview)
 _IDENTIFIER: Final = TypeAdapter[str](Identifier)
@@ -79,10 +83,19 @@ class ViewerLink(Contract):
     """Where the PDF was published from, which an anchor into it names."""
 
 
+class FigureLink(Contract):
+    """A pinned figure file's URL on the preview origin, and when it stops opening it."""
+
+    url: str
+    expires_at: datetime
+    media_type: str
+
+
 def add_routes(app: web.Application) -> None:
     base = "/api/v0/projects/{project}/artifacts"
     app.router.add_get(base, listing)
     app.router.add_get(base + "/{artifact}/revisions/{revision}/viewer", viewer)
+    app.router.add_get(base + "/{artifact}/revisions/{revision}/figure", figure)
 
 
 async def listing(request: web.Request) -> web.Response:
@@ -150,7 +163,9 @@ async def listing(request: web.Request) -> web.Response:
     return json_answer(await asyncio.to_thread(read))
 
 
-async def viewer(request: web.Request) -> web.Response:
+def _pinned(request: web.Request, off: str) -> tuple[str, str, int, str, Preview]:
+    """The project, artifact, revision and SHA-256 a minting route names, and the preview
+    origin, which must be on (``off`` says what is off without it)."""
     project = identifier(request, "project")
     artifact = identifier(request, "artifact")
     raw_revision, sha256 = request.match_info["revision"], request.query.get("sha256", "")
@@ -160,22 +175,47 @@ async def viewer(request: web.Request) -> web.Response:
         raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid artifact revision")
     if len(sha256) != 64 or not set(sha256) <= set("0123456789abcdef"):
         raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid sha256")
-    revision = int(raw_revision)
     preview = request.app.get(PREVIEW)
     if preview is None or not preview.origin:
-        raise ProjectError(ErrorKind.UNAVAILABLE, "the PDF viewer is off on this server")
+        raise ProjectError(ErrorKind.UNAVAILABLE, f"{off} is off on this server")
+    return project, artifact, int(raw_revision), sha256, preview
+
+
+def _resolve(request: web.Request, project: str, artifact: str, revision: int, sha256: str):
     context = request.app[CONTEXT]
+    context.projects.get(project)
+    link = ArtifactLink(
+        artifact_id=artifact, project_id=project, mode="pinned", revision=revision, sha256=sha256
+    )
+    return ArtifactInventory(context.documents).resolve(project, link)
+
+
+async def figure(request: web.Request) -> web.Response:
+    """A figure file's URL for a page's ``<img>`` (FG-12, FG-13): a PNG or a JPEG within
+    the size a page shows; the preview origin checks its first bytes and its header."""
+    project, artifact, revision, sha256, preview = _pinned(request, "the preview origin")
 
     def mint() -> str:
-        context.projects.get(project)
-        link = ArtifactLink(
-            artifact_id=artifact,
-            project_id=project,
-            mode="pinned",
-            revision=revision,
-            sha256=sha256,
-        )
-        found = ArtifactInventory(context.documents).resolve(project, link)
+        found = _resolve(request, project, artifact, revision, sha256)
+        reference = found.reference
+        if reference.media_type not in IMAGES:
+            raise ProjectError(ErrorKind.UNSUPPORTED, "this file is shown as a link")
+        if reference.size > MAX_IMAGE_BYTES:
+            raise ProjectError(ErrorKind.UNSUPPORTED, "this image is larger than a page shows")
+        expires = datetime.now(UTC) + timedelta(seconds=CAPABILITY_SECONDS)
+        capability = preview.capabilities.mint(project, artifact, revision, sha256)
+        url = f"{preview.origin}/file/{capability}"
+        answer = FigureLink(url=url, expires_at=expires, media_type=reference.media_type)
+        return api.dumps(answer.model_dump(mode="json"))
+
+    return json_answer(await asyncio.to_thread(mint))
+
+
+async def viewer(request: web.Request) -> web.Response:
+    project, artifact, revision, sha256, preview = _pinned(request, "the PDF viewer")
+
+    def mint() -> str:
+        found = _resolve(request, project, artifact, revision, sha256)
         if found.reference.media_type != PDF:
             raise ProjectError(ErrorKind.UNSUPPORTED, "the viewer opens PDFs only")
         # The capability counts its ten minutes on a monotonic clock; the time of day is

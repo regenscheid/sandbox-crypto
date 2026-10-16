@@ -326,7 +326,8 @@ async def test_the_workspace_may_frame_the_preview_origin_and_no_other(
 ) -> None:
     workspace, _, preview, _ = origins
     policy = (await workspace.get("/")).headers["Content-Security-Policy"]
-    assert policy == f"{CONTENT_SECURITY_POLICY}; frame-src {preview.origin}"
+    images = CONTENT_SECURITY_POLICY.replace("img-src 'self'", f"img-src 'self' {preview.origin}")
+    assert policy == f"{images}; frame-src {preview.origin}"
     assert policy.count("frame-src") == 1
     plain = await aiohttp_client(
         create_app(ProjectStore(state_dir, readonly=True), static_dir, login_token=TOKEN)

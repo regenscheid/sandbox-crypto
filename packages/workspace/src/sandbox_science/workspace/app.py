@@ -103,11 +103,13 @@ CONTENT_SECURITY_POLICY: Final = "; ".join(
 
 
 def content_security_policy(preview_origin: str) -> str:
-    """The workspace's CSP; with the PDF viewer on, it may frame that origin and no
-    other (docs/specs/pdf-viewer.md, PV-2)."""
+    """The workspace's CSP; with the preview origin on, it may frame that origin and load
+    images from it, and nothing else from anywhere else (docs/specs/pdf-viewer.md, PV-2;
+    docs/specs/figures.md, FG-12)."""
     if not preview_origin:
         return CONTENT_SECURITY_POLICY
-    return f"{CONTENT_SECURITY_POLICY}; frame-src {preview_origin}"
+    policy = CONTENT_SECURITY_POLICY.replace("img-src 'self'", f"img-src 'self' {preview_origin}")
+    return f"{policy}; frame-src {preview_origin}"
 
 
 SECURITY_HEADERS: Final = {
