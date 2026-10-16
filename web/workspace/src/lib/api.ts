@@ -290,6 +290,9 @@ export interface DocumentRevision {
   })[];
   removed: { id: string; kind: string }[];
   removed_math: { id: string; block: string }[];
+  /** Its references to recorded files, each pinned, with a newer revision as `latest`, or
+   * with why it is not (`unresolved`; figures, FG-8, FG-9). Older servers send none. */
+  pins?: Record<string, unknown>[];
 }
 
 export interface HistoryRevision {

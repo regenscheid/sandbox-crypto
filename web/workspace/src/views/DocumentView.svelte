@@ -6,7 +6,8 @@
   disagree, the view says so and leaves those parts without IDs.
 -->
 <script lang="ts">
-  import { api } from '../lib/api';
+  import { api, type DocumentRevision } from '../lib/api';
+  import { guardedWrite } from '../lib/mutation';
   import type { Mismatch } from '../lib/attach';
   import { describeAuthor } from '../lib/authors';
   import { formatTime } from '../lib/format';
@@ -63,6 +64,22 @@
     return api.document(projectId, documentId, revision);
   });
   let mismatches: Mismatch[] = $state([]);
+
+  /** Move a reference's pin to a newer revision of its file (figures, FG-8): a patch of
+   * the current revision, whose text is unchanged; the document is read again after it. */
+  async function repin(found: DocumentRevision, block: string, path: string, to: number) {
+    const body = {
+      action: 'patch',
+      base: found.document.head,
+      reason: `Move the pin of ${path} to revision ${to}`,
+      operations: [{ op: 'repin', block, path, revision: to }],
+    };
+    const scope = `${projectId}:${found.document.document_id}:${block}:${path}:${to}`;
+    await guardedWrite('document-repin', scope, body, (change) =>
+      api.changeDocument(projectId, found.document.document_id, change),
+    );
+    refresh += 1;
+  }
 
   function lines(found: Mismatch): string {
     const [first, end] = found.lines;
@@ -189,7 +206,14 @@
     <!-- Only when the document hides something from its rendering (threat model, A3). -->
     <HiddenBanner text={found.text} quiet />
     <article class="document" use:focusBlock={known ? block : null}>
-      <Markdown source={found.text} document={input} bind:mismatches />
+      <Markdown
+        source={found.text}
+        document={input}
+        bind:mismatches
+        pins={found.pins ?? []}
+        {projectId}
+        repin={shown.number === info.head ? (b, p, r) => repin(found, b, p, r) : null}
+      />
     </article>
   {/if}
   {#key `${info.document_id}:${shown.number}`}

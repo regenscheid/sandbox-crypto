@@ -10,10 +10,14 @@
   why, and the formula as written. Given a `document`, the server's view of a living
   document's revision, it renders `source` as that document (markdown.ts,
   `renderDocument`), with the server's IDs and the document's macros, and reports where
-  the two parsers disagree in `mismatches`.
+  the two parsers disagree in `mismatches`. Given `pins`, the text's reference map, each
+  path image it shows is drawn in place (figureRefs.ts, `FigureRef`); given `repin`, a
+  figure with a newer revision offers to move its pin there.
 -->
 <script lang="ts">
-  import { flushSync, getContext } from 'svelte';
+  import { flushSync, getContext, mount, unmount } from 'svelte';
+  import FigureRef from '../views/FigureRef.svelte';
+  import { placeReferences, type Pin } from './figureRefs';
   import type { Mismatch } from './attach';
   import { renderDocument, renderMarkdown, textState, whenMathTime } from './markdown';
   import type { DocumentInput } from './markdown';
@@ -25,11 +29,17 @@
     document = null,
     macros = undefined,
     mismatches = $bindable([]),
+    pins = [],
+    projectId = null,
+    repin = null,
   }: {
     source: string;
     document?: DocumentInput | null;
     macros?: MacroSet;
     mismatches?: Mismatch[];
+    pins?: Pin[];
+    projectId?: string | null;
+    repin?: ((block: string, path: string, revision: number) => Promise<void>) | null;
   } = $props();
   const projectMacros = getContext<(() => MacroSet) | undefined>('project-macros');
   /** Counts what makes this text render again: repairs it waits for, or its turn in a go. */
@@ -76,6 +86,22 @@
         arrivals += 1;
       });
     });
+  });
+
+  // Each path image the text shows, drawn in its place once the rendering is in the page.
+  $effect(() => {
+    void rendered.html;
+    const target = element;
+    if (!target || !pins.length || projectId === null) return;
+    const shown = placeReferences(target, pins).map((placed) =>
+      mount(FigureRef, {
+        target: placed.target,
+        props: { projectId, pin: placed.pin, alt: placed.alt, drawn: placed.drawn, repin },
+      }),
+    );
+    return () => {
+      for (const figure of shown) void unmount(figure);
+    };
   });
 
   function toggle(event: MouseEvent): void {

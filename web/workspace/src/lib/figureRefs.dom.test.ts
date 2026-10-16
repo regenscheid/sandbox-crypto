@@ -1,0 +1,163 @@
+// SPDX-License-Identifier: MIT
+// References to recorded files drawn in text (FG-6 to FG-9, FG-12, FG-17): each path image
+// matched in order to its pin, outside code and links; the pin's revision and a newer one,
+// with "Move the pin" where a page may move it; a broken reference with its reason; a
+// type shown as a link; and at most 20 figures a text, the rest drawn on request.
+import { flushSync, mount, unmount } from 'svelte';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import Markdown from './Markdown.svelte';
+import { FIGURES_PER_TEXT, pinView, placeReferences, revisionText, type Pin } from './figureRefs';
+
+const SHA = 'ab'.repeat(32);
+const HOSTILE = '"><script>alert(1)</script><img src=x onerror=alert(1)>';
+
+const mounted: ReturnType<typeof mount>[] = [];
+afterEach(() => {
+  for (const component of mounted.splice(0)) unmount(component);
+  document.body.innerHTML = '';
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+async function settle(): Promise<void> {
+  for (let i = 0; i < 8; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+  }
+}
+
+const pin = (path: string, fields: Partial<Pin> = {}): Pin => ({
+  block: 'b2',
+  kind: 'image',
+  path,
+  session: 's1',
+  artifact: 'art-1',
+  revision: 3,
+  sha256: SHA,
+  size: 100,
+  media_type: 'image/png',
+  ...fields,
+});
+
+describe('a pin in the page’s words', () => {
+  it('says how it is shown, its revision and a newer one, or why it is broken', () => {
+    expect(pinView(pin('a.png')).shown).toBe('image');
+    expect(pinView(pin('a.svg', { media_type: 'image/svg+xml' })).shown).toBe('frame');
+    expect(pinView(pin('a.html', { media_type: 'text/html' })).shown).toBe('frame');
+    expect(pinView(pin('a.csv', { media_type: 'text/csv' })).shown).toBe('link');
+    expect(revisionText(pinView(pin('a.png')))).toBe('r3');
+    expect(revisionText(pinView(pin('a.png', { latest: 5 })))).toBe('r3, newer: r5');
+    const broken = pinView({ block: 'b1', kind: 'image', path: 'gone.png', unresolved: 'deleted' });
+    expect([broken.shown, broken.reason]).toEqual(['broken', 'the file was deleted']);
+    expect(pinView(pin('x.png', { sha256: 'nope' })).shown).toBe('broken');
+  });
+});
+
+describe('placing references in rendered text', () => {
+  it('matches each path image, in order, outside code and links, and leaves others as text', () => {
+    const root = document.createElement('div');
+    root.innerHTML =
+      '<p>See ![one](a.png) and ![two](a.png), not ![x](nopin.png).</p>' +
+      '<pre><code>![code](a.png)</code></pre><p><a href="https://x">![link](a.png)</a></p>';
+    const first = pin('a.png');
+    const second = pin('a.png', { revision: 4 });
+    const placed = placeReferences(root, [first, second, pin('b.png', { kind: 'chart_data' })]);
+    expect(placed.map((p) => [p.alt, p.pin, p.drawn])).toEqual([
+      ['one', first, true],
+      ['two', second, true],
+    ]);
+    expect(root.textContent).toContain('not ![x](nopin.png).');
+    expect(root.querySelector('code')!.textContent).toBe('![code](a.png)');
+    expect(root.querySelectorAll('.figure-ref')).toHaveLength(2);
+  });
+
+  it('draws at most twenty figures a text; the rest wait for a click', () => {
+    const root = document.createElement('div');
+    const count = FIGURES_PER_TEXT + 2;
+    root.innerHTML = `<p>${Array.from({ length: count }, (_, i) => `![f${i}](p${i}.png)`).join(' ')}</p>`;
+    const placed = placeReferences(
+      root,
+      Array.from({ length: count }, (_, i) => pin(`p${i}.png`)),
+    );
+    expect(placed.filter((p) => p.drawn)).toHaveLength(FIGURES_PER_TEXT);
+    expect(placed.slice(FIGURES_PER_TEXT).every((p) => !p.drawn)).toBe(true);
+  });
+});
+
+describe('the renderer', () => {
+  type Repin = (block: string, path: string, revision: number) => Promise<void>;
+  function show(source: string, pins: Pin[], repin: Repin | null = null) {
+    const target = document.createElement('div');
+    document.body.append(target);
+    mounted.push(mount(Markdown, { target, props: { source, pins, projectId: 'p1', repin } }));
+    return target;
+  }
+
+  it('draws an image in place with its revisions, and moves its pin on request', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              kind: 'image',
+              url: 'http://127.0.0.1:8201/file/c.m',
+              capability: null,
+              expires_at: '2026-10-16T00:10:00Z',
+              media_type: 'image/png',
+            }),
+          ),
+      ),
+    );
+    const repin = vi.fn(async () => undefined);
+    const target = show(
+      'Timing:\n\n![Timing by size](plots/t.png)\n',
+      [pin('plots/t.png', { latest: 5 })],
+      repin,
+    );
+    await settle();
+    expect(target.querySelector('img')?.getAttribute('src')).toBe('http://127.0.0.1:8201/file/c.m');
+    expect(target.textContent).toContain('plots/t.png, r3, newer: r5');
+    const move = [...target.querySelectorAll('button')].find(
+      (b) => b.textContent === 'Move the pin to r5',
+    )!;
+    move.click();
+    await settle();
+    expect(repin).toHaveBeenCalledWith('b2', 'plots/t.png', 5);
+  });
+
+  it('shows a broken reference with its path and reason, as text, and offers no move', async () => {
+    const target = show(`![${HOSTILE}](gone.png)`, [
+      { block: 'b1', kind: 'image', path: 'gone.png', unresolved: 'content_not_kept' },
+    ]);
+    await settle();
+    expect(target.textContent).toContain('Not drawn: gone.png (its bytes were not kept).');
+    expect(target.querySelector('script, img, button')).toBeNull();
+  });
+
+  it('offers no move where the page gives none, and shows a link type as a link', async () => {
+    const target = show('![data](d.csv)', [pin('d.csv', { media_type: 'text/csv', latest: 9 })]);
+    await settle();
+    expect(target.textContent).toContain('d.csv is shown as a link');
+    expect(target.textContent).toContain('r3, newer: r9');
+    expect(target.querySelector('button')).toBeNull();
+  });
+
+  it('shows a figure past the limit as its source, and draws it on a click', async () => {
+    const count = FIGURES_PER_TEXT + 1;
+    const source = Array.from({ length: count }, (_, i) => `![f${i}](p${i}.csv)`).join('\n\n');
+    const target = show(
+      source,
+      Array.from({ length: count }, (_, i) => pin(`p${i}.csv`, { media_type: 'text/csv' })),
+    );
+    await settle();
+    const draw = [...target.querySelectorAll('button')].filter(
+      (b) => b.textContent === 'Draw this figure',
+    );
+    expect(draw).toHaveLength(1);
+    expect(target.textContent).toContain(`![f${count - 1}](p${count - 1}.csv)`);
+    draw[0]!.click();
+    flushSync();
+    expect(target.textContent).toContain(`p${count - 1}.csv is shown as a link`);
+  });
+});
