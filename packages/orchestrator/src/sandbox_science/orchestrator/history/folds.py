@@ -60,7 +60,7 @@ from sandbox_science.orchestrator.plan_tools import NAMES as PLAN_NAMES
 from sandbox_science.orchestrator.tokens import chars_per_token, estimate, view_tokens
 from sandbox_science.orchestrator.worker_client import dump
 
-from .archive import Archive, Archived, Entry
+from .archive import Archive, Archived, Entry, escape
 from .enrich import Enriched, enrich
 from .geometry import Geometry, geometry
 from .log import PATIENCE, patiently
@@ -164,6 +164,9 @@ class Folder(TurnHook):
         """Each enrichment call's usage, as the run's costs count it."""
         self.weak = 0
         self.overflows = 0
+        self.over = False
+        """Whether the region passes its budget with nothing left to merge."""
+        self.overs = 0
         self.stopped: str | None = None
         """Why the run stopped for its context: ``start``, ``breaker``, ``overflow`` or
         ``irreducible``."""
@@ -224,16 +227,26 @@ class Folder(TurnHook):
             size = self.tokens(transcript)
         while size > wall and await self._merge(transcript, size):  # no time for a call
             size = self.tokens(transcript)
+        running = self.running
+        if size > self.geometry.trigger and running is not None and running.parts:
+            # A fold is due: the merge's call gives way, its overview built by code, so
+            # that the fold's narrative is written (they touch different records).
+            if running.task is not None:
+                running.task.cancel()
+            await self._finish(transcript, size)
+            size = self.tokens(transcript)
         if size > self.geometry.trigger and self.running is None and not self.tripped:
             if self.model is None:
                 await self._fold(transcript, size)
             else:
                 await self._begin(transcript)
             size = self.tokens(transcript)
-        if self.running is None and size <= wall and (due := self._due(transcript)):
-            if self.model is None:
+        if self.running is None and size <= wall:
+            due, over = self._due(transcript)
+            await self._over(over)
+            if due and self.model is None:
                 await self._merges(transcript)
-            else:
+            elif due:
                 await self._begin_merge(transcript, due)
             size = self.tokens(transcript)
         if size <= wall:
@@ -496,24 +509,66 @@ class Folder(TurnHook):
             judge=self.judge,
         )
 
-    def _due(self, transcript: Transcript) -> list[tuple[str, FoldRecord]]:
-        """The records to merge now, oldest first (CM-21): the first-level ones, when
-        three or more total 0.4 of a chunk; else the region's two oldest, while it would
-        pass its budget; none otherwise."""
+    def _due(self, transcript: Transcript) -> tuple[list[tuple[str, FoldRecord]], bool]:
+        """The records to merge now, oldest first (CM-21), and whether the region would
+        pass its budget even so. The first-level ones, when three or more total 0.4 of a
+        chunk; else, while the region would pass its budget, the two oldest if merging
+        them frees room, or all of them if only that does. When even one overview of
+        every record would pass the budget, as markers alone can, none: merging cannot
+        bring it under, and spilling markers is step (f2b)'s."""
         if self.geometry is None:
-            return []
+            return [], False
         per_token, records = self.per_token(transcript), list(self.view.records)
         first = [(fold, record) for fold, record in records if record.level == 1]
         size = sum(estimate(len(record.text(fold)), per_token) for fold, record in first)
         if len(first) >= MIN_PARTS and size >= FIRST_SHARE * self.geometry.chunk:
-            return first
-        if len(records) >= 2 and self.view.wanted > int(self.geometry.region * per_token):
-            return records[:2]
-        return []
+            return first, False
+        budget = int(self.geometry.region * per_token)
+        if self.view.wanted <= budget:
+            return [], False
+        if len(records) < 2 or self._merged(records, per_token) > budget:
+            return [], True
+        two = records[:2]
+        if self._merged(two, per_token) < sum(self._shown(fold, found) for fold, found in two):
+            return two, False
+        return records, False
+
+    def _shown(self, fold: str, record: FoldRecord) -> int:
+        """A record's characters in the region, as the view renders it."""
+        return len(escape(record.text(fold, retired=self.view.retired.get(fold)))) + 2
+
+    def _merged(self, parts: Sequence[tuple[str, FoldRecord]], per_token: float) -> int:
+        """The characters an overview of ``parts`` built by code would take in the
+        region, its parts' retired markers retired in it too."""
+        assert self.geometry is not None  # noqa: S101 - the caller checked
+        overview = merge(parts, int(self.geometry.record * per_token))
+        gone: dict[int, str] = {}
+        offset = 0
+        for fold, record in parts:
+            gone |= {offset + i: why for i, why in self.view.retired.get(fold, {}).items()}
+            offset += len(record.markers)
+        for index, marker in enumerate(overview.markers):
+            if marker.get("kind") == "failures":
+                gone.setdefault(index, "its fold was merged into an overview")
+        return len(escape(overview.text("msg-" + "0" * 16, retired=gone))) + 2
+
+    async def _over(self, over: bool) -> None:
+        """A ``fold`` event when the region passes its budget though nothing is left to
+        merge, and once more when it is back under (CM-46); spills are step (f2b)'s."""
+        if over == self.over:
+            return
+        self.over = over
+        if over:
+            self.overs += 1
+        assert self.geometry is not None  # noqa: S101 - set at the first call
+        await self._event(
+            {"state": "region_over_budget" if over else "region_within_budget",
+             "chars": self.view.wanted, "budget_tokens": self.geometry.region}
+        )  # fmt: skip
 
     async def _merge(self, transcript: Transcript, before: int) -> bool:
         """One merge that is due, built by code and applied (CM-21c); whether one was."""
-        due = self._due(transcript)
+        due, _ = self._due(transcript)
         if not due or self.geometry is None:
             return False
         per_token = self.per_token(transcript)
@@ -608,6 +663,8 @@ class Folder(TurnHook):
         }
         if self.capped is not None:
             found["capped"] = self.capped
+        if self.overs:
+            found["region_over_budget"] = self.overs
         if running is not None and running.kept is not None:
             found["kept"] = running.kept[0].message_id  # ready: the next run applies it
         if self.stopped is not None:

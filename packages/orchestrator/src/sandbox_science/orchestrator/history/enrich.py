@@ -33,6 +33,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Final, cast
 
+from sandbox_science.orchestrator.aio import threaded
 from sandbox_science.orchestrator.ledger.provenance import numbers
 from sandbox_science.orchestrator.model import (
     ChatModel,
@@ -118,7 +119,10 @@ async def enrich(
             if isinstance(model, GatewayModel):
                 caller = model.choosing("none")
             continue
-        found, why = check(turn.text or "", record, rows, share=share, exists=exists)
+        # A span, an overview's above all, can be millions of characters: off the loop.
+        found, why = await threaded(
+            check, turn.text or "", record, rows, share=share, exists=exists
+        )
         if found is not None:
             return Enriched(found, tuple(calls))
         failed.append(why)

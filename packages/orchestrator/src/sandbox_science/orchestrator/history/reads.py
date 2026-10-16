@@ -37,6 +37,8 @@ EXTENTS: Final = ("whole", "partial", "abstract_only", "preview_only", "unknown"
 """A read's extents, from the most of a source to what says nothing of it."""
 KINDS: Final = ("pdf", "file", "eprint", "web", "nist", "paper", "connector")
 """The kinds of source."""
+CONTENT_KEYED: Final = frozenset({"pdf", "file"})
+"""The kinds whose key is their content's digest: every read of one reads the same."""
 PDF_TOOLS: Final = ("pdf_pages", "pdf_search")
 MAX_DETAIL: Final = 16384
 """The largest detail a read keeps, as JSON; a larger one keeps its extent alone."""
@@ -274,20 +276,35 @@ class Register:
             for message, kind, source, extent, detail, label in rows
         ]
 
-    def completed(self, project: str, kind: str, source: str) -> str | None:
-        """The archive message of the read that made a source ``whole``, its reads put
-        together in order; ``None`` while it is not (CM-21a)."""
+    def completed(
+        self, project: str, kind: str, source: str, *, after: str | None = None
+    ) -> str | None:
+        """The archive message of the read, after the reads of the message ``after``,
+        that made a source ``whole``, its reads put together in order; ``None`` while
+        none did (CM-21a). A PDF's or a file's key is its digest, so all its reads count;
+        another source's content may change, so only its reads after ``after`` do."""
         with self.control.read() as tx:
             rows = tx.sql.execute(
-                "SELECT message_id, extent, detail FROM source_reads WHERE project = ? AND "
-                "((kind = ? AND source = ?) OR (kind = 'web' AND ? = 'web' AND "
+                "SELECT rowid, message_id, extent, detail FROM source_reads WHERE project = ? "
+                "AND ((kind = ? AND source = ?) OR (kind = 'web' AND ? = 'web' AND "
                 "json_extract(detail, '$.final') = ?)) ORDER BY rowid",
                 (project, kind, source, kind, source),
             ).fetchall()
+            boundary = 0
+            if after is not None:
+                found = tx.sql.execute(
+                    "SELECT max(rowid) FROM source_reads WHERE project = ? AND message_id = ?",
+                    (project, after),
+                ).fetchone()
+                boundary = int(found[0]) if found and found[0] is not None else 0
+        same = kind in CONTENT_KEYED
         reads: list[Read] = []
-        for message, extent, detail in rows:
+        for rowid, message, extent, detail in rows:
+            if rowid <= boundary and not same:
+                continue
             reads.append(Read(kind, source, extent, cast(Json, json.loads(detail))))
-            if (found := merged(reads)) is not None and found.extent == "whole":
+            whole = (found := merged(reads)) is not None and found.extent == "whole"
+            if whole and rowid > boundary:
                 return str(message)
         return None
 

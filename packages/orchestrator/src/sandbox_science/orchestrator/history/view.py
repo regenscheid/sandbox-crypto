@@ -58,7 +58,7 @@ from .archive import PAGE, Archive, Archived, Entry, escape
 from .geometry import Geometry
 from .log import PATIENCE, patiently
 from .markers import Judge
-from .record import FoldRecord, marker_line, stub
+from .record import FoldRecord, marker_line, retired_line, stub
 
 if TYPE_CHECKING:
     from sandbox_science.orchestrator.projects import ProjectStore
@@ -115,8 +115,9 @@ class View:
     records: tuple[tuple[str, FoldRecord], ...] = ()
     """The records the region would show whole, those left out among them, oldest
     first: none an overview merged."""
-    retired: Mapping[str, tuple[int, ...]] = field(default_factory=dict[str, tuple[int, ...]])
-    """The markers each record shown renders as retired, by their index (CM-21a)."""
+    retired: Mapping[str, Mapping[int, str]] = field(default_factory=dict[str, Mapping[int, str]])
+    """The markers each record shown renders as retired, by their index, with why
+    (CM-21a)."""
     wanted: int = 0
     """The characters the region would take with every record in ``records``."""
     folded: tuple[int, int] | None = None
@@ -159,7 +160,7 @@ class View:
             "folded": list(self.folded) if self.folded else None,
             "folds": list(self.folds),
             "folds_left_out": list(self.folds_left_out),
-            "retired": {fold: list(found) for fold, found in self.retired.items()},
+            "retired": {fold: sorted(found) for fold, found in self.retired.items()},
             "stubs": list(self.stubs),
             "unarchived_runs": self.unarchived,
             "recorded_messages": self.recorded,
@@ -232,9 +233,11 @@ def session_view(
         region=region,
         folds=shown_folds,
         folds_left_out=left,
-        markers_left_out=_left_markers(records, left, int(geometry.region * per_token) // 4),
+        markers_left_out=_left_markers(
+            records, left, int(geometry.region * per_token) // 4, retired
+        ),
         records=tuple((row.message_id, found) for row, found in records),
-        retired={fold: tuple(sorted(found)) for fold, found in retired.items()},
+        retired=retired,
         wanted=wanted,
         folded=(folded[0].position, end) if folded else None,
         stubs=tuple(p.row.message_id for p in kept if p.kind == "stub" and p.row),
@@ -273,20 +276,32 @@ def _region(
 
 
 def _left_markers(
-    records: Sequence[tuple[Archived, FoldRecord]], left: Sequence[str], budget: int
+    records: Sequence[tuple[Archived, FoldRecord]],
+    left: Sequence[str],
+    budget: int,
+    retired: Mapping[str, Mapping[int, str]] | None = None,
 ) -> tuple[str, ...]:
     """The marker lines of the records ``left`` out, within ``budget`` characters, a
-    quarter of the region's: failure aggregates give way first, then the oldest lines;
-    the last line says how many gave way and how to read them whole."""
-    found = [
-        (marker.get("kind") == "failures", marker_line(marker, row.message_id), row.message_id)
-        for row, record in records
-        if row.message_id in left
-        for marker in record.markers
-    ]
+    quarter of the region's, retired ones as their index lines: failure aggregates give
+    way first, then retired markers, then caveats and reads, and decision lines last,
+    the oldest first in each (CM-21b); the last line says how many gave way and how to
+    read them whole."""
+    found: list[tuple[int, str, str]] = []
+    for row, record in records:
+        if row.message_id not in left:
+            continue
+        gone_here = (retired or {}).get(row.message_id, {})
+        for index, marker in enumerate(record.markers):
+            if index in gone_here:
+                line, rank = retired_line(marker, gone_here[index]), 1
+            else:
+                line = marker_line(marker, row.message_id)
+                kind = marker.get("kind")
+                rank = 0 if kind == "failures" else 3 if kind == "decision" else 2
+            found.append((rank, line, row.message_id))
     total = sum(len(line) + 3 for _, line, _ in found)
     gone: set[int] = set()
-    for index in sorted(range(len(found)), key=lambda i: (not found[i][0], i)):
+    for index in sorted(range(len(found)), key=lambda i: (found[i][0], i)):
         if total <= budget:
             break
         gone.add(index)

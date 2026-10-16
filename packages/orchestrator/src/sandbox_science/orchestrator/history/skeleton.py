@@ -222,10 +222,12 @@ def _change(span: _Span, args: str, found: Json, at: str) -> str:
         fields = cast(Json, change.get("fields") or {})
         if handle.startswith("D-") and ("status" in change or done.get("created")):
             text = f"{handle} → {status}: {reason}"
+            decided: Json = {"status": status}  # what retires the line when it changes
             if fields.get("reopen_condition"):
                 text += f"; reopen if {fields['reopen_condition']}"
+                decided["reopen"] = str(fields["reopen_condition"])
             span.markers.append(
-                {"kind": "decision", "subject": handle, "text": text, "status": status, **about}
+                {"kind": "decision", "subject": handle, "text": text, **decided, **about}
             )
         for caveat in cast(list[object], fields.get("caveats") or []):
             text = f"caveat on {handle}: {caveat}"
