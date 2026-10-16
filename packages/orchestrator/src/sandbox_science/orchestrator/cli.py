@@ -376,6 +376,7 @@ def _harness(
             ),
             skeleton_only=getattr(args, "skeleton_only_folds", False),
             fold_alias=getattr(args, "fold_alias", None),
+            image_aliases=frozenset(getattr(args, "images", None) or ()),
             watcher_calls_per_hour=args.watcher_calls_per_hour,
             watcher_first_check=args.watcher_first_check,
             watcher_interval=args.watcher_interval,
@@ -515,6 +516,13 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
         "--skeleton-only-folds",
         action="store_true",
         help="fold MAIN's view without the enrichment call: outlines built by code alone",
+    )
+    command.add_argument(
+        "--images",
+        action="append",
+        metavar="ALIAS",
+        help="a model alias that accepts images, whatever the gateway's model information "
+        "says: its runs are offered view_image; repeat for more aliases",
     )
     command.add_argument(
         "--fold-alias",

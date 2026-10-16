@@ -24,6 +24,7 @@ import aiohttp
 
 from sandbox_science.contracts.clock import SYSTEM_CLOCK, Clock
 
+from . import images
 from .pricing import GATEWAY, MODEL_INFO, CostSource, PriceList, Tokens, chat_tokens
 from .pricing import cost as priced_cost
 from .tokens import total_input
@@ -450,7 +451,7 @@ class OpenAICompatibleModel(GatewayModel):
     PREFIX = ("messages", "tools")
 
     async def complete(self, messages: Sequence[Message], tools: Sequence[ToolSpec]) -> ModelTurn:
-        body: dict[str, Any] = {"model": self.model, "messages": list(messages)}
+        body: dict[str, Any] = {"model": self.model, "messages": images.chat(messages)}
         if self._max_tokens is not None:
             body["max_tokens"] = self._max_tokens
         if tools:
@@ -621,6 +622,19 @@ class ModelGateway:
                 # An alias several deployments serve can call tools when any of them can.
                 capable[name] = capable.get(name, False) or calls
         return capable
+
+    async def image_input(self) -> dict[str, bool] | None:
+        """Whether each alias the gateway describes accepts images (``GET /model/info``,
+        its ``supports_vision``): only when every deployment of it says so, since any of
+        them may answer a call (docs/specs/figures.md, FG-33); ``None`` when the gateway
+        cannot be asked."""
+        described = await self._described()
+        if described is None:
+            return None
+        accepts: dict[str, bool] = {}
+        for name, info in described:
+            accepts[name] = accepts.get(name, True) and info.get("supports_vision") is True
+        return accepts
 
     async def input_limits(self) -> dict[str, Limits] | None:
         """Each described alias's limits (docs/specs/context-management.md, CM-27): its

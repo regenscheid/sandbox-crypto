@@ -54,7 +54,7 @@ from .documents.tool import DOCUMENT_EFFECTS, DocumentTool, WorkRequests, with_n
 from .documents.tool import SPECS as DOCUMENT_SPECS
 from .history import SPECS as HISTORY_SPECS
 from .history import HistoryTool
-from .hooks import Effect, TurnHook
+from .hooks import Effect, Notice, TurnHook
 from .jobs import BACKGROUND, JOB_EFFECTS, JOB_SPECS, STOP_AT_FAILURE, JobNotices, JobTools
 from .kernel_check import KernelCheck
 from .ledger.tool import LEDGER_EFFECTS, LedgerTool
@@ -73,6 +73,8 @@ from .question_tool import QuestionTool
 from .recording import FileRecorder, RecordedFiles, Written, with_recorded
 from .skills.tool import SPEC as SKILL_SPEC
 from .skills.tool import SkillTool
+from .view_image import SPEC as VIEW_IMAGE
+from .view_image import ImageViewer
 from .worker_client import WorkerAPIError, WorkerClient, dump
 
 if TYPE_CHECKING:
@@ -342,6 +344,9 @@ class ToolOutcome:
     saved: dict[str, str] = field(default_factory=dict[str, str])
     """The texts saved whole behind a sample, by path (Shell 5), which the session's
     archive keeps beside the result (docs/specs/context-management.md, CM-6)."""
+    image: tuple[Notice, str] | None = None
+    """An image ``view_image`` gives the model, and its token: the loop adds its framed
+    message after the turn's results (docs/specs/figures.md, FG-37)."""
 
 
 @dataclass(frozen=True)
@@ -388,6 +393,14 @@ def _group(
         ToolEntry(spec, effects.get(spec.name, "effect"), partial(handler, spec.name), **flags)
         for spec in specs
     ]
+
+
+async def _view(viewer: ImageViewer, request: Request) -> ToolOutcome:
+    viewed = await viewer.call(request.args)
+    image = None
+    if viewed.notice is not None and viewed.token is not None:
+        image = (viewed.notice, viewed.token)
+    return ToolOutcome(viewed.text, viewed.record, image=image)
 
 
 def _plain(handler: Callable[[dict[str, Any], str], Awaitable[ToolOutcome]]) -> Handler:
@@ -473,6 +486,7 @@ def _harness_tool_names() -> frozenset[str]:
         *QUESTION_SPECS,
         SKILL_SPEC,
         *HISTORY_SPECS,
+        VIEW_IMAGE,
     )
     return frozenset(spec.name for spec in specs) | {RESTART_KERNEL, MCP_TOOLS}
 
@@ -513,6 +527,8 @@ class Toolbox:
         tracks: TrackTools | None = None,
         skills: SkillTool | None = None,
         history: HistoryTool | None = None,
+        images: ImageViewer | None = None,
+        image_offer: Mapping[str, Any] | None = None,
     ) -> None:
         """For a ``delegated`` run, a call to a tool it is not offered, such as a review,
         plan, delegate, question or connector tool, is refused with
@@ -690,6 +706,10 @@ class Toolbox:
                 {spec.name: "read" for spec in history.specs},
                 whole=True,
             )
+        self.image_offer = None if image_offer is None else dict(image_offer)
+        """Whether the run was offered ``view_image``, and why, for its record (FG-33)."""
+        if images is not None:
+            entries.append(ToolEntry(VIEW_IMAGE, "read", partial(_view, images)))
         if questions is not None:
             entries += _group(
                 questions.specs,

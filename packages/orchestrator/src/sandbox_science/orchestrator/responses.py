@@ -38,6 +38,7 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any, Final, cast
 
+from . import images
 from .model import (
     AssistantMessage,
     ContextLimitError,
@@ -126,11 +127,18 @@ def rendered(
     the native items of the answers made on ``alias`` by ``model``."""
     instructions: str | None = None
     items: list[Item] = []
+    carried = images.carried(messages)
     for index, message in enumerate(messages):
         role, content = message.get("role"), message.get("content")
         text = content if isinstance(content, str) else ""
         if role == "system" and index == 0:
             instructions = text
+        elif role in ("system", "user") and (image := carried.get(id(message))) is not None:
+            parts = [
+                {"type": "input_text", "text": text},
+                {"type": "input_image", "image_url": image.data_url},
+            ]
+            items.append({"type": MESSAGE, "role": role, "content": parts})
         elif role in ("system", "user"):
             items.append({"type": MESSAGE, "role": role, "content": text})
         elif role == "assistant":

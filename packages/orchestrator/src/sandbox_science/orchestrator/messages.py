@@ -47,6 +47,7 @@ from typing import Any, Final, cast
 
 import aiohttp
 
+from . import images
 from .model import (
     AssistantMessage,
     GatewayModel,
@@ -438,6 +439,7 @@ def _render(
 ) -> _View:
     """The request's body, without its model and length, and what the checks need."""
     conversation = _paired(messages)
+    carried = images.carried(conversation)
     system: list[Json] = []
     if conversation and conversation[0].get("role") == "system":
         first = _text(conversation.pop(0))
@@ -494,6 +496,9 @@ def _render(
         elif role in ("user", "system"):
             if text := _text(message):
                 texts.append({"type": "text", "text": text})
+            if (image := carried.get(id(message))) is not None:
+                source = {"type": "base64", "media_type": image.media_type, "data": image.base64}
+                texts.append({"type": "image", "source": source})
         elif role == "assistant":
             flush()
             read = reads[id(message)]
