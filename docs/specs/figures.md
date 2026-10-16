@@ -1,6 +1,6 @@
 # Figures
 
-Date: 2026-10-15. **Status: Approved (2026-10-16, by the owner, as drafted); its open questions decided by the owner as recommended (2026-10-16).** The owner decided on 2026-10-14 how figures are kept, referred to, drawn, checked and exported, that a built-in skill teaches them, and that a `view_image` tool lets agents and the reviewer look at recorded images (backlog: "Figures in chat and documents", "Charts and diagrams as text", "A `view_image` tool"); those decisions are marked *(owner, 2026-10-14)*, and the answers to the open questions *(owner, 2026-10-16)*. The changes this spec makes to other specs are applied there ([below](#changes-to-other-specs)). Not built; the build plan is in the [backlog](../../.agents/BACKLOG.md). W0 behavior specification; conventions in the [index](README.md).
+Date: 2026-10-15. **Status: Approved (2026-10-16, by the owner, as drafted); its open questions decided by the owner as recommended (2026-10-16).** The owner decided on 2026-10-14 how figures are kept, referred to, drawn, checked and exported, that a built-in skill teaches them, and that a `view_image` tool lets agents and the reviewer look at recorded images (backlog: "Figures in chat and documents", "Charts and diagrams as text", "A `view_image` tool"); those decisions are marked *(owner, 2026-10-14)*, and the answers to the open questions *(owner, 2026-10-16)*. The changes this spec makes to other specs are applied there ([below](#changes-to-other-specs)). **Built in part** (build step F1; [living documents as built](../LIVING-DOCUMENTS.md#references-to-recorded-files)): FG-6 to FG-11 and LD-11's moved pins for living documents, but direct edits of document files, which are not built (LD-50); ledger statements and chat are step F2. The build plan is in the [backlog](../../.agents/BACKLOG.md). W0 behavior specification; conventions in the [index](README.md).
 
 ## Scope
 
@@ -50,6 +50,8 @@ Terms:
   - `shared/<path>` names a file of the project's shared area, as the file tools read it;
   - `/sessions/<session>/<path>` names a file of that session's workspace, the form for text outside that session;
   - any other relative path names a file of the text's own session workspace.
+
+  *As built (F1, 2026-10-16, by the coordinator, which the owner can reverse):* `sessions/<session>/<path>` without the slash names that session's file too, as the file tools and `find_artifacts` read it (lab 39), so a path an agent copies from the artifact list resolves.
 
   The text's session is the chat's, the workbook document's, or that of the agent run or direct edit that saved the text. A project document or ledger entry the user saves outside any session resolves only the first two forms. A path with a scheme (`https:`, `data:`, `file:`), a query, or a `.` or `..` segment is not a file reference: as an image it stays a link that never loads (LD-29), and in a chart it is an error (FG-19).
 - FG-7. When a text is saved, the server resolves each reference that is new, or whose path changed, to the file's current revision, and pins it *(owner, 2026-10-14; RA-19)*. The pin goes in the text's reference map; the text keeps only the path, so the source stays readable and portable (LD-2). A reference whose block keeps its ID and whose path is unchanged keeps its pin, however the text around it changes (new).

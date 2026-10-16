@@ -2812,6 +2812,16 @@ BEGIN SELECT RAISE(ABORT, 'a decided proposal is not changed'); END""",
         schema.execute(statement)
 
 
+def _document_pins(schema: Schema) -> None:
+    """Version 55: each document revision's references to recorded files with their pins
+    (docs/specs/figures.md, FG-7 to FG-10), a JSON array kept with the revision, which
+    its no-update trigger already keeps as written. Revisions saved before hold none."""
+    schema.execute(
+        "ALTER TABLE revisions ADD COLUMN pins TEXT CHECK (pins IS NULL OR (json_valid(pins) "
+        "AND json_type(pins) = 'array' AND length(CAST(pins AS BLOB)) <= 1048576))"
+    )
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -2866,6 +2876,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _fold_events,
     _cost_sources,
     _fold_proposals,
+    _document_pins,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

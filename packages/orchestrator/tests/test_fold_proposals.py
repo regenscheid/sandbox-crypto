@@ -343,8 +343,6 @@ def test_a_store_of_the_version_before_takes_proposals(tmp_path: Path) -> None:
     table to a store of the version before, whose rows stay."""
     import sqlite3
 
-    from sandbox_science.orchestrator.control import migrations
-
     from .control_versions import older_store
 
     current = ProjectStore(tmp_path / "current")
@@ -354,7 +352,9 @@ def test_a_store_of_the_version_before_takes_proposals(tmp_path: Path) -> None:
     target = tmp_path / "old"
     target.mkdir()
     older_store(
-        tmp_path / "current" / "control.sqlite3", target / "control.sqlite3", migrations.VERSION - 1
+        tmp_path / "current" / "control.sqlite3",
+        target / "control.sqlite3",
+        53,  # the version before fold proposals
     )
     with sqlite3.connect(target / "control.sqlite3") as db:
         tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master")}

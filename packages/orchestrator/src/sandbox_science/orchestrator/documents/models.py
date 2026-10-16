@@ -159,6 +159,8 @@ class Revision(Contract):
     info: RevisionInfo
     text: str
     block_map: dict[str, JsonValue]
+    pins: list[dict[str, JsonValue]] = Field(default_factory=list[dict[str, JsonValue]])
+    """Its references to recorded files, each pinned or with why it is not (FG-7, FG-9)."""
 
 
 class PatchInfo(Contract):
