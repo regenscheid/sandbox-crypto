@@ -255,7 +255,7 @@ async def test_a_failing_gateway_or_a_short_message_leaves_words(
     (found,) = _summary(record)["discoveries"]
     assert found["scoring"] == "lexical"
     assert found["embedding"].startswith("failed: the gateway answered 500")
-    answer = json.loads(cast(str, record.messages[-2]["content"]))
+    answer = json.loads(body(cast(str, record.messages[-2]["content"])))
     assert answer["ranked"].startswith(
         "by words alone: meaning could not be compared (failed: the gateway answered 500"
     )

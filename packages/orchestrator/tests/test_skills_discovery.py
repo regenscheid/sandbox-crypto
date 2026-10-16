@@ -245,7 +245,7 @@ async def test_a_run_for_a_comment_discovers_by_the_comments_text(pinned: Harnes
     first = pinned.gateway.main[0]
     (shown,) = _notices(first)
     assert "ss/beta" in shown
-    at = next(i for i, m in enumerate(first) if cast(str, m.get("content", "")) == shown)
+    at = next(i for i, m in enumerate(first) if body(cast(str, m.get("content", ""))) == shown)
     assert "request_text" in cast(str, first[at + 1]["content"])  # the request just after
     (found,) = _discoveries(record)
     assert (found["answered"], found["requests"]) == ("comment", [request])
