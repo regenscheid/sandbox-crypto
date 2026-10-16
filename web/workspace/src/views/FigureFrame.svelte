@@ -5,8 +5,9 @@
      with its own scrolling; a PDF in the viewer's figure mode. The frame is made when the
      figure comes near the view, at most eight draw at once, and one not drawn in five
      seconds is removed. Only a status in the protocol's exact shape, from this frame's
-     window and the preview origin, is taken. A figure that is not drawn shows its path
-     and the reason: never a blank. -->
+     window and the preview origin, is taken; once drawn, a later size from the frame (one
+     drawn before it had its width, or resized) is taken too, clamped, at most one every
+     200 ms. A figure that is not drawn shows its path and the reason: never a blank. -->
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import { api, ApiError } from '../lib/api';
@@ -20,6 +21,7 @@
     MAX_FRAME_HEIGHT,
   } from '../lib/figures';
   import { CODE_TEXT, figureStatus, type FigureRequest } from '../figures/protocol';
+  import { RESIZE_MILLISECONDS } from '../figures/layout';
   import type { ChartData } from '../lib/figureRefs';
 
   let {
@@ -52,6 +54,25 @@
   let release: (() => void) | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let observer: IntersectionObserver | undefined;
+  /** A later size waiting its turn, and when the last one was taken. */
+  let resizing: ReturnType<typeof setTimeout> | undefined;
+  let resized = 0;
+  let next = 0;
+
+  const fitted = (value: number) => Math.min(MAX_FRAME_HEIGHT, Math.max(20, value));
+
+  /** Take a size the frame sends after it was drawn, at most one every 200 ms, the
+   * latest last. */
+  function resize(value: number): void {
+    next = value;
+    if (resizing !== undefined) return;
+    const wait = Math.max(0, resized + RESIZE_MILLISECONDS - Date.now());
+    resizing = setTimeout(() => {
+      resizing = undefined;
+      resized = Date.now();
+      height = fitted(next);
+    }, wait);
+  }
 
   function end(reason: string | null): void {
     clearTimeout(timer);
@@ -115,13 +136,18 @@
   }
 
   function heard(event: MessageEvent): void {
-    if (!link || drawn || !frame || event.source !== frame.contentWindow) return;
+    if (!link || !frame || event.source !== frame.contentWindow) return;
     if (event.origin !== origin) return;
     const status = figureStatus(event.data);
     if (status === null) return;
+    if (drawn) {
+      if (status.status === 'rendered') resize(status.height);
+      return;
+    }
     // The frame's words never reach the page: only a code, in the workspace's words.
     if (status.status === 'error') return end(CODE_TEXT[status.code || 'unreadable']);
-    height = Math.min(MAX_FRAME_HEIGHT, Math.max(20, status.height));
+    height = fitted(status.height);
+    resized = Date.now();
     end(null);
   }
 
@@ -146,6 +172,7 @@
     observer?.disconnect();
     if (typeof window !== 'undefined') window.removeEventListener('message', heard);
     clearTimeout(timer);
+    clearTimeout(resizing);
     release?.();
   });
 </script>

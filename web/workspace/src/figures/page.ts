@@ -5,7 +5,8 @@
  * it, and answers with its size and a status. An SVG file is decoded as an image, so it
  * runs no script and loads nothing, whatever it holds, and painted once onto a canvas, so
  * nothing in it animates. A chart is drawn by a worker running this bundle (main.ts),
- * which the page ends at the time limit.
+ * which the page ends at the time limit. It draws once it has a width (layout.ts), and
+ * sends its size again whenever it changes.
  */
 import {
   accepted,
@@ -18,6 +19,7 @@ import {
 import { checkSvg, drawnInWorker, Refusal, type ChartWorker } from './chart';
 import { sanitized } from './sanitize';
 import { framedBy } from '../viewer/anchor';
+import { laidOut, watchSize } from './layout';
 
 let figure: HTMLElement;
 let workspace: string | null = null;
@@ -29,11 +31,16 @@ let taken = false;
 const MAX_SIDE = 4096;
 const MAX_CANVAS_PIXELS = 2 ** 24;
 
+/** The figure's size: its width, and the page's height. */
+function measure(): { width: number; height: number } {
+  const box = figure.getBoundingClientRect();
+  return { width: box.width, height: Math.max(box.height, document.documentElement.scrollHeight) };
+}
+
 function answer(status: 'rendered' | 'error', code: FigureCode = ''): void {
   if (workspace === null) return;
-  const box = figure.getBoundingClientRect();
-  const height = Math.max(box.height, document.documentElement.scrollHeight);
-  window.parent.postMessage(statusMessage(status, box.width, height, code), workspace);
+  const { width, height } = measure();
+  window.parent.postMessage(statusMessage(status, width, height, code), workspace);
 }
 
 async function file(capability: string, type: string): Promise<Blob> {
@@ -76,7 +83,9 @@ async function drawSvg(request: FigureRequest): Promise<void> {
     canvas.width = Math.max(1, Math.floor(width * ratio));
     canvas.height = Math.max(1, Math.floor(height * ratio));
     canvas.style.width = `${width}px`;
-    canvas.style.height = `${height}px`;
+    // Narrowed with the frame, if it is drawn before the frame has its width.
+    canvas.style.maxWidth = '100%';
+    canvas.style.height = 'auto';
     const context = canvas.getContext('2d');
     if (context === null) throw new Refusal('unreadable');
     context.drawImage(image, 0, 0, canvas.width, canvas.height);
@@ -121,13 +130,18 @@ export function startPage(own: string): void {
       const request = accepted(event, from, window.parent);
       if (request === null) return;
       taken = true; // one figure a frame: a second request, from anyone, is ignored
-      draw(request).then(
-        () => answer('rendered'),
-        (error: unknown) => {
-          figure.textContent = '';
-          answer('error', error instanceof Refusal ? error.code : 'unreadable');
-        },
-      );
+      laidOut(document.body)
+        .then(() => draw(request))
+        .then(
+          () => {
+            answer('rendered');
+            watchSize([figure, document.body], measure, () => answer('rendered'));
+          },
+          (error: unknown) => {
+            figure.textContent = '';
+            answer('error', error instanceof Refusal ? error.code : 'unreadable');
+          },
+        );
     });
   }
 }

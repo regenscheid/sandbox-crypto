@@ -139,6 +139,40 @@ describe('an SVG in the figure frame', () => {
     expect(target.querySelector('iframe')!.style.height).toBe('320px');
   });
 
+  it('takes later sizes once drawn, clamped, one every 200 ms: a frame whose first size is 0', async () => {
+    // A frame of another site in a hidden page has no size at first (#506's browser check).
+    serve({ kind: 'svg', url: `${PREVIEW}/figures/#w=x`, capability: CAP });
+    const target = show();
+    await settle();
+    target.querySelector('iframe')!.dispatchEvent(new Event('load'));
+    const post = (fields: Record<string, unknown>, source: unknown = framed) =>
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: status(fields),
+          origin: PREVIEW,
+          source: source as Window,
+        }),
+      );
+    const height = () => target.querySelector('iframe')!.style.height;
+    const later = () => new Promise((resolve) => setTimeout(resolve, 250));
+    post({ width: 0, height: 0 });
+    flushSync();
+    expect(height()).toBe('20px');
+    for (const value of [300, 9_999, 350]) post({ width: 545, height: value });
+    flushSync();
+    expect(height()).toBe('20px'); // not before its turn
+    await later();
+    flushSync();
+    expect(height()).toBe('350px'); // the latest
+    post({ status: 'error', code: 'size' }); // drawn: an error changes nothing
+    post({ height: 100 }, window); // nor another window's size
+    post({ height: 9_999 });
+    await later();
+    flushSync();
+    expect(height()).toBe('4000px'); // clamped
+    expect(target.textContent).not.toContain('Not drawn');
+  });
+
   it('shows the path and the reason, as text, when the frame says it failed', async () => {
     serve({ kind: 'svg', url: `${PREVIEW}/figures/#w=x`, capability: CAP });
     const target = show({ alt: HOSTILE });

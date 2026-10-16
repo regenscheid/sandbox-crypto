@@ -25,6 +25,7 @@ import {
   pdfBox,
   viewerParams,
 } from './anchor';
+import { laidOut, watchSize } from '../figures/layout';
 import { statusMessage } from '../figures/protocol';
 import './viewer.css';
 
@@ -64,9 +65,11 @@ async function show(index: number): Promise<void> {
   const generation = ++rendering;
   const page = await pdf.getPage(current);
   if (generation !== rendering) return;
-  // A figure is fitted to the frame's width; otherwise the zoom chosen.
+  // A figure is fitted to the frame's width (its own size while the frame has none, as in
+  // a page the browser is not showing); otherwise the zoom chosen.
   const width = page.getViewport({ scale: 1 }).width;
-  const scale = figureFor ? Math.min(4, document.body.clientWidth / width) : SCALES[scaleIndex]!;
+  const fit = document.body.clientWidth;
+  const scale = figureFor ? (fit > 0 ? Math.min(4, fit / width) : 1) : SCALES[scaleIndex]!;
   const viewport = page.getViewport({ scale });
   const container = document.createElement('div');
   container.className = 'page';
@@ -207,8 +210,17 @@ async function open(): Promise<void> {
     else status.textContent = `No page is labelled ${labelInput.value}.`;
   });
   anchorButton.addEventListener('click', () => copyAnchor(sha256, params.workspace));
+  // A figure waits for the frame's width (layout.ts), and is fitted again, its size sent
+  // again, whenever that width changes.
+  if (params.figure) await laidOut(document.body);
   // A page past the last opens the last (show).
   go(params.page ?? 1);
+  if (params.figure)
+    watchSize(
+      [document.body],
+      () => ({ width: document.body.clientWidth, height: 0 }),
+      () => go(current),
+    );
 }
 
 // The workspace opens a PDF again with a fresh capability by changing only the fragment,

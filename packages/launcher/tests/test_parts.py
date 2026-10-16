@@ -64,6 +64,20 @@ def test_a_token_open_to_others_or_empty_is_refused(tmp_path: Path) -> None:
         ensure_token(path)
 
 
+def test_a_preview_name_is_passed_to_the_workspace(make_config: Any, commands: Path) -> None:
+    config = load_config(
+        make_config(
+            {
+                "bin_dir": str(commands),
+                "workspace": {"listen": "127.0.0.1:18200", "static": "web/dist",
+                              "preview_name": "127.0.0.1"},
+            }
+        )
+    )  # fmt: skip
+    workspace = parts.workspace_argv(config, Layout(config.state_dir))
+    assert workspace[workspace.index("--preview-name") + 1] == "127.0.0.1"
+
+
 def test_command_lines_name_files_never_secrets(make_config: Any, commands: Path) -> None:
     config = load_config(
         make_config({"bin_dir": str(commands), "model": {"reviewer": "sandbox-reviewer"}})
@@ -77,6 +91,7 @@ def test_command_lines_name_files_never_secrets(make_config: Any, commands: Path
     assert harness[harness.index("--reviewer-model") + 1] == "sandbox-reviewer"
     workspace = parts.workspace_argv(config, layout)
     assert workspace[workspace.index("--preview-listen") + 1] == "127.0.0.1:18201"
+    assert "--preview-name" not in workspace  # the workspace's default: localhost
     assert workspace[workspace.index("--worker-token-file") + 1] == str(
         layout.token("workspace-worker")
     )

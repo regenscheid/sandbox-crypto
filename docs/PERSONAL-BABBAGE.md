@@ -15,7 +15,7 @@ Like the labs' scripts, this is babbage's setup: it assumes OpenShell 0.1.3 at `
 | `ss-personal-cache` | the package cache (the sandboxes reach it as `host.openshell.internal:8390`) | 127.0.0.1:8390 |
 | `ss-personal-launcher` | `sandbox-science up` and its parts: | |
 | | the GUI | 127.0.0.1:8300 |
-| | the PDF viewer's origin | 127.0.0.2:8301 |
+| | the PDF viewer's origin, given by `localhost` (another site from the GUI's) | 127.0.0.1:8301 and [::1]:8301 |
 | | the worker | 127.0.0.1:8310 |
 | | the forward to the MCP proxy's sandbox | 127.0.0.1:18300 |
 
@@ -67,7 +67,7 @@ policy = "personal-policy.yaml"
 
 [workspace]
 listen = "127.0.0.1:8300"
-preview_listen = "127.0.0.2:8301"
+# The viewer: the next port, given by localhost, another site (no preview_listen needed).
 static = "<the repository>/web/workspace/dist"
 
 [skills]
@@ -115,7 +115,7 @@ scripts/personal_down.sh      # sandbox-science down, then OpenShell's units; de
 .venv/bin/sandbox-science status --config ~/.config/sandbox-science/personal.toml
 ```
 
-- **Logging in.** The workspace makes a new login address at each start, in the state directory's `workspace-login` (mode 600), never on the screen or in a log: `xdg-open "$(cat ~/.local/state/sandbox-science-personal/launcher/workspace-login)"`. It works until the instance stops. Use the GUI at `http://127.0.0.1:8300/`, not `localhost`, so the PDF viewer works.
+- **Logging in.** The workspace makes a new login address at each start, in the state directory's `workspace-login` (mode 600), never on the screen or in a log: `xdg-open "$(cat ~/.local/state/sandbox-science-personal/launcher/workspace-login)"`. It works until the instance stops. Use the GUI at `http://127.0.0.1:8300/`, not `localhost`, so the PDF viewer works and stays another site (`http://localhost:8301`). A config that still sets `preview_listen = "127.0.0.2:8301"` works too, as another site; drop it to use the default.
 - **Stopping** suspends the research sandboxes, which keep their files and packages, and deletes the MCP proxy's sandbox, which the next start makes again. `personal_down.sh --keep-sandboxes` leaves the sandboxes and OpenShell running, so their kernels are there for the next `personal_up.sh`.
 - **Only OpenShell**: `personal_up.sh --openshell-only` starts the three OpenShell units without the launcher.
 - **The OpenShell CLI** for this instance: `source ~/.local/state/sandbox-science-personal/openshell/env.sh`, then `openshell sandbox list`. It points the XDG directories at the instance, so `gh` does not work in that shell.

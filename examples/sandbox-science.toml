@@ -50,8 +50,9 @@ policy = "policy.yaml"
 
 [workspace]
 listen = "127.0.0.1:8200"
-# The PDF viewer's origin: another loopback address makes it another site.
-preview_listen = "127.0.0.2:8201"
+# The PDF viewer's origin is the next port, given by the name localhost: another site
+# from 127.0.0.1. preview_name = "127.0.0.1" gives it by its address, on the same site.
+# preview_listen = "127.0.0.1:8201"
 static = "../web/workspace/dist"
 
 # Skill packs (docs/SKILLS.md): uncomment, and name them in a project's skills. up imports
