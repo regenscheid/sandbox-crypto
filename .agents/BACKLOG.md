@@ -384,7 +384,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
   - [x] K4: embeddings for search and discovery, made in the background, with their cost counted (#433, version 43)
   - [x] K5: skill packs in the launcher's config, imported once and updated on request (#435)
   - [ ] K6a: the import's model pass (topics, entry skills, short descriptions, environment bindings), the report's broken relative links and the launcher's `[skills] metadata_model` (#437, control store version 44)
-  - [ ] K6b: project overrides of what the pass derives
+  - [ ] K6b: project overrides of what the pass derives: description, topic, entry status and bindings taken away, with `skills override` (#450, control store version 45). The K7 allow rule's options are proposed in #450
   - [ ] K7: helper staging, and using the bindings (SK-16, SK-18, SK-19). Before staging consumes the pass's bindings, the deny-list in `skills/derive.py` must stop being the only barrier against a hostile pack. Its own scripts can mention any variable, so the mention rule does not stop it either. Add an allow rule, such as a variable namespaced to the pack, or the user's approval of each binding in the import report (with K6b) (re-check of #437)
   - [ ] K8: discovery thresholds tuned per pack on routing cases the user names (SK-34)
   - [ ] Skills in the GUI: the session's effective set, what each run was shown and loaded, why a skill was unavailable, each import's report, and the project skill settings (SK-24)
