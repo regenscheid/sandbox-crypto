@@ -44,16 +44,36 @@ _MATCHED: Final = re.compile(r"^(\d+) passage\(s\) matching ", re.M)
 _NONE_MATCHED: Final = re.compile(r"^No passage matching ", re.M)
 _FETCHED: Final = re.compile(r"\A\[[a-z_-]{1,32}\] (\S{1,4096}) \(HTTP (\d{3})\)")
 _TRUNCATED: Final = re.compile(
-    r"\[Truncated\. Call fetch_continue\(document_id='([^'\n]{1,128})', offset=(\d{1,12})\)"
+    r"\n\[Truncated\. Call fetch_continue\(document_id='([^'\n]{1,128})', "
+    r"offset=(\d{1,12})\)[^\n]*\]\s*\Z"
 )
+"""The server's notice that it cut a page, its last line: a page that quotes one
+elsewhere is not cut."""
 _NIST: Final = re.compile(r"\ANIST (.{1,64}?) — ", re.M)
 
 
 def nist_key(designation: str) -> str:
     """A NIST publication as a register's key: ``FIPS 203``, ``NIST.FIPS.203`` and
-    ``fips203`` alike."""
+    ``fips203`` alike, and ``SP 800-56A Rev. 3`` as ``NIST.SP.800-56Ar3``."""
     found = designation.strip().upper().removeprefix("NIST").lstrip(". ")
+    found = re.sub(r"\s*REV(?:ISION)?\b\.?\s*", "R", found)
     return re.sub(r"[\s._-]+", "", found)
+
+
+def paper_key(identifier: str) -> str:
+    """A paper's ``arxiv:`` or ``doi:`` ID as a register's key, in lower case; an arXiv
+    ID without its version (``v2``), and a bare one as arXiv's."""
+    found = identifier.strip().casefold()
+    scheme, colon, rest = found.partition(":")
+    if not colon:
+        scheme, rest = (
+            ("arxiv", found)
+            if re.match(r"^(\d{4}\.\d{4,5}|[a-z.-]+/\d{7})", found)
+            else ("doi", found)
+        )
+    if scheme == "arxiv":
+        rest = re.sub(r"v\d+$", "", rest.removeprefix("arxiv.org/abs/"))
+    return f"{scheme}:{rest.strip()}"
 
 
 def _eprint_record(arguments: Json, text: str) -> list[Read] | None:
@@ -81,11 +101,14 @@ def _web_fetch(arguments: Json, text: str) -> list[Read] | None:
     url = fetched.group(1) if fetched is not None else str(arguments.get("url") or "")
     if not url or (fetched is not None and not fetched.group(2).startswith("2")):
         return [] if fetched is not None else None  # an error page reads nothing
+    # Under the URL asked for, and the one the fetch ended at, if it was redirected.
+    asked = str(arguments.get("url") or url)
+    final: Json = {"final": url_key(url)} if url_key(url) != url_key(asked) else {}
     cut = _TRUNCATED.search(text)
     if cut is None:
-        return [Read("web", url_key(url), "whole", {}, label=url)]
-    detail: Json = {"chars": [[0, int(cut.group(2))]], "document": cut.group(1)}
-    return [Read("web", url_key(url), "partial", detail, label=url)]
+        return [Read("web", url_key(asked), "whole", final, label=asked)]
+    detail: Json = {"chars": [[0, int(cut.group(2))]], "document": cut.group(1), **final}
+    return [Read("web", url_key(asked), "partial", detail, label=asked)]
 
 
 def _fetch_continue(arguments: Json, text: str) -> list[Read] | None:
@@ -123,7 +146,7 @@ def _read_paper(arguments: Json, text: str) -> list[Read] | None:
     if "unavailable" in text.casefold() and "passage" not in text.casefold():
         return []  # no full text: nothing of the paper was read
     detail: Json = {"question": str(arguments.get("question"))[:200]}
-    return [Read("paper", paper.casefold(), "partial", detail, label=paper)]
+    return [Read("paper", paper_key(paper), "partial", detail, label=paper)]
 
 
 def _nist_read(arguments: Json, text: str) -> list[Read] | None:
@@ -202,14 +225,15 @@ def descriptor(tool: str) -> Descriptor | None:
 
 
 def url_key(url: str) -> str:
-    """A page's URL as a register's key: scheme and host in lower case, without its
-    fragment or a trailing slash."""
+    """A page's URL as a register's key: its host in lower case without ``www.``, and its
+    path, without the scheme (``http`` and ``https`` alike), its fragment or a trailing
+    slash."""
     url = url.strip().split("#", 1)[0]
-    scheme, sep, rest = url.partition("://")
+    _, sep, rest = url.partition("://")
     if not sep:
-        return url.rstrip("/")
+        rest = url
     host, slash, path = rest.partition("/")
-    return f"{scheme.lower()}://{host.lower()}{slash}{path}".rstrip("/")
+    return f"{host.lower().removeprefix('www.')}{slash}{path}".rstrip("/")
 
 
 def _json(text: str) -> Json:

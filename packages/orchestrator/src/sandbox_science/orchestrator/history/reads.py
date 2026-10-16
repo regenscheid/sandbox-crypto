@@ -87,11 +87,35 @@ def reads_of(
             identity = hashlib.sha256(json.dumps(args, sort_keys=True).encode()).hexdigest()
             placed = [Read("connector", f"{tool}:{identity[:16]}", "unknown", label=tool)]
         found += placed
+    cut = record.get("cut")
+    if isinstance(cut, dict):
+        found = [_cut(read, cast(Json, cut)) for read in found]
+    listed = cast(Json, record.get("recorded_files") or {}).get("files")
+    recorded = {
+        str(cast(Json, f).get("path")).removeprefix("./"): cast(Json, f)
+        for f in cast(list[object], listed if isinstance(listed, list) else [])
+        if isinstance(f, dict)
+    }
     for path, content in saved.items():  # a sample's saved file, which it previews
-        digest = hashlib.sha256(content.encode("utf-8", "replace")).hexdigest()
-        size = len(content.encode("utf-8", "replace"))
+        # By the revision its call recorded, as read_file will report it; else by its text.
+        revision = recorded.get(path.removeprefix("./")) or {}
+        digest = revision.get("sha256")
+        size = revision.get("size")
+        if not isinstance(digest, str):
+            digest = hashlib.sha256(content.encode("utf-8", "replace")).hexdigest()
+            size = len(content.encode("utf-8", "replace"))
         found.append(Read("file", digest, "preview_only", {"size": size}, label=path))
     return found
+
+
+def _cut(read: Read, cut: Json) -> Read:
+    """A read whose result the toolbox cut before the model saw it: never ``whole``,
+    and none of its pages or ranges count toward the whole, since the model saw only the
+    head and tail of what the tool returned."""
+    extent = "partial" if read.extent == "whole" else read.extent
+    kept = {k: v for k, v in read.detail.items() if k in ("document", "final", "query")}
+    detail: Json = {**kept, "cut": {"length": cut.get("length"), "shown": cut.get("shown")}}
+    return Read(read.kind, read.source, extent, detail, label=read.label)
 
 
 def _pdf(tool: str, result: Json) -> list[Read]:
@@ -213,17 +237,19 @@ class Register:
         """The project's sources, or a session's, or those of ``keys`` (kind, source),
         each as its reads put together, in the order first read."""
         wanted = list(dict.fromkeys(keys))
-        query = "SELECT kind, source, extent, detail, label FROM source_reads WHERE project = ?"
-        params: list[object] = [project]
+        query = "SELECT kind, source, extent, detail, label FROM source_reads WHERE project = :p"
+        params: dict[str, object] = {"p": project, "keys": json.dumps([list(k) for k in wanted])}
         if session is not None:
-            query += " AND session = ?"
-            params.append(session)
+            query += " AND session = :session"
+            params["session"] = session
         if wanted:
+            # A fetched page counts under the URL asked for and the one it ended at.
             query += (
-                " AND (kind, source) IN (SELECT json_extract(value, '$[0]'), "
-                "json_extract(value, '$[1]') FROM json_each(?))"
+                " AND ((kind, source) IN (SELECT json_extract(value, '$[0]'), "
+                "json_extract(value, '$[1]') FROM json_each(:keys)) OR (kind = 'web' AND "
+                "json_extract(detail, '$.final') IN (SELECT json_extract(value, '$[1]') "
+                "FROM json_each(:keys) WHERE json_extract(value, '$[0]') = 'web')))"
             )
-            params.append(json.dumps([list(k) for k in wanted]))
         with self.control.read() as tx:
             rows = tx.sql.execute(query + " ORDER BY rowid", params).fetchall()
         grouped: dict[tuple[str, str], list[Read]] = {}
@@ -253,6 +279,8 @@ def shown(read: Read) -> Json:
         if "pages" in covered:  # pages as spans, such as "1-3, 7"
             covered["pages"] = spans(cast(list[int], covered["pages"]))
         found["covered"] = covered
+    if read.kind == "eprint":
+        found["versions"] = "any: the reads of all its versions count together"
     return found
 
 
@@ -266,7 +294,7 @@ def reference_reads(control: ControlStore, project: str, fields: Mapping[str, An
     """How far the project's sessions read a ``reference`` entry's sources (LG-15, as
     CM-12 amends it): its PDF, by its SHA-256 or its artifact revision's, and its ePrint,
     URL, NIST, arXiv and DOI identifiers, each as the register put its reads together."""
-    from .descriptors import nist_key, url_key  # which reads this module's Read
+    from .descriptors import nist_key, paper_key, url_key  # which read this module's Read
 
     identifiers = cast(Json, fields.get("identifiers") or {})
     keys: list[tuple[str, str]] = []
@@ -278,7 +306,7 @@ def reference_reads(control: ControlStore, project: str, fields: Mapping[str, An
         keys.append(("nist", nist_key(nist)))
     for scheme in ("arxiv", "doi"):
         if isinstance(value := identifiers.get(scheme), str):
-            keys.append(("paper", f"{scheme}:{value.strip().casefold()}"))
+            keys.append(("paper", paper_key(f"{scheme}:{value}")))
     pdf = cast(Json, fields.get("pdf") or {})
     sha256 = pdf.get("sha256")
     if not isinstance(sha256, str) and isinstance(pdf.get("artifact_id"), str):

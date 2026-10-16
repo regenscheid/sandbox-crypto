@@ -14,19 +14,33 @@ import hashlib
 import json
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
 from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator.history import Archive, RunArchive
-from sandbox_science.orchestrator.history.descriptors import descriptor, nist_key, url_key
-from sandbox_science.orchestrator.history.reads import Read, Register, merged, reads_of, spans
+from sandbox_science.orchestrator.history.descriptors import (
+    descriptor,
+    nist_key,
+    paper_key,
+    url_key,
+)
+from sandbox_science.orchestrator.history.reads import (
+    Read,
+    Register,
+    merged,
+    reads_of,
+    reference_reads,
+    spans,
+)
 from sandbox_science.orchestrator.hooks import Appended
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.projects import ProjectStore
-from sandbox_science.orchestrator.tools import ToolOutcome
+from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome
+from sandbox_science.orchestrator.worker_client import WorkerClient
 
 from .test_ledger_evidence import publish
 from .test_ledger_tools import CONTEXT, tool, use
@@ -88,16 +102,16 @@ def placed(tool: str, arguments: dict[str, Any], text: str) -> list[Read]:
          "Queued for the fetcher; try again shortly.", []),
         ("e-print-mcp_eprint_file", {"paper_id": "2024/1234"}, "https://signed.example/x", []),
         ("web-fetch-mcp_fetch_page", {"url": "https://eprint.iacr.org/2024/1234"}, FETCHED,
-         [("web", "https://eprint.iacr.org/2024/1234", "partial")]),
+         [("web", "eprint.iacr.org/2024/1234", "partial")]),
         ("web-fetch-mcp_web_fetch", {"url": "https://example.org/note/"}, WHOLE_PAGE,
-         [("web", "https://example.org/note", "whole")]),
+         [("web", "example.org/note", "whole")]),
         ("web-fetch-mcp_web_fetch", {"url": "https://example.org/gone"},
          "[direct] https://example.org/gone (HTTP 404)\nNot found", []),
         ("firecrawl-mcp_firecrawl_scrape", {"url": "https://Example.org/a#top"},
-         '{"markdown": "# A"}', [("web", "https://example.org/a", "whole")]),
+         '{"markdown": "# A"}', [("web", "example.org/a", "whole")]),
         ("firecrawl-mcp_firecrawl_scrape",
          {"url": "https://example.org/a.pdf", "pdfOptions": {"maxPages": 3}},
-         '{"markdown": "# A"}', [("web", "https://example.org/a.pdf", "partial")]),
+         '{"markdown": "# A"}', [("web", "example.org/a.pdf", "partial")]),
         ("firecrawl-mcp_firecrawl_research_read_paper",
          {"paperId": "arXiv:1706.03762", "question": "q"}, "Passage 1: ...",
          [("paper", "arxiv:1706.03762", "partial")]),
@@ -131,7 +145,11 @@ def test_a_tool_without_a_descriptor_is_unknown_and_a_client_name_finds_its_own(
     # A failed call read nothing, whatever its tool.
     assert reads_of("e-print-mcp_get_eprint", "{}", {"connector": "c", "error": "x"}, "") == []
     assert nist_key("NIST.FIPS.203") == nist_key("fips 203") == "FIPS203"
-    assert url_key("HTTPS://Example.ORG/Path/#x") == "https://example.org/Path"
+    assert url_key("HTTPS://www.Example.ORG/Path/#x") == url_key("http://example.org/Path")
+    assert url_key("http://example.org/Path") == "example.org/Path"
+    assert nist_key("SP 800-56A Rev. 3") == nist_key("NIST.SP.800-56Ar3") == "SP80056AR3"
+    assert paper_key("arXiv:1706.03762v5") == paper_key("1706.03762") == "arxiv:1706.03762"
+    assert paper_key("doi:10.1/X") == paper_key("10.1/x") == "doi:10.1/x"
 
 
 def extent(reads: list[Read]) -> str:
@@ -273,9 +291,79 @@ async def test_a_reference_shows_how_far_its_sources_were_read(state: Path, ledg
     assert shown["read"] == [
         {"kind": "pdf", "source": "papers/eagle.pdf", "extent": "partial",
          "covered": {"pages": "1-3", "of": 12}},
-        {"kind": "eprint", "source": "2024/1234", "extent": "partial"},
+        {"kind": "eprint", "source": "2024/1234", "extent": "partial",
+         "versions": "any: the reads of all its versions count together"},
     ]  # fmt: skip
     # Another entry type shows none.
     claim = {"type": "issue", "title": "Q", "statement": "Open?"}
     await use(tool(ledger), "ledger_change", reason="r", changes=[claim])
     assert "read" not in await use(tool(ledger), "ledger_read", entry="ISS-1")
+
+
+PAGE = "# A long page\n" + "lattice reduction " * 2300  # about 41,000 characters
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments", "text"),
+    [
+        ("firecrawl-mcp_firecrawl_scrape", {"url": "https://example.org/long"},
+         json.dumps({"markdown": PAGE})),
+        ("web-fetch-mcp_fetch_page", {"url": "https://example.org/long"},
+         "[direct] https://example.org/long (HTTP 200)\nExtraction: trafilatura\n\n" + PAGE),
+    ],
+)  # fmt: skip
+def test_a_result_the_toolbox_cut_is_never_whole(
+    tool: str, arguments: dict[str, Any], text: str
+) -> None:
+    """A page the server returned whole, but longer than the toolbox shows: the model saw
+    its head and tail (``tools.bound``), so the read is ``partial``, with what was shown,
+    and adds nothing toward a whole read."""
+    toolbox = Toolbox(cast(WorkerClient, SimpleNamespace()), CONTEXT)
+    record: dict[str, Any] = {"connector": "crypto-research-mcp"}
+    shown = toolbox._cut(text, record)  # the toolbox's own bound, as a call's result gets it
+    assert len(text) > 40000 > len(shown)
+    assert record["cut"]["length"] == len(text)
+    (read,) = reads_of(tool, json.dumps(arguments), record, shown)
+    assert (read.source, read.extent) == ("example.org/long", "partial")
+    assert read.detail["cut"] == record["cut"]
+    assert "chars" not in read.detail
+    whole = placed(tool, arguments, text)  # the same page, shown whole
+    assert extent([read, *whole]) == "whole"
+    assert extent([read]) == "partial"
+
+
+def test_a_page_that_quotes_the_truncation_notice_is_not_cut() -> None:
+    quoted = WHOLE_PAGE + (
+        "\n\nThe server says [Truncated. Call fetch_continue(document_id='x', offset=10) "
+        "within 10 minutes; no refetch is needed.] when it cuts a page.\n\nMore text."
+    )
+    (read,) = placed("web-fetch-mcp_web_fetch", {"url": "https://example.org/note"}, quoted)
+    assert read.extent == "whole"
+
+
+def test_a_samples_file_is_its_recorded_revision_and_a_redirect_counts_for_both_urls(
+    state: Path,
+) -> None:
+    """A sample's saved file goes by the SHA-256 its call recorded, so a file that is not
+    UTF-8 can still be read whole; a fetch redirected elsewhere counts for the URL asked
+    for and the one it reached."""
+    recorded = {"recorded_files": {"files": [
+        {"path": ".sandbox/outputs/o.bin", "sha256": "ef" * 32, "size": 9}]}}  # fmt: skip
+    (sample,) = reads_of("shell", "{}", recorded, "", {".sandbox/outputs/o.bin": "\ufffd" * 3})
+    assert (sample.source, sample.extent, sample.detail) == ("ef" * 32, "preview_only", {"size": 9})
+    moved = "[direct] https://www.example.org/new (HTTP 200)\nExtraction: x\n\n# New"
+    (read,) = placed("web-fetch-mcp_web_fetch", {"url": "http://example.org/old"}, moved)
+    assert (read.source, read.detail) == ("example.org/old", {"final": "example.org/new"})
+    projects = ProjectStore(state)
+    log = RunArchive(Archive(projects.control), CONTEXT, run="run-1", parent=None)
+    try:
+        asked = json.dumps({"url": "http://example.org/old"})
+        call = ToolCall("c1", "web-fetch-mcp_web_fetch", asked)
+        outcome = ToolOutcome(moved, {"connector": "crypto-research-mcp"})
+        message = {"role": "tool", "tool_call_id": "c1", "content": moved}
+        asyncio.run(log.append(message, Appended("tool_result", call=call, outcome=outcome)))
+        fields = {"identifiers": {"url": "https://example.org/new/"}}
+        (found,) = reference_reads(projects.control, "p", fields)
+    finally:
+        projects.close()
+    assert (found["source"], found["extent"]) == ("http://example.org/old", "whole")
