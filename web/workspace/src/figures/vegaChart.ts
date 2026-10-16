@@ -197,6 +197,24 @@ const boundedInterpreter = {
   },
 };
 
+/** A logger that says nothing: Vega-Lite's warnings and Vega's errors echo a chart's own
+ * text, and the refusals noted here carry no use for a stack trace; the check runs with
+ * bounded output, and the frame has no console to fill (security review of #513, M2). */
+interface Quiet {
+  level(): Quiet;
+  error(): Quiet;
+  warn(): Quiet;
+  info(): Quiet;
+  debug(): Quiet;
+}
+const quiet: Quiet = {
+  level: () => quiet,
+  error: () => quiet,
+  warn: () => quiet,
+  info: () => quiet,
+  debug: () => quiet,
+};
+
 /** A library's message, for the figure check (FG-21). */
 const said = (error: unknown): string | undefined =>
   error instanceof Error ? error.message.slice(0, 500) : undefined;
@@ -216,7 +234,7 @@ export async function chartSvg(
   let runtime;
   let datasets: string[];
   try {
-    const compiled = compile(spec as never).spec;
+    const compiled = compile(spec as never, { logger: quiet as never }).spec;
     datasets = (compiled.data ?? []).map((data: { name: string }) => data.name);
     runtime = parse(compiled, undefined, { ast: true });
   } catch (error) {
@@ -227,6 +245,8 @@ export async function chartSvg(
     loader: chartLoader(files, read, refusals) as never,
     renderer: 'none',
     hover: false,
+    logger: quiet as never,
+    logLevel: vega.None,
   });
   try {
     await view.runAsync();

@@ -14,7 +14,13 @@ from pathlib import Path
 
 import pytest
 
-from sandbox_science.orchestrator.figurecheck import ENGINE, Chart, FigureChecker
+from sandbox_science.orchestrator.figurecheck import (
+    ENGINE,
+    NO_PERMISSIONS,
+    Chart,
+    FigureChecker,
+    permitted,
+)
 
 ROOT = Path(__file__).resolve().parents[3]
 BUILD = ROOT / "web/workspace/dist-math/figures"
@@ -23,11 +29,17 @@ SKILL_DATA = {"data/timing.csv": TIMING}
 """The data the figures skill's charts name, for checking them (FG-31)."""
 
 
-def fake(tmp_path: Path, body: str, *, timeout: float = 2.0) -> FigureChecker:
-    """A checker whose Node is a Python script: ``batch`` is the request it read."""
+def fake(
+    tmp_path: Path, body: str, *, timeout: float = 2.0, version: str = "v24.20.0"
+) -> FigureChecker:
+    """A checker whose Node is a Python script: ``batch`` is the request it read, and
+    ``ARGS`` the file its arguments are written to."""
     node = tmp_path / "fake-node"
     node.write_text(
-        f"#!{sys.executable}\nimport json,sys,time\nbatch=json.loads(sys.stdin.buffer.read())\n"
+        f"#!{sys.executable}\nimport json,sys,time\n"
+        f"if sys.argv[1:] == ['--version']: print({version!r}); sys.exit()\n"
+        f"open({str(tmp_path / 'args')!r}, 'w').write(json.dumps(sys.argv[1:]))\n"
+        "batch=json.loads(sys.stdin.buffer.read())\n"
         f"ENGINE={ENGINE!r}\n" + body
     )
     node.chmod(0o700)
@@ -86,6 +98,46 @@ async def test_an_answer_of_another_version_shape_or_batch_is_unavailable(
     checker = fake(tmp_path, ANSWER + f"print(json.dumps({answer}))\n")
     results = await checker.check_many([Chart(id="a", source="{}"), Chart(id="b", source="{}")])
     assert [r.status for r in results] == ["unavailable", "unavailable"]
+
+
+async def test_the_process_runs_under_nodes_permission_model(tmp_path: Path) -> None:
+    """Security review of #513, M3: it reads only its own temporary directory, evaluates
+    no strings as code; and stderr past its old bound fails nothing (M2)."""
+    checker = fake(
+        tmp_path,
+        ANSWER + "sys.stderr.write('WARN ' + 'x' * 20000)\n"
+        "print(json.dumps([answer(item) for item in batch]))\n",
+    )
+    (result,) = await checker.check_many([Chart(id="a", source="bad")])
+    assert result.status == "rejected"
+    args = json.loads((tmp_path / "args").read_text())
+    launcher, bundle = Path(args[-2]), Path(args[-1])
+    assert launcher.parent == bundle.parent != tmp_path  # the batch's pinned copies
+    assert args[2:5] == [
+        "--permission",
+        f"--allow-fs-read={bundle.parent}",
+        "--disallow-code-generation-from-strings",
+    ]
+
+
+@pytest.mark.parametrize("version", ["v22.12.0", "v23.4.0", "v20.18.1", "nonsense"])
+async def test_a_node_without_the_permission_model_checks_nothing(
+    tmp_path: Path, version: str
+) -> None:
+    checker = fake(tmp_path, ANSWER + "print(json.dumps([answer(item) for item in batch]))\n",
+                   version=version)  # fmt: skip
+    (result,) = await checker.check_many([Chart(id="a", source="{}")])
+    assert (result.status, result.reason) == ("unavailable", NO_PERMISSIONS)
+    assert not (tmp_path / "args").exists()  # no chart reached it
+
+
+def test_the_permission_model_is_read_from_the_version() -> None:
+    assert [permitted(v) for v in ("v22.13.0", "v23.5.0", "v24.20.0\n", "v23.1.0")] == [
+        True,
+        True,
+        True,
+        False,
+    ]
 
 
 async def test_no_node_is_unavailable(tmp_path: Path) -> None:
@@ -170,6 +222,26 @@ async def test_the_real_check_rejects_by_the_frames_rules_and_the_libraries() ->
     )
     assert found["address"][0][0] == "address"
     assert found["version"][0][0] == "version"
+
+
+async def test_the_real_check_answers_charts_whose_libraries_would_warn() -> None:
+    """Security review of #513, M2: a warning echoing a long title, or a refusal's stack,
+    no longer fills stderr and makes a rejected chart unavailable."""
+    long = "t" * 5000
+    noisy = spec(title=long, encoding={
+        "x": {"field": "key_bits", "type": "ordinal"},
+        "y": {"field": "median_ms", "type": "quantitative"},
+        "shape": {"field": "key_bits", "type": "nominal"},
+    })  # fmt: skip
+    many = spec(transform=[{"calculate": "sequence(0, 20000)", "as": "a"}], title=long)
+    results = await real().check_many(
+        [Chart(id="warns", source=noisy, files=SKILL_DATA),
+         Chart(id="refused", source=many, files=SKILL_DATA)]
+    )  # fmt: skip
+    assert [(r.status, [e.kind for e in r.errors]) for r in results] == [
+        ("accepted", []),
+        ("rejected", ["size"]),
+    ]
 
 
 async def test_the_real_check_notes_values_no_pinned_file_holds() -> None:

@@ -574,7 +574,7 @@
   },
   "figureLauncher": {
     "source": "server/check-figures.mjs",
-    "sha256": "9684e9b5d3e826c9de86365531efd90b76ad5a2d8d3fe0932c42fad319659932",
+    "sha256": "ffed8c83109dc4cd93ed00d5fd4e41d5e7a69f4e66d89a1112e03430f1d07a28",
     "builtins": [
       "node:path",
       "node:url"
