@@ -21,6 +21,7 @@ export const CAUSE_WORDS: Record<EntryFlag['cause'], string> = {
   dependency_status: 'an entry it rests on was set aside',
   evidence_changed: 'an entry its evidence pins changed its statement',
   spread: 'an entry it rests on is flagged',
+  reopen_condition: 'what its reopen condition watches was resolved or changed',
 };
 
 /**

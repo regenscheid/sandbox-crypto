@@ -26,6 +26,9 @@ const entry = (type: EntryView['type']): EntryView => ({
   entry_id: ID,
   handle: type === 'issue' ? 'I-1' : 'A-1',
   type,
+  kind: null,
+  session: null,
+  standing: null,
   origin: null,
   revision: 2,
   head: 2,
@@ -48,6 +51,8 @@ const entry = (type: EntryView['type']): EntryView => ({
 
 const record = (n: number, fields: Partial<WorkRecord> = {}): WorkRecord => ({
   record_id: `work-${String(n).padStart(24, '0')}`,
+  standing: null,
+  decision: null,
   position: n,
   entry_id: ID,
   handle: 'I-1',

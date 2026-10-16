@@ -30,6 +30,9 @@ const issue = (fields: Partial<EntryView> = {}): EntryView => ({
   entry_id: ID,
   handle: 'I-1',
   type: 'issue',
+  kind: null,
+  session: null,
+  standing: null,
   origin: null,
   revision: 2,
   head: 2,
@@ -53,6 +56,8 @@ const issue = (fields: Partial<EntryView> = {}): EntryView => ({
 
 const record = (id: string, fields: Partial<WorkRecord> = {}): WorkRecord => ({
   record_id: id,
+  standing: null,
+  decision: null,
   position: 2,
   entry_id: ID,
   handle: 'I-1',

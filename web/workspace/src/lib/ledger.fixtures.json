@@ -57,12 +57,14 @@
     "dominates",
     "split_into",
     "affects",
-    "concerns"
+    "concerns",
+    "reopen_on"
   ],
   "fields": [
     "assessment",
     "authors",
     "category",
+    "caveats",
     "conditions",
     "excluded_scope",
     "identifiers",
@@ -70,7 +72,9 @@
     "measures",
     "pdf",
     "published",
+    "reopen_condition",
     "retrieved",
+    "session",
     "version"
   ]
 }

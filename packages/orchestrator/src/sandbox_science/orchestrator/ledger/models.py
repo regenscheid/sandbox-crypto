@@ -23,6 +23,7 @@ LinkKind = Literal[
     "split_into",
     "affects",
     "concerns",
+    "reopen_on",
 ]
 
 PREFIXES: Final[dict[str, str]] = {
@@ -76,6 +77,7 @@ LINKS: Final[dict[str, tuple[tuple[str, ...], tuple[str, ...]]]] = {
     "split_into": (("issue",), ("issue",)),
     "affects": (("decision",), tuple(PREFIXES)),
     "concerns": (("issue",), (*PREFIXES, "finding", "block")),
+    "reopen_on": (("decision",), ("issue", "assumption", "claim", "result")),
 }
 """Which entries hold each kind of link, and what it points to (LG-5)."""
 
@@ -99,7 +101,7 @@ COMPUTATIONAL: Final = frozenset({"exact_computation", "finite_test", "numerical
 """Evidence types a computation produces."""
 
 Text = Annotated[str, Field(min_length=1, max_length=512)]
-Note = Annotated[str, Field(min_length=1, max_length=4096)]
+Note = Annotated[str, Field(min_length=1, max_length=4096, pattern=r"\S")]
 Statement = Annotated[str, Field(min_length=1, max_length=8192)]
 Reference = Annotated[str, Field(min_length=1, max_length=128)]
 """An entry named by its ID, its handle, or ``new:<key>`` for an entry the same
@@ -196,10 +198,25 @@ class EvidenceInput(Contract):
 
 
 ClaimKind = Literal["lemma", "theorem", "observation", "counterexample", "negative_result", "other"]
+IssueKind = Literal["question", "hypothesis", "idea", "experiment", "contradiction", "reproduction"]
+"""What an issue records (CM-10); ``reproduction`` is a failed reproduction."""
+
+MAX_CAVEATS: Final = 10
+Caveat = Annotated[str, Field(min_length=1, max_length=300, pattern=r"^[^\r\n]*\S[^\r\n]*$")]
+"""One line that qualifies a claim or result, such as "estimated from 2^20 samples"."""
+
+
+class IssueFields(Contract):
+    """An issue's kind (CM-10): one that names none, as those written before kinds were,
+    is a question."""
+
+    kind: IssueKind = "question"
 
 
 class ClaimFields(Contract):
     kind: ClaimKind | None = None
+    caveats: list[Caveat] = Field(default_factory=list[str], max_length=MAX_CAVEATS)
+    """What qualifies it beyond its evidence's scope notes and its assumptions (CM-10)."""
 
 
 Measure = (
@@ -258,10 +275,21 @@ class DecisionFields(Contract):
 
     excluded_scope: Note | None = None
     assessment: WorkID | None = None
+    reopen_condition: Annotated[str, Field(min_length=1, max_length=500)] | None = None
+    """What would justify reconsidering it (CM-10), ``none`` when nothing would; its
+    ``reopen_on`` links name what it watches."""
+    session: Identifier | None = None
+    """The one session it is meant for, such as a constraint the user set for that
+    session only; without it, it is the project's (CM-10). An agent gives ``this``."""
 
+
+NO_CONDITION: Final = "none"
+"""The reopen condition of a decision that nothing would reopen."""
+THIS_SESSION: Final = "this"
+"""The session a change names as the agent's own, which code fills in."""
 
 FIELDS: Final[dict[str, type[Contract]]] = {
-    "issue": EmptyFields,
+    "issue": IssueFields,
     "claim": ClaimFields,
     "result": ResultFields,
     "assumption": EmptyFields,
@@ -294,9 +322,10 @@ class EntryChange(Contract):
     """The IDs of evidence links to remove."""
 
 
-WorkEnding = Literal["limit", "obstruction_claimed", "produced", "assessment"]
+WorkEnding = Literal["limit", "obstruction_claimed", "produced", "assessment", "reopened"]
 """How a work record ends (LG-6): the time, tools, context or ideas ran out; an obstruction
-is claimed, with its evidence; it produced entries; or it assesses other work."""
+is claimed, with its evidence; it produced entries; it assesses other work; or an agent
+reopened an obstructed issue, which the ledger records itself (the owner, 2026-10-15)."""
 WorkLimit = Literal["time", "tools", "context", "ideas"]
 Verdict = Literal["accepted", "rejected", "inconclusive"]
 WORK_HOLDERS: Final = ("issue", "claim", "result")
@@ -357,6 +386,8 @@ class WorkInput(Contract):
 
     @model_validator(mode="after")
     def _ending(self) -> Self:
+        if self.ending == "reopened":
+            raise ValueError("the ledger records a reopening itself, with the change's reason")
         if (self.ending == "limit") != (self.limit is not None):
             raise ValueError("a work record that ends limit names what ran out, and only it")
         if (self.ending == "produced") != bool(self.produced):
@@ -375,9 +406,15 @@ class WorkInput(Contract):
 FlagID = Annotated[str, Field(pattern=r"^flag-[0-9a-f]{24}$")]
 
 FlagCause = Literal[
-    "assumption_revised", "assumption_withdrawn", "dependency_status", "evidence_changed", "spread"
+    "assumption_revised",
+    "assumption_withdrawn",
+    "dependency_status",
+    "evidence_changed",
+    "spread",
+    "reopen_condition",
 ]
-"""Why an entry is flagged for reconsideration (LG-28)."""
+"""Why an entry is flagged for reconsideration (LG-28); ``reopen_condition``: what a
+decision's ``reopen_on`` links name was resolved, or changed its status or statement."""
 
 MAX_CLEARED: Final = 256
 """The most flags one change clears, by ID or by entry."""
@@ -511,6 +548,26 @@ class ClearedFlag(Contract):
     operation_id: str
 
 
+class Standing(Contract):
+    """How the research state labels an entry or a work record (CM-11), so that a failed
+    attempt never reads as an impossibility: ``attempt`` (it did not succeed, or rests
+    on finite evidence only), ``claimed`` or ``disputed`` (an obstruction or negative
+    result not settled), ``flagged`` (settled, but an open flag leaves it unresolved),
+    or ``impossible`` (settled by the ledger), with its scope and assumptions."""
+
+    label: Literal["attempt", "claimed", "disputed", "flagged", "impossible"]
+    text: str
+    """The label in words."""
+    scope: str | None = None
+    """What an impossibility holds within: an obstructed issue's excluded scope, or a
+    negative result's evidence scope notes beside its statement."""
+    assumes: list[str] = Field(default_factory=list[str])
+    """The handles of the assumptions an impossibility rests on."""
+    by: str | None = None
+    """The decision that settled it, who confirmed a published one, or the entry a
+    flag came from."""
+
+
 class EntrySummary(Contract):
     """An entry as a list shows it."""
 
@@ -526,6 +583,12 @@ class EntrySummary(Contract):
     """For a claim or result: whether it holds no evidence links at all (LG-11)."""
     open_flags: int = 0
     """How many flags for reconsideration are open on it (LG-28)."""
+    kind: str | None = None
+    """An issue's kind, a question when it names none, or a claim's or result's (CM-10)."""
+    session: str | None = None
+    """A decision's session, when it is meant for that session only (CM-10)."""
+    standing: Standing | None = None
+    """At its current revision, how the research state labels it (CM-11)."""
 
 
 class EntryView(EntrySummary):
@@ -629,6 +692,12 @@ class WorkRecord(Contract):
     operation_id: str
     provenance: dict[str, Any] | None = None
     created: str
+    standing: Standing | None = None
+    """How the research state labels it (CM-11): an attempt that ended ``limit``, or an
+    obstruction claimed and not settled, or settled by the decision that obstructs its
+    issue."""
+    decision: str | None = None
+    """For a reopening, the handle of the decision that had made the issue obstructed."""
 
 
 class WorkPage(Contract):

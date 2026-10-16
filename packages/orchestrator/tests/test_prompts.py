@@ -63,7 +63,7 @@ HOSTILE = "Authorization: Bearer test-secret-prompt-not-a-credential"
 # Each installed version and the SHA-256 of its UTF-8 text. Changing a text means a new
 # version: add it here, and keep the old version's entry for its records.
 GOLDEN = {
-    "sandbox-main-5": "81a9856be312d2d1b3fd6df13460bdb0672f75a62740622bf2b9882a30ef4324",
+    "sandbox-main-6": "722cf2275e9c5738565b243e0a90f031432f8968ff3d095ddb1546db44af0bc0",
     "sandbox-main-plan-1": "efb031b0fab2b9855dc3c9adcb869108dd835b725f878b977eec9ba118feb866",
     "sandbox-stock-intake-1": "e846770bc153995c6da1c87cca1913400d0008f3983361246d04d9b9a94f45ab",
     "sandbox-stock-literature-2": (
@@ -102,8 +102,8 @@ GOLDEN = {
     "sandbox-notice-outcome-correction-1": (
         "4d308ab03dd3549555c60202b1690a59e7025667f6189cdb5abb4aa25cf6eae1"
     ),
-    "sandbox-delegated-check-5": "67f41f39b07ee7a107e4a3f25df82e887ccdc6aca2bfabfdb7dac2944cb998ec",
-    "sandbox-delegated-task-3": "24dda60703d735ec7a3193eca2c08668431598668bdc0868577e1fa3f9cacc6b",
+    "sandbox-delegated-check-6": "a4a1a189011c5e3ce7bede812ea5944e7ce1603b1c4ac594ebe43eac00bb6288",
+    "sandbox-delegated-task-4": "4d5dc22e5c56f2e0a5b577743979725dd27717aadc4cab434f2d823615b3fe12",
     "sandbox-job-watcher-1": "4b545fe81e35622bf1b894c435833d78fb122116f9364d429b21c6c3551e1ab1",
     "sandbox-consistency-5": "6b3ef83abea0df7ebf4ba76c6129106fa1e607266e998df8ea7abd17cd31412c",
     "sandbox-memory-run-1": "b69cc482f75853487a499ac89b5701b148066e919842a9970e6e318b2bdce121",

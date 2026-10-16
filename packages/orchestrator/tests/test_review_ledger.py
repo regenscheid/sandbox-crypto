@@ -760,14 +760,18 @@ def test_a_fix_with_entry_revisions_keeps_the_receipts_of_fixes_without_them(sto
 
 
 def test_an_open_flag_holds_the_gate_until_it_is_cleared_with_a_reason(store) -> None:
-    reviews, _, _ = store
+    import time
+
+    reviews, _, now = store
     supported(reviews)
     review_passes(reviews)
     revised = {"entry": "REF-1", "expected": 1, "statement": "A. Author, *A paper*, v2."}
     change(reviews, revised, op="revised")
     (flag,) = Ledger(reviews.documents).entry("p", "C-1").flags
     assert (flag.cause, flag.source["handle"]) == ("evidence_changed", "REF-1")
-    assert clause(reviews, "flagged", 2) == "flags"
+    # The owner's rule (2026-10-15): the flag weakened C-1, so the review before it no
+    # longer counts, and a review since does once the flag is cleared.
+    assert clause(reviews, "flagged", 2) == "review"
     Ledger(reviews.documents).change(
         "p",
         {
@@ -777,7 +781,11 @@ def test_an_open_flag_holds_the_gate_until_it_is_cleared_with_a_reason(store) ->
         },
         MAIN,
     )
-    establish(reviews, "established", 2)
+    assert clause(reviews, "cleared", 2) == "review"
+    now[0] = time.time() + 60
+    change(reviews, {"entry": "C-1", "expected": 2, "title": "Fermat, again"}, op="retitled")
+    review_passes(reviews)
+    establish(reviews, "established", 3)
     assert Ledger(reviews.documents).entry("p", "C-1").status == "established"
 
 

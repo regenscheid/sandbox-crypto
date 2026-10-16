@@ -144,7 +144,7 @@ export interface CitationCheckView {
 /** A flag that was cleared (LG-29): who cleared it, when, and why. */
 export interface ClearedFlag {
   flag_id: string;
-  cause: "assumption_revised" | "assumption_withdrawn" | "dependency_status" | "evidence_changed" | "spread";
+  cause: "assumption_revised" | "assumption_withdrawn" | "dependency_status" | "evidence_changed" | "spread" | "reopen_condition";
   source: Record<string, unknown>;
   via: string | null;
   revision: number;
@@ -263,7 +263,7 @@ export interface EntryFinding {
 /** An open flag for reconsideration (LG-28): its cause, what it came from, the flag it spread from, the revision it was raised on, the reviews whose snapshots held that revision, and the cleared flag it opens again, when the user reopened one. */
 export interface EntryFlag {
   flag_id: string;
-  cause: "assumption_revised" | "assumption_withdrawn" | "dependency_status" | "evidence_changed" | "spread";
+  cause: "assumption_revised" | "assumption_withdrawn" | "dependency_status" | "evidence_changed" | "spread" | "reopen_condition";
   source: Record<string, unknown>;
   via: string | null;
   revision: number;
@@ -282,7 +282,7 @@ export interface EntryHistory {
 
 /** A stored link: its kind, its target and the target's pinned revision. */
 export interface EntryLink {
-  kind: "answers" | "assumes" | "builds_on" | "restates" | "compares_to" | "supersedes" | "dominates" | "split_into" | "affects" | "concerns";
+  kind: "answers" | "assumes" | "builds_on" | "restates" | "compares_to" | "supersedes" | "dominates" | "split_into" | "affects" | "concerns" | "reopen_on";
   target: "entry" | "finding" | "block";
   target_id: string;
   revision: number | null;
@@ -321,6 +321,9 @@ export interface EntrySummary {
   updated: string;
   asserted_only: boolean | null;
   open_flags: number;
+  kind: string | null;
+  session: string | null;
+  standing: Standing | null;
 }
 
 /** An entry at one revision, with what it says, its outgoing links and who wrote it, and (at its current revision) the links other entries hold to it. */
@@ -335,6 +338,9 @@ export interface EntryView {
   updated: string;
   asserted_only: boolean | null;
   open_flags: number;
+  kind: string | null;
+  session: string | null;
+  standing: Standing | null;
   statement: string;
   fields: Record<string, unknown>;
   links: EntryLink[];
@@ -1201,6 +1207,15 @@ export interface SessionView {
   closed_at: string | null;
 }
 
+/** How the research state labels an entry or a work record (CM-11), so that a failed attempt never reads as an impossibility: ``attempt`` (it did not succeed, or rests on finite evidence only), ``claimed`` or ``disputed`` (an obstruction or negative result not settled), ``flagged`` (settled, but an open flag leaves it unresolved), or ``impossible`` (settled by the ledger), with its scope and assumptions. */
+export interface Standing {
+  label: "attempt" | "claimed" | "disputed" | "flagged" | "impossible";
+  text: string;
+  scope: string | null;
+  assumes: string[];
+  by: string | null;
+}
+
 /** One run of the session's tree. */
 export interface TreeRun {
   name: string;
@@ -1239,7 +1254,7 @@ export interface WorkRecord {
   handle: string;
   entry_revision: number;
   tried: string;
-  ending: "limit" | "obstruction_claimed" | "produced" | "assessment";
+  ending: "limit" | "obstruction_claimed" | "produced" | "assessment" | "reopened";
   limit: "time" | "tools" | "context" | "ideas" | null;
   produced: string[];
   assesses: string | null;
@@ -1251,6 +1266,8 @@ export interface WorkRecord {
   operation_id: string;
   provenance: Record<string, unknown> | null;
   created: string;
+  standing: Standing | null;
+  decision: string | null;
 }
 
 /** The worker's observation plus the project it belongs to. */

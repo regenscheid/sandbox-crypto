@@ -54,6 +54,7 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Final
 
 from sandbox_science.orchestrator.documents.errors import POLICY_DENIED, DocumentError
@@ -157,11 +158,13 @@ def material(
     text: str | None = None,
 ) -> Material:
     """The material of a revision: ``statement`` is its statement's text revision, and
-    ``text`` the SHA-256 of its body."""
+    ``text`` the SHA-256 of its body. Caveats qualify what a check or review covered and
+    are not part of it (the coordinator, 2026-10-15, which the owner can reverse): adding
+    one unsettles nothing, and removing one from a settled entry takes a decision."""
     return Material(
         text=text,
         statement=statement,
-        fields=json.dumps(fields, sort_keys=True),
+        fields=json.dumps({k: v for k, v in fields.items() if k != "caveats"}, sort_keys=True),
         assumes=frozenset(
             (link.target_id, link.revision) for link in links if link.kind == "assumes"
         ),
@@ -218,6 +221,7 @@ def clauses(
     """Each clause of the gate in order, read when asked for: its name, whether it holds,
     and why."""
     counting = [link for link in held if counts(db, link)]
+    since = weakened(db, entry)
     if not counting:
         yield (
             "evidence",
@@ -241,6 +245,7 @@ def clauses(
             and link.type not in _NOT_COUNTING
             and link.checked is not None
             and kept.get(link.checked) == now
+            and after(db, entry, link, since)
         ]
         proofs = [link for link in counting if link.type == "proof"]
         project = _project(db, entry)
@@ -292,7 +297,8 @@ def clauses(
                 "delegation that checked that revision and returned confirmed and "
                 "complete, read the entry and its proofs' targets at the revisions they "
                 "pin, met no plan fence, and added none of its proofs, while no check of "
-                "the same material disagreed",
+                "the same material disagreed, each recorded since the entry was last "
+                "weakened (a dispute, a flag, a reopening)",
             )
     if any(link.type in COMPUTATIONAL and link.target != "artifact" for link in counting):
         yield (
@@ -318,7 +324,8 @@ def clauses(
         ),
         default=None,
     )
-    covering = examined(db, entry, set(reviewed(db, entry, after=confirmed)))
+    since = max((t for t in (confirmed, since) if t is not None), default=None)
+    covering = examined(db, entry, set(reviewed(db, entry, after=since)))
     covered = sorted(revision for revision, material in covering.items() if material == now)
     if not covered:
         yield (
@@ -327,7 +334,8 @@ def clauses(
             f"no completed consistency review has covered {handle} as the change leaves "
             "it: a review whose coverage was complete, whose snapshot held, whole, a "
             "revision with the same statement, fields, assumptions and evidence, and "
-            "which started after any fix confirmed of a fail finding raised on them",
+            "which started after any fix confirmed of a fail finding raised on them, "
+            "and after the entry was last weakened (a dispute, a flag, a reopening)",
         )
     else:
         yield (
@@ -575,6 +583,89 @@ def disputed(db: sqlite3.Connection, project: str, entry: str, now: Material) ->
         ),
         None,
     )
+
+
+SETTLED: Final = frozenset({"established", "obstructed", "refuted", "recorded"})
+"""The statuses an entry leaves only by being weakened."""
+
+
+def weakened(db: sqlite3.Connection, entry: str, until: str | None = None) -> float | None:
+    """When ``entry`` was last weakened, as a POSIX time, at or before ``until`` when
+    given: a flag raised on it, or a revision that moved it down, into ``disputed`` or out
+    of a settled status, such as a dispute, a reopening or a refutation reversed. The
+    owner's rule (2026-10-15): a strengthening change by an agent counts only checks,
+    reviews and acceptances recorded after it."""
+    times = [raised for (raised,) in db.execute(
+        "SELECT raised FROM ledger_flags WHERE entry_id=?", (entry,)
+    )]  # fmt: skip
+    times += [
+        created
+        for created, status, before in db.execute(
+            "SELECT r.created,r.status,b.status FROM ledger_revisions r JOIN ledger_revisions b "
+            "ON b.entry_id=r.entry_id AND b.revision=r.revision-1 WHERE r.entry_id=? "
+            "AND r.status!=b.status",
+            (entry,),
+        )
+        if status == "disputed" or before in SETTLED
+    ]
+    bound = None if until is None else datetime.fromisoformat(until)
+    found = [
+        moment
+        for moment in (datetime.fromisoformat(t) for t in times)
+        if bound is None or moment <= bound
+    ]
+    return max(found).timestamp() if found else None
+
+
+def after(db: sqlite3.Connection, entry: str, link: EvidenceLink, since: float | None) -> bool:
+    """Whether the check ``link`` names was recorded after ``since``: a delegation's when
+    it started, another's when the revision that added it was written."""
+    if since is None:
+        return True
+    if link.target == "delegation":
+        row = db.execute(
+            "SELECT started_at FROM delegations WHERE delegation_id=?", (link.target_id,)
+        ).fetchone()
+    else:
+        row = db.execute(
+            "SELECT created FROM ledger_revisions WHERE entry_id=? AND revision=?",
+            (entry, link.added),
+        ).fetchone()
+    return row is not None and datetime.fromisoformat(row[0]).timestamp() > since
+
+
+def fresh_check(db: sqlite3.Connection, entry: str, flag: str) -> bool:
+    """Whether a delegation started since ``entry`` was last weakened checked it at its
+    current revision from a brief that named ``flag``, in a way that counts
+    (``delegated``), while no check of the same material disagrees: the gate the main
+    agent's clearing of a flag on a settled claim or result needs (the owner's rule,
+    2026-10-15). The check need not be linked as evidence."""
+    project = _project(db, entry)
+    (head,) = db.execute("SELECT head FROM ledger_entries WHERE entry_id=?", (entry,)).fetchone()
+    now = examined(db, entry, {head}).get(head)
+    if now is None:
+        return False
+    held = evidence.stored(db, entry, head)
+    proofs = [link for link in held if counts(db, link) and link.type == "proof"]
+    since = weakened(db, entry)
+    for (delegation,) in db.execute(
+        "SELECT delegation_id FROM delegations WHERE project_id=? AND kind='check' "
+        "AND json_extract(brief,'$.check.entry')=? AND json_extract(brief,'$.check.revision')=? "
+        "AND EXISTS (SELECT 1 FROM json_each(brief,'$.check.flags') WHERE value=?)",
+        (project, entry, head, flag),
+    ).fetchall():
+        check = EvidenceLink(
+            evidence_id=delegation,
+            role="independent_check",
+            type="proof",
+            target="delegation",
+            target_id=delegation,
+            checked=head,
+            added=head,
+        )
+        if after(db, entry, check, since) and delegated(db, project, entry, check, proofs):
+            return disputed(db, project, entry, now) is None
+    return False
 
 
 def _project(db: sqlite3.Connection, entry: str) -> str:

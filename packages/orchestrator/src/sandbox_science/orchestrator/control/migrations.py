@@ -2653,6 +2653,27 @@ BEGIN SELECT RAISE(ABORT, 'archived texts are kept'); END""",
         schema.execute(statement)
 
 
+def _research_state(schema: Schema) -> None:
+    """Version 47: the research state's link kind and flag cause (docs/specs/context-management.md,
+    CM-10): a decision's ``reopen_on`` links name what its reopen condition watches, and a
+    change to what they name flags it (``reopen_condition``); an agent's reopening of an
+    obstructed issue is a work record (``reopened``). The tables are made again
+    with the wider CHECK, their rows, indexes and triggers as they were. Issue kinds,
+    caveats, reopen conditions and session scopes are entry fields and need no column: an
+    issue that names no kind reads as a question."""
+    for table, old, new in (
+        ("ledger_links", "'affects','concerns'))", "'affects','concerns','reopen_on'))"),
+        ("ledger_flags", "'spread'))", "'spread', 'reopen_condition'))"),
+        ("ledger_work", "'produced', 'assessment'))", "'produced', 'assessment', 'reopened'))"),
+    ):
+        (create,) = schema.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
+        ).fetchone()
+        if create.count(old) != 1:
+            raise ControlError(INTERNAL, f"the {table} table is not as the version before left it")
+        rebuild(schema, table, create.replace(old, new, 1))
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -2699,6 +2720,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _skill_metadata,
     _skill_overrides,
     _archive,
+    _research_state,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

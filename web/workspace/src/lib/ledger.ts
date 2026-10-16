@@ -102,6 +102,7 @@ export const LINK_WORDS: Record<LinkKind, { out: string; in: string }> = {
   split_into: { out: 'Split into', in: 'Split from' },
   affects: { out: 'Affects', in: 'Affected by' },
   concerns: { out: 'Concerns', in: 'Concerned by' },
+  reopen_on: { out: 'Reopen condition watches', in: 'Watched by the reopen condition of' },
 };
 
 /** A link's target in words, and where it leads in the workspace, when somewhere. */
@@ -262,6 +263,9 @@ function categoryField(project: string, value: unknown): string | null {
 /** The names of the fields the types give their entries (docs/LEDGER.md), in words. */
 export const FIELD_NAMES: Record<string, string> = {
   kind: 'Kind',
+  caveats: 'Caveats',
+  reopen_condition: 'Reopen condition',
+  session: 'For session',
   category: 'Frontier category',
   conditions: 'Conditions',
   measures: 'Measures',

@@ -27,6 +27,11 @@ def status(entry: str, expected: int, value: str) -> dict[str, Any]:
     return {"entry": entry, "expected": expected, "status": value}
 
 
+def closed(entry: str, expected: int, value: str) -> dict[str, Any]:
+    """A decision rejected or reversed, with its reopen condition (CM-10)."""
+    return {**status(entry, expected, value), "fields": {"reopen_condition": "none"}}
+
+
 def test_a_decision_in_effect_that_affects_an_entry_sets_its_status(ledger: Ledger) -> None:
     change(ledger, NEW["claim"], NEW["claim"])
     made = change(ledger, decide("C-1"), status("C-1", 1, "established"), op="op-2", author=USER)
@@ -62,7 +67,7 @@ def test_a_decision_is_reversed_by_a_new_decision_that_states_its_changes(ledger
     change(
         ledger,
         decide("D-1", "C-1", title="Reverse"),
-        status("D-1", 1, "reversed"),
+        closed("D-1", 1, "reversed"),
         status("C-1", 2, "disputed"),
         op="op-3",
         author=USER,
@@ -82,7 +87,7 @@ def test_a_decision_is_reversed_by_a_new_decision_that_states_its_changes(ledger
             change(ledger, status(entry, expected, value), op=f"refused-{n}", author=USER)
     # A proposed decision is rejected as it is, and stays rejected.
     change(ledger, {**decide("C-1"), "status": None}, op="op-4")
-    change(ledger, status("D-3", 1, "rejected"), op="op-5")
+    change(ledger, closed("D-3", 1, "rejected"), op="op-5")
     with pytest.raises(DocumentError, match="a rejected decision stays rejected"):
         change(ledger, status("D-3", 2, "in_effect"), op="op-6")
     change(ledger, {**decide("C-1"), "status": None}, op="op-7")
@@ -248,7 +253,8 @@ def test_an_obstruction_needs_an_assessment_the_user_accepted(ledger: Ledger) ->
     assessed(ledger, "I-2", claim, "rejected", verdict="rejected")
     with pytest.raises(DocumentError, match="latest assessment of the claim"):
         change(ledger, obstructing("I-2", user), status("I-2", 1, "obstructed"), op="o-I-2")
-    change(ledger, decide("I-2"), status("I-2", 1, "obstructed"), op="by-user-I-2", author=USER)
+    by_user = decide("I-2", fields={"excluded_scope": "Index calculus below 2^80."})
+    change(ledger, by_user, status("I-2", 1, "obstructed"), op="by-user-I-2", author=USER)
     assert ledger.entry("p", "I-2").status == "obstructed"
 
 
@@ -258,7 +264,8 @@ def test_an_accepted_obstruction_holds_only_for_the_issue_it_was_made_on(
     """The review (high, #371): the user accepted "no attack below 2^80 for parameter set
     A"; the main agent reworded the issue to "is there any attack on S?" and made it
     obstructed in one change, and later rewrote the obstructed issue. Both are refused:
-    the acceptance holds for the statement and fields it was made on."""
+    the acceptance holds for the statement and fields it was made on, and a decision that
+    keeps an issue obstructed names no scope or assessment (the review of #440, N4)."""
     narrow = {**NEW["issue"], "title": "Below 2^80 for set A?",
               "statement": "Is there an attack below $2^{80}$ for parameter set A?"}  # fmt: skip
     change(ledger, narrow, NEW["claim"])
@@ -280,7 +287,7 @@ def test_an_accepted_obstruction_holds_only_for_the_issue_it_was_made_on(
     change(ledger, obstructing("I-1", fresh), status("I-1", 3, "obstructed"), op="fresh-o")
     assert ledger.entry("p", "I-1").status == "obstructed"
     rewrite = {"entry": "I-1", "expected": 4, "statement": "Is there ANY attack on S?"}
-    with pytest.raises(DocumentError, match="statement and fields as they were assessed"):
+    with pytest.raises(DocumentError, match="names an excluded scope or an assessment only"):
         change(ledger, obstructing("I-1", fresh), rewrite, op="rewrite")
 
 

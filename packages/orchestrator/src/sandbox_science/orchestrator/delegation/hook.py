@@ -376,10 +376,18 @@ class Delegations(TurnHook):
         }
         task = check_task(entry.handle, brief.check.revision)
         inputs = [evidence_line(link) for link in entry.evidence]
+        # The entry's open flags, which the check addresses: a check that counts for
+        # clearing one names it (the owner's rule applied to LG-29, 2026-10-15).
+        flags = [
+            f"{f.cause.replace('_', ' ')}, from {f.source.get('handle')} ({f.flag_id})"
+            for f in entry.flags
+        ]
+        if entry.flags:
+            check["flags"] = [f.flag_id for f in entry.flags]
         return _Planned(
             "check",
             {"task": task, "note": brief.note, "inputs": list(inputs), "check": check},
-            brief_text(task, inputs, brief.note),
+            brief_text(task, inputs, brief.note, flags),
             min(self.limits.check_turns, self.max_turns, self.turns_left),
             self.limits.check_tokens,
             Target(entry.entry_id, entry.handle, brief.check.revision, proof_reads(entry.evidence)),

@@ -37,6 +37,7 @@ import json
 import re
 import sqlite3
 import unicodedata
+from datetime import datetime
 from typing import Any, Final
 
 from sandbox_science.orchestrator.control.texts import TextRevisions
@@ -384,8 +385,8 @@ def _member(
     if fields.get("category") != name:
         return None
     eligible = disputed or status == _ELIGIBLE[origin]
-    confirmed = _confirmed(db, entry, row[4]) if eligible and origin == "published" else None
-    unverified = eligible and origin == "published" and confirmed is None
+    by = confirmed(db, entry, row[4]) if eligible and origin == "published" else None
+    unverified = eligible and origin == "published" and by is None
     eligible = eligible and not unverified
     candidate = not eligible and (
         unverified or (origin == "project" and status in ("proposed", "disputed"))
@@ -393,12 +394,12 @@ def _member(
     if not (eligible or candidate):
         return None
     shown = _result(db, row, fields, disputed=disputed, unverified=unverified, full=full)
-    if confirmed is not None:
-        shown = shown.model_copy(update={"confirmed_by": confirmed})
+    if by is not None:
+        shown = shown.model_copy(update={"confirmed_by": by})
     return shown, eligible, candidate
 
 
-def _confirmed(db: sqlite3.Connection, entry: str, revision: int) -> str | None:
+def confirmed(db: sqlite3.Connection, entry: str, revision: int) -> str | None:
     """Who confirmed published result ``entry`` as ``revision`` reads (LG-16 as amended):
     ``user`` when the user's latest revision holds that material and the user wrote it,
     by recording the entry or by a revision that brought it in, or checked it (``ledger
@@ -408,12 +409,18 @@ def _confirmed(db: sqlite3.Connection, entry: str, revision: int) -> str | None:
     user's word comes first, so a result both confirm says ``user``. A user's other
     edits, such as a title or a dropped link, confirm nothing, and material an agent
     writes after the user's latest revision is not what the user confirmed."""
-    if _by_user(db, entry, revision):
+    # The owner's rule (2026-10-15): only checks and confirmations recorded since the
+    # entry was last weakened, as of that revision, confirm it.
+    (created,) = db.execute(
+        "SELECT created FROM ledger_revisions WHERE entry_id=? AND revision=?", (entry, revision)
+    ).fetchone()
+    since = gate.weakened(db, entry, created)
+    if _by_user(db, entry, revision, since):
         return "user"
-    return "citation check" if _cited(db, entry, revision) else None
+    return "citation check" if _cited(db, entry, revision, since) else None
 
 
-def _cited(db: sqlite3.Connection, entry: str, revision: int) -> bool:
+def _cited(db: sqlite3.Connection, entry: str, revision: int, since: float | None) -> bool:
     """Whether the consistency reviewer's checks confirm revision ``revision`` of
     ``entry`` (CR-4; LG-16 as amended): it holds at least one quote, and each
     - cites a reference that is not refuted, withdrawn or superseded, in a link that counts;
@@ -440,7 +447,7 @@ def _cited(db: sqlite3.Connection, entry: str, revision: int) -> bool:
             "evidence_id=? AND material=? ORDER BY created DESC, rowid DESC LIMIT 1",
             (entry, link.evidence_id, digest),
         ).fetchone()
-        if latest is None or latest[0] != "supported":
+        if latest is None or latest[0] != "supported" or (since or 0.0) >= latest[1]:
             return False
         if db.execute(
             "SELECT 1 FROM citation_checks WHERE entry_id=? AND evidence_id=? AND "
@@ -495,8 +502,8 @@ def _own_check(link: EvidenceLink, entry: str) -> bool:
     )
 
 
-def _by_user(db: sqlite3.Connection, entry: str, revision: int) -> bool:
-    """Whether the user confirmed ``entry`` as ``revision`` reads, as ``_confirmed`` says."""
+def _by_user(db: sqlite3.Connection, entry: str, revision: int, since: float | None) -> bool:
+    """Whether the user confirmed ``entry`` as ``revision`` reads, as ``confirmed`` says."""
     latest = db.execute(
         "SELECT max(revision) FROM ledger_revisions WHERE entry_id=? "
         "AND json_extract(author,'$.kind')='user'",
@@ -515,14 +522,12 @@ def _by_user(db: sqlite3.Connection, entry: str, revision: int) -> bool:
         and gate.examined(db, entry, {at - 1}).get(at - 1) == now
     ):
         at -= 1
-    if (
-        db.execute(
-            "SELECT 1 FROM ledger_revisions WHERE entry_id=? AND revision=? "
-            "AND json_extract(author,'$.kind')='user'",
-            (entry, at),
-        ).fetchone()
-        is not None
-    ):
+    wrote = db.execute(
+        "SELECT created FROM ledger_revisions WHERE entry_id=? AND revision=? "
+        "AND json_extract(author,'$.kind')='user'",
+        (entry, at),
+    ).fetchone()
+    if wrote is not None and datetime.fromisoformat(wrote[0]).timestamp() > (since or 0.0):
         return True
     checked = {
         link.checked
@@ -530,6 +535,7 @@ def _by_user(db: sqlite3.Connection, entry: str, revision: int) -> bool:
         if link.checked is not None
         and _own_check(link, entry)
         and gate.added_by_user(db, entry, link, latest)
+        and gate.after(db, entry, link, since)
     }
     return now in gate.examined(db, entry, checked).values()
 
