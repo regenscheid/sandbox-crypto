@@ -1344,8 +1344,9 @@ async def test_finding_notice_acknowledgement_requires_saved_successful_model_tu
     raise_finding(reviews, review)
     reviews.finish("p", "s", review, "owner", "findings", "A finding.")
     reviews.configure("p", "s", ReviewConfig(enabled=False))
+    # The finding was raised on the run's own work: it is offered to the run (CR-21).
     controller = ReviewController(
-        reviews, context_for(reviews), run_id="saved", model=None, alias=None
+        reviews, context_for(reviews), run_id="author-1", model=None, alias=None
     )
     hooks = [Reviews(controller)]
     async with WorkerClient("http://127.0.0.1:1", "synthetic-token") as client:
@@ -1353,14 +1354,14 @@ async def test_finding_notice_acknowledgement_requires_saved_successful_model_tu
             ScriptedModel.from_json([{"text": "Read the finding."}]),
             Toolbox(client, context_for(reviews), reviews=controller),
             "Continue",
-            run_id="saved",
+            run_id="author-1",
             max_turns=1,
             hooks=hooks,
         )
     assert sorted(transcript.delivered_ids("reviews"))
     now = datetime.now(UTC)
     fields = {
-        "run_id": "saved",
+        "run_id": "author-1",
         "context": context_for(reviews).model_dump(mode="json"),
         "task": "Continue",
         "started_at": now,

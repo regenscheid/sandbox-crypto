@@ -85,8 +85,11 @@ GOLDEN = {
     "sandbox-notice-review-findings-1": (
         "d9fe98f7e1b697bb2d3264496fd601484a9dbce030d3fd0985e049aabd9e67a1"
     ),
-    "sandbox-notice-review-counts-1": (
-        "38520c582417fef8435cd529982761dfb11663e7f018977f6f4b589934099593"
+    "sandbox-notice-review-challenged-1": (
+        "11b7df629d84233aae8275c05199f83db8d5f4f94b75517e4b77065b759ec47c"
+    ),
+    "sandbox-notice-review-counts-2": (
+        "37d2f85e902081c4fc1623d53bfe31a9b7443f88352d655fa8e50de424f5763e"
     ),
     "sandbox-notice-math-1": "c65c1f751f7b2928f15f0d846b816e2287eeb3ddd63fa63ad083226fe0cf19c9",
     "sandbox-kernels-1": "a0211d3dbc39708fdf924610123e76f5cb70c5c25d888c29188d858b594733d9",
@@ -105,7 +108,7 @@ GOLDEN = {
     "sandbox-delegated-check-6": "a4a1a189011c5e3ce7bede812ea5944e7ce1603b1c4ac594ebe43eac00bb6288",
     "sandbox-delegated-task-5": "792e36147d2a4c2b729d51eb9623fb0566d488a21363527452b8479532d0dbe2",
     "sandbox-job-watcher-1": "4b545fe81e35622bf1b894c435833d78fb122116f9364d429b21c6c3551e1ab1",
-    "sandbox-consistency-6": "32321849314d4922b4324564330f949a2a44a4e4e70bc67ae182c76e92bc3328",
+    "sandbox-consistency-7": "fcc44fe5abf7b5023b446bc847fdbe7d6ca763d38fb5f77a02eae5fc769a4dfb",
     "sandbox-memory-run-1": "b69cc482f75853487a499ac89b5701b148066e919842a9970e6e318b2bdce121",
     "sandbox-memory-reviewer-1": (
         "d391d1a7e6c33b4fca0970450432103c38b5ea34b80821210f7c9d27f80b9742"

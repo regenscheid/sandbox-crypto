@@ -9,8 +9,9 @@ artifacts it pins (B6), ``sandbox-consistency-3`` to check quotes (CR-4),
 the window's actions item and each document revision's changed blocks,
 ``sandbox-consistency-5`` to weigh a delegated run's outcome against its output, with the
 author snapshot's terminal review now listing the run's earlier document revision as
-context (lab 42's B5), and ``sandbox-consistency-6`` to take earlier runs' actions as
-context; a change to any of them changes what a reviewer sees."""
+context (lab 42's B5), ``sandbox-consistency-6`` to take earlier runs' actions as
+context, and ``sandbox-consistency-7`` to know that a rejected rebuttal with evidence is a
+challenge; a change to any of them changes what a reviewer sees."""
 
 from __future__ import annotations
 
@@ -32,9 +33,9 @@ from .test_consistency import MAIN, anchor, claim, dispatch, raise_finding
 from .test_consistency import store as store
 
 GOLDEN = {
-    "author": "d5560df99292198c20256f215b646b264b3bdc44e03fe13b0145a57866769e82",
-    "confirmation": "f9739f0789b96e0c326a205d1b572ac426e54481945b57f0c08a3e87d848a261",
-    "fallback": "a7b7cbdbe72ba9e0e41c909efb0bb80fd183ba4331723017757320d1b542c0f1",
+    "author": "a63b5114115e845c7331c4fa2b780f06f575d085690bfcb67fe2c9b15bfba715",
+    "confirmation": "22e1305a8a82e4556688f2b8960f836647327972447ae0f4506bc50f754b1f38",
+    "fallback": "093fba92333560c11c0b67dcb36bb30dd40cc21dc3c64bd63a1f9af684811ddb",
 }
 
 

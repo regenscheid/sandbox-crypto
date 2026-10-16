@@ -26,9 +26,10 @@ nothing.
 
 The folds' proposals waiting for the session (CM-15) are listed in section 8, each with
 its basis and the fold that proposed it, to accept or dismiss with ``ledger_proposals``;
-they are not the ledger's and settle nothing. Not built yet: among the open items the
-review findings, jobs and approvals a session waits for, and recorded artifacts in the
-index.
+they are not the ledger's and settle nothing. The open items list the session's
+unresolved review findings, a challenged one saying that the author's rebuttal stands
+(the owner, 2026-10-16). Not built yet: among the open items the jobs and approvals a
+session waits for, and recorded artifacts in the index.
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Final, cast
 
+from sandbox_science.orchestrator.consistency.findings import Findings
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
 from sandbox_science.orchestrator.documents import DocumentError
@@ -211,8 +213,10 @@ class Digest:
         questions: Questions | None = None,
         delegations: DelegationRecords | None = None,
         proposals: FoldProposals | None = None,
+        findings: Findings | None = None,
     ) -> None:
         self.ledger, self.plans, self.proposals = ledger, plans, proposals
+        self.findings = findings
         self.questions, self.delegations = questions, delegations
         self._listed: dict[tuple[str, str], list[EntrySummary]] = {}
         self.unread: dict[str, int] = {}
@@ -522,7 +526,23 @@ class Digest:
             section.lines.append(Line(f"{found.proposal_id} {text} {tag} (fold {found.fold})"))
 
     def _items(self, waiting: Section, index: Section, project: str, session: str) -> None:
-        waiting.hint = index.hint = "delegation_status and the chat"
+        waiting.hint = index.hint = "delegation_status, review_findings and the chat"
+        if self.findings is not None:
+            for finding in self.findings.listing(project, session, unresolved=True)["findings"]:
+                if finding.get("origin") == "math":
+                    continue
+                status = str(finding["status"])
+                stands = (
+                    " (the reviewer rejected your rebuttal; it stands, no response needed)"
+                    if status == "challenged"
+                    else ""
+                )
+                waiting.lines.append(
+                    Line(
+                        f"{finding['finding_id']} {finding['severity']} review finding, "
+                        f"{status}{stands}: {_clip(str(finding['statement']), 200)}"
+                    )
+                )
         if self.questions is not None:
             waiting.lines += [
                 Line(f"{q.question_id} question to the user, not answered: {_clip(q.text, 200)}")

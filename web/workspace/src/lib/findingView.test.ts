@@ -24,6 +24,9 @@ describe('the finding card', () => {
     for (const status of ['open', 'claimed fixed', 'unaddressed', 'superseded', 'inconclusive'])
       expect(resolved(status)).toBe(false);
     expect(statusText('superseded')).toMatch(/nothing was checked/);
+    // The owner, 2026-10-16: a rejected rebuttal with evidence leaves both sides, no round.
+    expect(statusText('challenged')).toMatch(/rebuttal stands/);
+    expect(resolved('challenged')).toBe(false);
     expect(statusText('constructor')).toBe('constructor');
   });
 

@@ -18,6 +18,10 @@ const STATUSES: Readonly<Record<string, string>> = {
   superseded: 'Superseded: the revisions it is anchored to were replaced; nothing was checked.',
   inconclusive: 'Inconclusive: the reviewer could not decide from the evidence.',
   withdrawn: 'Withdrawn: a rebuttal was accepted, or the user dismissed it. Resolved.',
+  challenged:
+    'Challenged: the reviewer rejected a rebuttal that cites recorded evidence. The ' +
+    "agent's rebuttal stands and the reviewer's reason is kept beside it, with no further " +
+    'round; look at both whenever you like.',
 };
 
 /** Whether a finding is resolved; every other status stays visible as unresolved. */

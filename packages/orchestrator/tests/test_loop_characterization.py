@@ -125,7 +125,7 @@ async def test_all_six_sources_in_todays_order_then_acknowledged_after_save(
         notice("requests", sources.request),
         notice("jobs", sources.job),
         plans("draft", True),
-        notice("reviews", sources.finding),
+        # The owner, 2026-10-16: an earlier run's finding comes as a count, not a notice.
         counts(fail_open=1),
         notice("kernels", kernel),
     ]
@@ -143,16 +143,13 @@ async def test_all_six_sources_in_todays_order_then_acknowledged_after_save(
     assert all_delivered(record) == {
         "requests": [sources.request],
         "jobs": [sources.job],
-        "reviews": [sources.finding],
+        "reviews": [],
         "math": [sources.math],
         "kernels": sorted([kernel, newer]),
     }
     reviews = summary(record, "reviews")
-    # Delivered open findings are bounded at the end of the closing.
-    assert (reviews["classifier"]["label"], reviews["counts"]) == (
-        "terminal",
-        {"fail:unaddressed": 1},
-    )
+    # Only delivered open findings are bounded: the earlier one, a count, stays open.
+    assert (reviews["classifier"]["label"], reviews["counts"]) == ("terminal", {"fail:open": 1})
     # The math bound is staged until the saved record is acknowledged.
     assert summary(record, "math") == {
         "pending": False,
@@ -162,7 +159,7 @@ async def test_all_six_sources_in_todays_order_then_acknowledged_after_save(
 
     # The CLI saved the record, then acknowledged what it names.
     assert harness.request_states() == {sources.request: "delivered"}
-    assert harness.findings() == {"review": "unaddressed", "math": "unaddressed"}
+    assert harness.findings() == {"review": "open", "math": "unaddressed"}
     again = await harness.run("run-2", [Reply(calls=[call("plan_read")]), Reply("Answer C.")])
     first, _ = harness.gateway.main
     assert delivered(again, "kernels") == [newer]
@@ -171,7 +168,7 @@ async def test_all_six_sources_in_todays_order_then_acknowledged_after_save(
         SYSTEM,
         TASK_MESSAGE,
         plans("draft", True),
-        counts(fail_unaddressed=1),
+        counts(fail_open=1),
         notice("kernels", newer),  # A-04 changes this: the revision-3 observation.
     ]
     # A-02 may change this: a closing plan notice is recorded after the final answer
@@ -202,7 +199,7 @@ async def test_a_failed_first_model_call_delivers_nothing_and_everything_returns
     assert all_delivered(record) == {
         "requests": [sources.request],
         "jobs": [sources.job],
-        "reviews": [sources.finding],
+        "reviews": [],
         "math": [sources.math],
         "kernels": delivered(record, "kernels"),
     }
@@ -225,7 +222,7 @@ async def test_a_failed_response_round_keeps_only_what_earlier_calls_delivered(
     assert all_delivered(failed) == {
         "requests": [sources.request],
         "jobs": [sources.job],
-        "reviews": [sources.finding],
+        "reviews": [],
         "math": [],
         "kernels": delivered(failed, "kernels"),
     }
