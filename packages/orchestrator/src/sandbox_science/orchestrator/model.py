@@ -70,6 +70,11 @@ class ModelTurn:
     prefix: str | None = None
     """The digest of what the model was given, as its adapter rendered the request
     (``prefix_digest``)."""
+    adapter_state: Mapping[str, Any] | None = None
+    """What the adapter that made the answer keeps of the call for itself, as JSON values
+    (such as the tools it declared): carried by the answer and archived with it, so a
+    rebuild has it again. Only the adapter whose ``FORMAT`` is the answer's
+    ``native_format`` reads it."""
 
 
 COST_HEADER: Final = "x-litellm-response-cost"
@@ -97,10 +102,20 @@ class AssistantMessage(dict[str, Any]):
     ``copy.copy`` and ``copy.deepcopy`` keep what it carries.
 
     ``of`` makes one from a turn, as the loop adds it; the archive makes one from what it
-    kept (``history.Archived.chat``). ``read`` is an adapter's reading of ``native``,
+    kept (``history.Archived.chat``). ``adapter_state`` is the turn's, which only the
+    adapter that made the answer reads. ``read`` is an adapter's reading of ``native``,
     kept so that it reads it once."""
 
-    __slots__ = ("alias", "gateway_version", "model", "native", "native_format", "prefix", "read")
+    __slots__ = (
+        "adapter_state",
+        "alias",
+        "gateway_version",
+        "model",
+        "native",
+        "native_format",
+        "prefix",
+        "read",
+    )
 
     def __init__(
         self,
@@ -113,13 +128,14 @@ class AssistantMessage(dict[str, Any]):
         model: str | None = None,
         gateway_version: str | None = None,
         prefix: str | None = None,
+        adapter_state: Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__(role="assistant", content=content)
         if tool_calls:
             self["tool_calls"] = [dict(call) for call in tool_calls]
         self.native, self.native_format = native, native_format
         self.alias, self.model, self.gateway_version = alias, model, gateway_version
-        self.prefix = prefix
+        self.prefix, self.adapter_state = prefix, adapter_state
         self.read: object = None
 
     @classmethod
@@ -142,6 +158,7 @@ class AssistantMessage(dict[str, Any]):
             model=reply.model,
             gateway_version=reply.gateway_version,
             prefix=reply.prefix,
+            adapter_state=reply.adapter_state,
         )
 
 

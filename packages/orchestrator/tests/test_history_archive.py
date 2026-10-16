@@ -383,7 +383,7 @@ def test_answers_archived_before_their_alias_was_kept_have_none(
         projects.close()
     target = tmp_path / "older" / "control.sqlite3"
     target.parent.mkdir()
-    older_store(state / "control.sqlite3", target, migrations.VERSION - 1)
+    older_store(state / "control.sqlite3", target, 47)  # before the answers kept their alias (48)
     control = ControlStore(target)
     try:
         archive = Archive(control)

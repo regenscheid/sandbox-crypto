@@ -10,8 +10,9 @@ fails as it begins, so trying again cannot write a message twice."""
 
 from __future__ import annotations
 
+import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, Final, cast
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ExecutionContext
@@ -27,6 +28,8 @@ from .archive import Archive, Archived, Entry
 Json = dict[str, Any]
 _log = logging.getLogger(__name__)
 
+STATE_BYTES: Final = 65536
+"""The largest adapter state the archive keeps with an answer."""
 PATIENCE: Final = 60.0
 """Seconds an archive write keeps trying while the control store is busy."""
 
@@ -106,6 +109,7 @@ def entry_of(message: Message, appended: Appended, *, task_refs: Sequence[str] =
             native=native,
             alias=reply.alias,
             prefix=reply.prefix,
+            adapter_state=kept_state(reply.adapter_state),
         )
     text = str(content or "")
     if appended.kind == "tool_result" and appended.call is not None:
@@ -130,6 +134,23 @@ def entry_of(message: Message, appended: Appended, *, task_refs: Sequence[str] =
             kind = "outcome"
         return Entry("user", kind, text, source=notice.source, refs=notice.ids)
     return Entry("user", "task", text, refs=tuple(task_refs))
+
+
+def kept_state(state: Mapping[str, Any] | None) -> Json | None:
+    """An answer's adapter state as the archive keeps it: JSON of at most
+    ``STATE_BYTES``. A larger one, or one that is not JSON, is left out with a warning:
+    the adapter then does without it, as for an answer from before it was kept."""
+    if state is None:
+        return None
+    try:
+        text = json.dumps(dict(state), ensure_ascii=False)
+    except (TypeError, ValueError):
+        _log.warning("an answer's adapter state is not JSON; it is not archived")
+        return None
+    if len(text.encode()) > STATE_BYTES:
+        _log.warning("an answer's adapter state is over %d bytes; it is not archived", STATE_BYTES)
+        return None
+    return cast(Json, json.loads(text))
 
 
 def links(record: Json) -> Json | None:

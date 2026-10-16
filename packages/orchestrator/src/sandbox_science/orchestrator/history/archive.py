@@ -103,6 +103,7 @@ _FIELDS: Final = (
     "native",
     "alias",
     "prefix",
+    "adapter_state",
 )
 _COLUMNS: Final = ", ".join((*_PLACE, *_FIELDS))
 _TERM: Final = re.compile(r'"([^"]*)"|(\S+)')
@@ -190,6 +191,8 @@ class Entry:
     """The alias an answer was asked on (CM-42)."""
     prefix: str | None = None
     """The digest of what the model was given for an answer (``model.prefix_digest``)."""
+    adapter_state: Json | None = None
+    """What the adapter that made an answer keeps of its call (``ModelTurn``)."""
     saved: Mapping[str, str] = field(default_factory=dict[str, str], compare=False)
     """The texts of the files saved behind a tool result's sample, by path, as the run
     gives them to the archive; ``Archive.files`` reads them back."""
@@ -289,6 +292,7 @@ class Archived:
                 model=entry.model,
                 gateway_version=entry.gateway_version,
                 prefix=entry.prefix,
+                adapter_state=entry.adapter_state,
             )
         content = header(self.message_id, entry.kind, entry.source) + escape(entry.content or "")
         message: Json = {"role": entry.role, "content": content}
@@ -653,6 +657,9 @@ def _row(archived: Archived) -> tuple[object, ...]:
         "refs": json.dumps(list(entry.refs)),
         "tool_calls": json.dumps(list(entry.tool_calls)) if entry.tool_calls else None,
         "files": json.dumps(entry.files) if entry.files is not None else None,
+        "adapter_state": (
+            json.dumps(entry.adapter_state) if entry.adapter_state is not None else None
+        ),
     }
     return (
         *(getattr(archived, name) for name in _PLACE),
@@ -665,4 +672,6 @@ def _archived(row: Sequence[Any]) -> Archived:
     fields["refs"] = tuple(json.loads(fields["refs"]))
     fields["tool_calls"] = tuple(json.loads(fields["tool_calls"] or "[]"))
     fields["files"] = json.loads(fields["files"]) if fields["files"] is not None else None
+    state = fields["adapter_state"]
+    fields["adapter_state"] = json.loads(state) if state is not None else None
     return Archived(*row[: len(_PLACE)], entry=Entry(**fields))

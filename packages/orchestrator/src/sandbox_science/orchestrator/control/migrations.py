@@ -2689,6 +2689,17 @@ def _archived_answers(schema: Schema) -> None:
         schema.execute(statement)
 
 
+def _adapter_state(schema: Schema) -> None:
+    """Version 49: what the adapter that made an archived answer keeps of its call, as a
+    JSON object of at most 64 KiB, so that a view rebuilt from the archive has it again
+    (docs/specs/context-management.md, CM-38). Answers archived before have none."""
+    schema.execute(
+        "ALTER TABLE archive_messages ADD COLUMN adapter_state TEXT CHECK (adapter_state IS "
+        "NULL OR (json_valid(adapter_state) AND json_type(adapter_state) = 'object' AND "
+        "length(CAST(adapter_state AS BLOB)) <= 65536))"
+    )
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -2737,6 +2748,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _archive,
     _research_state,
     _archived_answers,
+    _adapter_state,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""
