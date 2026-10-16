@@ -19,7 +19,7 @@ from sandbox_science.worker.backends import SANDBOX_FILES
 
 LAZY: dict[str, frozenset[str]] = {
     "executor.py": frozenset({"jupyter_client"}),
-    "pdfhelper.py": frozenset({"pdf_oxide"}),
+    "pdfhelper.py": frozenset({"pdf_oxide", "PIL", "cairosvg"}),
 }
 """Packages a file may import inside a function, for a feature the image may lack."""
 LOADS: dict[str, frozenset[str]] = {

@@ -1129,7 +1129,7 @@ class Harness:
         accepts, why = await self._images(alias)
         viewer = None
         if accepts:
-            viewer = ImageViewer(ArtifactInventory(stores.documents), context)
+            viewer = ImageViewer(ArtifactInventory(stores.documents), context, self.client)
 
             async def forget() -> None:
                 viewer.close()

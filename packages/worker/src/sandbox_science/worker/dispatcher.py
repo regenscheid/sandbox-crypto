@@ -278,7 +278,11 @@ class Dispatcher:
             raise WorkerError(
                 ErrorKind.UNSUPPORTED, "this executor does not support background jobs"
             )
-        if isinstance(request, PdfRequest) and "pdf" not in environment.features:
+        if (
+            isinstance(request, PdfRequest)
+            and request.operation != "draw"  # which needs pdf_oxide only for a PDF
+            and "pdf" not in environment.features
+        ):
             raise WorkerError(
                 ErrorKind.UNSUPPORTED, "this environment cannot read PDFs (it lacks pdf_oxide)"
             )
