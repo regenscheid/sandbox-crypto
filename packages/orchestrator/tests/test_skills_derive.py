@@ -29,7 +29,6 @@ from sandbox_science.orchestrator.skills import Entry, SkillSet, SkillStore, sna
 from sandbox_science.orchestrator.skills.derive import (
     INDEX_DESCRIPTION,
     PROMPT,
-    SHORT,
     VERSION,
     PassError,
     catalog,
@@ -39,6 +38,7 @@ from sandbox_science.orchestrator.skills.derive import (
 )
 from sandbox_science.orchestrator.skills.discovery import SkillDiscovery
 from sandbox_science.orchestrator.skills.index import index
+from sandbox_science.orchestrator.skills.packs import SHORT
 from sandbox_science.orchestrator.skills.sources import Fetched, PackFile
 from sandbox_science.orchestrator.skills.tool import SkillTool
 

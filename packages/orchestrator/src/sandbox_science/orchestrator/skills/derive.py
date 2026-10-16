@@ -23,18 +23,16 @@ import re
 from dataclasses import dataclass
 from typing import Any, Final, cast
 
-from sandbox_science.orchestrator.documents.agent_text import CHIPS, is_hidden, newlines
+from sandbox_science.orchestrator.documents.agent_text import newlines
 from sandbox_science.orchestrator.model import ChatModel, Message, ModelError, ToolSpec
 
 from .index import cut, marker
-from .packs import Snapshot
+from .packs import SHORT, TOPIC, VARIABLE, Snapshot, plain_text, topic_name
 
 VERSION: Final = "sandbox-skills-pass-1"
 """The pass's prompt and checks; a new version derives again."""
 INDEX_DESCRIPTION: Final = 400
 """A description longer than this may get a short one: the index's first cut."""
-SHORT: Final = 300
-TOPIC: Final = 60
 MAX_TOPICS: Final = 50
 MAX_ENTRY: Final = 10
 MAX_BINDINGS: Final = 50
@@ -104,7 +102,6 @@ TOOL: Final = ToolSpec(
         "additionalProperties": False,
     },
 )
-_VARIABLE: Final = re.compile(r"[A-Z][A-Z0-9_]{1,63}")
 _MENTION: Final = re.compile(
     r"\$\{?([A-Z][A-Z0-9_]{1,63})\b"
     r"|environ(?:\.get)?\s*[\[(]\s*[\"']([A-Z][A-Z0-9_]{1,63})[\"']"
@@ -297,7 +294,7 @@ def check(answer: object, snap: Snapshot) -> tuple[dict[str, Any], list[dict[str
     topics: dict[str, list[str]] = {}
     placed: set[str] = set()
     for item in _items(given.get("topics"), "topics", drop)[:MAX_TOPICS]:
-        name, skills = _topic(item.get("name")), item.get("skills")
+        name, skills = topic_name(item.get("name")), item.get("skills")
         if not name or len(name) > TOPIC or name in topics or not isinstance(skills, list):
             drop("topic", item, f"not a new topic name of 1 to {TOPIC} characters with skills")
             continue
@@ -320,7 +317,7 @@ def check(answer: object, snap: Snapshot) -> tuple[dict[str, Any], list[dict[str
             entry.append(skill)
     descriptions: dict[str, str] = {}
     for item in _items(given.get("descriptions"), "descriptions", drop):
-        skill, text = item.get("skill"), _clean(item.get("description"))
+        skill, text = item.get("skill"), plain_text(item.get("description"))
         if not isinstance(skill, str) or skill not in names or skill in descriptions:
             drop("description", item, "names no skill of the pack, or one twice")
         elif len(names[skill].description) <= INDEX_DESCRIPTION:
@@ -334,7 +331,7 @@ def check(answer: object, snap: Snapshot) -> tuple[dict[str, Any], list[dict[str
     named = mentioned(snap)
     for item in _items(given.get("bindings"), "bindings", drop)[:MAX_BINDINGS]:
         variable, path = item.get("variable"), item.get("path")
-        if not isinstance(variable, str) or not _VARIABLE.fullmatch(variable):
+        if not isinstance(variable, str) or not VARIABLE.fullmatch(variable):
             drop("binding", item, "not an environment variable's name")
         elif forbidden(variable):
             drop("binding", item, "a shell, loader or start-up variable, which a pack may not set")
@@ -369,34 +366,13 @@ def _list(value: object, key: str, drop: Any) -> list[object]:
     return cast(list[object], value)
 
 
-def _clean(value: object) -> str:
-    """Derived text without control, hidden or look-alike characters, on one line."""
-    if not isinstance(value, str):
-        return ""
-    kept = "".join(
-        char
-        for char in value
-        if not is_hidden(char)
-        and ord(char) not in CHIPS[2]
-        and (char.isprintable() or char.isspace())
-    )
-    return " ".join(kept.split())
-
-
-def _topic(value: object) -> str:
-    """A topic's name, without what could pass for the index's own notation: brackets,
-    slashes, colons and a leading list mark."""
-    text = re.sub(r"[\[\]()/:·]", " ", _clean(value))
-    return " ".join(text.split()).lstrip("-\u2013\u2014*\u2022 ").strip()
-
-
 def _shown(item: object) -> str:
     """An item as the report names it: its text cleaned and cut."""
     try:
         text = json.dumps(item, ensure_ascii=False)
     except (TypeError, ValueError):
         text = type(item).__name__
-    return _clean(text)[:200]
+    return plain_text(text)[:200]
 
 
 def _places(snap: Snapshot) -> set[str]:
@@ -408,7 +384,7 @@ def _places(snap: Snapshot) -> set[str]:
 
 def _inside(path: object, places: set[str]) -> str | None:
     """``path`` as a path inside the pack, or ``None``."""
-    if not isinstance(path, str) or len(path) > 1024 or _clean(path) != path.strip():
+    if not isinstance(path, str) or len(path) > 1024 or plain_text(path) != path.strip():
         return None
     given = path.strip()
     if given.startswith(("/", "~")) or "\\" in given or ":" in given:

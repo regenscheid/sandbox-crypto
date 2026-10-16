@@ -56,6 +56,8 @@ def skills(args: argparse.Namespace) -> int:
                     shown = asdict(store.pin(args.project, args.source, USER, args.revision))
                 case "settings":
                     shown = asdict(_settings(store, args))
+                case "override":
+                    shown = asdict(_override(store, args))
                 case _:
                     shown = (
                         [asdict(pin) for pin in store.pins(args.project)]
@@ -178,6 +180,53 @@ def embedding_alias(value: str) -> str:
     return value
 
 
+def _override(store: SkillStore, args: argparse.Namespace) -> SkillSettings:
+    """The project's overrides of what the import's pass derives, changed when
+    ``--expected`` names the settings' revision read (SK-33): for ``--skill``, a
+    ``--description``, ``--topic`` and ``--entry`` or ``--not-entry`` to set, and
+    ``--clear`` to give back to the pass; for ``--source``, ``--unbind`` and ``--rebind``
+    of its derived bindings. A change without ``--expected`` is refused, naming the
+    revision and the overrides it would make."""
+    current = store.settings(args.project)
+    skills = {
+        k: dict(v) for k, v in cast(dict[str, Any], current.overrides.get("skills", {})).items()
+    }
+    unbound = {
+        k: list(v) for k, v in cast(dict[str, Any], current.overrides.get("unbound", {})).items()
+    }
+    given = {
+        "description": args.description,
+        "topic": args.topic,
+        "entry": True if args.entry else False if args.not_entry else None,
+    }
+    changing = any(v is not None for v in given.values()) or bool(args.clear)
+    if changing:
+        if args.skill is None:
+            raise ControlError(
+                INVALID_REQUEST, "--description, --topic, --entry and --clear need --skill"
+            )
+        fields = skills.setdefault(args.skill, {})
+        fields |= {key: value for key, value in given.items() if value is not None}
+        for key in args.clear or ():
+            for field in ("description", "topic", "entry") if key == "all" else (key,):
+                fields.pop(field, None)
+    if args.unbind or args.rebind:
+        if args.source is None:
+            raise ControlError(INVALID_REQUEST, "--unbind and --rebind need --source")
+        changing = True
+        names = set(unbound.get(args.source, [])) | set(args.unbind or ())
+        unbound[args.source] = sorted(names - set(args.rebind or ()))
+    if args.expected is None:
+        if changing:
+            raise ControlError(
+                INVALID_REQUEST,
+                f"give --expected {current.revision}, the settings' revision, to change them: "
+                f"overrides then {json.dumps({'skills': skills, 'unbound': unbound})}",
+            )
+        return current
+    return store.set_overrides(args.project, USER, args.expected, skills=skills, unbound=unbound)
+
+
 def _settings(store: SkillStore, args: argparse.Namespace) -> SkillSettings:
     """The project's skill settings, changed when ``--expected`` names the revision read.
     ``--no-always`` and ``--no-exclude`` empty a list first; ``--always`` and
@@ -267,6 +316,28 @@ def add_parser(commands: Any) -> None:
         settings.add_argument(flag, action="append", metavar="SOURCE/NAME", help=text)
     settings.add_argument("--no-always", action="store_true", help="empty the list first")
     settings.add_argument("--no-exclude", action="store_true", help="empty the list first")
+    override = actions.add_parser(
+        "override",
+        parents=[common],
+        help="show or change a project's overrides of what the import's pass derives",
+    )
+    override.add_argument("--project", required=True)
+    override.add_argument("--expected", type=int, help="the settings' revision, to change them")
+    override.add_argument("--skill", metavar="SOURCE/NAME", help="the skill to override")
+    override.add_argument("--description", help="the skill's short description in the index")
+    override.add_argument("--topic", help="the topic the skill is listed under")
+    entry = override.add_mutually_exclusive_group()
+    entry.add_argument("--entry", action="store_true", help="an entry skill")
+    entry.add_argument("--not-entry", action="store_true", help="no entry skill")
+    override.add_argument(
+        "--clear",
+        action="append",
+        choices=("description", "topic", "entry", "all"),
+        help="give the field back to the pass (repeat)",
+    )
+    override.add_argument("--source", help="the pack whose derived bindings change")
+    override.add_argument("--unbind", action="append", metavar="VARIABLE")
+    override.add_argument("--rebind", action="append", metavar="VARIABLE")
     listed = actions.add_parser(
         "list", parents=[common], help="the imports, a source's, or a project's pins"
     )

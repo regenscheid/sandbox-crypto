@@ -2566,6 +2566,18 @@ BEGIN SELECT RAISE(ABORT, 'derived skill metadata is written once'); END""",
         schema.execute(statement)
 
 
+def _skill_overrides(schema: Schema) -> None:
+    """Version 45: each project's overrides of what the import's model pass derives
+    (docs/specs/skills.md, SK-33): a skill's short description, its topic and whether it
+    is an entry skill, and the derived bindings a pack's skills may not have. They sit in
+    the project's skill settings, under the same revision, and survive new pins."""
+    schema.execute(
+        "ALTER TABLE project_skill_settings ADD COLUMN overrides TEXT NOT NULL DEFAULT '{}' "
+        "CHECK (json_valid(overrides) AND json_type(overrides) = 'object' "
+        "AND length(CAST(overrides AS BLOB)) <= 131072)"
+    )
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -2610,6 +2622,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _builtin_skills,
     _skill_vectors,
     _skill_metadata,
+    _skill_overrides,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""
