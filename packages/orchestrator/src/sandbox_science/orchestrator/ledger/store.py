@@ -102,6 +102,8 @@ from .models import (
 Json = dict[str, Any]
 
 TEXTS: Final = TextRevisions("statement")
+_DECIDED: Final = frozenset({"established", "recorded", "in_effect", "rejected", "reversed"})
+"""Statuses that settle an entry: a repin there needs an anchor (figures, FG-8)."""
 """Each entry's statement, a text revision under the entry's ID."""
 
 RECEIPTS: Final = Receipts("ledger", "operation ID {operation!r} names another ledger change")
@@ -1699,11 +1701,6 @@ class Ledger:
         statement = self._statement(db, row, p.statement, author)
         pins = p.pins
         if pins is None:
-            body = p.statement
-            if body is None:
-                saved = TEXTS.read(db, row.entry_id, statement, full=False)
-                assert saved is not None  # noqa: S101 - written just now or before
-                body = saved["body"]
             stored = (
                 db.execute(
                     "SELECT pins FROM ledger_revisions WHERE entry_id=? AND revision=?",
@@ -1712,13 +1709,18 @@ class Ledger:
                 if before
                 else None
             )
-            pins, _ = pin_references(
-                db,
-                project,
-                author.session_id,
-                text_references(body, "statement"),
-                json.loads(stored[0]) if stored and stored[0] else [],
-            )
+            previous: list[Json] = json.loads(stored[0]) if stored and stored[0] else []
+            if p.statement is None:
+                # The statement is unchanged: so are its pins, whoever revises the entry.
+                pins = previous
+            else:
+                pins, _ = pin_references(
+                    db,
+                    project,
+                    author.session_id,
+                    text_references(p.statement, "statement"),
+                    previous,
+                )
         db.execute(
             "INSERT INTO ledger_revisions(entry_id,revision,title,status,statement,fields,"
             "author,reason,operation_id,provenance,created,basis,anchors,pins) "
@@ -2676,6 +2678,8 @@ class Ledger:
         needs = (
             p.created
             or {"statement", "fields"} & set(p.changed)
+            # A pin moved on a decided entry changes what it shows, as content does.
+            or ("pins" in p.changed and p.status_before in _DECIDED)
             or (
                 p.row.type == "decision"
                 and "status" in p.changed
@@ -2838,7 +2842,7 @@ class Ledger:
         agent never changes one's title or content, but may state the reopen condition of
         one it rejects or reverses, if it has none (the coordinator, 2026-10-15)."""
         content = {"statement", "fields", "links", "evidence"} & set(p.changed)
-        if p.created or not (content or "title" in p.changed):
+        if p.created or not (content or {"title", "pins"} & set(p.changed)):
             return
         users = db.execute(
             "SELECT 1 FROM ledger_revisions WHERE entry_id=? "
@@ -2851,7 +2855,7 @@ class Ledger:
             others = {k: v for k, v in p.fields.items() if k != "reopen_condition"}
             final = [k for k in self._final_links(db, p) if k.kind != "reopen_on"]
             stated = (
-                not {"statement", "title", "evidence"} & set(p.changed)
+                not {"statement", "title", "evidence", "pins"} & set(p.changed)
                 and "status" in p.changed
                 and p.status in ("rejected", "reversed")
                 and "reopen_condition" not in p.fields_before
@@ -2861,7 +2865,8 @@ class Ledger:
             if not stated:
                 raise _refused(
                     f"{p.row.handle} is the user's decision: an agent changes its status by a "
-                    "decision, and never its title, statement, fields, links or evidence"
+                    "decision, and never its title, statement (its pins included), fields, "
+                    "links or evidence"
                 )
         if (
             content
