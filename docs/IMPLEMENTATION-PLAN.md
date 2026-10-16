@@ -1,6 +1,6 @@
 # Detailed implementation plan
 
-Written 2026-10-10 and updated 2026-10-13: the engineering sequence beneath the milestone [roadmap](ROADMAP.md). It is a plan, not a progress record. What is built today is in [.agents/STATUS.md](../.agents/STATUS.md), and work now follows the [revision and refactoring plan](../.agents/refactor-plan/PLAN.md) of 2026-10-14. Confirmed product requirements stay in [decisions](DECISIONS.md); this plan incorporates the [planning consistency review](../.agents/planning-consistency-review-2026-10-10.md) of 2026-10-10.
+Written 2026-10-10 and updated 2026-10-16: the engineering sequence beneath the milestone [roadmap](ROADMAP.md). It is a plan, not a progress record. What is built today is in [.agents/STATUS.md](../.agents/STATUS.md), and work now follows the [revision and refactoring plan](../.agents/refactor-plan/PLAN.md) of 2026-10-14. Confirmed product requirements stay in [decisions](DECISIONS.md); this plan incorporates the [planning consistency review](../.agents/planning-consistency-review-2026-10-10.md) of 2026-10-10.
 
 ## Original prompts and planning
 
@@ -56,7 +56,7 @@ Write short behavior specifications, in the project's own words, for the CScienc
 
 Each spec ends with acceptance fixtures that the new implementation must pass.
 
-Choose the harness building blocks (D55, D60, D61): Python throughout the server side; a provider-neutral model interface over the LiteLLM proxy, with the OpenAI-compatible adapter first and Anthropic Messages later; the project's own small MCP client for the MCP proxy (`orchestrator/connectors.py`); and own code for the research loop. Before choosing, assess reuse from OpenScience Desktop upstream (MIT) and OpenCode (MIT), and from the user's own `cscience-crypto` wrapper code where it embeds no upstream code. Record each reused file's license and revision.
+Choose the harness building blocks (D55, D60, D61): Python throughout the server side; a provider-neutral model interface over the LiteLLM proxy, with the OpenAI-compatible adapter first and Anthropic Messages after it (both built, with the Responses client, as of 2026-10-16: [context management](specs/context-management.md), CM-38 to CM-42); the project's own small MCP client for the MCP proxy (`orchestrator/connectors.py`); and own code for the research loop. Before choosing, assess reuse from OpenScience Desktop upstream (MIT) and OpenCode (MIT), and from the user's own `cscience-crypto` wrapper code where it embeds no upstream code. Record each reused file's license and revision.
 
 **Exit evidence:** behavior specs with fixtures, a harness-component decision with licenses recorded, and a mapping from the specs to the shared contracts above.
 
@@ -162,7 +162,7 @@ A small exact Sage result should reproduce without producer kernel memory and re
 
 | Choice | Evidence point | Default until then |
 | --- | --- | --- |
-| Harness building blocks | W0 behavior specs, license check and reuse assessment | Provider-neutral model interface over the LiteLLM proxy, OpenAI-compatible first and Anthropic Messages later (D61), + the project's own MCP client + own research loop (D55) |
+| Harness building blocks | W0 behavior specs, license check and reuse assessment | Provider-neutral model interface over the LiteLLM proxy, OpenAI-compatible first and Anthropic Messages after it (D61; both built), + the project's own MCP client + own research loop (D55) |
 | First local backend and OpenShell adoption | W2 enforcement, monitor, lifecycle and platform matrix | OpenShell with the MicroVM driver on babbage (D52, D63); the conformance suite keeps the worker API backend-neutral |
 | Persistence/synchronization mechanism | W3 writable-state coverage, conflict and restore checks | Preserve the original environment/state until a verified alternative exists |
 | Shared UI/kernel libraries | W2/W4 native math, output, anchor and security behavior | Jupyter-protocol kernels; candidate PDF.js/KaTeX integrations |

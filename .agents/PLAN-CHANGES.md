@@ -4,6 +4,26 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 ## 2026-10-16
 
+Decisions of the owner, later the same day (after #467):
+
+- **The figures spec is approved as it was drafted,** with its eight questions answered as recommended (#436; [figures](../docs/specs/figures.md); [specs README](../docs/specs/README.md), question 19). The build plan is in the [BACKLOG](BACKLOG.md#repository); F1 to F5, F9 to F11 are built.
+- **The response-loop guard** (#489; [consistency review](../docs/specs/consistency-review.md), CR-16, CR-21, CR-26, CR-29 as amended). **A:** a rebuttal that cites recorded evidence and that the next review rejects leaves the finding `challenged`: "the author's rebuttal stands and carries more weight than the reviewer's", the reviewer's reason is visible context, not a block, no round follows, and the orchestrator is told once. **B:** the session's earlier findings reach a run as counts, and the orchestrator may follow one up; only the open findings its own work raised interrupt it.
+- **K7's allow rule is option 3** (#486; [skills](../docs/specs/skills.md), SK-31, SK-33): a binding namespaced to the pack is set at once, and any other only when the project's user approves it. The deny-list stays as a backstop.
+- **Context-management lab round 1:** USD 500 at most, on the gateway's `arrcodex` GPT aliases alone, with the Claude arms deferred (#481).
+- **Citing the ledger handle** (CM-P1; [context management](../docs/specs/context-management.md), question 12; #509): "keep it as a prompt, and add it as a reviewer check, but do not block or reject if the agent still does not cite it." The lab's bar is the reason and the reopen condition, and the citation is reported. Built as a prompt rule (`sandbox-main-9`, `sandbox-delegated-task-6`) and an advisory reviewer category, `handle_citation`, stored as a note.
+- **A personal instance on babbage,** apart from the labs, for the owner's own use (#510; [the personal instance](../docs/PERSONAL-BABBAGE.md)).
+
+Decisions of the coordinator, each reversible by the owner:
+
+- **Calls with no gateway cost are priced from `/model/info`** and marked `model_info`; with a daily limit set, any unpriced run call in the last 24 hours counts the limit as reached ([run service](../docs/specs/run-service.md), RS-6a as amended; #476). The same holds for the reviewer's, watcher's and import pass's calls, whose cost source is recorded (#477, migration 53); a call past a size tier is priced at that tier (#491, #494).
+- **No reviewer configured means reviews are off,** and the run says so once ([consistency review](../docs/specs/consistency-review.md), CR-35 as amended; #475).
+- **The meaning cutoff is set by model family** (`text-embedding-3-*`: 0.34; #474; [skills](../docs/SKILLS.md)). Per-pack thresholds (SK-34) are still not built.
+- **A fold proposal the user accepts keeps its own basis,** shown as "accepted by the user"; the basis `user` is only for wording the user wrote or edited (#479, review).
+- **After a `research_state` stop, a new user message starts a consolidation run** (CM-45; #482, review): the short-form decisions and an instruction to propose a consolidation for the user to approve. The old queue stays held.
+- **A ledger `repin` raises no flag** (FG-43; #490, review). It is a statement change on the user's entries, so agents are refused it; it needs an anchor on decided entries; it has no gate.
+- **Lab round 1's shape:** after the seed (about 400,000 tokens), option 1: four `gpt-6-sol` arms and a second-model arm at 250,000, with a hard stop of USD 380 reported so that the listed rates stay within the owner's USD 500 (lab 44).
+- **Questions 12 to 14 of the skills spec** are still the coordinator's acceptance (above, 2026-10-15). The owner has not confirmed them.
+
 Conventions, with the `live` marker (#455) and the GPT adapter's ported code (#452):
 
 - **`live` tests.** A test marked `@pytest.mark.live` calls the deployment's real model gateway, for the labs. The root `conftest.py` skips it unless `SS_LIVE_GATEWAY` is set, so CI never runs one. Added to [CONVENTIONS](CONVENTIONS.md#testing).
