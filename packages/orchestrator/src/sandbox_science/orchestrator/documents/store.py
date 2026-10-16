@@ -83,7 +83,7 @@ from .models import (
 from .normalize import Normalized, normalize
 from .operations import MAX_OPERATIONS, Operation, touches
 from .parser import parser_versions
-from .pins import newer, unresolved_warnings
+from .pins import newer, references, unresolved_warnings
 from .pins import pin as pin_references
 from .project_macros import head as macro_head
 
@@ -1645,7 +1645,12 @@ class DocumentStore:
             ([], [])
             if tombstone
             else pin_references(
-                db, info.project_id, info.session_id or author.session_id, mapped, previous, moves
+                db,
+                info.project_id,
+                info.session_id or author.session_id,
+                references(mapped),
+                previous,
+                moves,
             )
         )
         if source != info.head:

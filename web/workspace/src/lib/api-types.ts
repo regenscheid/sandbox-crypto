@@ -141,6 +141,7 @@ export interface ChatMessage {
   run: string | null;
   reason: string | null;
   offered: string | null;
+  pins: Record<string, JsonValue>[];
 }
 
 /** A consistency reviewer's check of a quote (CR-4), as the entry view shows it. */
@@ -372,6 +373,7 @@ export interface EntryView {
   author: Record<string, unknown>;
   reason: string;
   anchors: Record<string, unknown>[];
+  pins: Record<string, unknown>[];
 }
 
 export type EnvironmentState = "creating" | "ready" | "stopped" | "deleted";
@@ -1249,6 +1251,7 @@ export interface RunEvent {
   at: string;
   kind: "started" | "user" | "model" | "assistant" | "tool" | "notice" | "waiting" | "stopped" | "fold";
   data: Record<string, JsonValue>;
+  pins: Record<string, JsonValue>[];
 }
 
 /** The run that holds a session, and when it last renewed its lease. */

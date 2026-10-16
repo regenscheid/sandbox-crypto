@@ -28,6 +28,7 @@ const CLAIM = 'work-00000000000000000000000a';
 
 const issue = (fields: Partial<EntryView> = {}): EntryView => ({
   entry_id: ID,
+  pins: [],
   handle: 'I-1',
   type: 'issue',
   kind: null,

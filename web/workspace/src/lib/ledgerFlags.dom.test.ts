@@ -63,6 +63,7 @@ const flag = (id: string, fields: Partial<EntryFlag> = {}): EntryFlag => ({
 
 const entry = (fields: Partial<EntryView> = {}): EntryView => ({
   entry_id: 'entry-0123456789abcdef01234567',
+  pins: [],
   handle: 'C-1',
   type: 'claim',
   kind: null,

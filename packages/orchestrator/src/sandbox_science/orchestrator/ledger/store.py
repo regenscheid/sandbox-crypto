@@ -41,6 +41,8 @@ from sandbox_science.orchestrator.documents.errors import (
 )
 from sandbox_science.orchestrator.documents.models import Author
 from sandbox_science.orchestrator.documents.normalize import normalize
+from sandbox_science.orchestrator.documents.pins import newer, text_references
+from sandbox_science.orchestrator.documents.pins import pin as pin_references
 from sandbox_science.orchestrator.documents.project_macros import head as macro_head
 from sandbox_science.orchestrator.projects import ProjectError, recorded, run_id_of
 
@@ -116,7 +118,7 @@ _HANDLE: Final = re.compile(r"(I|C|R|A|D|T|REF)-([1-9][0-9]{0,8})")
 _TYPES: Final = {prefix: kind for kind, prefix in PREFIXES.items()}
 _REVISION: Final = (
     "SELECT r.revision,r.title,r.status,r.statement,r.fields,r.author,r.reason,r.created,"
-    "r.basis,r.anchors FROM ledger_revisions r WHERE r.entry_id=? AND r.revision=?"
+    "r.basis,r.anchors,r.pins FROM ledger_revisions r WHERE r.entry_id=? AND r.revision=?"
 )
 _CURRENT: Final = (
     "FROM ledger_links l JOIN ledger_entries e ON e.entry_id=l.entry_id AND l.revision=e.head "
@@ -189,6 +191,9 @@ class _Planned:
     basis: str | None = None
     """Where the new revision comes from (CM-9)."""
     anchors: list[Json] = field(default_factory=list[Json])
+    pins: list[Json] | None = None
+    """The statement's pins, when a ``repin`` moved them; otherwise they are made when
+    the revision is written (figures spec, FG-7, FG-8)."""
 
 
 class Ledger:
@@ -260,6 +265,7 @@ class Ledger:
                 author=json.loads(found[5]),
                 reason=found[6],
                 anchors=json.loads(found[9] or "[]"),
+                pins=newer(db, project, json.loads(found[10] or "[]")),
             )
 
     def entries(
@@ -959,7 +965,10 @@ class Ledger:
         if replay is not None:
             return MutationResult.model_validate({**replay, "replayed": True})
         numbers: dict[str, int] = {}
-        planned = [self._plan(db, project, change, role, numbers) for change in mutation.changes]
+        planned = [
+            self._plan(db, project, change, role, numbers, author.session_id)
+            for change in mutation.changes
+        ]
         keys = {p.change.key: p.row for p in planned if p.created and p.change.key}
         if len(keys) != sum(1 for p in planned if p.created and p.change.key):
             raise DocumentError(INVALID_REQUEST, "two created entries share a key")
@@ -1454,8 +1463,11 @@ class Ledger:
         change: EntryChange,
         role: str,
         numbers: dict[str, int],
+        session: str | None = None,
     ) -> _Planned:
         if change.entry is None:
+            if change.repin is not None:
+                raise DocumentError(INVALID_REQUEST, "a new entry's references are pinned anew")
             return self._plan_create(db, project, change, role, numbers)
         if change.type is not None or change.origin is not None or change.key is not None:
             raise DocumentError(INVALID_REQUEST, "a revision keeps the entry's type and origin")
@@ -1514,6 +1526,25 @@ class Ledger:
             planned.changed = [*planned.changed, "status"]
         if change.links is not None:
             planned.previous = self._links(db, row.entry_id, row.head)
+        if change.repin is not None:
+            body = planned.statement
+            if body is None:
+                saved = TEXTS.read(db, row.entry_id, current[3], full=False)
+                assert saved is not None  # noqa: S101 - written with its revision
+                body = saved["body"]
+            moves = {("statement", item.path): item.revision for item in change.repin}
+            pins, moved = pin_references(
+                db,
+                project,
+                session,
+                text_references(body, "statement"),
+                json.loads(current[10] or "[]"),
+                moves,
+            )
+            if moved:
+                # A pin moved is no change of the statement's text, its evidence or what
+                # it claims, so it flags nothing (LG-28 as amended for figures).
+                planned.pins, planned.changed = pins, [*planned.changed, "pins"]
         return planned
 
     def _plan_create(
@@ -1666,10 +1697,32 @@ class Ledger:
         before = row.head
         row.head += 1
         statement = self._statement(db, row, p.statement, author)
+        pins = p.pins
+        if pins is None:
+            body = p.statement
+            if body is None:
+                saved = TEXTS.read(db, row.entry_id, statement, full=False)
+                assert saved is not None  # noqa: S101 - written just now or before
+                body = saved["body"]
+            stored = (
+                db.execute(
+                    "SELECT pins FROM ledger_revisions WHERE entry_id=? AND revision=?",
+                    (row.entry_id, before),
+                ).fetchone()
+                if before
+                else None
+            )
+            pins, _ = pin_references(
+                db,
+                project,
+                author.session_id,
+                text_references(body, "statement"),
+                json.loads(stored[0]) if stored and stored[0] else [],
+            )
         db.execute(
             "INSERT INTO ledger_revisions(entry_id,revision,title,status,statement,fields,"
-            "author,reason,operation_id,provenance,created,basis,anchors) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "author,reason,operation_id,provenance,created,basis,anchors,pins) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 row.entry_id,
                 row.head,
@@ -1684,6 +1737,7 @@ class Ledger:
                 now.isoformat(),
                 p.basis,
                 provenance_json(p.anchors),
+                json.dumps(pins, sort_keys=True) if pins else None,
             ),
         )
         held = p.evidence

@@ -37,6 +37,7 @@ const impossible: Standing = {
 
 const entry = (fields: Partial<EntryView> = {}): EntryView => ({
   entry_id: 'entry-0123456789abcdef01234567',
+  pins: [],
   handle: 'I-1',
   type: 'issue',
   kind: 'hypothesis',

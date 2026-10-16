@@ -347,6 +347,14 @@ FIELDS: Final[dict[str, type[Contract]]] = {
 """Each type's own fields (LG-1); the frontier and the gate add to these later."""
 
 
+class RepinInput(Contract):
+    """A reference in the statement to a recorded file, pinned again: to ``revision``, or
+    to the file's current revision (figures spec, FG-8)."""
+
+    path: Annotated[str, Field(min_length=1, max_length=4096)]
+    revision: Annotated[int, Field(ge=1, strict=True)] | None = None
+
+
 class EntryChange(Contract):
     """One entry a mutation creates (``type`` given, ``entry`` and ``expected`` not) or
     revises (``entry`` and ``expected`` given). A revision replaces the fields it gives:
@@ -370,6 +378,8 @@ class EntryChange(Contract):
     basis: Basis | None = None
     """Where the revision comes from (CM-9); ``interpreted`` when none is named."""
     anchors: list[AnchorInput] | None = Field(default=None, max_length=MAX_ANCHORS)
+    repin: list[RepinInput] | None = Field(default=None, min_length=1, max_length=32)
+    """References in the statement whose pins move; the statement's text is unchanged."""
 
 
 WorkEnding = Literal["limit", "obstruction_claimed", "produced", "assessment", "reopened"]
@@ -669,6 +679,9 @@ class EntryView(EntrySummary):
     reason: str
     anchors: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]])
     """Where the revision shown comes from, as the record keeps it (CM-9)."""
+    pins: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]])
+    """The statement's references to recorded files, each with the revision it is pinned
+    to and a newer one as ``latest``, or why it is not pinned (figures spec, FG-7)."""
 
 
 class EntryPage(Contract):

@@ -171,6 +171,7 @@ describe('the run tree', () => {
 
 const event = (seq: number, text: string): RunEvent => ({
   seq,
+  pins: [],
   at: '2026-10-15T00:00:00Z',
   kind: 'assistant',
   data: { text },

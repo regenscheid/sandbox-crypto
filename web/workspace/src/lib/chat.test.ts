@@ -36,6 +36,7 @@ const message = (
   seen: string | null = null,
 ): ChatMessage => ({
   message_id: `m${number}`,
+  pins: [],
   number,
   text: `text ${number}`,
   author: 'user',
@@ -51,6 +52,7 @@ const event = (
   data: Record<string, unknown> = {},
 ): RunEvent => ({
   seq,
+  pins: [],
   at: '2026-10-14T12:00:00Z',
   kind,
   data,
