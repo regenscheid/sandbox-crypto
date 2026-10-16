@@ -4,7 +4,7 @@
 
 ## Scope
 
-The user reads a published PDF in the workspace: views its pages, moves between them, zooms, selects text and copies an anchor to a place on a page. Annotations stored on a PDF (research artifacts, RA-21), other rich previews (HTML, SVG, notebook output) and files not yet published are not covered.
+The user reads a published PDF in the workspace: views its pages, moves between them, zooms, selects text and copies an anchor to a place on a page. Annotations stored on a PDF (research artifacts, RA-21), other rich previews (HTML, SVG, notebook output) and files not yet published are not covered. *Amended 2026-10-16 by the owner, with the [figures](figures.md) spec (FG-12 to FG-14); not built:* the preview origin also serves the figure frame's bundle and pinned figure files by capability, under the same rules (PV-1 to PV-3), and the viewer gains a figure mode: one page of a PDF figure, fitted to its frame's width, without the page controls. SVG, HTML and the charts and diagrams are that spec's.
 
 ## Threat model
 

@@ -103,7 +103,7 @@ Each of these revisions names the child run, its role `delegated`, its parent (t
 
 ### References
 
-- RA-19. A reference to an artifact is `pinned` to a revision or follows the `latest` revision. Evidence (claims, findings, lineage, ledger entries, delegation outcomes) MUST use pinned references. Presentation links, such as a figure embedded in a living document, may follow the latest revision and show which revision they resolved to (CScience distinguishes the two; D28, [product](../PRODUCT.md)).
+- RA-19. A reference to an artifact is `pinned` to a revision or follows the `latest` revision. Evidence (claims, findings, lineage, ledger entries, delegation outcomes) MUST use pinned references. Presentation links, such as a figure embedded in a living document, may follow the latest revision and show which revision they resolved to (CScience distinguishes the two; D28, [product](../PRODUCT.md)). *Amended 2026-10-14 by the owner ([figures](figures.md), FG-7):* a reference to a recorded file written in chat, a living document or a ledger statement is pinned when its text is saved, so RA-F4's embedded file is pinned too, and the document shows that a newer revision exists.
 - RA-20. References resolve in project scope; a reference into another project does not resolve without an explicit grant.
 
 ### Annotations
