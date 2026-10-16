@@ -12,7 +12,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -158,6 +158,25 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return path
 
 
+def bound_port() -> int:
+    """A loopback port the system has free now, once its probe closes."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+def free_port(taken: Collection[int], probe: Callable[[], int] = bound_port) -> int:
+    """A free loopback port that is none of ``taken``. A port picked by binding and
+    closing is free only until the system hands it out again, which it may do at once: a
+    CI run gave the MCP proxy's forward the workspace's port, and the launcher refused
+    the config (``both listen on``)."""
+    for _ in range(100):
+        port = probe()
+        if port not in taken:
+            return port
+    raise AssertionError(f"no free loopback port outside {sorted(taken)}")
+
+
 def free_ports() -> tuple[int, int]:
     """A port for the worker and one for the workspace, whose next port is free too."""
     while True:
@@ -179,8 +198,10 @@ class Launcher:
     ) -> None:
         self.config = config
         self.env = env
-        self.lines: queue.Queue[str] = queue.Queue()
+        self.lines: queue.Queue[str | None] = queue.Queue()
         self.seen: list[str] = []
+        self.ended = False
+        """Whether its output has ended."""
         self.process = subprocess.Popen(
             [sys.executable, "-m", "sandbox_science.launcher", command, "--config", str(config),
              *options],
@@ -193,21 +214,37 @@ class Launcher:
         assert self.process.stdout is not None
         for line in self.process.stdout:
             self.lines.put(line.rstrip("\n"))
+        self.lines.put(None)  # the end of its output
 
     def expect(self, text: str, timeout: float = 30) -> None:
+        """Wait until the launcher says ``text``: at most ``timeout`` seconds, and no
+        longer than its output lasts, so that a launcher that stopped early fails at once
+        with what it said."""
         deadline = time.monotonic() + timeout
         while not any(text in line for line in self.seen):
+            if self.ended:
+                raise AssertionError(
+                    f"no {text!r}: the launcher ended (status {self.process.wait(timeout)}), "
+                    "saying:\n" + "\n".join(self.seen)
+                )
             try:
-                self.seen.append(self.lines.get(timeout=max(0.01, deadline - time.monotonic())))
+                line = self.lines.get(timeout=max(0.01, deadline - time.monotonic()))
             except queue.Empty:
                 raise AssertionError(f"no {text!r} in:\n" + "\n".join(self.seen)) from None
+            if line is None:
+                self.ended = True
+            else:
+                self.seen.append(line)
 
     def finish(self, timeout: float = 30) -> int:
         status = self.process.wait(timeout)
         # All it said: the reader ends at the end of its output, however loaded the host.
         self.reader.join(timeout)
         while not self.lines.empty():
-            self.seen.append(self.lines.get())
+            line = self.lines.get()
+            if line is not None:
+                self.seen.append(line)
+        self.ended = True
         return status
 
     @property
@@ -275,7 +312,15 @@ def site(make_config: ConfigMaker, fake_parts: Path, tmp_path: Path) -> Iterator
         started.append(launcher)
         return launcher
 
-    yield {"launch": tracked, "spawn": spawn, "journal": journal, "worker": worker}
+    yield {
+        "launch": tracked,
+        "spawn": spawn,
+        "journal": journal,
+        "worker": worker,
+        "workspace": workspace,
+        # The workspace's next port is its own too (``free_ports``).
+        "taken": frozenset({worker, workspace, workspace + 1}),
+    }
     for launcher in started:
         if launcher.process.poll() is None:
             launcher.process.send_signal(signal.SIGINT)

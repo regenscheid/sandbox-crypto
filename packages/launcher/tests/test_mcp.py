@@ -21,6 +21,8 @@ import pytest
 from sandbox_science.launcher.config import load_config
 from sandbox_science.launcher.state import Layout
 
+from .conftest import free_port
+
 pytestmark = pytest.mark.slow
 
 SANDBOX = "ss-mcp-proxy"
@@ -32,17 +34,11 @@ SECRET = "test-secret-client-secret-launcher"
 REGISTERED = "crypto-research-mcp CF_ACCESS_CLIENT_ID CF_ACCESS_CLIENT_SECRET"
 
 
-def free_port() -> int:
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return probe.getsockname()[1]
-
-
 @pytest.fixture
 def mcp(site: dict[str, Any], fake_openshell: Path, tmp_path: Path) -> dict[str, Any]:
     state = tmp_path / "openshell.json"
     state.write_text(json.dumps({"providers": ["crypto-research-mcp"], "sandboxes": {}}))
-    listen = f"127.0.0.1:{free_port()}"
+    listen = f"127.0.0.1:{free_port(site['taken'])}"
 
     def launch(
         parts: dict[str, str] | None = None,
@@ -212,6 +208,38 @@ def test_up_registers_an_existing_provider_again_only_when_asked(
     launcher.process.send_signal(signal.SIGINT)
     assert launcher.finish() == 0
     nothing_kept_them(launcher, tmp_path)
+
+
+def test_the_forward_never_gets_a_port_the_site_took() -> None:
+    """A CI run of the next test failed: the system handed the forward's probe the port it
+    had just handed the workspace's, and the launcher refused its config. The pick skips
+    the ports the site took, here with a probe that hands the workspace's out first."""
+    worker, workspace = 18100, 18200
+    handed = iter([workspace, workspace + 1, worker, 18300])
+    taken = {worker, workspace, workspace + 1}
+    assert free_port(taken, probe=lambda: next(handed)) == 18300
+
+
+def test_a_launcher_that_stops_at_once_fails_its_wait_at_once(
+    site: dict[str, Any], fake_openshell: Path
+) -> None:
+    """With the forward on the workspace's port, as in that run, the launcher stops at
+    once; waiting for it to say ``Stop:`` fails as soon as its output ends, with what it
+    said, rather than after the wait's 30 seconds."""
+    launcher = site["launch"](
+        openshell={"cli": str(fake_openshell)},
+        mcp_proxy={
+            "image": IMAGE,
+            "providers": ["crypto-research-mcp"],
+            "servers": ["crypto-research-mcp"],
+            "listen": f"127.0.0.1:{site['workspace']}",
+        },
+    )
+    began = time.monotonic()
+    with pytest.raises(AssertionError, match="both listen on"):
+        launcher.expect("Stop:", timeout=30)
+    assert time.monotonic() - began < 20
+    assert launcher.finish() != 0
 
 
 def test_sandboxes_it_did_not_make_are_left_alone(mcp: dict[str, Any]) -> None:
