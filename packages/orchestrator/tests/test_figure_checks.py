@@ -13,6 +13,7 @@ from typing import Any, cast
 import pytest
 
 from sandbox_science.contracts import ExecutionContext
+from sandbox_science.orchestrator import figurechecks
 from sandbox_science.orchestrator.artifacts import ArtifactInventory
 from sandbox_science.orchestrator.documents import Author, DocumentStore, store_path
 from sandbox_science.orchestrator.figurecheck import Chart, FigureCheck, FigureChecker, Problem
@@ -220,3 +221,139 @@ async def test_the_run_service_starts_the_checks_as_it_looks(tmp_path: Path) -> 
     finally:
         store.close()
         projects.close()
+
+
+# Security review of #514.
+
+
+def sources(store: DocumentStore) -> list[tuple[str, int, float]]:
+    with store.control.read() as tx:
+        return tx.sql.execute("SELECT subject_type,tries,after FROM figure_sources").fetchall()
+
+
+async def test_a_texts_data_are_read_a_batch_at_a_time_once_for_each_file(
+    documents: DocumentStore,
+) -> None:
+    """HIGH: sixty fences naming one file read it once a batch, not sixty times at once;
+    past the text's chart limit the rest are unavailable."""
+    record(ArtifactInventory(documents), "op1", CSV, source=IN_S, path="data/t.csv")
+    text = "# T\n\n" + "\n\n".join(chart() for _ in range(60)) + "\n"
+    documents.create("p", name="n", title="T", text=text, author=AGENT, session_id="s")
+    checker = Checker()
+    figures = checks(documents, checker)
+    reads: list[int] = []
+    content = figures.inventory.content
+
+    def counted(*args: Any, **kwargs: Any) -> bytes:
+        reads.append(1)
+        return content(*args, **kwargs)
+
+    figures.inventory.content = counted  # type: ignore[method-assign]
+    await figures.drain()
+    assert len(checker.seen) == figurechecks.CHARTS_PER_TEXT == 32
+    assert len(reads) == 32 // 8  # once a batch of eight, shared by its charts
+    found = [result for status, result in results(documents).values() if status == "unavailable"]
+    assert len(found) == 28
+    assert {r["reason"] for r in found} == {figurechecks.TOO_MANY}
+
+
+async def test_a_texts_data_past_its_bound_are_not_read(
+    documents: DocumentStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inventory = ArtifactInventory(documents)
+    record(inventory, "op1", CSV, source=IN_S, path="data/a.csv")
+    record(inventory, "op2", CSV + b"256,20\n", source=IN_S, path="data/b.csv")
+    monkeypatch.setattr(figurechecks, "TEXT_BYTES", len(CSV) + 1)
+    text = f"# T\n\n{chart(url='data/a.csv')}\n\n{chart(url='data/b.csv')}\n"
+    documents.create("p", name="n", title="T", text=text, author=AGENT, session_id="s")
+    checker = Checker()
+    await checks(documents, checker).drain()
+    assert len(checker.seen) == 1
+    found = sorted((status, r.get("reason")) for status, r in results(documents).values())
+    assert found == [("accepted", None), ("unavailable", figurechecks.TOO_MUCH_DATA)]
+
+
+async def test_one_texts_failure_holds_up_no_other(
+    documents: DocumentStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MED 1: a path too long for a message is cut short; a text whose check raises is
+    logged and dropped, and the texts after it are checked."""
+    long = "data/" + "x" * 1500 + ".csv"
+    first = documents.create("p", name="a", title="A", text=f"# A\n\n{chart(url=long)}\n",
+                             author=AGENT, session_id="s")  # fmt: skip
+    await checks(documents, Checker()).drain()
+    ((_, result),) = results(documents).values()
+    message = result["errors"][0]["message"]
+    assert message.startswith("data/xxx") and "…" in message and len(message) < 300  # noqa: PT018
+
+    record(ArtifactInventory(documents), "op1", CSV, source=IN_S, path="data/t.csv")
+    title = documents.mapped("p", first.document_id).block_ids[0]
+    documents.patch("p", first.document_id, base=1, author=AGENT, operation_id="o2",
+                    reason="r", operations=[{"op": "replace_text", "block": title,
+                                             "quote": "A", "with": "AA"}])  # fmt: skip
+    documents.create("p", name="c", title="C", text=f"# C\n\n{chart()}\n", author=AGENT,
+                     session_id="s")  # fmt: skip
+    loading = FigureChecks._text
+
+    def failing(self: FigureChecks, db: Any, version: str, kind: str, subject: str,
+                *rest: Any) -> Any:  # fmt: skip
+        if subject == first.document_id:
+            raise RuntimeError("a bug")
+        return loading(self, db, version, kind, subject, *rest)
+
+    monkeypatch.setattr(FigureChecks, "_text", failing)
+    assert await checks(documents, Checker()).drain() == 2
+    assert sources(documents) == []  # the failed text is not tried at every look
+    assert "accepted" in [status for status, _ in results(documents).values()]
+
+
+class Hanging(Checker):
+    async def check_many(self, charts: list[Chart]) -> list[FigureCheck]:
+        self.seen.extend(charts)
+        reason = "figure checker deadline exceeded"
+        return [FigureCheck(id=c.id, status="unavailable", reason=reason) for c in charts]
+
+
+async def test_a_check_the_checker_could_not_finish_is_tried_again_later(
+    documents: DocumentStore,
+) -> None:
+    """LOW: a deadline or a crash is retried with a growing wait, a few times."""
+    record(ArtifactInventory(documents), "op1", CSV, source=IN_S, path="data/t.csv")
+    documents.create("p", name="n", title="T", text=f"# T\n\n{chart()}\n", author=AGENT,
+                     session_id="s")  # fmt: skip
+    now = [1000.0]
+    checker = Hanging()
+    figures = FigureChecks(documents, cast(FigureChecker, checker), clock=lambda: now[0])
+    await figures.drain()
+    assert sources(documents) == [("document", 1, 1000.0 + figurechecks.BACKOFF)]
+    assert await figures.drain() == 0  # not before its time
+    waits = [figurechecks.BACKOFF]
+    for tries in range(2, figurechecks.RETRIES + 1):
+        now[0] = sources(documents)[0][2]
+        await figures.drain()
+        _, counted, after = sources(documents)[0]
+        assert counted == tries
+        waits.append(after - now[0])
+    assert waits == [figurechecks.BACKOFF * 4**n for n in range(figurechecks.RETRIES)]
+    now[0] = sources(documents)[0][2]
+    await figures.drain()
+    assert sources(documents) == []  # given up after its retries
+    assert len(checker.seen) == figurechecks.RETRIES + 1
+    assert [status for status, _ in results(documents).values()] == ["unavailable"]
+
+
+async def test_texts_saved_before_the_checks_are_checked_once_at_start(
+    documents: DocumentStore,
+) -> None:
+    """INFO: control store version 57 has no backfill; the run service records, as it
+    starts, each current revision that may hold figures and has no checks."""
+    documents.create("p", name="n", title="T", text=f"# T\n\n{chart()}\n", author=AGENT,
+                     session_id="s")  # fmt: skip
+    documents.create("p", name="m", title="M", text="# M\n\nNo figure.\n", author=AGENT,
+                     session_id="s")  # fmt: skip
+    with documents.control.write() as tx:
+        tx.sql.execute("DELETE FROM figure_sources")  # as before version 57
+    figures = checks(documents, Checker())
+    assert figures.backfill() == 1
+    await figures.drain()
+    assert figures.backfill() == 0

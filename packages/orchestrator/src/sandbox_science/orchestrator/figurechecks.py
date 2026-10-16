@@ -18,7 +18,9 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import time
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Final
@@ -35,13 +37,13 @@ from .documents.errors import DocumentError
 from .documents.pins import CHART, chart_data, fence_body
 from .documents.store import DocumentStore
 from .figurecheck import (
+    MAX_BATCH,
     MAX_DATA,
     Chart,
     FigureCheck,
     FigureChecker,
     Problem,
     identity,
-    unavailable,
 )
 
 _log = logging.getLogger(__name__)
@@ -55,6 +57,23 @@ DRAWN: Final = frozenset(
 """The types the GUI draws (FG-12); any other shows as a link."""
 MAX_IMAGE: Final = 8 * 1024 * 1024
 TEXTS_PER_DRAIN: Final = 4
+CHARTS_PER_TEXT: Final = 32
+"""Charts one text's check sends to the checker; the rest are unavailable."""
+TEXT_BYTES: Final = 64 * 1024 * 1024
+"""Data one text's check reads, each SHA-256 once a batch (security review of #514)."""
+DRAIN_BYTES: Final = 64 * 1024 * 1024
+"""Data after which a drain takes no further text."""
+MAX_PATH_SHOWN: Final = 200
+RETRIES: Final = 4
+BACKOFF: Final = 60.0
+"""Seconds before the first retry of a check the checker left unavailable."""
+TRANSIENT: Final = "figure checker"
+"""How the reasons of the checker's own trouble begin: a deadline, a crash, a bad answer."""
+UNREADABLE: Final = "figure checker build unreadable"
+TOO_MANY: Final = f"the text has more than {CHARTS_PER_TEXT} charts to check; not checked"
+TOO_MUCH_DATA: Final = "the text's charts read more data than one check reads; not checked"
+UNREAD: Final = "its data could not be read"
+FAILED: Final = "the figure check failed"
 _REASONS: Final = {
     "no_file": "no recorded file at that path",
     "deleted": "the file was deleted",
@@ -80,7 +99,7 @@ def _record(tx: Tx, event: ControlEvent) -> None:
         return
     tx.sql.execute(
         "INSERT INTO figure_sources(subject_type,subject_id,project,seq) VALUES(?,?,?,?) "
-        "ON CONFLICT(subject_type,subject_id) DO UPDATE SET seq=excluded.seq",
+        "ON CONFLICT(subject_type,subject_id) DO UPDATE SET seq=excluded.seq,tries=0,after=0",
         (*subject, event.project, event.seq),
     )
 
@@ -111,13 +130,21 @@ class _Text:
 class FigureChecks:
     """The figure checks of one control store; ``checker`` is the configured one."""
 
-    def __init__(self, documents: DocumentStore, checker: FigureChecker | None) -> None:
-        self.documents, self.checker = documents, checker
+    def __init__(
+        self,
+        documents: DocumentStore,
+        checker: FigureChecker | None,
+        *,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self.documents, self.checker, self.clock = documents, checker, clock
         self.inventory = ArtifactInventory(documents)
 
     async def drain(self) -> int:
-        """Check the figures of up to ``TEXTS_PER_DRAIN`` saved texts; how many."""
-        if self.documents.control.missing or not await threaded(self._waiting):
+        """Check the figures of up to ``TEXTS_PER_DRAIN`` saved texts that are due, while
+        the drain has read less than ``DRAIN_BYTES`` of data; how many. A text whose check
+        fails is logged and dropped, never retried each look (security review of #514)."""
+        if self.documents.control.missing or not (rows := await threaded(self._due)):
             return 0
         checker, version = self.checker, "none"
         if checker is not None:
@@ -125,38 +152,88 @@ class FigureChecks:
                 version = await threaded(checker.version)
             except (OSError, ValueError):
                 checker = None
-        why = "no figure checker is configured" if self.checker is None else "no figure checker"
-        texts = await threaded(self._texts, version)
-        for text in texts:
-            waiting = [f for f in text.figures if f.result is None and f.chart is not None]
-            charts = [f.chart for f in waiting if f.chart is not None]
-            results = (
-                await checker.check_many(charts)
-                if checker is not None and charts
-                else [unavailable(chart.id, why) for chart in charts]
-            )
-            for item, result in zip(waiting, results, strict=True):
+        why = "no figure checker is configured" if self.checker is None else UNREADABLE
+        read = done = 0
+        for row in rows:
+            if read >= DRAIN_BYTES:
+                break
+            text: _Text | None = None
+            try:
+                text = await threaded(self._load, version, *row)
+                read += await self._check(text, checker, why)
+                await threaded(self._save, text)
+            except Exception:  # one text's failure must not hold up the others
+                _log.exception("the figure check of %s %s failed", row[0], row[1])
+                await threaded(self._failed, row, text)
+            done += 1
+        return done
+
+    async def _check(self, text: _Text, checker: FigureChecker | None, why: str) -> int:
+        """Check a text's charts that need it, at most ``CHARTS_PER_TEXT``, a batch at a
+        time, each batch's data read just before it is sent, once for each SHA-256, and
+        dropped after; the bytes read."""
+        waiting = [f for f in text.figures if f.result is None and f.chart is not None]
+        for item in waiting[CHARTS_PER_TEXT:]:
+            item.result = FigureCheck(status="unavailable", reason=TOO_MANY)
+        read = 0
+        for start in range(0, min(len(waiting), CHARTS_PER_TEXT), MAX_BATCH):
+            batch = waiting[start : start + MAX_BATCH]
+            if checker is None:
+                for item in batch:
+                    item.result = FigureCheck(status="unavailable", reason=why)
+                continue
+            shared: dict[str, str] = {}
+            for item in batch:
+                read += await threaded(self._data, text.project, item, shared, TEXT_BYTES - read)
+            ready = [f for f in batch if f.result is None and f.chart is not None]
+            charts = [f.chart for f in ready if f.chart is not None]
+            for item, result in zip(ready, await checker.check_many(charts), strict=True):
                 item.result = result
-            await threaded(self._save, text)
-        return len(texts)
+            for item in batch:
+                item.chart = None  # its data go with it
+        return read
 
-    def _waiting(self) -> bool:
+    def _due(self) -> list[tuple[str, str, str, int]]:
         with self.documents.control.read() as tx:
-            return tx.sql.execute("SELECT 1 FROM figure_sources LIMIT 1").fetchone() is not None
-
-    def _texts(self, version: str) -> list[_Text]:
-        with self.documents.control.read() as tx:
-            rows = tx.sql.execute(
+            return tx.sql.execute(
                 "SELECT subject_type,subject_id,project,seq FROM figure_sources "
-                "ORDER BY seq LIMIT ?",
-                (TEXTS_PER_DRAIN,),
+                "WHERE after<=? ORDER BY seq LIMIT ?",
+                (self.clock(), TEXTS_PER_DRAIN),
             ).fetchall()
-            texts = [self._text(tx.sql, version, *row) for row in rows]
-        for text in texts:
-            for item in text.figures:
-                if item.chart is not None and item.result is None:
-                    self._data(text.project, item)
-        return texts
+
+    def _load(self, version: str, kind: str, subject: str, project: str, seq: int) -> _Text:
+        with self.documents.control.read() as tx:
+            return self._text(tx.sql, version, kind, subject, project, seq)
+
+    def backfill(self) -> int:
+        """Record the documents and ledger entries whose current revision may hold
+        figures and has no checks, as those saved before figure checks were built
+        (control store version 57 has no backfill); how many. The run service does
+        this as it starts."""
+        if self.documents.control.missing:
+            return 0
+        with self.documents.control.write() as tx:
+            documents = tx.sql.execute(
+                "INSERT INTO figure_sources(subject_type,subject_id,project,seq) "
+                "SELECT 'document',d.document_id,d.project_id,0 FROM documents d "
+                "JOIN revisions r ON r.document_id=d.document_id AND r.number=d.head "
+                "WHERE r.tombstone=0 AND (r.pins IS NOT NULL OR instr(r.text,'vega-lite')) "
+                "AND NOT EXISTS(SELECT 1 FROM figure_checks c WHERE c.subject_type='document' "
+                "AND c.subject_id=d.document_id AND c.revision=d.head) "
+                "ON CONFLICT DO NOTHING"
+            ).rowcount
+            statements = tx.sql.execute(
+                "INSERT INTO figure_sources(subject_type,subject_id,project,seq) "
+                "SELECT 'statement',e.entry_id,e.project,0 FROM ledger_entries e "
+                "JOIN ledger_revisions r ON r.entry_id=e.entry_id AND r.revision=e.head "
+                "JOIN text_revisions t ON t.subject_type='statement' "
+                "AND t.subject_id=e.entry_id AND t.revision=r.statement "
+                "WHERE (r.pins IS NOT NULL OR instr(t.body,'vega-lite')) "
+                "AND NOT EXISTS(SELECT 1 FROM figure_checks c WHERE c.subject_type='statement' "
+                "AND c.subject_id=e.entry_id AND c.revision=e.head) "
+                "ON CONFLICT DO NOTHING"
+            ).rowcount
+        return documents + statements
 
     def _text(
         self, db: Any, version: str, kind: str, subject: str, project: str, seq: int
@@ -205,10 +282,20 @@ class FigureChecks:
             item.result = item.result or known.get((item.place, item.figure, item.digest))
         return _Text(kind, subject, project, revision, seq, figures)
 
-    def _data(self, project: str, item: _Figure) -> None:
-        """Read a chart's pinned data, or give its result without the checker."""
+    def _data(self, project: str, item: _Figure, shared: dict[str, str], room: int) -> int:
+        """Read a chart's pinned data, each file once for its SHA-256 in ``shared``, within
+        ``room`` bytes, or give its result without the checker; the bytes read."""
         assert item.chart is not None  # noqa: S101 - only charts are read
+        new = {str(entry["sha256"]): int(entry.get("size", 0)) for entry in item.pins}
+        needed = sum(size for sha, size in new.items() if sha not in shared)
+        if needed > room:
+            item.result = FigureCheck(status="unavailable", reason=TOO_MUCH_DATA)
+            return 0
+        read = 0
         for entry in item.pins:
+            if (known := shared.get(str(entry["sha256"]))) is not None:
+                item.chart.files[str(entry["path"])] = known
+                continue
             try:
                 revision = self.inventory.resolve(
                     project,
@@ -222,11 +309,12 @@ class FigureChecks:
                 )
                 data = self.inventory.content(project, revision.reference, max_bytes=MAX_DATA)
             except (DocumentError, ValueError):
-                item.result = FigureCheck(
-                    id=item.chart.id, status="unavailable", reason="its data could not be read"
-                )
-                return
-            item.chart.files[str(entry["path"])] = data.decode("utf-8", "replace")
+                item.result = FigureCheck(status="unavailable", reason=UNREAD)
+                return read
+            read += len(data)
+            text = shared[str(entry["sha256"])] = data.decode("utf-8", "replace")
+            item.chart.files[str(entry["path"])] = text
+        return read
 
     def _save(self, text: _Text) -> None:
         now = datetime.now(UTC).isoformat()
@@ -263,9 +351,41 @@ class FigureChecks:
                         now,
                     ),
                 )
-            db.execute(
+            # A check the checker's own trouble left unavailable is tried again later,
+            # at most RETRIES times, each wait four times the last; else the text is done.
+            again = any(
+                item.result is not None and (item.result.reason or "").startswith(TRANSIENT)
+                for item in text.figures
+            )
+            source = (text.kind, text.subject, text.seq)
+            if (
+                not again
+                or not db.execute(
+                    "UPDATE figure_sources SET tries=tries+1,after=?*(1<<(2*tries))+? "
+                    "WHERE subject_type=? AND subject_id=? AND seq=? AND tries<?",
+                    (BACKOFF, self.clock(), *source, RETRIES),
+                ).rowcount
+            ):
+                db.execute(
+                    "DELETE FROM figure_sources WHERE subject_type=? AND subject_id=? AND seq=?",
+                    source,
+                )
+
+    def _failed(self, row: tuple[str, str, str, int], text: _Text | None) -> None:
+        """Record a text whose check failed: its figures without a result unavailable,
+        when it was read, and its source removed, so it is not tried at every look."""
+        if text is not None:
+            for item in text.figures:
+                if item.result is None:
+                    item.result = FigureCheck(status="unavailable", reason=FAILED)
+            try:
+                self._save(text)
+            except Exception:  # its record failed too: drop the source alone
+                _log.exception("the figure check of %s %s was not recorded", row[0], row[1])
+        with self.documents.control.write() as tx:
+            tx.sql.execute(
                 "DELETE FROM figure_sources WHERE subject_type=? AND subject_id=? AND seq=?",
-                (text.kind, text.subject, text.seq),
+                (row[0], row[1], row[3]),
             )
 
 
@@ -287,6 +407,12 @@ def shown(documents: DocumentStore, kind: str, subject: str, revision: int) -> l
     """``results`` in a read of its own, for a reader with no transaction open."""
     with documents.control.read() as tx:
         return results(tx.sql, kind, subject, revision)
+
+
+def _shown(path: object) -> str:
+    """A path as a message names it: at most ``MAX_PATH_SHOWN`` characters."""
+    text = str(path)
+    return text if len(text) <= MAX_PATH_SHOWN else text[:MAX_PATH_SHOWN] + "…"
 
 
 def _figures(parsed: Parsed, places: list[str], pins: list[Json], version: str) -> list[_Figure]:
@@ -313,7 +439,8 @@ def _figures(parsed: Parsed, places: list[str], pins: list[Json], version: str) 
         errors = [
             Problem(
                 kind="unresolved_reference",
-                message=f"{p['path']} is not pinned: {_REASONS.get(p['unresolved'], 'unknown')}",
+                message=f"{_shown(p['path'])} is not pinned: "
+                f"{_REASONS.get(p['unresolved'], 'unknown')}",
             )
             for p in held
             if "unresolved" in p
@@ -332,14 +459,15 @@ def _figures(parsed: Parsed, places: list[str], pins: list[Json], version: str) 
         if "unresolved" in entry:
             reason = _REASONS.get(entry["unresolved"], "unknown")
             problem = Problem(
-                kind="unresolved_reference", message=f"{item.path} is not pinned: {reason}"
+                kind="unresolved_reference",
+                message=f"{_shown(item.path)} is not pinned: {reason}",
             )
             item.result = FigureCheck(id="file", status="rejected", errors=[problem])
         else:
             notes: list[Problem] = []
             if entry.get("media_type") not in DRAWN or int(entry.get("size", 0)) > MAX_IMAGE:
                 notes.append(
-                    Problem(kind="link", message=f"{item.path} shows as a link, not drawn")
+                    Problem(kind="link", message=f"{_shown(item.path)} shows as a link, not drawn")
                 )
             item.result = FigureCheck(id="file", status="accepted", notes=notes)
         figures.append(item)

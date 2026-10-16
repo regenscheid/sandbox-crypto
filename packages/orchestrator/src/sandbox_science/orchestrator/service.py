@@ -164,6 +164,8 @@ class RunService:
 
     async def serve(self) -> None:
         """Run until cancelled. The runs in progress then end ``interrupted``."""
+        # Texts saved before figure checks were built are checked once now.
+        await threaded(self.figures.backfill)
         try:
             while True:
                 await self.tick()

@@ -2852,7 +2852,8 @@ BEGIN SELECT RAISE(ABORT, 'chat pins are kept'); END""",
 def _figure_checks(schema: Schema) -> None:
     """Version 57: the figure checks (docs/specs/figures.md, FG-19 to FG-21). A save of
     a document or a ledger entry records it in ``figure_sources`` until its figures are
-    checked; ``figure_checks`` holds the result of each figure of a text's current
+    checked, and when a check its checker could not finish is tried again (``tries``,
+    ``after``); ``figure_checks`` holds the result of each figure of a text's current
     revision, by the block (or ``statement``) and the figure's place there (``chart:<n>``
     or ``file:<n>``), replaced when a later revision is checked."""
     subject = "subject_type TEXT NOT NULL CHECK (subject_type IN ('document', 'statement'))"
@@ -2862,6 +2863,8 @@ def _figure_checks(schema: Schema) -> None:
     subject_id TEXT NOT NULL,
     project TEXT NOT NULL,
     seq INTEGER NOT NULL,
+    tries INTEGER NOT NULL DEFAULT 0,
+    after REAL NOT NULL DEFAULT 0,
     PRIMARY KEY (subject_type, subject_id)
 ) STRICT""",
         f"""CREATE TABLE figure_checks (
