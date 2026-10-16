@@ -66,6 +66,13 @@ class Tokens:
     output: int
 
 
+def source_of(cost: float | None, source: CostSource | None) -> CostSource | None:
+    """Where a cost came from, as a call's record keeps it: none without a cost; else the
+    source given, or ``gateway``, which every cost was before model information priced
+    any."""
+    return None if cost is None else source or GATEWAY
+
+
 def cost(prices: Prices, tokens: Tokens) -> float | None:
     """What ``tokens`` cost at ``prices``; ``None`` when a price they need is missing."""
     if tokens.cache_write and prices.cache_write is None:

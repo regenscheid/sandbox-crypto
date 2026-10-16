@@ -234,9 +234,12 @@ async def test_watcher_fine_then_attention_resumes_same_turn(tmp_path: Path) -> 
     assert calls[0]["alias"] == "watcher"
     with sqlite3.connect(store_path(tmp_path)) as db:
         rows = db.execute(
-            "SELECT alias,model,input_tokens,output_tokens,cost FROM job_watcher_calls"
+            "SELECT alias,model,input_tokens,output_tokens,cost,cost_source FROM job_watcher_calls"
         ).fetchall()
-    assert rows == [("watcher", "small", 12, 5, 0.002), ("watcher", "small", None, None, None)]
+    assert rows == [
+        ("watcher", "small", 12, 5, 0.002, "gateway"),  # where its cost came from (lab 43)
+        ("watcher", "small", None, None, None, None),
+    ]
     # The project's cost counts the watcher's calls, as the gateway priced them (lab 40, B5).
     assert RunState(state.control).model_cost("p") == 0.002
     assert RunState(state.control).model_cost("p", clock.now() + timedelta(hours=1)) is None

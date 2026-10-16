@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: MIT
 import { expect, it } from 'vitest';
 import type { ModelCost } from './api-types';
-import { costByRole } from './modelCost';
+import { costByRole, costSource } from './modelCost';
+
+const UNPRICED = { model_info_last_day: null, model_info_total: null };
 
 it('splits the cost by role once more than one role spent', () => {
   const cost: ModelCost = {
+    ...UNPRICED,
     last_day: 0.6,
     total: 1.5,
     by_role: [
@@ -26,10 +29,19 @@ it('splits the cost by role once more than one role spent', () => {
 
 it('says nothing more when one role spent it all', () => {
   const one: ModelCost = {
+    ...UNPRICED,
     last_day: 0.1,
     total: 0.1,
     by_role: [{ role: 'main', last_day: 0.1, total: 0.1 }],
   };
   expect(costByRole(one)).toEqual([]);
-  expect(costByRole({ last_day: null, total: null, by_role: [] })).toEqual([]);
+  expect(costByRole({ ...UNPRICED, last_day: null, total: null, by_role: [] })).toEqual([]);
+});
+
+it("says how much of the cost the gateway's model info priced", () => {
+  const cost: ModelCost = { ...UNPRICED, last_day: 0.6, total: 1.5, by_role: [] };
+  expect(costSource(cost)).toBe('as the gateway reported it');
+  expect(costSource({ ...cost, model_info_last_day: null, model_info_total: 0.25 })).toBe(
+    'as the gateway reported it or its model info priced it ($0 and $0.25 of it priced from the model info)',
+  );
 });

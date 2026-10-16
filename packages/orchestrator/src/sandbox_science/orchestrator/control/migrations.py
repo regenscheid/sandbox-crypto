@@ -2760,6 +2760,16 @@ def _fold_events(schema: Schema) -> None:
     rebuild(schema, "run_events", create.replace(old, "'waiting', 'stopped', 'fold'))", 1))
 
 
+def _cost_sources(schema: Schema) -> None:
+    """Version 53: where each reviewer, job watcher and import pass call's cost came from
+    (run-service spec RS-6a; lab 43, B2), as run records' ``usage`` says it: ``gateway``,
+    reported by it, or ``model_info``, priced from the gateway's model information. A
+    call without a cost, or made before this version, has none."""
+    source = "cost_source IS NULL OR cost_source IN ('gateway', 'model_info')"
+    for table in ("review_calls", "job_watcher_calls", "skill_metadata_calls"):
+        schema.execute(f"ALTER TABLE {table} ADD COLUMN cost_source TEXT CHECK ({source})")
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -2812,6 +2822,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _read_register,
     _provenance,
     _fold_events,
+    _cost_sources,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

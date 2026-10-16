@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, Final, cast
 from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.control.errors import CONFLICT, INVALID_REQUEST, NOT_FOUND
 from sandbox_science.orchestrator.documents.models import Author
+from sandbox_science.orchestrator.pricing import CostSource, source_of
 
 from .builtin import BUILTIN, DELEGATING, PLATFORM, ROLES
 from .packs import (
@@ -518,12 +519,16 @@ class SkillStore:
         model: str,
         tokens: tuple[int | None, int | None],
         cost: float | None,
+        cost_source: CostSource | None = None,
     ) -> None:
-        """Count one call of the pass, ``project``'s when the import names one (RS-6a)."""
+        """Count one call of the pass, ``project``'s when the import names one (RS-6a),
+        with where its cost came from (the gateway, or its model information)."""
+        source = source_of(cost, cost_source)
         with self.control.write() as tx:
             tx.sql.execute(
-                "INSERT INTO skill_metadata_calls VALUES(?,?,?,?,?,?,?)",
-                (project, datetime.now(UTC).timestamp(), snapshot, model, *tokens, cost),
+                "INSERT INTO skill_metadata_calls(project,created,snapshot,model,input_tokens,"
+                "output_tokens,cost,cost_source) VALUES(?,?,?,?,?,?,?,?)",
+                (project, datetime.now(UTC).timestamp(), snapshot, model, *tokens, cost, source),
             )
 
     def settings(self, project: str) -> SkillSettings:

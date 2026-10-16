@@ -22,6 +22,12 @@ from sandbox_science.orchestrator.control import ControlStore, migrations
 
 Json = dict[str, Any]
 
+
+def before(step: migrations.Migration) -> int:
+    """The version a migration step takes a store from, wherever it sits in the list."""
+    return migrations.BASELINE + migrations.MIGRATIONS.index(step) - 1
+
+
 MACRO_REVISIONS = migrations.BASELINE + 8
 """The version that replaced the macro pin tables with ``macro_revision`` columns."""
 

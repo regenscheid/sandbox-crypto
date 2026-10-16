@@ -45,7 +45,13 @@ function project(): Project {
       },
     ],
     environments: [{ environment_id: 'e', default: true, sessions: ['s'] }],
-    model_cost: { last_day: null, total: null, by_role: [] },
+    model_cost: {
+      last_day: null,
+      total: null,
+      by_role: [],
+      model_info_last_day: null,
+      model_info_total: null,
+    },
   };
 }
 function op(): OperationSummary {

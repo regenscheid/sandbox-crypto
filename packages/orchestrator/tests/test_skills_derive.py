@@ -303,6 +303,9 @@ async def test_an_import_derives_once_and_runs_see_it(
     projects = ProjectStore(tmp_path / "state")
     try:
         assert RunState(projects.control).model_costs("p")["metadata"] == pytest.approx(0.125)
+        with projects.control.read() as tx:  # the gateway's own report (lab 43)
+            sources = tx.sql.execute("SELECT cost_source FROM skill_metadata_calls").fetchall()
+        assert sources == [("gateway",)]
         store = SkillStore(projects.control)
         store.pin("p", "ss", USER)
         found = {

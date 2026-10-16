@@ -15,7 +15,7 @@ from sandbox_science.orchestrator.projects import ProjectStore, run_name
 from sandbox_science.orchestrator.runstate import ChatMessage, RunState
 from sandbox_science.testing import FakeClock
 
-from .control_versions import at_version
+from .control_versions import at_version, before
 
 
 def store(tmp_path: Path, clock: FakeClock | None = None) -> tuple[ProjectStore, RunState]:
@@ -251,6 +251,97 @@ def test_a_version_39_stores_reviewer_and_watcher_calls_get_no_cost(tmp_path: Pa
         assert db.execute("SELECT cost FROM job_watcher_calls").fetchall() == [(None,)]
         with pytest.raises(sqlite3.IntegrityError):
             db.execute("UPDATE job_watcher_calls SET cost=-1")
+
+
+def test_older_stores_role_calls_get_no_cost_source(tmp_path: Path) -> None:
+    """Version 53 keeps where each reviewer, job watcher and import pass call's cost came
+    from (lab 43, B2); the calls made before it have none, and their costs still count."""
+    path = store_path(tmp_path)
+    with at_version(before(migrations._cost_sources)):
+        projects = ProjectStore(tmp_path)
+        projects.create("p", "minimal", "sha256:" + "a" * 64)
+        projects.close()
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "INSERT INTO review_calls(project,review_id,created,estimated_tokens,cost) "
+            "VALUES ('p','rev-1',1000,100,0.25)"
+        )
+        db.execute("INSERT INTO job_watcher_calls(project,requested_at) VALUES ('p',1000)")
+        db.execute(
+            "INSERT INTO skill_metadata_calls(project,created,snapshot,model,cost) "
+            "VALUES ('p',1000,'s','m',0.5)"
+        )
+    migrated = ProjectStore(tmp_path)
+    try:
+        state = RunState(migrated)
+        assert state.model_costs("p") == {"reviewer": 0.25, "metadata": 0.5}
+        assert state.model_info_cost("p") is None
+    finally:
+        migrated.close()
+    with sqlite3.connect(path) as db:
+        assert db.execute("PRAGMA user_version").fetchone() == (migrations.VERSION,)
+        for table in ROLE_TABLES:
+            assert db.execute(f"SELECT cost_source FROM {table}").fetchall() == [(None,)]
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("UPDATE job_watcher_calls SET cost_source='estimated'")
+
+
+ROLE_TABLES = ("review_calls", "job_watcher_calls", "skill_metadata_calls")
+UNPRICED_CALL = {
+    "review_calls": "INSERT INTO review_calls(project,review_id,created,estimated_tokens,"
+    "input_tokens,output_tokens) VALUES ('p','rev-2',?,100,10,2)",
+    "job_watcher_calls": "INSERT INTO job_watcher_calls(project,requested_at,input_tokens,"
+    "output_tokens) VALUES ('p',?,10,2)",
+    "skill_metadata_calls": "INSERT INTO skill_metadata_calls(project,created,snapshot,model,"
+    "input_tokens,output_tokens) VALUES ('p',?,'s','m',10,2)",
+}
+
+
+def test_each_roles_unpriced_calls_count_and_model_info_costs_are_told_apart(
+    tmp_path: Path,
+) -> None:
+    """Lab 43, B2's follow-ups: a reviewer's, job watcher's or import pass's call that used
+    tokens without a known cost counts against a daily limit, as a run's does; and the
+    part of the cost priced from the gateway's model information is told apart."""
+    projects, state = store(tmp_path)
+    now = datetime.now(UTC)
+    hour_ago = now - timedelta(hours=1)
+    try:
+        name = run_name(now, "r-main")
+        state.append("p", "s", name, "started", {"role": "main"})
+        usage = {"input_tokens": 5, "output_tokens": 1, "cost": 0.5, "cost_source": "model_info"}
+        state.append("p", "s", name, "assistant", {"turn": 1, "usage": usage})
+        with state.control.write() as tx:
+            tx.sql.execute(
+                "INSERT INTO review_calls(project,review_id,created,estimated_tokens,"
+                "input_tokens,output_tokens,cost,cost_source) "
+                "VALUES ('p','rev-1',?,100,10,2,0.25,'model_info')",
+                (now.timestamp(),),
+            )
+            tx.sql.execute(
+                "INSERT INTO job_watcher_calls(project,requested_at,input_tokens,output_tokens,"
+                "cost,cost_source) VALUES ('p',?,10,2,0.125,'gateway')",
+                (now.timestamp(),),
+            )
+        assert state.model_cost("p") == 0.875
+        assert state.model_info_cost("p") == 0.75
+        assert state.model_info_cost("p", now + timedelta(hours=1)) is None
+        state.set_cost_limit("p", 100)
+        assert (state.unpriced_calls("p", hour_ago), state.over_cost_limit("p", now)) == (0, False)
+        for table in ROLE_TABLES:
+            with state.control.write() as tx:
+                tx.sql.execute(UNPRICED_CALL[table], (now.timestamp(),))
+            assert (state.unpriced_calls("p", hour_ago), state.over_cost_limit("p", now)) == (
+                1,
+                True,
+            ), table
+            # Out of the window, it no longer counts.
+            assert state.unpriced_calls("p", now + timedelta(hours=1)) == 0
+            with state.control.write() as tx:
+                tx.sql.execute(f"DELETE FROM {table} WHERE cost IS NULL")
+            assert not state.over_cost_limit("p", now)
+    finally:
+        projects.close()
 
 
 def test_an_unsaved_runs_cost_is_its_started_roles(tmp_path: Path) -> None:

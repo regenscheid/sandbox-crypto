@@ -419,12 +419,13 @@ async def test_a_reviewer_calls_cost_counts_in_the_projects_cost(store):
                 input_tokens=900,
                 output_tokens=40,
                 cost=0.25,
+                cost_source="model_info",
             )
 
     await ReviewerRunner(reviews, "p", "s", review, "owner", Priced()).run()
     with documents.control.read() as tx:
-        (cost,) = tx.sql.execute("SELECT cost FROM review_calls").fetchone()
-    assert cost == 0.25
+        found = tx.sql.execute("SELECT cost,cost_source FROM review_calls").fetchone()
+    assert found == (0.25, "model_info")  # priced from the gateway's model info (lab 43)
     runs = RunState(documents)
     assert runs.model_cost("p") == 0.25
     assert runs.model_cost("q") is None  # another project's

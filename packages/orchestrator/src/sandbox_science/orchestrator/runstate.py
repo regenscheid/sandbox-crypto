@@ -44,6 +44,31 @@ SERVICE_SECONDS: Final = 30.0
 """How old the run service's heartbeat may be while it runs (RS-3)."""
 _log = logging.getLogger(__name__)
 
+TOKEN_CALLS: Final = (
+    ("review_calls", "created"),
+    ("job_watcher_calls", "requested_at"),
+    ("skill_metadata_calls", "created"),
+)
+"""The tables of the other roles' model calls that keep their tokens, with when each
+call was made: the reviewer's, the job watcher's and the import pass's. Each keeps where
+its cost came from (``cost_source``, version 53)."""
+
+
+def _run_usage(project: str, since: datetime | None) -> tuple[str, tuple[object, ...]]:
+    """A query of each usage entry (``u``) of the project's runs that started at ``since``
+    or later: saved records' and the ``assistant`` events' of runs without a record."""
+    first = "" if since is None else run_name(since, "")
+    return (
+        "SELECT usage.value AS u FROM runs, json_each(runs.record, '$.usage') AS usage "
+        "WHERE runs.project_id = ? AND runs.name >= ? "
+        "UNION ALL SELECT json_extract(e.data, '$.usage') FROM run_events AS e "
+        "WHERE e.project_id = ? AND e.run >= ? AND e.kind = 'assistant' "
+        "AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.project_id = e.project_id "
+        "AND runs.session_id = e.session_id AND runs.name = e.run)",
+        (project, first, project, first),
+    )
+
+
 WINDOW: Final = timedelta(hours=24)
 """The daily cost limit's window (RS-6a)."""
 MAX_COST: Final = 1_000_000_000
@@ -466,9 +491,10 @@ class RunState:
 
     def over_cost_limit(self, project: str, now: datetime) -> bool:
         """Whether the project has a daily cost limit and its calls in the window to
-        ``now`` reached it, at their costs; or whether, with a limit, a run's call in the
-        window used tokens and has no known cost, so that what was spent cannot be known
-        (lab 43, B2): the limit counts as reached until that call leaves the window."""
+        ``now`` reached it, at their costs; or whether, with a limit, a call in the
+        window used tokens and has no known cost (``unpriced_calls``), so that what was
+        spent cannot be known (lab 43, B2): the limit counts as reached until that call
+        leaves the window."""
         limit = self.cost_limit(project)
         if limit is None:
             return False
@@ -487,28 +513,50 @@ class RunState:
         return False
 
     def unpriced_calls(self, project: str, since: datetime) -> int:
-        """How many model calls of the project's runs that started at ``since`` or later
-        used tokens and have no cost, neither reported by the gateway nor priced from its
-        model information: from saved records' ``usage`` and the ``assistant`` events of
-        runs without a record, as ``model_costs`` reads them."""
-        first = run_name(since, "")
+        """How many of the project's model calls since ``since`` used tokens and have no
+        cost, neither reported by the gateway nor priced from its model information: its
+        runs' that started then or later, from saved records' ``usage`` and the
+        ``assistant`` events of runs without a record, as ``model_costs`` reads them; and
+        the reviewer's, the job watcher's and the import pass's made then or later."""
         unpriced = (
             "json_extract(u, '$.cost') IS NULL AND coalesce(json_extract(u, "
             "'$.input_tokens'), 0) + coalesce(json_extract(u, '$.output_tokens'), 0) > 0"
         )
+        runs, values = _run_usage(project, since)
         with self.control.read() as tx:
             (found,) = tx.sql.execute(
-                f"SELECT count(*) FROM (SELECT usage.value AS u FROM runs, "  # noqa: S608
-                "json_each(runs.record, '$.usage') AS usage "
-                "WHERE runs.project_id = ? AND runs.name >= ? "
-                "UNION ALL SELECT json_extract(e.data, '$.usage') FROM run_events AS e "
-                "WHERE e.project_id = ? AND e.run >= ? AND e.kind = 'assistant' "
-                "AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.project_id = e.project_id "
-                "AND runs.session_id = e.session_id AND runs.name = e.run)) "
-                f"WHERE {unpriced}",
-                (project, first, project, first),
+                f"SELECT count(*) FROM ({runs}) WHERE {unpriced}",  # noqa: S608
+                values,
             ).fetchone()
+            for table, made in TOKEN_CALLS:
+                (more,) = tx.sql.execute(
+                    f"SELECT count(*) FROM {table} WHERE project = ? AND {made} >= ? "  # noqa: S608
+                    "AND cost IS NULL AND coalesce(input_tokens, 0) + "
+                    "coalesce(output_tokens, 0) > 0",
+                    (project, since.timestamp()),
+                ).fetchone()
+                found += more
         return int(found)
+
+    def model_info_cost(self, project: str, since: datetime | None = None) -> float | None:
+        """The part of ``model_cost`` priced from the gateway's model information rather
+        than reported by it (``cost_source``, lab 43, B2); ``None`` when no call's was."""
+        runs, values = _run_usage(project, since)
+        after = 0.0 if since is None else since.timestamp()
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT sum(json_extract(u, '$.cost')), count(json_extract(u, '$.cost')) "  # noqa: S608
+                f"FROM ({runs}) WHERE json_extract(u, '$.cost_source') = 'model_info'",
+                values,
+            ).fetchall()
+            for table, made in TOKEN_CALLS:
+                rows += tx.sql.execute(
+                    f"SELECT sum(cost), count(cost) FROM {table} WHERE project = ? "  # noqa: S608
+                    f"AND {made} >= ? AND cost_source = 'model_info'",
+                    (project, after),
+                ).fetchall()
+        priced = [float(total) for total, count in rows if count]
+        return sum(priced) if priced else None
 
     def model_cost(self, project: str, since: datetime | None = None) -> float | None:
         """What the project's model calls cost, as the gateway reported it (RS-6a): every

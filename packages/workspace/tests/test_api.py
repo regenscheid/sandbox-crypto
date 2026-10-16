@@ -124,7 +124,8 @@ async def test_a_projects_model_cost_is_what_the_gateway_reported(
     client: TestClient[Any, Any], state_dir: Path
 ) -> None:
     found = (await get(client, "/api/v0/projects/p1"))["project"]
-    assert found["model_cost"] == {"last_day": None, "total": None, "by_role": []}
+    unpriced = {"model_info_last_day": None, "model_info_total": None}
+    assert found["model_cost"] == {"last_day": None, "total": None, "by_role": [], **unpriced}
     store = ProjectStore(state_dir)
     now = datetime.now(UTC)
     priced = store.run("p1", "a", FIRST_RUN).model_copy(
@@ -138,7 +139,12 @@ async def test_a_projects_model_cost_is_what_the_gateway_reported(
     store.save_run(priced)
     found = (await get(client, "/api/v0/projects/p1"))["project"]
     main = {"role": "main", "last_day": 0.125, "total": 0.125}
-    assert found["model_cost"] == {"last_day": 0.125, "total": 0.125, "by_role": [main]}
+    assert found["model_cost"] == {
+        "last_day": 0.125,
+        "total": 0.125,
+        "by_role": [main],
+        **unpriced,
+    }
     # Lab 40, B5: each role's calls, by role: a delegated run's, and the job watcher's.
     later = now + timedelta(seconds=1)
     child = priced.model_copy(
@@ -158,7 +164,8 @@ async def test_a_projects_model_cost_is_what_the_gateway_reported(
         context = ExecutionContext(project_id="p1", session_id="a", environment_id="e")
         call = jobs.reserve(context, "run-priced", "exe-1", "watcher", {}, 60, 0)
         assert call is not None
-        jobs.finish_call(call, "fine", "small", 10, 2, 0.5)
+        # Lab 43, B2: priced from the gateway's model info, which the page tells apart.
+        jobs.finish_call(call, "fine", "small", 10, 2, 0.5, "model_info")
     finally:
         jobs.close()
     found = (await get(client, "/api/v0/projects/p1"))["project"]
@@ -170,6 +177,8 @@ async def test_a_projects_model_cost_is_what_the_gateway_reported(
             {"role": "delegated", "last_day": 0.25, "total": 0.25},
             {"role": "watcher", "last_day": 0.5, "total": 0.5},
         ],
+        "model_info_last_day": 0.5,
+        "model_info_total": 0.5,
     }
 
 
