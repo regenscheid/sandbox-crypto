@@ -31,7 +31,7 @@ import aiohttp
 
 from sandbox_science.contracts.clock import SYSTEM_CLOCK, Clock
 from sandbox_science.orchestrator.aio import threaded
-from sandbox_science.orchestrator.model import COST_HEADER
+from sandbox_science.orchestrator.model import COST_HEADER, ModelError, gateway_said, read_limited
 
 from .packs import body
 from .store import SkillStore
@@ -115,13 +115,21 @@ class Embedder:
                 timeout=self._timeout,
                 allow_redirects=False,
             ) as response:
-                raw = await response.content.read(MAX_ANSWER_BYTES + 1)
-                if response.status != 200 or len(raw) > MAX_ANSWER_BYTES:
+                cost = _cost(response.headers.get(COST_HEADER))
+                try:  # to its end: a single read returns only what has arrived (lab 42, B1)
+                    raw = await read_limited(response, MAX_ANSWER_BYTES)
+                except ModelError:
+                    if response.status == 200 and paid is not None:  # charged all the same
+                        paid.append((self.alias, len(texts), cost))
+                    raise EmbeddingError(
+                        f"the gateway's answer is larger than {MAX_ANSWER_BYTES:,} bytes"
+                    ) from None
+                if response.status != 200:
                     said = raw.decode(errors="replace")
                     if self._key:
                         said = said.replace(self._key, "[the key]")  # whole, then cut
-                    raise EmbeddingError(f"the gateway answered {response.status}: {said[:300]}")
-                cost = _cost(response.headers.get(COST_HEADER))
+                    said = gateway_said(said, response.content_type)
+                    raise EmbeddingError(f"the gateway answered {response.status}: {said}")
         except (aiohttp.ClientError, TimeoutError) as error:
             raise EmbeddingError(
                 f"the gateway could not be reached ({type(error).__name__})"

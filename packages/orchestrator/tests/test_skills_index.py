@@ -166,6 +166,7 @@ async def test_search_says_why_and_resources_stay_in_the_pack(harness: Harness, 
         "searched": 2,
         "found": [],
         "note": "no skill matched; this covers only this search",
+        "ranked": "by words alone: this run compares skills by words only",
     }
     assert "one\ntwo" in notes
     assert "SS-MARKER-ALPHA-1" in sibling

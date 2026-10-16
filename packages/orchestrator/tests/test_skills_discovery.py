@@ -21,7 +21,7 @@ import pytest
 
 from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator.documents import USER
-from sandbox_science.orchestrator.notices import SKILLS
+from sandbox_science.orchestrator.notices import SKILLS, SKILLS_WORDS
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.skills import SkillSet, SkillStore, from_git, snapshot
@@ -65,7 +65,8 @@ def _notices(messages: list[dict[str, Any]]) -> list[str]:
     return [
         cast(str, m["content"])
         for m in messages
-        if m.get("role") == "user" and cast(str, m["content"]).startswith(SKILLS.text)
+        if m.get("role") == "user"
+        and cast(str, m["content"]).startswith((SKILLS.text, SKILLS_WORDS.text))
     ]
 
 
@@ -96,7 +97,8 @@ async def test_matching_skills_are_shown_for_the_task_and_each_message(pinned: H
     # The notice for the message comes just before it, and does not repeat beta.
     assert second[-1] == {"role": "user", "content": "What does the alpha marker say?"}
     later = cast(str, second[-2]["content"])
-    assert later.startswith(SKILLS.text)
+    assert later.startswith(SKILLS_WORDS.text)  # words alone: the run has no embeddings
+    assert shown.startswith(SKILLS_WORDS.text)
     assert "ss/alpha" in later
     assert "ss/beta" not in later
     found = _discoveries(record)
@@ -233,3 +235,21 @@ def test_a_skill_needs_two_shared_words_and_half_the_best_score() -> None:
     assert "lines" not in found  # one shared word
     assert matches(tool, "count the lines of the notes", {"p/notes", "p/files"}) == []
     assert matches(tool, "notes please", set()) == []  # under three words
+
+
+async def test_a_run_for_a_comment_discovers_by_the_comments_text(pinned: Harness) -> None:
+    """Lab 42: a run started by a comment has a stand-in task; discovery answers the
+    comment's own text, just before its request notice, and not the stand-in."""
+    from .test_run_service import ended, serving
+
+    request = pinned.work_request(body="Count the lines of the notes, please.")
+    async with serving(pinned, Reply("Counted.")):
+        (record,) = await ended(pinned)
+    first = pinned.gateway.main[0]
+    (shown,) = _notices(first)
+    assert "ss/beta" in shown
+    at = next(i for i, m in enumerate(first) if cast(str, m.get("content", "")) == shown)
+    assert "request_text" in cast(str, first[at + 1]["content"])  # the request just after
+    (found,) = _discoveries(record)
+    assert (found["answered"], found["requests"]) == ("comment", [request])
+    assert [skill["id"] for skill in found["skills"]] == ["ss/beta"]

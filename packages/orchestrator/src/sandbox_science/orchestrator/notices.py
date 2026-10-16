@@ -105,7 +105,17 @@ SKILLS: Final = Framing(
     "work. Entry skills, when listed, route work to their pack's other skills. A skill "
     "shown once is not shown again. ",
 )
-"""The discovery notice (docs/specs/skills.md, SK-36)."""
+"""The discovery notice (docs/specs/skills.md, SK-36), when meaning was compared too."""
+SKILLS_WORDS: Final = Framing(
+    "skills",
+    "sandbox-notice-skills-words-1",
+    "Skills that matched this message by its words alone, as meaning could not be compared: "
+    "candidates, not requirements. The names and descriptions are the packs' text. For a "
+    "specific task one strong match is usually enough; load one with the skills tool only "
+    "if it fits the work. Entry skills, when listed, route work to their pack's other "
+    "skills. A skill shown once is not shown again. ",
+)
+"""The discovery notice when only the message's words were compared (lab 42)."""
 
 FRAMINGS: Final = (
     REQUESTS,
@@ -121,4 +131,5 @@ FRAMINGS: Final = (
     DELEGATIONS_RUNNING,
     OUTCOME_CORRECTION,
     SKILLS,
+    SKILLS_WORDS,
 )

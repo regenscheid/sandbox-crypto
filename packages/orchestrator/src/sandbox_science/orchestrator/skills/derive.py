@@ -12,7 +12,7 @@ data. Every item is checked against bounds and the snapshot; one that fails is d
 and listed with why. A binding names no loader or shell variable, and a path inside the
 pack. Derived text loses its control and hidden characters. The result is kept by
 snapshot, alias and ``VERSION`` (store.py), so an import of a snapshot that has it asks
-nothing.
+nothing. A call the gateway answers with a 5xx, or that times out, is tried once more.
 """
 
 from __future__ import annotations
@@ -249,10 +249,20 @@ def messages(snap: Snapshot) -> list[Message]:
 
 async def derive(model: ChatModel, snap: Snapshot, alias: str) -> Derived:
     """One call of the pass over ``snap``'s catalog, its answer checked as data."""
-    try:
-        turn = await model.complete(messages(snap), [TOOL])
-    except ModelError as error:
-        raise PassError(f"the pass's call failed: {error}", error.cost) from None
+    for attempt in (1, 2):
+        try:
+            turn = await model.complete(messages(snap), [TOOL])
+            break
+        except (ModelError, TimeoutError) as error:
+            status = error.status if isinstance(error, ModelError) else None
+            cost = error.cost if isinstance(error, ModelError) else None
+            again = isinstance(error, TimeoutError) or (status or 0) >= 500
+            if attempt == 1 and again and cost is None:  # a gateway's 5xx, as lab 42's 524
+                continue
+            said = str(error) or "the call timed out"
+            raise PassError(f"the pass's call failed: {said}", cost) from None
+    else:  # pragma: no cover - each attempt breaks or raises
+        raise AssertionError("unreachable")
     answer: object = None
     calls = [c for c in turn.tool_calls if c.name == TOOL.name]
     text = calls[0].arguments if calls else (turn.text or "")

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncGenerator, Callable, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final, cast
@@ -589,14 +589,25 @@ def with_notices(text: str, notices: Sequence[str]) -> str:
     return text + "\n\nplatform notices:\n" + "\n".join(f"- {notice}" for notice in notices)
 
 
+REQUESTS_TASK: Final = "(The user's comments addressed to this session, as work requests.)"
+"""The task a run started for work requests alone is recorded with, and that the
+session's later runs see in its place in the earlier conversation (RS-10)."""
+
+
 class WorkRequests(TurnHook):
     """User work requests addressed to the session: before each turn, and at a closing
-    answer, which they continue. Requests are leased to the run while it lasts."""
+    answer, which they continue. Requests are leased to the run while it lasts.
+    ``discover``, when the run has skills, gives the skills notice for the requests'
+    texts, which goes just before them (docs/specs/skills.md, SK-35; lab 42)."""
 
     name = "requests"
 
-    def __init__(self, tool: DocumentTool) -> None:
-        self.tool = tool
+    def __init__(
+        self,
+        tool: DocumentTool,
+        discover: Callable[[Sequence[str], Sequence[str]], Awaitable[Notice | None]] | None = None,
+    ) -> None:
+        self.tool, self.discover = tool, discover
 
     def lease(self) -> AbstractAsyncContextManager[None]:
         return self.tool.active_requests()
@@ -629,7 +640,12 @@ class WorkRequests(TurnHook):
             return ()
         ids = tuple(str(notice["request_id"]) for notice in found)
         self.tool.request_seen.update(ids)
-        return (Notice(self.name, ids, REQUESTS.text, found),)
+        requests = Notice(self.name, ids, REQUESTS.text, found)
+        if self.discover is not None:
+            texts = [str(notice.get("request_text") or "") for notice in found]
+            if (skills := await self.discover(texts, ids)) is not None:
+                return (skills, requests)
+        return (requests,)
 
     def _acknowledge(self, record: RunRecord, ids: list[str]) -> None:
         store = DocumentStore(self.tool.store.path, producer=self.tool.store.producer)

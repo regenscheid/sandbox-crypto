@@ -17,10 +17,11 @@ from datetime import UTC, datetime, timedelta
 
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.documents.annotations import Annotations
+from sandbox_science.orchestrator.documents.tool import REQUESTS_TASK
 from sandbox_science.orchestrator.model import Message
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.runstate import RunState
-from sandbox_science.orchestrator.service import REQUESTS_TASK, earlier_conversation
+from sandbox_science.orchestrator.service import earlier_conversation
 from sandbox_science.orchestrator.worker_client import WorkerClient
 from sandbox_science.testing import FakeClock, eventually
 

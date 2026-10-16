@@ -270,6 +270,7 @@ class SkillTool:
             if meaning is not None:
                 item["meaning"] = round(meaning, 2)
             answer["found"].append(item)
+        answer["ranked"] = _ranked(record)  # the model is told, not only the record (lab 42)
         if not found:
             answer["note"] = "no skill matched; this covers only this search"
         record["found"] = [entry.qualified for entry, _, _ in found]
@@ -386,6 +387,19 @@ def _hashes(entry: Entry, served_text: str) -> dict[str, str]:
     """A loaded body's SHA-256s: the pack's text's, and the text as the run was given it."""
     served_sha256 = hashlib.sha256(served_text.encode()).hexdigest()
     return {"body_sha256": entry.body_sha256, "served_sha256": served_sha256}
+
+
+def _ranked(record: dict[str, Any]) -> str:
+    """How a search ranked, in the words its answer gives the model."""
+    match record["scoring"]:
+        case "hybrid":
+            return "by words and meaning"
+        case "partial":
+            return f"by words, and by meaning for some packs only ({record['embedding']})"
+        case _ if "embedding" in record:
+            return f"by words alone: meaning could not be compared ({record['embedding']})"
+        case _:
+            return "by words alone: this run compares skills by words only"
 
 
 class _RefusedError(Exception):

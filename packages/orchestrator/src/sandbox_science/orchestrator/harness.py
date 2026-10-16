@@ -56,6 +56,7 @@ from .delegation.outcome import Outcome, Target, result_of
 from .delegation.records import DelegationRecords
 from .delegation.tracks import TrackTools, grant
 from .documents import DocumentError, DocumentStore, DocumentTool
+from .documents.tool import REQUESTS_TASK, WorkRequests
 from .file_settings import ProjectFiles
 from .hooks import TurnHook
 from .jobs import JobTools
@@ -522,8 +523,16 @@ class Harness:
                     # Discovery shows the skills that match the task, and each message.
                     discovery = None
                     if toolbox.skills is not None:
-                        task = None if request.queued else request.task
+                        # A run started for comments alone has a stand-in task: discovery
+                        # answers the comments' own texts, as they arrive (lab 42).
+                        stand_in = request.queued or request.task == REQUESTS_TASK
+                        task = None if stand_in else request.task
                         discovery = SkillDiscovery(toolbox.skills, task, clock=self.clock)
+                        for hook in hooks:
+                            if isinstance(hook, WorkRequests):
+                                hook.discover = functools.partial(
+                                    discovery.about, answered="comment"
+                                )
                         hooks = (*hooks, discovery)
                     if chat is not None:
                         hooks = (*hooks, *await self._chat_hooks(admitted, chat, discovery))
