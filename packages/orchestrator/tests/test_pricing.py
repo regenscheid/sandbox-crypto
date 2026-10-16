@@ -30,6 +30,7 @@ from sandbox_science.orchestrator.model import (
 from sandbox_science.orchestrator.pricing import (
     RETRY_SECONDS,
     Prices,
+    Tier,
     Tokens,
     chat_tokens,
     cost,
@@ -115,7 +116,10 @@ def test_an_alias_is_priced_at_the_dearest_of_its_deployments() -> None:
         deployment("gpt", "azure/a", **{**PRICED, "output_cost_per_token": 1e-05}),
         deployment("other", "openai/b", input_cost_per_token=1.0, output_cost_per_token=1.0),
     ]}  # fmt: skip
-    assert prices_of(info, "gpt") == Prices(2e-06, 1e-05, 5e-07, 2.5e-06)
+    found = prices_of(info, "gpt")
+    assert found == (Prices(2e-06, 8e-06, 5e-07, 2.5e-06), Prices(2e-06, 1e-05, 5e-07, 2.5e-06))
+    assert found is not None
+    assert cost(found, Tokens(0, 0, 0, 10)) == pytest.approx(10 * 1e-05)  # the dearest
     assert prices_of(info, "none") is None
 
 
@@ -127,6 +131,9 @@ def test_an_alias_is_priced_at_the_dearest_of_its_deployments() -> None:
         {"input_cost_per_token": True, "output_cost_per_token": 1e-06},
         {"input_cost_per_token": -1, "output_cost_per_token": 1e-06},
         {"input_cost_per_token": "2e-06", "output_cost_per_token": 1e-06},
+        # A tier whose price is not one leaves the deployment unpriced.
+        {**PRICED, "input_cost_per_token_above_272k_tokens": "1e-05"},
+        {**PRICED, "output_cost_per_token_above_272k_tokens": -1},
     ],
 )
 def test_an_alias_any_deployment_of_which_is_unpriced_has_no_prices(fields: Json) -> None:
@@ -162,6 +169,90 @@ def test_a_missing_cache_price_is_never_cheaper() -> None:
     assert cost(Prices(2e-06, 8e-06, None, 2.5e-06), Tokens(0, 0, 50, 0)) == pytest.approx(
         50 * 2.5e-06
     )
+
+
+# --- Prices that rise with a call's size (lab 43 follow-up) ---------------------------
+
+# GPT-5.5's shape in LiteLLM's model information: its rates double past 272,000 tokens.
+TIERED = {
+    "input_cost_per_token": 5e-06,
+    "output_cost_per_token": 3e-05,
+    "cache_read_input_token_cost": 5e-07,
+    "input_cost_per_token_above_272k_tokens": 1e-05,
+    "output_cost_per_token_above_272k_tokens": 4.5e-05,
+    "cache_read_input_token_cost_above_272k_tokens": 1e-06,
+}
+
+
+def only(found: tuple[Prices, ...] | None) -> Prices:
+    assert found is not None
+    assert len(found) == 1
+    return found[0]
+
+
+def test_a_tier_is_read_from_the_fields_above_n_thousand_tokens() -> None:
+    found = only(prices_of({"data": [deployment("gpt", "openai/gpt-5.5", **TIERED)]}, "gpt"))
+    assert found == Prices(5e-06, 3e-05, 5e-07, None, (Tier(272_000, 1e-05, 4.5e-05, 1e-06),))
+
+
+def test_a_call_past_a_tier_is_priced_wholly_at_it() -> None:
+    """As LiteLLM prices it: a call whose input, cached or not, passes 272,000 tokens is
+    priced at the tier's rates, every token of it; one of 272,000 exactly is not."""
+    prices = only(prices_of({"data": [deployment("gpt", "openai/gpt-5.5", **TIERED)]}, "gpt"))
+    # The lab's call: 283,000 tokens of input, most of them cached.
+    lab = Tokens(fresh=83_000, cache_read=200_000, cache_write=0, output=2_000)
+    assert cost(prices, lab) == pytest.approx(83_000 * 1e-05 + 200_000 * 1e-06 + 2_000 * 4.5e-05)
+    at = Tokens(fresh=72_000, cache_read=200_000, cache_write=0, output=2_000)
+    assert cost(prices, at) == pytest.approx(72_000 * 5e-06 + 200_000 * 5e-07 + 2_000 * 3e-05)
+
+
+def test_the_highest_tier_passed_applies() -> None:
+    prices = Prices(1.0, 1.0, tiers=(Tier(128_000, 2.0, 2.0), Tier(200_000, 3.0, 3.0)))
+    assert cost(prices, Tokens(150_000, 0, 0, 0)) == pytest.approx(150_000 * 2.0)
+    assert cost(prices, Tokens(150_000, 60_000, 0, 1)) == pytest.approx(210_000 * 3.0 + 3.0)
+
+
+def test_a_rate_a_tier_lacks_is_never_lower_than_the_list_allows() -> None:
+    """Input or output: the highest the deployment gives. Cached input: the tier's input
+    rate. Writing the cache: unknown."""
+    prices = Prices(
+        5e-06,
+        3e-05,
+        cache_read=5e-07,
+        cache_write=6e-06,
+        tiers=(Tier(272_000, input=1e-05),),
+    )
+    big = Tokens(fresh=100_000, cache_read=200_000, cache_write=0, output=1_000)
+    assert cost(prices, big) == pytest.approx(300_000 * 1e-05 + 1_000 * 3e-05)
+    assert cost(prices, Tokens(300_000, 0, 10, 0)) is None
+    # An output rate only a lower tier gives is still the highest known.
+    stepped = Prices(1.0, 1.0, tiers=(Tier(100, output=5.0), Tier(200, input=2.0)))
+    assert cost(stepped, Tokens(300, 0, 0, 1)) == pytest.approx(300 * 2.0 + 5.0)
+
+
+def test_a_deployment_without_tiers_beside_one_with_them_is_priced_at_the_dearest() -> None:
+    plain = Prices(6e-06, 3e-05)
+    tiered = Prices(5e-06, 3e-05, tiers=(Tier(272_000, 1e-05, 4.5e-05),))
+    small, large = Tokens(1_000, 0, 0, 0), Tokens(300_000, 0, 0, 0)
+    assert cost((plain, tiered), small) == pytest.approx(1_000 * 6e-06)
+    assert cost((plain, tiered), large) == pytest.approx(300_000 * 1e-05)
+    assert cost((), small) is None
+
+
+async def test_a_large_response_is_priced_at_its_tier(fake: Fake) -> None:
+    fake.info = [deployment("gpt", "openai/gpt-5.5", **TIERED)]
+    usage = {"input_tokens": 283_000, "input_tokens_details": {"cached_tokens": 200_000},
+             "output_tokens": 2_000}  # fmt: skip
+    body = {"id": "r", "object": "response", "status": "completed", "model": "gpt-5.5",
+            "output": [], "usage": usage}  # fmt: skip
+    fake.then(json.dumps(body))
+    model = ResponsesModel(fake.url, "gpt", KEY, clock=Waits())
+    try:
+        turn = await model.complete(ASK, [])
+    finally:
+        await model.close()
+    assert turn.cost == pytest.approx(83_000 * 1e-05 + 200_000 * 1e-06 + 2_000 * 4.5e-05)
+    assert turn.cost_source == "model_info"
 
 
 # --- On each adapter --------------------------------------------------------------------

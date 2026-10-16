@@ -13,10 +13,19 @@ deployments), applied to the tokens the call's usage reports, and the call says 
 what LiteLLM says for a model it has no price for.
 
 When the alias's deployments are not all priced, or the usage lacks a count the price
-needs, the cost stays unknown (``None``). Several deployments of an alias are priced at
-the dearest of each. Cached input without a cache-read price is priced as input, which
-is no less; written cache without a cache-write price leaves the cost unknown, since
-writing costs more than input.
+needs, the cost stays unknown (``None``). A call is priced at each of the alias's
+deployments' prices, and the dearest is its cost. Cached input without a cache-read price
+is priced as input, which is no less; written cache without a cache-write price leaves the
+cost unknown, since writing costs more than input.
+
+A model's price may rise with the size of a call (lab 43 follow-up: GPT-5.5's doubles
+past 272,000 input tokens). LiteLLM's model information gives such a tier as the field
+with ``_above_<N>k_tokens`` after it, such as ``input_cost_per_token_above_272k_tokens``,
+and, as LiteLLM prices it, a call whose input, cached or not, passes N thousand tokens is
+priced wholly at the highest tier it passes. A rate that tier does not give is never
+taken lower than the list allows: an input or output rate is the highest the deployment
+gives for that kind, a cached-input rate the tier's input rate, and a cache-write rate is
+none, so a call that wrote the cache stays unpriced.
 """
 
 from __future__ import annotations
@@ -24,8 +33,9 @@ from __future__ import annotations
 import json
 import logging
 import math
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+import re
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from typing import Any, Final, Literal, cast
 
 import aiohttp
@@ -46,13 +56,50 @@ RETRY_SECONDS: Final = 60.0
 
 
 @dataclass(frozen=True, slots=True)
+class Tier:
+    """A deployment's prices per token for a call whose input passes ``above`` tokens; a
+    rate it does not give is ``None``."""
+
+    above: int
+    input: float | None = None
+    output: float | None = None
+    cache_read: float | None = None
+    cache_write: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Prices:
-    """An alias's prices per token, in the gateway's currency."""
+    """A deployment's prices per token, in the gateway's currency, with its tiers."""
 
     input: float
     output: float
     cache_read: float | None = None
     cache_write: float | None = None
+    tiers: tuple[Tier, ...] = ()
+
+    def at(self, given: int) -> Prices:
+        """The prices of a call whose input, cached or not, is ``given`` tokens: the
+        highest tier it passes. An input or output rate the tier lacks is the highest the
+        deployment gives for that kind; a cached-input rate it lacks is its input rate,
+        which is no less; a cache-write rate it lacks is none, which leaves a call that
+        wrote the cache unpriced."""
+        passed = [tier for tier in self.tiers if given > tier.above]
+        if not passed:
+            return replace(self, tiers=())
+        tier = max(passed, key=lambda found: found.above)
+
+        def rate(kind: str) -> float | None:
+            if (own := getattr(tier, kind)) is not None:
+                return cast(float, own)
+            known = [getattr(self, kind), *(getattr(found, kind) for found in self.tiers)]
+            return max((v for v in known if v is not None), default=None)
+
+        return Prices(
+            cast(float, rate("input")),
+            cast(float, rate("output")),
+            tier.cache_read,
+            tier.cache_write,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,8 +120,16 @@ def source_of(cost: float | None, source: CostSource | None) -> CostSource | Non
     return None if cost is None else source or GATEWAY
 
 
-def cost(prices: Prices, tokens: Tokens) -> float | None:
-    """What ``tokens`` cost at ``prices``; ``None`` when a price they need is missing."""
+def cost(prices: Prices | Sequence[Prices], tokens: Tokens) -> float | None:
+    """What ``tokens`` cost at ``prices``, the dearest of the deployments' when there are
+    several, each at the tier the call's input passes; ``None`` when a price they need is
+    missing."""
+    if not isinstance(prices, Prices):
+        found = [cost(each, tokens) for each in prices]
+        if not found or any(each is None for each in found):
+            return None
+        return max(cast(list[float], found))
+    prices = prices.at(tokens.fresh + tokens.cache_read + tokens.cache_write)
     if tokens.cache_write and prices.cache_write is None:
         return None
     read = prices.cache_read if prices.cache_read is not None else prices.input
@@ -93,9 +148,36 @@ def _price(value: object) -> float | None:
     return float(value) if math.isfinite(value) and value >= 0 else None
 
 
-def prices_of(info: object, alias: str) -> Prices | None:
-    """``alias``'s prices in a ``/model/info`` answer: the dearest of each across its
-    deployments, or ``None`` when any of them lacks an input or output price."""
+_TIERED: Final = re.compile(
+    r"(input_cost_per_token|output_cost_per_token|cache_read_input_token_cost"
+    r"|cache_creation_input_token_cost)_above_(\d{1,7}(?:\.\d{1,3})?)k_tokens"
+)
+_KINDS: Final = {
+    "input_cost_per_token": "input",
+    "output_cost_per_token": "output",
+    "cache_read_input_token_cost": "cache_read",
+    "cache_creation_input_token_cost": "cache_write",
+}
+
+
+def _tiers(fields: dict[str, Any]) -> tuple[Tier, ...] | None:
+    """A deployment's tiers from its ``…_above_<N>k_tokens`` fields; ``None`` when one of
+    them is not a price, which leaves the deployment unpriced."""
+    rates: dict[int, dict[str, float]] = {}
+    for key, value in fields.items():
+        if (named := _TIERED.fullmatch(key)) is None:
+            continue
+        if (price := _price(value)) is None:
+            return None
+        above = round(float(named.group(2)) * 1000)
+        rates.setdefault(above, {})[_KINDS[named.group(1)]] = price
+    return tuple(Tier(above, **found) for above, found in sorted(rates.items()))
+
+
+def prices_of(info: object, alias: str) -> tuple[Prices, ...] | None:
+    """``alias``'s prices in a ``/model/info`` answer, one for each of its deployments, or
+    ``None`` when any of them lacks an input or output price, or gives a tier's price that
+    is not one."""
     found = cast(dict[str, Any], info).get("data") if isinstance(info, dict) else None
     entries = [
         cast(dict[str, Any], entry)
@@ -110,7 +192,8 @@ def prices_of(info: object, alias: str) -> Prices | None:
             _price(fields.get("input_cost_per_token")),
             _price(fields.get("output_cost_per_token")),
         )
-        if given is None or made is None:
+        tiers = _tiers(fields)
+        if given is None or made is None or tiers is None:
             return None
         priced.append(
             Prices(
@@ -118,20 +201,10 @@ def prices_of(info: object, alias: str) -> Prices | None:
                 made,
                 _price(fields.get("cache_read_input_token_cost")),
                 _price(fields.get("cache_creation_input_token_cost")),
+                tiers,
             )
         )
-    if not priced:
-        return None
-
-    def dearest(values: list[float | None]) -> float | None:
-        return None if any(v is None for v in values) else max(cast(list[float], values))
-
-    return Prices(
-        max(p.input for p in priced),
-        max(p.output for p in priced),
-        dearest([p.cache_read for p in priced]),
-        dearest([p.cache_write for p in priced]),
-    )
+    return tuple(priced) or None
 
 
 def count(value: object) -> int | None:
@@ -198,7 +271,7 @@ class PriceList:
 
     async def prices(
         self, alias: str, session: Callable[[], aiohttp.ClientSession]
-    ) -> Prices | None:
+    ) -> tuple[Prices, ...] | None:
         """``alias``'s prices, or ``None`` when the gateway gives none."""
         if self._info is None:
             if (
