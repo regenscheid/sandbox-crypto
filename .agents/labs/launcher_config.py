@@ -2,7 +2,9 @@
 """Write a lab's launcher config, outside the repository, from the example.
 
     uv run python -I .agents/labs/launcher_config.py OUT --state-dir DIR [--project ID] \\
-        [--profile PROFILE] [--session ID ...] [--mcp-proxy IMAGE [--provider-env-file FILE]]
+        [--profile PROFILE] [--session ID ...] [--mcp-proxy IMAGE [--provider-env-file FILE]] \\
+        [--skills-pack NAME=GIT[@REF] ...] [--skills-embedding-model ALIAS] \\
+        [--skills-metadata-model ALIAS]
 
 The tracked example names no real secret file: whoever writes a config also chooses the
 OpenShell CLI that gets the registered values. A lab with the MCP proxy names the owner's
@@ -14,7 +16,10 @@ directory DIR and, if given, the project ID, its profile (such as crypto-base), 
 sessions (each ``--session`` one, in the project's environment, in place of the example's)
 and the MCP proxy for crypto-research-mcp, with the tool index the example's commented
 [mcp_proxy] table gives it (``index`` and ``about``), so that a lab adds nothing by hand
-(lab 40, B7; lab 41).
+(lab 40, B7; lab 41). Each ``--skills-pack`` is a ``[skills.packs.NAME]`` from a git URL
+or a repository's path, with a ref after the last ``@`` that no ``/`` or ``:`` follows,
+and the project pins every pack given; ``--skills-embedding-model`` and
+``--skills-metadata-model`` set ``[skills]``'s two models (lab 42, B8).
 It is written with mode 600, and refused inside a git checkout. With the MCP proxy, the
 policy is examples/policy.yaml with crypto-research-mcp's address in place of its
 placeholder, written as policy.yaml beside OUT: the proxy reaches the server it names.
@@ -72,6 +77,18 @@ def tool_index(example: Path) -> dict[str, object]:
     return {key: table[key] for key in ("index", "about")}
 
 
+def skills_pack(value: str) -> tuple[str, dict[str, str]]:
+    """``NAME=GIT[@REF]`` as a pack's name and table: a ref follows the last ``@`` when no
+    ``/`` or ``:`` does, so ``git@host:owner/repo`` keeps its user."""
+    name, equals, origin = value.partition("=")
+    if not equals or not name or not origin:
+        raise argparse.ArgumentTypeError("a pack is NAME=GIT[@REF]")
+    place, at, ref = origin.rpartition("@")
+    if at and place and ref and "/" not in ref and ":" not in ref:
+        return name, {"git": place, "ref": ref}
+    return name, {"git": origin}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("out", type=Path)
@@ -86,6 +103,15 @@ def main() -> int:
     )
     parser.add_argument("--mcp-proxy", metavar="IMAGE")
     parser.add_argument("--provider-env-file", type=Path)
+    parser.add_argument(
+        "--skills-pack",
+        action="append",
+        type=skills_pack,
+        metavar="NAME=GIT[@REF]",
+        help="a skill pack the project pins (repeat)",
+    )
+    parser.add_argument("--skills-embedding-model", metavar="ALIAS")
+    parser.add_argument("--skills-metadata-model", metavar="ALIAS")
     args = parser.parse_args()
     out = args.out.expanduser().absolute()
     if any((folder / ".git").exists() for folder in out.parents):
@@ -113,6 +139,18 @@ def main() -> int:
             proxy["provider_env_file"] = str(args.provider_env_file.expanduser().absolute())
             proxy["provider_profile"] = str(PROFILE)
         data["mcp_proxy"] = proxy
+    packs = dict(args.skills_pack or ())
+    models = {
+        "embedding_model": args.skills_embedding_model,
+        "metadata_model": args.skills_metadata_model,
+    }
+    if packs or any(models.values()):
+        data["skills"] = {
+            **data.get("skills", {}),
+            **{key: alias for key, alias in models.items() if alias is not None},
+            "packs": {**data.get("skills", {}).get("packs", {}), **packs},
+        }
+        project["skills"] = list(dict.fromkeys([*project.get("skills", []), *packs]))
     out.parent.mkdir(parents=True, exist_ok=True)
     if args.mcp_proxy is not None:
         policy = out.parent / "policy.yaml"
