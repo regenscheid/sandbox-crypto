@@ -585,11 +585,12 @@ export interface LedgerCitations {
   citations: EntryCitations;
 }
 
-/** One ledger entry at one revision. */
+/** One ledger entry at one revision; a reference's with how far its sources were read. */
 export interface LedgerEntry {
   project_id: string;
   observed_at: string;
   entry: EntryView;
+  read: SourceRead[];
 }
 
 /** The gate for one ledger entry as it reads now (LG-17). */
@@ -1210,6 +1211,15 @@ export interface SessionView {
   dedicated: boolean;
   opened_at: string;
   closed_at: string | null;
+}
+
+/** How far the project's sessions read one source of a reference (CM-12, LG-15), as the read register put its reads together: ``whole``, ``partial`` (with the pages, byte ranges or character ranges ``covered``), ``abstract_only``, ``preview_only``, or ``unknown`` when the reading tool says nothing of it. */
+export interface SourceRead {
+  kind: string;
+  source: string;
+  extent: "whole" | "partial" | "abstract_only" | "preview_only" | "unknown";
+  covered: Record<string, JsonValue> | null;
+  versions: string | null;
 }
 
 /** How the research state labels an entry or a work record (CM-11), so that a failed attempt never reads as an impossibility: ``attempt`` (it did not succeed, or rests on finite evidence only), ``claimed`` or ``disputed`` (an obstruction or negative result not settled), ``flagged`` (settled, but an open flag leaves it unresolved), or ``impossible`` (settled by the ledger), with its scope and assumptions. */

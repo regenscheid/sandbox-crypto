@@ -5,13 +5,20 @@ own entries only, and the read routes' guards."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.documents.models import Author
+from sandbox_science.orchestrator.history import Archive, RunArchive
+from sandbox_science.orchestrator.hooks import Appended
+from sandbox_science.orchestrator.model import ToolCall
+from sandbox_science.orchestrator.projects import ProjectStore
+from sandbox_science.orchestrator.tools import ToolOutcome
 from sandbox_science.workspace.ledger import (
     LedgerCitations,
     LedgerEntry,
@@ -210,6 +217,41 @@ async def test_the_user_checks_a_reference_through_the_workspace(
     entry = LedgerEntry.model_validate(await (await client.get(BASE + "/REF-1")).json()).entry
     (check,) = entry.evidence
     assert (check.role, check.checked, entry.author["kind"]) == ("independent_check", 1, "user")
+
+
+async def test_a_reference_reads_how_far_its_sources_were_read(
+    aiohttp_client: ClientFactory, seeded: Path, static_dir: Path
+) -> None:
+    """LG-15 as CM-12 amends it: a reference's entry read gives the read register's
+    extent for each of its sources a session read; another entry gives none."""
+    documents = DocumentStore(store_path(seeded))
+    try:
+        fields = {"identifiers": {"eprint": "2024/1234"}, "published": "2024"}
+        reference = {"type": "reference", "title": "A paper", "statement": "A paper.",
+                     "fields": fields}  # fmt: skip
+        Ledger(documents).change(
+            "p1", {"operation_id": "ref", "reason": "r", "changes": [reference]}, MAIN
+        )
+    finally:
+        documents.close()
+    projects = ProjectStore(seeded)
+    context = ExecutionContext(project_id="p1", session_id="a", environment_id="env-a")
+    log = RunArchive(Archive(projects.control), context, run="run-1", parent=None)
+    try:
+        call = ToolCall("call-1", "e-print-mcp_get_eprint", json.dumps({"paper_id": "2024/1234"}))
+        said = "[2024/1234] A paper\nAuthors: A. Author\nAbstract: It shows a thing."
+        message = {"role": "tool", "tool_call_id": call.id, "content": said}
+        outcome = ToolOutcome(said, {"connector": "crypto-research-mcp"})
+        await log.append(message, Appended("tool_result", call=call, outcome=outcome))
+    finally:
+        projects.close()
+    client = await workspace(aiohttp_client, seeded, static_dir)
+    read = LedgerEntry.model_validate(await (await client.get(BASE + "/REF-1")).json()).read
+    assert [(r.kind, r.source, r.extent) for r in read] == [
+        ("eprint", "2024/1234", "abstract_only")
+    ]
+    issue = LedgerEntry.model_validate(await (await client.get(BASE + "/I-1")).json())
+    assert issue.read == []
 
 
 async def test_an_entry_reads_its_quotes_citation_checks(

@@ -5,7 +5,7 @@
      leading where it points. All of it is shown as text, the statement
      through the Markdown component. -->
 <script lang="ts">
-  import type { EntryView } from '../lib/api-types';
+  import type { EntryView, SourceRead } from '../lib/api-types';
   import Markdown from '../lib/Markdown.svelte';
   import HiddenBanner from './HiddenBanner.svelte';
   import { formatTime } from '../lib/format';
@@ -17,18 +17,23 @@
   import LedgerFlags from './LedgerFlags.svelte';
   import LedgerIncoming from './LedgerIncoming.svelte';
   import LedgerLinks from './LedgerLinks.svelte';
+  import ResearchState from './ResearchState.svelte';
+  import { STATE_FIELDS } from '../lib/researchState';
 
   let {
     projectId,
     entry,
+    read = [],
     changed = async () => {},
   }: {
     projectId: string;
     entry: EntryView;
+    /** For a reference: how far the project's sessions read its sources (CM-12). */
+    read?: SourceRead[];
     /** Read the entry again, after the user's change to it. */
     changed?: () => Promise<void>;
   } = $props();
-  const fields = $derived(fieldRows(entry.fields, projectId, entry.links));
+  const fields = $derived(fieldRows(entry.fields, projectId, entry.links, STATE_FIELDS));
 </script>
 
 <h1>{entry.handle}: {entry.title}</h1>
@@ -59,6 +64,7 @@
 </dl>
 
 <LedgerFlags {projectId} {entry} {changed} />
+<ResearchState {projectId} {entry} {read} />
 
 <h2>Statement</h2>
 <Markdown source={entry.statement} />

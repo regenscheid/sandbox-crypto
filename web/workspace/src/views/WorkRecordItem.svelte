@@ -17,8 +17,10 @@
     producedLinks,
     referenceView,
   } from '../lib/ledgerWork';
-  import { CATEGORY_NAME, treeHref } from '../lib/router';
+  import { CATEGORY_NAME, ENTRY_NAME, ledgerEntryHref, treeHref } from '../lib/router';
   import { visible } from '../lib/text';
+  import { reopenedText } from '../lib/researchState';
+  import StandingBadge from './StandingBadge.svelte';
 
   let {
     projectId,
@@ -40,11 +42,19 @@
   );
   const produced = $derived(producedLinks(projectId, record));
   const references = $derived(record.references.map((r) => referenceView(projectId, r, read)));
+  const reopened = $derived(reopenedText(record));
 </script>
 
 <li class="work">
   <p>
-    <strong class:claimed={record.ending === 'obstruction_claimed'}>{endingText(record)}</strong>
+    <strong class:claimed={record.ending === 'obstruction_claimed'}
+      >{reopened ?? endingText(record)}</strong
+    >{#if record.decision}<span class="muted">
+        (it had been obstructed by {#if ENTRY_NAME.test(record.decision)}<a
+            href={ledgerEntryHref(projectId, record.decision)}>{record.decision}</a
+          >{:else}{visible(record.decision)}{/if})</span
+      >{/if}
+    <StandingBadge {projectId} standing={record.standing} />
     <span class="muted"
       >on r{record.entry_revision}, {formatTime(record.created)}, by {authorText(record.author)}
       · <code>{record.record_id}</code></span

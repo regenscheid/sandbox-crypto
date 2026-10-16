@@ -5,7 +5,8 @@
 with its handle, type, status and title; ``type`` and ``status`` filter, ``after`` and
 ``limit`` page. ``GET …/ledger/{entry}`` answers an entry at its current revision, or at
 ``revision``, with its links and the links other entries hold to it, 200 at a time from
-``incoming_after``, with their count; ``GET
+``incoming_after``, with their count, and for a reference how far the project's
+sessions read its sources (``read``, from the read register: CM-12, LG-15); ``GET
 …/ledger/{entry}/history`` its revisions, newest first, before ``before``. An entry is
 named by its ID or its handle. Reads go through the read-only control store.
 """
@@ -19,7 +20,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Final, Literal
 
 from aiohttp import web
-from pydantic import AwareDatetime, ConfigDict, Field, ValidationError
+from pydantic import AwareDatetime, ConfigDict, Field, JsonValue, ValidationError
 
 from sandbox_science.contracts import Contract, ErrorKind, Identifier
 from sandbox_science.orchestrator.documents import USER, DocumentStore
@@ -53,12 +54,26 @@ class LedgerListing(Contract):
     page: EntryPage
 
 
+class SourceRead(Contract):
+    """How far the project's sessions read one source of a reference (CM-12, LG-15), as
+    the read register put its reads together: ``whole``, ``partial`` (with the pages,
+    byte ranges or character ranges ``covered``), ``abstract_only``, ``preview_only``, or
+    ``unknown`` when the reading tool says nothing of it."""
+
+    kind: str
+    source: str
+    extent: Literal["whole", "partial", "abstract_only", "preview_only", "unknown"]
+    covered: dict[str, JsonValue] | None = None
+    versions: str | None = None
+
+
 class LedgerEntry(Contract):
-    """One ledger entry at one revision."""
+    """One ledger entry at one revision; a reference's with how far its sources were read."""
 
     project_id: Identifier
     observed_at: AwareDatetime
     entry: EntryView
+    read: list[SourceRead] = Field(default_factory=list[SourceRead])
 
 
 class LedgerGate(Contract):
@@ -169,7 +184,10 @@ async def entry(request: web.Request) -> web.Response:
             project, reference, None if raw is None else int(raw), incoming_after=after
         )
         return LedgerEntry(
-            project_id=project, observed_at=datetime.now(UTC), entry=found
+            project_id=project,
+            observed_at=datetime.now(UTC),
+            entry=found,
+            read=[SourceRead.model_validate(read) for read in ledger.reads(project, found)],
         ).model_dump_json()
 
     return await read_answer(request, project, read)

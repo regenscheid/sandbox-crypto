@@ -18,6 +18,7 @@ import {
   findingHref,
   ledgerEntryHref,
   runHref,
+  sessionHref,
   treeHref,
 } from './router';
 import { visible } from './text';
@@ -148,10 +149,49 @@ export function describeItem(
     return { mark: context, text: target, links: contextLinks(project, item) };
   }
   if (item.kind === 'actions') {
+    const earlier = Object.keys(record(locator['earlier'])).length
+      ? '; with, apart, the run’s earlier windows, as background'
+      : '';
     return {
       mark: "Derived from the window's tool records:",
-      text: actionsText(item),
+      text: actionsText(item) + earlier,
       links: [],
+    };
+  }
+  if (item.kind === 'plan') {
+    const version = count(locator['version']);
+    return {
+      mark: 'The session plan when the review was dispatched, as context, not reviewed material:',
+      text: visible(
+        `plan ${String(locator['plan'] ?? '?')}${version === null ? '' : ` version ${version}`}`,
+      ),
+      links: session ? [{ text: 'the session', href: sessionHref(project, session) }] : [],
+    };
+  }
+  const ran = named(locator['delegation']);
+  if ((item.kind === 'execution' || item.kind === 'action') && ran !== null) {
+    const what =
+      item.kind === 'execution'
+        ? `execution ${String(locator['execution'] ?? '?')}`
+        : `its call ${String(locator['message'] ?? '?')}`;
+    return {
+      mark:
+        item.kind === 'execution'
+          ? `An execution of delegation ${visible(ran)}'s run, chosen for its outcome, as context:`
+          : `What delegation ${visible(ran)}'s run did, as context:`,
+      text: visible(what),
+      links: session ? [{ text: 'the run tree', href: treeHref(project, session) }] : [],
+    };
+  }
+  const output = record(locator['output_of']);
+  if (item.kind === 'artifact' && Object.keys(output).length) {
+    const by = named(record(locator['delegated']).delegation) ?? '?';
+    return {
+      mark: `The saved output of an execution of delegation ${visible(by)}'s run, cut short in it:`,
+      text: visible(
+        `${String(output.stream ?? 'output')} of execution ${String(output.execution)}`,
+      ),
+      links: session ? [{ text: 'the run tree', href: treeHref(project, session) }] : [],
     };
   }
   const cited = record(locator['cited_by']);
@@ -190,6 +230,29 @@ export function describeItem(
     };
   }
   return null;
+}
+
+/**
+ * How many of a delegated run's executions a review holds, how many it left out and how
+ * they were chosen (CR-2 as amended for lab 42), from a delegation item's text read whole;
+ * empty when the text says nothing of them.
+ */
+export function heldText(text: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return '';
+  }
+  const held = record(record(parsed).executions);
+  const kept = Number.isSafeInteger(held.held) ? (held.held as number) : null;
+  if (kept === null) return '';
+  const left = Number.isSafeInteger(held.left_out) ? (held.left_out as number) : 0;
+  const how = named(held.chosen);
+  return (
+    `This review holds ${kept} of its run's executions${left ? ` and left ${left} out` : ''}` +
+    `${how ? `, chosen: ${visible(how)}` : ''}.`
+  );
 }
 
 /**
