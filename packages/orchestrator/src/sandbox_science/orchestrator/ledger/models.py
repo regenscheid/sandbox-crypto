@@ -81,6 +81,39 @@ LINKS: Final[dict[str, tuple[tuple[str, ...], tuple[str, ...]]]] = {
 }
 """Which entries hold each kind of link, and what it points to (LG-5)."""
 
+_LINK_ADVICE: Final[dict[tuple[str, str], str]] = {
+    ("assumes", "claim"): "to rest on another claim, link it with builds_on",
+    ("assumes", "result"): "to rest on another result, link it with builds_on",
+    ("builds_on", "reference"): (
+        "to cite a reference, give the claim or result supports evidence of type "
+        "source_claim that names it (LG-8)"
+    ),
+    ("builds_on", "assumption"): "to rely on an assumption, link it with assumes",
+    ("restates", "reference"): (
+        "to cite a reference, give the claim or result supports evidence of type "
+        "source_claim that names it (LG-8)"
+    ),
+}
+
+
+def _a(noun: str) -> str:
+    return f"{'an' if noun[0] in 'aeiou' else 'a'} {noun}"
+
+
+def wrong_link_target(kind: str, holder: str, handle: str, target: str) -> str:
+    """Why a ``kind`` link from a ``holder`` entry cannot point to ``handle``, a ``target``
+    entry, and what it may point to (LG-5). The type decides it, never the target's
+    status or how the target was named."""
+    names = [_a(t) for t in LINKS[kind][1] if t not in ("finding", "block")]
+    names += [_a(t) for t in ("review finding", "document block") if t.split()[1] in LINKS[kind][1]]
+    allowed = ", ".join(names[:-1]) + (" or " if len(names) > 1 else "") + names[-1]
+    advice = _LINK_ADVICE.get((kind, target))
+    return (
+        f"{_a(kind + ' link')} cannot point to {handle}, {_a(target)}: it points to {allowed}"
+        + (f" ({advice})" if advice else "")
+    )
+
+
 EvidenceRole = Literal["supports", "contradicts", "derivation", "independent_check"]
 EvidenceType = Literal[
     "proof",
