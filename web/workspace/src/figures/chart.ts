@@ -15,6 +15,10 @@ export const MAX_DATA_BYTES = 8 * 1024 * 1024;
 export const MAX_ROWS = 100_000;
 export const MAX_MARKS = 20_000;
 export const MAX_SEQUENCE = 10_000;
+/** A drawn chart's text in all, in characters, and its SVG, in characters (review of #500,
+ * memory): a chart within the other limits can still draw tens of megabytes of text. */
+export const MAX_TEXT = 1024 * 1024;
+export const MAX_SVG = 3 * 1024 * 1024;
 /** The Vega-Lite major version the frame draws (FG-15). */
 export const VEGA_LITE_MAJOR = 6;
 
@@ -151,19 +155,39 @@ export function chartLoader(files: ReadonlyMap<string, string>, read: Fetch, ref
   };
 }
 
-/** The marks a drawn scene holds, counted to the limit. */
-export function markCount(scene: unknown): number {
-  let count = 0;
+/** The marks a drawn scene holds, counted to the limit, and the characters of their text,
+ * counted to its limit. */
+export function sceneSize(scene: unknown): { marks: number; text: number } {
+  let marks = 0;
+  let text = 0;
   const visit = (node: unknown): void => {
-    if (!isObject(node as Json) || count > MAX_MARKS) return;
+    if (!isObject(node as Json) || marks > MAX_MARKS || text > MAX_TEXT) return;
+    const said = (node as { text?: unknown }).text;
+    for (const line of Array.isArray(said) ? said : [said])
+      if (typeof line === 'string' || typeof line === 'number') text += String(line).length;
     const items = (node as { items?: unknown }).items;
     if (Array.isArray(items)) {
-      count += items.length;
+      marks += items.length;
       for (const item of items) visit(item);
     }
   };
   visit(scene);
-  return count;
+  return { marks, text };
+}
+
+/** A drawn chart within its limits after the run: its marks, their text and each
+ * dataset's rows after its transforms (a `flatten` among them); or a `Refusal`. */
+export function checkDrawn(scene: unknown, rows: readonly number[]): void {
+  const size = sceneSize(scene);
+  if (size.marks > MAX_MARKS || size.text > MAX_TEXT) throw new Refusal('size');
+  if (rows.some((count) => count > MAX_ROWS)) throw new Refusal('size');
+}
+
+/** A chart's SVG within its limit, before it leaves the worker and before the page parses
+ * it; or a `Refusal`. */
+export function checkSvg(svg: unknown): string {
+  if (typeof svg !== 'string' || svg.length > MAX_SVG) throw new Refusal('size');
+  return svg;
 }
 
 /**

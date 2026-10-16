@@ -12,6 +12,11 @@ import {
   Refusal,
   Refusals,
   boundedSequence,
+  checkDrawn,
+  checkSvg,
+  MAX_SVG,
+  MAX_TEXT,
+  sceneSize,
   drawnInWorker,
   jsonRows,
   type ChartWorker,
@@ -195,5 +200,54 @@ describe("a chart's worker (review of #500, M1)", () => {
     const odd = fakeWorker({ ok: false, code: '<b>x</b>' });
     await expect(drawnInWorker(odd, message)).rejects.toThrow('unreadable');
     expect(odd.ended).toBe(1);
+  });
+});
+
+describe("a chart's memory (review of #500)", () => {
+  const texts = (pad: number) =>
+    JSON.stringify({
+      data: { sequence: { start: 0, stop: MAX_SEQUENCE, as: 'i' } },
+      transform: [{ calculate: `pad('', ${pad})`, as: 'label' }],
+      mark: 'text',
+      encoding: { y: { field: 'i', type: 'quantitative' }, text: { field: 'label' } },
+    });
+
+  it('refuses text past its limit before drawing its SVG', async () => {
+    // Within every other limit: 10,000 rows, each a label of 200 characters, 2 MB of text.
+    await expect(chartSvg(texts(200), new Map(), read)).rejects.toThrow('size');
+    const { svg } = await chartSvg(texts(20), new Map(), read);
+    expect(svg.length).toBeLessThanOrEqual(MAX_SVG);
+  });
+
+  it('refuses a dataset that grows past the row limit in its transforms', async () => {
+    const one = JSON.stringify([{ many: Array.from({ length: MAX_ROWS + 1 }, (_, i) => i) }]);
+    const flattened = JSON.stringify({
+      data: { url: 'data/one.json' },
+      transform: [{ flatten: ['many'] }],
+      mark: 'point',
+      // One mark: the rows after the flatten, not the marks, pass the limit.
+      encoding: { y: { aggregate: 'count', type: 'quantitative' } },
+    });
+    await expect(
+      chartSvg(flattened, new Map([['data/one.json', 'cap']]), async () => one),
+    ).rejects.toThrow('size');
+  });
+
+  it('refuses an impute whose keys would pass the row limit', async () => {
+    const imputed = bars({
+      transform: [{ impute: 'ms', key: 'size', keyvals: { start: 0, stop: 2_000_000 } }],
+    });
+    await expect(chartSvg(imputed, files, read)).rejects.toThrow('size');
+  });
+
+  it('caps the SVG and the scene, as the worker and the page check them', () => {
+    expect(() => checkSvg('x'.repeat(MAX_SVG + 1))).toThrow('size');
+    expect(() => checkSvg(5)).toThrow('size');
+    expect(checkSvg('<svg/>')).toBe('<svg/>');
+    const scene = { items: [{ items: [{ text: 'ab' }, { text: ['c', 'de'] }, { text: 7 }] }] };
+    expect(sceneSize(scene)).toEqual({ marks: 4, text: 6 });
+    expect(() => checkDrawn({ items: [{ text: 'x'.repeat(MAX_TEXT + 1) }] }, [])).toThrow('size');
+    expect(() => checkDrawn(scene, [MAX_ROWS + 1])).toThrow('size');
+    expect(() => checkDrawn(scene, [MAX_ROWS])).not.toThrow();
   });
 });

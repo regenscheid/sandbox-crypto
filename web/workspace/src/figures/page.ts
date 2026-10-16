@@ -15,7 +15,7 @@ import {
   type FigureCode,
   type FigureRequest,
 } from './protocol';
-import { drawnInWorker, Refusal, type ChartWorker } from './chart';
+import { checkSvg, drawnInWorker, Refusal, type ChartWorker } from './chart';
 import { sanitized } from './sanitize';
 import { framedBy } from '../viewer/anchor';
 
@@ -97,7 +97,8 @@ async function drawChart(request: FigureRequest): Promise<void> {
     paths,
     capabilities,
   });
-  const drawn = sanitized(svg, document);
+  // Checked again before it is parsed here, on a thread the page may share.
+  const drawn = sanitized(checkSvg(svg), document);
   if (name !== null) figure.setAttribute('aria-label', name);
   figure.replaceChildren(drawn);
 }

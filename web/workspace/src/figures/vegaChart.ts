@@ -21,8 +21,9 @@ import {
   checkedChart,
   delimited,
   jsonRows,
-  MAX_MARKS,
-  markCount,
+  checkDrawn,
+  checkSvg,
+  MAX_ROWS,
   Refusal,
   Refusals,
   type Fetch,
@@ -58,6 +59,21 @@ const json: Reader = (data, format) =>
   noted(() => jsonRows(typeof data === 'string' ? data : JSON.stringify(data), format?.property));
 json.responseType = 'text';
 formats('json', json);
+// Every transform's output is bounded as a data file's rows are, whatever makes them: a
+// `flatten` of one row's long array, an `impute` or a `fold` (review of #500, memory).
+type Step = { prototype: { transform?: (this: unknown, ...args: unknown[]) => unknown } };
+for (const step of Object.values(
+  (vega as unknown as { transforms: Record<string, Step> }).transforms,
+)) {
+  const own = step?.prototype?.transform;
+  if (typeof own !== 'function') continue;
+  step.prototype.transform = function (this: unknown, ...args: unknown[]) {
+    const out = own.apply(this, args) as { add?: unknown } | undefined;
+    if (Array.isArray(out?.add) && out.add.length > MAX_ROWS)
+      throw running.note(new Refusal('size'));
+    return out;
+  };
+}
 expressionFunction('sequence', (...args: number[]) =>
   noted(() => boundedSequence(args[0]!, args[1], args[2])),
 );
@@ -72,8 +88,11 @@ export async function chartSvg(
   running = new Refusals();
   const refusals = running;
   let runtime;
+  let datasets: string[];
   try {
-    runtime = parse(compile(spec as never).spec, undefined, { ast: true });
+    const compiled = compile(spec as never).spec;
+    datasets = (compiled.data ?? []).map((data: { name: string }) => data.name);
+    runtime = parse(compiled, undefined, { ast: true });
   } catch {
     throw new Refusal('invalid');
   }
@@ -87,8 +106,12 @@ export async function chartSvg(
     await view.runAsync();
     refusals.check();
     const scene = view.scenegraph() as unknown as { root: unknown };
-    if (markCount(scene.root) > MAX_MARKS) throw new Refusal('size');
-    const svg = await view.toSVG();
+    const rows = datasets.map((name) => {
+      const values: unknown = view.data(name);
+      return Array.isArray(values) ? values.length : 0;
+    });
+    checkDrawn(scene.root, rows);
+    const svg = checkSvg(await view.toSVG());
     refusals.check();
     const name = [spec['description'], spec['title']].find((value) => typeof value === 'string');
     return { svg, name: typeof name === 'string' ? name : null };

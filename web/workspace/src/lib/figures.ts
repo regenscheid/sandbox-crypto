@@ -82,6 +82,10 @@ export class Slots {
 
 /** The page's frames, drawing at most `DRAWING_AT_ONCE` at once (FG-17). */
 export const drawing = new Slots(DRAWING_AT_ONCE);
+/** The charts drawing at once, at most: a frame of the same site shares the page's
+ * process and memory, and a chart's run is the heaviest drawing (review of #500). */
+export const CHARTS_AT_ONCE = 2;
+export const charting = new Slots(CHARTS_AT_ONCE);
 
 /** An image's URL, if the server gave one on an http(s) origin; anything else is not
  * loaded. */

@@ -8,7 +8,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import FigureFrame from '../views/FigureFrame.svelte';
 import { sanitized } from '../figures/sanitize';
-import { Slots } from './figures';
+import { charting, CHARTS_AT_ONCE, Slots } from './figures';
 
 const SHA = 'ab'.repeat(32);
 const PREVIEW = 'http://127.0.0.1:8201';
@@ -204,6 +204,21 @@ describe('an HTML file', () => {
 });
 
 describe('the frames a page draws at once', () => {
+  it('draw at most two charts at once (review of #500)', async () => {
+    expect(CHARTS_AT_ONCE).toBe(2);
+    const first = await charting.acquire();
+    const second = await charting.acquire();
+    let third: (() => void) | null = null;
+    void charting.acquire().then((done) => (third = done));
+    await settle();
+    expect(third).toBeNull();
+    first();
+    await settle();
+    expect(third).not.toBeNull();
+    second();
+    third!();
+  });
+
   it('are at most the limit; the others wait their turn, in order', async () => {
     const slots = new Slots(2);
     const first = await slots.acquire();

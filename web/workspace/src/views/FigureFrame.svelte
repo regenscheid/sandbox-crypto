@@ -12,6 +12,7 @@
   import { api, ApiError } from '../lib/api';
   import type { FigureLink } from '../lib/api-types';
   import {
+    charting,
     drawing,
     DRAW_MILLISECONDS,
     HTML_FRAME_HEIGHT,
@@ -63,7 +64,14 @@
   }
 
   async function start(): Promise<void> {
-    release = await drawing.acquire();
+    // A chart takes a chart's turn first, so charts waiting hold no frame's turn; both end
+    // together.
+    const chartTurn = chart !== null ? await charting.acquire() : null;
+    const frameTurn = await drawing.acquire();
+    release = () => {
+      chartTurn?.();
+      frameTurn();
+    };
     try {
       let found: { kind: FigureLink['kind'] | 'chart'; url: string };
       if (chart !== null) {
