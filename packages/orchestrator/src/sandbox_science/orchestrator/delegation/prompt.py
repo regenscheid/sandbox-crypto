@@ -65,7 +65,7 @@ CHECK_PROMPT: Final = (
 )
 CHECK: Final = Section("delegated-check", CHECK_VERSION, CHECK_PROMPT)
 
-TASK_VERSION: Final = "sandbox-delegated-task-5"
+TASK_VERSION: Final = "sandbox-delegated-task-6"
 """The version of ``TASK_PROMPT``'s text."""
 TASK_PROMPT: Final = (
     "You are a delegated research agent. Another agent of this session, your parent, "
@@ -88,7 +88,9 @@ TASK_PROMPT: Final = (
     "each its basis and anchors. Call "
     "nothing impossible that the ledger has not settled, and keep to the constraints "
     "your brief gives. You reopen no obstructed issue or rejected approach: give the "
-    "reason to reopen it in open_questions, and your parent decides. "
+    "reason to reopen it in open_questions, and your parent decides. When your result "
+    "relies on a ledger entry, or declines an approach because of one, cite the entry's "
+    "handle, such as D-3, A-1, C-4 or I-3. "
     "Each message the platform adds begins with a header naming its archive ID "
     "(msg-…), by which you can cite it; history_search and history_read read your own "
     "run's messages whole. Copy exact values from your reads, never from memory, and "

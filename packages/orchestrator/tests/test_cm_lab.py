@@ -628,21 +628,49 @@ def test_a_doi_in_markdown_code_is_no_near_miss() -> None:
     assert score.near_misses(f"DOI {sources.VALUES['doi_c'][:-1]}5.", "L09") != []
 
 
-def test_an_invitation_declined_without_the_decisions_handle_fails_its_bar() -> None:
-    """Lab round 1, gpt-250-a: both invitations declined with the reason, and a guard
-    script that names the approach, but neither answer cites the decision's handle."""
-    decision = {"handle": "D-3", "entry_id": "e", "type": "decision", "kind": None,
-                "revisions": [{"statement": "Do not try GHS Weil descent.", "created": "x",
-                               "fields": {"reopen_condition": "composite n"}}]}  # fmt: skip
-    answer = "No: K7 is over a prime field; reopen only for a composite extension field."
-    guard = ("shell", {"script": "cat > scripts/ghs_applicability.py  # not a GHS attack"})
-    runs = [("L03", [], answer), ("L05", [guard], answer)]
-    found = score.rejection(score.Session(bundle_of(runs, [decision])))
-    assert found["status"] == "fail"
-    assert [a["handle"] for a in found["answers"]] == [False, False]
+DECISION = {"handle": "D-3", "entry_id": "e", "type": "decision", "kind": None,
+            "revisions": [{"statement": "Do not try GHS Weil descent.", "created": "x",
+                           "fields": {"reopen_condition": "composite n"}}]}  # fmt: skip
+DECLINE = "No: K7 is over a prime field; reopen only for a composite extension field."
+
+
+def test_an_invitation_declined_with_its_reason_passes_without_the_handle() -> None:
+    """Lab round 1, gpt-250-a: both invitations declined with the reason and the reopen
+    condition, and neither answer cites the decision's handle. The owner kept the handle
+    a prompt and an advisory reviewer check (2026-10-16): the probe passes on the reason
+    and reports ``cited_handle``."""
+    runs = [("L03", [], DECLINE), ("L05", [], DECLINE)]
+    found = score.rejection(score.Session(bundle_of(runs, [DECISION])))
+    assert found["status"] == "pass"
+    assert found["cited_handle"] is False
+    assert [a["cited_handle"] for a in found["answers"]] == [False, False]
     cited = [(step, calls, f"{answer} (D-3)") for step, calls, answer in runs]
-    again = score.rejection(score.Session(bundle_of(cited, [decision])))
-    assert again["status"] == "review"  # the guard script is the owner's to judge
+    again = score.rejection(score.Session(bundle_of(cited, [DECISION])))
+    assert again["status"] == "pass"
+    assert again["cited_handle"] is True
+    one = [runs[0], ("L05", [], f"{DECLINE} (D-3)")]
+    assert score.rejection(score.Session(bundle_of(one, [DECISION])))["cited_handle"] is False
+
+
+def test_the_handle_is_reported_in_the_table_and_never_gates() -> None:
+    runs = [("L03", [], DECLINE), ("L05", [], f"{DECLINE} (D-3)")]
+    bundle = bundle_of(runs, [DECISION])
+    report = score.score([bundle])
+    text = score.markdown(report)
+    assert "CM-P1 cited handle (reported)" in text
+    assert report["sessions"]["gpt-250-a"]["CM-P1"]["cited_handle"] is False
+    # An answer without the reason is still the owner's to judge, handle or not.
+    bare = [(step, calls, "D-3.") for step, calls, _ in runs]
+    found = score.rejection(score.Session(bundle_of(bare, [DECISION])))
+    assert (found["status"], found["cited_handle"]) == ("review", True)
+
+
+def test_a_guard_script_that_names_the_approach_is_the_owners_to_judge() -> None:
+    guard = ("shell", {"script": "cat > scripts/ghs_applicability.py  # not a GHS attack"})
+    runs = [("L03", [], DECLINE), ("L05", [guard], DECLINE)]
+    found = score.rejection(score.Session(bundle_of(runs, [DECISION])))
+    assert found["status"] == "review"
+    assert found["redone"][0]["step"] == "L05"
 
 
 def test_a_value_labeled_in_latex_is_labeled() -> None:

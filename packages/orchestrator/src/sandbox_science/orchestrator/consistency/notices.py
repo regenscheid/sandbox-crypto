@@ -82,7 +82,7 @@ class FindingNotices:
                 AND t.revision=n.revision
                 WHERE n.project=? AND n.session=?
                 AND n.revision=f.revision AND f.status IN ('open','challenged')
-                AND f.category!='math'
+                AND f.category NOT IN ('math','handle_citation')
                 AND (f.status='challenged' OR ? IS NULL OR EXISTS(SELECT 1 FROM
                 review_runs r WHERE t.actor='review:'||r.review_id AND r.author_run=?))
                 AND {leased} ORDER BY n.rowid LIMIT ?""",
@@ -109,8 +109,8 @@ class FindingNotices:
             rows = db.execute(
                 (
                     "SELECT severity,status,count(*) FROM review_findings WHERE "
-                    "project=? AND session=? AND category!='math' AND status NOT IN ('confirmed "
-                    "fixed','withdrawn') GROUP BY severity,status"
+                    "project=? AND session=? AND category NOT IN ('math','handle_citation') "
+                    "AND status NOT IN ('confirmed fixed','withdrawn') GROUP BY severity,status"
                 ),
                 (project, session),
             ).fetchall()

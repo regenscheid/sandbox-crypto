@@ -570,7 +570,7 @@ class ReviewStore:
             return dict(
                 db.execute(
                     "SELECT status,count(*) FROM review_findings WHERE project=? AND session=? "
-                    "AND category!='math' "
+                    "AND category NOT IN ('math','handle_citation') "
                     "GROUP BY status",
                     (project, session),
                 )
@@ -674,7 +674,8 @@ class ReviewStore:
                     "ORDER BY b.revision DESC LIMIT 1) "
                     "FROM review_findings f WHERE f.project=:project AND f.session=:session) "
                     "SELECT f.finding_id,f.revision FROM review_findings f WHERE "
-                    "project=:project AND session=:session AND category!='math' "
+                    "project=:project AND session=:session "
+                    "AND category NOT IN ('math','handle_citation') "
                     "AND status='claimed fixed' "
                     f"AND ({reviews}NOT IN ('running','failed','dropped'))=0 "
                     f"AND ({reviews}IN ('failed','dropped'))<:attempts "

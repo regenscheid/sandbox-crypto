@@ -27,6 +27,7 @@ from sandbox_science.orchestrator.documents.project_macros import (
 )
 
 from .models import (
+    ADVISORY_CATEGORIES,
     ConfirmationInput,
     EvidenceAnchor,
     FindingInput,
@@ -363,6 +364,7 @@ class Findings:
         if (
             notify
             and found["origin"] == "review"
+            and found["category"] not in ADVISORY_CATEGORIES
             and status in ("open", "challenged")
             and SEVERITY_RANK[found["severity"]] <= SEVERITY_RANK[threshold]
         ):
@@ -393,6 +395,8 @@ class Findings:
             update={
                 "statement": agent_text(value.statement, "the statement"),
                 "remedy": agent_text(value.remedy, "the remedy") if value.remedy else None,
+                # A suggestion is only ever a note, whatever the reviewer called it.
+                **({"severity": "note"} if value.category in ADVISORY_CATEGORIES else {}),
             }
         )
         anchors = [self.validate_anchor(project, session, review, a) for a in value.anchors]
@@ -453,7 +457,9 @@ class Findings:
                         db, project, actor, value.operation_id, fingerprint, result
                     )
                     return result
-                if found["reflags"] + 1 >= config.max_reflags:
+                if found["reflags"] + 1 >= config.max_reflags and (
+                    value.category not in ADVISORY_CATEGORIES
+                ):
                     status = "unaddressed"
                 result = self._reflag(db, found, assessment, status, actor)
             db.execute(
@@ -734,6 +740,11 @@ class Findings:
                 raise DocumentError(
                     POLICY_DENIED,
                     "patch the math source; its mechanical check confirms fixes without a claim",
+                )
+            if found["category"] in ADVISORY_CATEGORIES and value.action in ("fix", "rebut"):
+                raise DocumentError(
+                    POLICY_DENIED,
+                    "a suggestion needs no fix or rebuttal; it is never confirmed or challenged",
                 )
             if value.expected != found["revision"]:
                 raise DocumentError(CONFLICT, "finding changed since this response was drafted")
