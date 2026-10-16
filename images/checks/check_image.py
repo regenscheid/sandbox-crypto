@@ -71,8 +71,9 @@ PROJECT = Path("/sandbox/project")
 SESSION = "image-check"
 WORKSPACE = PROJECT / "sessions" / SESSION
 LANGUAGES = {"minimal": ["python"], "crypto-base": ["python", "sage"]}
-FEATURES = {"minimal": [], "crypto-base": ["pdf"]}
-"""What the executor offers beyond kernels: ``pdf`` where the PDF helper finds pdf_oxide."""
+FEATURES = {"minimal": ["jobs"], "crypto-base": ["jobs", "pdf"]}
+"""What the executor offers beyond kernels: ``jobs``, background shell jobs, everywhere, and
+``pdf`` where the PDF helper finds pdf_oxide."""
 MARKER = "Sandbox Science image check"
 
 HARNESS = f"{PREFIX}/bin/sandbox-science-harness"
@@ -201,15 +202,32 @@ class Executor:
             if wanted(message):
                 return message
 
-    def request(self, op: str, timeout: float = 30, **fields: Any) -> Message:
+    def request(self, op: str, wait: float = 30, **fields: Any) -> Message:
+        """Send ``op`` with ``fields``, as the executor reads them, and wait ``wait`` seconds
+        at most for its reply; a ``timeout`` among the fields is the execution's own."""
         ident = next(self.ids)
         stdin = self.process.stdin
         if stdin is None:
             raise CheckError("the executor has no stdin")
         stdin.write((json.dumps({"id": ident, "op": op, **fields}) + "\n").encode())
         stdin.flush()
-        reply = self._wait(lambda m: m.get("type") == "reply" and m.get("id") == ident, timeout)
+        reply = self._wait(lambda m: m.get("type") == "reply" and m.get("id") == ident, wait)
         expect(bool(reply.get("ok")), f"{op} refused: {reply.get('error')}")
+        return reply
+
+    def open(self) -> Message:
+        """Its ``hello``, once package admission is open: the executor starts with it held
+        and runs nothing until the worker opens it, as the worker's first sync of an
+        environment does (generation 0, ``ready``)."""
+        reply = self.request("hello", wait=60)
+        self.request(
+            "package_gate",
+            incarnation=reply.get("package_gate"),
+            generation=0,
+            mode="ready",
+            operation="",
+            revision=None,
+        )
         return reply
 
     def run(self, op: str, limit: float, **fields: Any) -> Message:
@@ -442,7 +460,7 @@ class Checks:
             shutil.copyfile(self.worker_files / name, EXECUTOR_DIR / name)
         script = EXECUTOR_DIR / "executor.py"
         self.client = Executor(script, PROJECT, Path("/tmp/executor.log"))  # noqa: S108
-        reply = self.client.request("hello", timeout=60)
+        reply = self.client.open()
         languages, features = reply.get("languages"), reply.get("features")
         expect(languages == LANGUAGES[self.profile], f"languages {languages}")
         expect(features == FEATURES[self.profile], f"features {features}")
@@ -466,11 +484,18 @@ class Checks:
         if self.crypto:
             tools += ["sage", "gp", "gap", "Singular", "gcc", "g++", "make", "latexmk", "pdflatex"]
             tools += ["pdftotext", "qpdf", "git"]
-        out = self.ex().shell(f'for t in {" ".join(tools)}; do echo "$t $(command -v $t)"; done')
+        # The package-command wrappers' directory comes first on PATH, where python is a
+        # stand-in that runs the prefix's own (provisioning.py, _mirror): it is the prefix's
+        # Python that runs, not a path, that is checked.
+        out = self.ex().shell(
+            f'for t in {" ".join(tools)}; do echo "$t $(command -v $t)"; done; '
+            "echo \"prefix $(python -c 'import sys; print(sys.prefix)')\""
+        )
         found = dict(line.split(" ", 1) for line in out.splitlines() if " " in line)
         missing = [tool for tool in tools if not found.get(tool, "").strip()]
         expect(not missing, f"not on PATH: {missing}")
-        expect(found["python"].strip() == f"{PREFIX}/bin/python", f"python is {found['python']}")
+        prefix = found.get("prefix", "").strip()
+        expect(prefix == PREFIX, f"python ({found['python'].strip()}) runs in {prefix}")
         return ", ".join(f"{tool}={found[tool].strip()}" for tool in tools[:4]) + ", ..."
 
     def multiprocessing(self) -> str:

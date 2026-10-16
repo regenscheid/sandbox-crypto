@@ -425,3 +425,26 @@ def test_the_license_labels_are_spdx_expressions(profile: str) -> None:
     assert report.UBUNTU in lines
     expression = report.label(lines)
     assert report.is_spdx(report.tokens(expression))
+
+
+def test_the_image_checks_client_runs_work_on_this_executor(tmp_path: Path) -> None:
+    """The image check drives the worker's executor itself, outside CI's Docker-free runs:
+    run here on this checkout's executor, its client opens package admission, which the
+    executor holds from its start until the worker opens it, and its limits reach the
+    executor. Without either, every shell and cell waited out 120 s for "a package command"
+    (lab of 2026-10-16), and only images/test.sh showed it."""
+    script = ROOT / "packages" / "worker" / "src" / "sandbox_science" / "worker" / "executor.py"
+    held = checks.Executor(script, tmp_path / "project", tmp_path / "held.log")
+    try:
+        held.request("hello", wait=60)
+        with pytest.raises(checks.CheckError, match=r"waited \d+ s for a package command"):
+            held.shell("echo held", limit=1)
+    finally:
+        held.close()
+    client = checks.Executor(script, tmp_path / "project", tmp_path / "executor.log")
+    try:
+        reply = client.open()
+        assert set(checks.FEATURES["minimal"]) <= set(reply["features"])
+        assert client.shell("echo ran", limit=30) == "ran\n"
+    finally:
+        client.close()

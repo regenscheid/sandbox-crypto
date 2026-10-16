@@ -216,13 +216,13 @@ After locking, review the diff, build, and update `licenses.txt` if the build as
 - **container**: as a container driver would run the image;
 - **landlock**: the same, under a Landlock ruleset like OpenShell's: its baseline, the devices the compiler adds (none for `orchestrator`), and the paths above. A check confirms that the ruleset is in effect.
 
-In the research profiles the checks start the worker's executor as the OpenShell backend does (`python -I /sandbox/.sandbox-science/executor.py --stdio --root /sandbox/project`), so kernels start through jupyter_client with the executor's environment:
+In the research profiles the checks start the worker's executor as the OpenShell backend does (`python -I /sandbox/.sandbox-science/executor.py --stdio --root /sandbox/project`), so kernels start through jupyter_client with the executor's environment. As the worker's first sync of an environment does, the check opens the executor's package admission after `hello` (`package_gate`, generation 0, `ready`): the executor holds it from its start and admits no shell or cell until then. Each shell and cell carries the check's own time limit:
 
 | Check | What it shows |
 | --- | --- |
 | `identity`, `filesystem`, `record` | uid 1000 is `sandbox` with home `/sandbox`; only the declared paths are writable; the image record names the profile, and there is no OpenShell image policy |
-| `executor` | The executor's `hello` lists `python`, and in crypto-base `sage` and the `pdf` feature |
-| `python-kernel`, `tools-on-path`, `multiprocessing` | A Python cell runs with the prefix's interpreter; the environment's programs are on `PATH`; `multiprocessing` locks, pools and process pools work |
+| `executor` | The executor's `hello` lists `python` and the `jobs` feature, and in crypto-base `sage` and the `pdf` feature too |
+| `python-kernel`, `tools-on-path`, `multiprocessing` | A Python cell runs with the prefix's interpreter; the environment's programs are on `PATH`, and its `python`, the package-command wrappers' stand-in first on `PATH`, runs the prefix's; `multiprocessing` locks, pools and process pools work |
 | `sage-kernel`, `sage-interfaces` | A Sage cell computes in GF(17) and preparses `2^10`; gp and Singular start through pseudo-terminals, and libgap works |
 | `fpylll`, `g6k`, `lattice-estimator` | LLL on a 60-dimensional q-ary lattice; a G6K sieve in dimension 50; the primal uSVP estimate for Kyber512 |
 | `latexmk`, `pdftotext`, `pdf-oxide` | `latexmk -pdf` builds an llncs document with T1 fonts, amsmath, cryptocode, algorithmicx, TikZ and cleveref, with no bitmap fonts in the PDF; `pdftotext`, `qpdf --check` and pdf_oxide read the result |
