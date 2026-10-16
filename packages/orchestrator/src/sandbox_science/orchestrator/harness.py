@@ -760,6 +760,7 @@ class Harness:
             consolidating=request.consolidate,
             switched=switched,
             former=former,
+            carried=await threaded(_carried, stores.projects, project, session),
             clock=self.clock,
         )
         # The ceiling a context error capped, carried to later runs: this service's, or
@@ -1321,6 +1322,24 @@ def _learned(projects: ProjectStore, project: str, session: str, alias: str) -> 
         folds = record.summaries.get("folds")
         capped = folds.get("capped") if isinstance(folds, dict) else None
         return capped if record.alias == alias and type(capped) is int else None
+    return None
+
+
+def _carried(projects: ProjectStore, project: str, session: str) -> tuple[str, str] | None:
+    """The session's last main run that began folding, and the fold it kept for the next
+    run's start (``summaries.folds.kept``, CM-24a), if it kept one."""
+    for entry in reversed(projects.runs(project, session)):
+        if entry.role != "main":
+            continue
+        try:
+            record = projects.run(project, session, entry.name)
+        except ProjectError:
+            return None
+        folds = record.summaries.get("folds")
+        if not isinstance(folds, dict):  # it stopped before its first call
+            continue
+        kept = folds.get("kept")
+        return (entry.name, kept) if isinstance(kept, str) else None
     return None
 
 

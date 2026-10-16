@@ -1080,6 +1080,16 @@ async def test_a_fold_ready_when_its_run_ends_is_kept_for_the_next_run(
     after = await harness.run("run-2", [Reply("Again.")], options=ENRICHED)
     view = cast(Json, after.summaries["view"])
     assert view["folds"] == [folds(first)["kept"]]
+    # The run that applies it at its start lists it, marked as carried from the run that
+    # kept it, so that the fold is in some run's record (CM-46); its calls stay the first
+    # run's, and the third run, which kept nothing, carries nothing.
+    assert [
+        (fold["fold"], fold["carried"]) for fold in cast(list[Json], folds(after)["folds"])
+    ] == [(folds(first)["kept"], name(first))]
+    assert folds(after)["calls"] == []
+    assert "kept" not in folds(after)
+    third = await harness.run("run-3", [Reply("Once more.")], options=ENRICHED)
+    assert folds(third)["folds"] == []
     region = next(
         str(m["content"]) for m in harness.gateway.main[0] if FOLD_REGION.text in str(m["content"])
     )

@@ -429,6 +429,7 @@ async def _complete(model: ChatModel, toolbox: Toolbox, transcript: Transcript) 
             cost_source=reply.cost_source,
             gateway_version=reply.gateway_version,
             thinking_replay=(reply.thinking_replay or "")[:300] or None,
+            retried=list(reply.retried[:16]),
         )
     )
     return reply

@@ -67,6 +67,10 @@ class ModelTurn:
     cost_source: CostSource | None = None
     """Where ``cost`` came from: ``gateway`` (reported) or ``model_info`` (priced from
     the gateway's model information)."""
+    retried: tuple[str, ...] = ()
+    """What the attempts before this answer's came to, in order: ``HTTP`` and a status,
+    or ``failed response``. Only this answer's cost is the turn's: an attempt that was
+    tried again was never answered, so nothing of it is recorded but this."""
     native: bytes | None = None
     """The gateway's answer as it sent it, which the session's archive keeps
     (docs/specs/context-management.md, CM-5); ``native_format`` says what it is."""
@@ -223,16 +227,21 @@ GATEWAY_BUDGET: Final = "gateway_budget"
 
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 """The largest answer read from the gateway, by default."""
-RETRIED: Final = frozenset({429, 502, 503, 504, 529})
+RETRIED: Final = frozenset({429, 502, 503, 504, 524, 529})
 """Gateway statuses that a later attempt can get past: rate limits and an unavailable,
-slow or overloaded upstream (Anthropic's 529). Another 5xx is tried again when its
-error says the upstream is overloaded (``overloaded``)."""
+slow or overloaded upstream (Anthropic's 529; Cloudflare's 524, a timeout of the proxy
+in front of the gateway, with an HTML page for a body, lab 44, B3). Another 5xx is tried
+again when its error says the upstream is overloaded (``overloaded``)."""
 OVERLOADED: Final = frozenset({"overloaded", "overloaded_error", "server_error"})
 """The error types and codes that say the upstream is overloaded or failed for a moment:
 Anthropic's ``overloaded_error``, and OpenAI's ``server_error`` with which a response
 fails ("Our servers are currently overloaded", lab 43, B3)."""
 MAX_RETRY_WAIT: Final = 60.0
 """The longest wait before a retry, whatever the gateway's ``Retry-After`` asks."""
+REQUEST_BYTES_PER_SECOND: Final = 5_000
+"""How much of a request the client allows a second of its timeout for, beyond the
+timeout itself: a conversation of 450,000 tokens (about 1.8 MB) gets 360 s more, since
+the gateway reads all of it before it answers (lab 44, B3)."""
 
 
 class GatewayModel(ABC):
@@ -244,9 +253,13 @@ class GatewayModel(ABC):
     another address), and any other status but 2xx are errors. A gateway that refuses
     the call because a spending budget is exhausted raises ``GatewayBudgetError``, never
     tried again, whatever its status. A rate limit (429) or an unavailable upstream (502,
-    503, 504) is tried again up to ``retries`` times, after ``Retry-After`` or ``backoff``
-    seconds doubling each time, at most a minute, and so is another 5xx, or an answer
-    whose response failed (``OverloadedError``), that says the upstream is overloaded. A
+    503, 504, or Cloudflare's 524) is tried again up to ``retries`` times, after
+    ``Retry-After`` or ``backoff`` seconds doubling each time, at most a minute, and so
+    is another 5xx, or an answer whose response failed (``OverloadedError``), that says
+    the upstream is overloaded; the body of such an error need not be JSON. Only the
+    HTTP call is tried again, before anything of it is recorded: the turn that results
+    names the attempts that failed (``retried``). The client's ``timeout`` is for a
+    request of any size; a larger one is allowed more (``REQUEST_BYTES_PER_SECOND``). A
     gateway that says the conversation exceeds the model's context raises
     ``ContextLimitError``. An error's message quotes
     the gateway's answer, with the key replaced if the answer holds it. Each turn keeps
@@ -288,7 +301,7 @@ class GatewayModel(ABC):
         self._api_key = api_key
         self._session: aiohttp.ClientSession | None = session
         self._owns_session = session is None
-        self._timeout = aiohttp.ClientTimeout(total=timeout)
+        self._timeout = timeout
         self._max_tokens = max_tokens
         self._max_response_bytes = max_response_bytes
         self._retries, self._backoff, self._clock = retries, backoff, clock
@@ -358,6 +371,7 @@ class GatewayModel(ABC):
         text, with its cost header if it has one."""
         prefix = prefix_digest({name: body[name] for name in self.PREFIX if name in body})
         wait = self._backoff
+        retried: list[str] = []
         for attempt in range(self._retries + 1):
             try:
                 text, priced, version = await self._post(body)
@@ -375,6 +389,7 @@ class GatewayModel(ABC):
                     gateway_version=version,
                     alias=self.model,
                     prefix=prefix,
+                    retried=tuple(retried),
                 )
             except _RetryableError as retry:
                 # A gateway that asks for a longer wait than the cap is not waited for.
@@ -383,11 +398,15 @@ class GatewayModel(ABC):
                 delay = retry.after if retry.after is not None else min(wait, MAX_RETRY_WAIT)
                 # The status only: the error, with the gateway's text, is the caller's to
                 # report once if the retries end.
+                failed = (
+                    "failed response"
+                    if retry.error.status is None
+                    else f"HTTP {retry.error.status}"
+                )
+                retried.append(failed)
                 _log.warning(
                     "the model gateway answered %s; trying again in %.1f s",
-                    "a failed response"
-                    if retry.error.status is None
-                    else f"HTTP {retry.error.status}",
+                    f"a {failed}" if retry.error.status is None else failed,
                     delay,
                 )
                 await self._clock.sleep(delay)
@@ -399,12 +418,14 @@ class GatewayModel(ABC):
         if self._session is None:
             self._session = aiohttp.ClientSession()
         added = {k: v for k, v in self._headers(body).items() if k.lower() != "authorization"}
+        size = len(json.dumps(body))  # as the client sends it
+        total = self._timeout + size / REQUEST_BYTES_PER_SECOND
         try:
             async with self._session.post(
                 f"{self.base_url}{self.PATH}",
                 json=body,
                 headers={**added, "Authorization": f"Bearer {self._api_key}"},
-                timeout=self._timeout,
+                timeout=aiohttp.ClientTimeout(total=total),
                 allow_redirects=False,
             ) as response:
                 try:
@@ -433,6 +454,8 @@ class GatewayModel(ABC):
                 if status in (400, 413) and _context_exceeded(text):
                     raise ContextLimitError(str(error), status=status)
                 raise error
+        except TimeoutError as exc:  # not tried again: the wait was already long
+            raise ModelError(f"the model gateway gave no answer within {total:,.0f} s") from exc
         except aiohttp.ClientError as exc:
             # An exception about a response holds the request, with its Authorization
             # header; only one without it is chained.

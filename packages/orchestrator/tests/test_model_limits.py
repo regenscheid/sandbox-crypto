@@ -13,8 +13,9 @@ import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
+import aiohttp
 import pytest
 import pytest_asyncio
 from aiohttp import web
@@ -26,6 +27,7 @@ from sandbox_science.orchestrator.hooks import Closing, Notice, RunView, TurnHoo
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import (
     MAX_RETRY_WAIT,
+    REQUEST_BYTES_PER_SECOND,
     ContextLimitError,
     GatewayBudgetError,
     ModelError,
@@ -157,6 +159,80 @@ async def test_rate_limits_and_unavailable_upstreams_are_tried_again(fake: Gatew
     # Retry-After in seconds is honored; an HTTP date falls back to the doubling backoff.
     assert waits.slept == [1.5, 4.0, 8.0]
     assert fake.calls == 4
+
+
+CLOUDFLARE_524 = (
+    "<!DOCTYPE html><html><head><title>Gateway Time-out</title></head><body>"
+    "<h1>A timeout occurred</h1><p>Error code 524</p></body></html>"
+)
+"""What Cloudflare answers when the gateway behind it takes too long (lab 44, B3)."""
+
+
+async def test_a_gateway_timeout_with_a_web_page_is_tried_again_and_recorded(
+    fake: Gateway,
+) -> None:
+    fake.answers = [
+        (524, CLOUDFLARE_524, {"Content-Type": "text/html"}),
+        (502, CLOUDFLARE_524, {"Content-Type": "text/html"}),
+        (200, ANSWER, {}),
+    ]
+    waits = Waits()
+    turn = await complete(fake, waits)
+    assert (turn.text, turn.input_tokens, fake.calls) == ("done", 1200, 3)
+    assert waits.slept == [2.0, 4.0]
+    # The turn is the answered attempt's alone; the others are only named.
+    assert turn.retried == ("HTTP 524", "HTTP 502")
+
+
+async def test_a_gateway_timeout_that_goes_on_ends_with_its_status_not_its_page(
+    fake: Gateway,
+) -> None:
+    fake.answers = [(524, CLOUDFLARE_524, {"Content-Type": "text/html"})] * 4
+    waits = Waits()
+    with pytest.raises(ModelError) as failed:
+        await complete(fake, waits)
+    assert failed.value.status == 524
+    assert "a text/html page of" in str(failed.value)
+    assert "Gateway Time-out" not in str(failed.value)
+    assert (waits.slept, fake.calls) == ([2.0, 4.0, 8.0], 4)  # retries, then the error
+
+
+async def test_a_call_without_retries_names_none(fake: Gateway) -> None:
+    fake.answers = [(200, ANSWER, {})]
+    turn = await complete(fake, Waits())
+    assert turn.retried == ()
+
+
+class Timeouts:
+    """A session that notes the total timeout of each request it sends."""
+
+    def __init__(self) -> None:
+        self.session = aiohttp.ClientSession()
+        self.totals: list[float | None] = []
+
+    def post(self, url: str, **kwargs: Any) -> Any:
+        self.totals.append(kwargs["timeout"].total)
+        return self.session.post(url, **kwargs)
+
+    def get(self, url: str, **kwargs: Any) -> Any:  # the price list's
+        return self.session.get(url, **kwargs)
+
+
+async def test_the_timeout_grows_with_the_size_of_the_request(fake: Gateway) -> None:
+    fake.answers = [(200, ANSWER, {})] * 2
+    session = Timeouts()
+    model = OpenAICompatibleModel(fake.url, "main", KEY, session=cast(Any, session), timeout=100)
+    try:
+        await model.complete([{"role": "user", "content": "hi"}], [])
+        await model.complete([{"role": "user", "content": "x" * 1_000_000}], [])
+    finally:
+        await session.session.close()
+    small, large = session.totals
+    assert small is not None
+    assert 100 < small < 101
+    assert large is not None
+    assert large == pytest.approx(100 + 1_000_100 / REQUEST_BYTES_PER_SECOND, abs=1)
+    assert large > 290
 
 
 async def test_retries_end_and_backoff_is_capped(fake: Gateway) -> None:
@@ -483,10 +559,35 @@ async def test_a_run_rides_out_a_rate_limit_and_records_its_usage(harness: Harne
             "cost_source": None,  # the scripted gateway gives no prices either
             "gateway_version": GATEWAY_VERSION,  # each call's, as the run record keeps it
             "thinking_replay": None,  # chat completions sends no thinking back
+            "retried": retried,
         }
-        for tokens in (first, last)
+        for tokens, retried in ((first, []), (last, ["HTTP 429"]))
     ]
     assert all(usage.characters for usage in record.usage)  # what each call sent and got
+
+
+async def test_a_run_rides_out_a_gateway_timeout_and_counts_only_the_answered_call(
+    harness: Harness,
+) -> None:
+    """Lab 44, B3: Cloudflare's 524 for a long call did not end the run in error; the
+    retried attempt left no usage, cost or turn of its own."""
+    record = await harness.run(
+        "run-1",
+        [
+            Reply(calls=[call("plan_read")]),
+            Reply(status=524, error=CLOUDFLARE_524, retry_after="0"),
+            Reply("The answer.", cost="0.0021"),
+        ],
+    )
+    assert (record.stopped, record.failure, record.final_text) == (
+        "answered",
+        None,
+        "The answer.",
+    )
+    assert [(usage.retried, usage.cost) for usage in record.usage] == [
+        ([], None),
+        (["HTTP 524"], 0.0021),
+    ]
 
 
 async def test_a_run_records_each_calls_cost_beside_its_tokens(harness: Harness) -> None:

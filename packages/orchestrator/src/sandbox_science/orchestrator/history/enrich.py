@@ -255,4 +255,5 @@ def _usage(turn: ModelTurn) -> ModelUsage:
         output_tokens=turn.output_tokens,
         cost=turn.cost,
         gateway_version=turn.gateway_version,
+        retried=list(turn.retried[:16]),
     )
