@@ -190,15 +190,18 @@ def _override(store: SkillStore, args: argparse.Namespace) -> SkillSettings:
     ``--expected`` names the settings' revision read (SK-33): for ``--skill``, a
     ``--description``, ``--topic`` and ``--entry`` or ``--not-entry`` to set, and
     ``--clear`` to give back to the pass; for ``--source``, ``--unbind`` and ``--rebind``
-    of its derived bindings. A change without ``--expected`` is refused, naming the
-    revision and the overrides it would make."""
+    of its derived bindings, ``--approve`` and ``--unapprove`` of those not namespaced to
+    the pack, and ``--prefix`` or ``--no-prefix`` for its own namespace (SK-31). A change
+    without ``--expected`` is refused, naming the revision and the overrides it would make."""
     current = store.settings(args.project)
+    lists = {
+        key: {k: list(v) for k, v in cast(dict[str, Any], current.overrides.get(key, {})).items()}
+        for key in ("unbound", "approved")
+    }
     skills = {
         k: dict(v) for k, v in cast(dict[str, Any], current.overrides.get("skills", {})).items()
     }
-    unbound = {
-        k: list(v) for k, v in cast(dict[str, Any], current.overrides.get("unbound", {})).items()
-    }
+    prefixes = dict(cast(dict[str, str], current.overrides.get("prefixes", {})))
     given = {
         "description": args.description,
         "topic": args.topic,
@@ -215,21 +218,40 @@ def _override(store: SkillStore, args: argparse.Namespace) -> SkillSettings:
         for key in args.clear or ():
             for field in ("description", "topic", "entry") if key == "all" else (key,):
                 fields.pop(field, None)
-    if args.unbind or args.rebind:
+    pairs = (("unbound", args.unbind, args.rebind), ("approved", args.approve, args.unapprove))
+    for key, adding, taking in pairs:
+        if adding or taking:
+            if args.source is None:
+                raise ControlError(INVALID_REQUEST, "bindings and prefixes need --source")
+            changing = True
+            names = set(lists[key].get(args.source, [])) | set(adding or ())
+            lists[key][args.source] = sorted(names - set(taking or ()))
+    if args.prefix is not None or args.no_prefix:
         if args.source is None:
-            raise ControlError(INVALID_REQUEST, "--unbind and --rebind need --source")
+            raise ControlError(INVALID_REQUEST, "bindings and prefixes need --source")
         changing = True
-        names = set(unbound.get(args.source, [])) | set(args.unbind or ())
-        unbound[args.source] = sorted(names - set(args.rebind or ()))
+        if args.prefix is not None:
+            prefixes[args.source] = args.prefix
+        else:
+            prefixes.pop(args.source, None)
     if args.expected is None:
         if changing:
+            then = {"skills": skills, **lists, "prefixes": prefixes}
             raise ControlError(
                 INVALID_REQUEST,
                 f"give --expected {current.revision}, the settings' revision, to change them: "
-                f"overrides then {json.dumps({'skills': skills, 'unbound': unbound})}",
+                f"overrides then {json.dumps(then)}",
             )
         return current
-    return store.set_overrides(args.project, USER, args.expected, skills=skills, unbound=unbound)
+    return store.set_overrides(
+        args.project,
+        USER,
+        args.expected,
+        skills=skills,
+        unbound=lists["unbound"],
+        approved=lists["approved"],
+        prefixes=prefixes,
+    )
 
 
 def _settings(store: SkillStore, args: argparse.Namespace) -> SkillSettings:
@@ -343,6 +365,16 @@ def add_parser(commands: Any) -> None:
     override.add_argument("--source", help="the pack whose derived bindings change")
     override.add_argument("--unbind", action="append", metavar="VARIABLE")
     override.add_argument("--rebind", action="append", metavar="VARIABLE")
+    override.add_argument(
+        "--approve",
+        action="append",
+        metavar="VARIABLE",
+        help="set a derived binding not namespaced to the pack (repeat)",
+    )
+    override.add_argument("--unapprove", action="append", metavar="VARIABLE")
+    named = override.add_mutually_exclusive_group()
+    named.add_argument("--prefix", help="the pack's own namespace, such as CAS_")
+    named.add_argument("--no-prefix", action="store_true", help="the source's name alone")
     listed = actions.add_parser(
         "list", parents=[common], help="the imports, a source's, or a project's pins"
     )

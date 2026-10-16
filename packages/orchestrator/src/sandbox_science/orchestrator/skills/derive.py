@@ -27,6 +27,7 @@ from sandbox_science.orchestrator.documents.agent_text import newlines
 from sandbox_science.orchestrator.model import ChatModel, Message, ModelError, ToolSpec
 from sandbox_science.orchestrator.pricing import CostSource
 
+from .allow import forbidden
 from .index import cut, marker
 from .packs import SHORT, TOPIC, VARIABLE, Snapshot, plain_text, topic_name
 
@@ -109,51 +110,6 @@ _MENTION: Final = re.compile(
     r"|getenv\s*\(\s*[\"']([A-Z][A-Z0-9_]{1,63})[\"']"
     r"|process\.env\.([A-Z][A-Z0-9_]{1,63})\b"
 )
-FORBIDDEN: Final = frozenset(
-    {
-        "PATH", "HOME", "SHELL", "USER", "LOGNAME", "LANG", "LANGUAGE", "TERM", "TMPDIR",
-        "TMP", "TEMP", "PWD", "OLDPWD", "IFS", "ENV", "CDPATH", "MAIL", "HOSTNAME", "TZ",
-        "EDITOR", "VISUAL", "PAGER", "MANPAGER", "BROWSER", "MANPATH", "INFOPATH",
-        "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "REQUESTS_CA_BUNDLE",
-        "CLASSPATH", "VIRTUAL_ENV", "IPYTHONDIR", "DOT_SAGE", "GPRC", "ZDOTDIR",
-        "CONFIG_SITE", "CC", "CXX", "CPP", "LD", "AR", "AS", "NM", "RANLIB", "FC", "F77",
-        "DISPLAY", "INPUTRC", "HISTFILE", "COLUMNS", "LINES", "MATPLOTLIBRC", "MPLCONFIGDIR",
-        "MPLBACKEND", "TERMINFO", "TERMCAP", "EMACS", "SUDO_ASKPASS", "GIT_ASKPASS",
-        "SSH_ASKPASS", "LS_COLORS", "TEXINPUTS", "BIBINPUTS", "TEXMFHOME", "WGETRC",
-        "CURL_HOME", "NETRC", "KRB5CCNAME", "GNUPGHOME", "MAKEFILES",
-    }
-)  # fmt: skip
-"""Shell, loader, interpreter start-up, pager and tool-configuration variables a binding
-may not name (SK-31): a pack's file under one would run, or change what runs, at every
-start of the tool."""
-FORBIDDEN_PREFIXES: Final = (
-    "LD_", "DYLD_", "PYTHON", "PY", "IPYTHON", "JUPYTER", "SAGE", "PARI", "GP_", "R_",
-    "RSTUDIO", "JULIA", "MATLAB", "OCTAVE", "MAGMA", "MAPLE", "MATHEMATICA", "PERL",
-    "RUBY", "GEM_", "BUNDLE", "NODE", "NPM_", "YARN", "DENO", "BUN_", "JAVA", "JDK_",
-    "MAVEN", "GRADLE", "RUST", "CARGO", "GO", "CONDA", "MAMBA", "PIP_", "UV_", "POETRY",
-    "VIRTUALENV", "TCL", "TK_", "LC_", "BASH", "ZSH", "SHELL", "PS", "PROMPT", "HIST",
-    "LESS", "MORE", "GIT_", "SSH_", "SSL_", "OPENSSL", "CURL", "GNUTLS", "XDG_", "DBUS_",
-    "WAYLAND", "X", "QT_", "GTK", "MALLOC", "GCONV", "NLSPATH", "LOCPATH", "HOSTALIASES",
-    "RESOLV", "SANDBOX_", "OMP_", "MKL_", "OPENBLAS", "CUDA", "NV", "LIBRARY_PATH",
-    "CPATH", "C_INCLUDE", "CPLUS_INCLUDE", "PKG_CONFIG", "CMAKE", "MAKE", "TEX", "MPL",
-    "KRB5", "GNUPG", "GPG", "AWS_", "GOOGLE_", "AZURE_", "KUBE", "DOCKER", "MAXIMA",
-    "SINGULAR", "ECL", "LUA", "CCACHE",
-)  # fmt: skip
-FORBIDDEN_SUFFIXES: Final = (
-    "OPT", "OPTS", "OPTIONS", "FLAGS", "RC", "RCFILE", "PROFILE", "PROFILE_USER",
-    "STARTUP", "STARTUP_FILE", "ENVIRON", "ENVIRON_USER", "WRAPPER", "HOOK", "HOOKS",
-    "INIT", "_CONFIG", "_CONFIG_DIR", "CONFIG_PATH", "_LIBS", "_PLUGINS",
-)  # fmt: skip
-"""Families of start-up and configuration variables, whatever the tool."""
-
-
-def forbidden(variable: str) -> bool:
-    """Whether a binding may not name ``variable``, by name or by family."""
-    return (
-        variable in FORBIDDEN
-        or variable.startswith(FORBIDDEN_PREFIXES)
-        or variable.endswith(FORBIDDEN_SUFFIXES)
-    )
 
 
 def mentioned(snap: Snapshot) -> set[str]:

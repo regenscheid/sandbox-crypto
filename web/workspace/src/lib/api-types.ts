@@ -585,6 +585,13 @@ export interface GoalOutcome {
   remaining_work: string[];
 }
 
+/** A derived binding the project's runs do not set, and why (SK-31). */
+export interface HeldBinding {
+  variable: string;
+  path: string;
+  reason: string;
+}
+
 export type JsonValue = unknown;
 
 /** A session's kernel; ``generation`` grows by one on every restart. */
@@ -951,13 +958,14 @@ export interface ProjectSession {
   runs: number;
 }
 
-/** A project's skills: its settings, its pins and the skills a run is given now. */
+/** A project's skills: its settings, its pins, the skills a run is given now and its derived bindings. */
 export interface ProjectSkills {
   project_id: string;
   observed_at: string;
   settings: SkillSettingsView;
   pins: SkillPinView[];
   effective: SkillView[];
+  bindings: SourceBindings[];
 }
 
 /** A project in the list, with how many sessions it has. */
@@ -1330,6 +1338,13 @@ export interface SkillView {
   entry: boolean;
   short_by: string | null;
   topic_by: string | null;
+}
+
+/** A pinned source's derived bindings: those the project's runs set, namespaced to the pack or approved, and those held (SK-31, SK-33). */
+export interface SourceBindings {
+  source: string;
+  set: Record<string, string>;
+  held: HeldBinding[];
 }
 
 /** How far the project's sessions read one source of a reference (CM-12, LG-15), as the read register put its reads together: ``whole``, ``partial`` (with the pages, byte ranges or character ranges ``covered``), ``abstract_only``, ``preview_only``, or ``unknown`` when the reading tool says nothing of it. */

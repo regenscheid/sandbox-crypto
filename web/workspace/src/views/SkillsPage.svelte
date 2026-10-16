@@ -11,6 +11,7 @@
   import { projectHref } from '../lib/router';
   import { idLines, overridesView } from '../lib/skills';
   import { idle, submit } from '../lib/submit';
+  import { visible } from '../lib/text';
   import ErrorMessage from './ErrorMessage.svelte';
   import SkillPinCard from './SkillPinCard.svelte';
   import SkillTable from './SkillTable.svelte';
@@ -99,7 +100,7 @@
   </form>
 
   <h2>Your overrides</h2>
-  {#if overrides && (overrides.skills.length || overrides.unbound.length)}
+  {#if overrides && (overrides.skills.length || overrides.unbound.length || overrides.approved.length || overrides.prefixes.length)}
     <p class="muted">
       What wins over the imports' passes. Change them with <code>skills override</code>.
     </p>
@@ -112,9 +113,41 @@
           <code>{item.source}</code>'s derived bindings taken away: {item.variables.join(', ')}
         </li>
       {/each}
+      {#each overrides.approved as item (item.source)}
+        <li>
+          <code>{item.source}</code>'s derived bindings approved: {item.variables.join(', ')}
+        </li>
+      {/each}
+      {#each overrides.prefixes as item (item.source)}
+        <li><code>{item.source}</code>'s variables also start with <code>{item.prefix}</code></li>
+      {/each}
     </ul>
   {:else}
     <p class="muted">None. Set them with <code>skills override</code>.</p>
+  {/if}
+
+  <h2>Bindings</h2>
+  {#if shown.bindings.length}
+    <p class="muted">
+      The environment variables the import's pass found for the packs' helpers. Runs set those
+      namespaced to the pack, or approved with <code>skills override --approve</code>; the rest are
+      held.
+    </p>
+    <ul>
+      {#each shown.bindings as item (item.source)}
+        {#each Object.entries(item.set) as [name, path] (name)}
+          <li><code>{visible(name)}</code> = <code>{visible(path)}</code> (set)</li>
+        {/each}
+        {#each item.held as held (held.variable)}
+          <li>
+            <code>{visible(held.variable)}</code> = <code>{visible(held.path)}</code>, held:
+            {visible(held.reason)}
+          </li>
+        {/each}
+      {/each}
+    </ul>
+  {:else}
+    <p class="muted">None: no pass found bindings for the pinned packs.</p>
   {/if}
 
   <h2>Pinned sources ({shown.pins.length})</h2>
