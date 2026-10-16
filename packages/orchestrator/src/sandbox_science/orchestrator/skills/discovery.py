@@ -33,7 +33,7 @@ from sandbox_science.orchestrator.hooks import Notice, Point, RunView, TurnHook
 from sandbox_science.orchestrator.notices import SKILLS, SKILLS_WORDS
 
 from .embeddings import EmbeddingError
-from .index import shown
+from .index import shown, written_by
 from .store import Entry
 from .tool import SkillTool, hybrid, rank, words
 
@@ -70,8 +70,12 @@ def matches(
 
 
 def _listed(entry: Entry) -> dict[str, str]:
-    """A skill as a notice lists it: its ID and the description the index gives it."""
-    return {"id": entry.qualified, "description": shown(entry)}
+    """A skill as a notice lists it: its ID and the description the index gives it, with
+    who wrote that, when its pack did not, in a field of its own."""
+    listed = {"id": entry.qualified, "description": shown(entry)}
+    if by := written_by(entry):
+        listed["description_by"] = by
+    return listed
 
 
 class SkillDiscovery(TurnHook):

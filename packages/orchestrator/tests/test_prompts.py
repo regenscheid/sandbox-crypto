@@ -113,11 +113,11 @@ GOLDEN = {
     "sandbox-memory-watcher-1": (
         "7d0f75c8dfcd72a66c74e0a9d7bd76cb71df5286de234f82573034f717d53790"
     ),
-    "sandbox-notice-skills-2": ("9e771dceecf872c8526f873d33685b01eebcd46f81f5b5e9b39727e7e4844e79"),
-    "sandbox-notice-skills-words-1": (
-        "60d5307150cba1f8cadad5e95d8f1e8142836447455788239d9a85e8661689e0"
+    "sandbox-notice-skills-3": ("2cce68a8be83ec7606f3673b325dc6bf3053b1889745ea1be8857cb32f2a9d1c"),
+    "sandbox-notice-skills-words-2": (
+        "95abbf47b2ed323a776ad1ed94e791530e2fc9352cdea710406c22a3aa572063"
     ),
-    "sandbox-skills-index-2": ("2abca83f2c03b9e812a26b76b9611aa0ff099349f158569c3a05f7839a82646d"),
+    "sandbox-skills-index-3": ("2daecc293895a53af16ac5cab4ebeb65dd527199da04a86f569cda0d89962601"),
     "sandbox-skills-pass-1": ("c1959f76747a1361f5e9ebe5b97c4b675c3fe45037c28e3dc1513a8fc56ff0b6"),
 }
 

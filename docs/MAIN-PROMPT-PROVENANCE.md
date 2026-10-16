@@ -25,7 +25,7 @@ The system message is its sections' texts joined by a blank line, in order
    ([project memory](MEMORY.md)). Its text is not from the catalog, so the section pin
    has no version; the `memory` pin below names the framing's.
 4. `skills`, with no version, when the project pins skills: the framing
-   `sandbox-skills-index-2`, the index of the run's skills and the skills loaded at its
+   `sandbox-skills-index-3`, the index of the run's skills and the skills loaded at its
    start ([skills](SKILLS.md)); the `skills` pin below names the framing's version.
 5. `planning`, version `sandbox-main-plan-1`, when the plan tools are offered. Plan
    tools offered without their hook, or the hook without the tools, refuse before any
