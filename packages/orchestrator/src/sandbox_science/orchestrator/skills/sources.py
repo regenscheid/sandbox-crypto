@@ -51,6 +51,10 @@ MAX_FILE_BYTES: Final = 1024 * 1024
 MAX_PACK_BYTES: Final = 32 * 1024 * 1024
 MAX_FILES: Final = 4096
 GIT_SECONDS: Final = 300.0
+QUIET: Final = ("-c", "maintenance.auto=false", "-c", "gc.auto=0")
+"""No automatic maintenance or garbage collection in the scratch repository: a fetch
+starts one in the background, which could still be writing in it, holding
+``objects/maintenance.lock``, as the import removes it."""
 ARCHIVE_SECONDS: Final = 120.0
 ALLOWED: Final = "file:git:http:https:ssh"
 """The transports git may use (``GIT_ALLOW_PROTOCOL``)."""
@@ -221,7 +225,7 @@ def _git(repo: str, *args: str, data: bytes | None = None, limit: int | None = N
 
     try:
         done = subprocess.run(  # noqa: S603 - the user's own git, on the user's own request
-            ["git", f"--git-dir={repo}", *args],  # noqa: S607 - git on the user's PATH
+            ["git", f"--git-dir={repo}", *QUIET, *args],  # noqa: S607 - git on the user's PATH
             cwd=os.path.dirname(repo),
             input=data,
             capture_output=True,
