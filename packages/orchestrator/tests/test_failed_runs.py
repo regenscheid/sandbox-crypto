@@ -223,7 +223,9 @@ async def test_cli_cleanup_failure_keeps_partial_record_and_closes_model(
             closed.append("store")
             raise OSError(HOSTILE)
 
-    monkeypatch.setattr(cli, "OpenAICompatibleModel", Model)
+    # The one place the CLI makes a gateway client, and what it closes.
+    monkeypatch.setattr(cli, "gateway_model", Model)
+    monkeypatch.setattr(cli, "GatewayModel", Model)
     monkeypatch.setattr(cli, "WorkerClient", Client)
     monkeypatch.setattr(cli, "read_secret", lambda _: "synthetic")
     monkeypatch.setattr(DocumentStore, "close", close)

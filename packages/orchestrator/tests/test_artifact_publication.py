@@ -336,7 +336,9 @@ async def test_cli_closes_borrowed_store_and_models_after_publisher_drain_cancel
     async def interrupted(*args, **kwargs):
         raise asyncio.CancelledError
 
-    monkeypatch.setattr(cli, "OpenAICompatibleModel", Model)
+    # The one place the CLI makes a gateway client, and what it closes.
+    monkeypatch.setattr(cli, "gateway_model", Model)
+    monkeypatch.setattr(cli, "GatewayModel", Model)
     monkeypatch.setattr(harness, "ArtifactPublisher", CancelledClosePublisher)
     monkeypatch.setattr(cli, "read_secret", lambda _: TOKEN)
     monkeypatch.setattr(harness, "run_task", interrupted)

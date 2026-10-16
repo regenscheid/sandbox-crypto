@@ -164,11 +164,14 @@ class ModelConfig(_Strict):
     """Seconds between check-ins; the run service's default (1,800) when unset."""
     delegated: str | None = Field(default=None, min_length=1)
     """The alias delegated runs call; the main agent's when unset."""
-    responses_api: tuple[Annotated[str, StringConstraints(min_length=1)], ...] = ()
-    """The aliases, in any role, the run service calls through the gateway's
-    ``/v1/responses``, GPT's Responses API with its reasoning sent back
-    (docs/specs/context-management.md, CM-40); every other alias goes through
-    ``/chat/completions``. None by default, until the labs confirm it."""
+    api: dict[Annotated[str, StringConstraints(min_length=1)], Literal["chat", "responses"]] = (
+        Field(default_factory=dict[str, Literal["chat", "responses"]])
+    )
+    """The gateway API the run service calls each alias through, in any role
+    (docs/specs/context-management.md, CM-41): ``chat`` (``/chat/completions``) or
+    ``responses`` (``/v1/responses``, GPT's Responses API, with its reasoning sent back,
+    CM-40). An alias it leaves out takes ``chat``, as every alias does by default, until
+    the labs confirm the others."""
     daily_cost_limit: float | None = Field(default=None, ge=0, le=1_000_000_000)
     """What each project's runs may cost over a rolling 24 hours, as the gateway reports
     it, in its currency (normally USD); ``up`` sets it for each project. Unset, as by

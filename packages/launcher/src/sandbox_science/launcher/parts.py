@@ -246,8 +246,8 @@ def harness_argv(config: LauncherConfig, layout: Layout) -> list[str]:
     if model.watcher_interval is not None:
         watcher += ["--watcher-interval", f"{model.watcher_interval:g}"]
     delegated = ["--delegated-model", model.delegated] if model.delegated else []
-    # The aliases GPT's Responses API serves (CM-40); the others take chat completions.
-    responses = [option for alias in model.responses_api for option in ("--responses-api", alias)]
+    # Each alias's gateway API (CM-41); an alias left out takes chat completions.
+    apis = [option for alias, kind in model.api.items() for option in ("--api", f"{alias}={kind}")]
     shared = [] if service.run_share is None else ["--run-share", str(service.run_share)]
     if (embedding := config.skills.embedding_model) is not None:
         shared += ["--skills-embedding-model", embedding]  # the skills' imports used it too
@@ -267,7 +267,7 @@ def harness_argv(config: LauncherConfig, layout: Layout) -> list[str]:
         "--worker", worker_url(config),
         "--token-file", str(layout.token("harness-worker")),
         "--model-url", model.url, "--model", model.name,
-        "--api-key-file", str(model.api_key_file), *reviewer, *watcher, *delegated, *responses,
+        "--api-key-file", str(model.api_key_file), *reviewer, *watcher, *delegated, *apis,
         *shared, *math,
         *mcp.harness_options(config, layout),
     ]  # fmt: skip

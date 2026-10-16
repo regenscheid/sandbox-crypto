@@ -448,7 +448,8 @@ async def _run_task(
                 await _out_of_room(hooks, transcript)
             return transcript
         # The answer as a chat message, carrying the gateway's answer for its adapter.
-        await _append(transcript, AssistantMessage(reply), Appended("assistant", reply=reply))
+        answer = AssistantMessage.of(reply)
+        await _append(transcript, answer, Appended("assistant", reply=reply))
         await _model_returned(hooks, transcript)
         if not reply.tool_calls:
             if await _closing(hooks, transcript, reply.text):

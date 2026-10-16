@@ -2674,6 +2674,21 @@ def _research_state(schema: Schema) -> None:
         rebuild(schema, table, create.replace(old, new, 1))
 
 
+def _archived_answers(schema: Schema) -> None:
+    """Version 48: what an archived answer came from, beside its native payload, model
+    and gateway version: the alias it was asked on, which with the model decides whether
+    its native items may be sent back (docs/specs/context-management.md, CM-42), and the
+    SHA-256 of what the model was given, in hexadecimal. Answers archived before have
+    neither."""
+    for statement in (
+        "ALTER TABLE archive_messages ADD COLUMN alias TEXT "
+        "CHECK (alias IS NULL OR length(CAST(alias AS BLOB)) BETWEEN 1 AND 256)",
+        "ALTER TABLE archive_messages ADD COLUMN prefix TEXT CHECK (prefix IS NULL OR "
+        "(length(prefix) = 64 AND prefix NOT GLOB '*[^0-9a-f]*'))",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -2721,6 +2736,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _skill_overrides,
     _archive,
     _research_state,
+    _archived_answers,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

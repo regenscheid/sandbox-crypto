@@ -429,7 +429,7 @@ class ReviewerRunner:
                 )
                 return
             # With the gateway's answer, which GPT's adapter sends back (CM-40).
-            assistant = AssistantMessage(reply)
+            assistant = AssistantMessage.of(reply)
             assistant["content"] = content
             messages.append(assistant)
             await asyncio.to_thread(

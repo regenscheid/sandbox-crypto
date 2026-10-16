@@ -50,7 +50,9 @@ def run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
             )
             return SimpleNamespace(location=location, languages=(), features=())
 
-    monkeypatch.setattr(cli, "OpenAICompatibleModel", Model)
+    # The one place the CLI makes a gateway client, and what it closes.
+    monkeypatch.setattr(cli, "gateway_model", Model)
+    monkeypatch.setattr(cli, "GatewayModel", Model)
     monkeypatch.setattr(cli, "WorkerClient", Client)
     monkeypatch.setattr(cli, "read_secret", lambda _: "test-secret-unused")
 

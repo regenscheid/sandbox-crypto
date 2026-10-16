@@ -49,6 +49,7 @@ from typing import Any, Final, Literal, cast
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.control.errors import INVALID_REQUEST, NOT_FOUND
+from sandbox_science.orchestrator.model import AssistantMessage
 
 Json = dict[str, Any]
 Role = Literal["user", "assistant", "tool"]
@@ -99,6 +100,8 @@ _FIELDS: Final = (
     "gateway_version",
     "native_format",
     "native",
+    "alias",
+    "prefix",
 )
 _COLUMNS: Final = ", ".join((*_PLACE, *_FIELDS))
 _TERM: Final = re.compile(r'"([^"]*)"|(\S+)')
@@ -182,6 +185,10 @@ class Entry:
     native_format: str | None = None
     native: bytes | None = None
     """The gateway's answer, as it sent it (CM-5)."""
+    alias: str | None = None
+    """The alias an answer was asked on (CM-42)."""
+    prefix: str | None = None
+    """The digest of what the model was given for an answer (``model.prefix_digest``)."""
     saved: Mapping[str, str] = field(default_factory=dict[str, str], compare=False)
     """The texts of the files saved behind a tool result's sample, by path, as the run
     gives them to the archive; ``Archive.files`` reads them back."""
@@ -266,15 +273,23 @@ class Archived:
 
     def chat(self) -> Json:
         """The message as it was sent, in the chat format the harness uses: a platform
-        message with its header and its look-alikes escaped, an answer as the model
-        wrote it."""
+        message with its header and its look-alikes escaped; an answer as the model
+        wrote it, carrying what it came from (``AssistantMessage``), so that the adapter
+        that made it can send it back as it did during the run."""
         entry = self.entry
-        content = entry.content
-        if entry.role != "assistant":
-            content = header(self.message_id, entry.kind, entry.source) + escape(content or "")
+        if entry.role == "assistant":
+            return AssistantMessage(
+                entry.content,
+                [dict(call) for call in entry.tool_calls],
+                native=entry.native,
+                native_format=entry.native_format,
+                alias=entry.alias,
+                model=entry.model,
+                gateway_version=entry.gateway_version,
+                prefix=entry.prefix,
+            )
+        content = header(self.message_id, entry.kind, entry.source) + escape(entry.content or "")
         message: Json = {"role": entry.role, "content": content}
-        if entry.tool_calls:
-            message["tool_calls"] = [dict(call) for call in entry.tool_calls]
         if entry.call_id is not None:
             message["tool_call_id"] = entry.call_id
         return message

@@ -332,13 +332,16 @@ class Gateway:
     """The body of each ``/responses`` request, in order."""
     responded: list[str] = field(default_factory=list[str])
     """Each ``/responses`` answer, as it was sent."""
+    raw: list[bytes] = field(default_factory=list[bytes])
+    """Each ``/responses`` request's body, as it arrived."""
 
     async def respond(self, request: web.Request) -> web.Response:
         """The main alias's script through OpenAI's Responses API, as LiteLLM serves it:
         each answer a reasoning item with synthetic encrypted content, then its text and
         calls."""
         assert request.headers.get("Authorization") == f"Bearer {API_KEY}"
-        body = cast(Json, await request.json())
+        self.raw.append(await request.read())
+        body = cast(Json, json.loads(self.raw[-1]))
         assert body["model"] == "main", body["model"]
         self.responses.append(body)
         reply = self.script.pop(0) if self.script else Reply("(the script has ended)")

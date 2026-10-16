@@ -4,7 +4,7 @@ name = "sandbox-science-policy-middleware"
 version = "0.1.0"
 description = "OpenShell supervisor middleware that decides sandbox requests with the Sandbox Science policy library"
 requires-python = ">=3.12"
-license = "MIT"
+license = "MIT AND Apache-2.0"
 dependencies = [
     "sandbox-science-event-store",
     "sandbox-science-policy",

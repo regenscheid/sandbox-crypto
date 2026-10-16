@@ -15,6 +15,8 @@ License facts below were read from each project's published license file on 2026
 
 Tier 1 code must work without any tier 3 package installed. It may depend on GPL tools only **over process or protocol boundaries**: subprocess argv/stdio, or the Jupyter messaging protocol to Sage's own kernel. It must not `import sage`, `import fpylll`, or link GPL libraries.
 
+**The project's own packages** are MIT, except for files ported or vendored from Apache-2.0 sources, which keep that license and their notices. A package holding such files declares `MIT AND Apache-2.0`: the orchestrator (`orchestrator/pairing.py`, from OpenAI Codex) and the policy middleware (the OpenShell protobuf contracts and the code generated from them). The Apache License 2.0's text is in [`LICENSES/Apache-2.0.txt`](../LICENSES/Apache-2.0.txt), beside the project's MIT [`LICENSE`](../LICENSE).
+
 MIT is GPL-compatible, so MIT-licensed helper scripts and skills that import a GPL library can keep their MIT source license. Whoever distributes the *combination* takes on the GPL obligations. That is the user, at runtime, not this project.
 
 ## Known components
@@ -72,7 +74,7 @@ for embedded subcomponents.
 | OpenCode | MIT | Harness reuse candidate |
 | Pydantic AI | MIT | Harness building-block candidate |
 | LiteLLM | MIT core (enterprise directory under separate terms) | **Model gateway (D61)**: run the proxy; use only MIT-licensed features |
-| OpenAI Codex (`openai/codex`, `rust-v0.163.0` at `6b99197`) | Apache-2.0 | Context management's pairing of tool calls and outputs before a request (CM-29a) is a port of its `context_manager/normalize.rs`, in `orchestrator/pairing.py`, which keeps its license notice and the part of its NOTICE that applies, and says what changed. Nothing else is taken from it |
+| OpenAI Codex (`openai/codex`, `rust-v0.163.0` at `6b99197`) | Apache-2.0 | Context management's pairing of tool calls and outputs before a request (CM-29a) is a port of its `context_manager/normalize.rs`, in `orchestrator/pairing.py`, which keeps its license notice and the part of its NOTICE that applies, and says what changed; the orchestrator package declares `MIT AND Apache-2.0`. Nothing else is taken from it |
 | sparfenyuk/mcp-proxy, docker/mcp-gateway | MIT | MCP proxy references/possible bases (D67) |
 | IBM mcp-context-forge | Apache-2.0 | MCP proxy reference/possible base (D67) |
 | markdown-it-py, mdit-py-plugins, mdurl, markdown-it | MIT | Living-document parsing (D65): the orchestrator parses documents with markdown-it-py 4.2.0 and mdit-py-plugins 0.6.1, pinned exactly, and mdurl, which markdown-it-py requires; markdown-it renders the workspace GUI's text (D80). The GUI's math rules are a port of mdit-py-plugins' `dollarmath` (MIT, Copyright (c) 2020 ExecutableBookProject, v0.6.1 at `da70e05`), credited in the ported file, and its rules for living documents' front matter and theorem-like containers are ports of the same package's `front_matter` and `container`, credited in `documentrules.ts`. The server's code span rule is a port of markdown-it 15.0.2's (MIT, Copyright (c) 2014 Vitaly Puzrin, Alex Kocharin), credited in `documents/parser.py`, so that both sides find the same code spans. The rules for LaTeX's own delimiters, on both sides, are adapted from the user's `cscience-crypto`, contributed under the MIT License |
@@ -85,7 +87,7 @@ for embedded subcomponents.
 | pydantic, pydantic-core, annotated-types, typing-inspection | MIT | Policy and API schemas (`packages/policy`) |
 | typing-extensions | PSF-2.0 | Required by pydantic; PSF-2.0 is permissive and GPL-compatible |
 | PyYAML | MIT | Policy file parsing; living documents' front matter |
-| OpenShell protobuf contracts (`supervisor_middleware.proto`, `extension.proto`, v0.1.3) | Apache-2.0 | Vendored unmodified in `packages/policy-middleware/proto` with the upstream license; the generated Python code carries the same license |
+| OpenShell protobuf contracts (`supervisor_middleware.proto`, `extension.proto`, v0.1.3) | Apache-2.0 | Vendored unmodified in `packages/policy-middleware/proto` with the upstream license; the generated Python code carries the same license, and the middleware package declares `MIT AND Apache-2.0` |
 | grpcio | Apache-2.0 | Policy middleware gRPC server |
 | protobuf | BSD-3-Clause | Policy middleware messages |
 | PyJWT | MIT | Policy middleware: verifies OpenShell extension tokens |
