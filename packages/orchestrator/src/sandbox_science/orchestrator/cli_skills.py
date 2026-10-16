@@ -22,7 +22,7 @@ from .documents import USER
 from .model import OpenAICompatibleModel
 from .pricing import GATEWAY
 from .projects import ProjectError, ProjectStore
-from .skills import SkillSettings, SkillStore, from_archive, from_git, snapshot
+from .skills import SkillSettings, SkillStore, allow, from_archive, from_git, snapshot
 from .skills.builtin import builtin_pack
 from .skills.derive import ANSWER_TOKENS, VERSION, Derived, PassError, derive
 from .skills.embeddings import (
@@ -104,6 +104,15 @@ def _import(store: SkillStore, args: argparse.Namespace) -> dict[str, Any]:
         )
     for warning in found.report.get("warnings", []):
         print(f"warning: {warning}", file=sys.stderr)
+    if held := cast(dict[str, Any], found.report.get("derived", {})).get("held"):
+        # The user's, not the model's: a load's answer names held bindings without this.
+        print(
+            f"note: {len(held)} derived bindings are held until a project's user approves "
+            f"them: {', '.join(item['variable'] for item in held)}; skills override "
+            f"--project P --source {args.name} --approve VARIABLE says what is known of one, "
+            "and --confirm then approves it",
+            file=sys.stderr,
+        )
     shown = asdict(found)
     shown["unchanged"] = same
     if isinstance(derived, PassError):
@@ -234,6 +243,8 @@ def _override(store: SkillStore, args: argparse.Namespace) -> SkillSettings:
             prefixes[args.source] = args.prefix
         else:
             prefixes.pop(args.source, None)
+    if args.approve and not args.confirm:
+        _unconfirmed(store, cast(str, args.source), args.approve, prefixes.get(args.source))
     if args.expected is None:
         if changing:
             then = {"skills": skills, **lists, "prefixes": prefixes}
@@ -251,6 +262,35 @@ def _override(store: SkillStore, args: argparse.Namespace) -> SkillSettings:
         unbound=lists["unbound"],
         approved=lists["approved"],
         prefixes=prefixes,
+    )
+
+
+def _unconfirmed(store: SkillStore, source: str, variables: list[str], prefix: str | None) -> None:
+    """Refuse an approval of a binding not namespaced to ``source`` without ``--confirm``,
+    saying what is known of each (SK-31): a pack's file under a variable some tool reads
+    runs as that tool."""
+    imports = store.imports()
+    others = {allow.namespace(i.source) for i in imports if i.source != source}
+    names, _ = allow.granted(source, prefix, others)
+    latest = next((i for i in imports if i.source == source), None)
+    derived = cast(dict[str, Any], latest.report.get("derived", {})) if latest else {}
+    paths = cast(dict[str, str], derived.get("bindings", {}))
+    unasked = [
+        v
+        for v in dict.fromkeys(variables)
+        if not v.startswith(tuple(names)) and not allow.forbidden(v)  # the store refuses those
+    ]
+    if not unasked:
+        return
+    for variable in unasked:
+        print(
+            f"approval: {allow.about(variable, source, names, paths.get(variable))}",
+            file=sys.stderr,
+        )
+    raise ControlError(
+        INVALID_REQUEST,
+        f"give --confirm to approve {', '.join(unasked)}, having read what is known of "
+        f"{'it' if len(unasked) == 1 else 'them'}",
     )
 
 
@@ -370,6 +410,11 @@ def add_parser(commands: Any) -> None:
         action="append",
         metavar="VARIABLE",
         help="set a derived binding not namespaced to the pack (repeat)",
+    )
+    override.add_argument(
+        "--confirm",
+        action="store_true",
+        help="approve a binding not namespaced to the pack, having read what --approve says",
     )
     override.add_argument("--unapprove", action="append", metavar="VARIABLE")
     named = override.add_mutually_exclusive_group()

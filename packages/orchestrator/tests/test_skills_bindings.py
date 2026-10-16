@@ -101,8 +101,11 @@ def test_a_hostile_pack_gets_only_its_namespace_and_the_rest_is_held(state: Path
         projects.close()
     (held,) = latest.report["derived"]["held"]
     assert (held["variable"], held["path"]) == ("LIBFOO_PLUGIN_DIR", "tool/start.py")
-    assert held["reason"].startswith("not namespaced to the pack (SS_)")
-    assert "--approve LIBFOO_PLUGIN_DIR" in held["reason"]
+    assert (
+        held["reason"]
+        == "not namespaced to the pack (SS_): held until the project's user approves it"
+    )
+    # The model reads held reasons in a load's answer: none hands it the command.
     bound = _bound(state)
     assert bound.set == {"ss": {"SS_DATA": "tool/start.py"}}
     reasons = {item["variable"]: item["reason"] for item in bound.held["ss"]}
@@ -114,9 +117,18 @@ def test_the_user_approves_or_names_a_prefix_and_never_a_start_up_variable(
     state: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     over = ("override", "--project", "p", "--source", "ss")
-    status, refused = _cli(capsys, state, *over, "--approve", "LIBFOO_PLUGIN_DIR")
+    # An approval says what is known of the variable, and needs --confirm.
+    for expected in ((), ("--expected", "0")):
+        status, said = _cli(capsys, state, *over, *expected, "--approve", "LIBFOO_PLUGIN_DIR")
+        assert status == 1
+        assert "approval: LIBFOO_PLUGIN_DIR is not namespaced to ss (SS_)" in said
+        assert "binds it to tool/start.py" in said
+        assert "may load or run the pack's files" in said
+        assert "give --confirm to approve LIBFOO_PLUGIN_DIR" in said
+    confirmed = ("--approve", "LIBFOO_PLUGIN_DIR", "--confirm")
+    status, refused = _cli(capsys, state, *over, *confirmed)
     assert (status, "give --expected 0" in refused) == (1, True)
-    status, shown = _cli(capsys, state, *over, "--expected", "0", "--approve", "LIBFOO_PLUGIN_DIR")
+    status, shown = _cli(capsys, state, *over, "--expected", "0", *confirmed)
     assert status == 0
     assert shown["overrides"]["approved"] == {"ss": ["LIBFOO_PLUGIN_DIR"]}
     assert _bound(state).set["ss"] == {
@@ -144,14 +156,24 @@ def test_the_user_approves_or_names_a_prefix_and_never_a_start_up_variable(
     assert "LIBFOO_PLUGIN_DIR" not in _bound(state).set["ss"]
 
 
+# The re-check of #486 found these approved without a word: each loads or runs a file
+# it names (KENZO_FAS: Sage's ECL loads it as Lisp; COMPILER_PATH: gcc runs its cc1).
+APPROVALS_REFUSED = (
+    "KENZO_FAS", "COMPILER_PATH", "LDSHARED", "LDCXXSHARED", "CCSHARED", "ODBCSYSINI",
+    "VIMRUNTIME", "TIX_LIBRARY", "CAML_LD_LIBRARY_PATH", "DEPENDENCIES_OUTPUT",
+    "SUNPRO_DEPENDENCIES", "GCC_COMPARE_DEBUG",
+)  # fmt: skip
+
+
 def test_the_store_refuses_approvals_it_could_never_honour(state: Path) -> None:
     projects = ProjectStore(state)
     try:
         store = SkillStore(projects.control)
-        with pytest.raises(ControlError, match="LD_PRELOAD is never set"):
-            store.set_overrides(
-                "p", USER, 0, skills={}, unbound={}, approved={"ss": ["LD_PRELOAD"]}
-            )
+        for variable in ("LD_PRELOAD", *APPROVALS_REFUSED):
+            with pytest.raises(ControlError, match=f"{variable} is never set"):
+                store.set_overrides(
+                    "p", USER, 0, skills={}, unbound={}, approved={"ss": [variable]}
+                )
         with pytest.raises(ControlError, match="no prefix"):
             store.set_overrides("p", USER, 0, skills={}, unbound={}, prefixes={"ss": "lower_"})
         with pytest.raises(ControlError, match="name no variable"):
@@ -176,6 +198,11 @@ COLLISIONS = (
     # Interpreter and notebook start-up, by name and by a source named after the tool.
     ("ipython", "IPYTHONDIR"), ("jupyter", "JUPYTER_CONFIG_DIR"), ("sage", "SAGE_STARTUP_FILE"),
     ("python", "PYTHONSTARTUP"), ("pari", "PARI_DATADIR"), ("maxima", "MAXIMA_USERDIR"),
+    # The re-check of #486: Sage loaded the pack's Lisp, gcc ran its cc1, as and ld.
+    ("kenzo", "KENZO_FAS"), ("compiler", "COMPILER_PATH"), ("collect", "COLLECT_GCC"),
+    ("cremona", "CREMONA_MINI_DATA_DIR"), ("lie", "LIE_INFO_DIR"), ("odbc", "ODBCSYSINI"),
+    ("vim", "VIMRUNTIME"), ("tix", "TIX_LIBRARY"), ("caml", "CAML_LD_LIBRARY_PATH"),
+    ("graphs", "GRAPHS_DATA_DIR"), ("local", "LOCAL_IDENTIFIER"), ("mpmath", "MPMATH_NOSAGE"),
 )  # fmt: skip
 
 
@@ -190,6 +217,19 @@ def test_a_source_named_after_a_tool_gets_no_namespace(source: str, variable: st
     assert why is not None
     assert why.endswith("never set")  # approved or not
     assert allow.prefix_refused(allow.namespace(source)) is not None
+
+
+def test_no_namespace_starts_a_variable_a_tool_reads() -> None:
+    """The structural rule beside the families: a namespace that starts any name or family
+    on the deny-list is refused, so every variable Sage's ``sage/env.py`` reads is safe
+    from the source named after its first part, whatever the families hold."""
+    for variable in allow.SAGE_READS | allow.TOOL_READS:
+        assert allow.forbidden(variable)
+        first = variable.split("_")[0] + "_"
+        if "_" in variable and len(first) >= allow.MIN_NAMESPACE:
+            assert allow.taken(first) is not None, first
+    assert allow.taken("GRAPHS_DATA_") is not None
+    assert allow.taken("CRYPTO_TOOLS_") is None
 
 
 def test_a_namespace_the_environment_has_a_command_for_is_refused() -> None:
@@ -231,22 +271,41 @@ def test_a_namespace_that_would_claim_another_sources_is_refused(
     assert held["ss-test", "SS_DATA"].startswith("not namespaced")
 
 
-def test_a_pack_laid_out_as_a_git_directory_is_refused(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+# Layouts git takes for a repository, or that point it at one: a bare one, at the top and
+# deep, and the re-check of #493's split one, whose a/config.worktree names b/ by a/commondir
+# and sets core.fsmonitor, which git 2.53 ran; each of git's own names alone, in any case.
+GIT_LAYOUTS = (
+    {"HEAD": "ref: refs/heads/main\n", "config": "[core]\n\tfsmonitor = ./run.sh\n"},
+    {"tool/deep/HEAD": "ref: refs/heads/main\n", "tool/deep/config": "[core]\n"},
+    {
+        "a/HEAD": "ref: refs/heads/main\n",
+        "a/commondir": "../b\n",
+        "a/config.worktree": "[core]\n\tworktree = ..\n\tfsmonitor = ./run.sh\n",
+        "b/config": "[extensions]\n\tworktreeConfig = true\n",
+        "b/objects/info/x": "",
+        "b/refs/heads/main": "0" * 40 + "\n",
+    },
+    {"a/commondir": "../b\n"},
+    {"tool/gitdir": "/sandbox/x\n"},
+    {"a/Config.Worktree": "[core]\n"},
+    {"tool/head": "ref: refs/heads/main\n"},
+)
+
+
+@pytest.mark.parametrize("layout", GIT_LAYOUTS)
+def test_a_pack_with_gits_own_files_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], layout: dict[str, str]
 ) -> None:
-    """``git status`` in a folder shaped as a bare repository reads its config, whose
-    ``core.fsmonitor`` runs code: such a pack is refused at import, at any depth."""
+    """``git status`` in a folder git takes for a repository reads its config, whose
+    ``core.fsmonitor`` runs code: a pack with a file named as git's ``HEAD``,
+    ``commondir``, ``gitdir`` or ``config.worktree`` is refused at import, at any depth."""
     root = tmp_path / "state"
     ProjectStore(root).close()
-    for layout in ("", "tool/deep/"):
-        archive = tmp_path / f"pack{len(layout)}.zip"
-        with zipfile.ZipFile(archive, "w") as zipped:
-            zipped.writestr("tool/SKILL.md", FILES["tool/SKILL.md"])
-            zipped.writestr(f"{layout}HEAD", "ref: refs/heads/main\n")
-            zipped.writestr(f"{layout}config", "[core]\n\tfsmonitor = ./run.sh\n")
-            zipped.writestr(f"{layout}objects/info/x", "")
-            zipped.writestr(f"{layout}refs/heads/main", "0" * 40 + "\n")
-        argv = ["import", "--name", "bare", "--archive", str(archive)]
-        status, said = _cli(capsys, root, *argv)
-        assert status == 1
-        assert "laid out as a git directory" in said
+    archive = tmp_path / "pack.zip"
+    with zipfile.ZipFile(archive, "w") as zipped:
+        zipped.writestr("tool/SKILL.md", FILES["tool/SKILL.md"])
+        for path, text in layout.items():
+            zipped.writestr(path, text)
+    status, said = _cli(capsys, root, "import", "--name", "bare", "--archive", str(archive))
+    assert status == 1
+    assert "is named as one of git's own files" in said
