@@ -52,7 +52,7 @@ from .errors import ExecutorRefusalError, WorkerError
 from .files import UNSYNCED, Files
 from .identity import execution_digest, same_execution
 from .journal import SOURCE_EVENT, ExecutionJournal
-from .kernels import KernelRegistry, require_run_kernels
+from .kernels import KernelRegistry, require_run_kernels, require_skill_bindings
 from .lifecycle import EnvironmentLifecycle
 from .live import REQUEST, Live, time_limit
 from .output_observations import normalize as normalize_observation
@@ -314,11 +314,15 @@ class Dispatcher:
             fields.update(language=request.language, code=request.code)
             if request.run is not None:
                 fields["run"] = request.run
+        if not isinstance(request, PdfRequest) and request.bindings:
+            fields["bindings"] = dict(request.bindings)  # the skills' (SK-16)
         channel = environment.channel
         if channel is None:
             raise WorkerError(ErrorKind.UNAVAILABLE, "the executor went away")
         if "run" in fields:
             require_run_kernels(channel)
+        if "bindings" in fields:
+            require_skill_bindings(channel)
         environment.running.add(execution_id)
         shared = self.shared
         if shared is not None:
@@ -568,6 +572,20 @@ class Dispatcher:
                             "than the output limit allows",
                         )
                     }
+                )
+            raw = message.get("result")
+            ended = cast(dict[str, Any], raw) if isinstance(raw, dict) else {}
+            if ended.get("bindings_kept") is True:
+                live.notices.append(
+                    "this kernel holds skill bindings other than this run's, those it started "
+                    "with; restart it to have the run's"
+                )
+            dropped = ended.get("bindings_dropped")
+            if isinstance(dropped, list) and dropped:
+                names = ", ".join(str(name)[:64] for name in cast(list[object], dropped)[:20])
+                live.notices.append(
+                    f"skill bindings not set, as the environment has its own of each: {names}; "
+                    "the environment's values stand"
                 )
             if message.get("recovery_compacted") is True:
                 live.notices.append(

@@ -435,6 +435,17 @@ class SkillStore:
             ).fetchone()
         return None if row is None else bytes(row[0])
 
+    def manifest(self, snapshot: str) -> list[tuple[str, str, int, bool]]:
+        """A snapshot's files by path: each with its SHA-256, size and whether it is
+        executable, as staging writes and checks them (SK-16)."""
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT f.path,f.blob,length(b.content),f.executable FROM skill_files f "
+                "JOIN skill_blobs b ON b.sha256=f.blob WHERE f.snapshot=? ORDER BY f.path",
+                (snapshot,),
+            ).fetchall()
+        return [(path, blob, size, bool(executable)) for path, blob, size, executable in rows]
+
     def served_body(self, entry: Entry) -> str:
         """A skill's body as a run is given it (``served``)."""
         content = self.file(entry.snapshot, f"{entry.name}/SKILL.md") or b""

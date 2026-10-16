@@ -32,10 +32,12 @@ from typing import Any, Final, TypeVar, cast
 from sandbox_science.contracts.clock import SYSTEM_CLOCK, Clock
 from sandbox_science.orchestrator.aio import threaded
 from sandbox_science.orchestrator.model import ToolSpec
+from sandbox_science.orchestrator.worker_client import WorkerAPIError
 
 from .embeddings import QUERY_CHARS, EmbeddingError, Paid, SkillVectors, cosine, count_paid
 from .index import SkillsGiven, give, marker
 from .packs import served
+from .staging import Stager, told
 from .store import MAX_LOADED, Entry, SkillSet, SkillStore
 
 T = TypeVar("T")
@@ -148,6 +150,8 @@ class SkillTool:
         self.project: str | None = None
         self.clock: Clock = SYSTEM_CLOCK
         self.wait = SEARCH_SECONDS
+        self.stager: Stager | None = None
+        """With a worker: a loaded skill's helpers are staged and its bindings set (SK-16)."""
         self.cutoff = SIMILAR
         """The cosine similarity at which a skill comes close in meaning, for the model
         the gateway last embedded in (``similar_at``)."""
@@ -258,6 +262,9 @@ class SkillTool:
                 text, record = await self._search(args["query"])
             elif action == "load" and _strings(args.get("names")):
                 text, record = await threaded(self._load, args["names"])
+                if staged := await self._stage(record["loads"]):
+                    record["staging"] = staged
+                    text = f"{text}\n\n{told(staged)}"
             elif action == "read" and _strings([args.get("skill"), args.get("path")]):
                 text, record = await threaded(self._read, args["skill"], args["path"])
             else:
@@ -315,6 +322,32 @@ class SkillTool:
         self.loaded = {skill: sha256 for skill, (sha256, _) in bodies.items()}
         self.held = dict(self.loaded)
         self.chars = sum(chars for _, chars in bodies.values())
+
+    async def _stage(self, loads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Stage the packs of the skills just loaded that have helper code, once a pack
+        (SK-16); a staging that fails leaves the load as it is, and says so."""
+        if self.stager is None:
+            return []
+        records: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for load in loads:
+            entry = self.by_id.get(load.get("id", ""))
+            if entry is None or entry.snapshot in seen:
+                continue
+            # Each load checks the staged files again; a body held from a past run, once.
+            again = load["status"] == "already_loaded" and entry.snapshot not in self.stager.checked
+            if load["status"] != "loaded" and not again:
+                continue
+            seen.add(entry.snapshot)
+            try:
+                found = await self.stager.stage(entry)
+            except WorkerAPIError as error:
+                self.stager.forget(entry.source)  # its files are not as expected
+                found = {"id": entry.qualified, "source": entry.source, "state": "failed"}
+                found |= {"revision": entry.revision, "error": error.message[:300]}
+            if found is not None:
+                records.append(found)
+        return records
 
     def _load(self, names: list[str]) -> tuple[str, dict[str, Any]]:
         """Each name's body, or why it is not loaded; a name that names no skill costs

@@ -85,7 +85,7 @@ def internal_request(worker: Harness, script: str = "sleep 60") -> ShellRequest:
     worker.store.authorize_provision_step(
         record.provision_id,
         result.operation_id,
-        hashlib.sha256(result.model_dump_json().encode()).hexdigest(),
+        hashlib.sha256(result.model_dump_json(exclude={"bindings"}).encode()).hexdigest(),
     )
     return result
 

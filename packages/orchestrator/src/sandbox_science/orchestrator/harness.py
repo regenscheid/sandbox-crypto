@@ -132,6 +132,7 @@ from .skills.builtin import builtin_pack
 from .skills.derive import VERSION as PASS_VERSION
 from .skills.discovery import SkillDiscovery
 from .skills.embeddings import SkillVectors
+from .skills.staging import Stager
 from .tokens import chars_per_token
 from .tools import HARNESS_TOOL_NAMES, Toolbox, ToolOutcome
 from .view_image import ImageViewer
@@ -1187,6 +1188,9 @@ class Harness:
             delegates=delegates,
             derived=self.derived,
         )
+        if skills is not None:
+            # A loaded skill's helpers are staged in the session's environment (SK-16).
+            skills.stager = Stager(self.client, context, skills.store, self.derived)
         if skills is not None and self.vectors is not None:
             # Reads the vectors the store has; the gateway's work goes on in the background.
             await skills.use(self.vectors, context.project_id, clock=self.clock)

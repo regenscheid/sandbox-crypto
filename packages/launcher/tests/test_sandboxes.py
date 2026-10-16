@@ -267,5 +267,5 @@ def test_a_worker_of_another_protocol_is_refused(research: dict[str, Any]) -> No
     launcher.expect("Stop:")
     stopped = launcher.command("down")
     assert stopped.returncode == 1
-    assert "version mismatch: the worker reports protocol '4'" in stopped.stdout
+    assert "version mismatch: the worker reports protocol '5'" in stopped.stdout
     assert launcher.finish() == 1

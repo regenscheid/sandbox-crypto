@@ -43,6 +43,10 @@ from sandbox_science.contracts import (
     ReadFileRequest,
     SessionClosed,
     SessionCloseRequest,
+    StageCheck,
+    StageCheckRequest,
+    StagePutRequest,
+    StagePutResult,
     WriteFileRequest,
     WriteFileResult,
 )
@@ -534,6 +538,12 @@ class ExecutionManager:
 
     async def list_files(self, request: ListFilesRequest) -> FileListing:
         return await self._files.listing(request)
+
+    async def stage_check(self, request: StageCheckRequest) -> StageCheck:
+        return await self._files.stage_check(request)
+
+    async def stage_put(self, request: StagePutRequest) -> StagePutResult:
+        return await self._files.stage_put(request)
 
     async def publish(self, request: PublishRequest) -> ArtifactRef:
         """Publish a file of the environment as an artifact, within ``capture_timeout``."""

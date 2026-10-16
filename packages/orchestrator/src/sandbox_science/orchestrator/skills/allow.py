@@ -146,11 +146,17 @@ def taken(name: str, tools: Collection[str] = ()) -> str | None:
         k for k in (*FORBIDDEN, *FORBIDDEN_PREFIXES, *TOOL_FAMILIES) if k.startswith(name)
     ):
         return f"{name} is the namespace of {read[0]}, a tool's own variable"
-    stem = name.rstrip("_").lower()
-    for command in (stem, stem.replace("_", "-"), stem.split("_")[0]):
+    for command in commands(name):
         if command in tools:
             return f"{name} is the namespace of the command {command}'s own variables"
     return None
+
+
+def commands(name: str) -> list[str]:
+    """The commands whose variables the namespace ``name`` would be: its name in lower
+    case, with ``_`` or ``-``, and its first part."""
+    stem = name.rstrip("_").lower()
+    return sorted({stem, stem.replace("_", "-"), stem.split("_")[0]} - {""})
 
 
 def prefix_refused(prefix: str) -> str | None:
