@@ -30,7 +30,7 @@ from sandbox_science.orchestrator.projects import ProjectStore, run_name
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.worker_client import dump
 
-from .loop_harness import Harness, Reply, call
+from .loop_harness import TASK, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
@@ -115,6 +115,12 @@ def test_numbers_are_read_in_one_notation() -> None:
     assert numbers("80bit, AES-128, x₁, ١٢٣ and 0x50") == {"80", "128", "1", "123", "0x50"}
     assert unread("p = 17, 2^{80}") is None
     assert unread("the ① case") == "the ① case"
+    # Low items of #457's re-check: other numerals, exponents that are no plain number,
+    # and thousands set apart by spaces, read as one number.
+    for written in ("half ½ of it", "case Ⅷ", "$2^{80+1}$", "2**(n)"):
+        assert unread(written) is not None, written
+    assert numbers("1 000 003 and 1\u00a0000") == {"1000003", "1000"}
+    assert unread("1 000 003, x^{n} and x^2") is None
 
 
 def test_an_agents_change_names_its_anchor_or_holds_evidence(ledger: Ledger) -> None:
@@ -209,7 +215,11 @@ def test_user_quoted_quotes_only_the_users_own_words(ledger: Ledger) -> None:
                 op=f"not-{n}", match="word for word")  # fmt: skip
     request = 'the "memory below 2^40"\nrule in every'
     change(ledger, {**DECISION, "anchors": [{"message": comment, "quote": request}]}, op="c")
-    assert [e.basis for e in ledger.entries("p").entries] == ["user_quoted"] * 2
+    # A comment archived under an earlier framing is read by its payload all the same.
+    earlier = said(ledger, Entry(role="user", kind="comment", source="requests",
+                                 content="Work requests [v0]: " + dump(payload)))  # fmt: skip
+    change(ledger, {**DECISION, "anchors": [{"message": earlier, "quote": request}]}, op="e")
+    assert [e.basis for e in ledger.entries("p").entries] == ["user_quoted"] * 3
 
 
 def test_observed_numbers_occur_in_what_was_observed(ledger: Ledger, tmp_path: Path) -> None:
@@ -335,6 +345,7 @@ def test_anchors_resolve_only_where_their_author_may_look(ledger: Ledger) -> Non
     with pytest.raises(DocumentError, match=f"no archive message {elsewhere}") as error:
         change(ledger, {**NEW["claim"], "anchors": [{"message": elsewhere}]}, op="far")
     assert "said by the user" not in error.value.message
+    assert error.value.message.count("provenance_required") == 1
     # A call ID is looked for in the author's own run first.
     said(ledger, result("mine: 7", call="call_0"))
     said(ledger, result("theirs: 2^128", call="call_0"), session="s2")
@@ -474,3 +485,31 @@ async def test_the_user_quoted_from_the_message_that_started_the_run(harness: Ha
     finally:
         projects.close()
     assert (archived.entry.kind, archived.entry.refs) == ("user", ("m-1",))
+
+
+async def test_the_user_quoted_from_the_operators_task(harness: Harness) -> None:
+    """A run started with ``run --task`` archives the task naming its own run as the
+    operator's (CM-9): the agent quotes it as the user's words."""
+
+    def quoting(messages: list[Any]) -> list[tuple[str, dict[str, Any]]]:
+        (task,) = [m for m in messages if m["role"] == "user" and TASK in m["content"]]
+        found = HEADER.match(task["content"])
+        assert found is not None
+        anchor = {"message": found[1], "quote": TASK}
+        return [call("ledger_change", reason="The operator's task.",
+                     changes=[{**DECISION, "anchors": [anchor]}])]  # fmt: skip
+
+    record = await harness.run("run-cli", [Reply(calls_from=quoting), Reply("Recorded.")])
+    documents = harness.documents()
+    try:
+        view = Ledger(documents).entry("p", "D-1")
+    finally:
+        documents.close()
+    assert view.basis == "user_quoted"
+    projects = ProjectStore(harness.state)
+    try:
+        archived = Archive(projects.control).message("p", view.anchors[0]["message"])
+    finally:
+        projects.close()
+    name = run_name(record.started_at, record.run_id)
+    assert (archived.entry.kind, archived.entry.refs) == ("task", (f"cli:{name}",))

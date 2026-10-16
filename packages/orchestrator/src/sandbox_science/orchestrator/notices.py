@@ -34,13 +34,18 @@ REQUESTS: Final = Framing(
 
 def requests(content: str) -> list[dict[str, Any]]:
     """The work requests a comment notice delivered, as its archived message holds them:
-    the framing, then the payload's JSON list."""
-    try:
-        found: object = json.loads(content.removeprefix(REQUESTS.text))
-    except ValueError:
-        return []
-    items = cast(list[object], found) if isinstance(found, list) else []
-    return [cast(dict[str, Any], item) for item in items if isinstance(item, dict)]
+    a framing of any version, then the payload's JSON list, which runs to the end."""
+    decoder, start = json.JSONDecoder(), content.find("[")
+    while start >= 0:
+        try:
+            found, end = decoder.raw_decode(content, start)
+        except ValueError:
+            found, end = None, -1
+        if end == len(content) and isinstance(found, list):
+            items = cast(list[object], found)
+            return [cast(dict[str, Any], item) for item in items if isinstance(item, dict)]
+        start = content.find("[", start + 1)
+    return []
 
 
 JOBS: Final = Framing(

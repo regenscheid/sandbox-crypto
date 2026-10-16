@@ -213,6 +213,7 @@ async def _held_run(
         project=args.project,
         session=args.session,
         task=args.task,
+        operator=True,
         environment=args.environment,
         dedicated=args.dedicated,
         run_id=args.run_id,
