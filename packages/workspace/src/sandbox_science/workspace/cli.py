@@ -28,6 +28,7 @@ import argparse
 import asyncio
 import ipaddress
 import logging
+import re
 import secrets
 import signal
 import sys
@@ -108,15 +109,46 @@ def base_url(host: str, port: int) -> str:
     return f"http://[{host}]:{port}" if ":" in host else f"http://{host}:{port}"
 
 
+def preview_name(host: str, preview_host: str, given: str | None = None) -> str:
+    """The host name the preview origin is given by (FG-17): ``given``, or else
+    ``localhost`` when the viewer listens on 127.0.0.1 and the workspace is not itself
+    named ``localhost``. ``localhost`` is another *site* from ``127.0.0.1``, so a browser
+    may run the preview's frames in a process of their own, on every system and through
+    an SSH tunnel, with no second address; otherwise, the listen address."""
+    if given is not None:
+        return given
+    if preview_host == "127.0.0.1" and host != "localhost":
+        return "localhost"
+    return preview_host
+
+
+def check_preview_name(name: str, preview_host: str) -> None:
+    """Refuse a preview name the viewer's listener would not answer to: on loopback, only
+    ``localhost`` or its own address; elsewhere, a host name or an IP address."""
+    if is_loopback(preview_host):
+        if name not in ("localhost", preview_host):
+            raise ValueError(
+                f"--preview-name {name!r} must be localhost or {preview_host}, the address "
+                "the viewer listens on"
+            )
+        return
+    try:
+        ipaddress.ip_address(name)
+    except ValueError:
+        if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?", name):
+            raise ValueError(f"--preview-name {name!r} is not a host name") from None
+
+
 async def serve(
     app: web.Application,
     host: str,
     port: int,
     login_token: str,
-    preview: tuple[web.Application, Preview, str, int] | None = None,
+    preview: tuple[web.Application, Preview, str, int, str] | None = None,
 ) -> None:
     """Serve until SIGTERM or SIGINT, after printing the login URL once. With ``preview``
-    (its application, its state, host and port), the PDF viewer's origin is served too."""
+    (its application, its state, host, port and the name it is given by), the PDF
+    viewer's origin is served too."""
     stopping = asyncio.Event()
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGTERM, signal.SIGINT):
@@ -129,11 +161,11 @@ async def serve(
         bound = runner.addresses[0][1] if port == 0 else port
         url = base_url(host, bound)
         if preview is not None and viewer is not None:
-            _, state, preview_host, preview_port = preview
+            _, state, preview_host, preview_port, name = preview
             await viewer.setup()
             await web.TCPSite(viewer, preview_host, preview_port).start()
             shown = viewer.addresses[0][1] if preview_port == 0 else preview_port
-            state.origin = base_url(preview_host, shown)
+            state.origin = base_url(name, shown)
             print(f"PDF viewer origin on {state.origin}/", flush=True)
             state.workspace_origin = url
         print(f"Sandbox Science workspace on {url}/", flush=True)
@@ -168,8 +200,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     command.add_argument(
         "--preview-listen",
-        help="host:port of the PDF viewer's own origin (default: the same host, the next "
-        "port; another loopback address, such as 127.0.0.2 on Linux, makes it another site)",
+        help="host:port of the PDF viewer's own origin (default: the same host, the next port)",
+    )
+    command.add_argument(
+        "--preview-name",
+        help="the host name the viewer's origin is given by: localhost or its listen "
+        "address on loopback (default: localhost when it listens on 127.0.0.1, another "
+        "site from the workspace's 127.0.0.1; otherwise its listen address)",
     )
     command.add_argument(
         "--allow-remote",
@@ -230,6 +267,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(f"{preview_host} is not a loopback address; see --allow-remote")
     if (preview_host, preview_port) == (host, port) and port:
         parser.error("--preview-listen must differ from --listen: the viewer needs its own origin")
+    name = preview_name(host, preview_host, args.preview_name)
+    try:
+        check_preview_name(name, preview_host)
+    except ValueError as exc:
+        parser.error(str(exc))
     if not loopback and not args.allow_remote:
         parser.error(
             f"{host} is not a loopback address; --allow-remote accepts connections from "
@@ -292,15 +334,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             "unencrypted, and any Host name is accepted",
             host,
         )
-    if preview_host == host:
+    if name == host:
         # Same site: a browser may run the preview origin's frames on the workspace page's
         # own thread, where a heavy figure stalls the page (FG-17; review of #492, M1).
         _log.warning(
             "the preview origin %s shares the workspace's host: figures and the PDF viewer "
-            "may run on the workspace page's thread. Give it another loopback address, "
-            "such as --preview-listen 127.0.0.2:%s, for a process of its own",
-            preview_host,
-            preview_port,
+            "may run on the workspace page's thread. Listen on 127.0.0.1, where the viewer "
+            "is given by localhost, or give --preview-name another name, for a process of "
+            "its own",
+            name,
         )
     viewer_app = create_preview_app(
         app[CONTEXT].documents,
@@ -312,7 +354,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     try:
         asyncio.run(
-            serve(app, host, port, login_token, (viewer_app, preview, preview_host, preview_port))
+            serve(
+                app,
+                host,
+                port,
+                login_token,
+                (viewer_app, preview, preview_host, preview_port, name),
+            )
         )
     except KeyboardInterrupt:  # before the signal handlers are in place
         return 0

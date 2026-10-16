@@ -81,6 +81,8 @@ def test_a_command_name_is_left_to_the_path(make_config: Any) -> None:
         ({"worker": {"listen": "127.0.0.1:\uff18\uff11\uff10\uff10"}}, "a port from 1 to 65535"),
         ({"workspace": {"listen": "127.0.0.1:65535"}}, "set preview_listen"),
         ({"workspace": {"preview_listen": "127.0.0.1:65536"}}, "a port from 1 to 65535"),
+        ({"workspace": {"preview_name": "viewer.example"}}, "preview_name is localhost"),
+        ({"workspace": {"preview_name": "127.0.0.2"}}, "or 127.0.0.1, where the viewer"),
         ({"projects": [{"id": "crypto", "profile": "crypto-base"}]}, "is not one of"),
         (
             {"projects": [{"id": "a", "profile": "minimal"}, {"id": "a", "profile": "minimal"}]},
@@ -129,7 +131,8 @@ def test_the_example_config_is_a_launcher_config(home: Path) -> None:
     assert config.worker.policy == example.parent / "policy.yaml"
     assert config.worker.policy.is_file()
     assert config.workspace.static == example.parent / "../web/workspace/dist"
-    assert config.workspace.preview() == "127.0.0.2:8201"
+    assert config.workspace.preview() == "127.0.0.1:8201"
+    assert config.workspace.preview_name is None  # the workspace's default, localhost
     assert config.openshell.model_dump()["environments"]["suspend_after"] == 3600.0
     assert config.run_service.math_checks == example.parent / "../web/workspace/dist-math"
     assert config.model.watcher == config.model.name == config.model.reviewer

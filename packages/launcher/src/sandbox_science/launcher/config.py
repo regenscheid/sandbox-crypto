@@ -355,6 +355,11 @@ class WorkspaceConfig(_Strict):
     listen: Listen = "127.0.0.1:8200"
     preview_listen: Listen | None = None
     """The PDF viewer's origin; by default the next port on the same address."""
+    preview_name: str | None = None
+    """The host name the viewer's origin is given by: ``localhost`` or its listen address.
+    By default ``localhost`` when it listens on 127.0.0.1: another site from the
+    workspace's ``127.0.0.1``, so a browser may run its frames in a process of their own
+    (docs/specs/figures.md, FG-17); otherwise its listen address."""
     static: ConfigPath
     """The web app's build: ``web/workspace/dist`` after ``npm run build``."""
     pass_env: tuple[Variable, ...] = ()
@@ -372,6 +377,9 @@ class WorkspaceConfig(_Strict):
     def _preview(self) -> Self:
         if self.preview_listen is None and split(self.listen)[1] == 65535:
             raise ValueError("listen's next port is not a port: set preview_listen")
+        address = split(self.preview())[0]
+        if self.preview_name not in (None, "localhost", address):
+            raise ValueError(f"preview_name is localhost or {address}, where the viewer listens")
         return self
 
 
