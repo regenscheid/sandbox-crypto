@@ -417,7 +417,7 @@ async def test_a_response_is_read_as_a_turn_and_kept_as_the_gateway_sent_it(
          ContextLimitError),
         (200, {"status": "failed", "error": {"code": "context_length_exceeded"}},
          ContextLimitError),
-        (200, {"status": "failed", "output": [], "error": {"code": "server_error"}}, ModelError),
+        (200, {"status": "failed", "output": [], "error": {"code": "invalid_prompt"}}, ModelError),
         (200, {"output": "not a list"}, ModelError),
     ],
 )  # fmt: skip

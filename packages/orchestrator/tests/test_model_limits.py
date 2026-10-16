@@ -480,6 +480,7 @@ async def test_a_run_rides_out_a_rate_limit_and_records_its_usage(harness: Harne
             "input_tokens": tokens,
             "output_tokens": 1,
             "cost": None,
+            "cost_source": None,  # the scripted gateway gives no prices either
             "gateway_version": GATEWAY_VERSION,  # each call's, as the run record keeps it
             "thinking_replay": None,  # chat completions sends no thinking back
         }

@@ -23,6 +23,8 @@ import aiohttp
 
 from sandbox_science.contracts.clock import SYSTEM_CLOCK, Clock
 
+from .pricing import GATEWAY, MODEL_INFO, CostSource, PriceList, Tokens, chat_tokens
+from .pricing import cost as priced_cost
 from .tokens import total_input
 
 _log = logging.getLogger(__name__)
@@ -56,9 +58,13 @@ class ModelTurn:
     input_tokens: int | None = None
     output_tokens: int | None = None
     cost: float | None = None
-    """What the call cost, as the gateway reported it (``COST_HEADER``, or the answer's
-    ``usage.cost``), in its currency: LiteLLM's is USD. ``None`` when it reported none:
-    it is never estimated."""
+    """What the call cost, in the gateway's currency (LiteLLM's is USD): as the gateway
+    reported it (``COST_HEADER``, or the answer's ``usage.cost``), or else priced from
+    its model information (``pricing``); ``None`` when neither gives it. It is never
+    estimated, and never 0 for a call that used tokens and was not priced."""
+    cost_source: CostSource | None = None
+    """Where ``cost`` came from: ``gateway`` (reported) or ``model_info`` (priced from
+    the gateway's model information)."""
     native: bytes | None = None
     """The gateway's answer as it sent it, which the session's archive keeps
     (docs/specs/context-management.md, CM-5); ``native_format`` says what it is."""
@@ -198,6 +204,11 @@ class ContextLimitError(ModelError):
     """The conversation is longer than the model's context window."""
 
 
+class OverloadedError(ModelError):
+    """The model's answer says its upstream is overloaded, as a failed response does: a
+    later attempt can get past it, so it is tried again as a 529 is (lab 43, B3)."""
+
+
 class GatewayBudgetError(ModelError):
     """The gateway refused the call because a spending budget is exhausted: its key's,
     user's or team's, which LiteLLM keeps (run-service spec RS-6d). Not tried again: a
@@ -212,7 +223,12 @@ MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 """The largest answer read from the gateway, by default."""
 RETRIED: Final = frozenset({429, 502, 503, 504, 529})
 """Gateway statuses that a later attempt can get past: rate limits and an unavailable,
-slow or overloaded upstream (Anthropic's 529)."""
+slow or overloaded upstream (Anthropic's 529). Another 5xx is tried again when its
+error says the upstream is overloaded (``overloaded``)."""
+OVERLOADED: Final = frozenset({"overloaded", "overloaded_error", "server_error"})
+"""The error types and codes that say the upstream is overloaded or failed for a moment:
+Anthropic's ``overloaded_error``, and OpenAI's ``server_error`` with which a response
+fails ("Our servers are currently overloaded", lab 43, B3)."""
 MAX_RETRY_WAIT: Final = 60.0
 """The longest wait before a retry, whatever the gateway's ``Retry-After`` asks."""
 
@@ -227,13 +243,17 @@ class GatewayModel(ABC):
     the call because a spending budget is exhausted raises ``GatewayBudgetError``, never
     tried again, whatever its status. A rate limit (429) or an unavailable upstream (502,
     503, 504) is tried again up to ``retries`` times, after ``Retry-After`` or ``backoff``
-    seconds doubling each time, at most a minute. A gateway that says the conversation
-    exceeds the model's context raises ``ContextLimitError``. An error's message quotes
+    seconds doubling each time, at most a minute, and so is another 5xx, or an answer
+    whose response failed (``OverloadedError``), that says the upstream is overloaded. A
+    gateway that says the conversation exceeds the model's context raises
+    ``ContextLimitError``. An error's message quotes
     the gateway's answer, with the key replaced if the answer holds it. Each turn keeps
     the answer as the gateway sent it (``native``, in ``FORMAT``), the gateway's version,
     the alias, and the digest of the request's ``PREFIX`` fields; its cost is
-    ``COST_HEADER``'s, or the answer's own without the header. An adapter may add headers
-    to a request (``_headers``), but not the key's.
+    ``COST_HEADER``'s, or the answer's own without the header, or else the gateway's
+    model information's price of its tokens (``pricing``, from ``prices``, which models
+    made by one gateway share). An adapter may add headers to a request (``_headers``),
+    but not the key's.
     """
 
     PATH: ClassVar[str]
@@ -257,6 +277,7 @@ class GatewayModel(ABC):
         retries: int = 3,
         backoff: float = 2.0,
         clock: Clock = SYSTEM_CLOCK,
+        prices: PriceList | None = None,
     ) -> None:
         if retries < 0 or backoff < 0:
             raise ValueError("retries and backoff are not negative")
@@ -269,6 +290,7 @@ class GatewayModel(ABC):
         self._max_tokens = max_tokens
         self._max_response_bytes = max_response_bytes
         self._retries, self._backoff, self._clock = retries, backoff, clock
+        self._prices = prices or PriceList(self.base_url, api_key, clock=clock)
 
     async def close(self) -> None:
         if self._owns_session and self._session is not None:
@@ -284,6 +306,33 @@ class GatewayModel(ABC):
         """The headers this adapter adds to a request, such as a beta flag."""
         return {}
 
+    def _tokens(self, usage: Mapping[str, object]) -> Tokens | None:
+        """An answer's tokens as they are priced, from its usage object."""
+        return chat_tokens(usage)
+
+    def _client(self) -> aiohttp.ClientSession:
+        if self._session is None:
+            self._session = aiohttp.ClientSession()
+        return self._session
+
+    async def _priced(self, turn: ModelTurn, text: str) -> ModelTurn:
+        """``turn`` with its cost: the gateway's, unless it reported none, or 0 for a call
+        that used tokens; then the gateway's model information's price of its tokens, or
+        none (lab 43, B2)."""
+        used = bool(turn.input_tokens or turn.output_tokens)
+        if turn.cost is not None and (turn.cost > 0 or not used):
+            return replace(turn, cost_source=GATEWAY)
+        try:
+            usage = _usage_object(json.loads(text))
+        except (ValueError, TypeError, RecursionError):
+            usage = {}
+        tokens = self._tokens(usage)
+        prices = await self._prices.prices(self.model, self._client) if tokens else None
+        found = priced_cost(prices, tokens) if prices is not None and tokens else None
+        if found is None:
+            return replace(turn, cost=None, cost_source=None)
+        return replace(turn, cost=found, cost_source=MODEL_INFO)
+
     async def _call(
         self, body: dict[str, Any], parse: Callable[[str, str | None], ModelTurn]
     ) -> ModelTurn:
@@ -298,9 +347,11 @@ class GatewayModel(ABC):
                     turn = parse(text, priced)
                 except ModelError as error:  # answered, and charged, whatever it holds
                     error.cost = reported_cost(priced) if priced is not None else None
+                    if isinstance(error, OverloadedError):
+                        raise _RetryableError(error, None) from None
                     raise
                 return replace(
-                    turn,
+                    await self._priced(turn, text),
                     native=text.encode(),
                     native_format=self.FORMAT,
                     gateway_version=version,
@@ -315,8 +366,10 @@ class GatewayModel(ABC):
                 # The status only: the error, with the gateway's text, is the caller's to
                 # report once if the retries end.
                 _log.warning(
-                    "the model gateway answered HTTP %s; trying again in %.1f s",
-                    retry.error.status,
+                    "the model gateway answered %s; trying again in %.1f s",
+                    "a failed response"
+                    if retry.error.status is None
+                    else f"HTTP {retry.error.status}",
                     delay,
                 )
                 await self._clock.sleep(delay)
@@ -357,7 +410,7 @@ class GatewayModel(ABC):
                 # Before the retries: LiteLLM sends some budget refusals as 429s.
                 if 400 <= status < 500 and _budget_exceeded(text):
                     raise GatewayBudgetError(str(error), status=status)
-                if status in RETRIED:
+                if status in RETRIED or (status >= 500 and overloaded(_error_fields(text))):
                     raise _RetryableError(error, _retry_after(response.headers.get("Retry-After")))
                 if status in (400, 413) and _context_exceeded(text):
                     raise ContextLimitError(str(error), status=status)
@@ -415,9 +468,11 @@ def gateway_model(
     session: aiohttp.ClientSession | None = None,
     max_tokens: int | None = None,
     max_response_bytes: int = MAX_RESPONSE_BYTES,
+    prices: PriceList | None = None,
 ) -> GatewayModel:
     """The client for ``alias``, through the adapter ``api`` names (``API_KINDS``), with
-    that adapter's own ``options``. The one place an adapter is chosen."""
+    that adapter's own ``options``, pricing from ``prices`` the calls the gateway does not
+    price. The one place an adapter is chosen."""
     kind: type[GatewayModel]
     if api == "chat":
         kind = OpenAICompatibleModel
@@ -438,6 +493,7 @@ def gateway_model(
         session=session,
         max_tokens=max_tokens,
         max_response_bytes=max_response_bytes,
+        prices=prices,
         **dict(options or {}),
     )
 
@@ -469,6 +525,8 @@ class ModelGateway:
         other alias's is ``chat``."""
         self.options = dict(options or {})
         """Each adapter's own options, by its kind, such as Claude's thinking replay."""
+        self.prices = PriceList(self.base_url, api_key, timeout=timeout)
+        """The gateway's prices, which the models it makes share."""
 
     def _shared(self) -> aiohttp.ClientSession:
         if self._session is None:
@@ -485,6 +543,7 @@ class ModelGateway:
             api=api,
             options=self.options.get(api),
             session=self._shared(),
+            prices=self.prices,
         )
 
     async def aliases(self) -> frozenset[str] | None:
@@ -596,6 +655,15 @@ def _error_fields(text: str) -> dict[str, object]:
     except (ValueError, RecursionError, TypeError):
         return {}
     return cast(dict[str, object], error) if isinstance(error, dict) else {}
+
+
+def overloaded(fields: Mapping[str, object]) -> bool:
+    """Whether an error object says the upstream is overloaded: its ``type`` or ``code``
+    is one of ``OVERLOADED``, or its message says so."""
+    message = fields.get("message")
+    said = message.lower() if isinstance(message, str) else ""
+    named = {value for value in (fields.get("type"), fields.get("code")) if isinstance(value, str)}
+    return bool(named & OVERLOADED) or "overloaded" in said
 
 
 def _budget_exceeded(text: str) -> bool:

@@ -16,6 +16,7 @@ from __future__ import annotations
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator import service as service_module
 from sandbox_science.orchestrator.jobstate import JobState
+from sandbox_science.orchestrator.runstate import WINDOW
 from sandbox_science.testing import eventually
 
 from .loop_harness import PROJECT, SESSION, Harness, Reply, call
@@ -50,12 +51,21 @@ async def test_a_run_that_reaches_the_limit_stops_before_its_next_call(
     assert stopped.data["stopped"] == "budget"
 
 
-async def test_a_limit_the_gateway_reports_no_cost_against_is_not_kept(harness: Harness) -> None:
-    runs(harness).set_cost_limit(PROJECT, 0)
+async def test_a_call_without_a_known_cost_counts_the_limit_as_reached(harness: Harness) -> None:
+    """Lab 43, B2: a call the gateway neither reported a cost for nor priced in its model
+    information counts nothing toward the limit, so it cannot keep the limit: once one
+    is in the window, the limit counts as reached, and the run stops before its next
+    call. Without a limit, the same calls run on."""
+    runs(harness).set_cost_limit(PROJECT, 1000)
     post(harness, "m-1", "Read the plan, then answer.")
-    async with serving(harness, Reply(calls=[call("plan_read")]), Reply("Done.")):
+    async with serving(harness, Reply(calls=[call("plan_read")]), Reply("Never sent.")):
         (record,) = await ended(harness)
-    assert (record.stopped, record.final_text) == ("answered", "Done.")
+    assert record.stopped == "budget"
+    assert len(harness.gateway.main) == 1
+    assert runs(harness).unpriced_calls(PROJECT, record.started_at - WINDOW) == 1
+    assert runs(harness).over_cost_limit(PROJECT, record.ended_at)
+    runs(harness).set_cost_limit(PROJECT, None)
+    assert not runs(harness).over_cost_limit(PROJECT, record.ended_at)
 
 
 async def test_a_gateway_that_refuses_for_its_budget_ends_the_run_and_the_session_waits(

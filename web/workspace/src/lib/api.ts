@@ -178,8 +178,12 @@ export interface ModelUsage {
   model: string | null;
   input_tokens: number | null;
   output_tokens: number | null;
-  /** What the call cost, as the gateway reported it; null or absent when it reported none. */
+  /** What the call cost: as the gateway reported it, or priced from its model info
+   * (`cost_source`); null or absent when neither gives it. */
   cost?: number | null;
+  /** Where the cost came from: `gateway` (reported) or `model_info` (priced from the
+   * gateway's model info, at the call's tokens); older records omit it. */
+  cost_source?: 'gateway' | 'model_info' | null;
 }
 
 /** One expression KaTeX rejected, as the page asks for its repair. */

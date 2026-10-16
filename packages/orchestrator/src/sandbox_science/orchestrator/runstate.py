@@ -22,6 +22,7 @@ that processes compare (a lease's renewal) are wall-clock seconds from ``clock``
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from typing import Final, Literal, cast
@@ -41,6 +42,8 @@ LEASE_SECONDS: Final = 60.0
 """How long a run's lease outlives its last renewal (RS-5)."""
 SERVICE_SECONDS: Final = 30.0
 """How old the run service's heartbeat may be while it runs (RS-3)."""
+_log = logging.getLogger(__name__)
+
 WINDOW: Final = timedelta(hours=24)
 """The daily cost limit's window (RS-6a)."""
 MAX_COST: Final = 1_000_000_000
@@ -461,13 +464,49 @@ class RunState:
 
     def over_cost_limit(self, project: str, now: datetime) -> bool:
         """Whether the project has a daily cost limit and its calls in the window to
-        ``now`` reached it, as the gateway reported their costs: a limit is not kept
-        where the gateway reports none."""
+        ``now`` reached it, at their costs; or whether, with a limit, a run's call in the
+        window used tokens and has no known cost, so that what was spent cannot be known
+        (lab 43, B2): the limit counts as reached until that call leaves the window."""
         limit = self.cost_limit(project)
         if limit is None:
             return False
-        spent = self.model_cost(project, now - WINDOW)
-        return spent is not None and spent >= limit
+        since = now - WINDOW
+        spent = self.model_cost(project, since)
+        if spent is not None and spent >= limit:
+            return True
+        if unknown := self.unpriced_calls(project, since):
+            _log.warning(
+                "project %s keeps a daily cost limit, and %s of its model calls in the "
+                "last 24 hours have no known cost: it counts as at its limit",
+                project,
+                unknown,
+            )
+            return True
+        return False
+
+    def unpriced_calls(self, project: str, since: datetime) -> int:
+        """How many model calls of the project's runs that started at ``since`` or later
+        used tokens and have no cost, neither reported by the gateway nor priced from its
+        model information: from saved records' ``usage`` and the ``assistant`` events of
+        runs without a record, as ``model_costs`` reads them."""
+        first = run_name(since, "")
+        unpriced = (
+            "json_extract(u, '$.cost') IS NULL AND coalesce(json_extract(u, "
+            "'$.input_tokens'), 0) + coalesce(json_extract(u, '$.output_tokens'), 0) > 0"
+        )
+        with self.control.read() as tx:
+            (found,) = tx.sql.execute(
+                f"SELECT count(*) FROM (SELECT usage.value AS u FROM runs, "  # noqa: S608
+                "json_each(runs.record, '$.usage') AS usage "
+                "WHERE runs.project_id = ? AND runs.name >= ? "
+                "UNION ALL SELECT json_extract(e.data, '$.usage') FROM run_events AS e "
+                "WHERE e.project_id = ? AND e.run >= ? AND e.kind = 'assistant' "
+                "AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.project_id = e.project_id "
+                "AND runs.session_id = e.session_id AND runs.name = e.run)) "
+                f"WHERE {unpriced}",
+                (project, first, project, first),
+            ).fetchone()
+        return int(found)
 
     def model_cost(self, project: str, since: datetime | None = None) -> float | None:
         """What the project's model calls cost, as the gateway reported it (RS-6a): every
