@@ -53,6 +53,7 @@ from sandbox_science.contracts import (
 from sandbox_science.orchestrator import cli, worker_client
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.harness import describe_isolation, save, tier_in_effect
+from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.jobs import JobTools
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.loop import run_task
@@ -1061,7 +1062,7 @@ async def test_runs_with_a_state_dir_write_living_documents(
         )  # fmt: skip
         assert status == 0
         recorded = json.loads(transcript.read_text())
-        return [json.loads(m["content"]) for m in recorded["messages"] if m["role"] == "tool"]
+        return [json.loads(body(m["content"])) for m in recorded["messages"] if m["role"] == "tool"]
 
     def call(tool: str, /, **arguments: Any) -> dict[str, Any]:
         return {"tool_calls": [{"name": tool, "arguments": arguments}]}

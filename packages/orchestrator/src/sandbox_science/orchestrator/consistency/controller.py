@@ -19,6 +19,7 @@ from sandbox_science.orchestrator.aio import lease, threaded
 from sandbox_science.orchestrator.documents.errors import POLICY_DENIED, DocumentError
 from sandbox_science.orchestrator.documents.models import Author
 from sandbox_science.orchestrator.documents.store import DocumentStore
+from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.hooks import (
     Closing,
     Effect,
@@ -270,7 +271,8 @@ def source_of(
     if name in PDF_TOOLS and isinstance(call.get("pdf"), dict):
         record = pdf_record(name, given, cast(Json, call["pdf"]))
     elif name == EPRINT_TOOL and call.get("connector") in servers and "error" not in call:
-        record = eprint_record(name, given, str(messages[-1].get("content", "")))
+        # The result's text after its archive header (CM-4a), as the server wrote it.
+        record = eprint_record(name, given, body(str(messages[-1].get("content", ""))))
     if record is None:
         return None
     # Bounded as an item is: lines past the bound are left out, and say so.

@@ -15,7 +15,7 @@ from contextlib import (
 from dataclasses import dataclass, field
 from typing import Any, Final, Literal, TypeVar, cast
 
-from .hooks import RESPONSE_ROUNDS, Notice, Point, TurnHook
+from .hooks import RESPONSE_ROUNDS, Appended, MessageLog, Notice, Point, TurnHook
 from .memory_prompt import MemoryGiven
 from .model import (
     GATEWAY_BUDGET,
@@ -145,6 +145,8 @@ class Transcript:
     phase: FailurePhase = field(default="harness", repr=False)
     offered: dict[str, set[str]] = field(default_factory=dict[str, set[str]], repr=False)
     """Each hook source's notice IDs in the messages, delivered or not."""
+    log: MessageLog | None = field(default=None, repr=False)
+    """Keeps each message the run adds, which then begins with its ID header."""
 
     @property
     def turns_left(self) -> int:
@@ -182,16 +184,23 @@ def _message(notice: Notice) -> Message:
     return {"role": "user", "content": notice.framing + dump(notice.payload)}
 
 
-def _offer(transcript: Transcript, notices: Sequence[Notice]) -> None:
+async def _append(transcript: Transcript, message: Message, appended: Appended) -> None:
+    """Add a message to the conversation, kept first by the run's log if it has one."""
+    if transcript.log is not None:
+        message = await transcript.log.append(message, appended)
+    transcript.messages.append(message)
+
+
+async def _offer(transcript: Transcript, notices: Sequence[Notice]) -> None:
     """Notices as user messages; their IDs count as delivered once a model call sees them."""
     for notice in notices:
-        transcript.messages.append(_message(notice))
+        await _append(transcript, _message(notice), Appended("notice", notice=notice))
         transcript.offered.setdefault(notice.source, set()).update(notice.ids)
 
 
 async def _notices(hooks: Sequence[TurnHook], point: Point, transcript: Transcript) -> None:
     for hook in hooks:
-        _offer(transcript, await hook.notices(point, transcript))
+        await _offer(transcript, await hook.notices(point, transcript))
 
 
 async def _model_returned(hooks: Sequence[TurnHook], transcript: Transcript) -> None:
@@ -268,7 +277,7 @@ async def _ask(hook: TurnHook, transcript: Transcript, answer: str | None) -> De
             decision = "accept"
         case _:
             return "accept"
-    _offer(transcript, closing.notices)
+    await _offer(transcript, closing.notices)
     return decision
 
 
@@ -346,6 +355,7 @@ async def _complete(model: ChatModel, toolbox: Toolbox, transcript: Transcript) 
             output_tokens=reply.output_tokens,
             characters=size + answered,
             cost=reply.cost,
+            gateway_version=reply.gateway_version,
         )
     )
     return reply
@@ -394,9 +404,13 @@ async def _run_task(
     hooks: Sequence[TurnHook],
     *,
     run_id: str,
+    task: str | None = None,
     on_tool: Callable[[str, str, ToolOutcome], Awaitable[None]] | None = None,
 ) -> Transcript:
-    """Run the observed conversation; ``run_id`` prefixes every worker operation ID."""
+    """Run the observed conversation from ``task``, if any; ``run_id`` prefixes every
+    worker operation ID."""
+    if task is not None:
+        await _append(transcript, {"role": "user", "content": task}, Appended("task"))
     await _notices(hooks, "start", transcript)
     revision = toolbox.revision
     for turn in range(transcript.max_turns):
@@ -420,7 +434,7 @@ async def _run_task(
                 }
                 for call in reply.tool_calls
             ]
-        transcript.messages.append(assistant)
+        await _append(transcript, assistant, Appended("assistant", reply=reply))
         await _model_returned(hooks, transcript)
         if not reply.tool_calls:
             if await _closing(hooks, transcript, reply.text):
@@ -434,8 +448,10 @@ async def _run_task(
             )
             transcript.phase = "harness"
             await _attach(hooks, transcript, outcome, toolbox.output_chars)
-            transcript.messages.append(
-                {"role": "tool", "tool_call_id": call.id, "content": outcome.text}
+            await _append(
+                transcript,
+                {"role": "tool", "tool_call_id": call.id, "content": outcome.text},
+                Appended("tool_result", call=call, outcome=outcome),
             )
             transcript.tool_records.append(
                 {"tool": call.name, "arguments": call.arguments, **outcome.record}
@@ -505,6 +521,7 @@ async def run_task(
     hooks: Sequence[TurnHook] | None = None,
     memory: MemoryGiven | None = None,
     role: str = "main",
+    log: MessageLog | None = None,
 ) -> Transcript:
     """Run a task, keeping an active originating-run lease while it waits or computes.
 
@@ -517,7 +534,8 @@ async def run_task(
     call, such as the user's queued messages. A cancellation while ``stop`` is set is
     the user's: the run ends ``cancelled``, with what it observed, instead of raising.
     ``memory`` is the project memory the run is given, which its record pins, and
-    ``role`` the run's role, which its prompt pins name.
+    ``role`` the run's role, which its prompt pins name. ``log`` keeps each message the
+    run adds as it adds it, the task first: the session's archive.
     """
     if max_input_chars < 1:
         raise ValueError("max_input_chars must be at least 1")
@@ -548,11 +566,8 @@ async def run_task(
                     max_input_chars=max_input_chars,
                     tools_chars=len(schema_json(toolbox.specs)),
                     prompt_provenance=pins,
-                    messages=[
-                        {"role": "system", "content": text},
-                        *history,
-                        *([{"role": "user", "content": task}] if task is not None else []),
-                    ],
+                    messages=[{"role": "system", "content": text}, *history],
+                    log=log,
                 )
                 try:
                     await _run_task(
@@ -561,6 +576,7 @@ async def run_task(
                         transcript,
                         hooks,
                         run_id=run_id,
+                        task=task,
                         on_tool=on_tool,
                     )
                 except Exception:

@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Final, Protocol, cast
 
 import aiohttp
@@ -54,10 +54,20 @@ class ModelTurn:
     """What the call cost, as the gateway reported it (``COST_HEADER``, or the answer's
     ``usage.cost``), in its currency: LiteLLM's is USD. ``None`` when it reported none:
     it is never estimated."""
+    native: bytes | None = None
+    """The gateway's answer as it sent it, which the session's archive keeps
+    (docs/specs/context-management.md, CM-5); ``native_format`` says what it is."""
+    native_format: str | None = None
+    gateway_version: str | None = None
+    """The gateway's version, as ``VERSION_HEADER`` named it (CM-39)."""
 
 
 COST_HEADER: Final = "x-litellm-response-cost"
 """The header in which LiteLLM's proxy reports a call's cost."""
+VERSION_HEADER: Final = "x-litellm-version"
+"""The header in which LiteLLM's proxy names its version."""
+CHAT_COMPLETIONS: Final = "chat_completions"
+"""The native format of this client's answers: a chat completion, as the gateway sent it."""
 
 
 class ChatModel(Protocol):
@@ -168,12 +178,14 @@ class OpenAICompatibleModel:
         wait = self._backoff
         for attempt in range(self._retries + 1):
             try:
-                text, priced = await self._post(body)
+                text, priced, version = await self._post(body)
                 try:
-                    return _parse_completion(text, priced)
+                    turn = _parse_completion(text, priced)
                 except ModelError as error:  # answered, and charged, whatever it holds
                     error.cost = _cost(priced) if priced is not None else None
                     raise
+                native, form = text.encode(), CHAT_COMPLETIONS
+                return replace(turn, native=native, native_format=form, gateway_version=version)
             except _RetryableError as retry:
                 # A gateway that asks for a longer wait than the cap is not waited for.
                 if attempt == self._retries or (retry.after or 0) > MAX_RETRY_WAIT:
@@ -190,8 +202,8 @@ class OpenAICompatibleModel:
                 wait *= 2
         raise AssertionError("unreachable")  # pragma: no cover
 
-    async def _post(self, body: dict[str, Any]) -> tuple[str, str | None]:
-        """The answer's text, and its cost header if it has one."""
+    async def _post(self, body: dict[str, Any]) -> tuple[str, str | None, str | None]:
+        """The answer's text, and its cost and version headers if it has them."""
         if self._session is None:
             self._session = aiohttp.ClientSession()
         try:
@@ -215,7 +227,8 @@ class OpenAICompatibleModel:
                 if self._api_key:  # An answer, or an error about it, can quote the key.
                     text = text.replace(self._api_key, "[the gateway key]")
                 if 200 <= response.status < 300:
-                    return text, response.headers.get(COST_HEADER)
+                    version = response.headers.get(VERSION_HEADER, "").strip()[:128] or None
+                    return text, response.headers.get(COST_HEADER), version
                 status = response.status
                 said = gateway_said(text, response.content_type)
                 error = ModelError(f"the model gateway returned {status}: {said}", status=status)

@@ -36,7 +36,7 @@ from sandbox_science.orchestrator.model import (
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
-from .loop_harness import Harness, Reply, call
+from .loop_harness import GATEWAY_VERSION, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
@@ -475,8 +475,14 @@ async def test_a_run_rides_out_a_rate_limit_and_records_its_usage(harness: Harne
     # One entry per answered call; the scripted gateway counts messages as input tokens.
     first, _, last = (len(messages) for messages in harness.gateway.main)
     assert [usage.model_dump(exclude={"characters"}) for usage in record.usage] == [
-        {"model": "scripted-main", "input_tokens": first, "output_tokens": 1, "cost": None},
-        {"model": "scripted-main", "input_tokens": last, "output_tokens": 1, "cost": None},
+        {
+            "model": "scripted-main",
+            "input_tokens": tokens,
+            "output_tokens": 1,
+            "cost": None,
+            "gateway_version": GATEWAY_VERSION,  # each call's, as the run record keeps it
+        }
+        for tokens in (first, last)
     ]
     assert all(usage.characters for usage in record.usage)  # what each call sent and got
 

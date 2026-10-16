@@ -39,8 +39,10 @@ def _listed(doc: str) -> set[str]:
 def _tables(path: Path) -> set[str]:
     db = sqlite3.connect(path)
     try:
+        # A virtual table's own tables, such as FTS5's, are SQLite's: its type is shadow.
         rows = db.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            "SELECT name FROM pragma_table_list WHERE schema = 'main' "
+            "AND type IN ('table', 'virtual') AND name NOT LIKE 'sqlite_%'"
         ).fetchall()
     finally:
         db.close()

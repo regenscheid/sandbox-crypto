@@ -32,9 +32,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
 if TYPE_CHECKING:
-    from .model import Message
+    from .model import Message, ModelTurn, ToolCall
     from .projects import ModelUsage, RunRecord
     from .prompts import PromptPins
+    from .tools import ToolOutcome
 
 Point = Literal["start", "turn", "tool"]
 """``start``: once, before the first turn. ``turn``: before each model call.
@@ -93,6 +94,29 @@ class Refusal:
     kind: str
     """An ``ErrorKind`` value."""
     message: str
+
+
+@dataclass(frozen=True)
+class Appended:
+    """What the loop knows of a message it adds to the conversation: the run's task, a
+    notice (the user's own messages among them), the model's answer, or a tool's
+    result."""
+
+    kind: Literal["task", "notice", "assistant", "tool_result"]
+    notice: Notice | None = None
+    reply: ModelTurn | None = None
+    call: ToolCall | None = None
+    outcome: ToolOutcome | None = None
+
+
+class MessageLog(Protocol):
+    """Where a run keeps each message as it adds it to its conversation: the session's
+    archive (docs/specs/context-management.md, CM-4)."""
+
+    async def append(self, message: Message, appended: Appended) -> Message:
+        """Keep ``message``, before the next model call; the message as the
+        conversation holds it, with its ID header (CM-4a). A failure fails the run."""
+        ...
 
 
 class RunView(Protocol):

@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Final
 
 from . import migrations
-from .errors import BUSY, INTERNAL, NOT_FOUND, ControlError
+from .errors import BUSY, INTERNAL, NOT_FOUND, UNAVAILABLE, ControlError
 
 _log = logging.getLogger(__name__)
 
@@ -216,6 +216,7 @@ class ControlStore:
     def _connection(self) -> sqlite3.Connection:
         if self._db is not None:
             return self._db
+        require_search()
         if self.readonly:
             if not self.path.is_file():
                 raise ControlError(NOT_FOUND, "nothing has been stored yet")
@@ -293,6 +294,25 @@ class ControlStore:
             if db.in_transaction:
                 db.execute("ROLLBACK")
             db.execute("PRAGMA foreign_keys=ON")
+
+
+def require_search() -> None:
+    """Refuse to open a control store with a SQLite that lacks what the session archive's
+    search needs (docs/specs/context-management.md, CM-7): FTS5, and its ``trigram``
+    tokenizer, which came with SQLite 3.34. The refusal says which is missing."""
+    probe = sqlite3.connect(":memory:")
+    try:
+        probe.execute("CREATE VIRTUAL TABLE words USING fts5(body)")
+        probe.execute("CREATE VIRTUAL TABLE trigrams USING fts5(body, tokenize='trigram')")
+    except sqlite3.OperationalError as error:
+        missing = "FTS5" if "module" in str(error) else "FTS5's trigram tokenizer (3.34 or later)"
+        raise ControlError(
+            UNAVAILABLE,
+            f"the control store needs SQLite with {missing} for the session archive's "
+            f"search; this Python's SQLite {sqlite3.sqlite_version} lacks it ({error})",
+        ) from None
+    finally:
+        probe.close()
 
 
 def store_path(state_dir: Path) -> Path:

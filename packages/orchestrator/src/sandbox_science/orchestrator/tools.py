@@ -336,6 +336,9 @@ class ToolOutcome:
     """The result must reach the model as it is, with no notices riding on it."""
     written: Written | None = None
     """The files the call changed, which the run's recorder records (RA-27)."""
+    saved: dict[str, str] = field(default_factory=dict[str, str])
+    """The texts saved whole behind a sample, by path (Shell 5), which the session's
+    archive keeps beside the result (docs/specs/context-management.md, CM-6)."""
 
 
 @dataclass(frozen=True)
@@ -1012,7 +1015,8 @@ class Toolbox:
             text, _ = self._fit(execution, replayed, saved, unsaved)
         record["saved_output"] = saved
         paths = (*written.paths, *(path for path in saved.values() if path not in written.paths))
-        return ToolOutcome(text, record, written=replace(written, paths=paths))
+        texts = {saved[name]: text for name, text, _ in _texts(execution) if name in saved}
+        return ToolOutcome(text, record, written=replace(written, paths=paths), saved=texts)
 
     async def _save(
         self, execution: Execution, names: Sequence[str]

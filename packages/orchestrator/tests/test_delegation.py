@@ -30,6 +30,7 @@ from sandbox_science.orchestrator.delegation.records import (
     Ending,
 )
 from sandbox_science.orchestrator.documents import USER
+from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.memory import ProjectMemory
 from sandbox_science.orchestrator.notices import (
@@ -179,7 +180,7 @@ def started(record: RunRecord) -> list[str]:
 
 def results(record: RunRecord) -> list[str]:
     """The record's tool results, in order."""
-    return [str(m["content"]) for m in record.messages if m["role"] == "tool"]
+    return [body(str(m["content"])) for m in record.messages if m["role"] == "tool"]
 
 
 def tools(record: RunRecord) -> tuple[str, ...]:
@@ -235,7 +236,7 @@ async def test_a_check_starts_fresh_and_its_outcome_reaches_its_parent(
     assert KNOWN in str(first[0]["content"])
     assert LATER not in str(first[0]["content"])
     assert [m["role"] for m in first] == ["system", "user"]
-    brief = str(first[1]["content"])
+    brief = body(str(first[1]["content"]))
     assert brief.startswith("Task: Check whether ledger entry C-1 holds at revision 1, ")
     assert "The requester's note, not evidence: It came from Fermat's little theorem." in brief
     assert "Characterize the loop." not in json.dumps(first)  # the parent's task
@@ -301,9 +302,9 @@ async def test_a_parent_cannot_answer_while_its_check_runs(delegating: Harness) 
     assert root.final_text == "Done now."
     third = delegating.gateway.main[2]
     (notice,) = [
-        str(m["content"])
+        body(str(m["content"]))
         for m in third
-        if m["role"] == "user" and str(m["content"]).startswith(DELEGATIONS_RUNNING.text)
+        if m["role"] == "user" and body(str(m["content"])).startswith(DELEGATIONS_RUNNING.text)
     ]
     assert _ID.search(notice)
     assert [r.stopped for r in children(delegating, root)] == ["answered"]
@@ -339,7 +340,7 @@ async def test_a_parents_end_cancels_its_check_and_the_next_run_gets_the_outcome
 
     later = await delegating.run("later", [Reply("Noted: the check was cancelled.")])
     first = delegating.gateway.main[0]
-    handbacks = [m for m in first if str(m.get("content", "")).startswith(DELEGATIONS.text)]
+    handbacks = [m for m in first if body(str(m.get("content", ""))).startswith(DELEGATIONS.text)]
     assert len(handbacks) == 1
     assert delegation_id in str(handbacks[0]["content"])
     assert later.delivered["delegations"] == [delegation_id]
@@ -610,10 +611,12 @@ async def test_an_invalid_result_gets_one_correction_and_stays_as_returned(
     )
     first, second = delegating.gateway.children
     corrections = [
-        m for m in second if str(m.get("content", "")).startswith(OUTCOME_CORRECTION.text)
+        m for m in second if body(str(m.get("content", ""))).startswith(OUTCOME_CORRECTION.text)
     ]
     assert len(corrections) == 1
-    assert not any(str(m.get("content", "")).startswith(OUTCOME_CORRECTION.text) for m in first)
+    assert not any(
+        body(str(m.get("content", ""))).startswith(OUTCOME_CORRECTION.text) for m in first
+    )
     (child,) = children(delegating, root)
     assert [m["content"] for m in child.messages if m["role"] == "assistant"] == [
         "Verdict: confirmed",

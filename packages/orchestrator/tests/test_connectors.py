@@ -40,6 +40,7 @@ from sandbox_science.orchestrator.connectors import (
     check_proxy,
 )
 from sandbox_science.orchestrator.documents.agent_text import hidden_characters
+from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolSpec
 from sandbox_science.orchestrator.projects import ProjectStore, run_name
@@ -296,7 +297,7 @@ async def test_a_run_calls_a_connector_tool_through_the_proxy(
     assert (summary["listed"], summary["servers"]) == (8, {"papers": 8})
     assert [loaded["name"] for loaded in summary["loaded"]] == ["search"]
     _, second = harness.gateway.main
-    assert second[-1]["content"] == "search: ok"
+    assert body(second[-1]["content"]) == "search: ok"
     assert proxied.fake.tool_calls() == ["search"]
     # The proxy recorded the call as the session's.
     (recorded,) = [p for kind, p in proxied.sink.events if kind == "mcp-call" and p.get("tool")]

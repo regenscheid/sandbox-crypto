@@ -31,6 +31,7 @@ from aiohttp.test_utils import TestServer
 
 from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator.documents import USER
+from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.notices import SKILLS, SKILLS_WORDS
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
 from sandbox_science.orchestrator.runstate import RunState
@@ -107,12 +108,8 @@ def _pin(harness: Harness, pack: Path | None = None) -> None:
 
 
 def _notices(messages: list[dict[str, Any]]) -> list[str]:
-    return [
-        cast(str, m["content"])
-        for m in messages
-        if m.get("role") == "user"
-        and cast(str, m["content"]).startswith((SKILLS.text, SKILLS_WORDS.text))
-    ]
+    texts = [body(cast(str, m["content"])) for m in messages if m.get("role") == "user"]
+    return [text for text in texts if text.startswith((SKILLS.text, SKILLS_WORDS.text))]
 
 
 def _summary(record: RunRecord) -> dict[str, Any]:
@@ -216,7 +213,7 @@ async def test_no_run_waits_for_the_vectors_and_once_they_exist_meaning_counts(
     (found,) = _summary(two)["discoveries"]
     assert found["scoring"] == "hybrid"
     assert [skill["id"] for skill in found["skills"]] == ["ss/beta"]
-    answer = json.loads(cast(str, two.messages[-2]["content"]))
+    answer = json.loads(body(cast(str, two.messages[-2]["content"])))
     assert answer.pop("ranked") == "by words and meaning"
     assert answer["found"] == [
         {"id": "ss/beta", "description": "Counts the lines of the notes.", "meaning": 1.0}
@@ -258,7 +255,7 @@ async def test_a_failing_gateway_or_a_short_message_leaves_words(
     (found,) = _summary(record)["discoveries"]
     assert found["scoring"] == "lexical"
     assert found["embedding"].startswith("failed: the gateway answered 500")
-    answer = json.loads(cast(str, record.messages[-2]["content"]))
+    answer = json.loads(body(cast(str, record.messages[-2]["content"])))
     assert answer["ranked"].startswith(
         "by words alone: meaning could not be compared (failed: the gateway answered 500"
     )

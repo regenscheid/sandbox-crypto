@@ -19,6 +19,7 @@ from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator import question_tool
 from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.documents import store_path
+from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.projects import ProjectStore, run_name
 from sandbox_science.orchestrator.question_tool import CANCELLED, STOPPED, QuestionTool
@@ -538,7 +539,7 @@ async def test_a_main_run_waits_for_the_users_answer(
     assert record.final_text == "Using Ed448, as you chose."
     assert "ask_user" in [tool["function"]["name"] for tool in harness.gateway.tools["main"][0]]
     (result,) = [m for m in harness.gateway.main[1] if m["role"] == "tool"]
-    assert json.loads(str(result["content"])) == {
+    assert json.loads(body(str(result["content"]))) == {
         "question_id": answered.question_id,
         "answer": "picked",
         "picked": ["Ed448"],

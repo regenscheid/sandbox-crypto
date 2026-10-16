@@ -28,6 +28,7 @@ from sandbox_science.orchestrator.delegation.records import (
 from sandbox_science.orchestrator.delegation.specs import CheckBrief
 from sandbox_science.orchestrator.documents import USER, DocumentError
 from sandbox_science.orchestrator.documents.models import Author
+from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.ledger import Ledger, gate
 from sandbox_science.orchestrator.ledger.models import EvidenceLink, GateClause
 from sandbox_science.orchestrator.loop import Transcript
@@ -651,7 +652,7 @@ def lemma_and_proof(harness: Harness) -> str:
 
 
 def started_in(messages: list[dict[str, Any]]) -> str:
-    started_with = [json.loads(str(m["content"])) for m in messages if m["role"] == "tool"]
+    started_with = [json.loads(body(str(m["content"]))) for m in messages if m["role"] == "tool"]
     return str(started_with[0]["delegation_id"])
 
 
@@ -700,7 +701,7 @@ async def test_a_main_run_checks_its_proof_by_delegation(delegating: Harness) ->
         ],
     )
     first = delegating.gateway.children[0]
-    brief = str(first[1]["content"])
+    brief = body(str(first[1]["content"]))
     assert brief.startswith("Task: Check whether ledger entry C-1 holds at revision 2, ")
     assert "- derivation (proof): entry C-2 r1 (ledger_read)" in brief
     assert brief.endswith("The requester's note, not evidence: Mind the lemma.")

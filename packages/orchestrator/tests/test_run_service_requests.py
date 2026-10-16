@@ -18,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.documents.annotations import Annotations
 from sandbox_science.orchestrator.documents.tool import REQUESTS_TASK
+from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.model import Message
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.runstate import RunState
@@ -153,7 +154,7 @@ async def test_a_comment_ends_a_job_wait(harness: Harness) -> None:
     assert record.delivered["requests"] == [request]
     *_, last = harness.gateway.main
     result, offered = last[-2:]
-    assert json.loads(str(result["content"]))["reason"] == "user_message"
+    assert json.loads(body(str(result["content"])))["reason"] == "user_message"
     assert shape([offered]) == [notice("requests", request)]
     await harness.end_job()
 
