@@ -6,7 +6,9 @@ The fixtures are those of docs/specs/pdf-sources.md (PDF-F1 to PDF-F6).
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import importlib.util
 import json
 import struct
 import subprocess
@@ -256,3 +258,69 @@ def test_the_command_line_prints_json_and_exits_3_on_errors(workspace: Path) -> 
     )  # fmt: skip
     assert bad.returncode == pdfhelper.EXIT_ERROR
     assert json.loads(bad.stdout)["error"]["kind"] == "invalid_request"
+
+
+def _size(result: dict[str, Any]) -> tuple[int, int]:
+    data = base64.b64decode(result["image"]["data"])
+    assert data.startswith(b"\x89PNG\r\n\x1a\n")
+    assert hashlib.sha256(data).hexdigest() == result["image"]["sha256"]
+    return struct.unpack(">II", data[16:24])
+
+
+def test_draw_makes_a_pdf_page_or_region_a_png_within_the_limit(workspace: Path) -> None:
+    """docs/specs/figures.md, FG-35: a page drawn to fit 1,600 pixels, a region larger,
+    in the answer, never in a file; the source's SHA-256 beside it."""
+    before = set(workspace.rglob("*"))
+    whole = pdfhelper.draw("paper.pdf", None, None)
+    assert (
+        whole["source"]["sha256"]
+        == hashlib.sha256((workspace / "paper.pdf").read_bytes()).hexdigest()
+    )
+    width, height = _size(whole)
+    assert max(width, height) <= pdfhelper.DRAW_SIDE
+    assert height > pdfhelper.DRAW_SIDE * 0.9  # a letter page, its height the longer side
+    corner = pdfhelper.draw("paper.pdf", 3, "72,684,144,756")
+    assert _size(corner) == (pdfhelper.MAX_DPI, pdfhelper.MAX_DPI)  # an inch, at the most dpi
+    assert set(workspace.rglob("*")) == before
+
+
+def test_draw_takes_svg_through_rsvg_convert(
+    workspace: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An SVG goes to ``rsvg-convert``, which a test stands in for: it writes a PNG of the
+    width it is asked for."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "rsvg-convert"
+    fake.write_text(
+        f"#!{sys.executable}\n"
+        "import sys\n"
+        f"sys.path.insert(0, {str(HELPER.parent)!r})\n"
+        "import pdfhelper\n"
+        "assert sys.stdin.buffer.read().startswith(b'<svg')\n"
+        "side = int(sys.argv[sys.argv.index('--width') + 1])\n"
+        "sys.stdout.buffer.write(pdfhelper.png(side, 10, [bytes(4 * side)] * 10))\n"
+    )
+    fake.chmod(0o755)
+    (workspace / "plot.svg").write_text('<svg xmlns="http://www.w3.org/2000/svg"/>')
+    monkeypatch.setenv("PATH", str(bin_dir))
+    assert _size(pdfhelper.draw("plot.svg", None, None)) == (pdfhelper.DRAW_SIDE, 10)
+    with pytest.raises(pdfhelper.HelperError, match="page and a region are for PDFs"):
+        pdfhelper.draw("plot.svg", 2, None)
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    with pytest.raises(pdfhelper.HelperError, match="librsvg") as refused:
+        pdfhelper.draw("plot.svg", None, None)
+    assert refused.value.kind == "unsupported"
+
+
+def test_draw_says_what_it_cannot_draw(workspace: Path) -> None:
+    (workspace / "notes.txt").write_text("plain words")
+    with pytest.raises(pdfhelper.HelperError, match="not a PDF, an SVG"):
+        pdfhelper.draw("notes.txt", None, None)
+    (workspace / "big.png").write_bytes(pdfhelper.png(2, 2, [bytes(8)] * 2))
+    if importlib.util.find_spec("PIL") is None:
+        with pytest.raises(pdfhelper.HelperError, match="Pillow") as refused:
+            pdfhelper.draw("big.png", None, None)
+        assert refused.value.kind == "unsupported"
+    else:
+        assert _size(pdfhelper.draw("big.png", None, None)) == (2, 2)

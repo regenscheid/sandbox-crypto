@@ -396,7 +396,7 @@ def _group(
 
 
 async def _view(viewer: ImageViewer, request: Request) -> ToolOutcome:
-    viewed = await viewer.call(request.args)
+    viewed = await viewer.call(request.args, request.operation)
     image = None
     if viewed.notice is not None and viewed.token is not None:
         image = (viewed.notice, viewed.token)

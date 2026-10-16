@@ -45,6 +45,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, TextIO
 
+from sandbox_science.contracts.worker import PROTOCOL_VERSION
+
 LOGIN_TOKEN = "fake-login-token-0123456789abcdef"
 
 name, args = sys.argv[1], sys.argv[2:]
@@ -87,7 +89,9 @@ def worker_api(settings: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         def answer(self, status: int, body: object) -> None:
             data = json.dumps(body).encode()
             self.send_response(status)
-            self.send_header("X-Worker-Protocol", "5" if behaviour == "old-protocol" else "6")
+            self.send_header(
+                "X-Worker-Protocol", "5" if behaviour == "old-protocol" else str(PROTOCOL_VERSION)
+            )
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()

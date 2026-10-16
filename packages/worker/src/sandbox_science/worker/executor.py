@@ -2521,7 +2521,7 @@ def available_features() -> list[str]:
 def pdf_argv(request: Message) -> list[str]:
     """The PDF helper's command line for a ``pdf`` request, run with this interpreter."""
     operation, path = str(request.get("operation", "")), str(request.get("path", ""))
-    if operation not in ("info", "pages", "search", "render"):
+    if operation not in ("info", "pages", "search", "render", "draw"):
         raise ToolError("invalid_request", f"no PDF operation {operation!r}")
     argv = [sys.executable, "-I", str(PDF_HELPER), operation, path]
     match operation:
@@ -2540,6 +2540,13 @@ def pdf_argv(request: Message) -> list[str]:
             out: object = request.get("out")
             if isinstance(out, str):
                 argv += ["--out", out]
+        case "draw":
+            if (page := request.get("page")) is not None:
+                argv += ["--page", str(page)]
+            drawn: object = request.get("region")
+            if isinstance(drawn, list):
+                values = cast(list[object], drawn)
+                argv += ["--region", ",".join(str(value) for value in values)]
         case _:
             pass
     return argv

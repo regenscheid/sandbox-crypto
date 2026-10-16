@@ -17,7 +17,7 @@ from pydantic import AfterValidator, AwareDatetime, Field, StringConstraints, mo
 from .context import ExecutionContext
 from .model import Contract, Counter, Identifier, Sha256
 
-PROTOCOL_VERSION: Final = 6
+PROTOCOL_VERSION: Final = 7
 """The worker API's version. Releases are lockstep (docs/COMPATIBILITY.md): it changes with
 any change to what the worker or its clients send, and each side refuses another version."""
 PROTOCOL_HEADER: Final = "X-Worker-Protocol"
@@ -203,7 +203,9 @@ Feature = Literal["pdf", "admission", "provisioning", "jobs"]
 Conda provisioning)."""
 FEATURES: Final[tuple[Feature, ...]] = ("pdf", "jobs")
 """The features an executor may report; the worker adds ``admission`` itself."""
-PdfOperation = Literal["info", "pages", "search", "render"]
+PdfOperation = Literal["info", "pages", "search", "render", "draw"]
+"""``draw`` makes a recorded figure a PNG for ``view_image`` (docs/specs/figures.md, FG-35):
+a PDF page or region, an SVG, or a PNG or JPEG scaled down; it writes no file."""
 PageList = Annotated[
     str, StringConstraints(pattern=r"^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$", max_length=200)
 ]

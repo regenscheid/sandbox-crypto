@@ -8,6 +8,7 @@ environment's interpreter::
     python -I pdfhelper.py pages PATH --pages 1-3,5 [--include-artifacts]
     python -I pdfhelper.py search PATH --query TEXT
     python -I pdfhelper.py render PATH --page N [--region X0,Y0,X1,Y1] [--dpi 150] [--out FILE]
+    python -I pdfhelper.py draw PATH [--page N] [--region X0,Y0,X1,Y1]
 
 It needs only the standard library and pdf_oxide (D59), and prints one JSON object: the
 result, or ``{"error": {"kind", "message"}}`` with exit status 3. PDFs are untrusted, so
@@ -22,19 +23,31 @@ in the parser's order, running headers, footers and page numbers (tagged ``/Arti
 included and marked ``artifact``. ``pages`` leaves those out unless asked, but never
 renumbers the rest, so a line cited from ``pages`` or ``search`` is the same line, as the
 citation check reads it (docs/specs/pdf-sources.md; consistency review CR-4).
+
+``draw`` turns a recorded figure into a PNG that ``view_image`` can send
+(docs/specs/figures.md, FG-35, FG-36): a PDF page or region, an SVG, or a PNG or JPEG
+too large to send, scaled down to at most ``DRAW_SIDE`` pixels on its longer side. It
+writes nothing: its JSON holds the PNG in base64, with the source's SHA-256, which the
+harness checks against the revision it pinned. PDFs need pdf_oxide; SVG, ``rsvg-convert``
+(librsvg) or cairosvg; PNG and JPEG, Pillow. A missing one is ``unsupported``, naming it.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
 import json
 import os
+import shutil
 import stat
 import struct
+import subprocess
 import sys
 import zlib
+from base64 import b64encode
 from collections import Counter
+from io import BytesIO
 from pathlib import Path
 from typing import Any, cast
 
@@ -50,6 +63,12 @@ DEFAULT_DPI = 150
 MAX_DPI = 300
 MAX_PIXELS = 40_000_000
 RENDER_DIR = "pdf-renders"
+DRAW_SIDE = 1600
+"""A drawn image's longer side, in pixels: what ``view_image`` sends at most."""
+DRAW_BYTES = 4 * 1024 * 1024
+DRAW_PIXELS = 50_000_000
+"""The most pixels a PNG or JPEG drawn may have before it is scaled."""
+SVG_SECONDS = 60
 EXIT_ERROR = 3
 
 
@@ -95,6 +114,14 @@ def resolve(text: str, *, must_exist: bool = True) -> tuple[Path, str]:
 
 
 def read_pdf(text: str) -> tuple[bytes, dict[str, Any]]:
+    data, source = read_file(text)
+    if b"%PDF-" not in data[:1024]:
+        raise HelperError("invalid_request", f"{text!r} is not a PDF")
+    return data, source
+
+
+def read_file(text: str) -> tuple[bytes, dict[str, Any]]:
+    """A regular file's bytes, read once, and its path, size and SHA-256."""
     path, given = resolve(text)
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -107,8 +134,6 @@ def read_pdf(text: str) -> tuple[bytes, dict[str, Any]]:
         if info.st_size > MAX_FILE_BYTES:
             raise HelperError("invalid_request", f"{given!r} is over {MAX_FILE_BYTES} bytes")
         data = handle.read(MAX_FILE_BYTES + 1)
-    if b"%PDF-" not in data[:1024]:
-        raise HelperError("invalid_request", f"{given!r} is not a PDF")
     source = {"path": given, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
     return data, source
 
@@ -394,31 +419,8 @@ def render(path: str, page: int, region: str | None, dpi: int, out: str | None) 
     scale = dpi / 72.0
     if (x1 - x0) * scale * (y1 - y0) * scale > MAX_PIXELS:
         raise HelperError("invalid_request", "the render would be too large; lower the dpi")
-    box = None
-    if region is not None:
-        if int(document.page_rotation(index) or 0) % 360:
-            raise HelperError("unsupported", "regions of rotated pages are not supported yet")
-        try:
-            box = [float(value) for value in region.split(",")]
-        except ValueError:
-            box = []
-        if len(box) != 4 or not (box[0] < box[2] and box[1] < box[3]):
-            raise HelperError("invalid_request", "region must be x0,y0,x1,y1 with x0<x1 and y0<y1")
-    pixmap = document.render_pixmap(index, dpi=dpi)
-    width, height, pixels = int(pixmap.width), int(pixmap.height), bytes(pixmap.data)
-    left, top, right, bottom = 0, 0, width, height
-    if box is not None:
-        sx, sy = width / (x1 - x0), height / (y1 - y0)
-        left = max(0, min(width, int((box[0] - x0) * sx)))
-        right = max(0, min(width, int((box[2] - x0) * sx + 0.999)))
-        top = max(0, min(height, int((y1 - box[3]) * sy)))
-        bottom = max(0, min(height, int((y1 - box[1]) * sy + 0.999)))
-        if right <= left or bottom <= top:
-            raise HelperError("invalid_request", "the region lies outside the page")
-    stride = width * 4
-    rows = [
-        pixels[row * stride + left * 4 : row * stride + right * 4] for row in range(top, bottom)
-    ]
+    box = _region(document, index, region)
+    left, top, right, bottom, rows = _pixels(document, index, box, dpi, (x0, y0, x1, y1))
     image = png(right - left, bottom - top, rows)
     digest = hashlib.sha256(image).hexdigest()
     if out is None:
@@ -444,10 +446,148 @@ def render(path: str, page: int, region: str | None, dpi: int, out: str | None) 
     }
 
 
+def _region(document: Any, index: int, region: str | None) -> list[float] | None:
+    if region is None:
+        return None
+    if int(document.page_rotation(index) or 0) % 360:
+        raise HelperError("unsupported", "regions of rotated pages are not supported yet")
+    try:
+        box = [float(value) for value in region.split(",")]
+    except ValueError:
+        box = []
+    if len(box) != 4 or not (box[0] < box[2] and box[1] < box[3]):
+        raise HelperError("invalid_request", "region must be x0,y0,x1,y1 with x0<x1 and y0<y1")
+    return box
+
+
+def _pixels(
+    document: Any,
+    index: int,
+    box: list[float] | None,
+    dpi: int,
+    media: tuple[float, float, float, float],
+) -> tuple[int, int, int, int, list[bytes]]:
+    """A page drawn at ``dpi``, cut to ``box``: its bounds and its RGBA rows."""
+    x0, y0, x1, y1 = media
+    pixmap = document.render_pixmap(index, dpi=dpi)
+    width, height, pixels = int(pixmap.width), int(pixmap.height), bytes(pixmap.data)
+    left, top, right, bottom = 0, 0, width, height
+    if box is not None:
+        sx, sy = width / (x1 - x0), height / (y1 - y0)
+        left = max(0, min(width, int((box[0] - x0) * sx)))
+        right = max(0, min(width, int((box[2] - x0) * sx + 0.999)))
+        top = max(0, min(height, int((y1 - box[3]) * sy)))
+        bottom = max(0, min(height, int((y1 - box[1]) * sy + 0.999)))
+        if right <= left or bottom <= top:
+            raise HelperError("invalid_request", "the region lies outside the page")
+    stride = width * 4
+    rows = [
+        pixels[row * stride + left * 4 : row * stride + right * 4] for row in range(top, bottom)
+    ]
+    return left, top, right, bottom, rows
+
+
+def draw(path: str, page: int | None, region: str | None) -> dict[str, Any]:
+    """A recorded figure as a PNG of at most ``DRAW_SIDE`` pixels on its longer side,
+    in the result, not in a file (FG-35)."""
+    data, source = read_file(path)
+    if b"%PDF-" in data[:1024]:
+        drawn = _draw_pdf(data, page or 1, region)
+    elif page is not None or region is not None:
+        raise HelperError("invalid_request", "a page and a region are for PDFs")
+    elif data.startswith((b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff")):
+        drawn = _draw_raster(data)
+    elif b"<svg" in data[:4096]:
+        drawn = _draw_svg(data)
+    else:
+        raise HelperError("unsupported", f"{path!r} is not a PDF, an SVG, a PNG or a JPEG")
+    if len(drawn) > DRAW_BYTES:
+        raise HelperError("unsupported", f"the drawing is over {DRAW_BYTES} bytes as a PNG")
+    if not drawn.startswith(b"\x89PNG\r\n\x1a\n") or len(drawn) < 24:
+        raise HelperError("exception", "the renderer did not make a PNG")
+    width, height = struct.unpack(">II", drawn[16:24])
+    return {
+        "source": source,
+        "image": {
+            "media_type": "image/png",
+            "width": width,
+            "height": height,
+            "sha256": hashlib.sha256(drawn).hexdigest(),
+            "data": b64encode(drawn).decode("ascii"),
+        },
+    }
+
+
+def _draw_pdf(data: bytes, page: int, region: str | None) -> bytes:
+    document = open_document(data)
+    count = int(document.page_count())
+    if not 1 <= page <= count:
+        raise HelperError("invalid_request", f"page {page} is outside 1-{count}")
+    index = page - 1
+    media = tuple(float(value) for value in document.page_media_box(index))
+    x0, y0, x1, y1 = media
+    box = _region(document, index, region)
+    wide, high = (box[2] - box[0], box[3] - box[1]) if box is not None else (x1 - x0, y1 - y0)
+    # The dots per inch that make the longer side DRAW_SIDE pixels, within MAX_PIXELS.
+    dpi = max(1, min(MAX_DPI, int(72 * DRAW_SIDE / max(wide, high, 1.0))))
+    while dpi > 1 and (x1 - x0) * (y1 - y0) * (dpi / 72) ** 2 > MAX_PIXELS:
+        dpi //= 2
+    left, top, right, bottom, rows = _pixels(document, index, box, dpi, (x0, y0, x1, y1))
+    return png(right - left, bottom - top, rows)
+
+
+def _draw_raster(data: bytes) -> bytes:
+    try:
+        image_module: Any = importlib.import_module("PIL.Image")  # optional (tier 3)
+    except ImportError:
+        raise HelperError(
+            "unsupported", "Pillow is not installed in this environment, which scales images"
+        ) from None
+    image_module.MAX_IMAGE_PIXELS = DRAW_PIXELS
+    try:
+        with image_module.open(BytesIO(data)) as image:
+            image.thumbnail((DRAW_SIDE, DRAW_SIDE))
+            out = BytesIO()
+            image.convert("RGBA").save(out, format="PNG")
+    except Exception as exc:
+        raise HelperError("exception", f"the image could not be read: {str(exc)[:300]}") from exc
+    return out.getvalue()
+
+
+def _draw_svg(data: bytes) -> bytes:
+    rsvg = shutil.which("rsvg-convert")
+    if rsvg is not None:
+        try:
+            done = subprocess.run(  # noqa: S603 - a fixed program, the SVG on its stdin
+                [rsvg, "--format", "png", "--keep-aspect-ratio",
+                 "--width", str(DRAW_SIDE), "--height", str(DRAW_SIDE)],
+                input=data, capture_output=True, timeout=SVG_SECONDS, check=False,
+            )  # fmt: skip
+        except subprocess.TimeoutExpired:
+            raise HelperError("timed_out", "drawing the SVG took too long") from None
+        if done.returncode != 0:
+            message = done.stderr.decode("utf-8", "replace")[:300]
+            raise HelperError("exception", f"rsvg-convert could not draw the SVG: {message}")
+        return done.stdout
+    try:
+        cairosvg: Any = importlib.import_module("cairosvg")  # optional (tier 3)
+    except ImportError:
+        raise HelperError(
+            "unsupported",
+            "nothing here draws SVG: install librsvg (rsvg-convert) or cairosvg",
+        ) from None
+    try:
+        return bytes(cairosvg.svg2png(bytestring=data, output_width=DRAW_SIDE))
+    except Exception as exc:
+        raise HelperError(
+            "exception", f"cairosvg could not draw the SVG: {str(exc)[:300]}"
+        ) from exc
+
+
 def main(argv: list[str] | None = None) -> int:
     commands = argparse.ArgumentParser(prog="pdfhelper")
     sub = commands.add_subparsers(dest="operation", required=True)
-    for name in ("info", "pages", "search", "render"):
+    for name in ("info", "pages", "search", "render", "draw"):
         command = sub.add_parser(name)
         command.add_argument("path")
         if name == "pages":
@@ -460,6 +600,9 @@ def main(argv: list[str] | None = None) -> int:
             command.add_argument("--region")
             command.add_argument("--dpi", type=int, default=DEFAULT_DPI)
             command.add_argument("--out")
+        if name == "draw":
+            command.add_argument("--page", type=int)
+            command.add_argument("--region")
     args = commands.parse_args(argv)
     try:
         match args.operation:
@@ -469,6 +612,8 @@ def main(argv: list[str] | None = None) -> int:
                 result = pages(args.path, args.pages, artifacts=args.include_artifacts)
             case "search":
                 result = search(args.path, args.query)
+            case "draw":
+                result = draw(args.path, args.page, args.region)
             case _:
                 result = render(args.path, args.page, args.region, args.dpi, args.out)
     except HelperError as error:

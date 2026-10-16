@@ -7,6 +7,7 @@ in this process."""
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import struct
 from pathlib import Path
@@ -22,7 +23,8 @@ from sandbox_science.orchestrator.artifacts import ArtifactInventory
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.model import ModelGateway
 from sandbox_science.orchestrator.notices import IMAGES
-from sandbox_science.orchestrator.view_image import MAX_VIEWS, ImageViewer, dimensions
+from sandbox_science.orchestrator.view_image import MAX_SIDE, MAX_VIEWS, ImageViewer, dimensions
+from sandbox_science.testing.pdfs import make_pdf
 
 from .loop_harness import API_KEY, SESSION, Harness, Reply, call
 from .loop_harness import gateway as gateway
@@ -171,7 +173,7 @@ async def test_what_view_image_refuses(tmp_path: Path) -> None:
     for args, kind in (
         ({"path": "plot.svg"}, "unsupported"),
         ({"path": "wide.png"}, "unsupported"),
-        ({"path": "big.png"}, "unavailable"),
+        ({"path": "big.png"}, "unsupported"),  # drawn only by a worker, and none is here
         ({"path": "gone.png"}, "not_found"),
         ({"path": "ok.png", "revision": 1}, "invalid_request"),
     ):
@@ -197,3 +199,38 @@ def test_a_call_carries_the_newest_eight_images() -> None:
     assert all(isinstance(message["content"], list) for message in sent[1:])
     images.forget(tokens)
     assert images.carried(messages) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_pdf_figure_is_drawn_in_the_environment(harness: Harness) -> None:
+    """FG-35: a PDF the session wrote is drawn by the worker's helper, from the file in
+    the environment, as a PNG within the limits; the drawing is in no workspace. Once the
+    file changes there, its earlier revision is no longer drawn."""
+    harness.gateway.limits = {"main": {"supports_vision": True}}
+    pdf = base64.b64encode(make_pdf([[(72, 700, "Timing")]])).decode()
+    write = f"mkdir -p plots && echo {pdf} | base64 -d > plots/fig.pdf"
+    script = [
+        Reply(calls=[call("shell", script=write)]),
+        Reply(calls=[call("view_image", path="plots/fig.pdf")]),
+        Reply("A page of text."),
+    ]
+    record = await harness.run("d1", script)
+    sent = harness.gateway.requests["main"][-1]
+    text, image = sent[-1]["content"]
+    assert IMAGES.text in text["text"]
+    drawn = base64.b64decode(image["image_url"]["url"].removeprefix("data:image/png;base64,"))
+    width, height = struct.unpack(">II", drawn[16:24])
+    assert max(width, height) <= MAX_SIDE
+    (viewed,) = [cast(Json, r["viewed"]) for r in record.tools if "viewed" in r]
+    assert viewed["media_type"] == "image/png"
+    assert cast(Json, viewed["drawn"])["sha256"] == hashlib.sha256(drawn).hexdigest()
+    first = viewed["artifact_id"]
+    other = base64.b64encode(make_pdf([[(72, 700, "Changed")]])).decode()
+    again = [
+        Reply(calls=[call("shell", script=f"echo {other} | base64 -d > plots/fig.pdf")]),
+        Reply(calls=[call("view_image", artifact_id=first, revision=1)]),
+        Reply("Changed."),
+    ]
+    later = await harness.run("d2", again)
+    refused = [r for r in later.tools if r.get("tool") == "view_image"]
+    assert refused[0]["error"] == "unavailable"

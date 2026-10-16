@@ -108,7 +108,7 @@ Every request that may change something (all but `GET` and the file reads) is lo
 
 ### Compatibility
 
-Releases are lockstep: the orchestrators, the workspace and the workers are upgraded together ([compatibility](COMPATIBILITY.md)). Every response carries the worker's `PROTOCOL_VERSION` (6) in the `X-Worker-Protocol` header, and the clients refuse another version as `unsupported` ("version mismatch"). A request that names another version in the same header gets that error from the worker (422) before anything runs; a request without the header is served.
+Releases are lockstep: the orchestrators, the workspace and the workers are upgraded together ([compatibility](COMPATIBILITY.md)). Every response carries the worker's `PROTOCOL_VERSION` (7) in the `X-Worker-Protocol` header, and the clients refuse another version as `unsupported` ("version mismatch"). A request that names another version in the same header gets that error from the worker (422) before anything runs; a request without the header is served.
 
 The worker binds an operation ID to the digest of its request's non-default fields (`contracts/canonical.py`), so a field added later with a default changes no stored identity. Operations stored before protocol 2 keep their older digest, which the worker still accepts.
 
@@ -421,11 +421,12 @@ Still open: restoring a revision and clearing recovery state (CP-13 and CP-20's 
 
 ## PDFs
 
-A `PdfRequest` runs one operation of the [PDF sources spec](specs/pdf-sources.md): `info`, `pages`, `search` or `render`.
+A `PdfRequest` runs one operation of the [PDF sources spec](specs/pdf-sources.md): `info`, `pages`, `search` or `render`; or `draw` (protocol 7), which makes a recorded figure a PNG for `view_image` ([figures](specs/figures.md#view_image-as-built), FG-35).
 - **Where it runs.** The executor runs the PDF helper (`pdfhelper.py`) as a process of its own, with its own interpreter, through the same path as a shell call's argv. Time limits, output limits, cancellation and leftover-process cleanup therefore apply as they do to shell calls. PDFs are untrusted, and nothing parses them outside the sandbox.
 - **The helper.** The OpenShell backend uploads it beside the executor. It needs only the standard library and pdf_oxide (D59).
 - **Results.** The result's stdout is the helper's JSON. On an error the exit code is 3, and stdout holds `{"error": {"kind", "message"}}`.
 - **Renders.** A render writes its PNG into the session workspace, so it appears in `written_files` and can be published like any output.
+- **Drawings.** `draw` takes a file of the session workspace or the shared area: a PDF's page, with an optional region, drawn with pdf_oxide at the dots per inch that make its longer side 1,600 pixels (at most 300 dpi); an SVG, through `rsvg-convert` (librsvg) or cairosvg; or a PNG or JPEG scaled down with Pillow. It writes no file: its JSON holds the PNG in base64, at most 4 MiB, beside the source's SHA-256, which the harness checks against the revision it pinned. A renderer the environment lacks makes it `unsupported`, naming it; these are runtime packages (tier 3), imported only when present. It needs the `pdf` feature only for a PDF.
 - **The feature.** The executor offers the `pdf` feature only when its interpreter can import pdf_oxide. Without it, a `PdfRequest` fails as `unsupported`. The harness offers its PDF tools (`pdf_info`, `pdf_pages`, `pdf_search`, `pdf_render`) only for an environment with the feature.
 
 ## Bounded artifact capture
