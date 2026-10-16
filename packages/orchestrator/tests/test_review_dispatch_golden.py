@@ -6,8 +6,10 @@ code before B-06 split ``dispatch``, and again for each rubric since, which is a
 changed: ``sandbox-consistency-2`` asked the reviewer to compare an entry's numbers with the
 artifacts it pins (B6), ``sandbox-consistency-3`` to check quotes (CR-4),
 ``sandbox-consistency-4`` to find the record of each action the author narrates, with
-the window's actions item and each document revision's changed blocks; a change to any
-of them changes what a reviewer sees."""
+the window's actions item and each document revision's changed blocks,
+``sandbox-consistency-5`` to weigh a delegated run's outcome against its output, with the
+author snapshot's terminal review now listing the run's earlier document revision as
+context (lab 42's B5); a change to any of them changes what a reviewer sees."""
 
 from __future__ import annotations
 
@@ -29,9 +31,9 @@ from .test_consistency import MAIN, anchor, claim, dispatch, raise_finding
 from .test_consistency import store as store
 
 GOLDEN = {
-    "author": "77eaf38c45099e0215484606e99d2dcdca7b0d7f2dc6e0bcc2bfc2fdc90db08b",
-    "confirmation": "18c8a755a8aaee94dc420265facc3ec3225987fa09db6b8d5b27a5611b980461",
-    "fallback": "b3e5f71f4eddd05582b1199e0f73f913b668c7c97af47bb2a050eb733626f3cd",
+    "author": "846757889aba44be04c9aaf49cb18cd48e8a3bbdfe552df3c6fb6a1d7a29e23b",
+    "confirmation": "a4b22ed8f3bd364bfffa8a58efe57d0eccf5cdec9362875e630b23d40c79a6a4",
+    "fallback": "b242878dd3eca3a23c93f7f7f9aa76c6fcd706b92b04c411cb5487d3ebc4077e",
 }
 
 
