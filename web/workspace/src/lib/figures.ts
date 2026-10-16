@@ -28,6 +28,61 @@ export function shownAsImage(
   );
 }
 
+/** The types a page shows in a frame (FG-12, FG-14): an SVG in the figure frame, an HTML
+ * file in a frame without scripts, and a PDF in the viewer's figure mode. */
+export const FRAMED_TYPES: ReadonlySet<string> = new Set([
+  'image/svg+xml',
+  'text/html',
+  'application/pdf',
+]);
+
+/** Whether an artifact revision is shown in a figure frame, with the preview origin on. */
+export function shownInFrame(
+  entry: Pick<ArtifactEntry, 'media_type' | 'size' | 'deleted' | 'content_retained'>,
+  previewOn: boolean,
+): boolean {
+  return (
+    previewOn &&
+    !entry.deleted &&
+    entry.content_retained &&
+    FRAMED_TYPES.has(entry.media_type) &&
+    entry.size <= MAX_IMAGE_BYTES
+  );
+}
+
+/** The limits a frame draws within (FG-17): at most this many frames draw at once, and a
+ * figure not drawn within this many milliseconds is abandoned. */
+export const DRAWING_AT_ONCE = 8;
+export const DRAW_MILLISECONDS = 5000;
+/** The height a frame takes, in CSS pixels, at most; an HTML figure's, fixed. */
+export const MAX_FRAME_HEIGHT = 4000;
+export const HTML_FRAME_HEIGHT = 400;
+
+/** Turns to draw: at most `limit` hold one at once; the others wait in order. */
+export class Slots {
+  private held = 0;
+  private readonly waiting: (() => void)[] = [];
+
+  constructor(private readonly limit: number) {}
+
+  /** Wait for a turn; the function it gives back ends it, once. */
+  async acquire(): Promise<() => void> {
+    if (this.held >= this.limit) await new Promise<void>((resolve) => this.waiting.push(resolve));
+    else this.held += 1;
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      const next = this.waiting.shift();
+      if (next) next();
+      else this.held -= 1;
+    };
+  }
+}
+
+/** The page's frames, drawing at most `DRAWING_AT_ONCE` at once (FG-17). */
+export const drawing = new Slots(DRAWING_AT_ONCE);
+
 /** An image's URL, if the server gave one on an http(s) origin; anything else is not
  * loaded. */
 export function imageSource(url: string): string | null {

@@ -12,8 +12,10 @@ Routes (docs/specs/pdf-viewer.md, PV-4):
   ?sha256=HEX`` mints a capability for that exact revision of a PDF and answers the viewer's
   URL on the preview origin, which opens it for 10 minutes (PV-3).
 - ``GET …/artifacts/{artifact}/revisions/{revision}/figure?sha256=HEX`` mints one for that
-  exact revision of a PNG or JPEG of at most 8 MiB and answers its URL on the preview
-  origin, for a page's ``<img>`` (docs/specs/figures.md, FG-12, FG-13); any other file is
+  exact revision of a figure file of at most 8 MiB and says how a page shows it
+  (docs/specs/figures.md, FG-12 to FG-14): a PNG or a JPEG in an ``<img>`` from the preview
+  origin; an SVG in the figure frame, which is given the capability; an HTML file as the
+  page of a frame without scripts; a PDF in the viewer's figure mode. Any other file is
   shown as a link.
 
 All read through the orchestrator's ``ArtifactInventory``; none writes.
@@ -23,7 +25,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-from typing import Final
+from typing import Final, Literal
 from urllib.parse import urlencode
 
 from aiohttp import web
@@ -36,7 +38,7 @@ from sandbox_science.orchestrator.projects import ProjectError
 
 from . import api
 from .context import CONTEXT, identifier, json_answer
-from .preview import CAPABILITY_SECONDS, IMAGES, MAX_IMAGE_BYTES, PDF, Preview
+from .preview import CAPABILITY_SECONDS, HTML, IMAGES, MAX_IMAGE_BYTES, PDF, SVG, Preview
 
 PREVIEW: Final = web.AppKey("preview", Preview)
 _IDENTIFIER: Final = TypeAdapter[str](Identifier)
@@ -84,9 +86,14 @@ class ViewerLink(Contract):
 
 
 class FigureLink(Contract):
-    """A pinned figure file's URL on the preview origin, and when it stops opening it."""
+    """How a page shows a pinned figure file, and when its capability stops opening it:
+    ``image``, an ``<img>`` of ``url``; ``svg``, the figure frame at ``url``, posted
+    ``capability``; ``html``, a frame without scripts whose page is ``url``; ``pdf``, the
+    viewer's figure mode at ``url``."""
 
+    kind: Literal["image", "svg", "html", "pdf"]
     url: str
+    capability: str | None = None
     expires_at: datetime
     media_type: str
 
@@ -191,21 +198,36 @@ def _resolve(request: web.Request, project: str, artifact: str, revision: int, s
 
 
 async def figure(request: web.Request) -> web.Response:
-    """A figure file's URL for a page's ``<img>`` (FG-12, FG-13): a PNG or a JPEG within
-    the size a page shows; the preview origin checks its first bytes and its header."""
+    """How a page shows a figure file (FG-12 to FG-14), within the size a page shows; the
+    preview origin checks its first bytes and, for an image, its header."""
     project, artifact, revision, sha256, preview = _pinned(request, "the preview origin")
 
     def mint() -> str:
         found = _resolve(request, project, artifact, revision, sha256)
-        reference = found.reference
-        if reference.media_type not in IMAGES:
+        media = found.reference.media_type
+        if media not in (*IMAGES, SVG, HTML, PDF):
             raise ProjectError(ErrorKind.UNSUPPORTED, "this file is shown as a link")
-        if reference.size > MAX_IMAGE_BYTES:
-            raise ProjectError(ErrorKind.UNSUPPORTED, "this image is larger than a page shows")
+        if found.reference.size > MAX_IMAGE_BYTES:
+            raise ProjectError(ErrorKind.UNSUPPORTED, "this file is larger than a page shows")
         expires = datetime.now(UTC) + timedelta(seconds=CAPABILITY_SECONDS)
-        capability = preview.capabilities.mint(project, artifact, revision, sha256, "file")
-        url = f"{preview.origin}/file/{capability}"
-        answer = FigureLink(url=url, expires_at=expires, media_type=reference.media_type)
+        purpose = "pdf" if media == PDF else "file"
+        capability = preview.capabilities.mint(project, artifact, revision, sha256, purpose)
+        file = f"{preview.origin}/file/{capability}"
+        given: str | None = None
+        if media in IMAGES:
+            kind, url = "image", file
+        elif media == HTML:
+            kind, url = "html", file
+        elif media == SVG:
+            # The frame takes the capability by message, from the workspace's window only.
+            kind, given = "svg", capability
+            url = f"{preview.origin}/figures/#{urlencode({'w': preview.workspace_origin})}"
+        else:
+            fragment = urlencode({"c": capability, "w": preview.workspace_origin, "m": "figure"})
+            kind, url = "pdf", f"{preview.origin}/viewer/#{fragment}"
+        answer = FigureLink(
+            kind=kind, url=url, capability=given, expires_at=expires, media_type=media
+        )
         return api.dumps(answer.model_dump(mode="json"))
 
     return json_answer(await asyncio.to_thread(mint))

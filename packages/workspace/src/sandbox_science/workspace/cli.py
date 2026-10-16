@@ -292,11 +292,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             "unencrypted, and any Host name is accepted",
             host,
         )
+    if preview_host == host:
+        # Same site: a browser may run the preview origin's frames on the workspace page's
+        # own thread, where a heavy figure stalls the page (FG-17; review of #492, M1).
+        _log.warning(
+            "the preview origin %s shares the workspace's host: figures and the PDF viewer "
+            "may run on the workspace page's thread. Give it another loopback address, "
+            "such as --preview-listen 127.0.0.2:%s, for a process of its own",
+            preview_host,
+            preview_port,
+        )
     viewer_app = create_preview_app(
         app[CONTEXT].documents,
         preview.capabilities,
         workspace_origin=lambda: preview.workspace_origin,
         viewer_dir=args.static / "viewer",
+        figures_dir=args.static / "figures",
         check_host=own_host if is_loopback(preview_host) else lambda request: True,
     )
     try:

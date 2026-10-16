@@ -14,6 +14,9 @@ export interface ViewerParams {
   workspace: string;
   /** The page to open at, such as a quote's; null for the first. */
   page: number | null;
+  /** The figure mode (`m=figure`; docs/specs/figures.md, FG-12): one page fitted to the
+   * frame's width, without the page controls, its size sent to the workspace. */
+  figure: boolean;
 }
 
 /**
@@ -33,7 +36,7 @@ export function viewerParams(hash: string): ViewerParams | null {
   } catch {
     return null;
   }
-  return { capability, workspace, page };
+  return { capability, workspace, page, figure: found.get('m') === 'figure' };
 }
 
 /**

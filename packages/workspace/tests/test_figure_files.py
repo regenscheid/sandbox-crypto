@@ -1,31 +1,42 @@
 # SPDX-License-Identifier: MIT
-"""Figure files on the preview origin (docs/specs/figures.md, FG-12, FG-13): a PNG or a
+"""Figure files on the preview origin (docs/specs/figures.md, FG-12 to FG-14): a PNG or a
 JPEG served for a capability the workspace minted, only as its recorded type and only
-when its first bytes are that type's, within 8 MiB and 50 megapixels; anything else is a
-link. Files are published through the inventory's public methods, as the harness does.
+when its first bytes are that type's, within 8 MiB and 50 megapixels; an SVG for the
+figure frame and an HTML file as a frame's page without scripts; the figure frame's
+bundle with its own policy, never served by the workspace; anything else is a link.
+Files are published through the inventory's public methods, as the harness does.
 """
 
 from __future__ import annotations
 
 import struct
+import time
 import zlib
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlencode
 
 import pytest
 
 from sandbox_science.orchestrator.artifacts import ArtifactInventory
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
+from sandbox_science.orchestrator.projects import ProjectStore
+from sandbox_science.workspace.app import create_app
 from sandbox_science.workspace.preview import (
     MAX_IMAGE_PIXELS,
     MAX_IMAGE_SIDE,
+    Capabilities,
+    create_preview_app,
     image_problem,
     jpeg_size,
     png_size,
+    svg_begins,
+    text_problem,
 )
 
+from .route_support import TOKEN, ClientFactory
+from .test_pdf_viewer import PDF_BYTES, Clock, publish
 from .test_pdf_viewer import origins as origins
-from .test_pdf_viewer import publish
 from .test_pdf_viewer import published as published
 
 
@@ -45,6 +56,11 @@ def jpeg(width: int, height: int) -> bytes:
 
 
 HTML = b"<html><script>parent.postMessage('x', '*')</script></html>"
+SVG_BYTES = (
+    b'<?xml version="1.0"?>\n<!-- a plot -->\n<svg xmlns="http://www.w3.org/2000/svg" '
+    b'onload="alert(1)"><script>alert(2)</script><image href="https://evil.example/x.png"/>'
+    b"</svg>"
+)
 
 
 @pytest.fixture
@@ -57,7 +73,12 @@ def files(state_dir: Path) -> dict[str, Any]:
         # A ".png" that holds HTML, recorded as an image.
         "html_png": publish(inventory, "op-hp", "plots/c.png", HTML, "image/png"),
         "huge": publish(inventory, "op-big", "plots/d.png", png(10000, 6000), "image/png"),
-        "svg": publish(inventory, "op-svg", "plots/e.svg", b"<svg/>", "image/svg+xml"),
+        "svg": publish(inventory, "op-svg", "plots/e.svg", SVG_BYTES, "image/svg+xml"),
+        "html": publish(inventory, "op-html", "tables/t.html", HTML, "text/html"),
+        # An ".svg" that holds HTML, recorded as an SVG.
+        "html_svg": publish(inventory, "op-hs", "plots/f.svg", HTML, "image/svg+xml"),
+        "pdf": publish(inventory, "op-pdf2", "plots/g.pdf", PDF_BYTES, "application/pdf"),
+        "text": publish(inventory, "op-txt2", "notes.txt", b"plain", "text/plain"),
     }
     documents.close()
     return made
@@ -100,7 +121,7 @@ async def test_bytes_that_are_not_their_type_or_too_large_are_refused(origins, f
         assert refused.headers["Cross-Origin-Resource-Policy"] == "same-origin"
         assert "script" not in await refused.text()
     # Another type is a link: the workspace mints nothing for it.
-    answer = await figure_link(workspace, files["svg"])
+    answer = await figure_link(workspace, files["text"])
     assert answer.status == 422  # unsupported: the GUI shows a link
 
 
@@ -136,3 +157,132 @@ def test_headers_give_the_size_and_the_first_bytes_the_type() -> None:
         413,
         "This image is larger than a page shows.",
     )
+
+
+async def test_each_figure_kind_is_shown_its_own_way(origins, files) -> None:
+    """FG-12, FG-14: an SVG in the figure frame, given its capability by message; an HTML
+    file as a frame's page; a PDF in the viewer's figure mode."""
+    workspace, _, preview, _ = origins
+    svg = await (await figure_link(workspace, files["svg"])).json()
+    assert svg["kind"] == "svg"
+    assert svg["url"] == f"{preview.origin}/figures/#{urlencode({'w': preview.workspace_origin})}"
+    assert svg["capability"]  # posted to the frame, never in its URL
+    assert svg["capability"] not in svg["url"]
+    html = await (await figure_link(workspace, files["html"])).json()
+    assert (html["kind"], html["capability"]) == ("html", None)
+    assert html["url"].startswith(f"{preview.origin}/file/")
+    pdf = await (await figure_link(workspace, files["pdf"])).json()
+    assert pdf["kind"] == "pdf"
+    fragment = parse_qs(pdf["url"].split("#", 1)[1])
+    assert (fragment["m"], fragment["w"]) == (["figure"], [preview.workspace_origin])
+    assert pdf["url"].startswith(f"{preview.origin}/viewer/#")
+
+
+async def test_an_svg_and_an_html_figure_are_served_inert(origins, files) -> None:
+    workspace, viewer, preview, _ = origins
+    svg = await (await figure_link(workspace, files["svg"])).json()
+    served = await viewer.get(f"/file/{svg['capability']}")
+    assert served.status == 200
+    assert served.headers["Content-Type"] == "image/svg+xml; charset=utf-8"
+    # The figure frame fetches it from its own origin; nothing else may load it, and
+    # opened directly it downloads.
+    assert served.headers["Cross-Origin-Resource-Policy"] == "same-origin"
+    assert served.headers["Content-Disposition"] == "attachment"
+    assert served.headers["Content-Security-Policy"].endswith("; sandbox")
+    html = await (await figure_link(workspace, files["html"])).json()
+    page = await viewer.get(html["url"].removeprefix(preview.origin))
+    assert page.status == 200
+    assert page.headers["Content-Type"] == "text/html; charset=utf-8"
+    assert page.headers["Content-Disposition"] == "inline"
+    policy = page.headers["Content-Security-Policy"]
+    # Scripts off: a sandbox with no allowances; framed by the workspace only; styles inline.
+    assert policy.endswith("; sandbox")
+    assert f"frame-ancestors {preview.workspace_origin}" in policy
+    assert "style-src 'self' 'unsafe-inline'" in policy
+    assert "unsafe-eval" not in policy
+    assert "connect-src 'self'" in policy
+    # An ".svg" holding HTML is not served as an SVG.
+    fake = await (await figure_link(workspace, files["html_svg"])).json()
+    assert (await viewer.get(f"/file/{fake['capability']}")).status == 415
+
+
+def test_the_svg_check_is_linear_on_hostile_prologs() -> None:
+    """Review of #492, H1: thousands of comments, unclosed ones and long doctypes are
+    checked in a time that grows with their length only."""
+    hostile = [
+        "<!---->" * 200_000 + "<svg/>",
+        "<!--" * 200_000,
+        "<!-- -" * 200_000 + "<svg/>",
+        "<?xml" + " " * 1_000_000,
+        "<!DOCTYPE svg" + " a" * 500_000,
+        " " * 2_000_000 + "<svg/>",
+    ]
+    start = time.monotonic()
+    found = [svg_begins(text) for text in hostile]
+    assert time.monotonic() - start < 2.0
+    assert found == [True, False, False, False, False, True]
+    assert text_problem("image/svg+xml", ("<!---->" * 200_000 + "<svg/>").encode()) is None
+
+
+def test_text_figures_are_utf8_and_an_svg_begins_as_one() -> None:
+    assert text_problem("image/svg+xml", SVG_BYTES) is None
+    assert text_problem("image/svg+xml", "\ufeff<svg>".encode()) is None
+    assert text_problem("image/svg+xml", b"<!DOCTYPE svg PUBLIC 'x'><svg/>") is None
+    assert text_problem("image/svg+xml", b"<!-- a --><!DOCTYPE svg>\n<!-- b -->\n<SVG>") is None
+    for bad in (
+        HTML,
+        b"<!DOCTYPE html><svg/>",
+        b"<!DOCTYPE svg [<!ENTITY x 'y'>]><svg/>",
+        b"<!DOCTYPE svg><!DOCTYPE svg><svg/>",
+        b"<!DOCTYPE svgx><svg/>",
+        b"\x89PNG",
+        b"<svgx/>",
+        b"<svg\x00/>",
+        b"<!-- <svg/>",
+    ):
+        assert text_problem("image/svg+xml", bad) is not None, bad
+    assert text_problem("text/html", HTML) is None
+    assert text_problem("text/html", b"\xff\xfe<html>") is not None
+
+
+async def test_the_figure_frame_bundle_has_its_own_policy(
+    aiohttp_client: ClientFactory, state_dir: Path, tmp_path: Path, static_dir: Path
+) -> None:
+    bundle = tmp_path / "figures"
+    (bundle / "assets").mkdir(parents=True)
+    (bundle / "index.html").write_text("<title>figure</title>")
+    (bundle / "assets" / "main.js").write_text("export {}")
+    (tmp_path / "secret.txt").write_text("not the bundle's")
+    documents = DocumentStore(store_path(state_dir), readonly=True)
+    preview = await aiohttp_client(
+        create_preview_app(
+            documents,
+            Capabilities(Clock()),
+            workspace_origin=lambda: "http://127.0.0.1:8200",
+            figures_dir=bundle,
+        )
+    )
+    page = await preview.get("/figures/")
+    assert page.status == 200
+    policy = page.headers["Content-Security-Policy"]
+    assert "style-src 'self' 'unsafe-inline'" in policy
+    assert "script-src 'self';" in policy
+    assert "unsafe-eval" not in policy
+    assert "connect-src 'self'" in policy
+    assert "frame-ancestors http://127.0.0.1:8200" in policy
+    assert (await preview.get("/figures/assets/main.js")).status == 200
+    assert (await preview.get("/figures/../secret.txt")).status == 404
+    # The viewer keeps its own stricter policy.
+    viewer = await preview.get("/viewer/")
+    assert viewer.status == 404  # no viewer bundle here
+    documents.close()
+    # The workspace's own listener never serves the frame.
+    (static_dir / "figures").mkdir()
+    (static_dir / "figures" / "index.html").write_text("<title>figure</title>")
+    workspace = await aiohttp_client(
+        create_app(ProjectStore(state_dir, readonly=True), static_dir, login_token=TOKEN)
+    )
+    for path in ("/figures/", "/figures/index.html", "/FIGURES/index.html"):
+        response = await workspace.get(path)
+        assert response.status == 404, path
+        assert "figure" not in await response.text(), path

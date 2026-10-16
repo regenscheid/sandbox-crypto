@@ -32,7 +32,9 @@ test('the viewer bundle holds its own code and PDF.js, and no workspace client',
     .map((id) => id.replaceAll('\\', '/'));
   const project = ids.filter((id) => id.startsWith(root.replaceAll('\\', '/')) && !id.includes('/node_modules/'));
   expect(project.length).toBeGreaterThan(0);
-  for (const id of project) expect(id).toMatch(/\/src\/viewer\/[a-z]+\.(ts|css|html)$/);
+  // Its own code, and the figure frame's protocol, for the size its figure mode sends.
+  for (const id of project)
+    expect(id).toMatch(/\/src\/(viewer\/[a-z]+\.(ts|css|html)|figures\/protocol\.ts)$/);
   expect(ids.some((id) => id.includes('/node_modules/pdfjs-dist/build/pdf.mjs'))).toBe(true);
   for (const chunk of output.filter((item) => item.type === 'chunk')) {
     expect(chunk.code).not.toContain('/api/v0');

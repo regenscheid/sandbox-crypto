@@ -87,3 +87,13 @@ body {
 .textLayer ::selection {
   background: rgb(0 90 200 / 0.3);
 }
+
+/* The figure mode: one page, fitted to the frame's width, without the controls. */
+.figure .toolbar,
+.figure #status:empty {
+  display: none;
+}
+
+.figure {
+  background: #fff;
+}

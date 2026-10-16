@@ -40,6 +40,9 @@ export default defineConfig({
           name: 'dom',
           include: ['src/**/*.dom.test.ts'],
           environment: 'happy-dom',
+          // A framed page is never loaded: a test frames the preview origin's URLs, which
+          // no server answers, and checks the frame's attributes and messages instead.
+          environmentOptions: { happyDOM: { settings: { disableIframePageLoading: true } } },
         },
       },
     ],

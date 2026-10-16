@@ -1,0 +1,18 @@
+/* SPDX-License-Identifier: MIT */
+/* The figure frame: one figure, fitted to the frame's width. */
+
+html,
+body {
+  margin: 0;
+  background: #fff;
+  color: #1b1b1b;
+  font:
+    14px/1.4 system-ui,
+    sans-serif;
+}
+
+#figure img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}

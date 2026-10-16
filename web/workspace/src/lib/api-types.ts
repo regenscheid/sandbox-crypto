@@ -420,9 +420,11 @@ export interface ExecutionContext {
   actor: string;
 }
 
-/** A pinned figure file's URL on the preview origin, and when it stops opening it. */
+/** How a page shows a pinned figure file, and when its capability stops opening it: ``image``, an ``<img>`` of ``url``; ``svg``, the figure frame at ``url``, posted ``capability``; ``html``, a frame without scripts whose page is ``url``; ``pdf``, the viewer's figure mode at ``url``. */
 export interface FigureLink {
+  kind: "image" | "svg" | "html" | "pdf";
   url: string;
+  capability: string | null;
   expires_at: string;
   media_type: string;
 }
