@@ -107,6 +107,35 @@ async def test_a_child_stops_before_a_call_that_would_pass_its_limit(tmp_path: P
         projects.close()
 
 
+async def test_a_child_makes_the_call_its_tokens_leave_room_for_its_report(
+    tmp_path: Path,
+) -> None:
+    """RS-6f: tokens that leave room for the next call but not for one after it make that
+    call the child's report round, so it reports rather than stopping without a word."""
+    projects, _, chat = _chat(tmp_path)
+
+    def spread(tokens: int, *, calls: int) -> Transcript:
+        """``_sized``, its 40,000 tokens used over ``calls`` calls."""
+        found = _sized(tokens)
+        found.usage.extend(
+            ModelUsage(model="m", input_tokens=40_000 // calls, output_tokens=0)
+            for _ in range(calls)
+        )
+        return found
+
+    try:
+        child = ModelBudget(chat, tokens=60_000)
+        assert await child.last_call(spread(5_000, calls=8)) is None
+        assert await child.last_call(spread(7_000, calls=8)) == "run_budget"
+        assert await child.halt(spread(7_000, calls=8)) is None  # the call still fits
+        # The next call sends at least what the last one did: a call of 20,000 tokens
+        # leaves room for one more, not two.
+        assert await child.last_call(spread(1_000, calls=2)) == "run_budget"
+        assert await ModelBudget(chat, 0.5).last_call(spread(7_000, calls=8)) is None
+    finally:
+        projects.close()
+
+
 async def test_a_root_stops_at_its_share_of_the_cost_limit_and_never_without_one(
     tmp_path: Path,
 ) -> None:

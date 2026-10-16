@@ -12,6 +12,9 @@ loop alone applies the delivery rules:
 - At a closing answer, a hook gets another turn only while turns remain, and a
   response round only while response rounds remain, and either only with notices.
   Hooks check this too, before doing work for a turn that cannot come.
+- At a limit, the run's last model call is its report round (``loop._report``): no hook
+  offers notices before it, no tool it asks for runs, and its closing has no turn to
+  give.
 - Notices at the ``tool`` point ride on the tool result, bounded with it, each under
   a key of its own. A hook that fails there, or a notice whose key is taken or that is
   too long, offers nothing: the result stands and the notice waits for a later safe
@@ -199,6 +202,13 @@ class TurnHook:
     async def halt(self, run: RunView) -> str | None:
         """Before each model call after the first, and before its notices: the reason the
         run stops there instead, which becomes its ``stopped``, or ``None`` to go on."""
+        return None
+
+    async def last_call(self, run: RunView) -> str | None:
+        """Before each model call after the first, once no hook halted the run: the limit
+        that leaves room for this call and no other, which makes it the run's report
+        round and becomes its ``stopped`` (a delegated run's tokens, ``run_budget``), or
+        ``None`` to go on (run-service spec, RS-6f)."""
         return None
 
     async def model_returned(self, run: RunView) -> None:

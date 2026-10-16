@@ -90,7 +90,9 @@ from .ledger.proposals import FoldProposals
 from .ledger.tool import LedgerTool
 from .loop import (
     MAX_INPUT_CHARS,
+    MAX_TURNS,
     SYSTEM_PROMPT,
+    TURNS_CEILING,
     Interruption,
     Transcript,
     run_task,
@@ -205,7 +207,9 @@ class Stores:
 class Settings:
     min_isolation_tier: int | None = 3
     """``None`` accepts a worker with any isolation, for development."""
-    max_turns: int = 30
+    max_turns: int = MAX_TURNS
+    """A main run's model calls before its report round (RS-6f), and the most a delegated
+    run of it may have: 2,000 by default, a safety net rather than a bound on the work."""
     max_input_chars: int | None = None
     """The longest conversation a run is sent, in characters; a longer one stops the
     run. ``None``: ``MAX_INPUT_CHARS`` for a run that does not fold, and none for a main
@@ -244,6 +248,8 @@ class Settings:
     above 0 and at most 1; ``None``, as by default, for no part of its own."""
 
     def __post_init__(self) -> None:
+        if not 1 <= self.max_turns <= TURNS_CEILING:
+            raise ValueError(f"max_turns is 1 to {TURNS_CEILING:,}")
         if self.run_share is not None and not 0 < self.run_share <= 1:
             raise ValueError("run_share is above 0 and at most 1")
         if self.run_share is not None and not self.cost_limits:

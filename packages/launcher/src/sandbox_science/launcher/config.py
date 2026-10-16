@@ -336,6 +336,9 @@ class WorkerConfig(_Strict):
 
 
 class RunServiceConfig(_Strict):
+    max_turns: int | None = Field(default=None, ge=0, le=100_000)
+    """The model calls a main run makes before its report round: a safety net, not a bound
+    on its work. Unset or 0: the run service's default, 2,000."""
     run_share: int | None = Field(default=None, ge=1, le=100)
     """The percent of a project's daily cost limit one run may use, when the project has
     a limit; none when unset."""

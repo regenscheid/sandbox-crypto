@@ -436,6 +436,17 @@ describe('the transcript of a run', () => {
     expect(
       stoppedText({ stopped: 'context_limit', reason: 'breaker', detail: 'three weak folds' }),
     ).toBe('The run stopped at its context limit. Reason: breaker: three weak folds.');
+    // The runaway guard (run service, RS-6f) says what it saw.
+    expect(
+      stoppedText({
+        stopped: 'runaway',
+        reason: 'same_error',
+        detail: 'the last 25 tool calls failed with the same error (invalid_request)',
+      }),
+    ).toBe(
+      'The run stopped: its runaway guard saw it repeat itself without progress, and its last call was asked to report what it found. Send a message to go on. It saw the last 25 tool calls failed with the same error (invalid_request).',
+    );
+    expect(stoppedText({ stopped: 'turn_limit' })).toMatch(/^The run stopped at its turn limit; /);
     // A fold of the run's view, as it went (context management, CM-46).
     expect(foldText({ state: 'started', span: [1, 40] })).toBe(
       'A fold of positions 1 to 40 started; its narrative is being written.',

@@ -94,7 +94,8 @@ _log = logging.getLogger(__name__)
 WEAK: Final = 0.1
 """A fold that frees less than this share of the view is weak (CM-44)."""
 BREAKER: Final = 3
-"""Weak folds after which a run folds no more."""
+"""Weak folds in a row after which a run folds no more (CM-44): in a row, so that a run
+of thousands of turns is not stopped by three weak folds far apart."""
 WAIT: Final = 600.0
 """The longest wait, in seconds, for a running fold past the hard wall (CM-24)."""
 PLAN_CHANGES: Final = PLAN_NAMES - {"plan_read"}
@@ -637,8 +638,8 @@ class Folder(TurnHook):
         # Folds before the run's first call catch up on a session folded little or not at
         # all, such as one from before folds: the breaker counts the run's own (CM-44).
         # A merge frees only the region's room, and is no fold the breaker counts.
-        if freed < WEAK * before and transcript.usage and not record.parts:
-            self.weak += 1
+        if transcript.usage and not record.parts:
+            self.weak = self.weak + 1 if freed < WEAK * before else 0
         calls = [usage.model_dump(mode="json") for usage in (done.calls if done else ())]
         made: Json = {
             "fold": row.message_id,

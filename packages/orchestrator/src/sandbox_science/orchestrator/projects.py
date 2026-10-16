@@ -225,8 +225,12 @@ class RunRecord(Contract):
     while the run's review held its answer), ``plan_unread`` (the session plan held the
     answer back: it has open steps the run did not read after they changed), ``cancelled``
     (by the user), ``budget`` (the project spent its model budget during the run),
-    ``run_budget`` (the run used its share of it), ``gateway_budget`` (the model gateway
-    refused a call because its spending budget is exhausted), or ``error``."""
+    ``run_budget`` (the run used its share of it, or a delegated run its tokens),
+    ``gateway_budget`` (the model gateway refused a call because its spending budget is
+    exhausted), ``runaway`` (the runaway guard saw the run repeat itself without progress),
+    or ``error``. A run stopped by its turn limit, a delegated run's tokens, its
+    conversation's length or the runaway guard first took a report round, whose answer
+    is its ``final_text`` (run-service spec, RS-6f)."""
     failure: FailurePhase | None = None
     """Failed phase; old records omit it. Partial messages are observations, not an answer."""
     delivered: dict[Identifier, list[Identifier]] = Field(
