@@ -120,6 +120,10 @@ GOLDEN = {
     "sandbox-skills-index-3": ("2daecc293895a53af16ac5cab4ebeb65dd527199da04a86f569cda0d89962601"),
     "sandbox-skills-pass-1": ("c1959f76747a1361f5e9ebe5b97c4b675c3fe45037c28e3dc1513a8fc56ff0b6"),
     "sandbox-state-block-1": "d024a897ddd73fcd38c34b6d095fbbdbb255b955bd3f90c0d1cc2414e29b11f1",
+    "sandbox-digest-1": "812be42ab775cf9be803c542840fa8a45257284446e84cf74810307ad2c3f51e",
+    "sandbox-task-constraints-1": (
+        "0d8771734b5ea32856d269050de4d9f047725f26e8061a946ce96f868f13ed68"
+    ),
     "sandbox-notice-redelivered-1": (
         "706f5ef5f1441a5194177af083185c8eb53cf9f9b31cfd7bb5609d3e666b4726"
     ),
