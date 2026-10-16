@@ -158,12 +158,12 @@ async def test_forged_expired_wrong_hash_and_non_pdf_capabilities_are_refused(
     payload, mac = good.split(".")
     forged = f"{payload}.{('A' if mac[0] != 'A' else 'B')}{mac[1:]}"
     assert (await viewer.get(f"/pdf/{forged}")).status == 403
-    other_key = Capabilities(clock).mint("p1", published["pdf"].artifact_id, 1, "0" * 64)
+    other_key = Capabilities(clock).mint("p1", published["pdf"].artifact_id, 1, "0" * 64, "pdf")
     assert (await viewer.get(f"/pdf/{other_key}")).status == 403  # another process's key
-    wrong_hash = preview.capabilities.mint("p1", published["pdf"].artifact_id, 1, "0" * 64)
+    wrong_hash = preview.capabilities.mint("p1", published["pdf"].artifact_id, 1, "0" * 64, "pdf")
     assert (await viewer.get(f"/pdf/{wrong_hash}")).status == 404
     text = published["text"]
-    not_pdf = preview.capabilities.mint("p1", text.artifact_id, text.revision, text.sha256)
+    not_pdf = preview.capabilities.mint("p1", text.artifact_id, text.revision, text.sha256, "pdf")
     assert (await viewer.get(f"/pdf/{not_pdf}")).status == 415
     clock.now += CAPABILITY_SECONDS
     assert (await viewer.get(f"/pdf/{good}")).status == 403  # expired

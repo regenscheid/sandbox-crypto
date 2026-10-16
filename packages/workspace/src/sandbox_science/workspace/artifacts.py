@@ -203,7 +203,7 @@ async def figure(request: web.Request) -> web.Response:
         if reference.size > MAX_IMAGE_BYTES:
             raise ProjectError(ErrorKind.UNSUPPORTED, "this image is larger than a page shows")
         expires = datetime.now(UTC) + timedelta(seconds=CAPABILITY_SECONDS)
-        capability = preview.capabilities.mint(project, artifact, revision, sha256)
+        capability = preview.capabilities.mint(project, artifact, revision, sha256, "file")
         url = f"{preview.origin}/file/{capability}"
         answer = FigureLink(url=url, expires_at=expires, media_type=reference.media_type)
         return api.dumps(answer.model_dump(mode="json"))
@@ -221,7 +221,7 @@ async def viewer(request: web.Request) -> web.Response:
         # The capability counts its ten minutes on a monotonic clock; the time of day is
         # read first, so the time shown is never later than the real expiry.
         expires = datetime.now(UTC) + timedelta(seconds=CAPABILITY_SECONDS)
-        capability = preview.capabilities.mint(project, artifact, revision, sha256)
+        capability = preview.capabilities.mint(project, artifact, revision, sha256, "pdf")
         # The fragment never reaches a server. The workspace's origin is the only window
         # the viewer posts anchors to (docs/specs/pdf-viewer.md, PV-6).
         fragment = urlencode({"c": capability, "w": preview.workspace_origin})

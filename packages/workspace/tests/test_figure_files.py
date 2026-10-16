@@ -16,7 +16,13 @@ import pytest
 
 from sandbox_science.orchestrator.artifacts import ArtifactInventory
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
-from sandbox_science.workspace.preview import MAX_IMAGE_PIXELS, image_problem, jpeg_size, png_size
+from sandbox_science.workspace.preview import (
+    MAX_IMAGE_PIXELS,
+    MAX_IMAGE_SIDE,
+    image_problem,
+    jpeg_size,
+    png_size,
+)
 
 from .test_pdf_viewer import origins as origins
 from .test_pdf_viewer import publish
@@ -102,9 +108,13 @@ async def test_a_figure_capability_opens_its_own_file_only(origins, files, publi
     workspace, viewer, preview, clock = origins
     link = await (await figure_link(workspace, files["png"])).json()
     path = link["url"].removeprefix(preview.origin)
-    # A PDF's capability names a PDF, which this route does not serve as an image.
-    pdf = preview.capabilities.mint("p1", published["pdf"].artifact_id, 1, published["pdf"].sha256)
-    assert (await viewer.get(f"/file/{pdf}")).status == 415
+    # A capability opens only the route it was minted for (review of #487, I1).
+    pdf = published["pdf"]
+    for_viewer = preview.capabilities.mint("p1", pdf.artifact_id, 1, pdf.sha256, "pdf")
+    assert (await viewer.get(f"/file/{for_viewer}")).status == 403
+    assert (await viewer.get(f"/pdf/{path.removeprefix('/file/')}")).status == 403
+    as_file = preview.capabilities.mint("p1", pdf.artifact_id, 1, pdf.sha256, "file")
+    assert (await viewer.get(f"/file/{as_file}")).status == 415  # a PDF is no image
     assert (await viewer.get(path[:-2] + "AA")).status == 403  # forged
     clock.now += 601
     assert (await viewer.get(path)).status == 403  # expired
@@ -118,6 +128,9 @@ def test_headers_give_the_size_and_the_first_bytes_the_type() -> None:
     assert jpeg_size(b"\xff\xd8\xff") is None
     assert image_problem("image/png", png(1, 1)) is None
     assert image_problem("image/png", png(0, 10)) is not None
+    # Each side is capped too: a sliver within the pixels is no image a page lays out.
+    assert image_problem("image/png", png(MAX_IMAGE_SIDE + 1, 1)) is not None
+    assert image_problem("image/png", png(1, MAX_IMAGE_SIDE)) is None
     side = int(MAX_IMAGE_PIXELS**0.5) + 1
     assert image_problem("image/jpeg", jpeg(side, side)) == (
         413,

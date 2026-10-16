@@ -48,6 +48,8 @@
   img {
     display: block;
     max-width: 100%;
+    max-height: 80vh;
     height: auto;
+    object-fit: contain;
   }
 </style>

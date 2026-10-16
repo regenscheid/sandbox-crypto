@@ -27,7 +27,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal
 
 from aiohttp import hdrs, web
 from pydantic import TypeAdapter, ValidationError
@@ -48,7 +48,12 @@ CONCURRENT_READS: Final = 4
 PDF: Final = "application/pdf"
 MAX_IMAGE_BYTES: Final = 8 * 1024 * 1024
 MAX_IMAGE_PIXELS: Final = 50_000_000
-"""The largest image a page is given, in bytes and by its header's size (FG-13)."""
+MAX_IMAGE_SIDE: Final = 16_384
+"""The largest image a page is given, in bytes and by its header's size (FG-13), and
+each side at most, so no image is a sliver too long to lay out (review of #487, L3)."""
+Purpose = Literal["pdf", "file"]
+"""The route a capability opens, which its MAC covers (review of #487, I1): the viewer's
+PDF, or a figure file."""
 VIEWER_TYPES: Final = {
     ".html": "text/html; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
@@ -123,6 +128,8 @@ def image_problem(media_type: str, data: bytes) -> tuple[int, str] | None:
     width, height = size
     if not width or not height or width * height > MAX_IMAGE_PIXELS:
         return 413, "This image is larger than a page shows."
+    if max(width, height) > MAX_IMAGE_SIDE:
+        return 413, "This image is larger than a page shows."
     return None
 
 
@@ -161,16 +168,19 @@ class Capabilities:
     def _mac(self, payload: bytes) -> bytes:
         return hmac.new(self._key, b"pdf-viewer-1\x00" + payload, hashlib.sha256).digest()
 
-    def mint(self, project: str, artifact: str, revision: int, sha256: str) -> str:
-        """A capability for the revision, as the text the viewer's URL carries."""
+    def mint(
+        self, project: str, artifact: str, revision: int, sha256: str, purpose: Purpose
+    ) -> str:
+        """A capability for the revision on one route, as the text a URL carries."""
         expires = int(self._clock()) + CAPABILITY_SECONDS
         payload = json.dumps(
-            [project, artifact, revision, sha256, expires], separators=(",", ":")
+            [project, artifact, revision, sha256, expires, purpose], separators=(",", ":")
         ).encode()
         return f"{_encode(payload)}.{_encode(self._mac(payload))}"
 
-    def check(self, text: str) -> Capability:
-        """The capability ``text`` names; ``CapabilityError`` unless genuine and current."""
+    def check(self, text: str, purpose: Purpose) -> Capability:
+        """The capability ``text`` names for the route ``purpose`` names; ``CapabilityError``
+        unless genuine, current and minted for that route."""
         if not _CAPABILITY.fullmatch(text):
             raise CapabilityError("malformed")
         encoded, mac = text.split(".")
@@ -182,7 +192,9 @@ class Capabilities:
             raise CapabilityError("not canonical")  # unused trailing bits set
         if not hmac.compare_digest(given, self._mac(payload)):
             raise CapabilityError("forged")
-        project, artifact, revision, sha256, expires = json.loads(payload)
+        project, artifact, revision, sha256, expires, minted = json.loads(payload)
+        if minted != purpose:
+            raise CapabilityError("minted for another route")
         if int(self._clock()) >= expires:
             raise CapabilityError("expired")
         return Capability(project, artifact, revision, sha256, expires)
@@ -278,9 +290,9 @@ def create_preview_app(
             }
         )
 
-    def checked(request: web.Request) -> Capability | None:
+    def checked(request: web.Request, purpose: Purpose) -> Capability | None:
         try:
-            found = capabilities.check(request.match_info["capability"])
+            found = capabilities.check(request.match_info["capability"], purpose)
             _IDENTIFIER.validate_python(found.project, strict=True)
             _IDENTIFIER.validate_python(found.artifact, strict=True)
             if len(found.sha256) != 64 or not set(found.sha256) <= _SHA256:
@@ -303,7 +315,7 @@ def create_preview_app(
         return revision.reference
 
     async def pdf(request: web.Request) -> web.StreamResponse:
-        if (found := checked(request)) is None:
+        if (found := checked(request, "pdf")) is None:
             return web.Response(status=403, text="This link is not valid, or has expired.")
 
         def read() -> web.Response:
@@ -333,7 +345,7 @@ def create_preview_app(
     async def figure_file(request: web.Request) -> web.StreamResponse:
         """A pinned figure file for a page's ``<img>`` (FG-12, FG-13): as the type it is
         recorded as, only when its first bytes are that type's, within the limits."""
-        if (found := checked(request)) is None:
+        if (found := checked(request, "file")) is None:
             return web.Response(status=403, text="This link is not valid, or has expired.")
 
         def read() -> web.Response:
