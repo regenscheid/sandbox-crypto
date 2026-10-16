@@ -251,7 +251,7 @@ These design rules hold for what is built and for the proposals below.
   scope/cursor and exact retained anchors. Approvals and user instructions, open
   questions, budgets, pending effects, the current plan and unresolved findings must
   remain visible. A failed summary does not advance a cursor or drop source context.
-  Child contexts receive pinned briefs, not the parent's unbounded transcript.
+  Child contexts receive pinned briefs, not the parent's unbounded transcript. The approved [context management](specs/context-management.md) spec meets these rules (CM-15 to CM-26); it is not built.
 - **Capacity and provider failure:** harness errors keep a safe failed run, with no
   automatic retry of its tool effects. The model client retries a rate limit or an
   unavailable upstream up to three times. Any other future retry must enforce configured or user-authorized
@@ -319,7 +319,7 @@ The proposed IDs below were never built; the built IDs are in the
 | `consistency-vNext` | Existing reviewer dispatch | Existing pinned review tools; preserve decision/read/CAS guards |
 | `display-repair-vNext` | Opt-in configured repair request | Existing parser/sanitizer/limits; source remains untouched |
 | `resume-v1` | Explicit resumed run | Saved transcript plus actual effect reconciliation and live scope checks |
-| `compact-v1` | Configured context threshold | Separate durable compaction record and validated replacement context |
+| `sandbox-fold-enrich-1`, `sandbox-fold-overview-1`, `sandbox-state-block-1` | A fold's enrichment call, an overview's update, and the state block at every view rebuild; they replace the earlier `compact-v1` proposal | The approved [context management](specs/context-management.md) spec: the archive, fold records with markers and search keys that code checks, and the research-state digest (CM-16 to CM-21b) |
 
 The built research templates are short framing aids, not copied methods or a
 replacement for the external crypto-analysis-skills pack. Pack bodies remain
@@ -387,7 +387,7 @@ not proof it was loaded. Models never choose their reviewer's alias or enlarge g
 > uncertain, return the defined unavailable result. Do not claim a proof, modify
 > saved source or resolve a finding. The host validates any proposed rendering.
 
-**Resume/compaction:**
+**Resume** (compaction is the [context management](specs/context-management.md) spec's, with its own prompts and prompt rules, CM-48 to CM-48b):
 > Reconstruct the objective and current authorized plan from durable records.
 > Separate completed effects, running or unknown operations, pending decisions and
 > hypotheses. Reconcile ambiguous operation outcomes before repeating anything
@@ -485,5 +485,5 @@ and compare actual model inputs, not merely a prompt file's existence.
    settings, rebuilt as a role of the one loop. Resolve the draft spec's remaining
    questions first.
 3. **Skills and context lifecycle:** catalog and load provenance and worker helper
-   rules, then bounded compaction and resume with retained source. Later live-model
+   rules, then context management as its [spec](specs/context-management.md) says, with its prompt rules for each role, and resume with retained source. Later live-model
    evaluations test whether the prompts improve research behavior.

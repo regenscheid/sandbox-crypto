@@ -78,7 +78,7 @@ Performance-sensitive work (timing and side-channel measurements, `perf_event_op
 | T1 | Package egress only through the package cache (D71); lockfiles; rebuild-from-lockfile | Package cache logs; install-phase correlation |
 | T4 | Tier 3 isolation; no Z1/Z2 credentials in the sandbox; everything an executor reports is checked, including for the shared-data sync (D79): its digests are never paths, content is kept only if it hashes to its digest, each project has its own blob store, an environment is synced for one project only, and each step has time and byte budgets ([worker](WORKER.md#shared-data-across-environments)) | Runtime security events |
 | T5 | Per-pool local policy ceiling; local enrollment needs local user action | Local audit log of remote commands |
-| T2 | Same as A1–A3; source content is data, not instructions | Content guard flags instruction-like text |
+| T2 | Same as A1–A3; source content is data, not instructions. Records in a model's context (fold records, the research-state digest, search results) are framed as data too, and only the user's own messages, copied by code, carry the user's authority ([context management](specs/context-management.md), CM-49) | Content guard flags instruction-like text |
 | T6 | Separate artifact origin, sandboxed iframes, CSP, KaTeX `trust: false`, PDF.js scripting off | CSP violation reports |
 | T7 | Default-deny egress; read-only fetch proxy; proxy-side DNS; URL length and rate limits | Proxy logs |
 
@@ -92,6 +92,7 @@ Performance-sensitive work (timing and side-channel measurements, `perf_event_op
 - The event store's hash chain is not keyed. Whoever can write the store can rewrite its records consistently or remove the newest; only checkpoints kept out of their reach show it ([event store](EVENT-STORE.md)).
 - Tier 1 local deployments share a kernel with trusted services.
 - Model providers receive project content. Data classes (D50) decide which classes may go to which endpoints.
+- Injected text can persist: an agent may copy instructions from a paper or a tool result into a ledger entry, which later context digests show, and project-wide history search can carry it into other sessions. It is framed as data and authorizes nothing, but it can still steer the agent ([context management](specs/context-management.md), CM-49).
 
 ## Data classes (proposed)
 
