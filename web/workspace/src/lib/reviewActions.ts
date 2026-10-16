@@ -59,6 +59,12 @@ export interface WindowActions {
   shown: number;
   total: number;
   documents: DocumentChange[];
+  /**
+   * The reviewed run's actions in its windows reviewed before this one, as background for
+   * an answer that says what it did earlier, not under review here; null when there are
+   * none.
+   */
+  earlier: WindowActions | null;
 }
 
 /** The actions item's window, in words, for the item list; empty for another item. */
@@ -83,8 +89,18 @@ export function actionsOf(text: string): WindowActions | null {
   }
   const payload = record(parsed);
   if (!Array.isArray(payload.actions)) return null;
+  const window = partOf(payload);
+  const earlier = record(payload.earlier);
+  return {
+    ...window,
+    earlier: Array.isArray(earlier.actions) ? { ...partOf(earlier), earlier: null } : null,
+  };
+}
+
+/** One part of the item, the window's or the earlier windows': its actions and documents. */
+function partOf(payload: Record<string, unknown>): Omit<WindowActions, 'earlier'> {
   const runs: RunActions[] = [];
-  for (const raw of payload.actions) {
+  for (const raw of Array.isArray(payload.actions) ? payload.actions : []) {
     const action = record(raw);
     const run = typeof action.run === 'string' ? action.run : '';
     const delegation = typeof action.delegation === 'string' ? action.delegation : null;

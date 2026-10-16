@@ -201,6 +201,15 @@ class Ledger:
 
     # Reads.
 
+    def reads(self, project: str, view: EntryView) -> list[dict[str, Any]]:
+        """How far the project's sessions read a reference's sources, from the read
+        register (LG-15 as CM-12 amends it); none for another entry."""
+        if view.type != "reference":
+            return []
+        from sandbox_science.orchestrator.history.reads import reference_reads  # no cycle
+
+        return reference_reads(self.control, project, view.fields)
+
     def entry(
         self,
         project: str,

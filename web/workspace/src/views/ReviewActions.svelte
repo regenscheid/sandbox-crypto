@@ -4,8 +4,9 @@
      calls that change something in order, each
      with its tool, target, outcome, a refused or failed one marked, and what it made,
      leading there where the workspace has a page; then the blocks each document revision
-     changed. Agents' arguments are shown as text, each character a person may not see as
-     its code point. Only props, so a test renders it on the server. -->
+     changed; and apart, labelled as background, the reviewed run's earlier windows.
+     Agents' arguments are shown as text, each character a person may not see as its code
+     point. Only props, so a test renders it on the server. -->
 <script lang="ts">
   import {
     blockLink,
@@ -28,12 +29,11 @@
   {#if target.href}<a href={target.href}>{target.text}</a>{:else}<bdi>{target.text}</bdi>{/if}
 {/snippet}
 
-<section class="actions" aria-label="What the runs did">
-  <h4>What the runs did</h4>
-  {#if actions.total > actions.shown}
-    <p class="muted">The first {actions.shown} of the window's {actions.total} calls are listed.</p>
+{#snippet part(shown: WindowActions, what: string, nothing: string)}
+  {#if shown.total > shown.shown}
+    <p class="muted">The first {shown.shown} of {what} {shown.total} calls are listed.</p>
   {/if}
-  {#each actions.runs as group, index (index)}
+  {#each shown.runs as group, index (index)}
     {#if group.delegation !== null}
       <p>
         Delegated run {@render link(runLink(projectId, sessionId, group.run))}, of delegation
@@ -64,12 +64,12 @@
       </tbody>
     </table>
   {:else}
-    <p class="muted">No run changed anything in this window.</p>
+    <p class="muted">{nothing}</p>
   {/each}
-  {#if actions.documents.length}
+  {#if shown.documents.length}
     <p class="label">The blocks each document revision changed</p>
     <ul class="links">
-      {#each actions.documents as change, index (index)}
+      {#each shown.documents as change, index (index)}
         <li>
           <bdi>{visible(change.document)}</bdi>{change.revision === null
             ? ''
@@ -88,6 +88,21 @@
         </li>
       {/each}
     </ul>
+  {/if}
+{/snippet}
+
+<section class="actions" aria-label="What the runs did">
+  <h4>What the runs did</h4>
+  {@render part(actions, "the window's", 'No run changed anything in this window.')}
+  {#if actions.earlier}
+    <section class="earlier" aria-label="Earlier windows, as background">
+      <h4>Earlier windows, as background</h4>
+      <p class="context">
+        What the reviewed run did in its windows reviewed before this one: context for an answer
+        that says what it did earlier, not under review here.
+      </p>
+      {@render part(actions.earlier, "those windows'", 'It changed nothing in them.')}
+    </section>
   {/if}
 </section>
 
@@ -110,5 +125,12 @@
   }
   .label {
     font-size: 0.9em;
+  }
+  .earlier {
+    border-left: 3px dashed var(--border, #9996);
+    padding-left: 0.6rem;
+  }
+  .context {
+    font-style: italic;
   }
 </style>

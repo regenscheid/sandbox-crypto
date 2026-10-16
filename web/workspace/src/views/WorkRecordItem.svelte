@@ -17,8 +17,10 @@
     producedLinks,
     referenceView,
   } from '../lib/ledgerWork';
-  import { CATEGORY_NAME, treeHref } from '../lib/router';
+  import { CATEGORY_NAME, ENTRY_NAME, ledgerEntryHref, treeHref } from '../lib/router';
   import { visible } from '../lib/text';
+  import { provenanceView, reopenedText } from '../lib/researchState';
+  import StandingBadge from './StandingBadge.svelte';
 
   let {
     projectId,
@@ -40,11 +42,20 @@
   );
   const produced = $derived(producedLinks(projectId, record));
   const references = $derived(record.references.map((r) => referenceView(projectId, r, read)));
+  const reopened = $derived(reopenedText(record));
+  const provenance = $derived(provenanceView(projectId, record));
 </script>
 
 <li class="work">
   <p>
-    <strong class:claimed={record.ending === 'obstruction_claimed'}>{endingText(record)}</strong>
+    <strong class:claimed={record.ending === 'obstruction_claimed'}
+      >{reopened ?? endingText(record)}</strong
+    >{#if record.decision}<span class="muted">
+        (it had been obstructed by {#if ENTRY_NAME.test(record.decision)}<a
+            href={ledgerEntryHref(projectId, record.decision)}>{record.decision}</a
+          >{:else}{visible(record.decision)}{/if})</span
+      >{/if}
+    <StandingBadge {projectId} standing={record.standing} />
     <span class="muted"
       >on r{record.entry_revision}, {formatTime(record.created)}, by {authorText(record.author)}
       · <code>{record.record_id}</code></span
@@ -77,6 +88,17 @@
         </li>
       {/each}
     </ul>
+  {/if}
+  {#if provenance.basis !== null || provenance.anchors.length}
+    <p class="muted">
+      {#if provenance.basis !== null}Basis: {provenance.basis}.{/if}
+      {#if provenance.anchors.length}Anchored on {#each provenance.anchors as anchor, i (i)}{i > 0
+            ? '; '
+            : ''}{#if anchor.href}<a href={anchor.href}>{anchor.text}</a
+            >{:else}{anchor.text}{/if}{#if anchor.quote !== null}: “<span class="tried"
+              >{anchor.quote}</span
+            >”{/if}{/each}.{/if}
+    </p>
   {/if}
   {#if record.part_of}<p class="muted">Part of work record {visible(record.part_of)}</p>{/if}
   <p class="muted">

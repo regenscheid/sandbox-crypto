@@ -297,13 +297,14 @@ function valueText(value: unknown): string {
 
 /**
  * The fields an entry's type gives it (claim kinds, a result's conditions and measures, a
- * reference's citation), as rows of text. A field the view does not know yet is still
- * shown, under its own name.
+ * reference's citation), as rows of text, less those in `omit`, which the view shows
+ * elsewhere. A field the view does not know yet is still shown, under its own name.
  */
 export function fieldRows(
   fields: Record<string, unknown>,
   project: string,
   links: readonly EntryLink[] = [],
+  omit: readonly string[] = [],
 ): FieldRow[] {
   const known = Object.keys(FIELD_NAMES);
   const names = [
@@ -311,7 +312,7 @@ export function fieldRows(
     ...Object.keys(fields)
       .filter((name) => !known.includes(name))
       .sort(),
-  ];
+  ].filter((name) => !omit.includes(name));
   return names.map((name) => {
     if (name === 'assessment') return assessmentField(project, fields[name], links);
     return {

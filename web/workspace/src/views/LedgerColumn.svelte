@@ -9,6 +9,8 @@
   import { openFlagsText } from '../lib/ledgerFlags';
   import { ledgerEntryHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
+  import StandingBadge from './StandingBadge.svelte';
+  import { entryTags } from '../lib/researchState';
 
   let {
     projectId,
@@ -41,6 +43,7 @@
       {#if entry.asserted_only}<span class="muted">asserted only</span>{/if}
       {#if entry.open_flags > 0}<strong class="flagged">{openFlagsText(entry.open_flags)}</strong
         >{/if}
+      <StandingBadge {projectId} standing={entry.standing} tags={entryTags(entry)} />
       <p>{entry.title}</p>
       <p class="muted">r{entry.revision} · {formatTime(entry.updated)}</p>
     </article>

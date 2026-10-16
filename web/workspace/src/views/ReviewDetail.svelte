@@ -19,7 +19,7 @@
     usageText,
   } from '../lib/reviewText';
   import { actionsOf } from '../lib/reviewActions';
-  import { describeItem, outcomeOf } from '../lib/reviewContext';
+  import { describeItem, heldText, outcomeOf } from '../lib/reviewContext';
   import DelegationCard from './DelegationCard.svelte';
   import ErrorMessage from './ErrorMessage.svelte';
   import ReviewActions from './ReviewActions.svelte';
@@ -122,7 +122,9 @@
         {projectId}
         {sessionId}
         delegation={outcome}
-      />{:else if actions}<ReviewActions
+      />{#if heldText(browser.text.text())}<p class="context">
+          {heldText(browser.text.text())}
+        </p>{/if}{:else if actions}<ReviewActions
         {projectId}
         {sessionId}
         {actions}

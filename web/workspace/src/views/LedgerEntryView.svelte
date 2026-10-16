@@ -40,7 +40,7 @@
 
 {#if shown.value}
   {@const entry = shown.value.entry}
-  <LedgerEntryBody {projectId} {entry} {changed} />
+  <LedgerEntryBody {projectId} {entry} read={shown.value.read} {changed} />
   <LedgerGate {projectId} entryId={entry.entry_id} shown={entry.revision} {changes} />
   {#if holdsWork(entry.type)}<LedgerWork {projectId} {entry} {changes} {changed} />{/if}
   <LedgerHistory

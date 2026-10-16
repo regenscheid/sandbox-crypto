@@ -11,6 +11,8 @@
   import { ledgerEntryHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
   import LedgerLinks from './LedgerLinks.svelte';
+  import StandingBadge from './StandingBadge.svelte';
+  import { entryTags } from '../lib/researchState';
 
   let { projectId, issue }: { projectId: string; issue: EntrySummary } = $props();
   const shown = $state(noDetail<string, EntryView>());
@@ -32,6 +34,7 @@
       {issue.title}
       {#if issue.open_flags > 0}<strong class="flagged">{openFlagsText(issue.open_flags)}</strong
         >{/if}
+      <StandingBadge {projectId} standing={issue.standing} tags={entryTags(issue)} />
       <span class="muted">r{issue.revision} · {formatTime(issue.updated)}</span></summary
     >
     {#if shown.loading}<p class="muted">Loading…</p>{/if}
