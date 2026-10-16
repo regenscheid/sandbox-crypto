@@ -174,6 +174,7 @@ class Files:
                 snapshot=request.snapshot,
                 files=[file.model_dump(mode="json") for file in request.files],
                 seal=request.seal,
+                commands=list(request.commands),
             )
         return checked(
             StageCheck,
@@ -181,6 +182,7 @@ class Files:
             ready=reply.get("ready"),
             sealed=reply.get("sealed", False),
             differing=reply.get("differing", []),
+            commands=[c for c in _listed(reply.get("commands")) if c in request.commands],
         )
 
     async def stage_put(self, request: StagePutRequest) -> StagePutResult:
@@ -282,6 +284,10 @@ class Files:
     def take_held(self, context: ExecutionContext) -> list[str]:
         """The notices held for the session's next result in the environment, now told."""
         return self._held.pop((context.environment_id, context.session_id), [])
+
+
+def _listed(value: object) -> list[object]:
+    return cast(list[object], value) if isinstance(value, list) else []
 
 
 def latest(notices: list[str]) -> list[str]:

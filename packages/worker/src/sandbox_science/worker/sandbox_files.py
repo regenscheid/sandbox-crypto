@@ -790,37 +790,52 @@ def list_directory(directory: int, limit: int) -> tuple[list[Message], bool]:
 
 STAGED = ".skills"
 MAX_STAGED_ENTRIES = 8192
-"""Entries a staged pack's check reads at most; past them it is not as expected."""
+"""Entries, files and folders, a staged pack's check reads at most; past them, or past
+``MAX_STAGED_DEPTH`` folders down, it is not as expected."""
+MAX_STAGED_DEPTH = 32
+FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
 
 
-def _staged(directory: int, prefix: str, found: dict[str, tuple[str, bool]]) -> None:
+def _staged(
+    directory: int,
+    prefix: str,
+    sizes: dict[str, int],
+    found: dict[str, tuple[str, bool]],
+    counted: list[int],
+) -> None:
     """Each file below ``directory`` by its path, with its SHA-256 and whether it is
-    executable; anything else, a symlink or more entries than allowed, as ``?``."""
+    executable; anything else (a symlink, a FIFO, a file of another size than ``sizes``
+    expects, which is never hashed, or more entries or folders than allowed) as ``?``."""
+    if prefix.count("/") >= MAX_STAGED_DEPTH:
+        found[prefix] = ("?", False)
+        return
     for entry in os.scandir(directory):
         path = prefix + entry.name
-        if len(found) >= MAX_STAGED_ENTRIES:
+        counted[0] += 1
+        if counted[0] > MAX_STAGED_ENTRIES:
             found["?"] = ("?", False)
             return
         if entry.is_dir(follow_symlinks=False):
             child = os.open(entry.name, DIRECTORY_FLAGS, dir_fd=directory)
             try:
-                _staged(child, path + "/", found)
+                _staged(child, path + "/", sizes, found, counted)
             finally:
                 os.close(child)
-        elif entry.is_file(follow_symlinks=False):
-            descriptor = os.open(
-                entry.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory
-            )
-            try:
-                digest = hashlib.sha256()
-                while chunk := os.read(descriptor, 1 << 20):
-                    digest.update(chunk)
-                mode = os.fstat(descriptor).st_mode
-            finally:
-                os.close(descriptor)
-            found[path] = (digest.hexdigest(), bool(mode & stat.S_IXUSR))
-        else:
-            found[path] = ("?", False)
+            continue
+        found[path] = ("?", False)
+        if not entry.is_file(follow_symlinks=False):
+            continue
+        descriptor = os.open(entry.name, FILE_FLAGS, dir_fd=directory)
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or info.st_size != sizes.get(path):
+                continue
+            digest = hashlib.sha256()
+            while chunk := os.read(descriptor, 1 << 20):
+                digest.update(chunk)
+            found[path] = (digest.hexdigest(), bool(info.st_mode & stat.S_IXUSR))
+        finally:
+            os.close(descriptor)
 
 
 def _modes(directory: int, sealed: bool) -> None:
@@ -873,13 +888,14 @@ def stage_check(
     base = [STAGED, source, snapshot]
     location = str(root.joinpath(*base))
     expected = {str(f["path"]): (str(f["sha256"]), bool(f.get("executable"))) for f in files}
+    sizes = {str(f["path"]): f["size"] for f in files if isinstance(f.get("size"), int)}
     found: dict[str, tuple[str, bool]] = {}
     try:
         top = walk(os.open(root, DIRECTORY_FLAGS), base, location, create=False)
     except ToolError:  # missing, or a symlink or file in its place: staged again
         return {"location": location, "ready": False, "differing": sorted(expected)}
     try:
-        _staged(top, "", found)
+        _staged(top, "", sizes, found, [0])
         differing = sorted(p for p in {*found, *expected} if found.get(p) != expected.get(p))
         if not differing and seal:
             _modes(top, sealed=True)
@@ -897,6 +913,15 @@ def stage_put(
     root: Path, source: str, snapshot: str, reset: bool, files: Sequence[tuple[str, bytes, bool]]
 ) -> int:
     """Write ``files`` where the snapshot is staged, after removing it with ``reset``."""
+    # A symlink or file sandbox code put at .skills or .skills/<source> goes first.
+    for names in ([STAGED], [STAGED, source]):
+        above = walk(os.open(root, DIRECTORY_FLAGS), names[:-1], STAGED, create=True)
+        try:
+            with contextlib.suppress(FileNotFoundError):
+                if not stat.S_ISDIR(os.lstat(names[-1], dir_fd=above).st_mode):
+                    os.unlink(names[-1], dir_fd=above)
+        finally:
+            os.close(above)
     parent = walk(
         os.open(root, DIRECTORY_FLAGS), [STAGED, source], f"{STAGED}/{source}", create=True
     )

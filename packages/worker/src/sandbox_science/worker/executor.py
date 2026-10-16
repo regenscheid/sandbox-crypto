@@ -35,6 +35,7 @@ import os
 import platform
 import re
 import secrets
+import shutil
 import signal
 import socket
 import stat
@@ -95,7 +96,9 @@ else:
     SHARED = sandbox_files.SHARED
     MAX_PATH_BYTES = sandbox_files.MAX_PATH_BYTES
 
-PROTOCOL = 1
+PROTOCOL = 2
+"""The executor's protocol with the worker: 2 takes skill bindings in executions, which the
+worker sends only to an executor of 2 or more (docs/specs/skills.md, SK-16)."""
 MAX_LINE = 16 * 1024 * 1024
 """The longest line the executor sends; the worker drops longer ones."""
 MAX_REQUEST = 64 * 1024 * 1024
@@ -144,6 +147,10 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _SESSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _SOURCE_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?")
+_BINDING_RE = re.compile(r"[A-Z][A-Z0-9_]{1,63}")
+_COMMAND_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}")
+_BINDING_VALUE_RE = re.compile(r"[^\x00-\x20\x7f;]{1,4096}")
+"""A binding's value: a path, without whitespace, control characters or ``;``."""
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 Message = dict[str, Any]
@@ -322,6 +329,8 @@ class Running:
     package_operation: str = ""
     package_generation: int = -1
     controller: Callable[[], bool] | None = None
+    bindings: dict[str, str] = field(default_factory=dict[str, str])
+    """A cell's skill bindings, to say when its kernel holds others."""
     """Seconds it waited for package commands before it started; its time limit covers them."""
 
 
@@ -361,6 +370,10 @@ class Kernel:
     """The run whose own kernel this is; ``None`` for the session's."""
     retired: bool = field(default=False, kw_only=True)
     """Its run has ended: it is never started again (set under ``control``)."""
+    bindings: dict[str, str] = field(default_factory=dict[str, str], kw_only=True)
+    """The skill bindings its next start takes: the last cell's, the whole set (SK-16)."""
+    started_bindings: dict[str, str] = field(default_factory=dict[str, str], kw_only=True)
+    """The skill bindings it started with, which it keeps until it starts again."""
 
     @property
     def kernel_id(self) -> str:
@@ -415,9 +428,10 @@ class Kernel:
             async def spawn() -> None:
                 nonlocal leader, client
                 with sandbox_processes.starting_children():
-                    await manager.start_kernel(
-                        cwd=str(self.cwd), env={**self.env, sandbox_processes.OWNER: owner}
-                    )
+                    # The environment's own variables win over any binding (SK-16).
+                    env = {**self.bindings, **self.env, sandbox_processes.OWNER: owner}
+                    await manager.start_kernel(cwd=str(self.cwd), env=env)
+                    self.started_bindings = dict(self.bindings)
                     pid = getattr(manager.provisioner, "pid", None)
                     if (
                         isinstance(pid, int)
@@ -803,16 +817,19 @@ class Executor:
     def session(self, request: Message) -> str:
         return self.session_name(request.get("session"))
 
-    def bindings(self, request: Message) -> dict[str, str]:
-        """The skill bindings an execution adds to the environment's variables (SK-16)."""
+    def bindings(self, request: Message, env: Mapping[str, str]) -> dict[str, str]:
+        """The skill bindings an execution adds to the environment's variables ``env``,
+        none of which a binding may name (SK-16)."""
         raw = request.get("bindings", {})
         if not isinstance(raw, dict):
             raise ToolError("invalid_request", "bindings must be an object")
         found: dict[str, str] = {}
         for name, value in cast(dict[object, object], raw).items():
-            if not (isinstance(name, str) and _ENV_NAME_RE.fullmatch(name)):
+            if not (isinstance(name, str) and _BINDING_RE.fullmatch(name)):
                 raise ToolError("invalid_request", f"invalid variable name {name!r}")
-            if not isinstance(value, str) or "\x00" in value:
+            if name in env:
+                raise ToolError("invalid_request", f"{name} is the environment's own variable")
+            if not (isinstance(value, str) and _BINDING_VALUE_RE.fullmatch(value)):
                 raise ToolError("invalid_request", f"invalid value for {name}")
             found[name] = value
         return found
@@ -1402,7 +1419,8 @@ class Executor:
         execution = str(request.get("execution", ""))
         if is_job and re.fullmatch(r"exe-[0-9a-f]{24}", execution) is None:
             raise ToolError("invalid_request", "invalid job execution id")
-        bindings = self.bindings(request)
+        env = self.environment(session)
+        bindings = self.bindings(request, env)
         running = self.accept(request, "job" if is_job else "shell")
         running.session = session
         await self.reply(request)
@@ -1411,7 +1429,7 @@ class Executor:
                 running,
                 argv,
                 cwd,
-                self.environment(session) | bindings,
+                bindings | env,
                 float(request.get("timeout", 120)),
                 int(request.get("limit", 1024 * 1024)),
             )
@@ -1740,15 +1758,13 @@ class Executor:
         code = request.get("code")
         if not isinstance(code, str):
             raise ToolError("invalid_request", "code must be a string")
-        bindings = self.bindings(request)
-        # A running kernel keeps the environment it started with; its next start has these.
-        kept = kernel.manager is not None and any(
-            kernel.env.get(name) != value for name, value in bindings.items()
-        )
-        kernel.env.update(bindings)
+        # The cell's bindings are the whole set the kernel's next start takes; a running
+        # kernel keeps those it started with, and the result says so (SK-16).
+        bindings = self.bindings(request, kernel.env)
         running = self.accept(request, "cell")
         running.kernel = kernel
-        await self.reply(request, bindings_kept=kept)
+        running.bindings = kernel.bindings = bindings
+        await self.reply(request)
         running.task = self.spawn(
             self.run_cell(
                 running,
@@ -1799,6 +1815,8 @@ class Executor:
                     running, kernel, code, timeout, limit, captures, outputs, msg_id=msg_id
                 )
                 result["state_lost"] = state_lost or result.get("state_lost", False)
+                if kernel.started_bindings != running.bindings:
+                    result["bindings_kept"] = True
                 result.update(await self.written(kernel.session, before))
                 result.update(await self.settle(running))
         except (asyncio.CancelledError, _NotStartedError):
@@ -2213,6 +2231,16 @@ class Executor:
             )
         except OSError as exc:
             raise sandbox_files.file_error(exc, f"{sandbox_files.STAGED}/{source}") from exc
+        raw = request.get("commands", [])
+        names = (
+            [n for n in cast(list[object], raw) if isinstance(n, str)][:256]
+            if isinstance(raw, list)
+            else []
+        )
+        path = self.tool_path()
+        found["commands"] = [
+            n for n in names if _COMMAND_RE.fullmatch(n) and shutil.which(n, path=path)
+        ]
         await self.reply(request, **found)
 
     async def op_skills_put(self, request: Message) -> None:

@@ -342,6 +342,7 @@ class SkillTool:
             try:
                 found = await self.stager.stage(entry)
             except WorkerAPIError as error:
+                self.stager.forget(entry.source)  # its files are not as expected
                 found = {"id": entry.qualified, "source": entry.source, "state": "failed"}
                 found |= {"revision": entry.revision, "error": error.message[:300]}
             if found is not None:

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, cast
 
 from sandbox_science.contracts import (
     ExecutionContext,
@@ -26,6 +26,7 @@ from sandbox_science.contracts import (
     StagePutRequest,
 )
 
+from . import allow
 from .store import Entry, SkillStore
 
 if TYPE_CHECKING:
@@ -52,6 +53,8 @@ class Stager:
         """What the run's executions add to their environment: the variables set, as paths
         in the staged packs."""
         self.attempts: dict[str, int] = {}
+        self.bound: dict[str, set[str]] = {}
+        """Each source's variables in ``bindings``."""
         self.checked: set[str] = set()
         """The snapshots this run staged or found staged."""
         self._locks: dict[str, asyncio.Lock] = {}
@@ -71,8 +74,9 @@ class Stager:
             "snapshot": entry.snapshot,
             "files": len(files),
         }
+        commands = await asyncio.to_thread(self._commands)
         async with self._locks.setdefault(entry.snapshot, asyncio.Lock()):
-            found = await self._check(entry, files)
+            found = await self._check(entry, files, commands)
             if found.ready:
                 record |= {"location": found.location, "state": "unchanged"}
             else:
@@ -83,30 +87,52 @@ class Stager:
                     record["differing"] = list(found.differing[:MAX_NAMED])
                     record["differing_count"] = len(found.differing)
                 await self._put(entry, files)
-                found = await self._check(entry, files)
+                found = await self._check(entry, files, commands)
                 record["location"] = found.location
                 if not found.ready:
                     record["state"] = "failed"
+                    self.forget(entry.source)
                     return record
         self.checked.add(entry.snapshot)
-        bound = await asyncio.to_thread(self.store.bindings, self.context.project_id, self.derived)
+        bound = await asyncio.to_thread(
+            self.store.bindings, self.context.project_id, self.derived, found.commands
+        )
+        self.forget(entry.source)
         given = {
             name: found.location + (f"/{path}" if path else "")
             for name, path in bound.set.get(entry.source, {}).items()
         }
         self.bindings.update(given)
+        self.bound[entry.source] = set(given)
         record["bindings"] = given
         if held := bound.held.get(entry.source):
             record["held"] = [{"variable": h["variable"], "reason": h["reason"]} for h in held]
         return record
 
-    async def _check(self, entry: Entry, files: tuple[StagedFile, ...]) -> Any:
+    def forget(self, source: str) -> None:
+        """Take ``source``'s bindings out of the run's executions, as when its staging
+        failed: they would name files that are not as expected."""
+        for name in self.bound.pop(source, set()):
+            self.bindings.pop(name, None)
+
+    def _commands(self) -> tuple[str, ...]:
+        """The command names the project's pinned sources' namespaces could be: the
+        environment's ``PATH`` says which are commands, whose variables they are."""
+        overrides = self.store.settings(self.context.project_id).overrides
+        prefixes = cast(dict[str, str], overrides.get("prefixes", {})).values()
+        names = [*(allow.namespace(p.source) for p in self.store.pins(self.context.project_id))]
+        return tuple(sorted({c for n in [*names, *prefixes] for c in allow.commands(n)}))[:256]
+
+    async def _check(
+        self, entry: Entry, files: tuple[StagedFile, ...], commands: tuple[str, ...]
+    ) -> Any:
         request = StageCheckRequest(
             context=self.context,
             source=entry.source,
             snapshot=entry.snapshot,
             files=files,
             seal=True,
+            commands=commands,
         )
         return await self.client.stage_check(request)
 

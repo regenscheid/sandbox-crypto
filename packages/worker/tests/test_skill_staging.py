@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import os
 import stat
 from collections.abc import AsyncIterator
@@ -21,7 +22,7 @@ from typing import Any
 import pytest
 import pytest_asyncio
 
-from .harness import CONTEXT, Harness
+from .harness import CONTEXT, Harness, HostileBackend
 
 pytestmark = pytest.mark.asyncio
 
@@ -111,7 +112,10 @@ async def test_what_sandbox_code_changes_is_found_and_staged_again(worker: Harne
 
 
 async def test_bindings_and_staged_paths_are_checked(worker: Harness) -> None:
-    for bindings in ({"lower": "x"}, {"1X": "x"}, {"SS_DIR": "a\x00b"}, {"SS_DIR": ""}):
+    for bindings in (
+        {"lower": "x"}, {"1X": "x"}, {"SS_DIR": "a\x00b"}, {"SS_DIR": ""}, {"SS_DIR": "a;b"},
+        {"SS_DIR": "a b"}, {"SS_DIR": "a\tb"},
+    ):  # fmt: skip
         status, _ = await worker.post(
             "/v1/executions",
             {"operation_id": "op-b", "context": CONTEXT, "kind": "shell", "script": "true",
@@ -133,18 +137,76 @@ async def test_bindings_and_staged_paths_are_checked(worker: Harness) -> None:
 
 
 @pytest.mark.slow
-async def test_a_running_kernel_keeps_its_environment_and_says_so(worker: Harness) -> None:
-    """A kernel started before a skill's bindings keeps its environment, and the result
-    says so; restarted, it has them."""
+async def test_a_kernel_takes_the_whole_set_when_it_starts_and_says_when_it_holds_others(
+    worker: Harness,
+) -> None:
+    """A cell's bindings are the whole set a kernel's next start takes: a running kernel
+    keeps those it started with, and the result says so; a restart takes the latest set,
+    so bindings taken away leave the kernel too (review of #493, finding 3)."""
     read = "import os; os.environ.get('SS_DIR')"
+    restart = {"context": CONTEXT, "language": "python"}
     first = await worker.run("op-c1", kind="cell", code=read)
     assert first["result"]["outputs"] == []
     bound = {"bindings": {"SS_DIR": "/staged"}}
     kept = await worker.run("op-c2", kind="cell", code=read, **bound)
     assert kept["result"]["outputs"] == []
-    assert any("restart it to have them" in notice for notice in kept["result"]["notices"])
-    status, _ = await worker.post("/v1/kernels/restart", {"context": CONTEXT, "language": "python"})
-    assert status == 200
+    assert any("restart it to have the run's" in n for n in kept["result"]["notices"])
+    assert (await worker.post("/v1/kernels/restart", restart))[0] == 200
     after = await worker.run("op-c3", kind="cell", code=read, **bound)
     assert after["result"]["outputs"][0]["data"]["text/plain"] == "'/staged'"
     assert not after["result"]["notices"]
+    # Taken away: the running kernel still has it, and says so; restarted, it has not.
+    revoked = await worker.run("op-c4", kind="cell", code=read)
+    assert revoked["result"]["outputs"][0]["data"]["text/plain"] == "'/staged'"
+    assert any("restart it to have the run's" in n for n in revoked["result"]["notices"])
+    assert (await worker.post("/v1/kernels/restart", restart))[0] == 200
+    gone = await worker.run("op-c5", kind="cell", code=read)
+    assert gone["result"]["outputs"] == []
+
+
+async def test_a_binding_never_replaces_the_environments_own_variables(worker: Harness) -> None:
+    """A binding of ``SESSION_WORKSPACE`` would move the session's files out of sight of
+    its written files (review of #493, finding 2): the executor refuses it, and so any
+    name the environment sets."""
+    for name in ("SESSION_WORKSPACE", "PROJECT_SHARED", "HOME", "PATH"):
+        done = await worker.run(
+            f"op-{name.lower().replace('_', '-')}",
+            kind="shell",
+            script="echo ran",
+            bindings={name: "/elsewhere"},
+        )
+        assert done["state"] == "failed", done
+        assert "the environment's own variable" in done["result"]["error"]["message"]
+
+
+async def test_an_executor_from_before_bindings_is_refused_them(tmp_path: Path) -> None:
+    """An executor of protocol 1 would run the execution without its bindings, saying
+    nothing: the worker refuses to send them (review of #493, finding 10)."""
+    async with await Harness.start(tmp_path, backend=HostileBackend("plain")) as old:
+        status, body = await old.post(
+            "/v1/executions",
+            {"operation_id": "op-old", "context": CONTEXT, "kind": "shell", "script": "true",
+             "bindings": {"SS_DIR": "/staged"}},
+        )  # fmt: skip
+        if status == 201:
+            body = await old.finish(body["execution_id"])
+            body = body["result"]["error"]
+        assert "predates skill bindings" in json.dumps(body)
+
+
+async def test_what_sandbox_code_puts_in_the_staged_tree_never_stalls_or_redirects_it(
+    worker: Harness,
+) -> None:
+    """A FIFO is named, never read; a symlink at ``.skills`` is removed before a put."""
+    location = Path((await _stage(worker))["location"])
+    await _shell(worker, "op-f", f'chmod u+w "{location}/tool" && mkfifo "{location}/tool/pipe"')
+    changed = await _check(worker)
+    assert changed["differing"] == ["tool/pipe"]
+    skills = location.parents[1]
+    await _shell(
+        worker, "op-l", f'chmod -R u+w "{skills}" && rm -rf "{skills}" && mkdir -p kept && '
+        f'ln -s "$PWD/kept" "{skills}"',
+    )  # fmt: skip
+    assert (await _stage(worker))["ready"]
+    assert not skills.is_symlink()
+    assert list((worker.workspace / "kept").iterdir()) == []

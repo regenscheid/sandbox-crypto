@@ -92,13 +92,14 @@ _VARIABLE: Final = r"^[A-Z][A-Z0-9_]{1,63}$"
 Bindings = Annotated[
     dict[
         Annotated[str, StringConstraints(pattern=_VARIABLE)],
-        Annotated[str, StringConstraints(min_length=1, max_length=MAX_PATH_BYTES)],
+        Annotated[str, StringConstraints(pattern=r"^[^\x00-\x20\x7f;]{1,4096}$")],
     ],
     Field(max_length=MAX_BINDINGS),
 ]
 """Environment variables an execution gets beside the environment's own: the skill packs'
-bindings, each naming a path in a staged pack (SK-16). The harness sets only those the
-project allows (SK-31)."""
+bindings, each naming a path in a staged pack, without whitespace, control characters or
+``;`` (SK-16). The harness sets only those the project allows (SK-31), and an executor
+refuses one the environment sets itself."""
 
 
 def _check_bindings(bindings: dict[str, str]) -> None:
@@ -632,6 +633,7 @@ MAX_STAGED_FILES: Final = 4096
 MAX_STAGED_BYTES: Final = 32 * 1024 * 1024
 """Bytes one staged pack holds at most, as an imported pack does."""
 StagedPath = Annotated[str, AfterValidator(validate_relative_path)]
+CommandName = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9_.-]{0,63}$")]
 SourceName = Annotated[str, StringConstraints(pattern=r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")]
 
 
@@ -654,6 +656,9 @@ class StageCheckRequest(Contract):
     snapshot: Sha256
     files: tuple[StagedFile, ...] = Field(max_length=MAX_STAGED_FILES)
     seal: bool = False
+    commands: tuple[CommandName, ...] = Field(default=(), max_length=256)
+    """Names to look for on the environment's ``PATH``: a pack's namespace that is a
+    command's name is that command's (SK-31)."""
 
     @model_validator(mode="after")
     def _bounded(self) -> Self:
@@ -672,6 +677,8 @@ class StageCheck(Contract):
     ready: bool
     sealed: bool = False
     differing: tuple[str, ...] = Field(default=(), max_length=MAX_STAGED_FILES)
+    commands: tuple[str, ...] = Field(default=(), max_length=256)
+    """Those of the request's ``commands`` the environment's ``PATH`` has."""
 
 
 class StagedContent(Contract):

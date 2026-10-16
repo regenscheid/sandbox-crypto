@@ -105,11 +105,17 @@ def taken(name: str, tools: Collection[str] = ()) -> str | None:
         return f"{name} is shorter than {MIN_NAMESPACE} characters"
     if forbidden(name + "X"):
         return f"{name} is a family of shell, loader, start-up or a tool's own variables"
-    stem = name.rstrip("_").lower()
-    for command in (stem, stem.replace("_", "-"), stem.split("_")[0]):
+    for command in commands(name):
         if command in tools:
             return f"{name} is the namespace of the command {command}'s own variables"
     return None
+
+
+def commands(name: str) -> list[str]:
+    """The commands whose variables the namespace ``name`` would be: its name in lower
+    case, with ``_`` or ``-``, and its first part."""
+    stem = name.rstrip("_").lower()
+    return sorted({stem, stem.replace("_", "-"), stem.split("_")[0]} - {""})
 
 
 def prefix_refused(prefix: str) -> str | None:

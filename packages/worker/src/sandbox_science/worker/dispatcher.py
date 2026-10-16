@@ -52,7 +52,7 @@ from .errors import ExecutorRefusalError, WorkerError
 from .files import UNSYNCED, Files
 from .identity import execution_digest, same_execution
 from .journal import SOURCE_EVENT, ExecutionJournal
-from .kernels import KernelRegistry, require_run_kernels
+from .kernels import KernelRegistry, require_run_kernels, require_skill_bindings
 from .lifecycle import EnvironmentLifecycle
 from .live import REQUEST, Live, time_limit
 from .output_observations import normalize as normalize_observation
@@ -321,6 +321,8 @@ class Dispatcher:
             raise WorkerError(ErrorKind.UNAVAILABLE, "the executor went away")
         if "run" in fields:
             require_run_kernels(channel)
+        if "bindings" in fields:
+            require_skill_bindings(channel)
         environment.running.add(execution_id)
         shared = self.shared
         if shared is not None:
@@ -373,12 +375,7 @@ class Dispatcher:
             live.execution, channel.incarnation, identity, daemon=channel.daemon_token is not None
         )
         live.watchdog = self.spawn(self.watch(live, time_limit(request)))
-        reply = await channel.request(request.kind, **fields)
-        if reply.get("bindings_kept") is True:
-            live.notices.append(
-                "this kernel started before the skill bindings it was sent and keeps its "
-                "environment; restart it to have them"
-            )
+        await channel.request(request.kind, **fields)
         if channel.daemon_token is not None:
             self.recovery.poll(request.context.environment_id, channel)
 
@@ -575,6 +572,12 @@ class Dispatcher:
                             "than the output limit allows",
                         )
                     }
+                )
+            raw = message.get("result")
+            if isinstance(raw, dict) and cast(dict[str, Any], raw).get("bindings_kept") is True:
+                live.notices.append(
+                    "this kernel holds skill bindings other than this run's, those it started "
+                    "with; restart it to have the run's"
                 )
             if message.get("recovery_compacted") is True:
                 live.notices.append(
