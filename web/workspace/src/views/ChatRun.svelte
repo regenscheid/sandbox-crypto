@@ -15,11 +15,11 @@
     <li>
       {#if entry.kind === 'user'}
         <h3>You</h3>
-        <Markdown source={entry.text} />
+        <Markdown source={entry.text} pins={entry.pins} {projectId} />
         <HiddenBanner text={entry.text} links />
       {:else if entry.kind === 'assistant'}
         <h3>Agent</h3>
-        {#if entry.text}<Markdown source={entry.text} /><HiddenBanner
+        {#if entry.text}<Markdown source={entry.text} pins={entry.pins} {projectId} /><HiddenBanner
             text={entry.text}
             links
           />{/if}

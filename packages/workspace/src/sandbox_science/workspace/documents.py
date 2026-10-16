@@ -332,4 +332,7 @@ def _revision(store: DocumentStore, project: str, reference: str, number: int | 
         "blocks": blocks,
         "removed": stored.get("removed", []),
         "removed_math": stored.get("removed_spans", []),
+        # Its references to recorded files, each pinned, with the file's newer revision
+        # when there is one, or with why it is not (figures spec, FG-8, FG-9).
+        "pins": store.pins(project, info.document_id, revision.info.number),
     }

@@ -67,7 +67,7 @@
 <ResearchState {projectId} {entry} {read} />
 
 <h2>Statement</h2>
-<Markdown source={entry.statement} />
+<Markdown source={entry.statement} pins={entry.pins ?? []} {projectId} />
 <HiddenBanner text={entry.statement} links />
 
 {#if fields.length}

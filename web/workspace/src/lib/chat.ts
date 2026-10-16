@@ -305,11 +305,13 @@ export class ChatFeed {
 /** One line of the transcript, from a run's events. */
 export type ChatEntry =
   | { kind: 'started'; seq: number; text: string }
-  | { kind: 'user'; seq: number; text: string }
+  | { kind: 'user'; seq: number; text: string; pins: Record<string, unknown>[] }
   | {
       kind: 'assistant';
       seq: number;
       text: string;
+      /** The text's references to recorded files, as the event pins them (FG-7, F2). */
+      pins: Record<string, unknown>[];
       calls: { name: string; arguments: string }[];
       /** This model call's tokens, as the gateway reported them; null when not recorded. */
       usage: string | null;
@@ -432,7 +434,7 @@ export function tokensText(value: unknown): string | null {
  */
 export function chatEntries(events: readonly RunEvent[]): ChatEntry[] {
   const entries: ChatEntry[] = [];
-  for (const { seq, kind, data } of events) {
+  for (const { seq, kind, data, pins = [] } of events) {
     if (kind === 'started') {
       const answering = list(data['message_ids']).length;
       // Lab 41, B4: a connector server whose listing failed is unavailable, not missing.
@@ -448,7 +450,7 @@ export function chatEntries(events: readonly RunEvent[]): ChatEntry[] {
             ? ` Connector servers unavailable, their listing failed: ${unavailable.join('; ')}. The agent is told, and its first mcp_tools call lists them again.`
             : ''),
       });
-    } else if (kind === 'user') entries.push({ kind: 'user', seq, text: text(data['text']) });
+    } else if (kind === 'user') entries.push({ kind: 'user', seq, text: text(data['text']), pins });
     else if (kind === 'assistant') {
       const calls = list(data['tool_calls']).map((call) => ({
         name: text(record(call)['name']),
@@ -458,6 +460,7 @@ export function chatEntries(events: readonly RunEvent[]): ChatEntry[] {
         kind: 'assistant',
         seq,
         text: text(data['text']),
+        pins,
         calls,
         usage: tokensText(data['usage']),
       });

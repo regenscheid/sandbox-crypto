@@ -16,11 +16,14 @@ import pytest
 import pytest_asyncio
 from aiohttp.test_utils import TestClient
 
+from sandbox_science.orchestrator.artifacts import ArtifactInventory
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import USER, Author, DocumentStore, store_path
 from sandbox_science.orchestrator.mathchecks.jobs import MathJobs
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.workspace.app import create_app
+
+from .test_pdf_viewer import publish
 
 pytestmark = pytest.mark.asyncio
 
@@ -598,3 +601,40 @@ async def test_a_revision_saved_through_the_workspace_is_scheduled_for_a_math_ch
         assert jobs.job(check)["document"] == doc
     finally:
         owner.close()
+
+
+async def test_a_revision_shows_its_pins_and_the_user_moves_one(
+    client: TestClient[Any, Any], state_dir: Path
+) -> None:
+    """Figures, FG-8: a revision's references with their pins and a newer revision; the
+    user's repin makes a revision whose text is unchanged."""
+    store = DocumentStore(store_path(state_dir), producer="test")
+    inventory = ArtifactInventory(store)
+    first = publish(inventory, "op-t1", "plots/t.png", b"one", "image/png")
+    assert first is not None
+    text = "# Timing\n\n![Timing](plots/t.png)\n"
+    created = store.create("p1", name="timing", title="T", text=text, author=AGENT, session_id="a")
+    publish(inventory, "op-t2", "plots/t.png", b"two", "image/png")
+    store.close()
+    found = await get(client, f"/api/v0/projects/p1/documents/{created.document_id}")
+    (pin,) = found["pins"]
+    assert (pin["path"], pin["artifact"], pin["revision"], pin["latest"]) == (
+        "plots/t.png",
+        first.artifact_id,
+        1,
+        2,
+    )
+    body = {
+        "action": "patch",
+        "base": 1,
+        "reason": "Move the pin of plots/t.png to revision 2",
+        "operation_id": "repin-1",
+        "operations": [
+            {"op": "repin", "block": pin["block"], "path": "plots/t.png", "revision": 2}
+        ],
+    }
+    await post_change(client, created.document_id, body)
+    moved = await get(client, f"/api/v0/projects/p1/documents/{created.document_id}")
+    assert moved["text"] == text
+    assert moved["revision"]["number"] == 2
+    assert [(found["revision"], found.get("latest")) for found in moved["pins"]] == [(2, None)]

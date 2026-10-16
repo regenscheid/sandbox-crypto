@@ -391,11 +391,12 @@ describe('the transcript of a run', () => {
     ]);
     expect(entries).toEqual([
       { kind: 'started', seq: 1, text: 'Run r1 started, answering 1 message.' },
-      { kind: 'user', seq: 2, text: '<b>What</b> is $x$?' },
+      { kind: 'user', seq: 2, text: '<b>What</b> is $x$?', pins: [] },
       {
         kind: 'assistant',
         seq: 4,
         text: 'Let me check.',
+        pins: [],
         calls: [{ name: 'python', arguments: '{"code": "1"}' }],
         usage: 'model-a: 1,200 input and 34 output tokens',
       },
@@ -409,7 +410,14 @@ describe('the transcript of a run', () => {
 
   it('takes no field of the wrong type, and says how a run stopped', () => {
     const [assistant] = chatEntries([event(1, 'assistant', { text: 5, tool_calls: 'x' })]);
-    expect(assistant).toEqual({ kind: 'assistant', seq: 1, text: '', calls: [], usage: null });
+    expect(assistant).toEqual({
+      kind: 'assistant',
+      seq: 1,
+      text: '',
+      pins: [],
+      calls: [],
+      usage: null,
+    });
     expect(tokensText({ model: 'm', input_tokens: 5, output_tokens: 1, cost: 0.003 })).toBe(
       'm: 5 input and 1 output tokens, $0.0030',
     );
