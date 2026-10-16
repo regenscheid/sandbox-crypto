@@ -425,3 +425,7 @@ Conda-forge metadata receipt only establishes historical candidate availability.
 The production selected-file policy, AGPL and permission checks still decide work.
 No model/provider call, automatic approval, rollback or disk-quota enforcement is
 claimed. Preserve original failures, identities and owners before any retry.
+
+## Context-management lab, round 1: the continuity probes
+
+The kit for the acceptance condition of context management's first build: a scripted research scenario on synthetic sources, a driver that records its seed once with folding off and runs eight arms (Claude and GPT, 250,000 and 600,000, and the skeleton-only control) each from a copy of it, and a scorer for CM-P1 to CM-P9. It waits for steps (f2) and (f3). Its runbook, with each arm's configuration, the expected cost and the teardown, is [cm-lab-round-1.md](cm-lab-round-1.md); the code is in `cm_lab/`, run through `cm_drive.py` and `cm_score.py`.
