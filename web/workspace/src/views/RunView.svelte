@@ -39,9 +39,11 @@
       with an answer
     {:else}
       <span class="problem">
-        {run.final_text === null ? 'without an answer' : 'with an answer'}. {stoppedText({
-          stopped: run.stopped,
-        })}
+        {(run.answer ?? run.final_text) === null ? 'without an answer' : 'with an answer'}. {stoppedText(
+          {
+            stopped: run.stopped,
+          },
+        )}
       </span>
     {/if}
   </dd>

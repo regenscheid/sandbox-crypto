@@ -243,6 +243,8 @@ async def test_hooks_share_response_rounds_and_the_last_answer_stands() -> None:
     transcript = await run_task(model, toolbox(), "go", run_id="r", hooks=[first, second])
     # Two rounds, each answering both hooks' findings; then the answer stands.
     assert (transcript.stopped, transcript.final_text) == ("answered", "c")
+    # The answer to the user is the first, which the rounds' findings followed (B4).
+    assert transcript.answer == "a"
     assert (transcript.response_rounds, first.accepted, second.accepted) == (2, 1, 1)
     assert transcript.delivered_ids("first") == {"first-1", "first-2"}
     assert transcript.summaries == {"first": {"closings": 3}, "second": {"closings": 3}}
@@ -268,6 +270,7 @@ async def test_a_veto_is_asked_first_and_can_stop_the_run_without_an_answer() ->
     transcript = await run_task(model, toolbox(), "go", run_id="r", hooks=[later, veto])
     assert (transcript.stopped, transcript.final_text) == ("user_message", None)
     assert (veto.closings, later.asked) == (2, 0)
+    assert transcript.answer is None  # neither answer was let stand
 
 
 class Asks(TurnHook):
@@ -306,6 +309,55 @@ async def test_findings_that_go_out_with_a_later_continue_count_as_a_response_ro
     assert transcript.response_rounds == 2
     assert transcript.delivered_ids("r") == {"r-1", "r-2"}
     assert transcript.final_text == "4"
+    assert transcript.answer == "0"
+
+
+class HoldsOnce(TurnHook):
+    """Holds back the first closing answer, as the plan's veto does, then accepts."""
+
+    name = "holds"
+    veto = True
+
+    def __init__(self) -> None:
+        self.closings = 0
+
+    async def closing(self, run: RunView, answer: str | None) -> Closing:
+        self.closings += 1
+        return Closing("retry" if self.closings == 1 else "accept")
+
+
+async def test_the_answer_is_the_first_text_a_closing_lets_stand() -> None:
+    """Lab 42, B4: a run's last text replaced its answer in later runs' history. The
+    answer is the text of the turn that answered: not one a veto held back, and not the
+    texts of the closing rounds after it."""
+    held = await run_task(
+        ScriptedModel([ModelTurn("stale"), ModelTurn("the answer")]),
+        toolbox(),
+        "go",
+        run_id="r",
+        hooks=[HoldsOnce()],
+    )
+    assert (held.answer, held.final_text) == ("the answer", "the answer")
+    new_input = await run_task(
+        ScriptedModel([ModelTurn("the answer"), ModelTurn("and to the new input")]),
+        toolbox(),
+        "go",
+        run_id="r",
+        max_turns=2,
+        hooks=[Asks("c", "continue")],
+    )
+    assert (new_input.answer, new_input.final_text) == ("the answer", "and to the new input")
+    plain = await run_task(ScriptedModel([ModelTurn("only")]), toolbox(), "go", run_id="r")
+    assert (plain.answer, plain.final_text) == ("only", "only")
+
+
+async def test_an_answer_a_response_round_followed_stands_at_the_turn_limit() -> None:
+    model = ScriptedModel([ModelTurn("the answer"), call()])
+    transcript = await run_task(
+        model, toolbox(), "go", run_id="r", max_turns=2, hooks=[Asks("r", "respond")]
+    )
+    assert (transcript.stopped, transcript.final_text) == ("turn_limit", None)
+    assert transcript.answer == "the answer"
 
 
 class Fence(TurnHook):

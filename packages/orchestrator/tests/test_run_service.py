@@ -341,6 +341,45 @@ async def test_the_earlier_conversation_keeps_every_run_that_fits(harness: Harne
     ]
 
 
+async def test_the_earlier_conversation_shows_each_runs_answer_not_its_last_text(
+    harness: Harness,
+) -> None:
+    """Lab 42, B4: run 3's answer was replaced in later runs' history by the text it wrote
+    after answering review findings. The history shows the run's answer to the user; a
+    record from before answers were kept shows its final text."""
+    await harness.run("run-1", [Reply("Answer.")], task="Question.")
+    store = ProjectStore(harness.state)
+    try:
+        (entry,) = store.runs(PROJECT, SESSION)
+        first = store.run(PROJECT, SESSION, entry.name)
+        assert (first.answer, first.final_text) == ("Answer.", "Answer.")
+        for number, answer, final in (
+            (2, "The plan is finished. Its output was: twist-done", "I responded to the finding."),
+            (3, None, "An answer from before answers were kept."),
+        ):
+            started = first.started_at + timedelta(minutes=number)
+            store.save_run(
+                first.model_copy(
+                    update={
+                        "run_id": f"run-{number}",
+                        "task": f"Question {number}.",
+                        "started_at": started,
+                        "ended_at": started + timedelta(seconds=5),
+                        "answer": answer,
+                        "final_text": final,
+                    }
+                )
+            )
+        history = earlier_conversation(store, runs(harness), PROJECT, SESSION, 10**6)
+    finally:
+        store.close()
+    assert _said(history, "assistant") == [
+        "Answer.",
+        "The plan is finished. Its output was: twist-done",
+        "An answer from before answers were kept.",
+    ]
+
+
 async def test_the_agents_answers_give_way_before_the_users_messages(harness: Harness) -> None:
     """Lane K's triage, D3: every question stays as written, the newest answers that fit
     stay whole, and the others are left out with a line that says so."""

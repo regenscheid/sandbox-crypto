@@ -411,6 +411,7 @@ class Finished:
             "stopped": transcript.stopped,
             "failure": transcript.failure,
             "final_text": transcript.final_text,
+            "answer": transcript.answer,
             "messages": transcript.messages,
             "prompt_provenance": (
                 transcript.prompt_provenance.model_dump(mode="json")
