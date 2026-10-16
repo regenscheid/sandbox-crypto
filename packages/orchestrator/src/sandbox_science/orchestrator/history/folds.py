@@ -24,6 +24,17 @@ still running is cancelled with the run, which records that its call was (CM-24a
 Without an enrichment model, as a scripted run's or with the skeleton-only setting (the
 control arm of question 4), every fold is skeleton-only and applied at once.
 
+When the session's last main run was on another model whose ceiling was larger, the
+run refits the view to its own geometry before its first call (CM-31): it folds, then
+merges, until the view is under the trigger, each fold's and merge's narrative written
+by the earlier model, which waits for it, at most ``WAIT`` in all, then skeleton-only
+and by code, as when that model is not available; each step is a ``fold`` event. A view
+still over the wall then stops the run: the switch is refused, ``research_state`` when
+the session's decisions are what does not fit, ``irreducible`` otherwise; the record
+keeps the refusal, so the next run refits from the earlier model again. A model changed
+behind the same alias is not seen as a switch: the view catches up by the ordinary
+folds at the next safe points.
+
 Records merge into overviews (CM-21, ``overview``): the first-level records, once three
 or more total 0.4 of a chunk, and the region's two oldest while it would pass its
 budget. Below the wall the run's model updates the overview's narrative while the agent
@@ -138,6 +149,8 @@ class Folder(TurnHook):
         exists: Callable[[str], bool] | None = None,
         judge: Judge | None = None,
         consolidating: bool = False,
+        switched: tuple[str, int] | None = None,
+        former: ChatModel | None = None,
         wait: float = WAIT,
         clock: Clock = SYSTEM_CLOCK,
         patience: float = PATIENCE,
@@ -148,7 +161,10 @@ class Folder(TurnHook):
         ``earlier`` are ``session_view``'s; ``digest`` renders the research state within
         a budget in characters, for the state block of each rebuild (CM-26); ``model``
         writes the narratives, none for skeleton-only folds; ``exists`` says whether a
-        ledger handle exists; ``judge`` decides which markers are retired. ``events``
+        ledger handle exists; ``judge`` decides which markers are retired; ``switched``
+        names the alias and the ceiling of the session's last main run when it was on
+        another model, and ``former`` that model, which writes the refit's narratives
+        (CM-31). ``events``
         writes a ``fold`` event, ``refit`` tells the skills what a rebuilt view holds
         (CM-29b), and ``specs`` gives the tools the run sends; the harness sets them once
         it has made them."""
@@ -165,6 +181,11 @@ class Folder(TurnHook):
         self.consolidating = consolidating
         """A consolidation run's: every current decision in one line, never a stop for
         them (CM-45)."""
+        self.switched, self.former = switched, former
+        self.deadline: float | None = None
+        """When the refit stops waiting for the earlier model's calls (CM-31)."""
+        self.refitted: Json | None = None
+        """The refit on a switch of model, as the run's record keeps it (CM-31)."""
         self.clock, self.patience = clock, patience
         self.events: Callable[[Json], Awaitable[None]] | None = None
         self.refit: Callable[[View], None] | None = None
@@ -235,6 +256,8 @@ class Folder(TurnHook):
                 return self._stop("start", why)
             if abs(found.scale - self.start.scale) > 1e-6:
                 await self._rebuild(transcript)  # the budgets shrink with λ
+            if self.switched is not None and not await self._switch(transcript):
+                return False
         if self.running is not None and self.running.kept is not None:
             await self._finish(transcript, self.tokens(transcript))
         if self.view.stop is not None:  # before any fold, merge or call (CM-45)
@@ -368,20 +391,95 @@ class Folder(TurnHook):
         await self._applied(transcript, before, kept, rows)
         return True
 
-    async def _begin(self, transcript: Transcript) -> None:
-        """A fold whose narrative the enrichment call writes while the run goes on."""
+    async def _begin(
+        self, transcript: Transcript, model: ChatModel | None = None, *, now: bool = False
+    ) -> None:
+        """A fold whose narrative the enrichment call writes while the run goes on; or,
+        ``now``, written by ``model`` and applied before the run goes on (CM-31)."""
+        model = model or self.model
         found = await self._span(transcript)
-        if found is None or self.model is None or self.geometry is None:
+        if found is None or model is None or self.geometry is None:
             return
         record, rows = found
         per_token = self.per_token(transcript)
         running = _Running(record, tuple(rows))
-        running.asked = self.tokens(transcript)
+        running.asked = before = self.tokens(transcript)
         running.task = asyncio.create_task(
-            self._enrich(running, self.model, list(transcript.sent), self.specs(), per_token)
+            self._enrich(running, model, list(transcript.sent), self.specs(), per_token)
         )
         self.running = running
         await self._event({"state": "started", "span": _positions_of(rows)})
+        if now:
+            await self._settled(transcript, running, before)
+
+    async def _settled(self, transcript: Transcript, running: _Running, before: int) -> None:
+        """``running`` waited for, at most until the refit's deadline, then applied: as
+        archived if it was ready, or as code built it."""
+        if running.task is not None:
+            left = None if self.deadline is None else self.deadline - self.clock.monotonic()
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(asyncio.shield(running.task), max(0.0, left or 0.0))
+            running.task.cancel()
+        await self._finish(transcript, before)
+
+    async def _switch(self, transcript: Transcript) -> bool:
+        """The view refitted to this run's geometry before its first call, when the
+        session's last main run was on another model with a larger ceiling (CM-31):
+        folds, then merges, until the view is under the trigger, their narratives by
+        the earlier model, waited for, or skeleton-only and by code without it; whether
+        the run goes on, which it does not when the view is still over the wall."""
+        assert self.geometry is not None  # noqa: S101 - set just before
+        switched, self.switched = self.switched, None
+        assert switched is not None  # noqa: S101 - the caller checked
+        alias, ceiling = switched
+        if ceiling <= self.geometry.ceiling:
+            return True
+        before = size = self.tokens(transcript)
+        await self._event({"state": "refit", "from": alias, "ceiling": ceiling, "tokens": size})
+        self.deadline = self.clock.monotonic() + self.wait
+        while size > self.geometry.trigger and self.view.stop is None:
+            if self._former() is not None:
+                await self._begin(transcript, self._former(), now=True)
+            else:
+                await self._fold(transcript, size)
+            after = self.tokens(transcript)
+            await self._event({"state": "refit_step", "step": "fold", "tokens": after})
+            if after >= size:
+                break
+            size = after
+        while self.view.stop is None and (due := self._due(transcript)[0]):
+            count = len(self.view.records)
+            if self._former() is not None:
+                await self._begin_merge(transcript, due, self._former(), now=True)
+            else:
+                await self._merge(transcript, size)
+            size = self.tokens(transcript)
+            await self._event({"state": "refit_step", "step": "merge", "tokens": size})
+            if len(self.view.records) >= count:
+                break
+        self.deadline = None
+        size = self.tokens(transcript)
+        self.refitted = {"from": alias, "ceiling": ceiling, "before": before, "after": size}
+        if size <= self.geometry.wall and self.view.stop is None:
+            return True
+        self.refitted["refused"] = True  # the next run refits from the earlier model again
+        refused = (
+            f"the switch from {alias}, whose ceiling was {ceiling:,} tokens, to this model's "
+            f"{self.geometry.ceiling:,} is refused: "
+        )
+        if self.view.stop is not None:  # the session's decisions are what does not fit
+            return self._stop("research_state", refused + self.view.stop + CONSOLIDATE)
+        return self._stop(
+            "irreducible",
+            refused + f"refitted, the view is still {size:,} tokens, past the wall of "
+            f"{self.geometry.wall:,}",
+        )
+
+    def _former(self) -> ChatModel | None:
+        """The earlier model while the refit has time for its calls; none after."""
+        if self.deadline is not None and self.clock.monotonic() >= self.deadline:
+            return None
+        return self.former
 
     async def _enrich(
         self,
@@ -641,9 +739,18 @@ class Folder(TurnHook):
         while await self._merge(transcript, self.tokens(transcript)):
             pass
 
-    async def _begin_merge(self, transcript: Transcript, due: list[tuple[str, FoldRecord]]) -> None:
-        """A merge whose narrative the run's model updates while the run goes on."""
-        if self.model is None or self.geometry is None:
+    async def _begin_merge(
+        self,
+        transcript: Transcript,
+        due: list[tuple[str, FoldRecord]],
+        model: ChatModel | None = None,
+        *,
+        now: bool = False,
+    ) -> None:
+        """A merge whose narrative the run's model updates while the run goes on; or,
+        ``now``, updated by ``model`` and applied before the run goes on (CM-31)."""
+        model = model or self.model
+        if model is None or self.geometry is None:
             return
         per_token = self.per_token(transcript)
         record = merge(due, int(self.geometry.record * per_token))
@@ -653,9 +760,9 @@ class Folder(TurnHook):
         first, last = record.first[0], record.last[0]
         rows = await threaded(spanned, self.archive, self.context, first, last)
         running = _Running(record, tuple(rows), parts=tuple(due))
-        running.asked = self.tokens(transcript)
+        running.asked = before = self.tokens(transcript)
         running.task = asyncio.create_task(
-            self._enrich(running, self.model, list(transcript.sent), self.specs(), per_token)
+            self._enrich(running, model, list(transcript.sent), self.specs(), per_token)
         )
         self.running = running
         await self._event(
@@ -666,6 +773,8 @@ class Folder(TurnHook):
                 "parts": list(record.parts),
             }
         )
+        if now:
+            await self._settled(transcript, running, before)
 
     async def _rejected(self, record: FoldRecord, why: str) -> None:
         _log.warning("run %s rejects a merge: %s", self.run, why)
@@ -738,6 +847,8 @@ class Folder(TurnHook):
             found["capped"] = self.capped
         if self.overs:
             found["region_over_budget"] = self.overs
+        if self.refitted is not None:
+            found["refit"] = self.refitted
         if running is not None and running.kept is not None:
             found["kept"] = running.kept[0].message_id  # ready: the next run applies it
         if self.stopped is not None:
