@@ -11,6 +11,7 @@ license helpers that gate the permissive images behave.
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import shutil
 import subprocess
@@ -448,3 +449,43 @@ def test_the_image_checks_client_runs_work_on_this_executor(tmp_path: Path) -> N
         assert client.shell("echo ran", limit=30) == "ran\n"
     finally:
         client.close()
+
+
+def test_the_service_checks_expect_each_packages_declared_license() -> None:
+    """The record check compares each repository package the service images install with
+    the license its ``pyproject.toml`` declares, which changed for the orchestrator."""
+    for packages in checks.SERVICE_PACKAGES.values():
+        for name in packages:
+            folder = ROOT / "packages" / name.removeprefix("sandbox-science-")
+            declared = tomllib.loads((folder / "pyproject.toml").read_text())["project"]
+            assert (declared["name"], declared["license"]) == (name, checks.PACKAGE_LICENSES[name])
+
+
+def test_the_harness_run_check_answers_on_this_checkouts_harness(tmp_path: Path) -> None:
+    """The orchestrator image's harness-run check, run here on this checkout's harness: its
+    stub worker speaks the worker protocol the contracts declare, which the harness refuses
+    a worker without, and the scripted task is answered."""
+    from sandbox_science.contracts.worker import PROTOCOL_HEADER, PROTOCOL_VERSION
+
+    probe = subprocess.run(
+        [sys.executable, "-I", "-c", checks.PROTOCOL_PROBE], capture_output=True, text=True
+    )
+    assert probe.stdout.split() == [PROTOCOL_HEADER, str(PROTOCOL_VERSION)]
+    requests: list[str] = []
+    server = checks.stub_worker((PROTOCOL_HEADER, PROTOCOL_VERSION), requests)
+    transcript = tmp_path / "transcript.json"
+    args = checks.harness_run_args(f"http://127.0.0.1:{server.server_port}", tmp_path, transcript)
+    try:
+        done = subprocess.run(
+            [sys.executable, "-c", "import sys; from sandbox_science.orchestrator.cli import "
+             "main; sys.exit(main())", "run", *args],
+            capture_output=True, text=True, timeout=120,
+            env={"HOME": str(tmp_path), "PATH": "/usr/local/bin:/usr/bin:/bin"},
+        )  # fmt: skip
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert done.returncode == 0, done.stderr[-1500:]
+    assert done.stdout.rstrip().endswith(checks.MARKER)
+    assert requests[:1] == [f"/v1/capabilities?environment_id={checks.SESSION}"]
+    assert json.loads(transcript.read_text())["stopped"] == "answered"
