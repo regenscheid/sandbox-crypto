@@ -24,11 +24,15 @@ The conversation stays in the chat format the loop keeps, and each request rende
   thinking of the answers before the change, as a rebuild does;
 - cache breakpoints mark the tools, the system message and the last user turn.
 
-Each answer's text is its text blocks and progress notes, in order, a paragraph each, so
-the archive indexes the notes and another adapter sends them as the answer's text. A
-reasoning summary (``display: "summarized"``, on the models without ``updates``) is
-archived with the response and never sent as text. Usage is CM-28's: the input is
-``input_tokens`` with the cache's reads and writes.
+A turn's answer (``text``) is its text blocks, and its progress notes are ``notes``. What
+the conversation holds (``content``) is both, in order, a paragraph each, so the archive
+indexes the notes and another adapter sends them as the answer's text, while the user's
+answer never shows one. A refusal of the thinking sent back is answered once more without
+it, replay off for the run; a refusal of ``display: "updates"``, as when the gateway does
+not pass the beta header on, with summaries from then on. A reasoning summary
+(``display: "summarized"``, on the models without ``updates``) is archived with the
+response and never sent as text. Usage is CM-28's: the input is ``input_tokens`` with
+the cache's reads and writes.
 """
 
 from __future__ import annotations
@@ -70,8 +74,9 @@ NOTE: Final = "[progress note] "
 UPDATES_BETA: Final = "thinking-display-updates-2026-08-18"
 BINDING_BETA: Final = "thinking-binding-controls-2026-08-01"
 TOOLS_BETA: Final = "mid-conversation-tool-changes-2026-07-01"
-MAX_TOKENS: Final = 32_000
-"""An answer's length when the role sets none: the API needs one."""
+MAX_TOKENS: Final = 16_000
+"""An answer's length when the role sets none: the API needs one, and a request that
+does not stream must end within the client's timeout."""
 REPLAY_DAYS: Final = 30
 """How long a check of the gateway lets thinking replay stay on (CM-39)."""
 KEPT: Final = 4096
@@ -85,6 +90,16 @@ _TOOL_CHANGES: Final = re.compile(
     r"claude-(?:opus-(?:5|5-5|4-8)|fable-5(?:-1)?|mythos-5(?:-1)?|sonnet-5-5)(?![-.]?\d)"
 )
 """The models that take mid-conversation tool changes."""
+_OLDER: Final = re.compile(
+    r"claude-3|claude-(?:opus|sonnet|haiku)-4(?:-[015])?(?:-\d{8})?(?![-.]?\d)"
+)
+"""The Claude models before the 4.6 family, which take no adaptive thinking."""
+_UNBOUND: Final = ("bound to a different conversation", "signature` in `thinking` block")
+"""How Anthropic refuses thinking sent back whose history changed, or that it cannot
+read: its documented recovery is the request again without thinking."""
+_UNDISPLAYED: Final = ("thinking.display", UPDATES_BETA, "anthropic-beta")
+"""How a refusal of ``display: "updates"`` reads, when the gateway does not pass the
+beta header on."""
 _THINKING: Final = frozenset({"thinking", "redacted_thinking"})
 _FINISH: Final = {
     "end_turn": "stop",
@@ -166,6 +181,7 @@ class _Served:
 
     updates: bool
     tool_changes: bool
+    adaptive: bool = True
 
 
 @dataclass(frozen=True)
@@ -214,12 +230,27 @@ class MessagesModel(GatewayModel):
     async def complete(self, messages: Sequence[Message], tools: Sequence[ToolSpec]) -> ModelTurn:
         served = await self._serving()
         why_not = self._why_not(messages)
-        view = _render(messages, tools, served, why_not is None, self._kept)
-        view.body["model"] = self.model
-        view.body["max_tokens"] = self._max_tokens or MAX_TOKENS
-        reading = _Reading(served.updates)
-        turn = await self._call(view.body, reading.parse)
-        off = None
+        off: str | None = None
+        try:
+            turn, view, reading = await self._ask(messages, tools, served, why_not is None)
+        except ModelError as error:
+            said = str(error)
+            if error.status != 400:
+                raise
+            if why_not is None and any(mark in said for mark in _UNBOUND):
+                # Anthropic's recovery: the request again with no thinking from the
+                # history, and replay off for the rest of the run (CM-39).
+                why_not = off = "the API refused the thinking sent back as bound elsewhere"
+                _log.warning("thinking replay is off for the rest of the run: %s", said)
+            elif served.updates and any(mark in said for mark in _UNDISPLAYED):
+                # The gateway did not pass the beta on: summaries from now on (CM-F31).
+                self._served = served = replace(served, updates=False)
+                _log.warning(
+                    "%s gets no progress notes, and summaries instead: %s", self.model, said
+                )
+            else:
+                raise
+            turn, view, reading = await self._ask(messages, tools, served, why_not is None)
         if why_not is None and self.replay is not None:
             off = _turned_off(self.replay, turn, reading, view)
         if reading.id is not None:
@@ -231,6 +262,19 @@ class MessagesModel(GatewayModel):
             prefix=view.prefix,
             thinking_replay="on" if why_not is None else f"off: {why_not}",
         )
+
+    async def _ask(
+        self,
+        messages: Sequence[Message],
+        tools: Sequence[ToolSpec],
+        served: _Served,
+        replay: bool,
+    ) -> tuple[ModelTurn, _View, _Reading]:
+        view = _render(messages, tools, served, replay, self._kept)
+        view.body["model"] = self.model
+        view.body["max_tokens"] = self._max_tokens or MAX_TOKENS
+        reading = _Reading(served.updates)
+        return await self._call(view.body, reading.parse), view, reading
 
     def _headers(self, body: Mapping[str, Any]) -> dict[str, str]:
         """The beta flags the request's features need: progress notes, the binding
@@ -263,6 +307,7 @@ class MessagesModel(GatewayModel):
         served = _Served(
             bool(models) and all(_UPDATES.search(model) for model in models),
             bool(models) and all(_TOOL_CHANGES.search(model) for model in models),
+            not models or not all(_OLDER.search(model) for model in models),
         )
         self._served = served
         return served
@@ -317,9 +362,8 @@ class _Reading:
             content = data["content"]
             if not isinstance(content, list):
                 raise TypeError("content is not a list")
-            said, calls = _answer(
-                [_object(block) for block in cast(list[object], content)], self.notes
-            )
+            blocks = [_object(block) for block in cast(list[object], content)]
+            said, calls = _answer(blocks, self.notes)
         except (ValueError, KeyError, TypeError, RecursionError) as exc:
             raise ModelError(f"unexpected message: {gateway_said(text)}") from exc
         changed = data.get("input_transformations")
@@ -332,8 +376,13 @@ class _Reading:
             )
         usage = _usage(data)
         stop, resolved = data.get("stop_reason"), data.get("model")
+        # The answer is its text blocks; its notes go in what the conversation holds.
+        answer = _answer(blocks, False)[0]
+        notes = [block.get("thinking") for block in blocks if _note(block) is not None]
         return ModelTurn(
-            text=said,
+            text=answer,
+            content=said if said != answer else None,
+            notes=tuple(str(note) for note in notes) if self.notes else (),
             tool_calls=calls,
             finish_reason=_FINISH.get(stop, stop) if isinstance(stop, str) else None,
             model=resolved if isinstance(resolved, str) else None,
@@ -466,10 +515,13 @@ def _render(
         if declared:
             declared[-1] = {**declared[-1], "cache_control": _CACHED}
         body["tools"] = [*declared, *deferred]
-    thinking: Json = {"type": "adaptive", "display": "updates" if served.updates else "summarized"}
-    if replay:
-        thinking["block_binding"] = {"prefix_mismatch_behavior": "error"}
-    body["thinking"] = thinking
+    # Claude models before the 4.6 family take no adaptive thinking: they run without.
+    if served.adaptive:
+        display = "updates" if served.updates else "summarized"
+        thinking: Json = {"type": "adaptive", "display": display}
+        if replay:
+            thinking["block_binding"] = {"prefix_mismatch_behavior": "error"}
+        body["thinking"] = thinking
     added = len(_canonical(out[after:])) if prior is not None else 0
     return _View(body, prefix, prior, added)
 

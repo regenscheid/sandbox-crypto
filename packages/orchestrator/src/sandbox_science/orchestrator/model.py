@@ -78,6 +78,13 @@ class ModelTurn:
     thinking_replay: str | None = None
     """Whether the call sent Claude's thinking back: ``on``, or ``off:`` and why (CM-39);
     ``None`` from an adapter without it."""
+    notes: tuple[str, ...] = ()
+    """Claude's progress notes, in order (CM-38a): the agent's account of its work
+    between calls, which ``text``, the answer, does not hold."""
+    content: str | None = None
+    """The answer as the conversation holds it, when that is not ``text``: Claude's
+    text with its progress notes in place, which the archive indexes and other adapters
+    send (``AssistantMessage.of``)."""
 
 
 COST_HEADER: Final = "x-litellm-response-cost"
@@ -153,7 +160,7 @@ class AssistantMessage(dict[str, Any]):
             for call in reply.tool_calls
         ]
         return cls(
-            reply.text,
+            reply.text if reply.content is None else reply.content,
             calls,
             native=reply.native,
             native_format=reply.native_format,

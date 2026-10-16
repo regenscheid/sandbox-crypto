@@ -119,6 +119,7 @@ class Fake:
             "fable": "anthropic/claude-fable-5-1",
             "older": "anthropic/claude-opus-5",
             "sonnet": "anthropic/claude-sonnet-5",
+            "haiku": "anthropic/claude-haiku-4-5",
         }
     )
     script: list[Reply] = field(default_factory=list[Reply])
@@ -127,6 +128,10 @@ class Fake:
     answered: list[str] = field(default_factory=list[str])
     paths: list[str] = field(default_factory=list[str])
     version: str | None = VERSION
+    forwards_beta: bool = True
+    """Passes ``anthropic-beta`` on, which LiteLLM 1.102.1 is not known to do."""
+    rebound: bool = False
+    """Takes every thinking block sent back for one bound to another conversation."""
     drops: bool = False
     """Strips every thinking block before the model sees it, as LiteLLM 1.102.1 may."""
     info_status: int = 200
@@ -165,13 +170,16 @@ class Fake:
         self.paths.append(request.path)
         body = cast(Json, await request.json())
         betas = {b for b in request.headers.get("anthropic-beta", "").split(",") if b}
+        if not self.forwards_beta:
+            betas = set()
         self.bodies.append(body)
         self.betas.append(betas)
-        reply = self.script.pop(0)
+        reply = self.script[0]
         headers = {"Content-Type": "application/json", **reply.headers}
         if self.version is not None:
             headers["x-litellm-version"] = self.version
         if reply.body is not None or reply.status != 200:
+            self.script.pop(0)
             return web.Response(status=reply.status, text=reply.body or "", headers=headers)
         if self.drops:
             body = {**body, "messages": [{**m, "content": [b for b in m["content"]
@@ -183,6 +191,7 @@ class Fake:
                 "error": {"type": "invalid_request_error", "message": refused},
             }
             return web.Response(status=400, text=json.dumps(error), headers=headers)
+        self.script.pop(0)
         text = json.dumps(self.answer(body, reply))
         self.answered.append(text)
         return web.Response(text=text, headers={**headers, "x-litellm-response-cost": "0.01"})
@@ -244,7 +253,7 @@ class Fake:
                     found = self.bound.get(block.get("signature", ""))
                     if found is None:
                         return f"messages.{index}: Invalid `signature` in `thinking` block."
-                    if found[0] != self.fingerprint(body, index):
+                    if self.rebound or found[0] != self.fingerprint(body, index):
                         return (
                             f"messages.{index}: Invalid `signature` in `thinking` block. The "
                             "block is bound to a different conversation."
@@ -257,7 +266,7 @@ class Fake:
         return None
 
     def answer(self, body: Json, reply: Reply) -> Json:
-        display = body["thinking"].get("display", "omitted")
+        display = body.get("thinking", {}).get("display", "omitted")
         replayed = [b["signature"] for m in body["messages"] for b in m["content"]
                     if b.get("type") in THINKING]  # fmt: skip
         prefix = self.fingerprint(body, len(body["messages"]))
@@ -281,8 +290,8 @@ class Fake:
             self.numbered += 1
             blocks.append({"type": "tool_use", "id": f"toolu_{self.numbered:04d}", "name": name,
                            "input": arguments})  # fmt: skip
-        if notes:
-            think(notes[0] if display == "updates" else "", len(notes[0]) // 4)
+        for note in notes:
+            think(note if display == "updates" else "", len(note) // 4)
         if reply.text is not None:
             blocks.append({"type": "text", "text": reply.text})
         total = (
@@ -398,7 +407,9 @@ async def test_with_replay_off_no_thinking_goes_back_and_notes_go_as_text_from_t
         messages, turns = await converse(model, [LOOKING, COUNTING, DONE], fake)
     finally:
         await model.close()
-    assert turns[0].text == f"{NOTE}Listing the files first.\n\n{NOTE}Then reading x."
+    assert turns[0].text is None  # the notes are not an answer
+    assert turns[0].notes == ("Listing the files first.", "Then reading x.")
+    assert messages[2]["content"] == f"{NOTE}Listing the files first.\n\n{NOTE}Then reading x."
     assert turns[-1].text == "x has 42 lines."
     assert {t.thinking_replay for t in turns} == {"off: no thinking replay setting"}
     for body, betas in zip(fake.bodies, fake.betas, strict=True):
@@ -496,6 +507,74 @@ async def test_another_version_than_the_settings_turns_replay_off_for_the_run(
     off = [b for b, t in zip(fake.bodies, turns, strict=True) if t.thinking_replay != "on"]
     assert all(thoughts(b) == [] and "block_binding" not in b["thinking"] for b in off)
     assert all(f"{NOTE}Listing the files first." in texts(b) for b in off)
+
+
+async def test_a_binding_refusal_is_answered_again_without_thinking(fake: Fake) -> None:
+    """CM-39, Anthropic's documented recovery: a request refused because the thinking
+    it sent back is bound to another conversation goes again once with no thinking from
+    the history, and replay stays off for the rest of the run, recorded."""
+    model = claude(fake, replay=SETTING)
+    try:
+        messages, turns = await converse(model, [LOOKING], fake)
+        fake.rebound = True
+        _, more = await converse(model, [COUNTING, DONE], fake, messages=messages)
+    finally:
+        await model.close()
+    turns += more
+    refused, retried, last = fake.bodies[1:]
+    assert thoughts(refused)  # sent, and refused with a 400
+    for body in (retried, last):
+        assert thoughts(body) == []
+        assert "block_binding" not in body["thinking"]
+    assert f"{NOTE}Listing the files first." in texts(retried)
+    assert turns[0].thinking_replay == "on"
+    refusal = "off: the API refused the thinking sent back as bound elsewhere"
+    assert [t.thinking_replay for t in turns[1:]] == [refusal, refusal]  # for the run
+
+
+async def test_a_gateway_that_drops_the_beta_header_gets_summaries(fake: Fake) -> None:
+    """CM-F31's risk: when the gateway does not pass ``anthropic-beta`` on, the API
+    refuses ``display: "updates"``; the client asks again for summaries, and keeps to
+    them, rather than failing every call on the alias."""
+    fake.forwards_beta = False
+    model = claude(fake)
+    try:
+        _, turns = await converse(model, [LOOKING, DONE], fake)
+    finally:
+        await model.close()
+    displays = [body["thinking"]["display"] for body in fake.bodies]
+    assert displays == ["updates", "summarized", "summarized"]
+    assert turns[0].notes == ()
+    assert turns[1].text == "x has 42 lines."
+
+
+async def test_progress_notes_are_not_the_answer(fake: Fake) -> None:
+    """CM-38a: a last turn's progress notes, Anthropic's stand-in for an interrupted
+    part among them, stay out of the answer the user gets, which is its text blocks,
+    and stay in what the conversation holds, which the archive indexes and other
+    adapters send."""
+    cut = "This part of the response was interrupted before it finished."
+    model = claude(fake)
+    try:
+        messages, (turn,) = await converse(
+            model, [Reply(text="The order is 42.", notes=["Checking the order.", cut])], fake
+        )
+    finally:
+        await model.close()
+    assert turn.text == "The order is 42."
+    assert turn.notes == ("Checking the order.", cut)
+    assert messages[-1]["content"] == (
+        f"{NOTE}Checking the order.\n\n{NOTE}{cut}\n\nThe order is 42."
+    )
+
+
+async def test_claude_models_before_adaptive_thinking_are_sent_none(fake: Fake) -> None:
+    model = claude(fake, "haiku")
+    try:
+        await converse(model, [Reply(text="Hello.")], fake)
+    finally:
+        await model.close()
+    assert "thinking" not in fake.bodies[-1]
 
 
 async def test_a_setting_over_thirty_days_old_leaves_replay_off(fake: Fake) -> None:
