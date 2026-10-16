@@ -17,7 +17,9 @@ first, for each number the outcome states and its brief does not, the latest who
 holds it, or nearly, then the latest; the outcome says how many were left out. An
 execution whose output was cut short brings the file its whole output was saved to, when
 the run recorded it. Each names its run, its delegation and its place among the run's tool
-calls, which is where it is read from.
+calls, which is where it is read from: the run's record keeps each execution whole, which
+the archive's tool results, sampled for the model, do not. Each also names the archived
+tool result its call came back as (CR-14 as amended).
 
 A delegation's observations are one batch, recorded in one change with the outcome first,
 which marks the delegation as recorded: a review window takes a batch whole or not at all
@@ -32,9 +34,11 @@ from dataclasses import dataclass
 from typing import Any, Final, cast
 
 from sandbox_science.orchestrator.documents.errors import DocumentError
+from sandbox_science.orchestrator.history import Archive
 from sandbox_science.orchestrator.projects import run_id_of
 
 from .actions import action_from
+from .archived import results
 from .artifacts import pinned_artifact
 from .executions import execution_projection
 from .ledger import delegation_outcome
@@ -157,7 +161,10 @@ def delegated_work(
             )
         )
     actions = 0
+    # Each call's result in the session's archive, which each item names (CR-14).
+    returned = results(Archive(store.documents.control), project, session, name, tools)
     for number, call in enumerate(tools):
+        at = {"message": number, **({"archive": returned[number]} if returned[number] else {})}
         action = action_from(call, f"{number}") if actions < MAX_DELEGATED_ACTIONS else None
         if action is not None:
             actions += 1
@@ -165,7 +172,7 @@ def delegated_work(
                 Delegated(
                     f"delegated:{delegation}:action:{number}",
                     "action",
-                    {**located, "message": number},
+                    {**located, **at},
                     action,
                 )
             )
@@ -179,7 +186,7 @@ def delegated_work(
                         "execution": execution["execution_id"],
                         "attempt": execution.get("attempt_id"),
                         **located,
-                        "message": number,
+                        **at,
                     },
                     payload,
                     complete,

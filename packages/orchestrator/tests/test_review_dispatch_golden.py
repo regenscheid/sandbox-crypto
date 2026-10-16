@@ -9,7 +9,8 @@ artifacts it pins (B6), ``sandbox-consistency-3`` to check quotes (CR-4),
 the window's actions item and each document revision's changed blocks,
 ``sandbox-consistency-5`` to weigh a delegated run's outcome against its output, with the
 author snapshot's terminal review now listing the run's earlier document revision as
-context (lab 42's B5); a change to any of them changes what a reviewer sees."""
+context (lab 42's B5), and ``sandbox-consistency-6`` to take earlier runs' actions as
+context; a change to any of them changes what a reviewer sees."""
 
 from __future__ import annotations
 
@@ -31,9 +32,9 @@ from .test_consistency import MAIN, anchor, claim, dispatch, raise_finding
 from .test_consistency import store as store
 
 GOLDEN = {
-    "author": "846757889aba44be04c9aaf49cb18cd48e8a3bbdfe552df3c6fb6a1d7a29e23b",
-    "confirmation": "a4b22ed8f3bd364bfffa8a58efe57d0eccf5cdec9362875e630b23d40c79a6a4",
-    "fallback": "b242878dd3eca3a23c93f7f7f9aa76c6fcd706b92b04c411cb5487d3ebc4077e",
+    "author": "d5560df99292198c20256f215b646b264b3bdc44e03fe13b0145a57866769e82",
+    "confirmation": "f9739f0789b96e0c326a205d1b572ac426e54481945b57f0c08a3e87d848a261",
+    "fallback": "a7b7cbdbe72ba9e0e41c909efb0bb80fd183ba4331723017757320d1b542c0f1",
 }
 
 
