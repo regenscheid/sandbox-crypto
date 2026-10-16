@@ -82,6 +82,8 @@ function walk(value: Json, pinned: ReadonlySet<string>): void {
     if (key === 'datasets') throw new Refusal('inline_data');
     if (EXPRESSIONS.has(key) && typeof item === 'string' && item.length > MAX_EXPRESSION)
       throw new Refusal('size');
+    // A number format that pads to a width past a string's limit (review of #500, L2).
+    if (key === 'format' && formatWidth(item) > MAX_FIELD) throw new Refusal('size');
     // A link, an image mark or an image channel would reach another address.
     if (key === 'href' || key === 'url' || key === 'image') {
       if (key === 'url' && typeof item === 'string' && pinned.has(item)) continue;
@@ -331,25 +333,61 @@ export function drawnInWorker(
   });
 }
 
+/** An object whose values a walk reads: an array or a plain object, never a class's. */
+function plain(value: object): boolean {
+  const prototype: unknown = Object.getPrototypeOf(value);
+  return Array.isArray(value) || prototype === Object.prototype || prototype === null;
+}
+
+/** Call `text` on each string within `value`, through its arrays and plain objects at any
+ * depth, and `array` on each array; but not within an object `owned` says is accounted
+ * for already (a row of the run's data, whose own transform checked it), nor again within
+ * one `seen` before. */
+function within(
+  value: unknown,
+  owned: (value: object) => boolean,
+  text: (value: string) => void,
+  array: (value: readonly unknown[]) => void = () => {},
+  seen = new Set<object>(),
+): void {
+  if (typeof value === 'string') return text(value);
+  if (value === null || typeof value !== 'object') return;
+  const pending: object[] = [value];
+  for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+    if (seen.has(next) || !plain(next) || owned(next)) continue;
+    seen.add(next);
+    if (Array.isArray(next)) array(next);
+    for (const item of Object.values(next) as unknown[])
+      if (typeof item === 'string') text(item);
+      else if (item !== null && typeof item === 'object') pending.push(item);
+  }
+}
+
 /**
  * What a chart's run has made so far (review of #500, memory): each value an expression
- * gives, a string function or a transform's rows, spent against the run's limits. A
+ * gives, a string function or a transform's rows, spent against the run's limits, with
+ * the strings and arrays nested in its arrays and plain objects (review of #500, L1). A
  * string past `MAX_FIELD`, or the run past its characters or array elements, is a
- * `Refusal` (`size`).
+ * `Refusal` (`size`). `owned` names the objects already accounted for: the run's rows.
  */
 export class Spending {
   characters = 0;
   elements = 0;
 
-  /** Spend `value`, and give it back: a string's characters, an array's elements and
-   * the strings among them. */
+  constructor(private readonly owned: (value: object) => boolean = () => false) {}
+
+  /** Spend `value`, and give it back: every string's characters and every array's
+   * elements within it. */
   spend<T>(value: T): T {
-    if (typeof value === 'string') this.text(value);
-    else if (Array.isArray(value)) {
-      this.elements += value.length;
-      if (this.elements > MAX_RUN_ELEMENTS) throw new Refusal('size');
-      for (const item of value) if (typeof item === 'string') this.text(item);
-    }
+    within(
+      value,
+      this.owned,
+      (text) => this.text(text),
+      (array) => {
+        this.elements += array.length;
+        if (this.elements > MAX_RUN_ELEMENTS) throw new Refusal('size');
+      },
+    );
     return value;
   }
 
@@ -359,25 +397,140 @@ export class Spending {
     if (this.characters > MAX_RUN_CHARACTERS) throw new Refusal('size');
   }
 
-  /** Check the rows one transform added or changed: no string field past `MAX_FIELD`, and
-   * at most `MAX_RUN_ELEMENTS` array elements in all its output. */
+  /** Check the rows one transform added or changed: no string past `MAX_FIELD` in any
+   * field, at any depth, and at most `MAX_RUN_ELEMENTS` elements in its fields' arrays
+   * in all its output. */
   rows(...outputs: unknown[]): void {
     let elements = 0;
+    const long = (text: string) => {
+      if (text.length > MAX_FIELD) throw new Refusal('size');
+    };
+    // Rows share what they point to (a mark's items point to the mark, and it to them
+    // all): each object is read once in all the output.
+    const seen = new Set<object>();
     for (const tuples of outputs) {
       if (!Array.isArray(tuples)) continue;
       for (const tuple of tuples)
         if (tuple !== null && typeof tuple === 'object')
           for (const value of Object.values(tuple as Record<string, unknown>)) {
-            if (typeof value === 'string' && value.length > MAX_FIELD) throw new Refusal('size');
             if (Array.isArray(value) && (elements += value.length) > MAX_RUN_ELEMENTS)
               throw new Refusal('size');
+            within(value, this.owned, long, undefined, seen);
           }
     }
   }
 }
 
-/** A string argument a chart's string function takes, within `MAX_FIELD`. */
+/** An argument a chart's function takes: a string within `MAX_FIELD`, an array within
+ * `MAX_RUN_ELEMENTS`. */
 export function argument(value: unknown): void {
   if (typeof value === 'string' && value.length > MAX_FIELD) throw new Refusal('size');
   if (Array.isArray(value) && value.length > MAX_RUN_ELEMENTS) throw new Refusal('size');
+}
+
+/** The width a number format's specifier pads to (d3-format's `[[fill]align][sign]
+ * [symbol][0][width]…`), or 0. */
+export function formatWidth(specifier: unknown): number {
+  if (typeof specifier !== 'string') return 0;
+  const parts = /^(?:.?[<>=^])?[+\-( ]?[$#]?0?(\d+)/.exec(specifier);
+  return parts ? Number(parts[1]) : 0;
+}
+
+/** The fewest milliseconds in one step of each of Vega's time units. */
+const UNIT_MILLISECONDS: Readonly<Record<string, number>> = {
+  year: 365 * 86_400_000,
+  quarter: 89 * 86_400_000,
+  month: 28 * 86_400_000,
+  week: 7 * 86_400_000,
+  date: 23 * 3_600_000,
+  day: 23 * 3_600_000,
+  dayofyear: 23 * 3_600_000,
+  hours: 3_600_000,
+  minutes: 60_000,
+  seconds: 1_000,
+  milliseconds: 1,
+};
+
+/** At most how many characters `join` would make of `values`, counted until past the
+ * limit: a nested array is joined with commas. */
+function joinedLength(values: readonly unknown[], separator: string, depth = 0): number {
+  let total = Math.max(0, values.length - 1) * separator.length;
+  for (const value of values) {
+    if (total > MAX_FIELD) break;
+    if (typeof value === 'string') total += value.length;
+    else if (Array.isArray(value))
+      total += depth < 8 ? joinedLength(value, ',', depth + 1) : MAX_FIELD + 1;
+    else if (value !== null && value !== undefined)
+      total += typeof value === 'object' ? 64 : String(value).length;
+  }
+  return total;
+}
+
+/** At most how many characters `replace` would make: each match adds the replacement,
+ * and each `$` in it up to the whole string (`$&`, `` $` ``, `$'`, a group). */
+function replacedLength(value: string, pattern: unknown, replacement: unknown): number {
+  const text = String(replacement);
+  const each = text.length + (text.split('$').length - 1) * value.length;
+  if (each === 0) return value.length;
+  let matches = 0;
+  if (pattern instanceof RegExp && pattern.global) {
+    const search = new RegExp(pattern.source, pattern.flags);
+    for (let found = search.exec(value); found !== null; found = search.exec(value)) {
+      matches += 1;
+      if (value.length + matches * each > MAX_FIELD) break;
+      if (found[0] === '') search.lastIndex += 1;
+    }
+  } else matches = 1;
+  return value.length + matches * each;
+}
+
+/** Milliseconds since the epoch of a date, a number or a date's text; NaN otherwise. */
+function milliseconds(value: unknown): number {
+  return value instanceof Date || typeof value === 'number' || typeof value === 'string'
+    ? new Date(value).getTime()
+    : NaN;
+}
+
+/**
+ * Refuse (`size`), before it is built, what one of a chart's functions would make past
+ * the limits (review of #500, L2): `pad` to a length, `join` with a separator, `truncate`
+ * with an ellipsis, `replace` of many matches, a number `format` of a wide width, or a
+ * `timeSequence` or `utcSequence` of more steps than `sequence` makes. Its arguments are
+ * each within `argument` already.
+ */
+export function checkBuild(name: string, args: readonly unknown[]): void {
+  const [first, second, third, fourth] = args;
+  let size = 0;
+  switch (name) {
+    case 'pad': {
+      const value = String(first);
+      const fill = third === undefined ? 1 : Math.max(1, String(third).length);
+      size = value.length + Math.max(0, Number(second) - value.length) * fill;
+      break;
+    }
+    case 'truncate':
+      size =
+        Math.min(String(first).length, Number(second)) +
+        (fourth === undefined ? 1 : String(fourth).length);
+      break;
+    case 'join':
+      if (Array.isArray(first))
+        size = joinedLength(first, second === undefined ? ',' : String(second));
+      break;
+    case 'replace':
+      size = replacedLength(String(first), second, third);
+      break;
+    case 'format':
+      size = formatWidth(second);
+      break;
+    case 'timeSequence':
+    case 'utcSequence': {
+      const span = Math.abs(milliseconds(third) - milliseconds(second));
+      const step = (UNIT_MILLISECONDS[String(first)] ?? 1) * Math.max(1, Number(fourth) || 1);
+      size = span / step <= MAX_SEQUENCE ? 0 : Infinity;
+      if (Number.isNaN(span)) size = 0;
+      break;
+    }
+  }
+  if (!(size <= MAX_FIELD) && !Number.isNaN(size)) throw new Refusal('size');
 }

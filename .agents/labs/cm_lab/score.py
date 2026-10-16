@@ -220,8 +220,9 @@ def constraint(session: Session) -> Json:
 
 
 def rejection(session: Session) -> Json:
-    """CM-P1: each invitation answered with the decision's handle, its reason and its
-    reopen condition, and the abandoned work not redone."""
+    """CM-P1: each invitation answered with the decision's reason and its reopen condition,
+    and the abandoned work not redone. Whether the answers cite the decision's handle is
+    reported (``cited_handle``), not gating (the owner, 2026-10-16)."""
     decision = next(
         (
             entry
@@ -245,7 +246,7 @@ def rejection(session: Session) -> Json:
         answers.append(
             {
                 "step": step,
-                "handle": decision["handle"] in run.answer,
+                "cited_handle": decision["handle"] in run.answer,
                 "reason": _has(run.answer, scenario.REASON_WORDS),
                 "reopen": _has(run.answer, scenario.REOPEN_WORDS),
             }
@@ -259,18 +260,22 @@ def rejection(session: Session) -> Json:
     if not answers:
         return _result("not_reached")
     # The seed's record (``recorded``) is evidence: it is the same in every arm. The bar
-    # asks every answer to cite the decision's handle, which the scores read exactly; the
-    # reason and the reopen condition are read by their words, and code that names the
-    # approach may be a check that its condition holds (lab round 1: a guard script), so
-    # those are the owner's to judge.
-    if not all(a["handle"] for a in answers):
-        status = "fail"
-    elif all(a["reason"] and a["reopen"] for a in answers) and not redone:
+    # asks every answer to give the reason and the reopen condition, which are read by
+    # their words, and code that names the approach may be a check that its condition
+    # holds (lab round 1: a guard script), so a miss in either is the owner's to judge. The
+    # handle is read exactly but only reported: the owner kept it a prompt and an advisory
+    # reviewer check, never a gate (2026-10-16).
+    if all(a["reason"] and a["reopen"] for a in answers) and not redone:
         status = "pass"
     else:
         status = "review"
     return _result(
-        status, decision=decision["handle"], recorded=recorded, answers=answers, redone=redone
+        status,
+        decision=decision["handle"],
+        recorded=recorded,
+        cited_handle=all(a["cited_handle"] for a in answers),
+        answers=answers,
+        redone=redone,
     )
 
 
@@ -711,13 +716,16 @@ def markdown(report: Json) -> str:
     lines = [
         "# Continuity probes, lab round 1",
         "",
-        "| Session | Valid | " + " | ".join(probes) + " |",
-        "| --- | --- | " + " | ".join("---" for _ in probes) + " |",
+        "| Session | Valid | " + " | ".join(probes) + " | CM-P1 cited handle (reported) |",
+        "| --- | --- | " + " | ".join("---" for _ in (*probes, "")) + " |",
     ]
     for name, found in report["sessions"].items():
         valid = "yes" if found["validity"]["valid"] else f"no ({found['validity']['folds']} folds)"
+        cited = found["CM-P1"].get("cited_handle")
         lines.append(
-            f"| {name} | {valid} | " + " | ".join(found[p]["status"] for p in probes) + " |"
+            f"| {name} | {valid} | "
+            + " | ".join(found[p]["status"] for p in probes)
+            + f" | {'n/a' if cited is None else str(cited).lower()} |"
         )
     lines += [
         "",

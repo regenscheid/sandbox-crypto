@@ -10,8 +10,9 @@ the window's actions item and each document revision's changed blocks,
 ``sandbox-consistency-5`` to weigh a delegated run's outcome against its output, with the
 author snapshot's terminal review now listing the run's earlier document revision as
 context (lab 42's B5), ``sandbox-consistency-6`` to take earlier runs' actions as
-context, and ``sandbox-consistency-7`` to know that a rejected rebuttal with evidence is a
-challenge; a change to any of them changes what a reviewer sees."""
+context, ``sandbox-consistency-7`` to know that a rejected rebuttal with evidence is a
+challenge, and ``sandbox-consistency-8`` to suggest the handle of a ledger entry an answer
+relies on without naming it; a change to any of them changes what a reviewer sees."""
 
 from __future__ import annotations
 
@@ -33,9 +34,9 @@ from .test_consistency import MAIN, anchor, claim, dispatch, raise_finding
 from .test_consistency import store as store
 
 GOLDEN = {
-    "author": "a63b5114115e845c7331c4fa2b780f06f575d085690bfcb67fe2c9b15bfba715",
-    "confirmation": "22e1305a8a82e4556688f2b8960f836647327972447ae0f4506bc50f754b1f38",
-    "fallback": "093fba92333560c11c0b67dcb36bb30dd40cc21dc3c64bd63a1f9af684811ddb",
+    "author": "1338d8a98cf3223de3ab5b559587b9f679f87b7060775360bba33a8186ff5746",
+    "confirmation": "a5321d6f3bed2f01df82c9dc9bd78ebb609e038995455098f287b70378ba4840",
+    "fallback": "e403c0f45996a7d29dd0bc006314207556d1a4b0b193363b88b5ade75e6ce006",
 }
 
 

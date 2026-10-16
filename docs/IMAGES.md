@@ -149,7 +149,7 @@ G6K has no conda-forge package. The build compiles it with the environment's com
 
   Tier 2 admits the system libraries the base distribution requires ([licensing](LICENSING.md)); these are them.
 - **crypto-base** contains GPL tools (SageMath, PARI, fpylll, G6K, GCC, …). The recipe and lockfiles are MIT; the image stays on the machines that build it and in a private registry. `build.sh` refuses to push.
-- **orchestrator** is checked like minimal, including the harness's two packages, which pip installs. Its only packages that are not permissive are the same runtime libraries of conda-forge's Python: the GCC runtime, `readline` and `ld_impl` (no `keyutils`, since it has no ZeroMQ). The harness is MIT, and aiohttp, pydantic, the Markdown parser (markdown-it-py, mdit-py-plugins, mdurl), PyYAML and their dependencies are under Apache-2.0, MIT, BSD-3-Clause and PSF-2.0 (tier 1 in [licensing](LICENSING.md)).
+- **orchestrator** is checked like minimal, including the harness's two packages, which pip installs. Its only packages that are not permissive are the same runtime libraries of conda-forge's Python: the GCC runtime, `readline` and `ld_impl` (no `keyutils`, since it has no ZeroMQ). The harness's contracts are MIT and its orchestrator package `MIT AND Apache-2.0`, as their `pyproject.toml` declare them and the `record` check expects, and aiohttp, pydantic, the Markdown parser (markdown-it-py, mdit-py-plugins, mdurl), PyYAML and their dependencies are under Apache-2.0, MIT, BSD-3-Clause and PSF-2.0 (tier 1 in [licensing](LICENSING.md)).
 - **mcp-proxy** is checked the same way, including its four packages from this repository, all MIT. Its packages are the orchestrator image's but for the Markdown parser, all MIT, so its licenses are the orchestrator image's: the same runtime libraries are its only packages that are not permissive.
 - **The license label.** `images/<profile>/licenses.txt` lists the license expressions in the image: its Conda packages, the Python packages pip installed, the trees built from source, and `LicenseRef-Ubuntu-archive` for the Ubuntu packages. `build.sh` joins them into the `org.opencontainers.image.licenses` label. When a new lockfile changes them, the build fails and prints the new lines for the file. License names that are not SPDX identifiers become `LicenseRef-…` values.
 
@@ -238,7 +238,7 @@ In the orchestrator image they run the harness by its full path, with only `HOME
 | `harness-imports` | The harness, its contracts, aiohttp, pydantic and pydantic-core import from the prefix; the versions |
 | `no-kernels` | No kernelspecs, and no ipykernel, jupyter_client or pyzmq |
 | `harness-state` | `project create` and `project show` keep a project record under `/sandbox` (`--state-dir`) |
-| `harness-run` | `run` with a scripted model, against a stub of the worker API on loopback: the harness sends its token, reads the capabilities and prints the model's answer |
+| `harness-run` | `run` with a scripted model, against a stub of the worker API on loopback: the stub speaks the worker protocol of the image's contracts package (its `X-Worker-Protocol` header), the harness sends its token, reads the capabilities and prints the model's answer |
 
 In the mcp-proxy image they start the launcher by its full path, with only `HOME`, a system `PATH` and a credential placeholder set, as the proxy's sandbox runs its command. The proxy's calls never leave the container: no call gets past the check for a session.
 

@@ -115,7 +115,16 @@ PROXY_MODULES = (
     "yaml",
 )
 SERVICE_PACKAGES = {"orchestrator": HARNESS_PACKAGES, "mcp-proxy": PROXY_PACKAGES}
-"""The repository's packages each service image installs from wheels; all MIT."""
+"""The repository's packages each service image installs from wheels."""
+PACKAGE_LICENSES = {
+    "sandbox-science-contracts": "MIT",
+    "sandbox-science-orchestrator": "MIT AND Apache-2.0",
+    "sandbox-science-policy": "MIT",
+    "sandbox-science-event-store": "MIT",
+    "sandbox-science-mcp-proxy": "MIT",
+}
+"""Each of those packages' license, as its ``pyproject.toml`` declares it (a recipe test keeps
+them in step): the orchestrator's holds Apache-2.0 code since b426d7df."""
 PROXY_BINARIES = f"{PREFIX}/bin/python*"
 """The targets file's ``mcp_proxy.binaries``: OpenShell sees the interpreter (lab 13)."""
 PROXY_DIR = Path("/sandbox/mcp-proxy")
@@ -165,6 +174,64 @@ class CheckError(Exception):
 def expect(condition: bool, message: str) -> None:
     if not condition:
         raise CheckError(message)
+
+
+PROTOCOL_PROBE = (
+    "from sandbox_science.contracts.worker import PROTOCOL_HEADER, PROTOCOL_VERSION; "
+    "print(PROTOCOL_HEADER, PROTOCOL_VERSION)"
+)
+"""Prints the header and version of the worker protocol the image's harness speaks."""
+
+
+def stub_worker(protocol: tuple[str, int], requests: list[str]) -> http.server.ThreadingHTTPServer:
+    """A stub of the worker API on loopback, serving in a thread: ``GET /v1/capabilities``
+    with ``TEST_TOKEN`` and nothing else, every response carrying ``protocol``, the worker
+    protocol's header and version, as the harness refuses a worker without them. Each
+    request's path goes into ``requests``."""
+    header, version = protocol
+    capabilities = json.dumps(
+        {
+            "protocol": version,
+            "languages": ["python"],
+            "location": {"pool_id": SESSION, "backend": "local", "hostname": "stub-worker"},
+        }
+    ).encode()
+
+    class StubWorker(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            requests.append(self.path)
+            authorized = self.headers.get("Authorization") == f"Bearer {TEST_TOKEN}"
+            found = urlsplit(self.path).path == "/v1/capabilities"
+            status = 200 if authorized and found else 404 if authorized else 401
+            body = capabilities if status == 200 else b"{}"
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header(header, str(version))
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: Any) -> None:
+            """Keep this script's output to its JSON lines."""
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), StubWorker)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def harness_run_args(worker: str, directory: Path, transcript: Path) -> list[str]:
+    """``sandbox-science-harness run``'s arguments for a scripted task against ``worker``,
+    with its token and script written in ``directory``."""
+    token, script = directory / "worker.token", directory / "script.json"
+    token.write_text(TEST_TOKEN + "\n")
+    script.write_text(json.dumps([{"text": MARKER}]))
+    return [
+        *("--worker", worker, "--token-file", str(token)),
+        *("--project", SESSION, "--session", SESSION, "--environment", SESSION),
+        *("--script", str(script), "--allow-unisolated"),
+        *("--transcript", str(transcript)),
+        "Answer with the marker.",
+    ]
 
 
 class Executor:
@@ -448,7 +515,8 @@ class Checks:
             pip = {item["name"]: item for item in record["packages"]["pip"]}
             for name in SERVICE_PACKAGES[self.profile]:
                 expect(name in pip, f"the record lists no {name}")
-                expect(pip[name]["license"] == "MIT", f"{name} is {pip[name]['license']}")
+                wanted = PACKAGE_LICENSES[name]
+                expect(pip[name]["license"] == wanted, f"{name} is {pip[name]['license']}")
         return f"revision {record['revision']}; packages {counts}; no image policy"
 
     # The executor and its kernels.
@@ -732,50 +800,18 @@ By \cref{thm:mink}, $\mathbb{F}_{17}^\times$ has order $16$.
         """A scripted task through to its answer, against a stub of the worker API on loopback.
 
         The stub answers only ``GET /v1/capabilities`` with the token; the scripted model answers
-        without tools, so the harness needs nothing else from a worker.
+        without tools, so the harness needs nothing else from a worker. It speaks the worker
+        protocol of the image's own contracts package, as the harness refuses any other.
         """
+        found = self.command(f"{PREFIX}/bin/python", "-I", "-c", PROTOCOL_PROBE).split()
+        protocol = (found[0], int(found[1]))
         requests: list[str] = []
-        capabilities = json.dumps(
-            {
-                "protocol": 1,
-                "languages": ["python"],
-                "location": {"pool_id": SESSION, "backend": "local", "hostname": "stub-worker"},
-            }
-        ).encode()
-
-        class StubWorker(http.server.BaseHTTPRequestHandler):
-            def do_GET(self) -> None:
-                requests.append(self.path)
-                authorized = self.headers.get("Authorization") == f"Bearer {TEST_TOKEN}"
-                found = urlsplit(self.path).path == "/v1/capabilities"
-                status = 200 if authorized and found else 404 if authorized else 401
-                body = capabilities if status == 200 else b"{}"
-                self.send_response(status)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-
-            def log_message(self, format: str, *args: Any) -> None:
-                """Keep this script's output to its JSON lines."""
-
         HARNESS_DIR.mkdir(parents=True, exist_ok=True)
-        token, script = HARNESS_DIR / "worker.token", HARNESS_DIR / "script.json"
-        token.write_text(TEST_TOKEN + "\n")
-        script.write_text(json.dumps([{"text": MARKER}]))
         transcript = HARNESS_DIR / "transcript.json"
-        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), StubWorker)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        server = stub_worker(protocol, requests)
         worker = f"http://127.0.0.1:{server.server_port}"
         try:
-            out = self.harness(
-                "run",
-                *("--worker", worker, "--token-file", str(token)),
-                *("--project", SESSION, "--session", SESSION, "--environment", SESSION),
-                *("--script", str(script), "--allow-unisolated"),
-                *("--transcript", str(transcript)),
-                "Answer with the marker.",
-            )
+            out = self.harness("run", *harness_run_args(worker, HARNESS_DIR, transcript))
         finally:
             server.shutdown()
             server.server_close()
@@ -783,7 +819,10 @@ By \cref{thm:mink}, $\mathbb{F}_{17}^\times$ has order $16$.
         expect(out.rstrip().endswith(MARKER), f"output {out[-500:]!r}")
         stopped = json.loads(transcript.read_text())["stopped"]
         expect(stopped == "answered", f"stopped: {stopped}")
-        return f"run against {worker}: capabilities with the token, then the scripted answer"
+        return (
+            f"run against {worker}: capabilities with the token and protocol {protocol[1]}, "
+            "then the scripted answer"
+        )
 
     # mcp-proxy: the proxy as its sandbox runs it, kept running by the image's launcher.
 

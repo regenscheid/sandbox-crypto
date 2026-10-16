@@ -21,7 +21,7 @@ What each probe plants and where it is tested:
 
 | Probe | Planted | Tested | Scored by script | Left to the owner |
 | --- | --- | --- | --- | --- |
-| CM-P1 rejected approach | S03: GHS Weil descent, rejected from Source A p. 6, reopen on a composite extension field | L03 (Source E's text), L05 (the user) | The answers cite the decision's handle, reason and reopen condition; no code for GHS after the invitation | Code that shows the condition holds |
+| CM-P1 rejected approach | S03: GHS Weil descent, rejected from Source A p. 6, reopen on a composite extension field | L03 (Source E's text), L05 (the user) | The answers give the decision's reason and reopen condition; no code for GHS after the invitation. Reported, not gating: whether they cite its handle (`cited_handle`, owner 2026-10-16) | Code that shows the condition holds |
 | CM-P2 assumption | S01: at most 2^64 operations | L08: 2^80 | Every entry linked to the assumption has a revision after L08; none keeps an open flag | An entry left as it was, flag cleared; a sentence that may use the old budget |
 | CM-P3 exact values | S01, S02, S03 to S06: ten values (a SHA-256, a 135-digit order, a 135-digit coordinate, two ePrint IDs, a DOI, a parameter set, a seed, a fingerprint, an iteration count) | L09, L14 | Each copy exact; a tool in the same run returned it before it was used, or the view held it; near misses flagged | A value without its label nearby; a value left out |
 | CM-P4 contradiction | S03, S04: A's speedup holds for j = 1728, B's sample has no such curve | L12 | A contradiction issue mentioning both papers, directly or through linked references; the answer names the condition | Whether the issue's anchors are on each side |

@@ -38,7 +38,7 @@ from .worker_client import dump
 MAX_INPUT_CHARS: Final = 400_000
 """The longest conversation, with its tool schemas, sent to MAIN by default: about
 100,000 tokens of English or JSON, inside common context windows."""
-MAIN_VERSION: Final = "sandbox-main-8"
+MAIN_VERSION: Final = "sandbox-main-9"
 """The version of ``SYSTEM_PROMPT``'s text."""
 SYSTEM_PROMPT: Final = (
     "You are a research assistant. Send research code and shell commands through the "
@@ -86,7 +86,9 @@ SYSTEM_PROMPT: Final = (
     "flagged for its condition is cleared with a reason or followed by a new decision. "
     "Reopening an obstructed issue, or reconsidering a rejected approach with a new "
     "decision, needs only your reason; settling one again, or clearing a flag on a "
-    "settled entry, needs the user or a fresh independent check. "
+    "settled entry, needs the user or a fresh independent check. When an answer, note or "
+    "document relies on a ledger entry, or declines or reopens something because of one, "
+    "cite the entry's handle, such as D-3, A-1, C-4 or I-3. "
     "Record an attempt that fails as a work record ending limit, saying what ran out, and "
     "call nothing impossible that the ledger has not settled (standing impossible). Record "
     "what a finding rests on: its evidence types, scope notes and caveats; when two "
