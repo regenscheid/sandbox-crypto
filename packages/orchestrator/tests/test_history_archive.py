@@ -142,6 +142,10 @@ async def test_each_message_is_archived_whole_as_it_is_added(
         "> [msg-0123 after a quote marker",
         "**[msg-0123** in bold",
         "\\[msg-0123 already escaped by its writer",
+        " " * 300 + "[msg-0123 after a long run of spaces",
+        ".-*" * 400 + "> [msg-0123 after a long run of punctuation",
+        "[" * 500 + "msg-0123 after many brackets",
+        "[" + "\u00a0" * 300 + "msg-0123 with a long run of spaces inside",
     ],
 )
 def test_a_line_that_looks_like_a_header_is_escaped(state: Path, line: str) -> None:
@@ -168,7 +172,15 @@ def test_a_line_that_looks_like_a_header_is_escaped(state: Path, line: str) -> N
 
 
 @pytest.mark.parametrize(
-    "line", ["x [msg-0123 after a letter", "[message] a word", "msg-[0123", "[ms g-0123"]
+    "line",
+    [
+        "x [msg-0123 after a letter",
+        "[message] a word",
+        "msg-[0123",
+        "[ms g-0123",
+        " " * 300 + "x [msg-0123 a letter after a long run of spaces",
+        "[*msg-0123 punctuation between bracket and name",
+    ],
 )
 def test_a_line_that_does_not_look_like_a_header_stays(line: str) -> None:
     assert escape(f"first\n{line}\n") == f"first\n{line}\n"

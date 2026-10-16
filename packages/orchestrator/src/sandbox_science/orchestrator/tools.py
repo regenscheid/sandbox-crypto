@@ -52,6 +52,8 @@ from .documents import annotation_tools
 from .documents.errors import DocumentError
 from .documents.tool import DOCUMENT_EFFECTS, DocumentTool, WorkRequests, with_notices
 from .documents.tool import SPECS as DOCUMENT_SPECS
+from .history import SPECS as HISTORY_SPECS
+from .history import HistoryTool
 from .hooks import Effect, TurnHook
 from .jobs import BACKGROUND, JOB_EFFECTS, JOB_SPECS, STOP_AT_FAILURE, JobNotices, JobTools
 from .kernel_check import KernelCheck
@@ -468,6 +470,7 @@ def _harness_tool_names() -> frozenset[str]:
         *TRACK_SPECS,
         *QUESTION_SPECS,
         SKILL_SPEC,
+        *HISTORY_SPECS,
     )
     return frozenset(spec.name for spec in specs) | {RESTART_KERNEL, MCP_TOOLS}
 
@@ -507,6 +510,7 @@ class Toolbox:
         check: bool = False,
         tracks: TrackTools | None = None,
         skills: SkillTool | None = None,
+        history: HistoryTool | None = None,
     ) -> None:
         """For a ``delegated`` run, a call to a tool it is not offered, such as a review,
         plan, delegate, question or connector tool, is refused with
@@ -675,6 +679,14 @@ class Toolbox:
                 lambda _, call: skills.call(call.args, call_id=call.call.id, model=call.model),
                 {SKILL_SPEC.name: "read"},
                 whole=True,  # a body is never cut, as a notice riding on it would (_attach)
+            )
+        if history is not None:
+            # A retrieval reaches the model whole: its pages say where the next begins.
+            entries += _group(
+                history.specs,
+                lambda name, call: history.call(name, call.args),
+                {spec.name: "read" for spec in history.specs},
+                whole=True,
             )
         if questions is not None:
             entries += _group(
