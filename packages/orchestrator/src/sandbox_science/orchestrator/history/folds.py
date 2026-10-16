@@ -400,7 +400,8 @@ class Folder(TurnHook):
             assert running.done is not None  # noqa: S101 - set above
             running.kept = await self._keep(running.done.record, per_token)
             done = running.done
-            if self.propose is not None and done.proposals and done.failed is None:
+            first = done.record.level == 1  # an overview proposes nothing (CM-15, CM-21)
+            if self.propose is not None and done.proposals and done.failed is None and first:
                 # Checked against the span once the fold is kept, and kept apart (CM-15).
                 fold = running.kept[0].message_id
                 try:
