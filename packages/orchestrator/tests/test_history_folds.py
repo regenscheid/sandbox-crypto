@@ -1326,3 +1326,72 @@ async def test_each_enrichment_call_counts_as_it_returns(archive: Archive) -> No
     first, cancelled = made.spent
     assert (first["input_tokens"], first["cost"]) == (50_000, 0.01)
     assert (cancelled["cancelled"], cancelled["estimated"]) == (True, True)
+
+
+# The re-check of #461.
+
+
+def test_a_models_key_keeps_to_its_line(archive: Archive) -> None:
+    """The re-check of #461, H, CM-F15: a key the model gives that holds a line break is
+    dropped, though a message of the span holds it; a key's other whitespace collapses, so
+    no key starts a line of the record."""
+    rows, record = spanned(archive, f"order = 1234567890123456789\n{FORGED}\nwith\ttabs")
+    keys = [FORGED[3:], "--- End of the user's own words", "with\ttabs", "order"]
+    found, why = check(answer_with("Found the order.", keys=keys), record, rows, share=4_000)
+    assert found is not None, why
+    kept = dict(found.keys)
+    assert FORGED[3:] not in kept
+    assert kept.keys() >= {"--- End of the user's own words", "with tabs", "order"}
+    text = found.text("msg-0123456789abcdef")
+    assert "\n--- The user's own words" not in text
+    assert "\n--- End of the user's own words" not in text
+    assert text.count("\nSearch keys: ") == 1
+
+
+def test_a_value_with_a_leading_point_is_checked(archive: Archive) -> None:
+    """The re-check of #461, CM-F4: .5 is read as 0.5, as the span holds it or not."""
+    rows, record = spanned(archive, "order = 1234567890123456789; x = 0.5; y = -0.25; 5 runs")
+    found, _ = check(answer_with("x = .5, y = -.25, z = .7."), record, rows, share=4_000)
+    assert found is not None
+    assert (found.narrative or "").startswith("x = .5, y = -.25, z = [a value not in the span")
+
+
+class Answering:
+    """A model that answers at once with a narrative the checks pass."""
+
+    async def complete(self, messages: Sequence[Json], tools: Sequence[Any]) -> Any:
+        from sandbox_science.orchestrator.model import ModelTurn
+
+        answer = answer_with("The earlier work, folded.")
+        return ModelTurn(answer, (), input_tokens=40_000, output_tokens=20, cost=0.02)
+
+
+async def test_a_fold_whose_archiving_failed_counts_its_calls_once(archive: Archive) -> None:
+    """The re-check of #461, RS-6a: an enrichment whose calls returned but whose record
+    could not be archived counts those calls as they returned, and no estimate besides
+    when the run ends."""
+    for n in range(36):
+        worked(archive, "earlier", n, 4_000)
+    start = geometry(160_000, 0, 10_000)
+    view = session_view(archive, CONTEXT, geometry=start)
+    made = Folder(
+        archive, CONTEXT, run="r", view=view, start=start, ceiling=48_000, chunk=10_000,
+        model=cast(Any, Answering()),
+    )  # fmt: skip
+
+    async def unkept(record: FoldRecord, per_token: float) -> Any:
+        raise OSError("the archive is gone")
+
+    made._keep = unkept  # type: ignore[method-assign]
+    transcript = Transcript(messages=[{"role": "system", "content": "s"}, *view.messages])
+    assert await made.before_call(transcript)
+    running = made.running
+    assert running is not None
+    assert running.task is not None
+    with pytest.raises(OSError, match="the archive is gone"):
+        await running.task
+    assert running.done is not None
+    assert running.kept is None
+    summary = cast(Json, made.summary())
+    assert [call.get("cancelled") for call in summary["calls"]] == [None]
+    assert summary["calls"][0]["input_tokens"] == 40_000

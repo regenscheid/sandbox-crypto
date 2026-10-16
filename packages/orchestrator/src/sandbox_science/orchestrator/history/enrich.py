@@ -42,11 +42,11 @@ from sandbox_science.orchestrator.model import (
     ModelTurn,
     ToolSpec,
 )
-from sandbox_science.orchestrator.notices import DIGEST, FOLD_ENRICH, FOLD_REGION, STATE_BLOCK
+from sandbox_science.orchestrator.notices import FOLD_ENRICH
 from sandbox_science.orchestrator.projects import ModelUsage
 
 from .archive import Archived, escape
-from .record import FoldRecord
+from .record import FoldRecord, flat, guarded
 
 Json = dict[str, Any]
 
@@ -58,26 +58,10 @@ _VALUES: Final = re.compile(
     r"|(?P<handle>(?<![\w-])(?:REF|[ICRADT])-\d+(?![\w-]))"
     r"|(?P<hex>(?<![\w-])(?=[0-9A-Fa-f]*\d)(?=[0-9A-Fa-f]*[A-Fa-f])[0-9A-Fa-f]{8,}(?![\w-]))"
     # Any token a number begins: its sign, separators, decimals, exponent, power (2^-99,
-    # 2^{-128}, 2**80, 2⁸⁰), scientific notation (9.9e-7) and unit (512bit).
-    r"|(?P<number>(?<![\w.])[-+\u2212]?\d(?:[\w.,^{}*⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺]|[-+](?=\d))*)"
+    # 2^{-128}, 2**80, 2⁸⁰), scientific notation (9.9e-7), unit (512bit), and a leading
+    # point (.5).
+    r"|(?P<number>(?<![\w.])[-+\u2212]?(?:\.(?=\d))?\d(?:[\w.,^{}*⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺]|[-+](?=\d))*)"
 )
-_FRAMINGS: Final = (
-    STATE_BLOCK.text[:40],
-    DIGEST.text[:40],
-    FOLD_REGION.text[:40],
-    FOLD_ENRICH.text[:40],
-    "--- fold ",
-    "--- The user's own words",
-    "--- End of the user's own words",
-    "--- msg-",
-    "--- run ",
-    "Outline:",
-    "Markers:",
-    "Narrative",
-    "Search keys:",
-)
-_MARKER: Final = re.compile(r"-\s*(?:decision|caveat|read|failures)\s*:", re.IGNORECASE)
-"""A line that begins like one of a record's marker lines."""
 
 
 @dataclass(frozen=True)
@@ -160,11 +144,12 @@ def check(
     keys = dict(record.keys)
     found = numbers(span)
     for key in cast(list[object], answer.get("keys") or []):
-        if isinstance(key, str) and key.strip() and key not in keys:
-            # A key is text a message of the span holds; a message's ID is not.
-            holder = next((row.message_id for row in rows if key in row.entry.text), None)
-            if holder is not None:
-                keys[key] = holder
+        # A key is one line of text a message of the span holds; a message's ID is not.
+        if not isinstance(key, str) or "\n" in key or "\r" in key or not flat(key):
+            continue
+        holder = next((row.message_id for row in rows if key in row.entry.text), None)
+        if holder is not None and flat(key) not in keys:
+            keys[flat(key)] = holder
     kept: list[tuple[str, str]] = []
     used = 0
     for key, at in keys.items():
@@ -190,9 +175,12 @@ def _checked(
     if kind == "number":  # a sentence's punctuation after it is not part of it
         stripped = value.rstrip(".,")
         value, tail = stripped, value[len(stripped) :]
-        known = numbers(value) <= found
-        if known and value[0] in "-\u2212":  # a sign is part of the value: the span says it
-            digits = re.escape(value[1:])
+        whole = re.sub(r"^([-+\u2212]?)\.", r"\g<1>0.", value)  # .5 is 0.5
+        known = numbers(whole) <= found
+        if known and whole[0] in "-\u2212":  # a sign is part of the value: the span says it
+            digits = re.escape(whole[1:])
+            if whole[1:].startswith("0."):  # -0.5 is said so or as -.5
+                digits = "0?" + digits[1:]
             known = re.search(rf"(?<![\w.])[-\u2212]\s?{digits}(?![\w.])", span) is not None
     elif kind == "handle":
         within = re.search(rf"(?<![\w-]){re.escape(value)}(?![\w-])", span) is not None
@@ -230,11 +218,7 @@ def _quoted(text: str) -> str:
     enrichment, a fold record's labels and marker lines, or the lines that mark the
     user's own words (CM-20, CM-F15). The record renders every line of the narrative
     quoted besides (``FoldRecord.text``)."""
-    lines = escape(text).splitlines(keepends=True)
-    return "".join(
-        f"\\{line}" if line.lstrip().startswith(_FRAMINGS) or _MARKER.match(line.lstrip()) else line
-        for line in lines
-    )
+    return "".join(guarded(line) for line in escape(text).splitlines(keepends=True))
 
 
 def _object(text: str) -> Json | None:

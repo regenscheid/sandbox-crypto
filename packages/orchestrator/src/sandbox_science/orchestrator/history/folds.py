@@ -480,7 +480,8 @@ class Folder(TurnHook):
         running = self.running
         if running is not None and running.task is not None and running.kept is None:
             running.task.cancel()  # the run ended: so does its fold (CM-24a)
-            self.spent.append(_cancelled(running))
+            if running.done is None:  # a call was in flight; those returned are counted
+                self.spent.append(_cancelled(running))
         if self.geometry is None:
             return None
         found: Json = {
