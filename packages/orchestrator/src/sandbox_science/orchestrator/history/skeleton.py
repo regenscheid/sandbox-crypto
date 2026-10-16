@@ -170,6 +170,20 @@ def _add(span: _Span, row: Archived, results: dict[tuple[str, str | None], Archi
             _call(span, name, args, result)
 
 
+def outcome_of(found: Json) -> str | None:
+    """A tool result's state as the skeleton reads it: its ``state``, or its error."""
+    state = found.get("state") if isinstance(found.get("state"), str) else None
+    if "error" in found:
+        error: object = found["error"]
+        state = "error " + str(cast(Json, error).get("kind") if isinstance(error, dict) else error)
+    return state
+
+
+def failed(state: str | None) -> bool:
+    """Whether a result in ``state`` failed (CM-18's failure aggregate counts it)."""
+    return state is not None and state.split()[0] in FAILED
+
+
 def _call(span: _Span, name: str, args: str, result: Archived | None) -> None:
     if result is None:
         span.items.append(_Item("call", f"{name}: no result", args=args))
@@ -186,11 +200,8 @@ def _call(span: _Span, name: str, args: str, result: Archived | None) -> None:
         shown = ", ".join(ids[:8]) + (f" and {len(ids) - 8} more" if len(ids) > 8 else "")
         span.items.append(_Item("retrieval", f"{at} {name}({args}) → {shown or 'nothing'}"))
         return
-    state = found.get("state") if isinstance(found.get("state"), str) else None
-    if "error" in found:
-        error: object = found["error"]
-        state = "error " + str(cast(Json, error).get("kind") if isinstance(error, dict) else error)
-    if state is not None and state.split()[0] in FAILED:
+    state = outcome_of(found)
+    if failed(state):
         span.failed.setdefault(name, []).append(at)
     outcome = state or "done"
     if (code := found.get("exit_code")) is not None:
@@ -247,7 +258,8 @@ def _change(span: _Span, args: str, found: Json, at: str) -> str:
             span.markers.append(
                 {"kind": "caveat", "subject": handle, "text": text, "evidence": evidence, **about}
             )
-    for work in _objects(asked.get("work")):
+    written = [str(w) for w in cast(list[object], found.get("work") or [])]
+    for index, work in enumerate(_objects(asked.get("work"))):
         ending, verdict = work.get("ending"), work.get("verdict")
         if ending in ("limit", "obstruction_claimed") or verdict == "inconclusive":
             how = f"{ending} ({work.get('limit')})" if ending == "limit" else str(ending)
@@ -255,10 +267,11 @@ def _change(span: _Span, args: str, found: Json, at: str) -> str:
                 how = "an inconclusive assessment"
             text = f"work on {work.get('entry')} ended {how}: {_words(str(work.get('tried')))}"
             entry = str(work.get("entry"))
-            span.markers.append(
-                {"kind": "caveat", "subject": entry, "text": text, "entry": entry,
-                 "work": str(verdict or ending), "at": at}
-            )  # fmt: skip
+            marker: Json = {"kind": "caveat", "subject": entry, "text": text, "entry": entry,
+                            "work": str(verdict or ending), "at": at}  # fmt: skip
+            if index < len(written):  # the record, which an assessment may decide (CM-21a)
+                marker["record"] = written[index]
+            span.markers.append(marker)
     if not shown and "error" in found:
         return "refused"
     return ", ".join(shown) + (f": {reason}" if reason else "")

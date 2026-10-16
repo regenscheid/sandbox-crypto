@@ -198,7 +198,7 @@ def session_view(
         ((row, found) for row, found in every if row.message_id not in merged),
         key=lambda pair: pair[1].first[0],
     )
-    gone = (judge or Judge()).retired([(row.message_id, found) for row, found in every])
+    gone = (judge or Judge()).retired([(row.message_id, found) for row, found in every], rows)
     retired = {row.message_id: gone[row.message_id] for row, _ in records if row.message_id in gone}
     end = max((found.last[0] for _, found in every), default=0)
     folded = [row for row in rows if row.position <= end and row.entry.kind != "fold"]
