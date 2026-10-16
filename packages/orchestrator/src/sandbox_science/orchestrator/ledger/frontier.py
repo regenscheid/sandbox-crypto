@@ -410,10 +410,36 @@ def confirmed(db: sqlite3.Connection, entry: str, revision: int) -> str | None:
     edits, such as a title or a dropped link, confirm nothing, and material an agent
     writes after the user's latest revision is not what the user confirmed."""
     # The owner's rule (2026-10-15): only checks and confirmations recorded since the
-    # entry was last weakened, as of that revision, confirm it.
-    (created,) = db.execute(
-        "SELECT created FROM ledger_revisions WHERE entry_id=? AND revision=?", (entry, revision)
-    ).fetchone()
+    # entry was last weakened confirm it, as of the revision that brought in the status and
+    # material ``revision`` holds; a later revision that keeps both, such as one adding a
+    # caveat, weakens nothing.
+    rows = db.execute(
+        "SELECT revision,status,created,json_extract(author,'$.kind') FROM ledger_revisions "
+        "WHERE entry_id=? AND revision<=? ORDER BY revision DESC LIMIT ?",
+        (entry, revision, gate.KEPT_REVISIONS),
+    ).fetchall()
+    held = gate.examined(db, entry, {row[0] for row in rows})
+    start = 0
+    while (
+        start + 1 < len(rows)
+        and rows[start + 1][1] == rows[0][1]
+        and (held.get(rows[start + 1][0]) == held.get(revision))
+    ):
+        start += 1
+    _, status, created, author = rows[start]
+    if author == "user" and start + 1 < len(rows):
+        # The user moved it back into this status: the user's authority restores what
+        # confirmed the same material in that status before (the coordinator, 2026-10-16).
+        before = next(
+            (
+                row[0]
+                for row in rows[start + 1 :]
+                if row[1] == status and held.get(row[0]) == held.get(revision)
+            ),
+            None,
+        )
+        if before is not None:
+            return confirmed(db, entry, before)
     since = gate.weakened(db, entry, created)
     if _by_user(db, entry, revision, since):
         return "user"

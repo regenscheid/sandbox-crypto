@@ -233,8 +233,16 @@ def settled(db: sqlite3.Connection, entry: str, since: int) -> bool:
             and frontier.confirmed(db, entry, revision) is not None
         ):
             return True
+    # A reversed decision settles nothing any more (CM-10): its flags are the main
+    # agent's to clear.
     return (
         db.execute(
+            "SELECT 1 FROM ledger_entries e JOIN ledger_revisions h ON h.entry_id=e.entry_id "
+            "AND h.revision=e.head WHERE e.entry_id=? AND h.status='in_effect'",
+            (entry,),
+        ).fetchone()
+        is not None
+        and db.execute(
             "SELECT 1 FROM ledger_revisions d JOIN ledger_links l ON l.entry_id=d.entry_id "
             "AND l.revision=d.revision AND l.kind='affects' AND l.target='entry' "
             "JOIN ledger_revisions t ON t.entry_id=l.target_id AND t.operation_id=d.operation_id "

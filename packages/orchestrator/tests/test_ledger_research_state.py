@@ -934,3 +934,55 @@ def test_an_acceptance_from_before_the_users_obstruction_obstructs_nothing(
     wide["fields"]["excluded_scope"] = "Every attack on every group."
     with pytest.raises(DocumentError, match="recorded before the issue was last obstructed"):
         change(ledger, wide, status("I-1", 3, "obstructed"), op="again")
+
+
+# The re-check's frictions, after #440.
+
+
+def test_a_caveat_after_an_old_flag_leaves_a_result_confirmed(ledger: Ledger) -> None:
+    """Adding a caveat weakens nothing: a published result the user confirmed stays
+    confirmed when an agent adds a caveat after a flag that came and went."""
+    cited = [{"role": "supports", "type": "source_claim", "entry": "new:paper"}]
+    resting = {**NEGATIVE, "origin": "published", "evidence": cited,
+               "links": [{"kind": "assumes", "entry": "new:a"}]}  # fmt: skip
+    change(ledger, {**NEW["reference"], "key": "paper"}, {**NEW["assumption"], "key": "a"}, resting)
+    ledger.check("p", "C-1", 1, USER, operation_id="confirmed")
+    change(ledger, {"entry": "A-1", "expected": 1, "statement": "$p = 19$."}, op="flag")
+    ledger.clear_flags("p", "C-1", None, USER, reason="Holds.", operation_id="cleared")
+    caveat = {"kind": "negative_result", "caveats": ["heuristic only"]}
+    change(ledger, {"entry": "C-1", "expected": 2, "fields": caveat}, op="caveat")
+    assert labels(ledger)["C-1"] == ("impossible", "impossible, as its source states it")
+
+
+def test_the_users_move_back_to_recorded_restores_the_users_confirmation(ledger: Ledger) -> None:
+    """The user's authority: a published result the user confirmed, disputed, and moved
+    back to recorded by the user, is confirmed again without a new check; moved back by
+    the main agent, it is not."""
+    cited = [{"role": "supports", "type": "source_claim", "entry": "new:paper"}]
+    published = {**NEGATIVE, "origin": "published", "evidence": cited}
+    change(ledger, {**NEW["reference"], "key": "paper"}, published, published)
+    for handle in ("C-1", "C-2"):
+        ledger.check("p", handle, 1, USER, operation_id=f"confirmed-{handle}")
+        change(ledger, status(handle, 2, "disputed"), op=f"disputed-{handle}")
+    change(ledger, status("C-1", 3, "recorded"), op="user-back", author=USER)
+    change(ledger, status("C-2", 3, "recorded"), op="main-back")
+    assert (labels(ledger)["C-1"] or ("",))[0] == "impossible"
+    assert (labels(ledger)["C-2"] or ("",))[0] == "claimed"
+
+
+def test_a_reversed_decisions_flags_are_the_main_agents(ledger: Ledger) -> None:
+    """CM-10: once the decision that obstructed an issue is reversed, it settles nothing,
+    and the main agent clears its reopen flags with a reason."""
+    settle(
+        ledger,
+        fields={"reopen_condition": "If I-2 resolves."},
+        links=[{"kind": "reopen_on", "entry": "I-2"}],
+    )
+    change(ledger, status("I-2", 1, "resolved"), op="resolve")
+    clear = {"reason": "Reversed.", "flags_cleared_on": [{"entry": "D-1"}]}
+    with pytest.raises(DocumentError, match="only the user clears a flag"):
+        ledger.change("p", {"operation_id": "early", **clear}, MAIN)
+    reversal = {**decide("D-1"), "title": "Reverse D-1"}
+    change(ledger, reversal, status("D-1", 1, "reversed"), status("I-1", 2, "open"), op="reverse")
+    ledger.change("p", {"operation_id": "cleared", **clear}, MAIN)
+    assert ledger.entry("p", "D-1").open_flags == 0
