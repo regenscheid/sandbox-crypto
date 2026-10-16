@@ -113,6 +113,8 @@ class Entry:
     """Whether the pass found that the skill routes work to its pack's others."""
     short_by: str | None = None
     """Who wrote ``short``: ``derived`` by the pass, or ``user`` in the settings."""
+    topic_by: str | None = None
+    """Who set ``topic``: ``derived`` by the pass, or ``user`` in the settings."""
 
     @property
     def qualified(self) -> str:
@@ -360,6 +362,7 @@ class SkillStore:
                             served(topics[name]) if name in topics else None,
                             name in entries_of,
                             "derived" if name in shorts else None,
+                            "derived" if name in topics else None,
                         ),
                         settings.overrides,
                     )
@@ -898,7 +901,7 @@ def _overridden(entry: Entry, overrides: dict[str, Any]) -> Entry:
     if "description" in fields:
         changed |= {"short": served(fields["description"]), "short_by": "user"}
     if "topic" in fields:
-        changed["topic"] = served(fields["topic"])
+        changed |= {"topic": served(fields["topic"]), "topic_by": "user"}
     if "entry" in fields:
         changed["entry"] = bool(fields["entry"])
     return replace(entry, **changed)

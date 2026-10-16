@@ -177,7 +177,7 @@ def test_the_index_groups_by_topic_and_entry_skills_keep_descriptions() -> None:
     full, how = index(entries, 1_000_000)
     assert how == "none"
     assert full[0].startswith("- ss/router [entry]: Routes work.")
-    assert full[-1] == "- ss/loose: (derived) Brief."
+    assert full[-1] == "- ss/loose (derived): Brief."
     named, how = index(entries, 1_500)
     assert how == "topics"
     assert named[0].startswith("- ss/router [entry]: Routes work.")

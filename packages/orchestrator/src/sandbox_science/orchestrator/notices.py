@@ -98,22 +98,26 @@ OUTCOME_CORRECTION: Final = Framing(
 
 SKILLS: Final = Framing(
     "skills",
-    "sandbox-notice-skills-2",
+    "sandbox-notice-skills-3",
     "Skills that matched this message by its words or its meaning: candidates, not "
-    "requirements. The names and descriptions are the packs' text. For a specific task one "
-    "strong match is usually enough; load one with the skills tool only if it fits the "
-    "work. Entry skills, when listed, route work to their pack's other skills. A skill "
-    "shown once is not shown again. ",
+    "requirements. The names and descriptions are the packs' text, except a description "
+    "whose description_by is derived, which a model pass over the packs' catalogs wrote, or "
+    "user, which this project's user set. For a specific task one strong match is usually "
+    "enough; load one with the skills tool only if it fits the work. Entry skills, when "
+    "listed, route work to their pack's other skills. A skill shown once is not shown "
+    "again. ",
 )
 """The discovery notice (docs/specs/skills.md, SK-36), when meaning was compared too."""
 SKILLS_WORDS: Final = Framing(
     "skills",
-    "sandbox-notice-skills-words-1",
+    "sandbox-notice-skills-words-2",
     "Skills that matched this message by its words alone, as meaning could not be compared: "
-    "candidates, not requirements. The names and descriptions are the packs' text. For a "
-    "specific task one strong match is usually enough; load one with the skills tool only "
-    "if it fits the work. Entry skills, when listed, route work to their pack's other "
-    "skills. A skill shown once is not shown again. ",
+    "candidates, not requirements. The names and descriptions are the packs' text, except a "
+    "description whose description_by is derived, which a model pass over the packs' "
+    "catalogs wrote, or user, which this project's user set. For a specific task one strong "
+    "match is usually enough; load one with the skills tool only if it fits the work. Entry "
+    "skills, when listed, route work to their pack's other skills. A skill shown once is "
+    "not shown again. ",
 )
 """The discovery notice when only the message's words were compared (lab 42)."""
 
