@@ -37,8 +37,8 @@ api_key_file = "~/.config/sandbox-science/secrets/litellm-harness.key"
 # run = "<the CM-F30 run's ID>"
 
 [run_service]
-# The math checks on the documents' formulas: npm run build:math in web/workspace, and
-# Node 22.12 or newer.
+# The math checks on the documents' formulas, and the figure checks on their charts
+# (its figures directory): npm run build:math in web/workspace, and Node 22.12 or newer.
 math_checks = "../web/workspace/dist-math"
 node = "node"
 

@@ -57,6 +57,7 @@ const quote = (evidence: string): EvidenceLink => ({
 const entry = (evidence: EvidenceLink[]): EntryView => ({
   entry_id: ID,
   pins: [],
+  figure_checks: [],
   handle: 'R-1',
   type: 'result',
   kind: null,

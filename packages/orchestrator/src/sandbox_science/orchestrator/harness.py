@@ -39,7 +39,7 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.contracts.worker import Language
 
-from . import mathchecks
+from . import figurechecks, mathchecks
 from .aio import threaded
 from .artifact_publisher import ArtifactPublisher
 from .artifacts import ArtifactInventory
@@ -187,8 +187,9 @@ class Stores:
     """A state directory's stores. Without them a run keeps no record and gets no
     documents, reviews, math checks, plans, artifact inventory or kernel check.
 
-    Making it subscribes the math checks to the documents' saved revisions, so every
-    harness, however it is assembled, schedules them (``mathchecks.subscribe``).
+    Making it subscribes the math checks to the documents' saved revisions, and the
+    figure checks to them and to the ledger's entries, so every harness, however it is
+    assembled, schedules them (``mathchecks.subscribe``, ``figurechecks.subscribe``).
     """
 
     projects: ProjectStore
@@ -199,6 +200,7 @@ class Stores:
 
     def __post_init__(self) -> None:
         mathchecks.subscribe(self.documents)
+        figurechecks.subscribe(self.documents)
 
 
 @dataclass(frozen=True)

@@ -43,6 +43,7 @@ from aiohttp import hdrs, web
 
 from sandbox_science.contracts import ErrorKind
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
+from sandbox_science.orchestrator.figurechecks import subscribe as check_figures
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.mathchecks import subscribe as check_math
 from sandbox_science.orchestrator.projects import ProjectStore
@@ -226,6 +227,7 @@ def create_app(
         document_store = DocumentStore(store_path(state_dir), producer="workspace", readonly=True)
     writer = DocumentStore(document_store.path, producer="workspace")
     check_math(writer)  # a revision saved here is checked like any other
+    check_figures(writer)  # and its figures, by the run service (FG-19)
 
     def principal(request: web.Request) -> str:
         return _digest(request.cookies.get(cookie_name(request), "")).hex()

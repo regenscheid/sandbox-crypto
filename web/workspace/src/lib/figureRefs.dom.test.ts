@@ -273,3 +273,64 @@ describe('a chart in text', () => {
     expect(target.querySelector('pre code')?.textContent).toContain('"mark":"bar"');
   });
 });
+
+describe('a chart’s check beside it (FG-23)', () => {
+  const code = (source: string, block?: string) =>
+    `<pre><code class="language-vega-lite"${block ? ` data-block="${block}"` : ''}>${source}</code></pre>`;
+  const rejected = {
+    place: 'statement',
+    figure: 'chart:1',
+    status: 'rejected',
+    errors: [{ kind: 'field', message: `no ${HOSTILE}`, line: 9, column: 7 }],
+    notes: [{ kind: 'params', message: 'the parameter "cut" holds a value of its own' }],
+  };
+
+  it('takes each chart’s result by its place, and none in a text that is not checked', () => {
+    const root = document.createElement('div');
+    root.innerHTML = code('{}') + code('{}');
+    const checks = [{ place: 'statement', figure: 'chart:0', status: 'accepted' }, rejected];
+    const [first, second] = placeCharts(root, [], 0, checks);
+    expect(first!.check?.status).toBe('accepted');
+    expect(second!.check).toEqual({
+      status: 'rejected',
+      errors: [{ kind: 'field', message: `no ${HOSTILE}`, line: 9, column: 7 }],
+      notes: [
+        {
+          kind: 'params',
+          message: 'the parameter "cut" holds a value of its own',
+          line: null,
+          column: null,
+        },
+      ],
+      reason: null,
+    });
+    const blocks = document.createElement('div');
+    blocks.innerHTML = code('{}', 'b4');
+    const [unchecked] = placeCharts(blocks, [], 0, checks);
+    expect(unchecked!.check?.status).toBe('unchecked'); // an earlier revision, or not yet
+    const chat = document.createElement('div');
+    chat.innerHTML = code('{}');
+    expect(placeCharts(chat, [])[0]!.check).toBeNull();
+  });
+
+  it('shows the errors with their lines, the notes, or why it was unavailable, as text', async () => {
+    vi.stubGlobal('fetch', vi.fn());
+    const target = document.createElement('div');
+    document.body.append(target);
+    const source =
+      '```vega-lite\n{"data": {"url": "data/none.csv"}}\n```\n\n```vega-lite\n{}\n```\n';
+    const unavailable = { place: 'statement', figure: 'chart:0', status: 'unavailable',
+      reason: 'no figure checker is configured', errors: [], notes: [] }; // prettier-ignore
+    const checks = [unavailable, rejected];
+    mounted.push(mount(Markdown, { target, props: { source, pins: [], projectId: 'p1', checks } }));
+    await settle();
+    const [first, second] = [...target.querySelectorAll('.figure-check')];
+    expect(first!.textContent).toContain(
+      'The check was unavailable: no figure checker is configured.',
+    );
+    expect(second!.textContent).toContain('The check rejected this chart:');
+    expect(second!.textContent).toContain(`Line 9, column 7: no ${HOSTILE}`);
+    expect(second!.textContent).toContain('Note: the parameter "cut" holds a value of its own');
+    expect(target.querySelector('script, img')).toBeNull();
+  });
+});

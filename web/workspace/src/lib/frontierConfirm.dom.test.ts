@@ -97,6 +97,7 @@ function frontier(confirmed: boolean): FrontierAnswer {
 const entry = (fields: Partial<EntryView> = {}): EntryView => ({
   entry_id: ID,
   pins: [],
+  figure_checks: [],
   handle: 'R-8',
   type: 'result',
   kind: null,

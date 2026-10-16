@@ -294,6 +294,9 @@ export interface DocumentRevision {
   /** Its references to recorded files, each pinned, with a newer revision as `latest`, or
    * with why it is not (`unresolved`; figures, FG-8, FG-9). Older servers send none. */
   pins?: Record<string, unknown>[];
+  /** The checks of its figures, when this revision was checked as the current one: each
+   * figure's place and result (figures, FG-23). Older servers send none. */
+  figure_checks?: Record<string, unknown>[];
 }
 
 export interface HistoryRevision {

@@ -25,6 +25,7 @@ const ID = 'entry-0123456789abcdef01234567';
 const entry = (type: EntryView['type']): EntryView => ({
   entry_id: ID,
   pins: [],
+  figure_checks: [],
   handle: type === 'issue' ? 'I-1' : 'A-1',
   type,
   kind: null,

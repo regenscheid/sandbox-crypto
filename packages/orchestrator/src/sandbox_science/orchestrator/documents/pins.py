@@ -134,12 +134,17 @@ def _image_at(content: str, start: int) -> tuple[str, int] | None:
     return _ESCAPED.sub(r"\1", address), at + title.end()
 
 
-def _chart_data(text: str) -> Iterator[str]:
-    """The data paths a ``vega-lite`` fence names: every ``data`` with a ``url``."""
+def fence_body(text: str) -> str:
+    """A fenced block's text without its opening and closing fences."""
     lines = text.split("\n")
-    body = "\n".join(
+    return "\n".join(
         lines[1:-1] if len(lines) > 1 and lines[-1].lstrip()[:3] in ("```", "~~~") else lines[1:]
     )
+
+
+def chart_data(text: str) -> Iterator[str]:
+    """The data paths a ``vega-lite`` fence names: every ``data`` with a ``url``."""
+    body = fence_body(text)
     if len(body) > MAX_CHART:
         return
     try:
@@ -185,9 +190,7 @@ def _found(parsed: Parsed, ids: Sequence[str]) -> list[Reference]:
             found.extend(Reference(block_id, "image", path) for path in _images(inline))
         info = str(block.attrs.get("info") or "").split(" ", 1)[0]
         if block.kind == "code" and info == CHART:
-            found.extend(
-                Reference(block_id, "chart_data", path) for path in _chart_data(block.text)
-            )
+            found.extend(Reference(block_id, "chart_data", path) for path in chart_data(block.text))
     return found
 
 

@@ -21,6 +21,7 @@ from sandbox_science.orchestrator.documents.annotations import Annotations
 from sandbox_science.orchestrator.documents.models import NAME, USER
 from sandbox_science.orchestrator.documents.operations import Operation, unlay
 from sandbox_science.orchestrator.documents.project_macros import view as macro_view
+from sandbox_science.orchestrator.figurechecks import shown as figure_checks
 
 from . import api, errors
 from .context import json_body
@@ -335,4 +336,7 @@ def _revision(store: DocumentStore, project: str, reference: str, number: int | 
         # Its references to recorded files, each pinned, with the file's newer revision
         # when there is one, or with why it is not (figures spec, FG-8, FG-9).
         "pins": store.pins(project, info.document_id, revision.info.number),
+        # The checks of its figures, when this revision was checked as the current one
+        # (FG-23).
+        "figure_checks": figure_checks(store, "document", info.document_id, revision.info.number),
     }

@@ -97,6 +97,8 @@ def key_problems(config: LauncherConfig) -> list[str]:
 
 MATH_FILES = ("check-math.mjs", "mathcheck.mjs")
 """The math checker's launcher and bundle, in ``npm run build:math``'s output."""
+FIGURE_FILES = ("figures/check-figures.mjs", "figures/figurecheck.mjs")
+"""The figure checker's, beside them (figures spec, FG-20)."""
 NODE = (22, 12)
 
 
@@ -112,7 +114,7 @@ def _math_problems(config: LauncherConfig) -> list[str]:
         return []
     problems = [
         f"no math checker build at {build}: in web/workspace, run npm run build:math"
-        for name in MATH_FILES
+        for name in (*MATH_FILES, *FIGURE_FILES)
         if not (build / name).is_file()
     ][:1]
     found = node(config)
@@ -265,6 +267,8 @@ def harness_argv(config: LauncherConfig, layout: Layout) -> list[str]:
             "--math-node", found or service.node,
             "--math-launcher", str(service.math_checks / MATH_FILES[0]),
             "--math-bundle", str(service.math_checks / MATH_FILES[1]),
+            "--figure-launcher", str(service.math_checks / FIGURE_FILES[0]),
+            "--figure-bundle", str(service.math_checks / FIGURE_FILES[1]),
         ]  # fmt: skip
     return [
         str(commands(config) / HARNESS), "serve",

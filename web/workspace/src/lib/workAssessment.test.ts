@@ -41,6 +41,7 @@ const claim = (fields: Partial<WorkRecord> = {}): WorkRecord => ({
 const issue = (fields: Partial<EntryView> = {}): EntryView => ({
   entry_id: 'entry-0123456789abcdef01234567',
   pins: [],
+  figure_checks: [],
   handle: 'I-1',
   type: 'issue',
   kind: null,

@@ -381,8 +381,8 @@ def test_dedicated_sessions_watcher_and_math_reach_their_commands(
     make_config: Any, commands: Path, tmp_path: Path
 ) -> None:
     build = tmp_path / "dist-math"
-    build.mkdir()
-    for name in parts.MATH_FILES:
+    (build / "figures").mkdir(parents=True)
+    for name in (*parts.MATH_FILES, *parts.FIGURE_FILES):
         (build / name).write_text("// built\n")
     node = fake_node(tmp_path / "node-bin", "v24.20.0")
     config = load_config(
@@ -410,9 +410,13 @@ def test_dedicated_sessions_watcher_and_math_reach_their_commands(
     assert harness[harness.index("--math-node") + 1] == str(node)
     assert harness[harness.index("--math-launcher") + 1] == str(build / "check-math.mjs")
     assert harness[harness.index("--math-bundle") + 1] == str(build / "mathcheck.mjs")
+    # The figure checker beside it, on the same Node (FG-20).
+    figures = build / "figures"
+    assert harness[harness.index("--figure-launcher") + 1] == str(figures / "check-figures.mjs")
+    assert harness[harness.index("--figure-bundle") + 1] == str(figures / "figurecheck.mjs")
     plain = load_config(make_config({"bin_dir": str(commands)}))
     assert not any(
-        flag.startswith(("--watcher", "--math", "--run-share", "--delegated"))
+        flag.startswith(("--watcher", "--math", "--figure", "--run-share", "--delegated"))
         for flag in parts.harness_argv(plain, layout)
     )
 
