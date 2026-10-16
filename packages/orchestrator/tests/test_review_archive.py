@@ -11,18 +11,25 @@ they came back as."""
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
+from sandbox_science.orchestrator.consistency.archived import held_calls, places, results
 from sandbox_science.orchestrator.consistency.models import ReviewConfig
+from sandbox_science.orchestrator.consistency.rubric import RUBRIC
 from sandbox_science.orchestrator.consistency.store import ReviewStore
-from sandbox_science.orchestrator.history import Archive
+from sandbox_science.orchestrator.history import Archive, Entry
 from sandbox_science.orchestrator.model import Message
-from sandbox_science.orchestrator.projects import RunRecord, run_name
+from sandbox_science.orchestrator.projects import ProjectStore, RunRecord, run_name
 
 from .loop_harness import PROJECT, SESSION, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
+from .test_consistency import store as store
 from .test_delegation import CHECK, REPORT, children, wait
 from .test_delegation import delegating as delegating
 
@@ -51,9 +58,15 @@ def reviews_of(reviews: ReviewStore, run: str) -> list[tuple[str, list[Json]]]:
     ]
 
 
-def actions(reviews: ReviewStore, review: str, items: list[Json]) -> Json:
+def actions(
+    reviews: ReviewStore,
+    review: str,
+    items: list[Json],
+    *,
+    scope: tuple[str, str] = (PROJECT, SESSION),
+) -> Json:
     (listed,) = [i for i in items if i["kind"] == "actions"]
-    return json.loads(reviews.read_evidence(PROJECT, SESSION, review, listed["evidence"])["text"])
+    return json.loads(reviews.read_evidence(*scope, review, listed["evidence"])["text"])
 
 
 def name(record: RunRecord) -> str:
@@ -144,3 +157,125 @@ async def test_a_delegated_runs_work_names_the_results_it_came_back_as(
         assert [a["tool"] for a in held] == ["python"]
     finally:
         documents.close()
+
+
+RUN = "20261016T030000000000Z-run-1"
+"""A run's name in the archive, as a record keeps it."""
+
+
+@pytest.fixture
+def archive(tmp_path: Path) -> Iterator[Archive]:
+    """An archive whose project has the session and another, with nothing in them yet."""
+    projects = ProjectStore(tmp_path / "state")
+    projects.create(PROJECT, "minimal", "sha256:" + "c" * 64)
+    projects.open_session(PROJECT, SESSION, dedicated=False)
+    projects.open_session(PROJECT, "other", dedicated=False)
+    yield Archive(projects.control)
+    projects.close()
+
+
+def asked(*calls: tuple[str, str]) -> Json:
+    """An answer calling ``sage`` once for each (call ID, arguments)."""
+    return {"role": "assistant", "content": "", "tool_calls": [
+        {"id": i, "type": "function", "function": {"name": "sage", "arguments": a}}
+        for i, a in calls
+    ]}  # fmt: skip
+
+
+def kept(archive: Archive, entry: Entry, *, session: str = SESSION, run: str = RUN) -> Json:
+    """``entry`` archived; the message as it was sent."""
+    return archive.append(PROJECT, session, run, entry).chat()
+
+
+def answer(archive: Archive, message: Json) -> None:
+    calls = tuple(cast(list[Json], message.get("tool_calls") or []))
+    entry = Entry("assistant", "assistant", message["content"], tool_calls=calls)
+    archive.append(PROJECT, SESSION, RUN, entry)
+
+
+def result(archive: Archive, call_id: str, text: str, **where: str) -> Json:
+    return kept(
+        archive, Entry("tool", "tool_result", text, source="sage", call_id=call_id), **where
+    )
+
+
+def test_an_answer_that_is_not_the_archived_one_stops_the_pairing(archive: Archive) -> None:
+    """The review of #462: answers have no header and are placed by their order, so each
+    is checked against the archived answer it is paired with; from the first that differs,
+    no answer is placed, a shift giving no place rather than a wrong one. A message with
+    no header has no place, and the run's own state block, archived first as part of its
+    view, shifts nothing."""
+    block = kept(archive, Entry("user", "state_block", "What came before."))
+    task = kept(archive, Entry("user", "task", "Factor n."))
+    first = asked(("c1", "{}"))
+    answer(archive, first)
+    returned = result(archive, "c1", "7031")
+    answer(archive, {"role": "assistant", "content": "It ends in 7031."})
+    answer(archive, {"role": "assistant", "content": "Done."})
+    rows = archive.messages(PROJECT, SESSION, run=RUN)
+    position = {row.entry.kind + str(n): row.position for n, row in enumerate(rows)}
+    system = {"role": "system", "content": "You are a research assistant."}
+    unheaded = {"role": "user", "content": "A note with no header."}
+    transcript = [system, block, task, first, returned, unheaded,
+                  {"role": "assistant", "content": "It ends in 7033."},
+                  {"role": "assistant", "content": "Done."}]  # fmt: skip
+    found = places(archive, PROJECT, SESSION, RUN, transcript, 2, 0)
+    assert sorted(found) == [2, 3, 4]  # the task, the first answer, its result
+    assert [found[i]["position"] for i in (2, 3, 4)] == [
+        position["task1"], position["assistant2"], position["tool_result3"]
+    ]  # fmt: skip
+    assert position["state_block0"] not in {f["position"] for f in found.values()}
+    shifted = [system, block, task, asked(("c9", "{}")), returned]
+    assert sorted(places(archive, PROJECT, SESSION, RUN, shifted, 2, 0)) == [2, 4]
+
+
+def test_a_shift_among_calls_of_one_tool_gives_no_place(archive: Archive) -> None:
+    """The review of #462: a delegated run's records and archived results are paired by
+    order while they agree on the tool and on its arguments, so two ``sage`` calls taken
+    in the wrong order give no place."""
+    answer(archive, asked(("c1", '{"code": "a"}'), ("c2", '{"code": "b"}')))
+    result(archive, "c1", "1")
+    result(archive, "c2", "2")
+    record = {"tool": "sage", "arguments": '{"code": "a"}'}
+    other = {"tool": "sage", "arguments": '{"code": "b"}'}
+    assert all(
+        found is not None for found in results(archive, PROJECT, SESSION, RUN, [record, other])
+    )
+    assert results(archive, PROJECT, SESSION, RUN, [other, record]) == [None, None]
+
+
+def test_held_calls_are_the_sessions_earlier_runs_only(archive: Archive) -> None:
+    """The review of #462: an earlier run's call counts only when its result is in the
+    session reviewed, and is not the reviewed run's own."""
+    later = "20261016T040000000000Z-run-2"
+    here = result(archive, "c1", "1")
+    elsewhere = result(archive, "c2", "2", session="other")
+    own = result(archive, "c3", "3", run=later)
+    assert held_calls(archive, PROJECT, SESSION, later, [here, elsewhere, own]) == [("run-1", "c1")]
+
+
+def test_a_refused_earlier_action_is_listed_as_refused(store: Any) -> None:
+    """The review of #462: an earlier run's call that was refused comes in with its
+    outcome, and the rubric holds a refused call to be no record, so a later answer
+    saying it happened still has none."""
+    from .test_consistency import claim
+
+    reviews, _, _ = store
+    reviews.observe(
+        "p", "s", "turn-1:action:3", "action",
+        {"run": "run-1", "invocation": "turn-1", "message": 3},
+        {"tool": "document_patch", "call": "c1", "target": {"document": "notes"},
+         "outcome": "refused", "made": []},
+    )  # fmt: skip
+    claim(reviews, "Done: the first run patched the notes.")
+    review = reviews.dispatch(
+        "p", "s", "terminal", author_run="author-1", owner="owner", alias="reviewer",
+        viewed=[("run-1", "c1")],
+    )  # fmt: skip
+    assert review is not None
+    items = reviews.manifest("p", "s", review)["evidence"]
+    held = actions(reviews, review, items, scope=("p", "s"))
+    assert [(a["run"], a["tool"], a["outcome"]) for a in held["earlier_runs"]["actions"]] == [
+        ("run-1", "document_patch", "refused")
+    ]
+    assert "A refused or failed call is no record" in " ".join(RUBRIC.split())

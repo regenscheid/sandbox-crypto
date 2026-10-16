@@ -14,7 +14,7 @@ so that an answer telling what an earlier run did is matched against them.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, cast
 
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.history.archive import HEADER, PAGE, Archive, Archived
@@ -58,7 +58,10 @@ def places(
 ) -> dict[int, Json]:
     """The place of each of ``messages`` from index ``start`` on that the run named
     ``run`` archived after position ``after``: a platform message's by the ID its header
-    names, and the model's answers, which have none, by their order."""
+    names, and the model's answers, which have none, by their order, only while each
+    archived answer is the message (``_same``): from the first that is not, no answer has
+    a place, so that a shift gives none rather than a wrong one. A message with no header
+    has none."""
     rows = _rows(archive, project, session, run, after)
     named = {row.message_id: row for row in rows}
     answers = [row for row in rows if row.entry.kind == "assistant"]
@@ -67,6 +70,8 @@ def places(
         message = messages[index]
         if message.get("role") == "assistant":
             row = answers.pop(0) if answers else None
+            if row is not None and not _same(row, message):
+                answers, row = [], None
         else:
             row = named.get(_header(message) or "")
         if row is not None:
@@ -74,12 +79,23 @@ def places(
     return found
 
 
+def _same(row: Archived, message: Message) -> bool:
+    """Whether archived answer ``row`` is ``message``: the same tool calls by ID, or, for
+    an answer without calls, the same text."""
+    calls = [
+        cast(Json, call).get("id") for call in cast(list[Any], message.get("tool_calls") or [])
+    ]
+    if calls or row.entry.tool_calls:
+        return calls == [call.get("id") for call in row.entry.tool_calls]
+    return (row.entry.content or "") == (message.get("content") or "")
+
+
 def held_calls(
-    archive: Archive, project: str, run: str, held: Sequence[Message]
+    archive: Archive, project: str, session: str, run: str, held: Sequence[Message]
 ) -> list[tuple[str, str]]:
     """The earlier runs' calls whose results the view ``held`` holds: each its run's ID
     and the call's ID, read from the archive by the ID each result's header names; the
-    run named ``run``'s own are not earlier."""
+    run named ``run``'s own are not earlier, nor are another session's."""
     found: list[tuple[str, str]] = []
     for message in held:
         identifier = _header(message) if message.get("role") == "tool" else None
@@ -90,7 +106,7 @@ def held_calls(
         except ControlError:
             continue
         earlier = run_id_of(row.run)
-        if row.run != run and earlier and row.entry.call_id:
+        if row.session == session and row.run != run and earlier and row.entry.call_id:
             found.append((earlier, row.entry.call_id[:128]))
     return found
 
@@ -100,12 +116,22 @@ def results(
 ) -> list[Json | None]:
     """The place of the tool result of each of the run named ``run``'s tool records
     ``tools``: each call's result is archived in the order its records are kept, and the
-    two are paired only while their tools agree."""
+    two are paired only while they agree on the tool and its arguments, as the answer
+    that made the call archived them, so that a shift among calls of one tool is caught."""
     rows = _rows(archive, project, session, run, 0)
+    asked = {
+        str(call.get("id")): cast(Json, call.get("function") or {}).get("arguments")
+        for row in rows
+        for call in row.entry.tool_calls
+    }
     returned = [row for row in rows if row.entry.kind == "tool_result"]
     found: list[Json | None] = [None] * len(tools)
     for index, (record, row) in enumerate(zip(tools, returned, strict=False)):
-        if record is None or row.entry.source != str(record.get("tool", ""))[:128]:
+        if (
+            record is None
+            or row.entry.source != str(record.get("tool", ""))[:128]
+            or asked.get(str(row.entry.call_id)) != record.get("arguments")
+        ):
             break
         found[index] = place(row)
     return found

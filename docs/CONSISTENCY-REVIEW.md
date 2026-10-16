@@ -57,10 +57,14 @@ read from the archive by the IDs their headers name, are listed with each review
 run's work under `earlier_runs` in its `actions` item, each naming its run, as context
 (CR-2 as amended; rubric `sandbox-consistency-6`). When the run's messages are archived,
 each transcript item names the archived message it copies (`archive`: its ID and
-position; a platform message by its header's ID, the model's answers by their order),
+position; a platform message by its header's ID, the model's answers by their order, each
+checked by its calls' IDs or its text, and none placed from the first that differs),
 and a review's `review.dispatched` event names the first and last positions its
 transcript items copy (CR-14 as amended); a delegated run's actions and executions name
-the archived tool result each call came back as. The reviewer uses
+the archived tool result each call came back as, paired while tool and arguments agree. An
+earlier run's true action can still draw a false `missing_action` when its result was left
+out of the view, the run predates the archive, or it was never reviewed: a false fail,
+never a false pass. The reviewer uses
 `--reviewer-model ALIAS` with the existing model gateway, or `--reviewer-script FILE`
 plus that alias for synthetic validation. The alias may be MAIN's: the reviewer still has
 its own calls, limits, budget and records. The adapter limits each answer to 2,048 tokens

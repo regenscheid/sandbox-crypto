@@ -442,7 +442,9 @@ class ReviewController:
         project, session = self.scope
         if self.viewed is None:
             held = messages[1 : self.position]
-            self.viewed = tuple(await asyncio.to_thread(held_calls, archive, project, name, held))
+            self.viewed = tuple(
+                await asyncio.to_thread(held_calls, archive, project, session, name, held)
+            )
         located = await asyncio.to_thread(
             places, archive, project, session, name, messages, self.position, self.archived
         )
