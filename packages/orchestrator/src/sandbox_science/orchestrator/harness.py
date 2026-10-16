@@ -72,7 +72,9 @@ from .history import (
     ViewMeter,
     ceiling,
     geometry,
+    ledger_cites,
     ledger_entries,
+    ledger_works,
     recorded_words,
     register_reads,
     session_view,
@@ -687,7 +689,10 @@ class Harness:
         ledger = Ledger(stores.documents)
         # Which folded markers are retired, by the ledger and the read register (CM-21a).
         judge = Judge(
-            ledger_entries(ledger, project), register_reads(Register(archive.control), project)
+            ledger_entries(ledger, project),
+            register_reads(Register(archive.control), project),
+            ledger_works(ledger, project),
+            ledger_cites(ledger, project),
         )
         view = await threaded(
             session_view,

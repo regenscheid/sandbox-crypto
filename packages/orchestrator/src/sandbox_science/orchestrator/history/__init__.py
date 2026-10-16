@@ -18,7 +18,7 @@ from .archive import (
 from .folds import Folder
 from .geometry import CEILING, Geometry, ceiling, geometry
 from .log import RunArchive, entry_of
-from .markers import Judge, ledger_entries, register_reads
+from .markers import Judge, ledger_cites, ledger_entries, ledger_works, register_reads
 from .reads import Register
 from .record import FoldRecord
 from .tool import SPECS, HistoryTool
@@ -50,7 +50,9 @@ __all__ = [
     "escape",
     "geometry",
     "header",
+    "ledger_cites",
     "ledger_entries",
+    "ledger_works",
     "recorded_words",
     "register_reads",
     "session_view",
