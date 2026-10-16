@@ -2700,6 +2700,38 @@ def _adapter_state(schema: Schema) -> None:
     )
 
 
+def _read_register(schema: Schema) -> None:
+    """Version 50: the read register (docs/specs/context-management.md, CM-12): each
+    source a tool result read, beside the result's archived message, with its kind, its
+    key in that kind, how a reader knows it, the read's extent and what it covered. A row
+    is written once, in the change that archives its message, and never changed."""
+    bounded = "length(CAST({0} AS BLOB)) BETWEEN 1 AND {1}"
+    for statement in (
+        f"""CREATE TABLE source_reads (
+    project TEXT NOT NULL,
+    session TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    tool TEXT NOT NULL CHECK ({bounded.format("tool", 256)}),
+    kind TEXT NOT NULL CHECK (kind IN ('pdf', 'file', 'eprint', 'web', 'nist', 'paper',
+        'connector')),
+    source TEXT NOT NULL CHECK ({bounded.format("source", 1024)}),
+    label TEXT CHECK (label IS NULL OR {bounded.format("label", 4096)}),
+    extent TEXT NOT NULL CHECK (extent IN ('whole', 'partial', 'abstract_only',
+        'preview_only', 'unknown')),
+    detail TEXT NOT NULL CHECK (json_valid(detail) AND json_type(detail) = 'object'
+        AND length(detail) <= 16384),
+    FOREIGN KEY (project, message_id) REFERENCES archive_messages (project, message_id)
+) STRICT""",
+        "CREATE INDEX source_reads_source ON source_reads (project, kind, source)",
+        "CREATE INDEX source_reads_session ON source_reads (project, session)",
+        """CREATE TRIGGER source_reads_no_update BEFORE UPDATE ON source_reads
+BEGIN SELECT RAISE(ABORT, 'reads are written once'); END""",
+        """CREATE TRIGGER source_reads_no_delete BEFORE DELETE ON source_reads
+BEGIN SELECT RAISE(ABORT, 'reads are kept'); END""",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -2749,6 +2781,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _research_state,
     _archived_answers,
     _adapter_state,
+    _read_register,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

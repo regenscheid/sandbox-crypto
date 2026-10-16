@@ -990,7 +990,7 @@ class Toolbox:
         except WorkerAPIError as exc:
             return _failure(exc.kind, exc.message)
         if entry.bound:
-            outcome.text = self._bound(outcome.text)
+            outcome.text = self._cut(outcome.text, outcome.record)
         return outcome
 
     # Executions.
@@ -1113,7 +1113,7 @@ class Toolbox:
             return outcome
         record["pdf"] = parsed
         text = format_pdf(kind, parsed, boxes=args.get("boxes") is True)
-        return ToolOutcome(self._bound(text), record, written=written)
+        return ToolOutcome(self._cut(text, record), record, written=written)
 
     async def _python(self, args: dict[str, Any], operation: str) -> ToolOutcome:
         return await self._cell("python", args, operation)
@@ -1176,6 +1176,19 @@ class Toolbox:
 
     def _bound(self, text: str) -> str:
         return bound(text, self.output_chars // 2)
+
+    def _cut(self, text: str, record: dict[str, Any]) -> str:
+        """``text`` bounded, and when that cut it, ``record['cut']`` says so: its length
+        and the character ranges the model was shown, its head and its tail, so that the
+        read register never takes a cut result for a whole read (CM-12)."""
+        limit = self.output_chars // 2
+        if len(text) > limit:
+            half = limit // 2
+            record["cut"] = {
+                "length": len(text),
+                "shown": [[0, half], [len(text) - half, len(text)]],
+            }
+        return bound(text, limit)
 
     # Files.
 

@@ -29,6 +29,7 @@ from sandbox_science.orchestrator.documents.errors import (
     DocumentError,
 )
 from sandbox_science.orchestrator.documents.models import Author
+from sandbox_science.orchestrator.history.reads import reference_reads
 from sandbox_science.orchestrator.hooks import Effect
 from sandbox_science.orchestrator.model import ToolSpec
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
@@ -901,6 +902,10 @@ class LedgerTool:
             exclude={"links", "evidence", "incoming", "findings", "flags", "statement"},
         )
         shown["reason"] = _clip(shown["reason"], 1000)
+        if view.type == "reference":
+            # How far the project's sessions read its sources, as observed (CM-12).
+            project = self.context.project_id
+            shown["read"] = reference_reads(self.ledger.control, project, view.fields)
         room = self.budget // 4
         if len(_dump(shown["fields"])) > room:
             # Measured as the answer carries it: dumping the clipped text escapes it again.

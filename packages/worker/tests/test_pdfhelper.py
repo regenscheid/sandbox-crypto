@@ -77,6 +77,7 @@ def test_lines_carry_their_boxes(workspace: Path) -> None:
     result = pdfhelper.pages("paper.pdf", "3", artifacts=False)
     [page] = result["pages"]
     assert (page["index"], page["label"]) == (3, "1")
+    assert result["page_count"] == 4  # the read register's whole (CM-12)
     first = page["lines"][0]
     assert (first["n"], first["text"]) == (1, "A Note on GF(17)")
     x0, y0, x1, y1 = first["bbox"]

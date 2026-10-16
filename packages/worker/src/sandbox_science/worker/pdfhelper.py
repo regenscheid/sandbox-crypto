@@ -336,7 +336,8 @@ def pages(path: str, spec: str, *, artifacts: bool) -> dict[str, Any]:
         if not every:
             entry["note"] = "no extractable text on this page; render it to read it"
         result.append(entry)
-    return {"parser": parser(), "source": source, "pages": result}
+    # The page count too, so the read register can tell a whole read from a part (CM-12).
+    return {"parser": parser(), "source": source, "page_count": count, "pages": result}
 
 
 def search(path: str, query: str) -> dict[str, Any]:
