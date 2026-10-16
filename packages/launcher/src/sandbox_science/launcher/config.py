@@ -189,6 +189,12 @@ class ModelConfig(_Strict):
     CM-40) or ``messages`` (``/v1/messages``, Claude's Messages API with its progress
     notes, CM-38). An alias it leaves out takes ``chat``, as every alias does by default,
     until the labs confirm the others."""
+    images: list[Annotated[str, StringConstraints(min_length=1)]] = Field(
+        default_factory=list[str], max_length=64
+    )
+    """Aliases whose models accept images, whatever the gateway's model information says:
+    their runs are offered ``view_image`` (docs/specs/figures.md, FG-33). Without them, a
+    run is offered it when the gateway says its model accepts images."""
     thinking_replay: ThinkingReplayConfig | None = None
     """Claude's thinking sent back on the gateway image a CM-F30 run verified (CM-39),
     for the aliases ``api`` names ``messages``; off by default, until a LiteLLM release
