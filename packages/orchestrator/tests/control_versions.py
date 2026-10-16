@@ -159,7 +159,16 @@ def older_store(source: Path, target: Path, version: int) -> None:
                 "AND name NOT LIKE 'sqlite_%' ORDER BY rowid"
             )
         ]
+        # A virtual table's rows are its shadow tables' (an FTS5 index's _data, _idx,
+        # _docsize and _config), which the new store filled as it made it: they are
+        # replaced by the source's, which index the same documents, and the virtual
+        # table itself, whose rows cannot be read back from a contentless index, is left.
+        kinds = dict(db.execute("SELECT name, type FROM pragma_table_list WHERE schema='main'"))
         for table in tables:
+            if kinds.get(table) == "virtual":
+                continue
+            if kinds.get(table) == "shadow":
+                db.execute(f'DELETE FROM main."{table}"')
             _copy(db, table)
         if version < TEXT_MATH:
             for statement in _TEXT_MATH:

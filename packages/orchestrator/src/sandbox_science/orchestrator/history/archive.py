@@ -6,19 +6,27 @@ and is never changed or removed: tasks, the user's messages, the comments, notic
 delegation outcomes the platform delivers, the model's answers with their tool calls,
 and tool results. Each has an ID, ``msg-`` and 16 hexadecimal digits, unique in the
 project, and a position in its session that only grows; a session's runs, delegated
-runs included, share one sequence. A message the platform writes begins with a header
-line naming its ID and kind, such as ``[msg-5f0c2e9a41d7b386 · tool result · sage]``,
-and a line of its own content that begins like one gets a backslash before it. A
-model's answer keeps its content as the model wrote it, beside the gateway's native
+runs included, share one sequence. The archive keeps each message's content as the run
+added it. A message the platform writes is sent with a header line naming its ID and
+kind, such as ``[msg-5f0c2e9a41d7b386 · tool result · sage]``, and with a backslash
+before each line of its content that looks like one (``escape``): ``Archived.chat``
+renders that, the same each time, so that what a model call was sent can be rebuilt.
+Changing ``header`` or ``escape`` changes how earlier messages render, which the prompt
+cache and Claude's thinking bind to, so either needs a new scheme rather than an edit.
+A model's answer keeps its content as the model wrote it, beside the gateway's native
 answer, the model and the gateway's version.
 
 Two FTS5 indexes cover each message's text and each file saved behind a sample, kept up
 to 1 MiB: one by words (``unicode61``, ranked by BM25), one by trigrams, which finds
-substrings.
+substrings. They are contentless: they hold no copy of the text, and SQLite cannot
+rebuild them from themselves. Rebuilding one means deleting its rows (``'delete-all'``)
+and inserting each document of ``archive_docs`` again under its ``doc``: a saved file's
+``text``, or for a message the ``Entry.text`` of its row.
 
 The session view reads the archive with ``messages`` and ``message``: an ``Archived``
-message is its ``entry`` as it was sent (``Entry.chat``), with its ID, its position, its
-run, its parent run (for a delegated run's) and its time.
+message is its ``entry`` as the run added it, with its ID, its position, its run, its
+parent run (for a delegated run's) and its time, and ``chat()`` is the message as it was
+sent.
 """
 
 from __future__ import annotations
@@ -27,8 +35,9 @@ import json
 import re
 import secrets
 import sqlite3
+import unicodedata
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import UTC
 from typing import Any, Final, Literal, cast
 
@@ -55,9 +64,9 @@ KEPT_BYTES: Final = 1024 * 1024
 """The largest saved file the archive keeps and the indexes cover (CM-7)."""
 
 HEADER: Final = re.compile(r"\[(msg-[0-9a-f]{16}) · [^\]\n]*\]\n")
-_LOOKALIKE: Final = re.compile(
-    r"(^|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029])([ \t]*\[[ \t]*msg-)", re.IGNORECASE
-)
+_LOOKALIKE: Final = re.compile(r"(?:\W|_)*?\[\s*msg\s*-", re.IGNORECASE)
+"""A header as a reader may take it: after any characters that are not letters or digits,
+``[``, ``msg`` and a dash, with any spaces between them."""
 _UNSAFE: Final = re.compile(r"[^A-Za-z0-9_.:-]")
 _PLACE: Final = ("project", "message_id", "session", "position", "run", "parent", "created")
 _FIELDS: Final = (
@@ -89,8 +98,23 @@ def header(message_id: str, kind: str, source: str | None = None) -> str:
 
 def escape(text: str) -> str:
     """``text`` with a backslash before each line that begins like a header, so that
-    only the platform's headers read as headers (CM-4a)."""
-    return _LOOKALIKE.sub(lambda found: f"{found.group(1)}\\{found.group(2)}", text)
+    only the platform's headers read as headers (CM-4a). A line looks like one when, read
+    as compatibility characters (NFKC: a fullwidth bracket is a bracket) without invisible
+    formatting characters, and with any dash taken for a hyphen, it begins with ``[msg-``
+    after punctuation, spaces or quote markers, in any case and with any spaces inside.
+    Every line break Python knows ends a line."""
+    return "".join(
+        f"\\{line}" if _header_like(line) else line for line in text.splitlines(keepends=True)
+    )
+
+
+def _header_like(line: str) -> bool:
+    shown = "".join(
+        "-" if char == "\u2212" or unicodedata.category(char) == "Pd" else char
+        for char in unicodedata.normalize("NFKC", line[:256])
+        if unicodedata.category(char) != "Cf"
+    )
+    return _LOOKALIKE.match(shown) is not None
 
 
 def body(content: str) -> str:
@@ -101,8 +125,8 @@ def body(content: str) -> str:
 
 @dataclass(frozen=True)
 class Entry:
-    """A message as a run adds it, and as the archive keeps it: once archived, the
-    content of a message the platform wrote begins with its header."""
+    """A message as a run adds it, and as the archive keeps it: the content as the run
+    added it, without the header it is sent with."""
 
     role: Role
     kind: str
@@ -125,15 +149,6 @@ class Entry:
     """The texts of the files saved behind a tool result's sample, by path, as the run
     gives them to the archive; ``Archive.files`` reads them back."""
 
-    def chat(self) -> Json:
-        """The message in the chat format the harness uses."""
-        message: Json = {"role": self.role, "content": self.content}
-        if self.tool_calls:
-            message["tool_calls"] = [dict(call) for call in self.tool_calls]
-        if self.call_id is not None:
-            message["tool_call_id"] = self.call_id
-        return message
-
     @property
     def text(self) -> str:
         """Its whole text: its content, then an answer's tool calls, one JSON object a
@@ -154,13 +169,16 @@ class Entry:
 
 @dataclass(frozen=True)
 class SavedFile:
-    """A file saved behind a sample (Shell 5), as the archive keeps it."""
+    """A file saved behind a sample (Shell 5), as the archive keeps it, with the artifact
+    revision its call recorded it as (RA-27), if it did."""
 
     path: str
     size: int
     text: str | None
     left_out: str | None
     """Why the archive keeps no text of it."""
+    artifact_id: str | None
+    revision: int | None
 
 
 @dataclass(frozen=True)
@@ -177,6 +195,21 @@ class Archived:
     created: str
     entry: Entry
 
+    def chat(self) -> Json:
+        """The message as it was sent, in the chat format the harness uses: a platform
+        message with its header and its look-alikes escaped, an answer as the model
+        wrote it."""
+        entry = self.entry
+        content = entry.content
+        if entry.role != "assistant":
+            content = header(self.message_id, entry.kind, entry.source) + escape(content or "")
+        message: Json = {"role": entry.role, "content": content}
+        if entry.tool_calls:
+            message["tool_calls"] = [dict(call) for call in entry.tool_calls]
+        if entry.call_id is not None:
+            message["tool_call_id"] = entry.call_id
+        return message
+
 
 class Archive:
     """The sessions' archive in one control store, which its owner closes."""
@@ -187,8 +220,8 @@ class Archive:
     def append(
         self, project: str, session: str, run: str, entry: Entry, *, parent: str | None = None
     ) -> Archived:
-        """Keep a message ``run`` adds to its conversation, in one change; the message as
-        archived, a platform message with its header."""
+        """Keep a message ``run`` adds to its conversation, and index it, in one change;
+        the message as archived."""
         if entry.kind not in KINDS or (entry.kind == "assistant") != (entry.role == "assistant"):
             raise ControlError(INVALID_REQUEST, f"no {entry.role} message is of kind {entry.kind}")
         created = self.clock.now().astimezone(UTC).isoformat()
@@ -205,9 +238,6 @@ class Archive:
                 (project, message_id),
             ).fetchone():
                 message_id = "msg-" + secrets.token_hex(8)
-            if entry.role != "assistant":
-                written = header(message_id, entry.kind, entry.source) + escape(entry.content or "")
-                entry = replace(entry, content=written)
             archived = Archived(project, message_id, session, last + 1, run, parent, created, entry)
             try:
                 db.execute(
@@ -218,13 +248,31 @@ class Archive:
             except sqlite3.IntegrityError as error:
                 raise ControlError(INVALID_REQUEST, f"the message is refused: {error}") from None
             _document(db, project, message_id, entry.text)
+            recorded = {
+                link.get("path"): link
+                for link in cast(list[Json], (entry.files or {}).get("recorded") or [])
+            }
             for path, text in entry.saved.items():
-                size = len(text.encode())
+                link = recorded.get(path) or {}
+                artifact, revision = link.get("artifact_id"), link.get("revision")
+                size, left = len(text.encode()), None
                 if size > KEPT_BYTES:
-                    left = "larger than 1 MiB: read it with read_file"
-                    _document(db, project, message_id, None, path=path, size=size, left=left)
-                else:
-                    _document(db, project, message_id, text, path=path, size=size)
+                    left = "larger than 1 MiB, so not kept: " + (
+                        f"read artifact {artifact} at revision {revision}"
+                        if artifact is not None
+                        else "its call recorded no artifact revision of it"
+                    )
+                _document(
+                    db,
+                    project,
+                    message_id,
+                    text if left is None else None,
+                    path=path,
+                    size=size,
+                    left=left,
+                    artifact=artifact,
+                    revision=revision,
+                )
         return archived
 
     def message(self, project: str, message_id: str) -> Archived:
@@ -265,7 +313,8 @@ class Archive:
         """The files saved behind a tool result's sample."""
         with self.control.read() as tx:
             rows = tx.sql.execute(
-                "SELECT path, size, text, left_out FROM archive_docs WHERE project = ? "
+                "SELECT path, size, text, left_out, artifact_id, revision FROM archive_docs "
+                "WHERE project = ? "
                 "AND message_id = ? AND path IS NOT NULL ORDER BY doc",
                 (project, message_id),
             ).fetchall()
@@ -281,13 +330,25 @@ def _document(
     path: str | None = None,
     size: int | None = None,
     left: str | None = None,
+    artifact: str | None = None,
+    revision: int | None = None,
 ) -> None:
     """One text the indexes cover: a message's, whose text stays in its row, or a saved
-    file's, kept here; or a file left out, with why, which they do not."""
+    file's, kept here with its artifact revision; or a file left out, with why, which
+    they do not cover."""
     doc = db.execute(
-        "INSERT INTO archive_docs (project, message_id, path, size, text, left_out) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (project, message_id, path, size, text if path is not None else None, left),
+        "INSERT INTO archive_docs (project, message_id, path, size, text, left_out, "
+        "artifact_id, revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            project,
+            message_id,
+            path,
+            size,
+            text if path is not None else None,
+            left,
+            artifact,
+            revision,
+        ),
     ).lastrowid
     if text is not None:
         for table in _INDEXES:

@@ -543,7 +543,12 @@ class Harness:
                         # Each message is kept in the session's archive as it is added (CM-4).
                         archive = Archive(self.stores.projects.control, clock=self.clock)
                         log = RunArchive(
-                            archive, admitted.context, run=chat.run, parent=chat.parent
+                            archive,
+                            admitted.context,
+                            run=chat.run,
+                            parent=chat.parent,
+                            message_ids=request.message_ids,
+                            clock=self.clock,
                         )
                     transcript = await run_task(
                         self.role(request).model,

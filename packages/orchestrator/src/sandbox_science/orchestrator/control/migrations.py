@@ -2582,12 +2582,13 @@ def _archive(schema: Schema) -> None:
     """Version 46: the sessions' archive (docs/specs/context-management.md, CM-3 to CM-7):
     every message a run adds to its conversation, written whole as the run goes and never
     changed, with its ID, unique in the project, its position in the session, its run
-    and parent run, its kind and source, a tool result's call and links, and an
-    answer's tool calls, native payload, model and gateway version; and the texts the
-    search covers, numbered as the documents of two FTS5 indexes, by words
-    (``unicode61``, ranked by BM25) and by substrings (``trigram``): each message's, and
-    each saved file's behind a sample, kept up to 1 MiB. The indexes hold no copy of the
-    text (``content=''``)."""
+    and parent run, its kind and source, its content as the run added it, a tool
+    result's call and links, and an answer's tool calls, native payload, model and
+    gateway version; and the texts the search covers, numbered as the documents of two
+    FTS5 indexes, by words (``unicode61``, ranked by BM25) and by substrings
+    (``trigram``): each message's, and each saved file's behind a sample, kept up to 1
+    MiB, with the artifact revision its call recorded. The indexes hold no copy of the
+    text (``content=''``); history/archive.py says how to rebuild them."""
     bounded = "{0} IS NULL OR length(CAST({0} AS BLOB)) BETWEEN 1 AND {1}"
     for statement in (
         f"""CREATE TABLE archive_messages (
@@ -2632,7 +2633,10 @@ BEGIN SELECT RAISE(ABORT, 'archived messages are kept'); END""",
     size INTEGER CHECK (size IS NULL OR size >= 0),
     text TEXT,
     left_out TEXT CHECK ({bounded.format("left_out", 512)}),
+    artifact_id TEXT CHECK ({bounded.format("artifact_id", 128)}),
+    revision INTEGER CHECK (revision IS NULL OR revision >= 1),
     CHECK (path IS NOT NULL OR (size IS NULL AND text IS NULL AND left_out IS NULL)),
+    CHECK ((artifact_id IS NULL) = (revision IS NULL)),
     CHECK (path IS NULL OR size IS NOT NULL),
     CHECK (text IS NULL OR left_out IS NULL),
     FOREIGN KEY (project, message_id) REFERENCES archive_messages (project, message_id)
