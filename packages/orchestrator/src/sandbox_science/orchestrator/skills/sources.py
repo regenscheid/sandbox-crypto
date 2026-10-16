@@ -409,6 +409,18 @@ def _plain(path: str) -> bool:
     )
 
 
+def _git_directory(paths: set[str]) -> str | None:
+    """A folder of ``paths`` holding both ``HEAD`` and ``config``, as a bare repository
+    does, or ``None``: git run in or below a staged pack would take it for a repository,
+    and run what its ``core.fsmonitor``, ``core.sshCommand`` or hooks name (re-check of
+    #493)."""
+    for path in paths:
+        folder, _, name = path.rpartition("/")
+        if name == "HEAD" and (f"{folder}/config" if folder else "config") in paths:
+            return folder
+    return None
+
+
 def _root(root: str) -> str:
     """The skills' directory the user named, refused unless it is a plain path."""
     root = root.strip("/")
@@ -454,6 +466,12 @@ def _select(
         chosen.append(replace(entry, path=path))
     if len(chosen) > MAX_FILES or sum(entry.size for entry in chosen) > MAX_PACK_BYTES:
         raise ControlError(INVALID_REQUEST, "the pack has over 4,096 files or 32 MiB")
+    if (layout := _git_directory(seen)) is not None:
+        raise ControlError(
+            INVALID_REQUEST,
+            f"{layout[:200] or 'the pack'} is laid out as a git directory (HEAD and config): "
+            "git run there would read its config and hooks, so the pack is refused",
+        )
     if not chosen:
         raise ControlError(NOT_FOUND, f"no files in {root or 'the pack'}")
     return chosen, tuple(skipped), root, tuple(warnings)

@@ -67,6 +67,11 @@ RUN userdel ubuntu && rm -rf /home/ubuntu && \
     groupadd --gid 1000 sandbox && \
     useradd --uid 1000 --gid 1000 --home-dir /sandbox --no-create-home --shell /bin/bash sandbox && \
     install -d -o 1000 -g 1000 -m 0755 /sandbox /opt/sandbox-science
+# Git takes a bare repository only when named (--git-dir, GIT_DIR), never one it finds by
+# itself, such as a folder laid out as one in a staged skill pack, whose config could run
+# code under `git status` (safe.bareRepository). GIT_CONFIG_SYSTEM makes every git read it,
+# Conda's too, whose own system file is under its prefix.
+RUN printf '[safe]\n\tbareRepository = explicit\n' > /etc/gitconfig
 COPY --from=micromamba /micromamba /usr/local/libexec/sandbox-science/micromamba
 COPY --chmod=0755 common/micromamba /usr/local/bin/micromamba
 ENV HOME=/sandbox \
@@ -74,7 +79,8 @@ ENV HOME=/sandbox \
     LANG=C.UTF-8 \
     MAMBA_ROOT_PREFIX=/opt/sandbox-science \
     CONDA_PREFIX=/opt/sandbox-science \
-    PATH=/opt/sandbox-science/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    PATH=/opt/sandbox-science/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    GIT_CONFIG_SYSTEM=/etc/gitconfig
 WORKDIR /sandbox
 
 # ---------------------------------------------------------------------------------------------

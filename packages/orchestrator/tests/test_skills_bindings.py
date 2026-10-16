@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +21,7 @@ from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.documents import USER
 from sandbox_science.orchestrator.projects import ProjectStore
-from sandbox_science.orchestrator.skills import SkillStore, snapshot
+from sandbox_science.orchestrator.skills import SkillStore, allow, snapshot
 from sandbox_science.orchestrator.skills.derive import VERSION, check
 from sandbox_science.orchestrator.skills.sources import Fetched, PackFile
 
@@ -157,3 +158,95 @@ def test_the_store_refuses_approvals_it_could_never_honour(state: Path) -> None:
             store.set_overrides("p", USER, 0, skills={}, unbound={}, approved={"ss": ["a b"]})
     finally:
         projects.close()
+
+
+# The security review of #486 proved these: a source named after a tool binds the tool's
+# own variable, and the tool runs the pack's file (gap: Sage's libgap ran init.g; gcc:
+# gcc -c ran the pack's cc1).
+COLLISIONS = (
+    ("gap", "GAP_ROOT_PATHS"), ("gcc", "GCC_EXEC_PREFIX"), ("hdf5", "HDF5_PLUGIN_PATH"),
+    ("glibc", "GLIBC_TUNABLES"), ("php", "PHP_INI_SCAN_DIR"),
+    ("coverage", "COVERAGE_PROCESS_START"), ("opal", "OPAL_PREFIX"), ("ompi", "OMPI_MCA_X"),
+    ("mysql", "MYSQL_HOME"), ("gs", "GS_LIB"), ("systemd", "SYSTEMD_PAGER"),
+    ("sudo", "SUDO_EDITOR"), ("gh", "GH_PAGER"), ("terminfo", "TERMINFO_DIRS"),
+    ("session", "SESSION_WORKSPACE"), ("project", "PROJECT_SHARED"),
+    ("libva", "LIBVA_DRIVERS_PATH"), ("ocl", "OCL_ICD_VENDORS"), ("guile", "GUILE_LOAD_PATH"),
+    ("cloudsdk", "CLOUDSDK_PYTHON"), ("fourtitwo", "FOURTITWO_PATH"), ("jmol", "JMOL_DIR"),
+    ("rubiks", "RUBIKS_BINS_PREFIX"), ("ntl", "NTL_DIR"),
+    # Interpreter and notebook start-up, by name and by a source named after the tool.
+    ("ipython", "IPYTHONDIR"), ("jupyter", "JUPYTER_CONFIG_DIR"), ("sage", "SAGE_STARTUP_FILE"),
+    ("python", "PYTHONSTARTUP"), ("pari", "PARI_DATADIR"), ("maxima", "MAXIMA_USERDIR"),
+)  # fmt: skip
+
+
+@pytest.mark.parametrize(("source", "variable"), COLLISIONS)
+def test_a_source_named_after_a_tool_gets_no_namespace(source: str, variable: str) -> None:
+    assert allow.forbidden(variable)
+    assert allow.taken(allow.namespace(source)) is not None
+    names, refused = allow.granted(source, None, set())
+    assert names == []
+    assert refused
+    why = allow.held(variable, source, names=names, refused=refused, approved={variable})
+    assert why is not None
+    assert why.endswith("never set")  # approved or not
+    assert allow.prefix_refused(allow.namespace(source)) is not None
+
+
+def test_a_namespace_the_environment_has_a_command_for_is_refused() -> None:
+    """Beside the list, any command on the environment's PATH, as the worker reports it."""
+    assert allow.taken("FOOTOOL_", {"footool"}) is not None
+    assert allow.taken("FOO_TOOL_", {"foo-tool"}) is not None
+    assert allow.taken("FOO_TOOL_", {"foo"}) is not None  # its first part
+    assert allow.taken("SS_", {"footool"}) is None
+    assert allow.taken("S_") is not None  # too short
+
+
+def test_a_namespace_that_would_claim_another_sources_is_refused(
+    state: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``ss`` (``SS_``) and ``ss-test`` (``SS_TEST_``): ``SS_`` would claim the other's
+    variables, so ``ss`` gets no namespace; a variable both bind is held for both."""
+    names, refused = allow.granted("ss", None, {"SS_TEST_"})
+    assert (names, refused) == ([], ["SS_ would claim another source's namespace SS_TEST_"])
+    assert allow.granted("ss-test", None, {"SS_"}) == (["SS_TEST_"], [])
+    projects = ProjectStore(state)
+    try:
+        store = SkillStore(projects.control)
+        files = {
+            "other/SKILL.md": FILES["tool/SKILL.md"].replace("tool", "other"),
+            "other/run.sh": SCRIPT,
+        }
+        packed = tuple(PackFile(p, t.encode()) for p, t in files.items())
+        snap = snapshot(Fetched("archive", "b.tar", "", packed, (), archive_sha256="c" * 64))
+        found, _ = store.add("ss-test", snap, USER)
+        both = {"SS_TEST_DATA": "other", "SS_DATA": "other"}
+        store.add_metadata(found.snapshot, "pass", VERSION, "m", {"bindings": both}, [])
+        store.pin("p", "ss-test", USER)
+        bound = store.bindings("p", PASS)
+    finally:
+        projects.close()
+    assert bound.set == {"ss-test": {"SS_TEST_DATA": "other"}}
+    held = {(s, h["variable"]): h["reason"] for s, items in bound.held.items() for h in items}
+    assert "would claim another source's namespace SS_TEST_" in held["ss", "SS_DATA"]
+    assert held["ss-test", "SS_DATA"].startswith("not namespaced")
+
+
+def test_a_pack_laid_out_as_a_git_directory_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``git status`` in a folder shaped as a bare repository reads its config, whose
+    ``core.fsmonitor`` runs code: such a pack is refused at import, at any depth."""
+    root = tmp_path / "state"
+    ProjectStore(root).close()
+    for layout in ("", "tool/deep/"):
+        archive = tmp_path / f"pack{len(layout)}.zip"
+        with zipfile.ZipFile(archive, "w") as zipped:
+            zipped.writestr("tool/SKILL.md", FILES["tool/SKILL.md"])
+            zipped.writestr(f"{layout}HEAD", "ref: refs/heads/main\n")
+            zipped.writestr(f"{layout}config", "[core]\n\tfsmonitor = ./run.sh\n")
+            zipped.writestr(f"{layout}objects/info/x", "")
+            zipped.writestr(f"{layout}refs/heads/main", "0" * 40 + "\n")
+        argv = ["import", "--name", "bare", "--archive", str(archive)]
+        status, said = _cli(capsys, root, *argv)
+        assert status == 1
+        assert "laid out as a git directory" in said

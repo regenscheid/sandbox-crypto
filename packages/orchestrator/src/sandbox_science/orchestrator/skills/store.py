@@ -219,10 +219,13 @@ class SkillStore:
             if derived is not None:
                 # The bindings a project sets only once its user approves them (SK-31).
                 given = cast(dict[str, str], derived.get("bindings", {}))
+                rows = db.execute("SELECT DISTINCT source FROM skill_imports").fetchall()
+                others = {allow.namespace(s) for (s,) in rows}
+                names, refused = allow.granted(source, None, others - {allow.namespace(source)})
                 held = [
                     {"variable": variable, "path": path, "reason": why}
                     for variable, path in sorted(given.items())
-                    if (why := allow.held(variable, source))
+                    if (why := allow.held(variable, source, names=names, refused=refused))
                 ]
                 report["derived"] = {**derived, "held": held} if held else derived
             user, more = _user_set(db, source, {skill.name for skill in snapshot.skills})
@@ -677,29 +680,47 @@ class SkillStore:
             )
             return _settings(db, project)
 
-    def bindings(self, project: str, derived: tuple[str, str] | None) -> Bound:
+    def bindings(
+        self, project: str, derived: tuple[str, str] | None, tools: Collection[str] = ()
+    ) -> Bound:
         """Each pinned source's bindings the pass of ``derived``, an alias and version,
         found: those the project's runs set, namespaced to the pack or approved, and those
         held, with why, as the rest are, and those the project's overrides take away
-        (SK-30, SK-31, SK-33). The deny-list is checked again: a pass of an older list
-        may have kept what this one refuses."""
+        (SK-30, SK-31, SK-33). A namespace is refused when it is a tool's (``tools``
+        names the environment's commands, when known), or would claim another pinned
+        source's; a variable two sources bind is held for both. The deny-list is checked
+        again: a pass of an older list may have kept what this one refuses."""
         found = Bound({}, {})
         if self.control.missing or derived is None:
             return found
         with self.control.read() as tx:
             db = tx.sql
             overrides = _settings(db, project).overrides
-            for pin in _pins(db, project):
-                given = cast(
+            prefixes = cast(dict[str, str], overrides.get("prefixes", {}))
+            given = {
+                pin.source: cast(
                     dict[str, str], _derived(db, pin.pinned.snapshot, derived).get("bindings", {})
                 )
-                for variable, path in sorted(given.items()):
-                    why = _held(overrides, pin.source, variable)
-                    if why is None:
-                        found.set.setdefault(pin.source, {})[variable] = path
-                    else:
-                        item = {"variable": variable, "path": path, "reason": why}
-                        found.held.setdefault(pin.source, []).append(item)
+                for pin in _pins(db, project)
+            }
+        spaces = {s: {allow.namespace(s), *([prefixes[s]] if s in prefixes else [])} for s in given}
+        named: dict[str, list[str]] = {}
+        for source, variables in given.items():
+            for variable in variables:
+                named.setdefault(variable, []).append(source)
+        for source, variables in given.items():
+            others = {name for other, names in spaces.items() if other != source for name in names}
+            names, refused = allow.granted(source, prefixes.get(source), others, tools)
+            for variable, path in sorted(variables.items()):
+                why = _held(overrides, source, variable, names, refused)
+                if why is None and len(named[variable]) > 1:
+                    also = ", ".join(s for s in named[variable] if s != source)
+                    why = f"{also} binds it too: held for each"
+                if why is None:
+                    found.set.setdefault(source, {})[variable] = path
+                else:
+                    item = {"variable": variable, "path": path, "reason": why}
+                    found.held.setdefault(source, []).append(item)
         return found
 
     def pins(self, project: str) -> list[Pin]:
@@ -764,13 +785,18 @@ def _variables(lists: Mapping[str, Sequence[str]]) -> dict[str, list[str]]:
     return found
 
 
-def _held(overrides: dict[str, Any], source: str, variable: str) -> str | None:
+def _held(
+    overrides: dict[str, Any],
+    source: str,
+    variable: str,
+    names: Sequence[str],
+    refused: Sequence[str],
+) -> str | None:
     """Why the project does not set ``source``'s derived binding of ``variable``."""
     if variable in cast(dict[str, list[str]], overrides.get("unbound", {})).get(source, []):
         return "taken away by the project's overrides"
     approved = cast(dict[str, list[str]], overrides.get("approved", {})).get(source, [])
-    prefix = cast(dict[str, str], overrides.get("prefixes", {})).get(source)
-    return allow.held(variable, source, prefix=prefix, approved=frozenset(approved))
+    return allow.held(variable, source, names=names, refused=refused, approved=approved)
 
 
 def _settings(db: sqlite3.Connection, project: str) -> SkillSettings:

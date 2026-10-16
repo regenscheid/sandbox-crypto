@@ -14,6 +14,7 @@ backstop: a variable on it is never set, namespaced or approved.
 from __future__ import annotations
 
 import re
+from collections.abc import Collection, Sequence
 from typing import Final
 
 PREFIX: Final = re.compile(r"[A-Z][A-Z0-9_]{1,30}_")
@@ -57,13 +58,36 @@ FORBIDDEN_SUFFIXES: Final = (
     "INIT", "_CONFIG", "_CONFIG_DIR", "CONFIG_PATH", "_LIBS", "_PLUGINS",
 )  # fmt: skip
 """Families of start-up and configuration variables, whatever the tool."""
+TOOL_FAMILIES: Final = (
+    "GAP_", "GCC_", "CC_", "HDF5_", "GLIBC_", "OMPI_", "OPAL_", "PMIX_", "MPI_", "PHP_",
+    "SYSTEMD_", "SUDO_", "MYSQL_", "GS_", "TERMINFO", "SESSION_", "PROJECT_", "LIBVA_",
+    "OCL_", "FOURTITWO_", "JMOL_", "NTL_", "GH_", "GUILE_", "CLOUDSDK_", "COVERAGE_",
+    "RUBIKS_", "FLINT_", "GIAC_", "LCALC_", "SYMPOW_", "PALP_", "POLYMAKE_", "M2_",
+    "MACAULAY2_", "CDD_", "NORMALIZ_", "LATTE_", "TACHYON_", "GIVARO_", "LINBOX_", "FFLAS_",
+    "MPFR_", "GMP_", "ECLIB_", "GLPK_", "CBC_", "SCIP_", "CPLEX_", "GUROBI_", "MOSEK_",
+    "FRICAS_", "AXIOM_", "MUPAD_", "REDUCE_", "PARIGP_", "GPHELP", "ARB_", "MPC_", "PPL_",
+    "BOOST_", "OPENSSH_", "WGET", "RSYNC_", "TAR_", "GZIP", "BZIP", "XZ_", "ZSTD_", "LZ4_",
+    "SQLITE_", "PG", "PSQL", "REDIS", "MONGO", "NPY_", "NUMPY", "SCIPY", "SYMPY", "NUMBA_",
+    "CUPY_", "JAX_", "XLA_", "KERAS_", "MKL", "BLAS", "LAPACK", "ATLAS_", "SPACK_", "NIX_",
+    "BREW_", "HOMEBREW_", "APT_", "DEBIAN_", "DPKG_", "RPM_", "YUM_", "DNF_", "SNAP_",
+    "FLATPAK_", "APPTAINER", "SINGULARITY", "PODMAN", "CONTAINER", "BUILDAH", "OPENSHELL",
+    "LITELLM", "ANTHROPIC", "OPENAI", "HF", "WANDB_", "MLFLOW_", "RAY_", "DASK_", "SPHINX",
+    "MAKEINFO", "TEXMF", "LUATEX", "PDFTEX", "XETEX", "PANDOC", "LATEXMK", "BIBTEX", "BIBER",
+    "GHOSTSCRIPT", "MAGMA", "MATHEMATICA", "WOLFRAM", "SVN_", "HG", "CVS", "BZR_", "FOSSIL_",
+)  # fmt: skip
+"""Tools' own variable families that a pack's namespace would claim: lab 43's review found a
+pack named ``gap`` binding ``GAP_ROOT_PATHS``, whose ``init.g`` Sage's libgap ran, and one
+named ``gcc`` binding ``GCC_EXEC_PREFIX``, whose ``cc1`` ran. They are on the deny-list,
+and no source or prefix has them for a namespace."""
+MIN_NAMESPACE: Final = 3
+"""A namespace's characters at least, its ``_`` included."""
 
 
 def forbidden(variable: str) -> bool:
     """Whether a binding may not name ``variable``, by name or by family."""
     return (
         variable in FORBIDDEN
-        or variable.startswith(FORBIDDEN_PREFIXES)
+        or variable.startswith(FORBIDDEN_PREFIXES + TOOL_FAMILIES)
         or variable.endswith(FORBIDDEN_SUFFIXES)
     )
 
@@ -73,28 +97,64 @@ def namespace(source: str) -> str:
     return source.upper().replace("-", "_") + "_"
 
 
+def taken(name: str, tools: Collection[str] = ()) -> str | None:
+    """Why ``name``, a namespace, belongs to something else, or ``None``: too short, a
+    family on the deny-list, or the name of a command ``tools`` has (the environment's
+    ``PATH``, as the worker sees it), whole or by its first part."""
+    if len(name) < MIN_NAMESPACE:
+        return f"{name} is shorter than {MIN_NAMESPACE} characters"
+    if forbidden(name + "X"):
+        return f"{name} is a family of shell, loader, start-up or a tool's own variables"
+    stem = name.rstrip("_").lower()
+    for command in (stem, stem.replace("_", "-"), stem.split("_")[0]):
+        if command in tools:
+            return f"{name} is the namespace of the command {command}'s own variables"
+    return None
+
+
 def prefix_refused(prefix: str) -> str | None:
     """Why a source may not be given ``prefix``, or ``None``."""
     if not PREFIX.fullmatch(prefix):
         return f"{prefix[:40]!r} is no prefix: capitals, digits and _, 3 to 32, ending in _"
-    if forbidden(prefix + "X"):
-        return f"{prefix} is a prefix of shell, loader or tool-configuration variables"
-    return None
+    return taken(prefix)
+
+
+def granted(
+    source: str, prefix: str | None, others: Collection[str], tools: Collection[str] = ()
+) -> tuple[list[str], list[str]]:
+    """The namespaces ``source``'s variables are set under, its name's and ``prefix``, and
+    why any is refused: taken (``taken``), or a prefix of, or the same as, a namespace of
+    another source in ``others``, whose variables it would claim."""
+    names: list[str] = []
+    refused: list[str] = []
+    for name in (namespace(source), *([prefix] if prefix else [])):
+        if why := taken(name, tools):
+            refused.append(why)
+        elif claims := sorted(other for other in others if other.startswith(name)):
+            refused.append(f"{name} would claim another source's namespace {claims[0]}")
+        else:
+            names.append(name)
+    return names, refused
 
 
 def held(
-    variable: str, source: str, *, prefix: str | None = None, approved: frozenset[str] = frozenset()
+    variable: str,
+    source: str,
+    *,
+    names: Sequence[str],
+    refused: Sequence[str] = (),
+    approved: Collection[str] = (),
 ) -> str | None:
     """Why the derived binding of ``variable`` for ``source`` is not set, or ``None`` when
-    it is: namespaced to the pack, by its name or ``prefix``, or ``approved``."""
+    it is: under one of its namespaces ``names`` (``granted``), or ``approved``."""
     if forbidden(variable):
-        return "a shell, loader, start-up or tool-configuration variable: never set"
-    names = namespace(source) + (f" or {prefix}" if prefix else "")
-    if variable.startswith(namespace(source)) or (prefix and variable.startswith(prefix)):
+        return "a shell, loader, start-up or a tool's own variable: never set"
+    if variable.startswith(tuple(names)) or variable in approved:
         return None
-    if variable in approved:
-        return None
+    why = f"not namespaced to the pack ({', '.join(names) or 'none'})"
+    if refused:
+        why += f"; {'; '.join(refused)}"
     return (
-        f"not namespaced to the pack ({names}): held until the project's user approves it, "
-        f"with skills override --source {source} --approve {variable}"
+        f"{why}: held until the project's user approves it, with skills override "
+        f"--source {source} --approve {variable}"
     )
