@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import subprocess
+import time
 from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 from typing import Any, cast
@@ -534,25 +535,42 @@ async def test_a_cancelled_search_cancels_its_embedding(
         projects.close()
 
 
-async def test_a_failed_build_counts_what_was_paid(
-    skills: tuple[ProjectStore, SkillStore],
+class _SlowCounts(SkillStore):
+    """A store slow to count each call, so that a build that published its outcome before
+    counting what it paid would show partial costs to a reader of ``ready``."""
+
+    def add_embedding_call(self, project: str, model: str, texts: int, cost: float | None) -> None:
+        time.sleep(0.05)
+        super().add_embedding_call(project, model, texts, cost)
+
+
+@pytest.mark.parametrize("outcome", ["failure", "success"])
+async def test_a_build_counts_what_was_paid_before_it_says_how_it_went(
+    skills: tuple[ProjectStore, SkillStore], outcome: str
 ) -> None:
-    """Review of #433, F: a build whose later call answers in another model fails, and
-    the calls the gateway answered still count for the project."""
-    projects, store = skills
-    peer = _Peer(_space(V1, "alpha", cost=0.25), _space(V2, "beta", cost=0.5))
+    """Review of #433, F, and the race found on babbage: every call the gateway answered
+    counts for the project, a build that failed included, and by the time ``ready`` says
+    the build ended, failed or not."""
+    projects, _ = skills
+    store = _SlowCounts(projects.control)
+    second = _space(V2 if outcome == "failure" else V1, "beta", cost=0.5)
+    peer = _Peer(_space(V1, "alpha", cost=0.25), second)
     vectors = SkillVectors(peer, FakeClock())
     (snapshot_id,) = {entry.snapshot for entry in store.effective(PROJECT).entries}
     try:
         await vectors.start(store, [snapshot_id], PROJECT)
         while vectors.ready([snapshot_id])[1] == "pending":
-            await asyncio.sleep(0.01)
-        found, why = vectors.ready([snapshot_id])
-        assert found == {}
-        assert why is not None
-        assert why.startswith("failed: the gateway answered in ('embed-model-v2', 3)")
-        costs = RunState(projects.control).model_costs(PROJECT)
+            await asyncio.sleep(0)
+        costs = RunState(projects.control).model_costs(PROJECT)  # at once: no waiting
         assert costs["embeddings"] == pytest.approx(0.75)
+        found, why = vectors.ready([snapshot_id])
+        if outcome == "failure":
+            assert found == {}
+            assert why is not None
+            assert why.startswith("failed: the gateway answered in ('embed-model-v2', 3)")
+        else:
+            assert why is None
+            assert sorted(found[snapshot_id][1]) == ["alpha", "beta"]
     finally:
         await vectors.close()
         projects.close()

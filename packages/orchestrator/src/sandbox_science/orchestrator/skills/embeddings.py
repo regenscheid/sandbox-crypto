@@ -299,43 +299,53 @@ class SkillVectors:
         settled: asyncio.Future[None] | None,
     ) -> None:
         """Read the snapshot's vectors, or, settling ``settled`` first so that the run
-        goes on, have the gateway make them."""
+        goes on, have the gateway make them. The calls the gateway answered are counted
+        before the result or the failure is published, so that a reader who sees
+        ``ready`` change sees every cost (RS-6a)."""
         hint = self._hints.pop(snapshot, None)
         paid: Paid = []
+        made: tuple[Space, dict[str, list[float]]] | None = None
+        failure: Exception | None = None
         try:
             if hint is None:
                 last = await threaded(store.space_for, snapshot, self.embedder.alias)
                 if last is not None and last[2]:
                     space = Space(last[0], last[1])
-                    vectors = await threaded(store.vectors, snapshot, *space)
-                    self._ready[snapshot] = (space, vectors)
-                    return
-            _settle(settled)
-            made = await ensure(store, self.embedder, snapshot, hint, paid)
+                    made = (space, await threaded(store.vectors, snapshot, *space))
             if made is None:
-                self._ready[snapshot] = (Space("", 0), {})
-                return
-            kept = await threaded(store.vectors, snapshot, *made.space)
-            self._ready[snapshot] = (made.space, kept)
-            self._failed.pop(snapshot, None)
+                _settle(settled)
+                found = await ensure(store, self.embedder, snapshot, hint, paid)
+                if found is None:
+                    made = (Space("", 0), {})
+                else:
+                    made = (found.space, await threaded(store.vectors, snapshot, *found.space))
         except Exception as error:  # remembered, and tried again later
-            failed = self._failed.get(snapshot)
-            delay = min(BACKOFF_MAX, failed[1] * 2) if failed is not None else BACKOFF_FIRST
-            reason = str(error) or type(error).__name__
-            if hint is not None:
-                self._hints[snapshot] = hint
-            self._failed[snapshot] = (self.clock.monotonic() + delay, delay, reason)
-            _log.warning(
-                "embedding the skills of %s failed, again in %g s: %s", snapshot, delay, reason
-            )
+            failure = error
         finally:
-            _settle(settled)
-            if self._tasks.get(snapshot) is asyncio.current_task():
-                del self._tasks[snapshot]
             try:
                 await count_paid(store, project, paid)  # what was paid, the build failed or not
             except Exception:
                 _log.exception("counting the embedding calls of %s failed", snapshot)
+            if failure is not None:
+                self._failed_with(snapshot, hint, failure)
+            elif made is not None:
+                self._ready[snapshot] = made
+                self._failed.pop(snapshot, None)
+            _settle(settled)
+            if self._tasks.get(snapshot) is asyncio.current_task():
+                del self._tasks[snapshot]
+
+    def _failed_with(self, snapshot: str, hint: Space | None, error: Exception) -> None:
+        """Remember a build that failed, to be tried again after a backoff that doubles."""
+        failed = self._failed.get(snapshot)
+        delay = min(BACKOFF_MAX, failed[1] * 2) if failed is not None else BACKOFF_FIRST
+        reason = str(error) or type(error).__name__
+        if hint is not None:
+            self._hints[snapshot] = hint
+        self._failed[snapshot] = (self.clock.monotonic() + delay, delay, reason)
+        _log.warning(
+            "embedding the skills of %s failed, again in %g s: %s", snapshot, delay, reason
+        )
 
     def ready(
         self, snapshots: Iterable[str]
