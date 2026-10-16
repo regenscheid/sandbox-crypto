@@ -94,6 +94,7 @@ from .projects import (
     RunRecord,
     RunRole,
     ensure_environment,
+    operator_ref,
     run_name,
 )
 from .question_tool import QuestionTool
@@ -222,6 +223,9 @@ class RunRequest:
     message_ids: tuple[str, ...] = ()
     """The queued messages the run is started for (RS-6): its conversation begins with
     them, and ``task`` only names them in the record."""
+    operator: bool = False
+    """Whether ``task`` is the operator's own words, typed at the command line: its
+    archived task names it so (CM-9), as a queued run's names the user's messages."""
     requests: bool = False
     """Whether the run is started for the session's waiting work requests (LD-22): its
     conversation begins with them, as its hooks offer them, and ``task`` only names
@@ -570,7 +574,8 @@ class Harness:
                             admitted.context,
                             run=chat.run,
                             parent=chat.parent,
-                            message_ids=request.message_ids,
+                            message_ids=request.message_ids
+                            or ((operator_ref(chat.run),) if request.operator else ()),
                             clock=self.clock,
                         )
                     transcript = await run_task(

@@ -347,6 +347,12 @@ def run_name(started_at: datetime, run_id: str) -> str:
     return f"{started_at.astimezone(UTC).strftime(_STARTED)}-{run_id}"
 
 
+def operator_ref(run: str) -> str:
+    """What a run's archived task names when it is the operator's own words, typed with
+    ``run --task``: the run, by its record's name (CM-9). Only the platform archives."""
+    return f"cli:{run}"
+
+
 def run_id_of(name: str) -> str | None:
     """The ID of the run a record's name stands for; None for any other name."""
     found = _run_entry(name)

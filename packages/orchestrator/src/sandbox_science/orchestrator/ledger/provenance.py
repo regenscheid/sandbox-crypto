@@ -37,7 +37,7 @@ from typing import Any, Final
 
 from sandbox_science.orchestrator.documents.errors import POLICY_DENIED, DocumentError
 from sandbox_science.orchestrator.notices import requests
-from sandbox_science.orchestrator.projects import run_id_of
+from sandbox_science.orchestrator.projects import operator_ref, run_id_of
 
 from . import evidence
 from .models import MIN_QUOTE, AnchorInput, EvidenceLink
@@ -56,6 +56,10 @@ _EXPONENT: Final = r"[-+]?[0-9]+(?:\.[0-9]+)?"
 _POWER: Final = re.compile(
     rf"\s*(?:\^|\*\*)\s*(?:\{{\s*({_EXPONENT})\s*\}}|\(\s*({_EXPONENT})\s*\)|({_EXPONENT}))"
 )
+_SPACED: Final = re.compile(r"(?<![0-9.])[0-9]{1,3}(?:[ \u00a0][0-9]{3})+(?![0-9]|\.[0-9])")
+"""A number whose thousands are set apart by spaces, ``1 000 003``."""
+_EXPRESSION: Final = re.compile(r"[0-9]\s*(?:\^|\*\*)\s*(?![-+]?[0-9])")
+"""A power whose exponent is not a plain number, ``2^{80+1}``, once plain ones are read."""
 _SEPARATED: Final = re.compile(r"(?<=[0-9])(?:[,\u2009\u202f_]|\{,\})(?=[0-9]{3}(?![0-9]))")
 _SCIENTIFIC: Final = re.compile(r"(?<![\w.])([0-9]+(?:\.[0-9]+)?)[eE]([-+]?[0-9]+)(?!\w|\.[0-9])")
 _TIMES_TEN: Final = re.compile(
@@ -97,8 +101,11 @@ def briefed(brief: str) -> frozenset[str]:
     return frozenset(_MESSAGE_ID.findall(json.dumps(inputs)))
 
 
+PREFIX: Final = "provenance_required: "
+
+
 def refused(message: str) -> DocumentError:
-    return DocumentError(POLICY_DENIED, f"provenance_required: {message}")
+    return DocumentError(POLICY_DENIED, PREFIX + message)
 
 
 def normal(text: str) -> str:
@@ -112,6 +119,7 @@ def normal(text: str) -> str:
         for c in text.translate(_SUBSCRIPT)
     )
     text = _POWER.sub(lambda m: "^" + (m[1] or m[2] or m[3]).removeprefix("+"), text)
+    text = _SPACED.sub(lambda m: re.sub(r"[ \u00a0]", "", m[0]), text)
     text = _SEPARATED.sub("", text)
     text = _SCIENTIFIC.sub(lambda m: _scientific(m[1], m[2]), text)
     return _TIMES_TEN.sub(lambda m: _scientific(m[1], m[2]), text)
@@ -129,11 +137,16 @@ def numbers(text: str) -> set[str]:
 
 
 def unread(text: str) -> str | None:
-    """The first digit of ``text`` that ``numbers`` does not read, if any, with what
-    surrounds it."""
-    rest = _NUMBER.sub(" ", normal(_NAMES.sub(" ", text)))
+    """What of ``text`` holds a number ``numbers`` does not read, if anything, with what
+    surrounds it: a power whose exponent is no plain number (``2^{80+1}``), or a digit or
+    numeral left over (``①``, ``½``, ``Ⅷ``)."""
+    read = normal(_NAMES.sub(" ", text))
+    found = _EXPRESSION.search(read)
+    if found is not None:
+        return read[max(0, found.start() - 10) : found.end() + 10].strip()
+    rest = _NUMBER.sub(" ", read)
     for index, c in enumerate(rest):
-        if c.isdigit():
+        if c.isdigit() or c.isnumeric():
             return rest[max(0, index - 10) : index + 10].strip()
     return None
 
@@ -172,6 +185,8 @@ def resolve(
         try:
             kept.append(_resolved(db, project, anchor, block, find, scope or Scope()))
         except DocumentError as error:
+            if error.message.startswith(PREFIX):
+                raise
             raise refused(f"an anchor is not in this project: {error.message}") from None
     return kept
 
@@ -307,15 +322,17 @@ def users_words(db: sqlite3.Connection, project: str, message: str) -> list[str]
     """The user's own words an archive message holds, each apart: a chat message the run
     received (``user``); the chat messages a main run's task is made of (``task``, by the
     chat messages it names: a delegation's brief and the stand-in for comments name
-    none); the request text of each comment a notice delivered (``comment``), not the
-    platform's framing or the document text beside it, which an agent may have written."""
+    none), or the task the operator typed at the command line, which names its own run;
+    the request text of each comment a notice delivered (``comment``), not the platform's
+    framing or the document text beside it, which an agent may have written."""
     row = db.execute(
-        "SELECT kind,content,refs,session FROM archive_messages WHERE project=? AND message_id=?",
+        "SELECT kind,content,refs,session,run FROM archive_messages "
+        "WHERE project=? AND message_id=?",
         (project, message),
     ).fetchone()
     if row is None:
         return []
-    kind, content, refs, session = row
+    kind, content, refs, session, run = row
     if kind == "user":
         return [content or ""]
     if kind == "comment":
@@ -323,6 +340,8 @@ def users_words(db: sqlite3.Connection, project: str, message: str) -> list[str]
     if kind != "task":
         return []
     named = [ref for ref in json.loads(refs) if isinstance(ref, str)]
+    if operator_ref(run) in named:
+        return [content or ""]
     return [
         text
         for (text,) in db.execute(
