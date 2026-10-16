@@ -42,7 +42,7 @@ All state goes under `~/.local/state/openshell-lab`, and every service runs as a
    - `python -I budget.py $LAB/worker/client-a.token header|budget`: the cache's per-sandbox header and budgets (restart the cache with `sandbox_rate = 0.5` and `sandbox_burst = 2` in `$LAB/cache.toml` for `budget`, then restore it).
    - `bash forward.sh`: the MCP proxy in its own sandbox, with its forward run as the example unit runs it, across a stop and start.
 6. To test a branch before it merges, restart the worker unit from that branch's worktree (`<worktree>/.venv/bin/sandbox-science-worker serve --settings worker.toml`, working directory `$LAB/worker`). Do not switch branches in the main checkout while a lab runs: the cache and the middleware run from its editable install.
-7. `bash lab_down.sh` deletes every sandbox, stops every lab unit (the forward unit included, which restarts forever otherwise), removes the lab directory and checks that no process, port, OpenShell path or driver socket is left. Labs are always torn down completely.
+7. `bash lab_down.sh` deletes every sandbox, stops every lab unit (the forward unit included, which restarts forever otherwise), removes the lab directory and checks that no process, port, OpenShell path or driver socket is left. Labs are always torn down completely. The owner's personal instance ([`docs/PERSONAL-BABBAGE.md`](../../docs/PERSONAL-BABBAGE.md): units `ss-personal-*`, state under `~/.local/state/sandbox-science-personal`) is not a lab: never stop, delete or clean up any of it, and `lab_down.sh`'s checks leave its processes and driver socket directory out.
 
 ## Provisioning (lab 18)
 
