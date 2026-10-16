@@ -54,7 +54,7 @@ for embedded subcomponents.
 | syft, ScanCode | Apache-2.0 | SBOM / license scanning |
 | SeaweedFS | Apache-2.0 | Object storage candidate |
 | OpenSearch, NATS | Apache-2.0 | Only if search or a broker is ever needed |
-| OpenScience Desktop upstream (`ai4s-research/open-science`) | MIT | Reuse candidate for code, subject to per-file checks |
+| OpenScience Desktop upstream (`ai4s-research/open-science`) | MIT | Reuse candidate for code, subject to per-file checks and its NOTICE files: a permissive license does not settle D56. Its two derived skills are never imported (below) |
 | SageMath | GPLv2+ (distributions effectively GPLv3) | Tier 3 |
 | fpylll | GPLv2+ | Tier 3 |
 | G6K | GPLv2 | Tier 3 |
@@ -107,6 +107,7 @@ for embedded subcomponents.
 | External Secrets Operator | Apache-2.0 | Optional Kubernetes secret sync |
 | SOPS | MPL-2.0 | Optional encrypted secrets in configuration repositories |
 | Anthropic `skills` PDF/office skills | Source-available with service restrictions | Learn from them; do not copy |
+| OpenScience's `conducting-scientific-research` and `scientific-problem-selection` skills | Derived from Claude Science text | Never imported, adapted or paraphrased (D56; [plan changes](../.agents/PLAN-CHANGES.md)). Check an upstream's NOTICE files before borrowing anything from OpenScience or Open Science Desktop |
 | Built-in skills (`skills/builtin/`) | The project's own, under this repository's MIT License | Written anew for this platform ([skills](SKILLS.md#the-built-in-pack)). No text from Claude Science, Anthropic's skills, or OpenScience's `conducting-scientific-research` and `scientific-problem-selection`, which derive from Claude Science text, is copied or paraphrased (D56) |
 | `regenscheid/crypto-analysis-skills` | MIT LICENSE proposed in a pull request (2026-10-10); previously none | Confirm the copyright holder before merging: its commits use a NIST address, and works of US federal employees made as part of their duties are not subject to US copyright, which would call for a different notice |
 | Docker Desktop | Proprietary, subscription terms for larger organizations | Acceptable for personal use; Colima/Lima/Podman avoid the question |
