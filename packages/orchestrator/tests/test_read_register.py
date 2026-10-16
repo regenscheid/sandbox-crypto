@@ -36,12 +36,12 @@ from sandbox_science.orchestrator.history.reads import (
     spans,
 )
 from sandbox_science.orchestrator.hooks import Appended
-from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
+from .ledger_support import AnchoredLedger as Ledger
 from .test_ledger_evidence import publish
 from .test_ledger_tools import CONTEXT, tool, use
 from .test_ledger_tools import ledger as ledger
