@@ -64,7 +64,7 @@ def test_a_reference_is_pinned_when_saved_and_keeps_its_pin(inventory: ArtifactI
     figure = _block(store, document, "![Timing]")
     assert pin == {
         "block": figure, "kind": "image", "path": "plots/t.svg",
-        "artifact_path": "sessions/s1/plots/t.svg", "artifact": first.artifact_id,
+        "artifact_path": "sessions/s1/plots/t.svg", "session": "s1", "artifact": first.artifact_id,
         "revision": 1, "sha256": hashlib.sha256(b"<svg>1</svg>").hexdigest(),
         "size": 12, "media_type": "application/octet-stream",
     }  # fmt: skip
@@ -116,6 +116,82 @@ def test_moving_a_pin_makes_a_revision_with_the_same_text(inventory: ArtifactInv
     store.revert("p1", document, base=3, target=2, author=USER, reason="back",
                  operation_id="r")  # fmt: skip
     assert [entry["revision"] for entry in store.revision("p1", document).pins] == [1, 1]
+
+
+def _where(store: DocumentStore, document: str) -> list[tuple[Any, ...]]:
+    return [
+        (pin["path"], pin.get("artifact_path"), pin.get("revision", pin.get("unresolved")))
+        for pin in store.revision("p1", document).pins
+    ]
+
+
+def test_a_pin_stays_with_the_session_that_resolved_it(inventory: ArtifactInventory) -> None:
+    """Review of #488: whoever saves next, the same reference in the same place keeps the
+    pin it was given, in the session that resolved it; only a new reference is resolved
+    in the saver's session (FG-7, FG-11)."""
+    s2 = SOURCE.model_copy(update={"context": CONTEXT.model_copy(update={"session_id": "s2"})})
+    record(inventory, "op1", b"<svg>s1</svg>", path="plots/t.svg")
+    record(inventory, "op2", b"<svg>s2</svg>", source=s2, path="plots/t.svg")
+    store = _store(inventory)
+    other = AGENT.model_copy(update={"session_id": "s2", "run_id": "run2"})
+    document = store.create("p1", name="notes", title="Notes", text=TEXT, author=AGENT).document_id
+    first = [("plots/t.svg", "sessions/s1/plots/t.svg", 1)]
+    assert _where(store, document) == first
+    figure, summary = _block(store, document, "![Timing]"), _block(store, document, "In summary")
+
+    def patch(author: Author, base: int, *operations: dict[str, Any]) -> int | None:
+        result = store.patch("p1", document, base=base, author=author, operation_id=f"o{base}",
+                             reason="edit", operations=list(operations))  # fmt: skip
+        return result.revision
+
+    edit = {"op": "replace_text", "block": summary, "quote": "grows", "with": "grows fast"}
+    assert patch(other, 1, edit) == 2  # another session edits another block
+    assert patch(USER, 2, {**edit, "quote": "fast", "with": "quickly"}) == 3  # the user does
+    caption = {"op": "replace_text", "block": figure, "quote": "Timing", "with": "Time"}
+    assert patch(other, 3, caption) == 4  # the caption changes, the path does not
+    assert _where(store, document) == first
+    added = {"op": "insert", "at": "end", "markdown": "![Again](plots/t.svg)"}
+    assert patch(other, 4, added) == 5  # a new reference: the saver's session
+    assert patch(USER, 5, {**added, "markdown": "![Mine](plots/t.svg)"}) == 6
+    assert _where(store, document) == [
+        *first,
+        ("plots/t.svg", "sessions/s2/plots/t.svg", 1),
+        ("plots/t.svg", None, "needs_session"),
+    ]
+    # An accepted suggestion and a revert keep them too.
+    store.set_suggestions("p1", document, on=True, author=USER)
+    suggested = store.patch("p1", document, base=6, author=other, operation_id="sg",
+                            reason="edit", operations=[{**edit, "quote": "quickly",
+                                                        "with": "fast"}])  # fmt: skip
+    assert suggested.patch_id is not None
+    accepted = store.decide("p1", document, suggested.patch_id, accept=True, author=USER, base=6)
+    assert accepted.revision == 7
+    store.revert("p1", document, base=7, target=1, author=USER, reason="back", operation_id="rv")
+    assert _where(store, document) == first
+
+
+def test_a_moved_workbook_document_keeps_its_pins(inventory: ArtifactInventory) -> None:
+    record(inventory, "op1", b"one", path="plots/t.svg")
+    store = _store(inventory)
+    document = _notes(store)
+    store.promote("p1", document, base=1, name="notes", author=USER, reason="share",
+                  operation_id="pr")  # fmt: skip
+    summary = _block(store, document, "In summary")
+    store.patch("p1", document, base=1, author=USER, operation_id="u", reason="edit",
+                operations=[{"op": "replace_text", "block": summary, "quote": "grows",
+                             "with": "grows fast"}])  # fmt: skip
+    assert _where(store, document) == [("plots/t.svg", "sessions/s1/plots/t.svg", 1)]
+
+
+def test_escaped_and_html_images_are_no_references(inventory: ArtifactInventory) -> None:
+    record(inventory, "op1", b"one", path="plots/t.svg")
+    store = _store(inventory)
+    text = (
+        "\\![a](plots/t.svg) <!-- ![b](plots/t.svg) --> <span title='![c](plots/t.svg)'>x</span> "
+        "\\\\![d](plots/t.svg)\n"
+    )
+    document = _notes(store, text)
+    assert _where(store, document) == [("plots/t.svg", "sessions/s1/plots/t.svg", 1)]
 
 
 def test_what_is_a_reference_and_what_resolves(inventory: ArtifactInventory) -> None:

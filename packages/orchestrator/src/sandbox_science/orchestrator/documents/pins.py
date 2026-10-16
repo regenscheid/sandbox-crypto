@@ -11,9 +11,11 @@ pins are kept beside the text, which keeps only the path (LD-2):
   that session's workspace; any other relative path, a file of the text's session;
 - an address with a scheme, a query or fragment, or a ``.`` or ``..`` segment is no file
   reference: as an image it stays a link that never loads;
-- a reference whose block keeps its ID and whose path is unchanged keeps its pin; a new or
-  changed one, or one that did not resolve before, is resolved to the file's current
-  revision; a ``repin`` operation moves a pin to a named revision or the current one.
+- a reference whose block keeps its ID and whose path is unchanged keeps its pin, or the
+  reason it has none, as it was resolved, in the session that resolved it, whoever saves
+  the text; a new or changed one is resolved to the file's current revision, in the
+  saver's session, which the pin records; a ``repin`` operation moves a pin to a named
+  revision or the current one, of the file its reference was resolved to.
 
 The parser reads only http, https and mailto addresses as links and images (LD-29), so a
 path image is text to it; the references are found in each block's inline text by their
@@ -49,6 +51,8 @@ CHART: Final = "vega-lite"
 
 _SCHEME: Final = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:")
 _ESCAPED: Final = re.compile(r"\\([!-/:-@\[-`{-~])")
+_HTML: Final = re.compile(r"<!--.*?-->|<[A-Za-z/][^<>\n]*>", re.DOTALL)
+"""An HTML comment, or a tag: an image written there is not one, as HTML would read it."""
 
 Json = dict[str, Any]
 
@@ -69,9 +73,15 @@ class Reference:
 def _images(inline: InlineText) -> Iterator[str]:
     """The addresses of the images in ``inline`` that the parser left as text."""
     content = inline.content
+    html = [(m.start(), m.end()) for m in _HTML.finditer(content)]
     position = content.find("![")
     while position >= 0:
-        if not any(low <= position < high for low, high, _ in inline.excluded):
+        escaped = len(content[:position]) - len(content[:position].rstrip("\\"))
+        if (
+            not escaped % 2
+            and not any(low <= position < high for low, high, _ in inline.excluded)
+            and not any(low <= position < high for low, high in html)
+        ):
             found = _image_at(content, position)
             if found is not None:
                 address, end = found
@@ -230,21 +240,35 @@ def pin(
         reference = Reference(str(entry["block"]), str(entry["kind"]), str(entry["path"]))
         nth = seen[(reference.block, reference.kind, reference.path)]
         seen[(reference.block, reference.kind, reference.path)] += 1
-        if "artifact" in entry:
-            kept[reference.key(nth)] = entry
+        kept[reference.key(nth)] = entry
     pins: list[Json] = []
     moved: list[str] = []
     seen.clear()
     for reference in references(mapped)[:MAX_REFERENCES]:
         nth = seen[(reference.block, reference.kind, reference.path)]
         seen[(reference.block, reference.kind, reference.path)] += 1
-        target = project_path(reference.path, session)
+        move = (reference.block, reference.path)
+        old = kept.get(reference.key(nth))
+        if old is not None and move not in moves:
+            # The same reference in the same place keeps its pin, or its reason, as it was
+            # resolved, in the session that resolved it, whoever saves now (FG-7, FG-11).
+            pins.append(old)
+            continue
+        at = session if old is None else old.get("session")
+        target = old.get("artifact_path") if old is not None else None
+        if not target:
+            target = project_path(reference.path, at if old is not None else session)
         if target is None:
             continue
         entry: Json = {"block": reference.block, "kind": reference.kind, "path": reference.path}
-        move = (reference.block, reference.path)
-        old = kept.get(reference.key(nth))
+        entry["session"] = at
         if not target:
+            if move in moves:
+                raise DocumentError(
+                    INVALID_REQUEST,
+                    f"{reference.path} in block {reference.block} names no session's file: "
+                    "write shared/… or /sessions/<s>/…",
+                )
             pins.append({**entry, "unresolved": "needs_session"})
             continue
         entry["artifact_path"] = target
@@ -259,8 +283,6 @@ def pin(
             if old is None or found.get("revision") != old.get("revision"):
                 moved.append(reference.block)
             pins.append(found)
-        elif old is not None and old.get("artifact_path") == target:
-            pins.append(old)
         else:
             pins.append({**entry, **_resolve(db, project, target, None)})
     written = {(str(entry["block"]), str(entry["path"])) for entry in pins}
