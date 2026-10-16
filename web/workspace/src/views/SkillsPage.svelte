@@ -130,8 +130,8 @@
   {#if shown.bindings.length}
     <p class="muted">
       The environment variables the import's pass found for the packs' helpers. Runs set those
-      namespaced to the pack, or approved with <code>skills override --approve</code>; the rest are
-      held.
+      namespaced to the pack, or approved with <code>skills override --approve</code>, which says
+      what is known of the variable, and then <code>--confirm</code>; the rest are held.
     </p>
     <ul>
       {#each shown.bindings as item (item.source)}
