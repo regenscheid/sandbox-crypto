@@ -224,6 +224,12 @@ class RunRecord(Contract):
     summaries: dict[Identifier, JsonValue] = Field(default_factory=dict[Identifier, JsonValue])
     """What a source reported at the run's end, such as the consistency review's outcome."""
     final_text: str | None = None
+    """The run's last answer: the text its last closing accepted."""
+    answer: str | None = None
+    """The run's answer to the user: the text of the turn that answered, before any
+    closing rounds that followed, such as its responses to review findings, whose texts
+    the messages keep (lab 42, B4). Later runs' earlier conversation shows it (RS-10).
+    Records from before it have none: their ``final_text`` stands in."""
     messages: list[dict[str, JsonValue]]
     """The conversation in the OpenAI chat format the harness uses, system prompt first."""
     tools: list[dict[str, JsonValue]]
@@ -280,7 +286,9 @@ class RunRecord(Contract):
 
     @model_validator(mode="after")
     def _failure_is_not_an_answer(self) -> RunRecord:
-        if self.failure is not None and (self.stopped != "error" or self.final_text is not None):
+        if self.failure is not None and (
+            self.stopped != "error" or self.final_text is not None or self.answer is not None
+        ):
             raise ValueError("a failed run must have error status and no final answer")
         return self
 

@@ -84,7 +84,7 @@ SYSTEM_PROMPT: Final = (
 
 
 _T = TypeVar("_T")
-Decision = Literal["accept", "respond", "turn", "stop"]
+Decision = Literal["accept", "respond", "turn", "retry", "stop"]
 _log = logging.getLogger(__name__)
 
 
@@ -120,6 +120,12 @@ class Transcript:
     summaries: dict[str, Any] = field(default_factory=dict[str, Any])
     """What each source reports at the run's end, such as a review's outcome."""
     final_text: str | None = None
+    """The run's last answer, which the last closing accepted."""
+    answer: str | None = None
+    """The run's answer to the user: the text of the turn that answered, which a closing
+    let stand, before any closing rounds that followed it, such as the responses to
+    review findings or a turn for new input (lab 42, B4). A text a veto held back is not
+    one. ``None`` while no closing let an answer stand."""
     turns: int = 0
     max_turns: int = 30
     max_input_chars: int = MAX_INPUT_CHARS
@@ -167,7 +173,7 @@ class Transcript:
         """Keep the first failure classification without retaining exception data."""
         self.failure = self.failure or phase
         self.stopped = "error"
-        self.final_text = None
+        self.final_text = self.answer = None
 
 
 def _message(notice: Notice) -> Message:
@@ -210,18 +216,29 @@ async def _closing(hooks: Sequence[TurnHook], transcript: Transcript, answer: st
             if respond and decision == "turn":
                 # Findings asked for earlier in this closing go out with the turn: a round.
                 transcript.response_rounds += 1
-            return decision == "turn"
+            if decision == "turn":
+                _stands(transcript, answer)  # a round for new input: the answer stood
+            return decision in ("turn", "retry")
         respond = respond or decision == "respond"
     if respond:
         transcript.response_rounds += 1
+        _stands(transcript, answer)
         return True
     for hook in hooks:
         await hook.accept(transcript)
     for hook in vetoes:
-        if (decision := await _ask(hook, transcript, answer)) in ("turn", "stop"):
-            return decision == "turn"
+        if (decision := await _ask(hook, transcript, answer)) in ("turn", "retry", "stop"):
+            return decision != "stop"
+    _stands(transcript, answer)
     transcript.final_text = answer
     return False
+
+
+def _stands(transcript: Transcript, answer: str | None) -> None:
+    """The run's answer to the user is the first text a closing let stand: what follows
+    it are closing rounds (lab 42, B4)."""
+    if transcript.answer is None:
+        transcript.answer = answer
 
 
 async def _ask(hook: TurnHook, transcript: Transcript, answer: str | None) -> Decision:
@@ -240,7 +257,7 @@ async def _ask(hook: TurnHook, transcript: Transcript, answer: str | None) -> De
             transcript.stopped = closing.stopped
             decision = "stop"
         case "retry":
-            decision = "turn"
+            decision = "retry"
         case "continue" if closing.notices and transcript.has_room(closing.notices):
             decision = "turn"
         case "respond" if (
@@ -555,6 +572,7 @@ async def run_task(
                     if not user_cancelled(error, stop):
                         raise
                     transcript.stopped, transcript.final_text = "cancelled", None
+                    transcript.answer = None
                 for hook in hooks:
                     if (summary := hook.summary()) is not None:
                         transcript.summaries[hook.name] = summary

@@ -141,7 +141,11 @@ export interface RunRecord {
   stopped: string;
   /** Fixed harness phase; older records omit it. No exception or provider text. */
   failure?: 'model' | 'tool' | 'harness' | 'cleanup' | null;
+  /** The run's last answer: the text its last closing accepted. */
   final_text: string | null;
+  /** The run's answer to the user: the text of the turn that answered, before any closing
+   * rounds such as responses to review findings. Older records omit it. */
+  answer?: string | null;
   math_summary?: {
     pending?: boolean;
     renderer?: string;

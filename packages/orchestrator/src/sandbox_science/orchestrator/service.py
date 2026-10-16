@@ -441,7 +441,10 @@ def earlier_conversation(
         question = "\n\n".join(part for part in parts if part)
         if not question:
             continue
-        answer = record.final_text or f"(The run ended without an answer: {record.stopped}.)"
+        # The run's answer to the user, not the texts of the closing rounds after it
+        # (lab 42, B4); a record from before the answer was kept has its final text.
+        said = record.answer if record.answer is not None else record.final_text
+        answer = said or f"(The run ended without an answer: {record.stopped}.)"
         least = len(question) + min(len(answer), len(_answer_left_out(answer)))
         if used + least > budget:
             left_out = 1
