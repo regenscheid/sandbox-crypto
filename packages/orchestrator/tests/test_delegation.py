@@ -804,3 +804,38 @@ def test_a_version_31_store_keeps_its_outcomes_and_writes_reads_of_proofs_once(
         assert (later.read_entry, later.read_proofs) == (True, True)
     finally:
         migrated.close()
+
+
+async def test_a_checks_brief_names_the_entrys_open_flags(delegating: Harness) -> None:
+    """The owner's rule applied to LG-29 (2026-10-15): the platform's brief names the open
+    flags of the entry it checks, and keeps their IDs, so that a check that counts for
+    clearing a flag on a settled entry addressed why it was flagged."""
+    documents = delegating.documents()
+    try:
+        ledger = Ledger(documents)
+        assumption = {"type": "assumption", "title": "p", "statement": "$p = 17$.", "key": "a"}
+        resting = {
+            "type": "claim",
+            "origin": "project",
+            "title": "Fermat for p",
+            "statement": "$a^{p-1} = 1$.",
+            "links": [{"kind": "assumes", "entry": "new:a"}],
+        }
+        ledger.change(
+            PROJECT, {"operation_id": "a", "reason": "r", "changes": [assumption, resting]}, USER
+        )
+        revised = {"entry": "A-1", "expected": 1, "statement": "$p = 19$."}
+        ledger.change(PROJECT, {"operation_id": "f", "reason": "r", "changes": [revised]}, USER)
+        (flag,) = ledger.entry(PROJECT, "C-2").flags
+    finally:
+        documents.close()
+    check = call("delegate", check={"entry": "C-2", "revision": 1})
+    root = await delegating.run(
+        "root", [Reply(calls=[check]), wait(), Reply("Done.")], delegated=[Reply(REPORT)]
+    )
+    first = delegating.gateway.children[0]
+    brief = str(first[1]["content"])
+    assert f"assumption revised, from A-1 ({flag.flag_id})" in brief
+    (delegation_id,) = started(root)
+    written = cast(dict[str, Any], delegation(delegating, delegation_id).brief["check"])
+    assert written["flags"] == [flag.flag_id]

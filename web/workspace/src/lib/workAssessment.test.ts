@@ -14,6 +14,8 @@ import { assessable, assessmentConflict, assessmentProblem, claimText } from './
 
 const claim = (fields: Partial<WorkRecord> = {}): WorkRecord => ({
   record_id: 'work-0123456789abcdef01234567',
+  standing: null,
+  decision: null,
   position: 4,
   entry_id: 'entry-0123456789abcdef01234567',
   handle: 'I-1',
@@ -38,6 +40,9 @@ const issue = (fields: Partial<EntryView> = {}): EntryView => ({
   entry_id: 'entry-0123456789abcdef01234567',
   handle: 'I-1',
   type: 'issue',
+  kind: null,
+  session: null,
+  standing: null,
   origin: null,
   revision: 2,
   head: 2,

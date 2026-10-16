@@ -11,7 +11,10 @@ say:
   hold evidence pinned to it (``dependency_status``; ``assumption_withdrawn`` for a
   withdrawn assumption);
 - an entry whose statement changes flags the entries with evidence pinned to an earlier
-  revision of it (``evidence_changed``).
+  revision of it (``evidence_changed``);
+- an entry whose status or statement changes, such as an issue resolved, flags the
+  decisions whose ``reopen_on`` links name it (``reopen_condition``; CM-10). Reopening
+  changes nothing by itself: the flag is cleared with a reason, or a new decision is made.
 
 An entry also takes a flag when a change makes it rest on such a thing: a link or
 evidence it gains to an entry that is set aside, that pins a revision older than the
@@ -129,6 +132,10 @@ def raise_flags(
             for entry, pinned in dependents(db, c.entry_id, (), True):
                 if (pinned or 0) < c.revision:
                     flag(entry, "evidence_changed", source, None)
+        moved = c.status_before is not None and c.status != c.status_before
+        if moved or c.statement_changed:
+            for entry, _ in dependents(db, c.entry_id, ("reopen_on",), False):
+                flag(entry, "reopen_condition", source, None)
         for kind, target, pinned in c.pins:
             _rests_on(db, c.entry_id, kind, target, pinned, flag)
     # Spread to the entries that rest on a flagged entry, once each.

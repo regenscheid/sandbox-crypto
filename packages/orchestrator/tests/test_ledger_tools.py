@@ -675,6 +675,7 @@ def test_the_change_schema_lists_the_values_the_ledger_takes() -> None:
         STATUSES,
         ClaimFields,
         EvidenceInput,
+        IssueFields,
         ReferenceFields,
     )
     from sandbox_science.orchestrator.ledger.tool import SPECS
@@ -682,11 +683,13 @@ def test_the_change_schema_lists_the_values_the_ledger_takes() -> None:
     (spec,) = [s for s in SPECS if s.name == "ledger_change"]
     change = spec.parameters["properties"]["changes"]["items"]["properties"]
     fields = change["fields"]["properties"]
-    assert fields["kind"]["enum"] == [
-        "lemma", "theorem", "observation", "counterexample", "negative_result", "other"
-    ]  # fmt: skip
-    for kind in fields["kind"]["enum"]:
+    claims = ["lemma", "theorem", "observation", "counterexample", "negative_result", "other"]
+    issues = ["question", "hypothesis", "idea", "experiment", "contradiction", "reproduction"]
+    assert fields["kind"]["enum"] == claims + issues
+    for kind in claims:
         ClaimFields.model_validate({"kind": kind})
+    for kind in issues:
+        IssueFields.model_validate({"kind": kind})
     for scheme in fields["identifiers"]["properties"]:
         ReferenceFields.model_validate({"identifiers": {scheme: "x"}})
     described = change["status"]["description"]

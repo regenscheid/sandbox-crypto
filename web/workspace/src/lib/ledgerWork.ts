@@ -20,6 +20,7 @@ export const ENDING_WORDS: Record<WorkRecord['ending'], string> = {
   obstruction_claimed: 'Obstruction claimed',
   produced: 'Produced',
   assessment: 'Assessment',
+  reopened: 'Reopened by the agent',
 };
 
 /** What ran out, in words. */

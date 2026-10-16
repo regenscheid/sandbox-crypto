@@ -44,18 +44,20 @@ from sandbox_science.orchestrator.documents.normalize import normalize
 from sandbox_science.orchestrator.documents.project_macros import head as macro_head
 from sandbox_science.orchestrator.projects import ProjectError, recorded, run_id_of
 
-from . import evidence, flags, frontier, gate
+from . import evidence, flags, frontier, gate, standing
 from .models import (
     DECIDED,
     FIELDS,
     LINKS,
     MAX_CLEARED,
     MAX_ENTRY_WORK,
+    NO_CONDITION,
     PREFIXES,
     SET_ASIDE,
     SHOWN_CHECKS,
     SHOWN_FLAGGED,
     STATUSES,
+    THIS_SESSION,
     WORK_HOLDERS,
     Category,
     CategoryDefinition,
@@ -86,6 +88,7 @@ from .models import (
     MutationResult,
     QuoteChecks,
     ReferenceFields,
+    Standing,
     WorkInput,
     WorkPage,
     WorkRecord,
@@ -172,6 +175,8 @@ class _Planned:
     status: str = ""
     status_before: str | None = None
     fields: Json = field(default_factory=dict[str, Any])
+    fields_before: Json = field(default_factory=dict[str, Any])
+    """The fields of the revision before; none for an entry the change creates."""
     links: list[EntryLink] | None = None
     """The new revision's links; None keeps the revision before's."""
     previous: list[EntryLink] = field(default_factory=list[EntryLink])
@@ -220,11 +225,17 @@ class Ledger:
             )
             held = evidence.stored(db, row.entry_id, number)
             open_flags = self._flags(db, row.entry_id)
+            fields = json.loads(found[4])
+            label = (
+                standing.of_entry(db, row.entry_id, row.type, row.origin, found[2], fields, number)
+                if number == row.head
+                else None
+            )
             return EntryView(
-                **self._summary(row, found, evidence.asserted_only(row.type, held)),
+                **self._summary(row, found, evidence.asserted_only(row.type, held), label),
                 open_flags=len(open_flags),
                 statement=text["body"],
-                fields=json.loads(found[4]),
+                fields=fields,
                 links=self._links(db, row.entry_id, number),
                 evidence=held,
                 incoming=incoming,
@@ -274,15 +285,18 @@ class Ledger:
                 "e.type=?) AND (? IS NULL OR r.status=?) ORDER BY e.position LIMIT ?",
                 (project, start, kind, kind, status, status, limit + 1),
             ).fetchall()
-        found = [
-            {
-                **self._summary(
-                    _Row(*r[:6]), r[6:], None if r[2] not in ("claim", "result") else not r[14]
-                ),
-                "open_flags": r[15],
-            }
-            for r in rows[:limit]
-        ]
+            found = [
+                {
+                    **self._summary(
+                        _Row(*r[:6]),
+                        r[6:],
+                        None if r[2] not in ("claim", "result") else not r[14],
+                        standing.of_entry(db, r[0], r[2], r[4], r[8], json.loads(r[10]), r[6]),
+                    ),
+                    "open_flags": r[15],
+                }
+                for r in rows[:limit]
+            ]
         return EntryPage(
             entries=[EntrySummary(**s) for s in found],
             next_after=found[-1]["entry_id"] if len(rows) > limit else None,
@@ -855,6 +869,7 @@ class Ledger:
                 except DocumentError as error:
                     raise _labelled(error, provenance) from None
             mutations = kept
+        mutations = [(_this_session(m, author), provenance) for m, provenance in mutations]
         pinned: dict[evidence.Block, str] = {}
         for mutation, provenance in mutations:
             blocks: list[evidence.Block] = []
@@ -922,6 +937,7 @@ class Ledger:
                     INVALID_REQUEST, f"the change to {p.row.handle} changes nothing"
                 )
         self._check_links(db, planned)
+        self._check_research(db, project, planned, author)
         self._check_dominates(db, project, planned, role)
         self._check_quotes(db, planned)
         self._check_published(db, planned)
@@ -946,6 +962,7 @@ class Ledger:
         work, rejected = self._record_work(
             db, project, mutation, author, keys, pinned, provenance, now.isoformat()
         )
+        work += self._reopened(db, project, planned, mutation, author, provenance, now)
         raised = flags.raise_flags(
             db, project, [self._changed(p) for p in planned], now.isoformat()
         )
@@ -1140,6 +1157,67 @@ class Ledger:
                     rejections.append(found)
         return recorded, rejections
 
+    def _reopened(
+        self,
+        db: sqlite3.Connection,
+        project: str,
+        planned: list[_Planned],
+        mutation: Mutation,
+        author: Author,
+        provenance: Json | None,
+        now: datetime,
+    ) -> list[str]:
+        """A work record on each obstructed issue an agent's change reopens (the owner,
+        2026-10-15): reopening weakens a settled state and needs no decision, and is kept
+        with the change's reason, citing the decision that had made the issue obstructed."""
+        made: list[str] = []
+        for p in planned:
+            if (
+                author.kind == "user"
+                or p.status_before != "obstructed"
+                or p.status == p.status_before
+            ):
+                continue
+            decider = standing.decider(db, p.row.entry_id, "obstructed")
+            cited = "" if decider is None else f", which {decider.handle} had made obstructed"
+            record = new_id("work")
+            db.execute(
+                "INSERT INTO ledger_work(record_id,position,project,entry_id,entry_revision,"
+                "tried,ending,detail,refs,author,reason,operation_id,provenance,created) "
+                "VALUES(?,(SELECT coalesce(max(position),0)+1 FROM ledger_work),"
+                "?,?,?,?,'reopened',?,'[]',?,?,?,?,?)",
+                (
+                    record,
+                    project,
+                    p.row.entry_id,
+                    p.row.head,
+                    _normalized(f"Reopened {p.row.handle}{cited}: {mutation.reason}"),
+                    json.dumps({} if decider is None else {"decision": decider.entry_id}),
+                    author.model_dump_json(exclude_none=True),
+                    mutation.reason,
+                    mutation.operation_id,
+                    None if provenance is None else json.dumps(provenance, sort_keys=True),
+                    now.isoformat(),
+                ),
+            )
+            self.events.append(
+                db,
+                "ledger.work_recorded",
+                project,
+                author.session_id,
+                p.row.entry_id,
+                {
+                    "record": record,
+                    "entry": p.row.entry_id,
+                    "handle": p.row.handle,
+                    "ending": "reopened",
+                    "operation_id": mutation.operation_id,
+                },
+                now,
+            )
+            made.append(record)
+        return made
+
     def _produced(
         self,
         db: sqlite3.Connection,
@@ -1261,6 +1339,11 @@ class Ledger:
                     handles[entry] = self._find(db, project, entry).handle
                 return handles[entry]
 
+            (status,) = db.execute(
+                "SELECT status FROM ledger_revisions WHERE entry_id=? AND revision=?",
+                (row.entry_id, row.head),
+            ).fetchone()
+            settled = standing.obstructed(db, row.entry_id) if status == "obstructed" else None
             records = [
                 WorkRecord(
                     record_id=r[0],
@@ -1281,6 +1364,8 @@ class Ledger:
                     operation_id=r[10],
                     provenance=None if r[11] is None else json.loads(r[11]),
                     created=r[12],
+                    standing=standing.of_work(r[4], detail.get("limit"), r[0], settled),
+                    decision=handle(detail["decision"]) if "decision" in detail else None,
                 )
                 for r in found[:limit]
             ]
@@ -1328,6 +1413,7 @@ class Ledger:
             status=current[2],
             status_before=current[2],
             fields=json.loads(current[4]),
+            fields_before=json.loads(current[4]),
         )
         if change.title is not None and change.title != current[1]:
             planned.title, planned.changed = change.title, [*planned.changed, "title"]
@@ -1337,7 +1423,16 @@ class Ledger:
             if saved is None or text != saved["body"]:
                 planned.statement, planned.changed = text, [*planned.changed, "statement"]
         if change.fields is not None:
-            fields = _fields(row.type, change.fields)
+            given = change.fields
+            if (
+                row.type == "decision"
+                and change.status not in (None, current[2])
+                and set(given) <= {"reopen_condition"}
+            ):
+                # A decision rejected or reversed states its reopen condition and keeps its
+                # other fields, such as an obstruction's excluded scope (CM-10).
+                given = {**planned.fields, **given}
+            fields = _fields(row.type, given)
             _check_pdf(db, project, fields)
             frontier.check_result(db, project, fields)
             if fields != planned.fields:
@@ -1367,11 +1462,12 @@ class Ledger:
                 INVALID_REQUEST, "claims and results, and only they, have an origin"
             )
         status = _first_status(kind, change.origin)
-        if kind == "decision" and change.status == "in_effect":
-            # LG-17: the user or the main agent records a decision in effect at once.
+        if kind == "decision" and change.status in ("in_effect", "rejected"):
+            # LG-17: the user or the main agent records a decision in effect at once, and
+            # an approach abandoned as a rejected one, with its reopen condition (CM-10).
             if role == "delegated":
                 raise _refused("a delegated agent's decision is proposed")
-            status = "in_effect"
+            status = change.status
         if change.status is not None and change.status != status:
             raise DocumentError(INVALID_REQUEST, f"a new {kind} starts {status}")
         # Handles count per project and type; a mutation's new entries take the next ones.
@@ -1777,14 +1873,31 @@ class Ledger:
         for d in named:
             found = db.execute(
                 "SELECT a.entry_id,a.verdict,json_extract(a.author,'$.kind'),"
-                "a.entry_revision,c.record_id,c.entry_id,c.ending,c.entry_revision "
+                "a.entry_revision,c.record_id,c.entry_id,c.ending,c.entry_revision,a.created "
                 "FROM ledger_work a JOIN ledger_work c ON c.record_id=a.assesses "
                 "WHERE a.record_id=? AND a.project=?",
                 (d.fields["assessment"], issue.project),
             ).fetchone()
             if found is None:
                 refuse(f"no assessment {d.fields['assessment']} of a claim on it")
-            on, verdict, kind, at, claim, claimed_on, ending, claimed_at = found
+            on, verdict, kind, at, claim, claimed_on, ending, claimed_at, made = found
+            # The owner's rule (2026-10-15): the acceptance is recorded after the issue was
+            # last weakened, reopened among others, or obstructed.
+            moved = [
+                datetime.fromisoformat(created).timestamp()
+                for (created,) in db.execute(
+                    "SELECT r.created FROM ledger_revisions r JOIN ledger_revisions b "
+                    "ON b.entry_id=r.entry_id AND b.revision=r.revision-1 WHERE r.entry_id=? "
+                    "AND r.status='obstructed' AND b.status!='obstructed'",
+                    (issue.entry_id,),
+                )
+            ]
+            since = max([*moved, gate.weakened(db, issue.entry_id) or 0.0], default=0.0)
+            if datetime.fromisoformat(made).timestamp() <= since:
+                refuse(
+                    "the acceptance it names was recorded before the issue was last obstructed, "
+                    "reopened or flagged: an obstruction needs an acceptance recorded since"
+                )
             if (on, claimed_on, ending) != (issue.entry_id, issue.entry_id, "obstruction_claimed"):
                 refuse("the assessment it names is not of an obstruction claimed on it")
             if (verdict, kind) != ("accepted", "user"):
@@ -1796,6 +1909,16 @@ class Ledger:
             ).fetchone()
             if latest != "accepted":
                 refuse("the user's latest assessment of the claim does not accept it")
+            if db.execute(
+                "SELECT 1 FROM ledger_revisions r JOIN ledger_entries e USING(entry_id) "
+                "WHERE e.type='decision' AND r.entry_id!=? "
+                "AND json_extract(r.fields,'$.assessment')=? LIMIT 1",
+                (d.row.entry_id, d.fields["assessment"]),
+            ).fetchone():
+                refuse(
+                    "the acceptance it names settled an earlier obstruction: each obstruction "
+                    "needs a fresh acceptance of the user's"
+                )
             if not (
                 _content(db, issue.entry_id, at)
                 == current
@@ -1869,7 +1992,9 @@ class Ledger:
     def _rewrites(self, db: sqlite3.Connection, p: _Planned) -> bool:
         """Whether the change alters what a decision on ``p``'s entry rested on: its
         statement, fields, ``assumes`` links or evidence."""
-        if {"statement", "fields", "evidence"} & set(p.changed):
+        if {"statement", "evidence"} & set(p.changed):
+            return True
+        if "fields" in p.changed and _unsettles(p.fields_before, p.fields):
             return True
         if "links" not in p.changed:
             return False
@@ -1968,6 +2093,28 @@ class Ledger:
                 found[flag] = (entry.entry_id, entry.handle, cause, json.loads(source)["handle"])
         if len(found) > MAX_CLEARED:
             raise DocumentError(INVALID_REQUEST, f"a change clears at most {MAX_CLEARED} flags")
+        for flag, (entry, handle, _, _) in found.items() if role == "main" else ():
+            # The owner's rule (2026-10-15): clearing a flag on a settled entry settles it
+            # again, which needs the user or a passing gate.
+            (revision, kind) = db.execute(
+                "SELECT f.revision,e.type FROM ledger_flags f JOIN ledger_entries e "
+                "USING(entry_id) WHERE f.flag_id=?",
+                (flag,),
+            ).fetchone()
+            if not standing.settled(db, entry, revision):
+                continue
+            if kind not in ("claim", "result"):
+                raise _refused(
+                    f"{handle} was settled when the flag was raised or since: only the user "
+                    "clears a flag on a settled issue or decision"
+                )
+            if not gate.fresh_check(db, entry, flag):
+                raise _refused(
+                    f"{handle} is settled, and clearing its flag settles it again: that needs "
+                    "the user, or a delegation's check of it at its current revision, from a "
+                    "brief that named the flag, started since it was last weakened, that "
+                    "counts; ask for one, or leave the flag for the user"
+                )
         for flag in found:
             db.execute(
                 "UPDATE ledger_flags SET cleared=?,cleared_by=?,reason=?,operation_id=? "
@@ -2329,6 +2476,208 @@ class Ledger:
                     INVALID_REQUEST, f"{p.row.handle} holds split_into links only while split"
                 )
 
+    def _check_research(
+        self, db: sqlite3.Connection, project: str, planned: list[_Planned], author: Author
+    ) -> None:
+        """The research state's rules (CM-10), as the change leaves its entries: a
+        contradiction concerns the two sides, at least, that disagree; a decision's reopen
+        condition, its ``reopen_on`` links and its session follow ``_check_condition``,
+        ``_check_kept`` and ``_check_session``; and only a decision that the change puts
+        in effect to make an issue obstructed names an excluded scope and an assessment
+        (LG-7), so that no later decision widens a settled impossibility."""
+        by_id = {p.row.entry_id: p for p in planned}
+        deciding = [
+            d
+            for d in planned
+            if d.row.type == "decision" and d.status == "in_effect" and d.status_before != d.status
+        ]
+        for p in planned:
+            links = self._final_links(db, p)
+            if p.row.type == "issue" and p.fields.get("kind") == "contradiction":
+                sides = {(k.target, k.target_id, k.block) for k in links if k.kind == "concerns"}
+                if len(sides) < 2:
+                    raise DocumentError(
+                        INVALID_REQUEST,
+                        f"{p.row.handle} is a contradiction: it concerns the entries, findings "
+                        "or document blocks that disagree, at least two",
+                    )
+            if p.row.type == "issue" and p.status == "obstructed" != p.status_before:
+                deciders = [
+                    d
+                    for d in deciding
+                    if any(
+                        k.kind == "affects" and k.target_id == p.row.entry_id
+                        for k in self._final_links(db, d)
+                    )
+                ]
+                if len(deciders) > 1:
+                    raise DocumentError(
+                        INVALID_REQUEST, f"one decision makes {p.row.handle} obstructed"
+                    )
+                if (
+                    author.kind == "user"
+                    and deciders
+                    and not deciders[0].fields.get("excluded_scope")
+                ):
+                    raise DocumentError(
+                        INVALID_REQUEST,
+                        f"the decision that makes {p.row.handle} obstructed names the scope it "
+                        "excludes (fields.excluded_scope)",
+                    )
+            dropped = set(p.fields_before.get("caveats", ())) - set(p.fields.get("caveats", ()))
+            if author.kind != "user" and dropped:
+                raise _refused(
+                    f"an agent adds caveats to {p.row.handle} and removes none: the user may "
+                    "remove one"
+                )
+            if p.row.type != "decision":
+                continue
+            self._check_condition(db, p, links, by_id)
+            self._check_kept(db, p, author, deciding)
+            self._check_session(project, p, author)
+            named = [p.fields.get(k) for k in ("excluded_scope", "assessment")]
+            before = [p.fields_before.get(k) for k in ("excluded_scope", "assessment")]
+            if named != before and any(named):
+                obstructs = any(d is p for d in deciding) and any(
+                    k.kind == "affects"
+                    and (target := by_id.get(k.target_id)) is not None
+                    and target.row.type == "issue"
+                    and target.status == "obstructed" != target.status_before
+                    for k in links
+                )
+                if not obstructs:
+                    raise DocumentError(
+                        INVALID_REQUEST,
+                        f"{p.row.handle} names an excluded scope or an assessment only in the "
+                        "change that puts it in effect and makes the issue it affects obstructed",
+                    )
+
+    def _check_condition(
+        self,
+        db: sqlite3.Connection,
+        p: _Planned,
+        links: list[EntryLink],
+        by_id: dict[str, _Planned],
+    ) -> None:
+        """A decision's reopen condition and its ``reopen_on`` links come together, a
+        condition the ledger does not hold yet being stated as an open issue of kind
+        question that it links to; one that becomes rejected or reversed states its
+        condition, ``none`` when nothing would reopen it (CM-10)."""
+        condition = p.fields.get("reopen_condition")
+        watched = [k for k in links if k.kind == "reopen_on"]
+        if condition is None and watched:
+            raise DocumentError(
+                INVALID_REQUEST,
+                f"{p.row.handle}'s reopen_on links watch for its reopen condition: give "
+                "fields.reopen_condition",
+            )
+        if condition is not None and condition.strip().casefold() == NO_CONDITION:
+            if watched:
+                raise DocumentError(
+                    INVALID_REQUEST,
+                    f"{p.row.handle}'s reopen condition is none, so it watches nothing",
+                )
+        elif condition is not None and not watched:
+            raise DocumentError(
+                INVALID_REQUEST,
+                f"{p.row.handle}'s reopen condition names what it watches with reopen_on "
+                "links: an open issue of kind question that states the condition, or the "
+                "assumption, claim or result whose change would matter",
+            )
+        moved = p.created or "status" in p.changed
+        if p.status in ("rejected", "reversed") and moved and condition is None:
+            raise DocumentError(
+                INVALID_REQUEST,
+                f"{p.row.handle} becomes {p.status}: state what would justify reopening "
+                f"it (fields.reopen_condition), or {NO_CONDITION}",
+            )
+        for link in _added(p, "reopen_on"):
+            target = by_id.get(link.target_id)
+            kind, status, asked = (
+                (target.row.type, target.status, target.fields.get("kind"))
+                if target is not None
+                else db.execute(
+                    "SELECT e.type,r.status,json_extract(r.fields,'$.kind') FROM ledger_entries "
+                    "e JOIN ledger_revisions r ON r.entry_id=e.entry_id AND r.revision=e.head "
+                    "WHERE e.entry_id=?",
+                    (link.target_id,),
+                ).fetchone()
+            )
+            if kind == "issue" and (status != "open" or (asked or "question") != "question"):
+                raise DocumentError(
+                    INVALID_REQUEST,
+                    f"{link.handle} is not an open question: a reopen condition watches an "
+                    "open issue of kind question",
+                )
+
+    def _check_kept(
+        self, db: sqlite3.Connection, p: _Planned, author: Author, deciding: list[_Planned]
+    ) -> None:
+        """A decision in effect, rejected or reversed keeps its statement, fields, links
+        and evidence unless it changes its status in the same change or a decision put in
+        effect by it affects it (LG-30). The user edits a decision of the user's freely; an
+        agent never changes one's title or content, but may state the reopen condition of
+        one it rejects or reverses, if it has none (the coordinator, 2026-10-15)."""
+        content = {"statement", "fields", "links", "evidence"} & set(p.changed)
+        if p.created or not (content or "title" in p.changed):
+            return
+        users = db.execute(
+            "SELECT 1 FROM ledger_revisions WHERE entry_id=? "
+            "AND json_extract(author,'$.kind')='user' LIMIT 1",
+            (p.row.entry_id,),
+        ).fetchone()
+        if users and author.kind == "user":
+            return
+        if users:
+            others = {k: v for k, v in p.fields.items() if k != "reopen_condition"}
+            final = [k for k in self._final_links(db, p) if k.kind != "reopen_on"]
+            stated = (
+                not {"statement", "title", "evidence"} & set(p.changed)
+                and "status" in p.changed
+                and p.status in ("rejected", "reversed")
+                and "reopen_condition" not in p.fields_before
+                and others == p.fields_before
+                and ("links" not in p.changed or final == p.previous)
+            )
+            if not stated:
+                raise _refused(
+                    f"{p.row.handle} is the user's decision: an agent changes its status by a "
+                    "decision, and never its title, statement, fields, links or evidence"
+                )
+        if (
+            content
+            and p.status_before in ("in_effect", "rejected", "reversed")
+            and "status" not in p.changed
+            and not any(
+                d is not p
+                and any(
+                    k.kind == "affects" and k.target_id == p.row.entry_id
+                    for k in self._final_links(db, d)
+                )
+                for d in deciding
+            )
+        ):
+            raise DocumentError(
+                INVALID_REQUEST,
+                f"{p.row.handle} is {p.status_before}: its statement, fields, links and "
+                "evidence change only with its status, or in a change that puts in effect a "
+                "decision that affects it",
+            )
+
+    def _check_session(self, project: str, p: _Planned, author: Author) -> None:
+        """A decision scoped to a session names one of the project's; an agent scopes a
+        decision to its own session, or takes its own session's scope off, and no other."""
+        session, before = p.fields.get("session"), p.fields_before.get("session")
+        if session == before:
+            return
+        if author.kind != "user" and {session, before} - {None, author.session_id}:
+            raise _refused("an agent scopes a decision to its own session, and no other")
+        if (
+            session is not None
+            and session not in recorded(self.documents.path.parent, project).sessions
+        ):
+            raise DocumentError(NOT_FOUND, f"no session {session} in this project")
+
     def _authority(self, project: str, author: Author) -> str:
         """The role LG-13 gives ``author``: ``user``, ``main`` or ``delegated``. Code in
         the sandbox, imports, the platform and other agent roles change nothing."""
@@ -2398,8 +2747,14 @@ class Ledger:
         return _Row(*row)
 
     @staticmethod
-    def _summary(row: _Row, revision: tuple[Any, ...], asserted_only: bool | None) -> Json:
+    def _summary(
+        row: _Row, revision: tuple[Any, ...], asserted_only: bool | None, label: Standing | None
+    ) -> Json:
+        fields = json.loads(revision[4])
         return {
+            "kind": fields.get("kind", "question" if row.type == "issue" else None),
+            "session": fields.get("session") if row.type == "decision" else None,
+            "standing": label,
             "asserted_only": asserted_only,
             "entry_id": row.entry_id,
             "handle": row.handle,
@@ -2675,6 +3030,28 @@ def _dropped(p: _Planned, kind: str) -> list[EntryLink]:
     ]
 
 
+def _unsettles(before: Json, after: Json) -> bool:
+    """Whether fields ``after`` change what a decision on the entry rested on: anything
+    but caveats added. A caveat qualifies a settled entry; dropping one strengthens it."""
+    kept = [{k: v for k, v in f.items() if k != "caveats"} for f in (before, after)]
+    return kept[0] != kept[1] or not set(before.get("caveats", ())) <= set(after.get("caveats", ()))
+
+
+def _this_session(mutation: Mutation, author: Author) -> Mutation:
+    """``mutation``, a decision's session ``this`` naming the author's own (CM-10): an agent
+    knows the session it runs in by no ID."""
+    changes: list[EntryChange] = []
+    for change in mutation.changes:
+        if change.fields is None or change.fields.get("session") != THIS_SESSION:
+            changes.append(change)
+            continue
+        if author.session_id is None:
+            raise DocumentError(INVALID_REQUEST, "this session names an agent's own session")
+        fields = {**change.fields, "session": author.session_id}
+        changes.append(change.model_copy(update={"fields": fields}))
+    return mutation.model_copy(update={"changes": changes})
+
+
 def _agent_text(mutation: Mutation) -> Mutation:
     """An agent's ledger text as it is kept: its line ends line feeds, and no character the
     user may not see, as it is or as a character reference (``check_agent_text``, threat
@@ -2723,19 +3100,21 @@ def _content(db: sqlite3.Connection, entry: str, revision: int) -> tuple[Any, ..
 
 
 def _rests_on(db: sqlite3.Connection, issue: str, claim: str) -> bool:
-    """Whether ``issue`` is obstructed by a decision in effect that names an assessment
-    of ``claim``."""
+    """Whether ``issue`` is obstructed by a decision in effect that named an assessment of
+    ``claim``, as the change that obstructed it wrote that decision (the one its label
+    reads, ``standing.decider``)."""
+    (status,) = db.execute(
+        "SELECT r.status FROM ledger_entries e JOIN ledger_revisions r "
+        "ON r.entry_id=e.entry_id AND r.revision=e.head WHERE e.entry_id=?",
+        (issue,),
+    ).fetchone()
+    decider = standing.decider(db, issue, "obstructed") if status == "obstructed" else None
+    if decider is None or not decider.in_effect or not decider.fields.get("assessment"):
+        return False
     return (
         db.execute(
-            "SELECT 1 FROM ledger_entries i JOIN ledger_revisions ir ON ir.entry_id=i.entry_id "
-            "AND ir.revision=i.head JOIN ledger_links l ON l.kind='affects' "
-            "AND l.target_id=i.entry_id JOIN ledger_entries d ON d.entry_id=l.entry_id "
-            "AND l.revision=d.head JOIN ledger_revisions dr ON dr.entry_id=d.entry_id "
-            "AND dr.revision=d.head JOIN ledger_work a "
-            "ON a.record_id=json_extract(dr.fields,'$.assessment') "
-            "WHERE i.entry_id=? AND ir.status='obstructed' AND d.type='decision' "
-            "AND dr.status='in_effect' AND a.assesses=? LIMIT 1",
-            (issue, claim),
+            "SELECT 1 FROM ledger_work WHERE record_id=? AND assesses=?",
+            (decider.fields["assessment"], claim),
         ).fetchone()
         is not None
     )
