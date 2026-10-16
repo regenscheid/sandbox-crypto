@@ -604,3 +604,50 @@ async def test_a_view_rebuilt_from_the_archive_sends_the_request_the_run_sent(
     outputs = [i for i in expected["input"] if i["type"] == "function_call_output"]
     outputs[0]["output"] = stub
     assert json.dumps(json.loads(found.raw[-1])) == json.dumps(expected)
+
+
+async def test_a_runs_requests_keep_its_view_and_only_its_start_rebuilds_it(
+    harness: Harness,
+) -> None:
+    """CM-28, CM-29 across a run boundary: the next run starts from its session's view,
+    rebuilt from the archive, run 1's reasoning and calls among it; within the run each
+    request sends the one before it unchanged, byte for byte, the view included, so the
+    cache keeps its prefix. A run's start is a rebuild: the prefix may change there."""
+    options = ["--api", "main=responses"]
+    looking = Reply("Looking.", calls=[call("shell", script="echo hello")])
+    await harness.run("run-1", [looking, Reply("Done.")], options=options)
+    found = harness.gateway
+    first = len(found.raw)
+    again = Reply("Again.", calls=[call("shell", script="echo again")])
+    await harness.run("run-2", [again, Reply("Done again.")], options=options)
+    one, two = found.responses[:first], found.responses[first:]
+    assert len(two) == 2
+    # Within run 2, the second request sends the first's instructions, tools and input
+    # unchanged, byte for byte as they arrived, its view included.
+    assert (two[1]["instructions"], two[1]["tools"]) == (two[0]["instructions"], two[0]["tools"])
+    before, after = input_bytes(found.raw[first]), input_bytes(found.raw[first + 1])
+    assert after.startswith(before[:-1])  # all but the closing bracket
+    # Run 2's start rebuilt run 1 from the archive: here, with no state block or kernel
+    # line to add, its items come back as run 1 last sent them, reasoning included, then
+    # run 1's answer. Nothing requires that at a run's start; folds will change it.
+    view = two[0]["input"]
+    assert exact(view[: len(one[-1]["input"])], one[-1]["input"])
+    assert reasonings(view) == ["rs_litellm_1", "rs_litellm_2"]
+    # Each answer's recorded prefix is of the request that produced it, run by run.
+    projects = ProjectStore(harness.state)
+    try:
+        kept = Archive(projects.control).messages(PROJECT, SESSION)
+    finally:
+        projects.close()
+    answers = [a.entry.prefix for a in kept if a.entry.kind == "assistant"]
+    made = [prefix_of(body, "instructions", "tools", "input") for body in found.responses]
+    assert answers == made
+    assert len(set(made)) == len(made)
+
+
+def input_bytes(raw: bytes) -> bytes:
+    """A request's ``input`` array, as the bytes that arrived."""
+    text = raw.decode()
+    start = text.index("[", text.index('"input"'))
+    _, end = json.JSONDecoder().raw_decode(text, start)
+    return text[start:end].encode()

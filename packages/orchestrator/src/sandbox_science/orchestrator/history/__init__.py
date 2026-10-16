@@ -16,7 +16,7 @@ from .archive import (
 )
 from .log import RunArchive, entry_of
 from .tool import SPECS, HistoryTool
-from .view import Part, View, ViewMeter, session_view, settle
+from .view import Part, View, ViewMeter, recorded_words, session_view, settle
 
 __all__ = [
     "HEADER",
@@ -36,6 +36,7 @@ __all__ = [
     "entry_of",
     "escape",
     "header",
+    "recorded_words",
     "session_view",
     "settle",
 ]

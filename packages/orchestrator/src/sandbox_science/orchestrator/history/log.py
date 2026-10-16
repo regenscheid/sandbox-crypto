@@ -22,7 +22,7 @@ from sandbox_science.orchestrator.hooks import Appended
 from sandbox_science.orchestrator.model import Message
 from sandbox_science.orchestrator.notices import DELEGATIONS, REQUESTS
 
-from .archive import Archive, Entry
+from .archive import Archive, Archived, Entry
 
 Json = dict[str, Any]
 _log = logging.getLogger(__name__)
@@ -51,27 +51,42 @@ class RunArchive:
 
     async def append(self, message: Message, appended: Appended) -> Message:
         entry = entry_of(message, appended, task_refs=self.message_ids)
-        context = self.context
-        deadline, wait = self.clock.monotonic() + self.patience, 0.5
-        while True:
-            try:
-                archived = await threaded(
-                    self.archive.append,
-                    context.project_id,
-                    context.session_id,
-                    self.run,
-                    entry,
-                    parent=self.parent,
-                )
-                break
-            except ControlError as error:
-                if error.kind != BUSY or self.clock.monotonic() + wait > deadline:
-                    raise
-                _log.warning("the archive of run %s is busy; trying again", self.run)
-                await self.clock.sleep(wait)
-                wait = min(2 * wait, 8.0)
+        archived = await patiently(
+            self.archive,
+            self.context,
+            self.run,
+            entry,
+            parent=self.parent,
+            patience=self.patience,
+            clock=self.clock,
+        )
         # The model's answer goes on as it wrote it; the platform's messages with headers.
         return message if entry.role == "assistant" else archived.chat()
+
+
+async def patiently(
+    archive: Archive,
+    context: ExecutionContext,
+    run: str,
+    entry: Entry,
+    *,
+    parent: str | None = None,
+    patience: float = PATIENCE,
+    clock: Clock = SYSTEM_CLOCK,
+) -> Archived:
+    """``entry`` appended to ``run``'s archive, tried again while the store is busy."""
+    deadline, wait = clock.monotonic() + patience, 0.5
+    while True:
+        try:
+            return await threaded(
+                archive.append, context.project_id, context.session_id, run, entry, parent=parent
+            )
+        except ControlError as error:
+            if error.kind != BUSY or clock.monotonic() + wait > deadline:
+                raise
+            _log.warning("the archive of run %s is busy; trying again", run)
+            await clock.sleep(wait)
+            wait = min(2 * wait, 8.0)
 
 
 def entry_of(message: Message, appended: Appended, *, task_refs: Sequence[str] = ()) -> Entry:

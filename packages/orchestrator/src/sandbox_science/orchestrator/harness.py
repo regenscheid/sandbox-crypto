@@ -58,7 +58,16 @@ from .delegation.tracks import TrackTools, grant
 from .documents import DocumentError, DocumentStore, DocumentTool
 from .documents.tool import REQUESTS_TASK, WorkRequests
 from .file_settings import ProjectFiles
-from .history import Archive, HistoryTool, RunArchive, View, ViewMeter, session_view, settle
+from .history import (
+    Archive,
+    HistoryTool,
+    RunArchive,
+    View,
+    ViewMeter,
+    recorded_words,
+    session_view,
+    settle,
+)
 from .hooks import TurnHook
 from .jobs import JobTools
 from .jobstate import JobState
@@ -626,6 +635,9 @@ class Harness:
             budget=self.settings.max_input_chars,
             per_token=chars_per_token(calls),
             runs=[entry.name for entry in runs if entry.role == "main"],
+            earlier=functools.partial(
+                recorded_words, stores.projects, stores.runs, project, session
+            ),
         )
         kernels = None
         if view.cells:  # whether the kernels its cells ran in still run (CM-29c)
@@ -634,7 +646,7 @@ class Harness:
             except Exception as error:  # unknown, then: the run goes on
                 _log.warning("the kernels could not be observed for the view: %r", error)
         name = run_name(admitted.started_at, admitted.run_id)
-        return await threaded(settle, view, archive, context, run=name, kernels=kernels)
+        return await settle(view, archive, context, run=name, kernels=kernels, clock=self.clock)
 
     def _limits(self, request: RunRequest) -> dict[str, JsonValue]:
         """The limits a run runs under, as its record keeps them (PD-29)."""

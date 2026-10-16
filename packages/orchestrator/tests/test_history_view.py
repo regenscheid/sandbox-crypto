@@ -7,18 +7,25 @@ archive's own API."""
 
 from __future__ import annotations
 
+import asyncio
 import json
-from collections.abc import Iterator
+import sqlite3
+import threading
+from collections.abc import Iterator, Sequence
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
 from sandbox_science.contracts import ExecutionContext
+from sandbox_science.orchestrator.control import ControlError, ControlStore
+from sandbox_science.orchestrator.documents.tool import REQUESTS_TASK
 from sandbox_science.orchestrator.history import (
     Archive,
     Entry,
     HistoryTool,
+    View,
     body,
     session_view,
     settle,
@@ -110,6 +117,7 @@ async def test_a_run_starts_from_its_sessions_view(harness: Harness) -> None:
     assert summary["parts"] == len(view) + 1
     assert summary["positions"] == [1, len(view)]
     assert summary["left_out"] is None
+    assert summary["kernel_lines"] == [kernel_line["content"]]  # CM-46
     # Each part's tokens at the session's characters per token, rounded up.
     assert summary["tokens"] >= estimate(summary["chars"], summary["chars_per_token"])
 
@@ -160,7 +168,9 @@ async def test_each_call_measures_its_view_and_a_model_calibrates_its_own(
     assert summary["chars_per_token"] == round(chars_per_token(calls[:2]), 3)
 
 
-def test_the_oldest_messages_are_left_out_and_the_users_words_kept(archive: Archive) -> None:
+async def test_the_oldest_messages_are_left_out_and_the_users_words_kept(
+    archive: Archive,
+) -> None:
     """CM-F2, CM-26, CM-30, until folds: a view past its share leaves out its oldest
     messages, and its state block keeps the user's words from them, oldest first; past
     their share the oldest become one-line pointers, never the newest; a long message
@@ -174,7 +184,7 @@ def test_the_oldest_messages_are_left_out_and_the_users_words_kept(archive: Arch
     last = said(archive, "run-6", "The latest question.", "m-6")
     answered(archive, "run-6", "v" * 3_000)
     view = session_view(archive, CONTEXT, budget=budget)
-    settled = settle(view, archive, CONTEXT, run="run-7", kernels=None)
+    settled = await settle(view, archive, CONTEXT, run="run-7", kernels=None)
     block, *kept = settled.parts
     text = body(str(block.message["content"]))
     # The newest messages are whole in the raw tail; what went before is named.
@@ -205,7 +215,7 @@ async def test_a_pointer_reads_back_whole(archive: Archive) -> None:
     for n in range(2, 8):
         said(archive, f"run-{n}", f"Later {n}. " + "r" * 3_000, f"m-{n}")
         answered(archive, f"run-{n}", "s" * 5_000)
-    view = settle(
+    view = await settle(
         session_view(archive, CONTEXT, budget=40_000), archive, CONTEXT, run="r", kernels=None
     )
     assert f"--- {first} · user message · " in str(view.parts[0].message["content"])
@@ -315,9 +325,214 @@ async def test_a_run_whose_session_outgrew_its_share_starts_from_a_state_block(
     block = small.messages[1]
     assert str(block["content"]).split("\n", 1)[0].endswith(" \u00b7 state block]")
     text = body(str(block["content"]))
-    assert text.startswith(STATE_BLOCK.text + "Left out: the messages at positions 1 to ")
-    assert " \u00b7 task \u00b7 " in text
-    assert TASK in text  # run 1's task, the user's own words here
     summary = cast(Json, small.summaries["view"])
     assert isinstance(summary, dict)
     assert str(summary["state_block"]).startswith("msg-")
+    # Run 1's task, the user's latest words, is kept whole though its calls are left out,
+    # and so is the newest unit, its answer.
+    kept = summary["kept_apart"]
+    assert text == f"{STATE_BLOCK.text}Left out: the messages at positions 2 to 5. "
+    assert str(small.messages[2]["content"]).startswith(f"[{kept} \u00b7 task]")
+    assert body(str(small.messages[2]["content"])) == TASK
+    assert small.messages[3]["content"] == "Printed."
+
+
+# The review of #454.
+
+
+async def test_the_users_words_keep_their_tenth_however_many_there_are(
+    archive: Archive,
+) -> None:
+    """CM-30: with about 2,000 of the user's messages left out, even their one-line
+    pointers pass the words' share; the oldest become one line naming the range, which
+    the history tools find, and the words keep to their tenth of the input."""
+    budget = 100_000
+    ids = [
+        said(archive, f"run-{n // 20}", f"Note {n}: " + "y" * 60, f"m-{n}") for n in range(2_000)
+    ]
+    answered(archive, "run-100", "w" * 20_000)
+    view = session_view(archive, CONTEXT, budget=budget)
+    assert view.kept_apart is None  # the latest message is among the newest kept
+    shown = [p.row.message_id for p in view.parts if p.row and p.row.entry.kind == "user"]
+    assert shown == ids[-len(shown) :]
+    out = ids[: -len(shown)]
+    words = view.words or ""
+    assert len(words) <= budget * WORDS + 100  # its framing lines
+    lines = [line for line in words.splitlines() if line.startswith("--- ")]
+    gone = int(lines[1].split()[1].replace(",", ""))
+    assert lines[1] == (
+        f"--- {gone:,} earlier messages, {ids[0]} to {ids[gone - 1]}; history_search and "
+        "history_read find them ---"
+    )
+    # Then one line for each message after them, and the newest left out whole.
+    pointers = lines[2:-2]
+    assert [line.split()[1] for line in pointers] == out[gone:-1]
+    newest = archive.message(PROJECT, out[-1])
+    assert lines[-2] == f"--- {out[-1]} · user message · {newest.created} ---"
+    assert f"{newest.entry.content}\n--- End of the user's own words ---" in words
+    found = HistoryTool(archive, CONTEXT, run="r", delegated=False)
+    text, _ = await found.call("history_read", {"message": ids[0]})
+    assert json.loads(text)["text"] == "Note 0: " + "y" * 60
+
+
+def test_the_newest_unit_and_the_users_latest_message_are_always_kept(
+    archive: Archive,
+) -> None:
+    """CM-26, until folds: a newest unit larger than the view's room is kept whole, the
+    context limit the backstop; and so is the user's latest message, though messages
+    after it are left out."""
+    said(archive, "run-1", "Old words.", "m-1")
+    answered(archive, "run-1", "a" * 1_000)
+    question = said(archive, "run-2", "The question.", "m-2")
+    answered(archive, "run-2", "b" * 30_000)
+    answered(archive, "run-3", "c" * 30_000)
+    view = session_view(archive, CONTEXT, budget=40_000)
+    kinds = [(p.kind, p.row.run if p.row else None) for p in view.parts]
+    assert kinds == [("user", "run-2"), ("assistant", "run-3"), ("tool_result", "run-3")]
+    assert view.left_out == (1, 6)
+    assert view.kept_apart == question
+    assert view.shown == {"m-2": question, "m-1": view.shown["m-1"]}
+    assert "Old words." in (view.words or "")
+    assert "The question." not in (view.words or "")
+    # Without a message from the user before it, the newest unit alone.
+    alone = session_view(archive, CONTEXT, budget=10_000)
+    assert [p.kind for p in alone.parts] == ["user", "assistant", "tool_result"]
+
+
+async def test_the_state_block_names_what_it_kept_apart(archive: Archive) -> None:
+    said(archive, "run-1", "Old words.", "m-1")
+    question = said(archive, "run-2", "The question.", "m-2")
+    answered(archive, "run-2", "b" * 30_000)
+    answered(archive, "run-3", "c" * 30_000)
+    settled = await settle(
+        session_view(archive, CONTEXT, budget=40_000), archive, CONTEXT, run="r", kernels=None
+    )
+    text = body(str(settled.parts[0].message["content"]))
+    assert text.startswith(
+        f"{STATE_BLOCK.text}Left out: the messages at positions 1 to 4, but for the user's "
+        f"latest message, {question}, which is kept. "
+    )
+    assert settled.summary()["kept_apart"] == question
+
+
+def test_results_are_paired_with_their_calls_by_id_within_each_run(archive: Archive) -> None:
+    """CM-29a: a call's result follows it in the view however the archive ordered it,
+    with a notice between or the results swapped; a call ID another run used again finds
+    only its own run's result, and a run's reused ID each its next result."""
+
+    def calls(*names: str) -> Entry:
+        made = tuple(
+            {"id": name, "type": "function", "function": {"name": "shell", "arguments": "{}"}}
+            for name in names
+        )
+        return Entry("assistant", "assistant", None, tool_calls=made)
+
+    def result(name: str, text: str) -> Entry:
+        return Entry("tool", "tool_result", text, source="shell", call_id=name)
+
+    add = lambda run, entry: archive.append(PROJECT, SESSION, run, entry)  # noqa: E731
+    add("run-1", calls("c1", "c2"))
+    add("run-1", Entry("user", "notice", "A notice between.", source="plans"))
+    add("run-1", result("c2", "second"))
+    add("run-1", result("c1", "first"))
+    add("run-1", calls("c1"))
+    add("run-1", result("c1", "again"))
+    add("run-2", calls("c1"))  # its result never came
+    view = session_view(archive, CONTEXT, budget=10**6)
+    sent = [
+        (m["role"], m.get("tool_call_id"), body(str(m.get("content") or ""))) for m in view.messages
+    ]
+    assert sent == [
+        ("assistant", None, ""),
+        ("tool", "c1", "first"),
+        ("tool", "c2", "second"),
+        ("user", None, "A notice between."),
+        ("assistant", None, ""),
+        ("tool", "c1", "again"),
+        ("assistant", None, ""),
+        ("tool", "c1", ABORTED),
+    ]
+
+
+async def test_a_run_from_before_the_archive_keeps_the_users_words_from_its_record(
+    harness: Harness,
+) -> None:
+    """RS-10, as the session view keeps it: a main run whose record was saved before the
+    archive existed has no messages in it; its task joins the user's words in the next
+    run's state block, from its saved record."""
+    first = await harness.run("run-1", [Reply("Done.")])
+    store = ProjectStore(harness.state)
+    try:
+        started = first.started_at - timedelta(hours=1)
+        old = first.model_copy(
+            update={"run_id": "run-0", "task": "An old question.", "started_at": started}
+        )
+        store.save_run(old)
+    finally:
+        store.close()
+    second = await harness.run("run-2", [Reply("Again.")])
+    text = body(str(second.messages[1]["content"]))
+    assert text.startswith(
+        f"{STATE_BLOCK.text}1 earlier runs ran before the archive existed: their messages are "
+        "neither shown nor searched; the user's messages from them are among the user's "
+        "words below, as their runs' records keep them. "
+    )
+    assert f"--- run {name(old)} · task ---\nAn old question." in text
+    summary = cast(Json, second.summaries["view"])
+    assert (summary["unarchived_runs"], summary["recorded_messages"]) == (1, 1)
+
+
+def test_the_users_words_are_the_records_first_and_never_a_stand_in_task(
+    archive: Archive,
+) -> None:
+    """CM-30, RS-10: the words from runs before the archive come first, as ``earlier``
+    reads them for the runs the archive lacks; the stand-in task of a run started for
+    comments is not the user's words, nor the user's latest message."""
+    archive.append(PROJECT, SESSION, "run-1", Entry("user", "task", REQUESTS_TASK))
+    said(archive, "run-1", "An earlier message.", "m-1")
+    latest = said(archive, "run-1", "The latest message.", "m-2")
+    answered(archive, "run-1", "a" * 30_000)
+    archive.append(PROJECT, SESSION, "run-2", Entry("user", "task", REQUESTS_TASK))
+    answered(archive, "run-2", "b" * 30_000)
+    asked: list[list[str]] = []
+
+    def earlier(runs: Sequence[str]) -> list[tuple[str, str, str]]:
+        asked.append(list(runs))
+        return [(run, "user message", f"Said in {run}.") for run in runs]
+
+    view = session_view(
+        archive, CONTEXT, budget=40_000, runs=["run-0", "run-1", "run-2"], earlier=earlier
+    )
+    assert asked == [["run-0"]]
+    assert (view.unarchived, view.recorded, view.kept_apart) == (1, 1, latest)
+    words = view.words or ""
+    assert REQUESTS_TASK not in words
+    assert words.index("--- run run-0 · user message ---\nSaid in run-0.") < words.index(
+        "An earlier message."
+    )
+
+
+async def test_the_state_block_waits_for_a_busy_store(tmp_path: Path) -> None:
+    """CM-4 for the state block: its write waits for a busy store, as a run's do."""
+    projects = ProjectStore(tmp_path / "state")
+    projects.create(PROJECT, "minimal", "sha256:" + "c" * 64)
+    projects.open_session(PROJECT, SESSION, dedicated=False)
+    projects.close()
+    path = tmp_path / "state" / "control.sqlite3"
+    control = ControlStore(path, timeout=0.05)
+    holder = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+    try:
+        holder.execute("BEGIN IMMEDIATE")
+        threading.Timer(0.8, lambda: holder.execute("COMMIT")).start()
+        view = View(words="\n(words)", unarchived=1)
+        settled = await settle(view, Archive(control), CONTEXT, run="r", kernels=None)
+        assert settled.parts[0].kind == "state_block"
+        holder.execute("BEGIN IMMEDIATE")
+        with pytest.raises(ControlError) as refused:
+            await settle(view, Archive(control), CONTEXT, run="r", kernels=None, patience=0.6)
+        assert refused.value.kind == "busy"
+        holder.execute("COMMIT")
+    finally:
+        await asyncio.sleep(0)
+        holder.close()
+        control.close()
