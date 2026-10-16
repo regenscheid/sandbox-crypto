@@ -120,7 +120,11 @@ def skeleton(
             covered = _covered_text(read)
             extent = read.extent.replace("_", " ")
             text = f"{name}: read {extent}{covered} (result {found[-1][0]}); not read whole"
-            span.markers.append({"kind": "read", "subject": name, "text": text})
+            source = [read.kind, read.source]
+            span.markers.append(
+                {"kind": "read", "subject": name, "text": text, "source": source,
+                 "at": found[-1][0]}
+            )  # fmt: skip
     for path, message in span.sampled.items():  # a sample from before the register
         if path not in span.read and message not in registered:
             text = f"{path}: only a sample was shown (result {message}); not read whole"
@@ -173,7 +177,7 @@ def _call(span: _Span, name: str, args: str, result: Archived | None) -> None:
     at, text = result.message_id, result.entry.content or ""
     found = _json(text)
     if name in CHANGES:
-        span.items.append(_Item("change", f"{at} {name}: {_change(span, args, found)}"))
+        span.items.append(_Item("change", f"{at} {name}: {_change(span, args, found, at)}"))
         return
     if name == "wait_delegations":
         _inconclusive(span, text, at)
@@ -201,7 +205,7 @@ def _call(span: _Span, name: str, args: str, result: Archived | None) -> None:
     span.items.append(_Item("call", head, args=args, result=text))
 
 
-def _change(span: _Span, args: str, found: Json) -> str:
+def _change(span: _Span, args: str, found: Json, at: str) -> str:
     """A ledger or memory change's line, and its markers."""
     asked = _json(args)
     reason = str(asked.get("reason") or "")
@@ -211,16 +215,23 @@ def _change(span: _Span, args: str, found: Json) -> str:
     for index, done in enumerate(entries):
         handle, status = str(done.get("handle")), str(done.get("status"))
         shown.append(f"{handle} → {status}")
+        about: Json = {"entry": handle, "at": at}
+        if isinstance(done.get("revision"), int):
+            about["revision"] = done["revision"]
         change = changes[index] if index < len(changes) and len(changes) == len(entries) else {}
         fields = cast(Json, change.get("fields") or {})
         if handle.startswith("D-") and ("status" in change or done.get("created")):
             text = f"{handle} → {status}: {reason}"
             if fields.get("reopen_condition"):
                 text += f"; reopen if {fields['reopen_condition']}"
-            span.markers.append({"kind": "decision", "subject": handle, "text": text})
+            span.markers.append(
+                {"kind": "decision", "subject": handle, "text": text, "status": status, **about}
+            )
         for caveat in cast(list[object], fields.get("caveats") or []):
             text = f"caveat on {handle}: {caveat}"
-            span.markers.append({"kind": "caveat", "subject": handle, "text": text})
+            span.markers.append(
+                {"kind": "caveat", "subject": handle, "text": text, "caveat": str(caveat), **about}
+            )
         for evidence in _objects(change.get("evidence")):
             kind, scope = evidence.get("type"), evidence.get("scope")
             if kind in ("finite_test", "numerical_experiment"):
@@ -230,7 +241,10 @@ def _change(span: _Span, args: str, found: Json) -> str:
                 text = f"evidence on {handle} ({kind}) is scoped to: {scope}"
             else:
                 continue
-            span.markers.append({"kind": "caveat", "subject": handle, "text": text})
+            evidence = [kind, scope]
+            span.markers.append(
+                {"kind": "caveat", "subject": handle, "text": text, "evidence": evidence, **about}
+            )
     for work in _objects(asked.get("work")):
         ending, verdict = work.get("ending"), work.get("verdict")
         if ending in ("limit", "obstruction_claimed") or verdict == "inconclusive":
@@ -238,7 +252,11 @@ def _change(span: _Span, args: str, found: Json) -> str:
             if verdict == "inconclusive":
                 how = "an inconclusive assessment"
             text = f"work on {work.get('entry')} ended {how}: {_words(str(work.get('tried')))}"
-            span.markers.append({"kind": "caveat", "subject": str(work.get("entry")), "text": text})
+            entry = str(work.get("entry"))
+            span.markers.append(
+                {"kind": "caveat", "subject": entry, "text": text, "entry": entry,
+                 "work": str(verdict or ending), "at": at}
+            )  # fmt: skip
     if not shown and "error" in found:
         return "refused"
     return ", ".join(shown) + (f": {reason}" if reason else "")
@@ -320,7 +338,14 @@ def _inconclusive(span: _Span, content: str, at: str) -> None:
                 target = cast(Json, item.get("target") or {}).get("handle")
                 of = f" of {target}" if target else ""
                 text = f"check {subject}{of} ended inconclusive (in {at})"
-                span.markers.append({"kind": "caveat", "subject": subject, "text": text})
+                checked: Json = {"check": subject, "at": at}
+                if target:
+                    checked["entry"] = str(target)
+                if isinstance(
+                    revision := cast(Json, item.get("target") or {}).get("revision"), int
+                ):
+                    checked["revision"] = revision
+                span.markers.append({"kind": "caveat", "subject": subject, "text": text, **checked})
                 continue
             stack.extend(item.values())
         elif isinstance(value, list):

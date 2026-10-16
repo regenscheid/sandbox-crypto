@@ -18,6 +18,8 @@ from .archive import (
 from .folds import Folder
 from .geometry import CEILING, Geometry, ceiling, geometry
 from .log import RunArchive, entry_of
+from .markers import Judge, ledger_entries, register_reads
+from .reads import Register
 from .record import FoldRecord
 from .tool import SPECS, HistoryTool
 from .view import Part, View, ViewMeter, recorded_words, session_view, settle
@@ -35,7 +37,9 @@ __all__ = [
     "Geometry",
     "HistoryTool",
     "Hit",
+    "Judge",
     "Part",
+    "Register",
     "RunArchive",
     "SavedFile",
     "View",
@@ -46,7 +50,9 @@ __all__ = [
     "escape",
     "geometry",
     "header",
+    "ledger_entries",
     "recorded_words",
+    "register_reads",
     "session_view",
     "settle",
 ]

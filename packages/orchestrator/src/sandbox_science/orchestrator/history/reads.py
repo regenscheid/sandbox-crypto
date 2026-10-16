@@ -274,6 +274,23 @@ class Register:
             for message, kind, source, extent, detail, label in rows
         ]
 
+    def completed(self, project: str, kind: str, source: str) -> str | None:
+        """The archive message of the read that made a source ``whole``, its reads put
+        together in order; ``None`` while it is not (CM-21a)."""
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT message_id, extent, detail FROM source_reads WHERE project = ? AND "
+                "((kind = ? AND source = ?) OR (kind = 'web' AND ? = 'web' AND "
+                "json_extract(detail, '$.final') = ?)) ORDER BY rowid",
+                (project, kind, source, kind, source),
+            ).fetchall()
+        reads: list[Read] = []
+        for message, extent, detail in rows:
+            reads.append(Read(kind, source, extent, cast(Json, json.loads(detail))))
+            if (found := merged(reads)) is not None and found.extent == "whole":
+                return str(message)
+        return None
+
     def unplaced(self, project: str, session: str) -> Json:
         """How many of a session's reads were connector reads no descriptor placed, of
         all its reads (CM-12a)."""
