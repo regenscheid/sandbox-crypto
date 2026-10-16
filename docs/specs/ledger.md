@@ -115,7 +115,7 @@ Terms:
 - LG-28. The platform flags an entry for reconsideration when ([product](../PRODUCT.md); research workspace; [architecture](../ARCHITECTURE.md)) (new; the spread to all dependents settled 2026-10-11, open question 4):
   - an assumption it relies on is withdrawn, or gets a revision that changes its statement;
   - the document block bound to it, or to an assumption it relies on, is changed or removed;
-  - its evidence changes: a document block or math span it is pinned to is changed or removed by a later revision; an entry it is pinned to changes its statement or becomes `disputed`, `refuted`, `superseded` or `withdrawn`; or another artifact it is pinned to gets a newer revision;
+  - its evidence changes: a document block or math span it is pinned to is changed or removed by a later revision; an entry it is pinned to changes its statement or becomes `disputed`, `refuted`, `superseded` or `withdrawn`; or another artifact it is pinned to gets a newer revision; A figure's pin in the entry's own statement is presentation, not evidence, and raises no flag; a pin moved in a document block bound to the entry changes that block (LD-11 as amended 2026-10-16; [figures](figures.md), FG-43).
   - an entry it builds on or assumes becomes `disputed`, `refuted`, `superseded` or `withdrawn`;
   - for a decision, an issue its `reopen_on` names is resolved, or an entry it names changes status or statement (amended 2026-10-15, [context management](context-management.md), CM-10; built 2026-10-15, with the cause `reopen_condition`). Reopening changes no status: the main agent or the user clears the flag with a reason or records a new decision (LG-4).
 
