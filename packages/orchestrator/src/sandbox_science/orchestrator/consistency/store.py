@@ -39,6 +39,7 @@ from sandbox_science.orchestrator.documents.errors import (
 )
 from sandbox_science.orchestrator.documents.project_macros import head, response_view
 from sandbox_science.orchestrator.projects import ProjectError, recorded
+from sandbox_science.orchestrator.session_plans import SessionPlans
 
 from .models import ReviewConfig, ReviewOutcome, ReviewType, Scope
 from .prompt_bundle import (
@@ -108,10 +109,12 @@ class FindingGroup:
 @dataclass
 class SnapshotBudget:
     """The bytes and items a snapshot has used of ``MAX_SNAPSHOT_BYTES`` and
-    ``MAX_SNAPSHOT_ITEMS``."""
+    ``MAX_SNAPSHOT_ITEMS``, or of the ``share`` of them it may use: half is the share
+    open findings take before feed rows (the review of #449)."""
 
     size: int = 0
     items: int = 0
+    share: int = 1
 
     @staticmethod
     def cost(group: FindingGroup) -> int:
@@ -125,8 +128,9 @@ class SnapshotBudget:
     def fits(self, group: FindingGroup) -> bool:
         return (
             all(len(item.payload.encode()) <= MAX_ITEM_BYTES for item in group.items)
-            and self.size + self.cost(group) <= MAX_SNAPSHOT_BYTES
-            and self.items + len(group.items) + len(group.grants) <= MAX_SNAPSHOT_ITEMS
+            and self.size + self.cost(group) <= MAX_SNAPSHOT_BYTES // self.share
+            and self.items + len(group.items) + len(group.grants)
+            <= MAX_SNAPSHOT_ITEMS // self.share
         )
 
     def add(self, group: FindingGroup) -> None:
@@ -277,6 +281,17 @@ class ReviewStore:
             self.artifacts = ArtifactInventory(documents)
         if artifacts is not None and artifacts.documents is not documents:
             raise ValueError("artifact evidence must share the control connection")
+        self._plans: SessionPlans | None = None
+
+    def _session_plans(self) -> SessionPlans | None:
+        """The session plans a snapshot's plan item reads, made once, since making them
+        checks their budgets in a change of their own; None when they cannot be made."""
+        if self._plans is None:
+            try:
+                self._plans = SessionPlans(self.documents)
+            except DocumentError:
+                return None
+        return self._plans
 
     def scope(self, project: str, session: str) -> None:
         try:
@@ -722,12 +737,23 @@ class ReviewStore:
         author_run: str,
     ) -> _Plan:
         """The items, grants and pins a review of ``kind`` would take now, for the run
-        ``author_run``."""
+        ``author_run``.
+
+        Open findings take their slots first, confirmation targets and rebuttals before
+        the others, in as much as half the snapshot of an author window, or all of a
+        confirmation's, so that feed rows, the actions item and the plan item cannot crowd
+        them out (the review of #449). The feed's next rows take what is left, and a
+        finding that did not fit that share takes what they leave."""
         from .actions import plan_item
 
+        plans = self._session_plans()
         with self.documents.control.read() as tx:
             db = tx.sql
             window = self._dispatch_window(db, project, session)
+            findings = self._open_findings(db, project, session, targets)
+            # The session plan as this read sees it, which a narrated plan change is
+            # checked against (lab 42's B2).
+            planned = None if plans is None else plan_item(plans, db, project, session, author_run)
             # A terminal review's answer may say what the run did in its windows reviewed
             # before; their actions come in as context (lab 42's B5).
             earlier = (
@@ -735,37 +761,55 @@ class ReviewStore:
                 if kind == "terminal"
                 else None
             )
-            # Fix targets and their original evidence take precedence over new feed
-            # items; those keep their watermark for a later review.
-            selected_end, pinned = (
-                (window.watermark, [])
-                if kind == "confirmation"
-                else self._feed_items(db, project, session, window, earlier)
-            )
-            findings = self._open_findings(db, project, session, targets)
-        # The session plan as recorded now, which a narrated plan change is checked
-        # against (lab 42's B2).
-        planned = plan_item(self.documents, project, session, author_run)
+        shown: list[EvidenceItem] = []
         if planned is not None:
             encoded = dump(planned[1])
-            pinned.append(EvidenceItem("plan", dump(planned[0]), encoded, digest(encoded), 1))
-        budget = SnapshotBudget(size=sum(item.size for item in pinned), items=len(pinned))
+            shown.append(EvidenceItem("plan", dump(planned[0]), encoded, digest(encoded), 1))
         grants: dict[str, Json] = {}
+        admitted: dict[int, FindingGroup] = {}
+        reserved = SnapshotBudget(share=1 if kind == "confirmation" else 2)
+        for index, row in enumerate(findings[:MAX_SNAPSHOT_FINDINGS]):
+            group = self._finding_group(project, session, row, grants)
+            if reserved.fits(group):
+                admitted[index] = group
+                grants.update(group.grants)
+                reserved.add(group)
+        # Fix targets and their original evidence take precedence over new feed items;
+        # those keep their watermark for a later review.
+        if kind == "confirmation":
+            selected_end, pinned = window.watermark, []
+        else:
+            room = (
+                MAX_SNAPSHOT_BYTES - reserved.size - sum(item.size for item in shown),
+                MAX_SNAPSHOT_ITEMS - reserved.items - len(shown),
+            )
+            with self.documents.control.read() as tx:
+                selected_end, pinned = self._feed_items(
+                    tx.sql, project, session, window, earlier, room
+                )
+        pinned += shown
+        budget = SnapshotBudget(
+            size=sum(item.size for item in pinned) + reserved.size,
+            items=len(pinned) + reserved.items,
+        )
+        for index, row in enumerate(findings[:MAX_SNAPSHOT_FINDINGS]):
+            if index in admitted:
+                continue
+            group = self._finding_group(project, session, row, grants)
+            if budget.fits(group):
+                admitted[index] = group
+                grants.update(group.grants)
+                budget.add(group)
         included: list[tuple[str, int]] = []
         response_pins: dict[str, Json] = {}
-        groups = 0
-        for row in findings[:MAX_SNAPSHOT_FINDINGS]:
-            group = self._finding_group(project, session, row, grants)
-            if not budget.fits(group):
-                continue
+        for index in sorted(admitted):
+            group = admitted[index]
             pinned.extend(group.items)
             if group.body_pin is not None:
                 response_pins[group.finding] = group.body_pin
             if (group.finding, group.revision) in targets:
                 included.append((group.finding, group.revision))
-            grants.update(group.grants)
-            budget.add(group)
-            groups += 1
+        groups = len(admitted)
         if kind == "confirmation" and included:
             # What the author did since the findings were raised, to check a claimed fix
             # against (lab 41): the actions item, as an author window's.
@@ -868,20 +912,27 @@ class ReviewStore:
         ).fetchone()
         if first is None:
             return None
-        rows = db.execute(
-            "SELECT kind,locator,payload FROM (SELECT seq,kind,locator,payload FROM "
-            "review_feed WHERE project=? AND session=? AND seq>=? AND seq<=? AND "
-            "(kind='action' OR (kind='document' AND source_key GLOB 'document:*')) "
-            "ORDER BY seq DESC LIMIT ?) ORDER BY seq",
-            (project, session, first, window.watermark, 2 * MAX_ACTIONS),
-        ).fetchall()
+        # The run's own actions, its delegated runs' (brought for its review), and the
+        # document revisions they made: not another run's, nor work brought for one.
+        rows = [
+            (kind, stored_json(locator), payload)
+            for kind, locator, payload in db.execute(
+                "SELECT kind,locator,payload FROM (SELECT seq,kind,locator,payload FROM "
+                "review_feed WHERE project=? AND session=? AND seq>=? AND seq<=? AND "
+                "((kind='action' AND (json_extract(locator,'$.run')=? OR "
+                "json_extract(locator,'$.for_run')=?)) OR (kind='document' AND "
+                "source_key GLOB 'document:*')) ORDER BY seq DESC LIMIT ?) ORDER BY seq",
+                (project, session, first, window.watermark, run, run, 2 * MAX_ACTIONS),
+            )
+        ]
+        runs = {run} | {loc.get("run") for _, loc, _ in rows if loc.get("for_run") == run}
         return Earlier(
+            [(loc, stored_json(found)) for kind, loc, found in rows if kind == "action"],
             [
-                (stored_json(loc), stored_json(found))
+                _revised(stored_json(found))
                 for kind, loc, found in rows
-                if kind == "action"
+                if kind == "document" and loc.get("run") in runs
             ],
-            [_revised(stored_json(found)) for kind, _, found in rows if kind == "document"],
             first,
             window.watermark,
         )
@@ -893,40 +944,71 @@ class ReviewStore:
         session: str,
         window: _Window,
         earlier: Earlier | None = None,
+        room: tuple[int, int] | None = None,
     ) -> tuple[int, list[EvidenceItem]]:
-        """The feed's next items after the watermark, as many as the snapshot's bytes
-        allow, and the last one's sequence number. What a tool call read for a quote
-        (a raw ``source``) is not an item: the transcript holds the result the agent saw,
-        and only a source a quote cites comes in, pinned beside its entry (``quoted:``),
-        so a long read that no quote cites leaves the coverage whole (CR-4). The actions
-        item lists the window's actions, and ``earlier``'s as context."""
-        from .actions import actions_item
+        """The feed's next items after the watermark, as many as ``room``, the bytes and
+        items the snapshot leaves them, allows, and the last one's sequence number. What a
+        tool call read for a quote (a raw ``source``) is not an item: the transcript holds
+        the result the agent saw, and only a source a quote cites comes in, pinned beside
+        its entry (``quoted:``), so a long read that no quote cites leaves the coverage
+        whole (CR-4). The actions item lists the window's actions, as many as
+        ``MAX_ACTIONS``, and ``earlier``'s as context; the rows it folds take no item.
 
+        A delegation's batch, its outcome and the rows that follow it under its key, comes
+        whole or waits whole for the next window (the review of #449), so that a review
+        that holds an execution of a delegated run holds its outcome; a batch the window
+        begins with comes whole, bounded as ``delegated.py`` bounds it."""
+        from .actions import MAX_ACTIONS, actions_item
+
+        max_bytes, max_items = room or (MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_ITEMS)
         items: list[EvidenceItem] = []
         actions: list[tuple[Json, Json]] = []
         revised: list[Json] = []
         size, end = 0, window.watermark
+        batch: tuple[str, int, int, int, int, int] | None = None
+        """The batch being read: its keys' prefix, and the window as it stood before it."""
         for seq, key, kind, locator, payload, sha, complete in db.execute(
             "SELECT seq,source_key,kind,locator,payload,sha256,complete FROM review_feed "
-            "WHERE project=? AND session=? AND seq>? AND seq<=? ORDER BY seq LIMIT ?",
-            (project, session, window.watermark, window.end, MAX_SNAPSHOT_ITEMS),
+            "WHERE project=? AND session=? AND seq>? AND seq<=? ORDER BY seq",
+            (project, session, window.watermark, window.end),
         ):
-            if kind == "source" and not str(key).startswith("quoted:"):
-                end = seq
+            key = str(key)
+            if batch is not None and not key.startswith(batch[0]):
+                batch = None
+            raw = kind == "source" and not key.startswith("quoted:")
+            folded = raw or kind == "action"
+            item = None if folded else EvidenceItem(kind, locator, payload, sha, complete)
+            # Room is kept for the actions item, at most half an item; the plan item's
+            # is outside ``room``.
+            full = (
+                len(actions) >= MAX_ACTIONS
+                if kind == "action"
+                else item is not None
+                and bool(items)
+                and (
+                    size + item.size > max_bytes - MAX_ITEM_BYTES // 2
+                    or len(items) >= max_items - 1
+                )
+            )
+            if full and batch is None:
+                break
+            if full and batch is not None and (batch[1] or batch[2]):
+                # Leave the batch whole for the next window.
+                _, kept, listed, changed, size, end = batch
+                del items[kept:], actions[listed:], revised[changed:]
+                break
+            if kind == "delegation" and key.startswith("delegated:") and key.count(":") == 1:
+                batch = (f"{key}:", len(items), len(actions), len(revised), size, end)
+            end = seq
+            if raw:
                 continue
-            if kind == "action":
+            if item is None:
                 # One derived item lists the window's actions, after the others.
                 actions.append((stored_json(locator), stored_json(payload)))
-                end = seq
                 continue
-            item = EvidenceItem(kind, locator, payload, sha, complete)
-            # Room is kept for the actions and plan items, at most half an item each.
-            if items and size + item.size > MAX_SNAPSHOT_BYTES - MAX_ITEM_BYTES:
-                break
             items.append(item)
             size += item.size
-            end = seq
-            if kind == "document" and str(key).startswith("document:"):
+            if kind == "document" and key.startswith("document:"):
                 revised.append(_revised(stored_json(payload)))
         if actions or revised or (earlier is not None and (earlier.actions or earlier.documents)):
             located, listed = actions_item(actions, revised, window.watermark + 1, end, earlier)

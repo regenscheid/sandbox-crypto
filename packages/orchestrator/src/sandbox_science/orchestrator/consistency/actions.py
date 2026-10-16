@@ -19,6 +19,7 @@ context (lab 42's B5). A narrated action the list does not hold has no record (r
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Final, cast
@@ -165,17 +166,17 @@ def _plan_made(call: Json, given: Json) -> list[str]:
 
 
 def plan_item(
-    documents: DocumentStore, project: str, session: str, run: str
+    plans: SessionPlans, db: sqlite3.Connection, project: str, session: str, run: str
 ) -> tuple[Json, Json] | None:
-    """The session plan as recorded now, as a review's ``plan`` item (lab 42's B2): its
-    locator, and its payload, which gives the plan's status and goal outcome and each
-    current step's title, track and latest recorded status, with who recorded it and
-    when; None when the session has no plan, or it cannot be read."""
+    """The session plan as recorded in the open read ``db``, as a review's ``plan`` item
+    (lab 42's B2): its locator, and its payload, which gives the plan's status and goal
+    outcome and each current step's title, track and latest recorded status, with who
+    recorded it and when; None when the session has no plan, or it cannot be read."""
     try:
         reader = PlanAuthority(
             scope=PlanScope(project_id=project, session_id=session), role="main", run_id=run
         )
-        plan = SessionPlans(documents).compact_current(reader)
+        plan = plans.compact_in(db, reader)
     except (DocumentError, ValueError):  # a plan past the read's bound, or no run to read as
         return None
     if plan is None:

@@ -509,6 +509,15 @@ async def test_a_terminal_review_holds_the_runs_actions_in_its_earlier_windows(
     exchange, call = called(1, "document_create", {"name": "notes"}, **created)
     transcript = [{"role": "user", "content": "Write the notes."}, *exchange]
     await controller.safe_point(transcript, tool=created, call=call)
+    # Delegated work brought for this run's review is its; work brought for another's
+    # is not (the review of #449).
+    for n, (task, reviewed) in enumerate([("task-0", "author-0"), ("task-1", "author-1")]):
+        reviews.observe(
+            "p", "s", f"delegated:dlg-{n}:action:0", "action",
+            {"run": task, "delegation": f"dlg-{n}", "for_run": reviewed, "message": 0},
+            {"tool": "sage", "call": "0", "target": {}, "outcome": "ok",
+             "made": [f"execution exe-{n} (succeeded)"]},
+        )  # fmt: skip
     checkpoint = dispatch(reviews, "checkpoint")
     reviews.finish("p", "s", checkpoint, "owner", "inconclusive", "Checked.")
     transcript.append({"role": "assistant", "content": "I created the notes: the order is 19."})
@@ -521,7 +530,8 @@ async def test_a_terminal_review_holds_the_runs_actions_in_its_earlier_windows(
     assert (found["actions"], found["documents"]) == ([], [])
     earlier = found["earlier"]
     assert [(a["run"], a["tool"], a["made"]) for a in earlier["actions"]] == [
-        ("author-1", "document_create", [f"document {notes.document_id} r1"])
+        ("author-1", "document_create", [f"document {notes.document_id} r1"]),
+        ("task-1", "sage", ["execution exe-1 (succeeded)"]),
     ]
     assert [(d["document"], d["revision"]) for d in earlier["documents"]] == [
         (notes.document_id, 1)
@@ -531,6 +541,76 @@ async def test_a_terminal_review_holds_the_runs_actions_in_its_earlier_windows(
     items = reviews.manifest("p", "s", checkpoint, limit=50)["evidence"]
     (listed,) = [i for i in items if i["kind"] == "actions"]
     assert "earlier" not in listed["locator"]
+
+
+DELEGATION = "dlg-" + "1" * 24
+
+
+def delegated(documents: Any, tools: list[dict[str, Any]], summary: str) -> None:
+    """Run author-1 of session s, and its delegation ``DELEGATION``, a task run task-1
+    whose tool records are ``tools``, ended with ``summary``."""
+    from datetime import UTC, datetime, timedelta
+
+    from sandbox_science.orchestrator.delegation.records import (
+        Delegation,
+        DelegationRecords,
+        Ending,
+    )
+    from sandbox_science.orchestrator.projects import ProjectStore, RunRecord, run_name
+
+    projects = ProjectStore(documents.path.parent)
+    context = context_for(ReviewStore(documents))
+    start = datetime(2026, 10, 16, 3, tzinfo=UTC)
+    later = start + timedelta(seconds=1)
+    parent, child = run_name(start, "author-1"), run_name(later, "task-1")
+    records = DelegationRecords(documents)
+    try:
+        projects.save_run(
+            RunRecord(run_id="author-1", context=context, task="t", started_at=start,
+                      ended_at=start, stopped="answered", messages=[], tools=[])
+        )  # fmt: skip
+        records.start("p", "s", Delegation.model_validate(
+            {"delegation_id": DELEGATION, "parent": parent, "run": child, "kind": "task",
+             "brief": {"task": "Factor the twist order."},
+             "started_at": start.isoformat()}))  # fmt: skip
+        records.end("p", "s", DELEGATION, Ending(
+            "returned", "answered", summary,
+            result={"status": "complete", "summary": summary}))  # fmt: skip
+        projects.save_run(
+            RunRecord(run_id="task-1", role="delegated", parent=parent, delegation=DELEGATION,
+                      context=context, task="t", started_at=later, ended_at=later,
+                      stopped="answered", messages=[], tools=tools)
+        )  # fmt: skip
+    finally:
+        projects.close()
+
+
+def cell(number: int, text: str, **record: Any) -> dict[str, Any]:
+    """A delegated run's ``sage`` call whose cell printed ``text``."""
+    execution = {"execution_id": f"exe-{number}", "attempt_id": f"att-{number}",
+                 "kind": "cell", "state": "succeeded",
+                 "request": {"code": f"step{number}()", "language": "sage"},
+                 "result": {"stdout": {"text": text, "truncated": False},
+                            "stderr": {"text": "", "truncated": False}, "exit_code": 0,
+                            "outputs": [], "written_files": []}}  # fmt: skip
+    return {"tool": "sage", "arguments": json.dumps({"code": f"step{number}()"}),
+            "effect": "effect", "execution": execution, **record}  # fmt: skip
+
+
+def evidence(reviews: ReviewStore, review: str) -> list[dict[str, Any]]:
+    """Every item of ``review``, in order."""
+    items: list[dict[str, Any]] = []
+    after = 0
+    while True:
+        page = reviews.manifest("p", "s", review, after=after, limit=50)
+        items += page["evidence"]
+        if page["next_after"] is None:
+            return items
+        after = page["next_after"]
+
+
+def read(reviews: ReviewStore, review: str, item: dict[str, Any]) -> Any:
+    return json.loads(reviews.read_evidence("p", "s", review, item["evidence"])["text"])
 
 
 @pytest.mark.asyncio
@@ -543,79 +623,180 @@ async def test_a_delegated_runs_executions_and_their_output_reach_the_review(
     review holds the delegated run's executions with their output, in each state its
     calls saw them, bounded as the run's own are, each naming its run and delegation;
     none of it makes a review due."""
-    from datetime import UTC, datetime, timedelta
-
-    from sandbox_science.orchestrator.delegation.records import (
-        Delegation,
-        DelegationRecords,
-        Ending,
-    )
-    from sandbox_science.orchestrator.projects import ProjectStore, RunRecord, run_name
-
     reviews, documents, _ = store
-    context = context_for(reviews)
-    start = datetime(2026, 10, 16, 3, tzinfo=UTC)
-    parent, child = run_name(start, "author-1"), run_name(start + timedelta(seconds=1), "task-1")
     factor = "1013176677300131846900870239606035638738100997248092069256697437031"
-    cell = {"execution_id": "exe-1", "attempt_id": "att-1", "kind": "cell", "state": "succeeded",
-            "request": {"code": "factor(n)", "language": "sage"},
-            "result": {"stdout": {"text": f"{factor}\n", "truncated": False},
-                       "stderr": {"text": "", "truncated": False}, "exit_code": 0,
-                       "outputs": [], "written_files": []}}  # fmt: skip
     queued = {"execution_id": "exe-2", "kind": "job", "state": "queued"}
     ended = {**queued, "state": "succeeded",
              "result": {"stdout": {"text": "is_prime: True\n", "truncated": False}}}  # fmt: skip
-    tools: list[dict[str, Any]] = [
-        {"tool": "sage", "arguments": json.dumps({"code": "factor(n)"}), "effect": "effect",
-         "execution": cell},
+    summary = f"The largest factor ends in {factor[-4:-1]}3."
+    delegated(documents, [
+        cell(1, f"{factor}\n"),
         {"tool": "start_job", "arguments": "{}", "effect": "effect", "execution": queued},
         {"tool": "wait_jobs", "arguments": "{}", "effect": "read", "executions": [ended]},
         {"tool": "job_status", "arguments": "{}", "effect": "read", "execution": ended},
-    ]  # fmt: skip
-    delegation = "dlg-" + "1" * 24
-    summary = f"The largest factor ends in {factor[-4:-1]}3."
-    projects = ProjectStore(documents.path.parent)
-    records = DelegationRecords(documents)
-    try:
-        projects.save_run(
-            RunRecord(run_id="author-1", context=context, task="t", started_at=start,
-                      ended_at=start, stopped="answered", messages=[], tools=[])
-        )  # fmt: skip
-        records.start("p", "s", Delegation.model_validate(
-            {"delegation_id": delegation, "parent": parent, "run": child, "kind": "task",
-             "brief": {"task": "Factor the twist order."},
-             "started_at": start.isoformat()}))  # fmt: skip
-        records.end("p", "s", delegation, Ending(
-            "returned", "answered", summary,
-            result={"status": "complete", "summary": summary}))  # fmt: skip
-        projects.save_run(
-            RunRecord(run_id="task-1", role="delegated", parent=parent, delegation=delegation,
-                      context=context, task="t", started_at=start + timedelta(seconds=1),
-                      ended_at=start + timedelta(seconds=1), stopped="answered", messages=[],
-                      tools=tools)
-        )  # fmt: skip
-    finally:
-        projects.close()
-    controller = ReviewController(reviews, context, run_id="author-1", model=None, alias=None)
+    ], summary)  # fmt: skip
+    controller = ReviewController(
+        reviews, context_for(reviews), run_id="author-1", model=None, alias=None
+    )
     await controller.safe_point([])
     assert not reviews.due("p", "s")
     assert not reviews.run_effects("p", "s", "author-1")
     review = dispatch(reviews)
-    items = reviews.manifest("p", "s", review, limit=50)["evidence"]
+    items = evidence(reviews, review)
     executions = [i for i in items if i["kind"] == "execution"]
     assert [(i["locator"]["execution"], i["locator"]["message"]) for i in executions] == [
         ("exe-1", 0), ("exe-2", 1), ("exe-2", 2)
     ]  # fmt: skip
     assert {(i["locator"]["run"], i["locator"]["delegation"]) for i in executions} == {
-        ("task-1", delegation)
+        ("task-1", DELEGATION)
     }
-    read = [
-        json.loads(reviews.read_evidence("p", "s", review, i["evidence"])["text"])
-        for i in executions
-    ]
-    assert [(e["state"], e["stdout"]) for e in read] == [
+    found = [read(reviews, review, i) for i in executions]
+    assert [(e["state"], e["stdout"]) for e in found] == [
         ("succeeded", f"{factor}\n"), ("queued", ""), ("succeeded", "is_prime: True\n")
     ]  # fmt: skip
-    assert read[0]["request"] == {"code": "factor(n)", "language": "sage"}
+    assert found[0]["request"] == {"code": "step1()", "language": "sage"}
+    # The outcome comes first in its batch, and says that none was left out.
+    assert items[0]["kind"] == "delegation"
+    outcome = read(reviews, review, items[0])
+    assert outcome["result"]["summary"] == summary
+    assert (outcome["executions"]["held"], outcome["executions"]["left_out"]) == (3, 0)
+
+
+@pytest.mark.asyncio
+async def test_a_busy_delegated_runs_review_holds_its_decisive_executions(store: Any) -> None:
+    """The review of #449: of 150 executions, the first 100 came in and the last, decisive
+    ones were left out. Those whose output holds a number the outcome states, or nearly,
+    come first, then the latest, and the outcome says how many were left out."""
+    reviews, documents, _ = store
+    stated = "301234567890123"
+    tools = [cell(n, f"attempt {n}: residue {n:05d}\n") for n in range(150)]
+    tools[20] = cell(20, f"attempt 20: the order is {stated[:-1]}1\n")
+    delegated(documents, tools, f"The order is {stated}.")
+    controller = ReviewController(
+        reviews, context_for(reviews), run_id="author-1", model=None, alias=None
+    )
+    await controller.safe_point([])
+    review = dispatch(reviews)
+    items = evidence(reviews, review)
+    held = {i["locator"]["execution"] for i in items if i["kind"] == "execution"}
+    assert len(held) == 100
+    assert {"exe-20", "exe-149", "exe-51"} <= held
+    assert not {"exe-0", "exe-19", "exe-50"} & held
     (outcome,) = [i for i in items if i["kind"] == "delegation"]
-    assert summary in reviews.read_evidence("p", "s", review, outcome["evidence"])["text"]
+    counted = read(reviews, review, outcome)["executions"]
+    assert (counted["held"], counted["left_out"]) == (100, 50)
+
+
+@pytest.mark.asyncio
+async def test_a_delegations_batch_is_never_split_across_review_windows(store: Any) -> None:
+    """The review of #449: 200 calls' actions counted against a window's 256 rows, and the
+    outcome came last, so a review held executions and the run's relayed value but not the
+    outcome they bear on. A delegation's batch begins with its outcome and comes whole: a
+    window it would overflow ends before it, and the next takes it whole."""
+    from .test_consistency import claim
+
+    reviews, documents, now = store
+    tools = [cell(n, f"attempt {n}: candidate ...{7000 + n}\n" + "x" * 3000) for n in range(200)]
+    delegated(documents, tools, "The final factor ends in 7199.")
+    for n in range(200):
+        claim(reviews, f"Step {n} is done.", f"m{n}")
+    controller = ReviewController(
+        reviews, context_for(reviews), run_id="author-1", model=None, alias=None
+    )
+    await controller.safe_point(
+        [{"role": "user", "content": "Factor it."},
+         {"role": "assistant", "content": "The factor ends in 7199."}]
+    )  # fmt: skip
+    reviews.observe("p", "s", "after", "transcript", {"run": "author-1", "message": 9},
+                    {"role": "assistant", "content": "Done."})  # fmt: skip
+    seen: list[tuple[str, list[dict[str, Any]]]] = []
+    while reviews.progress("p", "s")["remaining"]:
+        now[0] += 1000
+        review = dispatch(reviews, "checkpoint")
+        seen.append((review, evidence(reviews, review)))
+        reviews.finish("p", "s", review, "owner", "inconclusive", "Checked.")
+    assert len(seen) >= 2
+    holding = [
+        (review, items)
+        for review, items in seen
+        if any("delegation" in i["locator"] for i in items)
+    ]
+    ((review, items),) = holding  # the batch is in one review, whole
+    executions = [i["locator"]["execution"] for i in items if i["kind"] == "execution"]
+    assert (len(executions), executions[-1]) == (100, "exe-199")
+    (outcome,) = [i for i in items if i["kind"] == "delegation"]
+    assert read(reviews, review, outcome)["executions"]["left_out"] == 100
+    # The window before it ended before the batch rather than split it.
+    assert any(i["kind"] == "transcript" for _, before in seen[:1] for i in before)
+    assert holding[0][0] != seen[0][0]
+
+
+@pytest.mark.asyncio
+async def test_an_output_cut_short_brings_the_file_it_was_saved_to(
+    store: Any, tmp_path: Path
+) -> None:
+    """The review of #449: a delegated execution's stdout past 8,192 characters is cut in
+    its item. The file the harness saved the whole output to comes with it, as the run
+    recorded it, copied as a ledger entry's pins are."""
+    import hashlib
+
+    reviews, documents, _ = store
+    whole = "".join(f"line {n}: residue {n:06d}\n" for n in range(1000))
+    path, data = "call-output/exe-1/stdout.txt", whole.encode()
+    artifact = published(documents, tmp_path, path, data)
+    recorded = {"recorded": 1, "files": [
+        {"path": path, "artifact_id": artifact, "revision": 1, "size": len(data),
+         "sha256": hashlib.sha256(data).hexdigest(), "content_retained": True,
+         "deleted": False, "reproduced": False}]}  # fmt: skip
+    delegated(
+        documents,
+        [cell(1, whole, saved_output={"stdout": path}, recorded_files=recorded)],
+        "The last residue is 999.",
+    )
+    controller = ReviewController(
+        reviews, context_for(reviews), run_id="author-1", model=None, alias=None
+    )
+    await controller.safe_point([])
+    review = dispatch(reviews)
+    items = evidence(reviews, review)
+    (execution,) = [i for i in items if i["kind"] == "execution"]
+    assert read(reviews, review, execution)["stdout_truncated"]
+    (output,) = [i for i in items if "output_of" in i["locator"]]
+    assert output["locator"]["output_of"] == {"execution": "exe-1", "stream": "stdout"}
+    assert output["locator"]["delegated"]["delegation"] == DELEGATION
+    payload = reviews.evidence("p", "s", review, output["evidence"])["payload"]
+    assert "line 999: residue 000999" in json.dumps(payload)
+
+
+def test_open_findings_keep_their_slots_before_feed_rows(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The review of #449: feed rows took a snapshot's items first, and open findings that
+    did not fit what was left were silently left out of the review that should weigh
+    them. Open findings take their slots first, up to half the snapshot; the feed rows
+    that do not fit wait for the next window."""
+    from sandbox_science.orchestrator.consistency import store as storage
+
+    from .test_consistency import claim, raise_finding
+
+    reviews, _, _ = store
+    for n in range(3):
+        claim(reviews, f"The count is {16 + n}.", f"first-{n}")
+    first = dispatch(reviews)
+    claimed = reviews.manifest("p", "s", first)["evidence"]
+    raised = [
+        raise_finding(reviews, first, anchors=[{"evidence": item["evidence"]}],
+                      operation_id=f"finding-{n}", statement=f"The count is wrong ({n}).")
+        for n, item in enumerate(claimed)
+    ]  # fmt: skip
+    reviews.finish("p", "s", first, "owner", "findings", "Three findings.")
+    for n in range(20):
+        claim(reviews, f"Step {n} is done.", f"later-{n}")
+    monkeypatch.setattr(storage, "MAX_SNAPSHOT_ITEMS", 16)
+    review = dispatch(reviews)
+    items = reviews.manifest("p", "s", review, limit=50)["evidence"]
+    held = {i["locator"]["finding"] for i in items if i["kind"] == "finding"}
+    assert held == {finding["finding_id"] for finding in raised}
+    transcripts = [i for i in items if i["kind"] == "transcript"]
+    assert 0 < len(transcripts) < 20
+    assert not reviews.run("p", "s", review)["coverage_complete"]

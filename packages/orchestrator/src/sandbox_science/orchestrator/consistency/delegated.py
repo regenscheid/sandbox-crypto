@@ -1,19 +1,26 @@
 # SPDX-License-Identifier: MIT
 """A run's delegated runs' work, in its review (docs/specs/consistency-review.md, CR-2 as
-the coordinator amended it for lab 41's B5).
+the coordinator amended it for lab 41's B5 and lab 42's B3).
 
 A delegated run has no review of its own: what it did reaches its parent as an outcome.
 So once a delegation of the run ends, its review window gains, from the platform's own
-records: the delegated run's actions, read from its run record as the run's own are
-(``actions.action_from``), naming the delegation; its executions with their output, each
-in each state its calls saw it, bounded as the run's own are; the delegation's outcome,
-as context; and the result files its outcome pinned, copied as a ledger entry's pins are.
-Delegations of those delegations come in too. None of it makes a review due.
+records: the delegation's outcome, as context; the delegated run's actions, read from its
+run record as the run's own are (``actions.action_from``), naming the delegation; its
+executions with their output, bounded as the run's own are; and the result files its
+outcome pinned, copied as a ledger entry's pins are. Delegations of those delegations
+come in too. None of it makes a review due.
 
 The executions are the record an outcome's summary rests on (lab 42's B3): a task printed
 one value from Sage and its summary gave another, and a review that held only the
-summary took it as checked. Each names its run, its delegation and its place among the
-run's tool calls, which is where it is read from.
+summary took it as checked. A busy run has more than a review holds, so they are chosen:
+first those whose output holds a number the outcome states, or nearly, then the latest;
+the outcome says how many were left out. An execution whose output was cut short brings
+the file its whole output was saved to, when the run recorded it. Each names its run, its
+delegation and its place among the run's tool calls, which is where it is read from.
+
+A delegation's observations are one batch, recorded in one change with the outcome first,
+which marks the delegation as recorded: a review window takes a batch whole or not at all
+(``ReviewStore._feed_items``), so a review that holds an execution holds its outcome.
 """
 
 from __future__ import annotations
@@ -30,7 +37,8 @@ from .actions import action_from
 from .artifacts import pinned_artifact
 from .executions import execution_projection
 from .ledger import delegation_outcome
-from .store import Json, ReviewStore
+from .numbers import distance, numbers
+from .store import Json, ReviewStore, dump
 
 _log = logging.getLogger(__name__)
 
@@ -40,8 +48,16 @@ MAX_DELEGATED_ACTIONS: Final = 200
 """The most actions one delegated run brings into its parent's review."""
 MAX_DELEGATED_EXECUTIONS: Final = 100
 """The most execution items one delegated run brings into its parent's review."""
+MAX_DELEGATED_BYTES: Final = 2 * 1024 * 1024
+"""The most bytes its execution items and saved outputs take, so that a delegation's batch
+fits one review's snapshot whole."""
+MAX_SAVED: Final = 8
+"""The most saved outputs of executions cut short one delegated run brings."""
+MAX_HELD: Final = 200
+"""The most numbers of one execution's output compared with those its outcome states."""
 MAX_RESULTS: Final = 8
 """The most result files one delegation brings into its parent's review."""
+CHOSEN: Final = "those whose output holds a number this outcome states, or nearly, then the latest"
 
 
 @dataclass(frozen=True)
@@ -90,11 +106,18 @@ def ended_delegations(
 
 
 def delegated_work(
-    store: ReviewStore, project: str, session: str, delegation: str, name: str, run_id: str
+    store: ReviewStore,
+    project: str,
+    session: str,
+    delegation: str,
+    name: str,
+    run_id: str,
+    reviewed: str,
 ) -> list[Delegated] | None:
-    """What delegation ``delegation``'s run (record ``name``) did, as observations of its
-    parent's review: its actions, its result files and, last, its outcome; None while its
-    run record is not kept yet."""
+    """What delegation ``delegation``'s run (record ``name``, ID ``run_id``) did, as
+    observations of the review of run ``reviewed``, in the order they are recorded: its
+    outcome, then its actions, its chosen executions with the saved outputs of those cut
+    short, and its result files; None while its run record is not kept yet."""
     with store.documents.control.read() as tx:
         row = tx.sql.execute(
             "SELECT json_extract(record,'$.tools') FROM runs WHERE project_id=? "
@@ -107,13 +130,24 @@ def delegated_work(
         ).fetchone()
     if row is None:
         return None
-    tools = cast(list[Any], json.loads(row[0])) if row[0] else []
+    tools = [cast(Json, t) if isinstance(t, dict) else None for t in json.loads(row[0] or "[]")]
+    located = {"run": run_id, "delegation": delegation, "for_run": reviewed}
+    outcome = delegation_outcome(store, project, delegation)
+    executions, left_out = _chosen(store, project, tools, outcome)
     found: list[Delegated] = []
-    located = {"run": run_id, "delegation": delegation}
-    actions = executions = 0
-    states: set[str] = set()  # an execution in a state once, as the run's own are
-    for number, raw in enumerate(tools):
-        call = cast(Json, raw) if isinstance(raw, dict) else None
+    if outcome is not None:
+        count = sum(len(listed) for listed in executions.values())
+        held = {"held": count, "left_out": left_out, "chosen": CHOSEN}
+        found.append(
+            Delegated(
+                f"delegated:{delegation}",
+                "delegation",
+                {**located, "name": name},
+                {**outcome, "executions": held},
+            )
+        )
+    actions = 0
+    for number, call in enumerate(tools):
         action = action_from(call, f"{number}") if actions < MAX_DELEGATED_ACTIONS else None
         if action is not None:
             actions += 1
@@ -125,13 +159,8 @@ def delegated_work(
                     action,
                 )
             )
-        for execution in _executions(call):
+        for execution, payload, complete, saved in executions.get(number, []):
             identity = f"{execution['execution_id']}:{execution.get('state')}"
-            if executions >= MAX_DELEGATED_EXECUTIONS or identity in states:
-                continue
-            executions += 1
-            states.add(identity)
-            payload, complete = execution_projection(execution)
             found.append(
                 Delegated(
                     f"delegated:{delegation}:execution:{identity}",
@@ -146,13 +175,133 @@ def delegated_work(
                     complete,
                 )
             )
-    recorded = cast(Json, json.loads(files[0])) if files and files[0] else {}
+            for stream, (locator, output) in saved.items():
+                output_of = {"execution": execution["execution_id"], "stream": stream}
+                found.append(
+                    Delegated(
+                        f"delegated:{delegation}:output:{identity}:{stream}",
+                        "artifact",
+                        {**locator, "delegated": located, "output_of": output_of},
+                        output,
+                    )
+                )
+    found += _results(store, project, delegation, files[0] if files else None, located)
+    return found
+
+
+Chosen = tuple[Json, Json, bool, dict[str, tuple[Json, Json]]]
+"""An execution chosen for a review: its record, its projection, whether that is complete,
+and the saved outputs of its streams cut short, each its locator and copy."""
+
+
+def _chosen(
+    store: ReviewStore, project: str, tools: list[Json | None], outcome: Json | None
+) -> tuple[dict[int, list[Chosen]], int]:
+    """The executions a review holds of a delegated run's tool records ``tools``, by the
+    number of the record each was read from, in the order the calls saw them, and how many
+    it leaves out: each in each state its calls saw it, once; as many as
+    ``MAX_DELEGATED_EXECUTIONS`` within ``MAX_DELEGATED_BYTES``, first those whose output
+    holds a number ``outcome`` states, or nearly, then the latest, so that a busy run's
+    last, decisive ones are not the ones left out (the review of lab 42's B3)."""
+    every: list[tuple[int, Json]] = []
+    seen: set[str] = set()
+    for number, call in enumerate(tools):
+        for execution in _executions(call):
+            identity = f"{execution['execution_id']}:{execution.get('state')}"
+            if identity not in seen:
+                seen.add(identity)
+                every.append((number, execution))
+    stated: set[str] = set(numbers(dump(outcome))) if outcome is not None else set()
+    order = sorted(range(len(every)), key=lambda i: (not _bears(every[i][1], stated), -i))
+    picked: dict[int, tuple[Json, bool, dict[str, tuple[Json, Json]]]] = {}
+    size = saved = 0
+    for index in order:
+        if len(picked) >= MAX_DELEGATED_EXECUTIONS:
+            break
+        number, execution = every[index]
+        payload, complete = execution_projection(execution)
+        cost = len(dump(payload).encode())
+        if size + cost > MAX_DELEGATED_BYTES:
+            continue
+        size += cost
+        outputs: dict[str, tuple[Json, Json]] = {}
+        for stream in ("stdout", "stderr"):
+            if saved >= MAX_SAVED or not payload.get(f"{stream}_truncated"):
+                continue
+            copied = _saved_output(store, project, tools[number], stream)
+            cost = len(dump(copied).encode()) if copied is not None else 0
+            if copied is not None and size + cost <= MAX_DELEGATED_BYTES:
+                outputs[stream] = copied
+                size, saved = size + cost, saved + 1
+        picked[index] = (payload, complete, outputs)
+    chosen: dict[int, list[Chosen]] = {}
+    for index in sorted(picked):
+        number, execution = every[index]
+        chosen.setdefault(number, []).append((execution, *picked[index]))
+    return chosen, len(every) - len(picked)
+
+
+def _bears(execution: Json, stated: set[str]) -> bool:
+    """Whether ``execution``'s output holds one of the numbers ``stated``, or one within
+    the edits a number copied by hand is off by (``numbers.near``'s bound), its last two
+    digits included: p and p + 2 are the pair a misstated summary makes."""
+    if not stated:
+        return False
+    result = cast(Json, execution.get("result") or {})
+    text = "\n".join(
+        str(cast(Json, result.get(stream) or {}).get("text", "")) for stream in ("stdout", "stderr")
+    )
+    held = numbers(text)[:MAX_HELD]
+    return any(
+        distance(number, value, max(3, len(number) * 5 // 100)) is not None
+        for number in stated
+        for value in held
+    )
+
+
+def _saved_output(
+    store: ReviewStore, project: str, call: Json | None, stream: str
+) -> tuple[Json, Json] | None:
+    """The file the harness saved ``stream``'s whole output of ``call`` to (tools spec
+    Shell 5), as the run recorded it, copied as a ledger entry's pins are, so at most
+    64 KiB of text; None when there is none, it was not recorded with its content, or it
+    cannot be copied whole."""
+    if call is None:
+        return None
+    path = cast(Json, call.get("saved_output") or {}).get(stream)
+    listed = cast(Json, call.get("recorded_files") or {}).get("files")
+    if not isinstance(path, str) or not isinstance(listed, list):
+        return None
+    for raw in cast(list[Any], listed):
+        entry = cast(Json, raw) if isinstance(raw, dict) else {}
+        named = entry.get("path")
+        if not isinstance(named, str) or not (named == path or named.endswith(f"/{path}")):
+            continue
+        artifact, revision, sha256 = (entry.get(k) for k in ("artifact_id", "revision", "sha256"))
+        if (
+            entry.get("content_retained") is not True
+            or not isinstance(artifact, str)
+            or not isinstance(revision, int)
+            or not isinstance(sha256, str)
+        ):
+            return None
+        return pinned_artifact(store, project, artifact, revision, sha256)
+    return None
+
+
+def _results(
+    store: ReviewStore, project: str, delegation: str, files: str | None, located: Json
+) -> list[Delegated]:
+    """The result files a delegation's outcome pinned (``files``, as its record keeps
+    them), as many as ``MAX_RESULTS``, copied as a ledger entry's pins are."""
+    recorded = cast(Json, json.loads(files)) if files else {}
     results = [
         cast(Json, item)
         for part in ("results", "files")
         for item in cast(list[Any], recorded.get(part) or [])
         if isinstance(item, dict)
     ]
+    found: list[Delegated] = []
     seen: set[tuple[str, int]] = set()
     for item in results:
         if len(seen) >= MAX_RESULTS:
@@ -177,11 +326,6 @@ def delegated_work(
                     payload,
                 )
             )
-    outcome = delegation_outcome(store, project, delegation)
-    if outcome is not None:
-        found.append(
-            Delegated(f"delegated:{delegation}", "delegation", {**located, "name": name}, outcome)
-        )
     return found
 
 
@@ -201,25 +345,29 @@ def _executions(call: Json | None) -> list[Json]:
 
 def observe_delegated(store: ReviewStore, project: str, session: str, run_id: str) -> int:
     """Record the work of each ended delegation below run ``run_id`` the session's feed
-    does not hold yet; how many delegations it recorded. A record the feed refuses is
-    left out, and logged."""
+    does not hold yet; how many delegations it recorded. Each delegation's observations
+    are recorded in one change, its outcome first, so the feed holds its batch whole or
+    not at all; a record the feed refuses is left out, and logged."""
     recorded = 0
     for delegation, name, child in ended_delegations(store, project, session, run_id):
-        found = delegated_work(store, project, session, delegation, name, child)
+        found = delegated_work(store, project, session, delegation, name, child, run_id)
         if found is None:
             continue  # its run record comes later
-        for item in found:
-            try:
-                store.observe(
-                    project,
-                    session,
-                    item.key,
-                    cast(Any, item.kind),
-                    item.locator,
-                    item.payload,
-                    complete=item.complete,
-                )
-            except DocumentError:
-                _log.warning("left out %s for %s/%s", item.key, project, session)
+        store.scope(project, session)
+        with store.documents.control.write() as tx:
+            for item in found:
+                try:
+                    store.record_observation(
+                        tx.sql,
+                        project,
+                        session,
+                        item.key,
+                        item.kind,
+                        item.locator,
+                        item.payload,
+                        complete=item.complete,
+                    )
+                except DocumentError:  # refused before it wrote anything
+                    _log.warning("left out %s for %s/%s", item.key, project, session)
         recorded += 1
     return recorded

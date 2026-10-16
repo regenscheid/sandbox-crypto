@@ -1266,51 +1266,55 @@ class SessionPlans:
         if self.documents.control.missing:
             return None
         with self.documents.control.read() as tx:
-            db = tx.sql
-            pointer = self._current(db, authority.scope)
-            if pointer is None:
-                return None
-            head = self._head(db, authority.scope, pointer.ref)
-            version = self._version(db, authority.scope, pointer.ref)
-            used = len(
-                _json(
-                    {
-                        "head": head.model_dump(mode="json"),
-                        "version": version.model_dump(mode="json"),
-                    },
-                    MAX_PAGE,
-                )
+            return self.compact_in(tx.sql, authority)
+
+    def compact_in(self, db: sqlite3.Connection, authority: PlanAuthority) -> CompactPlan | None:
+        """``compact_current`` in the caller's open read of the control store ``db``."""
+        authority = _checked(PlanAuthority, authority)
+        pointer = self._current(db, authority.scope)
+        if pointer is None:
+            return None
+        head = self._head(db, authority.scope, pointer.ref)
+        version = self._version(db, authority.scope, pointer.ref)
+        used = len(
+            _json(
+                {
+                    "head": head.model_dump(mode="json"),
+                    "version": version.model_dump(mode="json"),
+                },
+                MAX_PAGE,
             )
-            steps: list[CompactStep] = []
-            for step_id, (_, fingerprint) in _steps(version.body).items():
-                latest = self._latest(db, authority.scope, pointer.ref, step_id)
-                if latest is not None and latest.sequence > head.progress_cursor:
-                    raise DocumentError(INTERNAL, "retained progress exceeds its head")
-                projection = CompactStep(
-                    step_id=step_id,
-                    step_sha256=fingerprint,
-                    matches_current_step=latest is not None and latest.step_sha256 == fingerprint,
-                    latest=CompactProgress(
-                        ref=latest.ref,
-                        sequence=latest.sequence,
-                        step_sha256=latest.step_sha256,
-                        status=latest.status,
-                        author=latest.author,
-                        recorded_at=latest.recorded_at,
-                        evidence_count=len(latest.evidence),
-                    )
-                    if latest is not None
-                    else None,
+        )
+        steps: list[CompactStep] = []
+        for step_id, (_, fingerprint) in _steps(version.body).items():
+            latest = self._latest(db, authority.scope, pointer.ref, step_id)
+            if latest is not None and latest.sequence > head.progress_cursor:
+                raise DocumentError(INTERNAL, "retained progress exceeds its head")
+            projection = CompactStep(
+                step_id=step_id,
+                step_sha256=fingerprint,
+                matches_current_step=latest is not None and latest.step_sha256 == fingerprint,
+                latest=CompactProgress(
+                    ref=latest.ref,
+                    sequence=latest.sequence,
+                    step_sha256=latest.step_sha256,
+                    status=latest.status,
+                    author=latest.author,
+                    recorded_at=latest.recorded_at,
+                    evidence_count=len(latest.evidence),
                 )
-                used += len(_json(projection)) + 1
-                if used > MAX_PAGE - 1024:
-                    raise DocumentError(INVALID_REQUEST, "compact plan read limit")
-                steps.append(projection)
-            result = CompactPlan(
-                event_cursor=pointer.event_cursor, head=head, version=version, steps=tuple(steps)
+                if latest is not None
+                else None,
             )
-            _json(result, MAX_PAGE)
-            return result
+            used += len(_json(projection)) + 1
+            if used > MAX_PAGE - 1024:
+                raise DocumentError(INVALID_REQUEST, "compact plan read limit")
+            steps.append(projection)
+        result = CompactPlan(
+            event_cursor=pointer.event_cursor, head=head, version=version, steps=tuple(steps)
+        )
+        _json(result, MAX_PAGE)
+        return result
 
     def version(self, authority: PlanAuthority, ref: PlanRef) -> PlanVersion:
         """Resolve one exact immutable version within the trusted project/session scope."""
