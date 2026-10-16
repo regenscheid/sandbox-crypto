@@ -14,6 +14,11 @@ import {
   boundedSequence,
   checkDrawn,
   checkSvg,
+  MAX_EXPRESSION,
+  MAX_FIELD,
+  MAX_RUN_CHARACTERS,
+  MAX_RUN_ELEMENTS,
+  Spending,
   MAX_SVG,
   MAX_TEXT,
   sceneSize,
@@ -251,3 +256,74 @@ describe("a chart's memory (review of #500)", () => {
     expect(() => checkDrawn(scene, [MAX_ROWS])).not.toThrow();
   });
 });
+
+describe("what a chart's expressions make (review of #500, memory)", () => {
+  const rows = (stop: number) => ({ sequence: { start: 0, stop, as: 'i' } });
+
+  it('refuses many long strings grouped, with no data file and no text mark', async () => {
+    // The first crash: pad() of 20,000 on each of 10,000 rows, then a groupby.
+    const grouped = JSON.stringify({
+      data: rows(10_000),
+      transform: [
+        { calculate: "pad('' + datum.i, 20000)", as: 'p' },
+        { aggregate: [{ op: 'count', as: 'n' }], groupby: ['p'] },
+      ],
+      mark: 'bar',
+      encoding: { x: { field: 'p', type: 'nominal' }, y: { field: 'n', type: 'quantitative' } },
+    });
+    expect(grouped.length).toBeLessThan(2000);
+    await expect(chartSvg(grouped, new Map(), read)).rejects.toThrow('size');
+  });
+
+  it('refuses a string doubled past its limit by concatenation', async () => {
+    // The second crash: 28 doublings, then upper(), on 8 rows.
+    const doubling = Array.from({ length: 28 }, () => ({ calculate: 'datum.s + datum.s', as: 's' }));
+    const doubled = JSON.stringify({
+      data: rows(8),
+      transform: [{ calculate: "'abcdefgh'", as: 's' }, ...doubling, { calculate: 'upper(datum.s)', as: 'u' }],
+      mark: 'point',
+      encoding: { x: { field: 'i', type: 'quantitative' } },
+    });
+    await expect(chartSvg(doubled, new Map(), read)).rejects.toThrow('size');
+  });
+
+  it('refuses sequences made row by row past the run’s elements', async () => {
+    const sequences = JSON.stringify({
+      data: rows(1_000),
+      transform: [{ calculate: 'sequence(0, 5000)', as: 'many' }],
+      mark: 'point',
+      encoding: { x: { field: 'i', type: 'quantitative' } },
+    });
+    await expect(chartSvg(sequences, new Map(), read)).rejects.toThrow('size');
+  });
+
+  it('refuses an expression whose text passes 1 KiB', () => {
+    const long = '1' + ' + 1'.repeat(MAX_EXPRESSION);
+    expect(() => checkedChart(bars({ transform: [{ calculate: long, as: 'x' }] }), ['data/t.csv'])).toThrow('size');
+    expect(() => checkedChart(bars({ transform: [{ filter: long }] }), ['data/t.csv'])).toThrow('size');
+  });
+
+  it('spends what values hold, and checks what transforms make', () => {
+    const spending = new Spending();
+    expect(spending.spend('abc')).toBe('abc');
+    expect(() => spending.spend('x'.repeat(MAX_FIELD + 1))).toThrow('size');
+    expect(() => new Spending().spend(Array(MAX_RUN_ELEMENTS + 1).fill(0))).toThrow('size');
+    const many = new Spending();
+    expect(() => {
+      for (let i = 0; i < MAX_RUN_CHARACTERS / MAX_FIELD + 1; i++) many.spend('x'.repeat(MAX_FIELD));
+    }).toThrow('size');
+    expect(() => new Spending().rows([{ s: 'x'.repeat(MAX_FIELD + 1) }])).toThrow('size');
+    const arrays = [{ a: Array(MAX_RUN_ELEMENTS / 2 + 1).fill(0) }];
+    expect(() => new Spending().rows(arrays, arrays)).toThrow('size');
+    expect(() => new Spending().rows([{ a: [1, 2], s: 'ok' }])).not.toThrow();
+  });
+
+  it('still draws an ordinary chart with labels and a formula', async () => {
+    const labelled = bars({
+      transform: [{ calculate: "upper('ms ') + format(datum.ms, '.1f')", as: 'label' }],
+      mark: 'bar',
+    });
+    const { svg } = await chartSvg(labelled, files, read);
+    expect(svg).toMatch(/^<svg/);
+  });
+}); // prettier-ignore

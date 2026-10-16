@@ -19,6 +19,24 @@ export const MAX_SEQUENCE = 10_000;
  * memory): a chart within the other limits can still draw tens of megabytes of text. */
 export const MAX_TEXT = 1024 * 1024;
 export const MAX_SVG = 3 * 1024 * 1024;
+/** What a chart's expressions may make (review of #500, memory): any one string at most
+ * 64 Ki characters; at most 16 Mi characters and 1 M array elements in all its run; and
+ * an expression's own text at most 1 KiB, so no one evaluation can build much before it
+ * is checked. */
+export const MAX_FIELD = 64 * 1024;
+export const MAX_RUN_CHARACTERS = 16 * 1024 * 1024;
+export const MAX_RUN_ELEMENTS = 1_000_000;
+export const MAX_EXPRESSION = 1024;
+/** The keys whose string values are expressions, in a Vega-Lite specification. */
+const EXPRESSIONS = new Set([
+  'calculate',
+  'filter',
+  'expr',
+  'signal',
+  'test',
+  'labelExpr',
+  'update',
+]);
 /** The Vega-Lite major version the frame draws (FG-15). */
 export const VEGA_LITE_MAJOR = 6;
 
@@ -62,6 +80,8 @@ function walk(value: Json, pinned: ReadonlySet<string>): void {
   if (!isObject(value)) return;
   for (const [key, item] of Object.entries(value)) {
     if (key === 'datasets') throw new Refusal('inline_data');
+    if (EXPRESSIONS.has(key) && typeof item === 'string' && item.length > MAX_EXPRESSION)
+      throw new Refusal('size');
     // A link, an image mark or an image channel would reach another address.
     if (key === 'href' || key === 'url' || key === 'image') {
       if (key === 'url' && typeof item === 'string' && pinned.has(item)) continue;
@@ -309,4 +329,55 @@ export function drawnInWorker(
     };
     worker.postMessage(message);
   });
+}
+
+/**
+ * What a chart's run has made so far (review of #500, memory): each value an expression
+ * gives, a string function or a transform's rows, spent against the run's limits. A
+ * string past `MAX_FIELD`, or the run past its characters or array elements, is a
+ * `Refusal` (`size`).
+ */
+export class Spending {
+  characters = 0;
+  elements = 0;
+
+  /** Spend `value`, and give it back: a string's characters, an array's elements and
+   * the strings among them. */
+  spend<T>(value: T): T {
+    if (typeof value === 'string') this.text(value);
+    else if (Array.isArray(value)) {
+      this.elements += value.length;
+      if (this.elements > MAX_RUN_ELEMENTS) throw new Refusal('size');
+      for (const item of value) if (typeof item === 'string') this.text(item);
+    }
+    return value;
+  }
+
+  private text(value: string): void {
+    if (value.length > MAX_FIELD) throw new Refusal('size');
+    this.characters += value.length;
+    if (this.characters > MAX_RUN_CHARACTERS) throw new Refusal('size');
+  }
+
+  /** Check the rows one transform added or changed: no string field past `MAX_FIELD`, and
+   * at most `MAX_RUN_ELEMENTS` array elements in all its output. */
+  rows(...outputs: unknown[]): void {
+    let elements = 0;
+    for (const tuples of outputs) {
+      if (!Array.isArray(tuples)) continue;
+      for (const tuple of tuples)
+        if (tuple !== null && typeof tuple === 'object')
+          for (const value of Object.values(tuple as Record<string, unknown>)) {
+            if (typeof value === 'string' && value.length > MAX_FIELD) throw new Refusal('size');
+            if (Array.isArray(value) && (elements += value.length) > MAX_RUN_ELEMENTS)
+              throw new Refusal('size');
+          }
+    }
+  }
+}
+
+/** A string argument a chart's string function takes, within `MAX_FIELD`. */
+export function argument(value: unknown): void {
+  if (typeof value === 'string' && value.length > MAX_FIELD) throw new Refusal('size');
+  if (Array.isArray(value) && value.length > MAX_RUN_ELEMENTS) throw new Refusal('size');
 }
