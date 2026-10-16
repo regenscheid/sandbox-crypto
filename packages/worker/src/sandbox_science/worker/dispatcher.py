@@ -574,10 +574,18 @@ class Dispatcher:
                     }
                 )
             raw = message.get("result")
-            if isinstance(raw, dict) and cast(dict[str, Any], raw).get("bindings_kept") is True:
+            ended = cast(dict[str, Any], raw) if isinstance(raw, dict) else {}
+            if ended.get("bindings_kept") is True:
                 live.notices.append(
                     "this kernel holds skill bindings other than this run's, those it started "
                     "with; restart it to have the run's"
+                )
+            dropped = ended.get("bindings_dropped")
+            if isinstance(dropped, list) and dropped:
+                names = ", ".join(str(name)[:64] for name in cast(list[object], dropped)[:20])
+                live.notices.append(
+                    f"skill bindings not set, as the environment has its own of each: {names}; "
+                    "the environment's values stand"
                 )
             if message.get("recovery_compacted") is True:
                 live.notices.append(

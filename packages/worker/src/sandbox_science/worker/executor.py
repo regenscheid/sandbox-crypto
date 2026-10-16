@@ -331,6 +331,9 @@ class Running:
     controller: Callable[[], bool] | None = None
     bindings: dict[str, str] = field(default_factory=dict[str, str])
     """A cell's skill bindings, to say when its kernel holds others."""
+    bindings_dropped: tuple[str, ...] = ()
+    """The skill bindings left out as naming the environment's own variables, which the
+    result names for the run's notice."""
     """Seconds it waited for package commands before it started; its time limit covers them."""
 
 
@@ -817,22 +820,27 @@ class Executor:
     def session(self, request: Message) -> str:
         return self.session_name(request.get("session"))
 
-    def bindings(self, request: Message, env: Mapping[str, str]) -> dict[str, str]:
-        """The skill bindings an execution adds to the environment's variables ``env``,
-        none of which a binding may name (SK-16)."""
+    def bindings(
+        self, request: Message, env: Mapping[str, str]
+    ) -> tuple[dict[str, str], tuple[str, ...]]:
+        """The skill bindings an execution adds to the environment's variables ``env``, and
+        those left out as naming one of them (SK-16): the environment's value stands, and
+        the run is told, as one such binding would otherwise fail every execution of it."""
         raw = request.get("bindings", {})
         if not isinstance(raw, dict):
             raise ToolError("invalid_request", "bindings must be an object")
         found: dict[str, str] = {}
+        dropped: list[str] = []
         for name, value in cast(dict[object, object], raw).items():
             if not (isinstance(name, str) and _BINDING_RE.fullmatch(name)):
                 raise ToolError("invalid_request", f"invalid variable name {name!r}")
-            if name in env:
-                raise ToolError("invalid_request", f"{name} is the environment's own variable")
             if not (isinstance(value, str) and _BINDING_VALUE_RE.fullmatch(value)):
                 raise ToolError("invalid_request", f"invalid value for {name}")
+            if name in env:
+                dropped.append(name)
+                continue
             found[name] = value
-        return found
+        return found, tuple(sorted(dropped))
 
     def session_name(self, session: object) -> str:
         if not isinstance(session, str) or not _SESSION_RE.fullmatch(session):
@@ -1420,9 +1428,10 @@ class Executor:
         if is_job and re.fullmatch(r"exe-[0-9a-f]{24}", execution) is None:
             raise ToolError("invalid_request", "invalid job execution id")
         env = self.environment(session)
-        bindings = self.bindings(request, env)
+        bindings, dropped = self.bindings(request, env)
         running = self.accept(request, "job" if is_job else "shell")
         running.session = session
+        running.bindings_dropped = dropped
         await self.reply(request)
         running.task = self.spawn(
             self.run_shell(
@@ -1580,6 +1589,8 @@ class Executor:
                 **written,
                 "running_kernels": await self.session_kernels(session),
             }
+            if running.bindings_dropped:
+                result["bindings_dropped"] = list(running.bindings_dropped)
             if not self.closing:
                 await self.event(
                     execution, "end", state=state, result=result, output_observations=observations
@@ -1760,10 +1771,11 @@ class Executor:
             raise ToolError("invalid_request", "code must be a string")
         # The cell's bindings are the whole set the kernel's next start takes; a running
         # kernel keeps those it started with, and the result says so (SK-16).
-        bindings = self.bindings(request, kernel.env)
+        bindings, dropped = self.bindings(request, kernel.env)
         running = self.accept(request, "cell")
         running.kernel = kernel
         running.bindings = kernel.bindings = bindings
+        running.bindings_dropped = dropped
         await self.reply(request)
         running.task = self.spawn(
             self.run_cell(
@@ -1848,6 +1860,8 @@ class Executor:
                 sandbox_started=wall_started,
                 sandbox_ended=time.time(),
             )
+            if running.bindings_dropped:
+                result["bindings_dropped"] = list(running.bindings_dropped)
             if not self.closing:
                 observations = result.pop("output_observations", None)
                 await self.event(

@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import stat
+import threading
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -166,17 +167,35 @@ async def test_a_kernel_takes_the_whole_set_when_it_starts_and_says_when_it_hold
 
 async def test_a_binding_never_replaces_the_environments_own_variables(worker: Harness) -> None:
     """A binding of ``SESSION_WORKSPACE`` would move the session's files out of sight of
-    its written files (review of #493, finding 2): the executor refuses it, and so any
-    name the environment sets."""
+    its written files (review of #493, finding 2): the executor leaves out any binding of a
+    name the environment sets, and the execution runs with the rest and a notice, rather
+    than failing, as one such binding would fail every shell and cell of the run (its
+    re-check)."""
     for name in ("SESSION_WORKSPACE", "PROJECT_SHARED", "HOME", "PATH"):
         done = await worker.run(
             f"op-{name.lower().replace('_', '-')}",
             kind="shell",
-            script="echo ran",
-            bindings={name: "/elsewhere"},
+            script=f'echo "${name} $SS_DIR"',
+            bindings={name: "/elsewhere", "SS_DIR": "/staged"},
         )
-        assert done["state"] == "failed", done
-        assert "the environment's own variable" in done["result"]["error"]["message"]
+        assert done["state"] == "succeeded", done
+        stdout = done["result"]["stdout"]["text"]
+        assert "/elsewhere" not in stdout
+        assert stdout.strip().endswith("/staged")
+        (notice,) = [n for n in done["result"]["notices"] if "skill bindings not set" in n]
+        assert notice.startswith(
+            f"skill bindings not set, as the environment has its own of each: {name};"
+        )
+    cell = await worker.run(
+        "op-cell-home",
+        kind="cell",
+        code="import os; os.environ['HOME'], os.environ.get('SS_DIR')",
+        bindings={"HOME": "/elsewhere", "SS_DIR": "/staged"},
+    )
+    assert cell["state"] == "succeeded", cell
+    assert "/elsewhere" not in json.dumps(cell["result"]["outputs"])
+    assert "'/staged'" in json.dumps(cell["result"]["outputs"])
+    assert any("skill bindings not set" in n for n in cell["result"]["notices"])
 
 
 async def test_an_executor_from_before_bindings_is_refused_them(tmp_path: Path) -> None:
@@ -210,3 +229,37 @@ async def test_what_sandbox_code_puts_in_the_staged_tree_never_stalls_or_redirec
     assert (await _stage(worker))["ready"]
     assert not skills.is_symlink()
     assert list((worker.workspace / "kept").iterdir()) == []
+
+
+async def test_a_fifo_swapped_in_before_the_seal_is_left_and_never_waited_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Between the check and the seal, sandbox code can put a FIFO where a file was: the
+    seal opens it without blocking, leaves it, and seals the rest (re-check of #493)."""
+    from sandbox_science.worker import sandbox_files
+
+    tree = tmp_path / "pack"
+    tree.mkdir()
+    (tree / "kept.txt").write_text("kept\n")
+    (tree / "pipe").write_text("was a file\n")
+    listed = os.scandir
+
+    def swapped(directory: int) -> list[os.DirEntry[str]]:
+        entries = list(listed(directory))  # each entry says "file", as at the check
+        os.unlink("pipe", dir_fd=directory)
+        os.mkfifo("pipe", dir_fd=directory)
+        return entries
+
+    monkeypatch.setattr(os, "scandir", swapped)  # the module's, as it uses os.scandir
+    descriptor = os.open(tree, os.O_RDONLY | os.O_DIRECTORY)
+    sealing = threading.Thread(target=sandbox_files._modes, args=(descriptor, True), daemon=True)
+    try:
+        sealing.start()
+        sealing.join(10)
+        assert not sealing.is_alive(), "the seal waited on the FIFO"
+    finally:
+        os.close(descriptor)
+    assert stat.S_IMODE((tree / "kept.txt").stat().st_mode) == 0o444
+    assert stat.S_ISFIFO((tree / "pipe").lstat().st_mode)
+    assert stat.S_IMODE(tree.stat().st_mode) == 0o555
+    tree.chmod(0o755)

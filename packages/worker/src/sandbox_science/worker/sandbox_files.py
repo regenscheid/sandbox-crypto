@@ -839,7 +839,11 @@ def _staged(
 
 
 def _modes(directory: int, sealed: bool) -> None:
-    """Make the tree below ``directory`` read-only, or writable again to remove it."""
+    """Make the tree below ``directory`` read-only, or writable again to remove it. A file
+    is opened as ``_staged`` opens one, never blocking, and left as it is when it is no
+    longer a regular file: sandbox code can put a FIFO in its place between the check and
+    the seal, whose open would wait for a writer (re-check of #493), and the next load's
+    check finds it."""
     for entry in os.scandir(directory):
         if entry.is_dir(follow_symlinks=False):
             child = os.open(entry.name, DIRECTORY_FLAGS, dir_fd=directory)
@@ -848,11 +852,12 @@ def _modes(directory: int, sealed: bool) -> None:
             finally:
                 os.close(child)
         elif entry.is_file(follow_symlinks=False):
-            descriptor = os.open(
-                entry.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory
-            )
+            descriptor = os.open(entry.name, FILE_FLAGS, dir_fd=directory)
             try:
-                executable = os.fstat(descriptor).st_mode & stat.S_IXUSR
+                info = os.fstat(descriptor)
+                if not stat.S_ISREG(info.st_mode):
+                    continue
+                executable = info.st_mode & stat.S_IXUSR
                 os.fchmod(
                     descriptor, (0o555 if executable else 0o444) if sealed else 0o644 | executable
                 )
