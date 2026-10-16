@@ -782,3 +782,150 @@ def list_directory(directory: int, limit: int) -> tuple[list[Message], bool]:
         return entries, len(names) > limit
     finally:
         os.close(directory)
+
+
+# Skill packs staged for helper code (docs/specs/skills.md, SK-16): each snapshot in its
+# own folder below the environment's root, written by the harness, then made read-only.
+# Sandbox code can still change them, so each later load checks every file's SHA-256.
+
+STAGED = ".skills"
+MAX_STAGED_ENTRIES = 8192
+"""Entries a staged pack's check reads at most; past them it is not as expected."""
+
+
+def _staged(directory: int, prefix: str, found: dict[str, tuple[str, bool]]) -> None:
+    """Each file below ``directory`` by its path, with its SHA-256 and whether it is
+    executable; anything else, a symlink or more entries than allowed, as ``?``."""
+    for entry in os.scandir(directory):
+        path = prefix + entry.name
+        if len(found) >= MAX_STAGED_ENTRIES:
+            found["?"] = ("?", False)
+            return
+        if entry.is_dir(follow_symlinks=False):
+            child = os.open(entry.name, DIRECTORY_FLAGS, dir_fd=directory)
+            try:
+                _staged(child, path + "/", found)
+            finally:
+                os.close(child)
+        elif entry.is_file(follow_symlinks=False):
+            descriptor = os.open(
+                entry.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory
+            )
+            try:
+                digest = hashlib.sha256()
+                while chunk := os.read(descriptor, 1 << 20):
+                    digest.update(chunk)
+                mode = os.fstat(descriptor).st_mode
+            finally:
+                os.close(descriptor)
+            found[path] = (digest.hexdigest(), bool(mode & stat.S_IXUSR))
+        else:
+            found[path] = ("?", False)
+
+
+def _modes(directory: int, sealed: bool) -> None:
+    """Make the tree below ``directory`` read-only, or writable again to remove it."""
+    for entry in os.scandir(directory):
+        if entry.is_dir(follow_symlinks=False):
+            child = os.open(entry.name, DIRECTORY_FLAGS, dir_fd=directory)
+            try:
+                _modes(child, sealed)
+            finally:
+                os.close(child)
+        elif entry.is_file(follow_symlinks=False):
+            descriptor = os.open(
+                entry.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory
+            )
+            try:
+                executable = os.fstat(descriptor).st_mode & stat.S_IXUSR
+                os.fchmod(
+                    descriptor, (0o555 if executable else 0o444) if sealed else 0o644 | executable
+                )
+            finally:
+                os.close(descriptor)
+    os.fchmod(directory, 0o555 if sealed else 0o755)
+
+
+def _remove(parent: int, name: str) -> None:
+    """Remove ``name`` below ``parent``, whatever it is, through no symlink."""
+    try:
+        info = os.lstat(name, dir_fd=parent)
+    except FileNotFoundError:
+        return
+    if not stat.S_ISDIR(info.st_mode):
+        os.unlink(name, dir_fd=parent)
+        return
+    directory = os.open(name, DIRECTORY_FLAGS, dir_fd=parent)
+    try:
+        os.fchmod(directory, 0o700)
+        for entry in list(os.scandir(directory)):
+            _remove(directory, entry.name)
+    finally:
+        os.close(directory)
+    os.rmdir(name, dir_fd=parent)
+
+
+def stage_check(
+    root: Path, source: str, snapshot: str, files: Sequence[Message], seal: bool
+) -> Message:
+    """Whether the snapshot is staged as ``files`` say, and nothing more; with ``seal``,
+    once it is, it is made read-only."""
+    base = [STAGED, source, snapshot]
+    location = str(root.joinpath(*base))
+    expected = {str(f["path"]): (str(f["sha256"]), bool(f.get("executable"))) for f in files}
+    found: dict[str, tuple[str, bool]] = {}
+    try:
+        top = walk(os.open(root, DIRECTORY_FLAGS), base, location, create=False)
+    except ToolError:  # missing, or a symlink or file in its place: staged again
+        return {"location": location, "ready": False, "differing": sorted(expected)}
+    try:
+        _staged(top, "", found)
+        differing = sorted(p for p in {*found, *expected} if found.get(p) != expected.get(p))
+        if not differing and seal:
+            _modes(top, sealed=True)
+    finally:
+        os.close(top)
+    return {
+        "location": location,
+        "ready": not differing,
+        "sealed": seal and not differing,
+        "differing": differing,
+    }
+
+
+def stage_put(
+    root: Path, source: str, snapshot: str, reset: bool, files: Sequence[tuple[str, bytes, bool]]
+) -> int:
+    """Write ``files`` where the snapshot is staged, after removing it with ``reset``."""
+    parent = walk(
+        os.open(root, DIRECTORY_FLAGS), [STAGED, source], f"{STAGED}/{source}", create=True
+    )
+    try:
+        if reset:
+            _remove(parent, snapshot)
+        top = walk(parent, [snapshot], snapshot, create=True)
+        parent = -1
+    finally:
+        if parent >= 0:
+            os.close(parent)
+    try:
+        for path, content, executable in files:
+            names = check_relative(path).split("/")
+            directory = walk(os.dup(top), names[:-1], path, create=True)
+            try:
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(names[-1], dir_fd=directory)
+                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+                descriptor = os.open(names[-1], flags, 0o600, dir_fd=directory)
+                try:
+                    view = memoryview(content)
+                    while view:
+                        view = view[os.write(descriptor, view) :]
+                    os.fchmod(descriptor, 0o755 if executable else 0o644)
+                finally:
+                    os.close(descriptor)
+            finally:
+                os.close(directory)
+    finally:
+        os.close(top)
+    return len(files)

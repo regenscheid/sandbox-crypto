@@ -143,6 +143,8 @@ MAX_SENTINELS = 8
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _SESSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_SOURCE_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?")
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 Message = dict[str, Any]
 Send = Callable[[Message], Awaitable[None]]
@@ -750,6 +752,8 @@ class Executor:
             "shared": self.op_shared,
             "remove": self.op_remove,
             "move": self.op_move,
+            "skills_check": self.op_skills_check,
+            "skills_put": self.op_skills_put,
         }
         handler = handlers.get(str(request.get("op")))
         try:
@@ -798,6 +802,20 @@ class Executor:
 
     def session(self, request: Message) -> str:
         return self.session_name(request.get("session"))
+
+    def bindings(self, request: Message) -> dict[str, str]:
+        """The skill bindings an execution adds to the environment's variables (SK-16)."""
+        raw = request.get("bindings", {})
+        if not isinstance(raw, dict):
+            raise ToolError("invalid_request", "bindings must be an object")
+        found: dict[str, str] = {}
+        for name, value in cast(dict[object, object], raw).items():
+            if not (isinstance(name, str) and _ENV_NAME_RE.fullmatch(name)):
+                raise ToolError("invalid_request", f"invalid variable name {name!r}")
+            if not isinstance(value, str) or "\x00" in value:
+                raise ToolError("invalid_request", f"invalid value for {name}")
+            found[name] = value
+        return found
 
     def session_name(self, session: object) -> str:
         if not isinstance(session, str) or not _SESSION_RE.fullmatch(session):
@@ -1384,6 +1402,7 @@ class Executor:
         execution = str(request.get("execution", ""))
         if is_job and re.fullmatch(r"exe-[0-9a-f]{24}", execution) is None:
             raise ToolError("invalid_request", "invalid job execution id")
+        bindings = self.bindings(request)
         running = self.accept(request, "job" if is_job else "shell")
         running.session = session
         await self.reply(request)
@@ -1392,7 +1411,7 @@ class Executor:
                 running,
                 argv,
                 cwd,
-                self.environment(session),
+                self.environment(session) | bindings,
                 float(request.get("timeout", 120)),
                 int(request.get("limit", 1024 * 1024)),
             )
@@ -1721,9 +1740,15 @@ class Executor:
         code = request.get("code")
         if not isinstance(code, str):
             raise ToolError("invalid_request", "code must be a string")
+        bindings = self.bindings(request)
+        # A running kernel keeps the environment it started with; its next start has these.
+        kept = kernel.manager is not None and any(
+            kernel.env.get(name) != value for name, value in bindings.items()
+        )
+        kernel.env.update(bindings)
         running = self.accept(request, "cell")
         running.kernel = kernel
-        await self.reply(request)
+        await self.reply(request, bindings_kept=kept)
         running.task = self.spawn(
             self.run_cell(
                 running,
@@ -2157,6 +2182,64 @@ class Executor:
             raise ToolError("invalid_request", "invalid capture ID")
         await self.captures.cancel(capture_id)
         await self.reply(request, capture_id=capture_id, cleaned=True)
+
+    def staged(self, request: Message) -> tuple[str, str]:
+        source, snapshot = request.get("source"), request.get("snapshot")
+        if not (isinstance(source, str) and _SOURCE_RE.fullmatch(source)):
+            raise ToolError("invalid_request", f"invalid source {source!r}")
+        if not (isinstance(snapshot, str) and _SHA256_RE.fullmatch(snapshot)):
+            raise ToolError("invalid_request", "snapshot must be a SHA-256")
+        return source, snapshot
+
+    async def op_skills_check(self, request: Message) -> None:
+        """Whether a pack is staged as the harness expects it, and with ``seal``, made
+        read-only once it is (docs/specs/skills.md, SK-16)."""
+        source, snapshot = self.staged(request)
+        raw = request.get("files", [])
+        items = cast(list[object], raw) if isinstance(raw, list) else []
+        files = [cast(Message, item) for item in items if isinstance(item, dict)]
+        if not isinstance(raw, list) or len(files) != len(items):
+            raise ToolError("invalid_request", "files must be a list of objects")
+        for item in files:
+            sandbox_files.check_relative(str(item.get("path")))
+        try:
+            found = await asyncio.to_thread(
+                sandbox_files.stage_check,
+                self.root,
+                source,
+                snapshot,
+                files,
+                request.get("seal") is True,
+            )
+        except OSError as exc:
+            raise sandbox_files.file_error(exc, f"{sandbox_files.STAGED}/{source}") from exc
+        await self.reply(request, **found)
+
+    async def op_skills_put(self, request: Message) -> None:
+        """Write a batch of a pack's files where its snapshot is staged (SK-16)."""
+        source, snapshot = self.staged(request)
+        raw = request.get("files", [])
+        files: list[tuple[str, bytes, bool]] = []
+        for item in cast(list[object], raw) if isinstance(raw, list) else []:
+            fields = cast(Message, item) if isinstance(item, dict) else {}
+            path = sandbox_files.check_relative(str(fields.get("path")))
+            try:
+                content = base64.b64decode(str(fields.get("content_b64", "")), validate=True)
+            except ValueError as exc:
+                raise ToolError("invalid_request", f"{path}: content_b64 is not base64") from exc
+            files.append((path, content, fields.get("executable") is True))
+        try:
+            written = await asyncio.to_thread(
+                sandbox_files.stage_put,
+                self.root,
+                source,
+                snapshot,
+                request.get("reset") is True,
+                files,
+            )
+        except OSError as exc:
+            raise sandbox_files.file_error(exc, f"{sandbox_files.STAGED}/{source}") from exc
+        await self.reply(request, written=written)
 
     async def op_write(self, request: Message) -> None:
         path = request.get("path")

@@ -414,7 +414,10 @@ async def test_gate_wait_uses_original_timeout_budget(tmp_path: Path) -> None:
 
 def authorize(store: Store, request: ShellRequest, origin: str) -> None:
     store.authorize_provision_step(
-        origin, request.operation_id, hashlib.sha256(request.model_dump_json().encode()).hexdigest()
+        origin,
+        request.operation_id,
+        # The protocol 1 digest, of the fields protocol 1 had.
+        hashlib.sha256(request.model_dump_json(exclude={"bindings"}).encode()).hexdigest(),
     )
 
 

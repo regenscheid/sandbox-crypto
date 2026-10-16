@@ -57,6 +57,10 @@ from sandbox_science.contracts import (
     RevisionHistory,
     SessionClosed,
     SessionCloseRequest,
+    StageCheck,
+    StageCheckRequest,
+    StagePutRequest,
+    StagePutResult,
     WorkerErrorResponse,
     WriteFileRequest,
     WriteFileResult,
@@ -570,6 +574,13 @@ class WorkerClient:
 
     async def list_files(self, request: ListFilesRequest) -> FileListing:
         return await self._call("POST", "/v1/files/list", FileListing, request)
+
+    async def stage_check(self, request: StageCheckRequest) -> StageCheck:
+        """Whether a skill pack is staged as expected, sealed once it is (SK-16)."""
+        return await self._call("POST", "/v1/skills/check", StageCheck, request)
+
+    async def stage_put(self, request: StagePutRequest) -> StagePutResult:
+        return await self._call("POST", "/v1/skills/put", StagePutResult, request)
 
     async def publish(self, request: PublishRequest) -> ArtifactRef:
         return await self._call("POST", "/v1/artifacts", ArtifactRef, request)

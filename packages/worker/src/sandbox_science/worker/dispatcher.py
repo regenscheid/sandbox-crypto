@@ -314,6 +314,8 @@ class Dispatcher:
             fields.update(language=request.language, code=request.code)
             if request.run is not None:
                 fields["run"] = request.run
+        if not isinstance(request, PdfRequest) and request.bindings:
+            fields["bindings"] = dict(request.bindings)  # the skills' (SK-16)
         channel = environment.channel
         if channel is None:
             raise WorkerError(ErrorKind.UNAVAILABLE, "the executor went away")
@@ -371,7 +373,12 @@ class Dispatcher:
             live.execution, channel.incarnation, identity, daemon=channel.daemon_token is not None
         )
         live.watchdog = self.spawn(self.watch(live, time_limit(request)))
-        await channel.request(request.kind, **fields)
+        reply = await channel.request(request.kind, **fields)
+        if reply.get("bindings_kept") is True:
+            live.notices.append(
+                "this kernel started before the skill bindings it was sent and keeps its "
+                "environment; restart it to have them"
+            )
         if channel.daemon_token is not None:
             self.recovery.poll(request.context.environment_id, channel)
 

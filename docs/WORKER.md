@@ -56,6 +56,8 @@ Every route needs `Authorization: Bearer <token>`: the pool's own token, which a
 | `POST /v1/files/read` | `ReadFileRequest` → `FileContent` |
 | `POST /v1/files/write` | `WriteFileRequest` → `WriteFileResult` |
 | `POST /v1/files/list` | `ListFilesRequest` → `FileListing` |
+| `POST /v1/skills/check` | `StageCheckRequest` → `StageCheck`: whether a skill pack is staged as expected; with `seal`, made read-only once it is ([skills](SKILLS.md#helper-staging)) |
+| `POST /v1/skills/put` | `StagePutRequest` → `StagePutResult`: a batch of a pack's files where its snapshot is staged; with `reset`, after removing what is there |
 | `POST /v1/artifacts` | `PublishRequest` → `ArtifactRef` (201). A `media_type` must be `type/subtype`, with optional `; name=value` parameters |
 | `GET /v1/artifacts/{id}` | → `ArtifactRef` |
 | `GET /v1/artifacts/{id}/content` | → the bytes, with `X-Content-SHA256`, as a download (`Content-Disposition: attachment`, `nosniff` and a sandboxing content security policy), so no media type turns them into a page |
@@ -106,7 +108,7 @@ Every request that may change something (all but `GET` and the file reads) is lo
 
 ### Compatibility
 
-Releases are lockstep: the orchestrators, the workspace and the workers are upgraded together ([compatibility](COMPATIBILITY.md)). Every response carries the worker's `PROTOCOL_VERSION` (5) in the `X-Worker-Protocol` header, and the clients refuse another version as `unsupported` ("version mismatch"). A request that names another version in the same header gets that error from the worker (422) before anything runs; a request without the header is served.
+Releases are lockstep: the orchestrators, the workspace and the workers are upgraded together ([compatibility](COMPATIBILITY.md)). Every response carries the worker's `PROTOCOL_VERSION` (6) in the `X-Worker-Protocol` header, and the clients refuse another version as `unsupported` ("version mismatch"). A request that names another version in the same header gets that error from the worker (422) before anything runs; a request without the header is served.
 
 The worker binds an operation ID to the digest of its request's non-default fields (`contracts/canonical.py`), so a field added later with a default changes no stored identity. Operations stored before protocol 2 keep their older digest, which the worker still accepts.
 
@@ -137,6 +139,8 @@ The worker binds an operation ID to the digest of its request's non-default fiel
   - The file tools refuse absolute paths, `..` and paths through symlinks. They open one directory at a time, relative to the last, without following a symlink, the workspace and the shared area themselves included.
   - Reads refuse anything but a regular file without waiting for it (a FIFO, say), and hash in a thread, so a large file does not hold up other sessions.
   - Writes to the shared area need `expected_sha256` or `create_only`.
+  - Skill packs are staged at `<project root>/.skills/<source>/<snapshot>`, one folder a snapshot, outside the session workspaces and the shared area, so no attempt's written files list them. A check reads every file without following a symlink and names each one that differs, is missing or is more than expected; a symlink or file in the folder's place is not staged. A put with `reset` removes the folder first, through no symlink. A sealed pack's files are 0444, or 0555 if executable, and its folders 0555.
+- **Bindings.** A shell, job or cell request may carry `bindings`, at most 64 variables, each a name of capitals, digits and `_` and a path; the execution's environment gets them beside the environment's own. A kernel takes them when it starts, and a restart takes the latest a cell sent. A cell whose bindings a running kernel lacks runs in that kernel as it is, and its result's notices say to restart it.
 
 ## Background jobs
 

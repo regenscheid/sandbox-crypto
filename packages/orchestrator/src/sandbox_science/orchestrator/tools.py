@@ -675,6 +675,8 @@ class Toolbox:
             )
         self.skills = skills
         """The run's skills: their system-message section and the ``skills`` tool."""
+        if self.jobs is not None:
+            self.jobs.bindings = self._bindings  # a job carries them as a shell does
         if skills is not None:
             entries += _group(
                 skills.specs,
@@ -997,12 +999,18 @@ class Toolbox:
 
     # Executions.
 
+    def _bindings(self) -> dict[str, str]:
+        """The variables the run's staged skill packs set in its executions (SK-16)."""
+        stager = self.skills.stager if self.skills is not None else None
+        return dict(stager.bindings) if stager is not None else {}
+
     async def _shell(self, args: dict[str, Any], operation: str) -> ToolOutcome:
         request = ShellRequest.model_validate(
             {
                 "operation_id": operation,
                 "context": self.context,
                 **_known(args, "script", "cwd", "timeout_seconds"),
+                "bindings": self._bindings(),
             }
         )
         return await self._run(request)
@@ -1131,6 +1139,7 @@ class Toolbox:
                 "language": language,
                 "run": self.kernel_run,
                 **_known(args, "code", "timeout_seconds"),
+                "bindings": self._bindings(),
             }
         )
         return await self._run(request)

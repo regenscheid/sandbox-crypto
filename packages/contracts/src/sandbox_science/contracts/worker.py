@@ -17,7 +17,7 @@ from pydantic import AfterValidator, AwareDatetime, Field, StringConstraints, mo
 from .context import ExecutionContext
 from .model import Contract, Counter, Identifier, Sha256
 
-PROTOCOL_VERSION: Final = 5
+PROTOCOL_VERSION: Final = 6
 """The worker API's version. Releases are lockstep (docs/COMPATIBILITY.md): it changes with
 any change to what the worker or its clients send, and each side refuses another version."""
 PROTOCOL_HEADER: Final = "X-Worker-Protocol"
@@ -86,6 +86,26 @@ def _no_nul(text: str, what: str) -> None:
         raise ValueError(f"{what} must not contain NUL characters")
 
 
+MAX_BINDINGS: Final = 64
+"""Skill bindings one execution carries at most (docs/specs/skills.md, SK-16)."""
+_VARIABLE: Final = r"^[A-Z][A-Z0-9_]{1,63}$"
+Bindings = Annotated[
+    dict[
+        Annotated[str, StringConstraints(pattern=_VARIABLE)],
+        Annotated[str, StringConstraints(min_length=1, max_length=MAX_PATH_BYTES)],
+    ],
+    Field(max_length=MAX_BINDINGS),
+]
+"""Environment variables an execution gets beside the environment's own: the skill packs'
+bindings, each naming a path in a staged pack (SK-16). The harness sets only those the
+project allows (SK-31)."""
+
+
+def _check_bindings(bindings: dict[str, str]) -> None:
+    for value in bindings.values():
+        _no_nul(value, "a binding")
+
+
 def _check_command(script: str | None, argv: tuple[str, ...] | None) -> None:
     """Exactly one of a non-blank ``script`` and an ``argv`` naming a program; no NULs."""
     if (script is None) == (argv is None):
@@ -112,10 +132,12 @@ class ShellRequest(Contract):
     cwd: RelativePath = "."
     timeout_seconds: Timeout = DEFAULT_TIMEOUT_SECONDS
     output_limit_bytes: OutputLimit = DEFAULT_OUTPUT_LIMIT
+    bindings: Bindings = Field(default_factory=dict[str, str])
 
     @model_validator(mode="after")
     def _one_command(self) -> Self:
         _check_command(self.script, self.argv)
+        _check_bindings(self.bindings)
         return self
 
 
@@ -136,6 +158,7 @@ class JobRequest(Contract):
     )
     """The job's time limit; None, the default, takes the policy's default when submitted."""
     output_limit_bytes: OutputLimit = DEFAULT_OUTPUT_LIMIT
+    bindings: Bindings = Field(default_factory=dict[str, str])
 
     @model_validator(mode="after")
     def _one_command(self) -> Self:
@@ -144,6 +167,7 @@ class JobRequest(Contract):
         _no_nul(self.purpose, "purpose")
         _no_nul(self.expected_progress, "expected_progress")
         _check_command(self.script, self.argv)
+        _check_bindings(self.bindings)
         return self
 
 
@@ -161,6 +185,14 @@ class CellRequest(Contract):
     its main runs share."""
     timeout_seconds: Timeout = DEFAULT_TIMEOUT_SECONDS
     output_limit_bytes: OutputLimit = DEFAULT_OUTPUT_LIMIT
+    bindings: Bindings = Field(default_factory=dict[str, str])
+    """The environment of a kernel this cell starts; a kernel already running keeps its
+    own, and the result's notices say so when they differ."""
+
+    @model_validator(mode="after")
+    def _checked(self) -> Self:
+        _check_bindings(self.bindings)
+        return self
 
 
 Feature = Literal["pdf", "admission", "provisioning", "jobs"]
@@ -593,6 +625,75 @@ class WriteFileRequest(Contract):
 class WriteFileResult(Contract):
     sha256: Sha256
     size: Annotated[int, Field(ge=0)]
+
+
+MAX_STAGED_FILES: Final = 4096
+"""Files one staged pack holds at most, as an imported pack does."""
+MAX_STAGED_BYTES: Final = 32 * 1024 * 1024
+"""Bytes one staged pack holds at most, as an imported pack does."""
+StagedPath = Annotated[str, AfterValidator(validate_relative_path)]
+SourceName = Annotated[str, StringConstraints(pattern=r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")]
+
+
+class StagedFile(Contract):
+    """A file of a staged skill pack, as the harness expects it (SK-16)."""
+
+    path: StagedPath
+    sha256: Sha256
+    size: Annotated[int, Field(ge=0, le=MAX_STAGED_BYTES)]
+    executable: bool = False
+
+
+class StageCheckRequest(Contract):
+    """Whether a pack's snapshot is staged in the environment as ``files`` say, file by
+    file, with nothing more; with ``seal``, once it is, its files and folders are made
+    read-only (docs/specs/skills.md, SK-16)."""
+
+    context: ExecutionContext
+    source: SourceName
+    snapshot: Sha256
+    files: tuple[StagedFile, ...] = Field(max_length=MAX_STAGED_FILES)
+    seal: bool = False
+
+    @model_validator(mode="after")
+    def _bounded(self) -> Self:
+        if sum(file.size for file in self.files) > MAX_STAGED_BYTES:
+            raise ValueError(f"a staged pack holds at most {MAX_STAGED_BYTES} bytes")
+        if len({file.path for file in self.files}) != len(self.files):
+            raise ValueError("a staged pack names each file once")
+        return self
+
+
+class StageCheck(Contract):
+    """Where the snapshot is staged, and whether it is as expected: the paths that differ,
+    are missing or are more than expected, at most ``MAX_STAGED_FILES``."""
+
+    location: str
+    ready: bool
+    sealed: bool = False
+    differing: tuple[str, ...] = Field(default=(), max_length=MAX_STAGED_FILES)
+
+
+class StagedContent(Contract):
+    path: StagedPath
+    content_b64: str
+    executable: bool = False
+
+
+class StagePutRequest(Contract):
+    """Write some of a pack's files where its snapshot is staged; with ``reset``, after
+    removing what is there. Content travels in batches within the request size; a check
+    with ``seal`` ends the staging."""
+
+    context: ExecutionContext
+    source: SourceName
+    snapshot: Sha256
+    reset: bool = False
+    files: tuple[StagedContent, ...] = Field(max_length=MAX_STAGED_FILES)
+
+
+class StagePutResult(Contract):
+    written: Annotated[int, Field(ge=0, le=MAX_STAGED_FILES)]
 
 
 class PublishRequest(Contract):

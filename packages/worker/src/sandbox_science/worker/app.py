@@ -52,6 +52,8 @@ from sandbox_science.contracts import (
     ReadFileRequest,
     SessionClosed,
     SessionCloseRequest,
+    StageCheckRequest,
+    StagePutRequest,
     SuspendResult,
     WorkerErrorResponse,
     WriteFileRequest,
@@ -319,6 +321,8 @@ def create_app(
             web.post("/v1/files/read", read_file),
             web.post("/v1/files/write", write_file),
             web.post("/v1/files/list", list_files),
+            web.post("/v1/skills/check", skills_check),
+            web.post("/v1/skills/put", skills_put),
             web.post("/v1/artifacts", publish),
             web.get("/v1/artifacts/{artifact_id}", get_artifact),
             web.get("/v1/artifacts/{artifact_id}/content", get_artifact_content),
@@ -1127,6 +1131,20 @@ async def write_file(request: web.Request) -> web.Response:
     body = WriteFileRequest.model_validate_json(await _body(request))
     _context(request, body.context)
     return _json(await request.app[MANAGER].write_file(body))
+
+
+async def skills_check(request: web.Request) -> web.Response:
+    """Whether a skill pack is staged in the environment as expected (SK-16)."""
+    body = StageCheckRequest.model_validate_json(await _body(request))
+    _context(request, body.context)
+    return _json(await request.app[MANAGER].stage_check(body))
+
+
+async def skills_put(request: web.Request) -> web.Response:
+    """Write a batch of a skill pack's files where its snapshot is staged (SK-16)."""
+    body = StagePutRequest.model_validate_json(await _body(request))
+    _context(request, body.context)
+    return _json(await request.app[MANAGER].stage_put(body))
 
 
 async def list_files(request: web.Request) -> web.Response:

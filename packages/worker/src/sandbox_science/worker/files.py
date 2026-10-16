@@ -28,6 +28,10 @@ from sandbox_science.contracts import (
     FileListing,
     ListFilesRequest,
     ReadFileRequest,
+    StageCheck,
+    StageCheckRequest,
+    StagePutRequest,
+    StagePutResult,
     WriteFileRequest,
     WriteFileResult,
 )
@@ -160,6 +164,36 @@ class Files:
             else:
                 reply = await channel.request("write", session=context.session_id, **fields)
             return checked(WriteFileResult, sha256=reply.get("sha256"), size=reply.get("size"))
+
+    async def stage_check(self, request: StageCheckRequest) -> StageCheck:
+        """Whether a skill pack is staged as expected, sealed once it is (SK-16)."""
+        async with self.connections.using(request.context.environment_id) as channel:
+            reply = await channel.request(
+                "skills_check",
+                source=request.source,
+                snapshot=request.snapshot,
+                files=[file.model_dump(mode="json") for file in request.files],
+                seal=request.seal,
+            )
+        return checked(
+            StageCheck,
+            location=reply.get("location"),
+            ready=reply.get("ready"),
+            sealed=reply.get("sealed", False),
+            differing=reply.get("differing", []),
+        )
+
+    async def stage_put(self, request: StagePutRequest) -> StagePutResult:
+        """Write a batch of a skill pack's files where its snapshot is staged (SK-16)."""
+        async with self.connections.using(request.context.environment_id) as channel:
+            reply = await channel.request(
+                "skills_put",
+                source=request.source,
+                snapshot=request.snapshot,
+                reset=request.reset,
+                files=[file.model_dump(mode="json") for file in request.files],
+            )
+        return checked(StagePutResult, written=reply.get("written"))
 
     async def listing(self, request: ListFilesRequest) -> FileListing:
         context = request.context
