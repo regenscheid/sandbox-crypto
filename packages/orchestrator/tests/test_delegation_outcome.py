@@ -30,6 +30,16 @@ from .test_delegation_lifecycle import BRIEF, _delegations
 TARGET = Target("ent-1", "C-1", 1)
 
 
+def test_a_blank_obstacle_or_refutation_is_none() -> None:
+    """Lab 42, B6: a text only some results hold, left blank, is absent, so the
+    correction never asks for one the result may not have."""
+    blank = parse(json.dumps({**RESULT, "obstacle": "", "refutation": " "}), TARGET)
+    assert (blank.obstacle, blank.refutation) == (None, None)
+    with pytest.raises(ValueError, match="a blocked check names its obstacle"):
+        parse(json.dumps({**RESULT, "status": "blocked", "verdict": "inconclusive",
+                          "obstacle": ""}), TARGET)  # fmt: skip
+
+
 def test_a_result_names_the_entry_and_revision_of_its_brief() -> None:
     assert parse(REPORT, TARGET).verdict == "confirmed"
     assert parse(json.dumps({**RESULT, "entry": "ent-1"}), TARGET).entry == "ent-1"

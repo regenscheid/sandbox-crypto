@@ -164,6 +164,15 @@ def test_a_task_result_is_checked_against_its_schema(answer: str, error: str) ->
         parse_task(answer)
 
 
+@pytest.mark.parametrize("blank", ["", "  \n "])
+def test_a_blank_obstacle_is_no_obstacle(blank: str) -> None:
+    """Lab 42, B6: a complete task that wrote "obstacle": "" was asked for 1 to 1000
+    characters, and then refused for naming an obstacle it did not have."""
+    assert parse_task(json.dumps({**DONE, "obstacle": blank})).obstacle is None
+    with pytest.raises(ValueError, match="a blocked task names its obstacle"):
+        parse_task(json.dumps({**DONE, "status": "blocked", "obstacle": blank}))
+
+
 async def test_a_task_that_answers_badly_is_corrected_once(delegating: Harness) -> None:
     root = await delegating.run(
         "root",
