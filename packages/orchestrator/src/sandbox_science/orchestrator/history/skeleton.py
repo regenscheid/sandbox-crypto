@@ -43,6 +43,7 @@ BUDGETS: Final = {
     "outcome": 150,
     "retrieval": 60,
     "notice": 30,
+    "change": 500,
 }
 """Each item's budget in tokens: a call's line takes its tool, outcome and ID beside its
 arguments' budget, and up to the result's of its text."""
@@ -127,12 +128,17 @@ def skeleton(
     for tool, ids in span.failed.items():
         span.markers.append({"kind": "failures", "subject": tool, "count": len(ids), "ids": ids})
     budgets = {kind: int(tokens * per_token) for kind, tokens in BUDGETS.items()}
-    lines = [_line(item, budgets) for item in span.items]
+    lines = [flat(_line(item, budgets)) for item in span.items]
     for squeeze in SQUEEZES:
         if sum(len(line) + 1 for line in lines) <= share:
             break
         budgets |= {kind: int(tokens * per_token) for kind, tokens in squeeze.items()}
-        lines = [_line(item, budgets) for item in span.items]
+        lines = [flat(_line(item, budgets)) for item in span.items]
+    # Text from messages and records keeps to its line: none of it starts a line of its own.
+    span.markers = [
+        {key: flat(value) if isinstance(value, str) else value for key, value in marker.items()}
+        for marker in span.markers
+    ]
     kept = [item.kind in KEPT for item in span.items]
     return Skeleton(tuple(_fit(lines, share, kept)), tuple(span.markers), _keys(rows, keys_share))
 
@@ -240,7 +246,7 @@ def _change(span: _Span, args: str, found: Json) -> str:
 
 def _line(item: _Item, budgets: dict[str, int]) -> str:
     if item.kind in ("user", "change"):
-        return _cut(item.head, budgets["user"]) if item.kind == "user" else item.head
+        return _cut(item.head, budgets[item.kind])
     if item.kind in ("notice", "retrieval"):
         return _cut(item.head, budgets[item.kind])
     if item.kind == "call":
@@ -334,7 +340,7 @@ def _keys(rows: Sequence[Archived], share: int) -> tuple[tuple[str, str], ...]:
                     continue
                 found[key] = row.message_id
                 used += len(key) + 24
-    return tuple(found.items())
+    return tuple((flat(key), at) for key, at in found.items())
 
 
 def _cut(text: str, chars: int) -> str:
@@ -346,6 +352,11 @@ def _cut(text: str, chars: int) -> str:
         return text[: max(0, chars)] + " [...]"
     half = (chars - 20) // 2
     return f"{text[:half]} [... {len(text) - 2 * half:,} characters ...] {text[-half:]}"
+
+
+def flat(text: str) -> str:
+    """``text`` on one line, its whitespace runs single spaces."""
+    return " ".join(text.split())
 
 
 def _words(text: str) -> str:

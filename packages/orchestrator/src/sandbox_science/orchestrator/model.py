@@ -511,6 +511,9 @@ class Limits:
     input: int
     output: int | None
     provider: str | None
+    model: str | None = None
+    """The model the gateway calls for it (``litellm_params.model``), which names its
+    family, as ``bedrock/anthropic.claude-...`` does."""
 
 
 class ModelGateway:
@@ -622,11 +625,12 @@ class ModelGateway:
                 continue
             known = limits.get(name)
             if known is None or found < known.input:
-                provider = info.get("litellm_provider")
+                provider, model = info.get("litellm_provider"), info.get("litellm_model")
                 limits[name] = Limits(
                     found,
                     output if type(output) is int and output > 0 else None,
                     provider if isinstance(provider, str) else None,
+                    model if isinstance(model, str) else None,
                 )
         return limits
 
@@ -660,7 +664,13 @@ class ModelGateway:
             entry = cast(dict[str, object], item)
             name, info = entry.get("model_name"), entry.get("model_info")
             if isinstance(name, str) and isinstance(info, dict):
-                described.append((name, cast(dict[str, object], info)))
+                params = entry.get("litellm_params")
+                called = (
+                    cast(dict[str, object], params).get("model")
+                    if isinstance(params, dict)
+                    else None
+                )
+                described.append((name, {**cast(dict[str, object], info), "litellm_model": called}))
         return described
 
     async def close(self) -> None:

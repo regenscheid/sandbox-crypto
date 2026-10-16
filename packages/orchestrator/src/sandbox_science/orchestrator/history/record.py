@@ -12,6 +12,7 @@ every later view shows those as stubs too.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from typing import Any, Final, cast
@@ -21,6 +22,25 @@ from .archive import Archived, escape
 Json = dict[str, Any]
 
 FORMAT: Final = "sandbox-fold-1"
+LABELS: Final = (
+    "--- fold ",
+    "--- The user's own words",
+    "--- End of the user's own words",
+    "--- msg-",
+    "--- run ",
+    "Outline:",
+    "Markers:",
+    "Narrative",
+    "Search keys:",
+    "Session record, written by the platform",
+    "Fold records, written by the platform",
+    "Research state, rendered by the platform",
+    "Platform instruction",
+)
+"""How the platform's own lines begin: a fold record's, the state block's and their
+framings. A line from a message or a model that begins so is quoted (CM-20, CM-F15)."""
+MARKER: Final = re.compile(r"-\s*(?:decision|caveat|read|failures)\s*:", re.IGNORECASE)
+"""A line that begins like one of a record's marker lines."""
 """The stored form of a fold record, beside its text."""
 STUB_CHARS: Final = 5_000
 """A tool result longer than this, older than the newest ``STUBS_KEPT``, is stubbed."""
@@ -77,7 +97,7 @@ class FoldRecord:
             f"({first} to {last}) · runs {', '.join(self.runs)} · "
             f"{self.dates[0]} to {self.dates[1]} ---",
             "Outline:",
-            *self.skeleton,
+            *(guarded(line) for line in self.skeleton),
         ]
         if self.markers:
             lines.append("Markers:")
@@ -88,7 +108,8 @@ class FoldRecord:
             else "Narrative: none (a skeleton-only fold)."
         )
         if self.keys:
-            lines.append("Search keys: " + "; ".join(f"{key} ({at})" for key, at in self.keys))
+            shown = "; ".join(f"{flat(key)} ({at})" for key, at in self.keys)
+            lines.append("Search keys: " + shown)
         if whole:
             for marker in self.markers:
                 if marker.get("kind") == "failures":
@@ -104,13 +125,25 @@ class FoldRecord:
 
 
 def marker_line(marker: Mapping[str, Any], fold: str) -> str:
-    """A stored marker as its line."""
+    """A stored marker as its line, on one line whatever its text held."""
     if marker.get("kind") == "failures":
         return (
-            f"failures: {marker.get('count')} {marker.get('subject')} calls failed or timed "
-            f"out; their IDs are in fold {fold}"
+            f"failures: {marker.get('count')} {flat(str(marker.get('subject')))} calls failed "
+            f"or timed out; their IDs are in fold {fold}"
         )
-    return f"{marker.get('kind')}: {marker.get('text')}"
+    return f"{flat(str(marker.get('kind')))}: {flat(str(marker.get('text')))}"
+
+
+def flat(text: str) -> str:
+    """``text`` on one line, its whitespace runs single spaces."""
+    return " ".join(text.split())
+
+
+def guarded(line: str) -> str:
+    """``line`` with a backslash before it when it begins like one of the platform's
+    own (``LABELS``, ``MARKER``)."""
+    lead = line.lstrip()
+    return f"\\{line}" if lead.startswith(LABELS) or MARKER.match(lead) else line
 
 
 def stub(row: Archived, call: Mapping[str, Any] | None) -> Json:

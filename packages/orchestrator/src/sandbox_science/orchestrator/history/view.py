@@ -210,12 +210,7 @@ def session_view(
         region=region,
         folds=shown_folds,
         folds_left_out=left,
-        markers_left_out=tuple(
-            marker_line(marker, row.message_id)
-            for row, found in records
-            if row.message_id in left
-            for marker in found.markers
-        ),
+        markers_left_out=_left_markers(records, left, int(geometry.region * per_token) // 4),
         folded=(folded[0].position, end) if folded else None,
         stubs=tuple(p.row.message_id for p in kept if p.kind == "stub" and p.row),
         words=words if folded or before or left else None,
@@ -242,6 +237,38 @@ def _region(
     content = FOLD_REGION.text + "\n\n".join(text for _, text in texts[start:])
     region = Part("fold_region", {"role": "user", "content": content})
     return region, tuple(at for at, _ in texts[start:]), tuple(at for at, _ in texts[:start])
+
+
+def _left_markers(
+    records: Sequence[tuple[Archived, FoldRecord]], left: Sequence[str], budget: int
+) -> tuple[str, ...]:
+    """The marker lines of the records ``left`` out, within ``budget`` characters, a
+    quarter of the region's: failure aggregates give way first, then the oldest lines;
+    the last line says how many gave way and how to read them whole."""
+    found = [
+        (marker.get("kind") == "failures", marker_line(marker, row.message_id), row.message_id)
+        for row, record in records
+        if row.message_id in left
+        for marker in record.markers
+    ]
+    total = sum(len(line) + 3 for _, line, _ in found)
+    gone: set[int] = set()
+    for index in sorted(range(len(found)), key=lambda i: (not found[i][0], i)):
+        if total <= budget:
+            break
+        gone.add(index)
+        total -= len(found[index][1]) + 3
+    kept = tuple(line for index, (_, line, _) in enumerate(found) if index not in gone)
+    if not gone:
+        return kept
+    spilled = [found[index][2] for index in sorted(gone)]
+    first, last = spilled[0], spilled[-1]  # in the records' order, oldest first
+    named = first if first == last else f"{first} to {last}"
+    return (
+        *kept,
+        f"{len(gone)} more marker lines, of the records {named}, are left out here; "
+        "history_read returns each record whole",
+    )
 
 
 def _stubbed(unit: Sequence[Part], stubs: set[str]) -> Unit:

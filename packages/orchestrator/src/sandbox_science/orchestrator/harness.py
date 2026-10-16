@@ -503,6 +503,8 @@ class Harness:
         self.gateway = gateway
         self._limits_seen: dict[str, Limits] | None = None
         """The limits the gateway's model information gave, once it gave them."""
+        self._learned: dict[str, int] = {}
+        """Each alias's ceiling a context error capped, for later runs (CM-43)."""
 
     def role(self, request: RunRequest) -> Role:
         """The model a run calls: the delegated role's for a delegated run, or the one
@@ -689,7 +691,7 @@ class Harness:
         found = await threaded(digest, int(start.digest * per_token))
         view = dataclasses.replace(view, digest=found)
         view = await settle(view, archive, context, run=name, kernels=kernels, clock=self.clock)
-        return Folder(
+        made = Folder(
             archive,
             context,
             run=name,
@@ -704,6 +706,18 @@ class Harness:
             digest=digest,
             clock=self.clock,
         )
+        # The ceiling a context error capped, carried to later runs: this service's, or
+        # the session's last main run's on the alias, as its record keeps it (CM-43).
+        alias = self.main.alias
+        made.learned = self._learned.get(alias)
+        if made.learned is None:
+            made.learned = await threaded(_learned, stores.projects, project, session, alias)
+
+        def learn(cap: int) -> None:
+            self._learned[alias] = cap
+
+        made.on_cap = learn
+        return made
 
     async def _ceiling(self) -> int:
         """MAIN's ceiling C (CM-27): the role's, capped by the model's limit: the setting's
@@ -719,7 +733,8 @@ class Harness:
         if found is None:
             return settings.ceiling
         model = self.main.model
-        if isinstance(model, MessagesModel) or "anthropic" in (found.provider or ""):
+        named = " ".join(name or "" for name in (found.provider, found.model, self.main.alias))
+        if isinstance(model, MessagesModel) or "anthropic" in named or "claude" in named.lower():
             output = model.max_output if isinstance(model, GatewayModel) else None
             return ceiling(settings.ceiling, window=found.input, max_output=output or found.output)
         return ceiling(settings.ceiling, input_limit=found.input)
@@ -1190,6 +1205,22 @@ class Harness:
                 delegated=delegated,
             ),
         )
+
+
+def _learned(projects: ProjectStore, project: str, session: str, alias: str) -> int | None:
+    """The ceiling the session's last main run on ``alias`` capped after a context
+    error, as its record keeps it (``summaries.folds.capped``), if it did."""
+    for entry in reversed(projects.runs(project, session)):
+        if entry.role != "main":
+            continue
+        try:
+            record = projects.run(project, session, entry.name)
+        except ProjectError:
+            return None
+        folds = record.summaries.get("folds")
+        capped = folds.get("capped") if isinstance(folds, dict) else None
+        return capped if record.alias == alias and type(capped) is int else None
+    return None
 
 
 def _refit(toolbox: Toolbox, discovery: SkillDiscovery | None, view: View) -> None:

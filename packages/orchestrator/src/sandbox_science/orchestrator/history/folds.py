@@ -116,6 +116,11 @@ class Folder(TurnHook):
         self.detail: str | None = None
         self.capped: int | None = None
         """The ceiling a context error capped at the largest input the model took."""
+        self.learned: int | None = None
+        """The largest input an earlier run's context error found the model takes: the
+        cap a context error falls back to, the first call's among them."""
+        self.on_cap: Callable[[int], None] | None = None
+        """Told each cap, so later runs learn it."""
 
     @property
     def tripped(self) -> bool:
@@ -161,12 +166,16 @@ class Folder(TurnHook):
         """After a context error: the ceiling no larger than the largest input the model
         took in this run, which it is known to take (CM-43)."""
         taken = [usage.input_tokens for usage in transcript.usage if usage.input_tokens]
+        if self.learned is not None:  # what an earlier run learned the model takes
+            taken.append(self.learned)
         if self.geometry is None or not taken or max(taken) >= self.geometry.ceiling:
             return
         capped = geometry(max(taken), self.geometry.prompt, self.chunk)
         if capped.refused() is not None:  # a report too small to be the model's limit
             return
         self.geometry, self.capped = capped, max(taken)
+        if self.on_cap is not None:
+            self.on_cap(max(taken))
         _log.warning(
             "run %s caps its ceiling at %d tokens after a context error", self.run, max(taken)
         )
