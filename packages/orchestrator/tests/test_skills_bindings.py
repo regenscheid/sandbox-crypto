@@ -125,6 +125,12 @@ def test_the_user_approves_or_names_a_prefix_and_never_a_start_up_variable(
         assert "binds it to tool/start.py" in said
         assert "may load or run the pack's files" in said
         assert "give --confirm to approve LIBFOO_PLUGIN_DIR" in said
+    # One under the source's own namespace too: this cannot see the environment's PATH,
+    # where a command named for the namespace (sh for SH_) has a run hold it (third check).
+    status, said = _cli(capsys, state, *over, "--expected", "0", "--approve", "SS_DATA")
+    assert status == 1
+    assert "approval: SS_DATA is under ss's namespace SS_, which a run grants only" in said
+    assert "give --confirm to approve SS_DATA" in said
     confirmed = ("--approve", "LIBFOO_PLUGIN_DIR", "--confirm")
     status, refused = _cli(capsys, state, *over, *confirmed)
     assert (status, "give --expected 0" in refused) == (1, True)
@@ -203,6 +209,11 @@ COLLISIONS = (
     ("cremona", "CREMONA_MINI_DATA_DIR"), ("lie", "LIE_INFO_DIR"), ("odbc", "ODBCSYSINI"),
     ("vim", "VIMRUNTIME"), ("tix", "TIX_LIBRARY"), ("caml", "CAML_LD_LIBRARY_PATH"),
     ("graphs", "GRAPHS_DATA_DIR"), ("local", "LOCAL_IDENTIFIER"), ("mpmath", "MPMATH_NOSAGE"),
+    # The third check's notes: autoconf (in crypto-base) runs autom4te by AUTOM4TE and
+    # reads AUTOM4TE_CFG; the rest cost nothing to hold.
+    ("autom4te", "AUTOM4TE_CFG"), ("bison", "BISON_PKGDATADIR"), ("valgrind", "VALGRIND_LIB"),
+    ("gbm", "GBM_BACKENDS_PATH"), ("vdpau", "VDPAU_DRIVER_PATH"), ("ladspa", "LADSPA_PATH"),
+    ("lv2", "LV2_PATH"), ("groff", "GROFF_FONT_PATH"), ("reticulate", "RETICULATE_PYTHON"),
 )  # fmt: skip
 
 
@@ -230,6 +241,18 @@ def test_no_namespace_starts_a_variable_a_tool_reads() -> None:
             assert allow.taken(first) is not None, first
     assert allow.taken("GRAPHS_DATA_") is not None
     assert allow.taken("CRYPTO_TOOLS_") is None
+
+
+def test_an_approval_under_a_command_named_namespace_says_a_run_holds_it() -> None:
+    """``sh`` gets ``SH_`` outside a run, which knows no commands, but a run's staging
+    refuses it, as ``sh`` is on the environment's PATH: an approval of ``SH_DIR`` sets
+    it there, so it needs ``--confirm`` and says why."""
+    names, refused = allow.granted("sh", None, set())
+    assert (names, refused) == (["SH_"], [])
+    assert allow.granted("sh", None, set(), {"sh"})[0] == []
+    said = allow.about("SH_DIR", "sh", names, "tool")
+    assert said.startswith("SH_DIR is under sh's namespace SH_, which a run grants only when")
+    assert "approved, it is set even then" in said
 
 
 def test_a_namespace_the_environment_has_a_command_for_is_refused() -> None:

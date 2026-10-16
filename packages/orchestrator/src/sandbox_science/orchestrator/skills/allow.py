@@ -107,7 +107,8 @@ TOOL_FAMILIES: Final = (
     "DEPENDENCIES_", "CREMONA_", "ELLCURVE_", "MATHJAX_", "THREEJS_", "PPLPY_", "LIE_",
     "OPENMP_", "MPMATH_", "MTXLIB", "M4", "ODBC", "VIM", "TIX_", "CAML_", "OCAML",
     "SETUPTOOLS", "DISTUTILS", "CYTHON", "MESON", "NINJA", "LIBTOOL", "AUTOCONF", "AUTOMAKE",
-    "ACLOCAL",
+    "ACLOCAL", "AUTOM4TE", "BISON_", "VALGRIND_", "GBM_", "VDPAU_", "LADSPA_", "LV2_",
+    "GROFF_", "RETICULATE_",
 )  # fmt: skip
 """Tools' own variable families that a pack's namespace would claim: lab 43's review found a
 pack named ``gap`` binding ``GAP_ROOT_PATHS``, whose ``init.g`` Sage's libgap ran, and one
@@ -212,10 +213,19 @@ LOADS: Final = ("PATH", "PATHS", "DIR", "DIRS", "LIB", "LIBRARY", "PREFIX", "ROO
 
 
 def about(variable: str, source: str, names: Sequence[str], path: str | None) -> str:
-    """What is known of ``variable``, a binding not namespaced to ``source`` (``names``),
-    for the user who would approve it (SK-31): the pack's file it would name, and what its
-    name says. Nothing tells which tools read it."""
-    said = [f"{variable} is not namespaced to {source} ({', '.join(names) or 'none'})"]
+    """What is known of ``variable``, a binding of ``source``, whose namespaces outside a
+    run are ``names`` (``granted`` without the environment's commands), for the user who
+    would approve it (SK-31): the pack's file it would name, and what its name says.
+    Nothing tells which tools read it."""
+    if under := next((name for name in names if variable.startswith(name)), None):
+        first = (
+            f"{variable} is under {source}'s namespace {under}, which a run grants only when "
+            f"no command on the environment's PATH is named for it (as sh would take SH_); "
+            "approved, it is set even then"
+        )
+    else:
+        first = f"{variable} is not namespaced to {source} ({', '.join(names) or 'none'})"
+    said = [first]
     if path is not None:
         said.append(f"the pack's pass binds it to {path or 'the pack'} in the staged pack")
     if variable.rsplit("_", 1)[-1] in LOADS:
