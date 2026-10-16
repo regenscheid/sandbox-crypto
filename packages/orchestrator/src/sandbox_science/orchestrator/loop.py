@@ -379,6 +379,7 @@ async def _complete(model: ChatModel, toolbox: Toolbox, transcript: Transcript) 
             characters=size + answered,
             cost=reply.cost,
             gateway_version=reply.gateway_version,
+            thinking_replay=(reply.thinking_replay or "")[:300] or None,
         )
     )
     return reply

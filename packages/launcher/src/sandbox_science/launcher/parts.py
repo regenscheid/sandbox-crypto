@@ -248,6 +248,9 @@ def harness_argv(config: LauncherConfig, layout: Layout) -> list[str]:
     delegated = ["--delegated-model", model.delegated] if model.delegated else []
     # Each alias's gateway API (CM-41); an alias left out takes chat completions.
     apis = [option for alias, kind in model.api.items() for option in ("--api", f"{alias}={kind}")]
+    # Claude's thinking replay setting (CM-39).
+    if (replay := model.thinking_replay) is not None:
+        apis += ["--thinking-replay", replay.model_dump_json()]
     shared = [] if service.run_share is None else ["--run-share", str(service.run_share)]
     if (embedding := config.skills.embedding_model) is not None:
         shared += ["--skills-embedding-model", embedding]  # the skills' imports used it too

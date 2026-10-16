@@ -96,4 +96,5 @@ markers = [
     "slow: starts real processes for its tests (kernels, executors, daemons, package managers); the slow tier (scripts/tiers.py)",
     "integration: needs OpenShell, KVM or a cluster; runs only when SS_INTEGRATION=1",
     "images: needs Docker and built base images; runs only when SS_IMAGE_TESTS names them",
+    "live: calls the deployment's real model gateway, for the labs; runs only when SS_LIVE_GATEWAY names it",
 ]

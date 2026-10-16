@@ -391,6 +391,53 @@ class Gateway:
         headers = {"x-litellm-version": self.version, "Content-Type": "application/json"}
         return web.Response(text=text, headers=headers)
 
+    claude: list[Json] = field(default_factory=list[Json])
+    """The body of each ``/messages`` request, in order."""
+    claude_answers: list[str] = field(default_factory=list[str])
+    """Each ``/messages`` answer, as it was sent."""
+    claude_raw: list[bytes] = field(default_factory=list[bytes])
+    """Each ``/messages`` request's body, as it arrived."""
+    claude_betas: list[str] = field(default_factory=list[str])
+    """Each ``/messages`` request's ``anthropic-beta`` header."""
+    served: dict[str, str] | None = None
+    """The provider model behind each alias, as ``GET /model/info`` says."""
+
+    async def message(self, request: web.Request) -> web.Response:
+        """The main alias's script through Anthropic's Messages API, as LiteLLM serves
+        it: each answer a signed reasoning block, then, before its calls, its text as a
+        progress note, or else its text."""
+        assert request.headers.get("Authorization") == f"Bearer {API_KEY}"
+        self.claude_raw.append(await request.read())
+        self.claude_betas.append(request.headers.get("anthropic-beta", ""))
+        body = cast(Json, json.loads(self.claude_raw[-1]))
+        assert body["model"] == "main", body["model"]
+        self.claude.append(body)
+        reply = self.script.pop(0) if self.script else Reply("(the script has ended)")
+        turn = len(self.claude)
+        updates = body["thinking"]["display"] == "updates"
+        content: list[Json] = [{"type": "thinking", "thinking": "", "signature": f"sig-{turn}a"}]
+        if reply.text is not None and reply.calls:
+            note = reply.text if updates else ""
+            content.append({"type": "thinking", "thinking": note, "signature": f"sig-{turn}b"})
+        elif reply.text is not None:
+            content.append({"type": "text", "text": reply.text})
+        for name, arguments in reply.calls:
+            self.numbered += 1
+            content.append(
+                {"type": "tool_use", "id": f"toolu_{self.numbered}", "name": name,
+                 "input": arguments}
+            )  # fmt: skip
+        text = json.dumps(
+            {"id": f"msg_{turn}", "type": "message", "role": "assistant",
+             "model": "scripted-main", "content": content,
+             "stop_reason": "tool_use" if reply.calls else "end_turn",
+             "usage": {"input_tokens": 10, "cache_read_input_tokens": len(body["messages"]),
+                       "cache_creation_input_tokens": 0, "output_tokens": 1}}
+        )  # fmt: skip
+        self.claude_answers.append(text)
+        headers = {"x-litellm-version": self.version, "Content-Type": "application/json"}
+        return web.Response(text=text, headers=headers)
+
     version: str = GATEWAY_VERSION
     """What ``x-litellm-version`` names on each chat completion."""
 
@@ -412,12 +459,16 @@ class Gateway:
         return web.json_response({"object": "list", "data": data})
 
     async def model_info(self, request: web.Request) -> web.Response:
-        if self.capable is None:
+        if self.capable is None and self.served is None:
             return web.Response(status=404, text="not found")
         assert request.headers.get("Authorization") == f"Bearer {API_KEY}"
         data = [
             {"model_name": alias, "model_info": {"supports_function_calling": calls}}
-            for alias, calls in self.capable.items()
+            for alias, calls in (self.capable or {}).items()
+        ]
+        data += [
+            {"model_name": alias, "litellm_params": {"model": model}, "model_info": {}}
+            for alias, model in (self.served or {}).items()
         ]
         return web.json_response({"data": data})
 
@@ -496,6 +547,7 @@ async def gateway() -> AsyncIterator[Gateway]:
     app = web.Application()
     app.router.add_post("/chat/completions", found.handle)
     app.router.add_post("/responses", found.respond)
+    app.router.add_post("/messages", found.message)
     app.router.add_get("/models", found.models)
     app.router.add_get("/model/info", found.model_info)
     app.router.add_post("/embeddings", found.embeddings)

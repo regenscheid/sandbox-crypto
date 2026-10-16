@@ -75,6 +75,9 @@ class ModelTurn:
     (such as the tools it declared): carried by the answer and archived with it, so a
     rebuild has it again. Only the adapter whose ``FORMAT`` is the answer's
     ``native_format`` reads it."""
+    thinking_replay: str | None = None
+    """Whether the call sent Claude's thinking back: ``on``, or ``off:`` and why (CM-39);
+    ``None`` from an adapter without it."""
 
 
 COST_HEADER: Final = "x-litellm-response-cost"
@@ -200,9 +203,9 @@ GATEWAY_BUDGET: Final = "gateway_budget"
 
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 """The largest answer read from the gateway, by default."""
-RETRIED: Final = frozenset({429, 502, 503, 504})
-"""Gateway statuses that a later attempt can get past: rate limits and an unavailable
-or slow upstream."""
+RETRIED: Final = frozenset({429, 502, 503, 504, 529})
+"""Gateway statuses that a later attempt can get past: rate limits and an unavailable,
+slow or overloaded upstream (Anthropic's 529)."""
 MAX_RETRY_WAIT: Final = 60.0
 """The longest wait before a retry, whatever the gateway's ``Retry-After`` asks."""
 
@@ -253,7 +256,7 @@ class GatewayModel(ABC):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self._api_key = api_key
-        self._session = session
+        self._session: aiohttp.ClientSession | None = session
         self._owns_session = session is None
         self._timeout = aiohttp.ClientTimeout(total=timeout)
         self._max_tokens = max_tokens
@@ -389,10 +392,10 @@ class OpenAICompatibleModel(GatewayModel):
         return await self._call(body, _parse_completion)
 
 
-API_KINDS: Final = ("chat", "responses")
+API_KINDS: Final = ("chat", "responses", "messages")
 """The adapters an alias may be called through, as the deployment names them (CM-41):
-``chat`` completions, every alias's unless the deployment says otherwise, and GPT's
-``responses`` (CM-40)."""
+``chat`` completions, every alias's unless the deployment says otherwise, GPT's
+``responses`` (CM-40) and Claude's ``messages`` (CM-38)."""
 
 
 def gateway_model(
@@ -415,6 +418,10 @@ def gateway_model(
         from .responses import ResponsesModel  # which builds on this module
 
         kind = ResponsesModel
+    elif api == "messages":
+        from .messages import MessagesModel  # which builds on this module
+
+        kind = MessagesModel
     else:
         raise ValueError(f"no adapter {api!r}: one of {', '.join(API_KINDS)}")
     return kind(
@@ -444,6 +451,7 @@ class ModelGateway:
         *,
         timeout: float = 30,
         apis: Mapping[str, str] | None = None,
+        options: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self._api_key = api_key
@@ -452,6 +460,8 @@ class ModelGateway:
         self.apis = dict(apis or {})
         """The adapter of each alias the deployment names one for (``API_KINDS``); any
         other alias's is ``chat``."""
+        self.options = dict(options or {})
+        """Each adapter's own options, by its kind, such as Claude's thinking replay."""
 
     def _shared(self) -> aiohttp.ClientSession:
         if self._session is None:
@@ -461,7 +471,14 @@ class ModelGateway:
     def model(self, alias: str) -> GatewayModel:
         """A model that calls ``alias``, through its adapter and the gateway's session."""
         api = self.apis.get(alias, "chat")
-        return gateway_model(self.base_url, alias, self._api_key, api=api, session=self._shared())
+        return gateway_model(
+            self.base_url,
+            alias,
+            self._api_key,
+            api=api,
+            options=self.options.get(api),
+            session=self._shared(),
+        )
 
     async def aliases(self) -> frozenset[str] | None:
         """The model aliases the gateway lists (``GET /models``, as the LiteLLM proxy
@@ -587,16 +604,27 @@ def _budget_exceeded(text: str) -> bool:
     return fields.get("type") == "budget_exceeded" or any(mark in said for mark in BUDGET_MARKS)
 
 
+CONTEXT_MARKS: Final = ("prompt is too long", "exceed context limit")
+"""How Anthropic's errors say the input is too long for the model, in lower case, as
+LiteLLM's ``/v1/messages`` relays them, alone or quoted inside its own message: "prompt
+is too long: 1050000 tokens > 1000000 maximum", and "input length and `max_tokens`
+exceed context limit: ..."."""
+
+
 def _context_exceeded(text: str) -> bool:
     """Whether a gateway's error says the input is longer than the model's context.
 
     The error object's ``code`` is ``context_length_exceeded`` as OpenAI-compatible
-    providers send it, or its message names LiteLLM's ``ContextWindowExceededError``.
-    Text elsewhere in the answer, which can quote the request, does not count."""
+    providers send it, or its message names LiteLLM's ``ContextWindowExceededError`` or
+    says so as Anthropic's do (``CONTEXT_MARKS``). Text elsewhere in the answer, which
+    can quote the request, does not count."""
     fields = _error_fields(text)
     message = fields.get("message")
-    return fields.get("code") == "context_length_exceeded" or (
-        isinstance(message, str) and message.startswith("litellm.ContextWindowExceededError")
+    said = message.lower() if isinstance(message, str) else ""
+    return (
+        fields.get("code") == "context_length_exceeded"
+        or said.startswith("litellm.contextwindowexceedederror")
+        or any(mark in said for mark in CONTEXT_MARKS)
     )
 
 

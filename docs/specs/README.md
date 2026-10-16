@@ -56,7 +56,7 @@ Each spec ends with acceptance fixtures: *Given* (setup and inputs), *When* (act
 | --- | --- | --- |
 | `scripted` | The real harness with a **scripted model** (new): an adapter behind the provider-neutral model interface (D61) that replays predetermined tool calls and text and records every request it receives. A fake worker is enough unless the fixture is also `worker` | Tests harness behavior deterministically; runs in CI |
 | `worker` | A real worker: OpenShell with the MicroVM driver on babbage in phase 1 | Integration test, skipped unless `SS_INTEGRATION=1` ([conventions](../../.agents/CONVENTIONS.md#testing)) |
-| `live` | Real models through LiteLLM | Measures routing or quality, such as skill activation per model alias; reports results and gates nothing unless the fixture says so |
+| `live` | Real models through LiteLLM | Measures routing or quality, such as skill activation per model alias; reports results and gates nothing unless the fixture says so. Tests marked `live` are skipped unless `SS_LIVE_GATEWAY` names the gateway |
 
 Fixture data (a test skill pack, a local Conda channel with test packages, scripted transcripts) is written by this project under MIT when the fixture is implemented. The numeric fixture `finite-field-identity-v1` is defined in the [roadmap](../ROADMAP.md#first-end-to-end-fixture).
 

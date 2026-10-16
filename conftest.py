@@ -2,7 +2,9 @@
 """Rules for every test in the repository.
 
 Tests marked ``integration`` need OpenShell, KVM, a cluster or the public registries.
-They run only when ``SS_INTEGRATION=1``, so CI and ordinary local runs skip them.
+They run only when ``SS_INTEGRATION=1``, so CI and ordinary local runs skip them. Tests
+marked ``live`` call the deployment's real model gateway, for the labs; they run only
+when ``SS_LIVE_GATEWAY`` names it.
 
 After each test module, no process this run started may still run from the run's
 temporary directory: an executor, a sandbox daemon, a kernel or a command they started
@@ -22,12 +24,15 @@ LEFTOVER_GRACE = 10.0
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    if os.environ.get("SS_INTEGRATION") == "1":
-        return
+    integration = os.environ.get("SS_INTEGRATION") == "1"
+    live = bool(os.environ.get("SS_LIVE_GATEWAY"))
     skip = pytest.mark.skip(reason="integration test: set SS_INTEGRATION=1 to run it")
+    unlive = pytest.mark.skip(reason="live gateway test: set SS_LIVE_GATEWAY to run it")
     for item in items:
-        if item.get_closest_marker("integration") is not None:
+        if not integration and item.get_closest_marker("integration") is not None:
             item.add_marker(skip)
+        if not live and item.get_closest_marker("live") is not None:
+            item.add_marker(unlive)
 
 
 @pytest.fixture(scope="module", autouse=True)

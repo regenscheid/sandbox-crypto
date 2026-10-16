@@ -166,6 +166,9 @@ class ModelUsage(Contract):
     gateway_version: str | None = Field(default=None, max_length=128)
     """The gateway's version, as its ``x-litellm-version`` header named it
     (docs/specs/context-management.md, CM-39); null when it sent none."""
+    thinking_replay: str | None = Field(default=None, max_length=300)
+    """Whether the call sent Claude's thinking back: ``on``, or ``off:`` and why (CM-39);
+    null for a client without thinking replay."""
 
 
 def _summary(value: JsonValue | None) -> dict[str, JsonValue]:

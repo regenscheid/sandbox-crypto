@@ -82,6 +82,7 @@ from .harness import (
 from .jobstate import JobState
 from .loop import MAX_INPUT_CHARS, Interruption
 from .mathcheck import MathChecker
+from .messages import ThinkingReplay
 from .model import (
     API_KINDS,
     MAX_RESPONSE_BYTES,
@@ -125,14 +126,29 @@ def _gateway(
 ) -> ChatModel:
     """The client for ``alias``, through the adapter ``--api`` names for it (CM-41)."""
     key = read_secret(args.api_key_file)
+    api = _apis(args).get(alias, "chat")
     return gateway_model(
         args.model_url,
         alias,
         key,
-        api=_apis(args).get(alias, "chat"),
+        api=api,
+        options=_options(args).get(api),
         max_tokens=max_tokens,
         max_response_bytes=max_response_bytes,
     )
+
+
+def _options(args: argparse.Namespace) -> dict[str, dict[str, object]]:
+    """Each adapter's own options, by its kind: Claude's thinking replay (CM-39)."""
+    replay = getattr(args, "thinking_replay", None)
+    return {"messages": {"replay": replay}} if replay is not None else {}
+
+
+def _thinking_replay(value: str) -> ThinkingReplay:
+    try:
+        return ThinkingReplay.parse(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from None
 
 
 def _apis(args: argparse.Namespace) -> dict[str, str]:
@@ -303,6 +319,7 @@ def _harness(
             args.model_url,
             read_secret(args.api_key_file),
             apis=_apis(args),
+            options=_options(args),
         )
         closing(stack, interruption, gateway.close)
     vectors = None
@@ -417,8 +434,17 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
         default=[],
         metavar="ALIAS=KIND",
         help="the gateway API a model alias is called through, in any role: chat "
-        "(/chat/completions, every alias's by default) or responses (/v1/responses, GPT's "
-        "Responses API, its reasoning sent back); repeat for more aliases",
+        "(/chat/completions, every alias's by default), responses (/v1/responses, GPT's "
+        "Responses API, its reasoning sent back) or messages (/v1/messages, Claude's "
+        "Messages API, with its progress notes); repeat for more aliases",
+    )
+    command.add_argument(
+        "--thinking-replay",
+        type=_thinking_replay,
+        metavar="JSON",
+        help="send Claude's thinking back, on the gateway image a CM-F30 run verified: "
+        '{"image": its digest, "version": its x-litellm-version, "verified": the date, '
+        '"run": the run\'s ID}; off without it',
     )
     command.add_argument(
         "--skills-embedding-model",
@@ -576,6 +602,8 @@ def _check_agent(parser: argparse.ArgumentParser, args: argparse.Namespace) -> N
         parser.error("--api needs --model-url")
     if len({alias for alias, _ in args.api}) < len(set(args.api)):
         parser.error("--api names two adapters for one alias")
+    if args.thinking_replay is not None and "messages" not in _apis(args).values():
+        parser.error("--thinking-replay needs an alias with --api ALIAS=messages")
     if getattr(args, "skills_embedding_model", None) is not None and args.model_url is None:
         parser.error("--skills-embedding-model needs --model-url")
     if args.max_input_chars < 1:
