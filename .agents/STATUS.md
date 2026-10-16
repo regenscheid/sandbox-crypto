@@ -14,22 +14,22 @@ Updated 2026-10-15, main `0195f834`. This file is replaced, not appended to, and
 Both labs used the real model and crypto-research-mcp.
 
 - **Lab 40** ran the whole path with delegation and connectors (162 skills imported). Its eight bugs are fixed.
-- **Lab 41** checked what merged since. Passed: depth 2, a task on an issue with a result file, connector search, cost by role and history. The claimed-action check flagged earlier runs' true statements. Its nine bugs are fixed (#412, #414 to #416, #418 to #420, #424, #425), and a claimed fix is checked against the file it names (#422).
+- **Lab 41** checked what merged since. Passed: depth 2, tasks on issues, connector search, cost by role and history. The claimed-action check flagged earlier runs' true statements. Its nine bugs are fixed (#412, #414 to #416, #418 to #420, #424, #425), and a claimed fix is checked against the file it names (#422).
 - **No lab has run since.** Lab 41's fixes, skills in runs and the PDF line numbering are untested with a real model.
 
 ## What works today
 
 - **Launcher:** `sandbox-science up`, `down`, `status` and `skills update` run the worker, the run service, the workspace and the MCP proxy from one config, which also names skill packs ([quickstart](../docs/QUICKSTART.md)).
-- **Infrastructure:** the policy library and middleware, the package cache, the MCP proxy, the event store, and one approval state machine.
+- **Infrastructure:** the policy library and middleware, the package cache, the MCP proxy, the event store and approvals.
 - **Worker:** OpenShell VM sandboxes at tier 3 with persistent Python and Sage kernels, file handoff, PDF tools, background jobs and Conda and pip provisioning. Protocol 5 ([compatibility](../docs/COMPATIBILITY.md)); the control store is at version 43. `pdf_pages` and `pdf_search` number lines one way, and `pdf_pages` shows line boxes on request.
 - **Harness:** the tool loop; the run service for GUI chat; an MCP client with tools loaded on demand and a failed listing tried again ([MCP connectors](../docs/MCP-CONNECTORS.md)); planning; living documents; comments; automatic consistency review, which matches narrated actions against what each run and its delegated runs did; math checks; the job watcher; recorded files; project memory ([memory](../docs/MEMORY.md)); `ask_user` ([questions](../docs/QUESTIONS.md)). Agents' writes refuse hidden characters.
 - **Delegation** ([spec](../docs/specs/plans-and-delegation.md)): off by default, per project (`project delegation`). Checks (the platform writes the brief) and tasks (the parent writes it; a plan track, an outcome on an issue, result files pinned). A run tree, a cap on runs at once, limits on a runaway child and a fallback model alias. A confirmed check counts as the `independent_check`.
-- **Ledger** ([ledger](../docs/LEDGER.md)): seven entry types, pinned evidence, decisions and the gate, flags, work records, and the frontier with history. The citation check confirms an agent's published result; the copied-number check compares long numbers with the artifacts.
+- **Ledger** ([ledger](../docs/LEDGER.md)): seven entry types, pinned evidence, decisions and the gate, flags, work records, and the frontier with history. The citation check confirms an agent's published result; the copied-number check compares long numbers.
 - **Cost:** each call's cost as the gateway reports it, by run and by role (main, delegated, reviewer, watcher, skill embeddings). LiteLLM enforces the budget, and a refusal ends the run. A project may set a daily cost limit.
 - **Skills** ([skills](../docs/SKILLS.md), spec approved): `skills import` takes a pack from git or an archive and pins it. Each run gets its project's skills: an index in the system message, the `skills` tool (search, load, read), skills loaded at every start, and a discovery notice before the first model call and each user message. The seven built-in skills are pinned at each run's start. Matching is by words and, with an embedding model, by meaning. The launcher imports a pack once and updates it on request.
-- **Workspace GUI:** documents; comments; reviews and findings; plans; chat with open questions; jobs; kernels; provisioning; artifacts and a PDF viewer; the ledger; the Memory page; a session's run tree; the cost by role.
-- **Not built:** the skills import's model pass (K6a, #437), overrides of what it derives, per-pack thresholds, helper staging and a skills page in the GUI; compaction; approvals in the GUI; execution-pinned evidence; editable figures, charts and `view_image` (spec #436).
-- **Tests:** 13,068 Python tests are collected, 888 of them in the slow tier, and 2,055 web tests (at #433). A pull request's checks take about four minutes.
+- **Workspace GUI:** documents; comments; reviews and findings; plans; chat with open questions; jobs; kernels; provisioning; artifacts and a PDF viewer; the ledger; the Memory page; a session's run tree.
+- **Not built:** the skills import's model pass (K6a, #437), overrides of what it derives, per-pack thresholds, helper staging and a skills page in the GUI; compaction; approvals in the GUI; execution-pinned evidence; editable figures, charts and `view_image`.
+- **Tests:** 13,068 Python tests are collected, 888 of them in the slow tier, and 2,055 web tests (#433). A pull request's checks take about eight minutes.
 
 ## In progress
 
@@ -38,7 +38,7 @@ Both labs used the real model and crypto-research-mcp.
 
 ## What comes next
 
-1. The owner's decision on context management (a live evaluation is proposed), then compaction as decided.
+1. The owner's decision on context management, from the survey under way, then compaction as decided.
 2. The paused work: K6a (#437), skills K6b onward, and a lab with skills in runs to confirm labs 40 and 41's fixes.
 3. The figures spec after the owner's answers, then editable figures, charts and `view_image`.
 4. Other [BACKLOG](BACKLOG.md) items: questions from delegated runs, a reference's read extent (LG-15), memory proposals' basis (PM-3, PM-4), vouching for PDFs, approvals in the GUI.
@@ -47,7 +47,7 @@ Both labs used the real model and crypto-research-mcp.
 ## Known issues
 
 - **Not fixed, from labs 40 and 41:**
-  - `eprint_fulltext` matches single words, so a phrase may find nothing (the server's behavior).
+  - `eprint_fulltext` matches single words, so a phrase may find nothing.
   - A citation check and a finding can disagree (a quote `supported`, a `fail` finding on the unit).
   - The copied-number check reads decimal numbers only, and only artifacts in the review's window.
   - A check keeps the sandbox's write tools (`write_file`, `publish`, `provision`).
@@ -63,7 +63,7 @@ Both labs used the real model and crypto-research-mcp.
 
 Only the first stops work.
 
-- **Context management (the owner, open).** Long runs stop with `context_limit`. The owner's priority is strong recall and reasoning over long research projects (days, several million tokens of data); auditability and budget control come second. An offline evaluation of moving the loop onto Pydantic AI or LangChain, against extending our own loop (clearing old tool results, a `history_search` tool, provider-native compaction, a structured summary), covered request size, prompt caching and integration cost. Its replay used recorded turns and no real summarizer, so it could not measure research quality. Proposed to the owner: a live, long-horizon research evaluation with real models of provider-native compaction, maintained library components, and our own clearing and search, with persistent research state. A prototype is on branch `spike/pydantic-ai`; the report is not in the repository.
+- **Context management (the owner, open).** The owner's priority is strong recall and reasoning over long research projects (days, several million tokens of data); auditability and budget control come second. An offline evaluation of moving the loop onto Pydantic AI or LangChain, against extending our own loop (clearing, search, provider-native compaction, a summary), covered request size, prompt caching and integration cost. Its replay used recorded turns and no real summarizer, so it could not measure research quality. The owner uses both Claude and GPT models, so the approach must work for both. The owner prefers an existing library known to be good for long research sessions; failing that, the project follows closely how Claude Science and OpenScience manage context, rather than designing its own. A survey of libraries and a close study of those systems is under way, and the owner decides from its result. No live evaluation is planned. A prototype is on branch `spike/pydantic-ai`; the report is not in the repository.
 - **Models:** the `reviewer`, `watcher` and `delegated` aliases are all `sandbox-orchestrator` for now.
 - **PDF vouching:** whether the e-print server names a PDF's hash in a recorded result (asked of the owner). Until then only the user's check of the reference vouches for a PDF quote.
 - **Draft specs:** [living documents](../docs/specs/living-documents.md), question 15; the figures spec (#436), eight questions.

@@ -7,6 +7,7 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 Decision of the owner on pausing work:
 
 - **New work waits for the context-management decision.** The owner is deciding how to manage the context of long runs. Their priority is strong recall and reasoning over long research projects; auditability and budget control come second ([STATUS](STATUS.md#open-questions)). Until the owner decides, no new work starts, and work in flight finishes. Waiting: skills K6a (#437, a draft, not to be reviewed or merged), the skills lab and the rest of the [BACKLOG](BACKLOG.md).
+- **Direction for context management.** The owner uses both Claude and GPT models, so the approach must work for both. The owner prefers an existing library known to be good for long research sessions; failing that, the project follows closely how Claude Science and OpenScience manage context, rather than designing its own. A survey of libraries and a close study of those systems is under way, and the owner decides from its result. No live evaluation is planned.
 
 Decisions of the owner on the skills spec's questions 15 and 16, with the spec's approval (#373):
 

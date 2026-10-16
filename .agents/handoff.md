@@ -45,5 +45,5 @@ The owner's research on other products' prompts lives outside this repository, a
 
 ## What is next
 
-1. The owner's decision on context management. A live, long-horizon research evaluation of the options with real models is proposed to the owner; nothing else starts before the decision.
+1. The owner's decision on context management, from a survey of libraries and a close study of how Claude Science and OpenScience manage context (under way). No live evaluation is planned. Nothing else starts before the decision.
 2. Then the paused work: skills K6a (#437) onward, a lab with skills in runs to confirm labs 40 and 41's fixes, the figures spec (#436), [BACKLOG](BACKLOG.md) and Phase 5.
