@@ -1405,6 +1405,27 @@ class ReviewStore:
             )
         return True
 
+    def off(self, project: str, session: str, reason: str) -> bool:
+        """Record that the session's reviews are off, and why, once: not when its latest
+        such record has had no review dispatched since; whether it recorded it."""
+        self.scope(project, session)
+        with self.documents.control.write() as tx:
+            db = tx.sql
+            said = self.review_log.recent(db, project, session, "review.off", 1)
+            started = self.review_log.recent(db, project, session, "review.dispatched", 1)
+            if said and (not started or started[0].seq < said[0].seq):
+                return False
+            self.review_log.append(
+                db,
+                "review.off",
+                project,
+                session,
+                session,
+                {"reason": reason},
+                datetime.fromtimestamp(self.clock(), UTC),
+            )
+        return True
+
     @staticmethod
     def confirmation_failed(db: sqlite3.Connection, project: str, session: str, key: str) -> bool:
         rows = db.execute(
@@ -2043,7 +2064,13 @@ class ReviewStore:
         if after is not None:
             identifier(after, "rev")
         if self.documents.control.missing:
-            return {"reviews": [], "next_after": None, "unreviewed": [], "waiting": None}
+            return {
+                "reviews": [],
+                "next_after": None,
+                "unreviewed": [],
+                "waiting": None,
+                "off": None,
+            }
         with self.documents.control.read() as tx:
             db = tx.sql
             cursor = db.execute("SELECT coalesce(max(rowid),0)+1 FROM review_runs").fetchone()[0]
@@ -2077,6 +2104,13 @@ class ReviewStore:
                 if deferred and (not started or started[0].seq < deferred[0].seq)
                 else None
             )
+            # Reviews off, and none dispatched since: the session's work goes unreviewed.
+            stopped = self.review_log.recent(db, project, session, "review.off", 1)
+            off = (
+                {**stopped[0].payload, "since": stopped[0].time.timestamp()}
+                if stopped and (not started or started[0].seq < stopped[0].seq)
+                else None
+            )
         values: list[Json] = []
         size = 0
         for review in ids[:50]:
@@ -2091,4 +2125,5 @@ class ReviewStore:
             "next_after": values[-1]["review_id"] if len(ids) > len(values) else None,
             "unreviewed": unreviewed,
             "waiting": waiting,
+            "off": off,
         }

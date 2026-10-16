@@ -5,6 +5,7 @@
   import { visible } from '../lib/text';
   import {
     leftUnreviewed,
+    offText,
     outcomeText,
     reviewLine,
     unreviewedText,
@@ -15,6 +16,7 @@
 </script>
 
 {#if panel.waiting}<p role="status" class="waiting">{waitingText(panel.waiting)}</p>{/if}
+{#if panel.off}<p role="status" class="off">{visible(offText(panel.off))}</p>{/if}
 {#if panel.unreviewed.length}
   <div role="status" class="unreviewed">
     <h3>Left unreviewed</h3>

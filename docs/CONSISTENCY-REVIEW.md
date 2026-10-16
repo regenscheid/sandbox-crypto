@@ -68,9 +68,12 @@ never a false pass. The reviewer uses
 `--reviewer-model ALIAS` with the existing model gateway, or `--reviewer-script FILE`
 plus that alias for synthetic validation. The alias may be MAIN's: the reviewer still has
 its own calls, limits, budget and records. The adapter limits each answer to 2,048 tokens
-and 64 KiB before the reviewer applies stricter response bounds. No alias makes zero
-reviewer model calls; required windows end failed, retry twice, then become visibly
-unreviewed. This never becomes a pass.
+and 64 KiB before the reviewer applies stricter response bounds. With no reviewer alias,
+reviews are off (CR-35 as amended for lab 43's B6): none is dispatched or recorded as
+failed, a terminal summary says `off`, and the session's review list says so, from a
+`review.off` event recorded once until a review is dispatched again. An alias whose model
+is unavailable makes zero reviewer model calls; its required windows end failed, retry
+twice, then become visibly unreviewed. Neither becomes a pass.
 
 **Limits (lab 38).** A review of a normal session's window by a large model reads twenty to fifty items in eight to twenty calls, each sending the whole conversation again, so its limits are set for that: at most 24 calls, 300 seconds, 300,000 characters of context per call, and a budget of 400,000 tokens over all its calls; and a project's reviewer makes at most 240 calls an hour. The budget counts what each call used, as the provider reports it, and an estimate only for a call not yet answered or one the provider does not report. The run service takes the budget and the hourly cap as `--review-token-budget` and `--review-calls-per-hour`, the settings of a project that has none of its own, and the launcher passes `[model]`'s `review_token_budget` and `review_calls_per_hour`. A manifest page lists up to 50 items; a larger `limit` is read as 50. Of one turn's tool calls, the first 16 run and the rest are answered `not_run`, asking the reviewer to make them again; only text or tool arguments over their bounds fail a review. A review a limit ends is `capped`, and its summary names the limit and what it used: the token budget, with the tokens counted and the calls made; the project's hourly cap, with its calls in the last hour; the call limit; the time; or the context. The GUI's review view shows each review's calls, tokens and counted budget against its limits. A review a limit ends keeps its window, as a failed one does: the next review covers it again, and the third time it is left unreviewed; a terminal hold does not retry it at once, since the same limit would end it again. When the project's reviewer has no calls left this hour, no review starts: the session's work waits as one pending review, covering all of it since the last, which the next safe point or run boundary starts once calls are left. The first deferral records `review.deferred`, and the GUI's review list says the session's review is waiting, and why, until a review starts.
 

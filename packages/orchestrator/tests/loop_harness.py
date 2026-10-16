@@ -896,8 +896,8 @@ async def harness(tmp_path: Path, worker: Worker, gateway: Gateway) -> Harness:
     projects.create(PROJECT, "minimal", POLICY)
     projects.open_session(PROJECT, SESSION, dedicated=False)
     found = Harness(tmp_path, worker, gateway)
-    # Reviews are off unless a test turns them on: with no reviewer model, every
-    # terminal answer would otherwise record three failed review windows.
+    # Reviews are off unless a test turns them on: with no reviewer model they are
+    # off anyway (lab 43's B6), and a test that names one turns them on.
     found.configure_reviews(ReviewConfig(enabled=False))
     return found
 

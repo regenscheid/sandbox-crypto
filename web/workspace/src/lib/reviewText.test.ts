@@ -8,6 +8,7 @@ import {
   leftUnreviewed,
   locatorText,
   mathCheckText,
+  offText,
   outcomeText,
   queueText,
   recordText,
@@ -133,6 +134,11 @@ describe('what the reviews panel says, after review', () => {
         "The session's work since its last review waits for one review, which starts at the " +
         'next run once calls are left.',
     );
+    // Lab 43's B6: with no reviewer configured, the list says reviews are off, once.
+    expect(offText({ reason: 'No reviewer model is configured.', since: 1791990000 })).toBe(
+      `No reviewer model is configured. (since ${when(1791990000)})`,
+    );
+    expect(offText({})).toBe(`Consistency reviews are off. (since ${when(undefined)})`);
     expect(outcomeText('failed')).toBe(
       'failed: reviewer error; its window is due to be reviewed again',
     );

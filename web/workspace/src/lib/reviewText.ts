@@ -160,6 +160,16 @@ export function waitingText(waiting: Json): string {
   );
 }
 
+/**
+ * Why the session's reviews are off (lab 43's B6): no reviewer model is configured, so its
+ * work is not reviewed; the run service said so once, with the time.
+ */
+export function offText(off: Json): string {
+  const found = typeof off === 'object' && off !== null && !Array.isArray(off) ? off : {};
+  const reason = text(found['reason']) || 'Consistency reviews are off.';
+  return `${reason} (since ${when(found['since'] as number | undefined)})`;
+}
+
 /** An audit record in one line. */
 export function recordText(record: Json): string {
   const found =

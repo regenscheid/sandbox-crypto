@@ -1117,14 +1117,51 @@ async def test_terminal_drains_prior_document_events_and_classifies_neutral_answ
     documents.create(
         "p", name="terminal", title="N", text="A report.\n", author=MAIN, session_id="s"
     )
+    # A configured alias whose model is unavailable: each window fails (CR-F10).
     controller = ReviewController(
-        reviews, context_for(reviews), run_id="author-1", model=None, alias=None
+        reviews, context_for(reviews), run_id="author-1", model=None, alias="reviewer"
     )
     summary = await controller.terminal([], "Here is the report.")
     assert summary["classifier"]["effects"]
     assert summary["classifier"]["document_ingestion"]["complete"]
     assert summary["outcome"] == "unreviewed"
     assert not summary.get("pending")
+
+
+@pytest.mark.asyncio
+async def test_with_no_reviewer_configured_reviews_are_off_and_say_so_once(store) -> None:
+    """Lab 43's B6: with no reviewer alias, every safe point recorded a failed review.
+    With no reviewer configured, reviews are off (CR-35 as amended): none is dispatched
+    or failed, and the session's review list says so, recorded once, until a review is
+    dispatched again."""
+    from sandbox_science.orchestrator.consistency.controller import REVIEWS_OFF, ReviewController
+
+    reviews, documents, _ = store
+    documents.create(
+        "p", name="terminal", title="N", text="A report.\n", author=MAIN, session_id="s"
+    )
+    for run in ("author-1", "author-2"):
+        controller = ReviewController(
+            reviews, context_for(reviews), run_id=run, model=None, alias=None
+        )
+        reviews.request("p", "s")  # a review is due at each safe point
+        await controller.safe_point([])
+        await controller.safe_point([])
+        summary = await controller.terminal([], "The report is done.")
+        assert summary["off"] == REVIEWS_OFF
+        assert "outcome" not in summary
+        assert not summary.get("pending")
+    listed = reviews.listing("p", "s")
+    assert listed["reviews"] == []
+    assert listed["off"]["reason"] == REVIEWS_OFF
+    with documents.control.read() as tx:
+        said = reviews.review_log.recent(tx.sql, "p", "s", "review.off", 10)
+    assert len(said) == 1
+    # A review dispatched later, with a reviewer, ends it; off again, it says so again.
+    dispatch(reviews)
+    assert reviews.listing("p", "s")["off"] is None
+    assert reviews.off("p", "s", REVIEWS_OFF)
+    assert not reviews.off("p", "s", REVIEWS_OFF)
 
 
 @pytest.mark.asyncio

@@ -135,6 +135,7 @@ export const reviews = {
       next_after: string | null;
       unreviewed: Json[];
       waiting?: Json;
+      off?: Json;
     }>(`${base(p, s)}/reviews${after ? `?after=${part(after)}` : ''}`),
   findings: (p: string, s: string, after: string | null = null) =>
     get<{ findings: Finding[]; next_after: string | null }>(

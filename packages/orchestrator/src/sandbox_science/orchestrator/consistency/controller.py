@@ -161,6 +161,12 @@ REVIEW_EFFECTS: Final[dict[str, Effect]] = {
     "review_response_read": "read",
 }
 """The author tools that only read; responding and requesting a review are effects."""
+REVIEWS_OFF: Final = (
+    "No reviewer model is configured, so consistency reviews are off: this session's work "
+    "is not reviewed. Give the run service a reviewer alias (--reviewer-model) to turn "
+    "them on."
+)
+"""Why a session's reviews are off, as its review list says once."""
 _COMPLETE = re.compile(
     r"\b(?:done|completed|finished|implemented|task is complete|work is complete)\b", re.I
 )
@@ -272,6 +278,9 @@ class ReviewController:
             raise ValueError("review interruption requires an unbounded input queue")
         self.store, self.context, self.run_id = store, context, run_id
         self.model, self.alias, self.role, self.messages = model, alias, role, messages
+        self.off = model is None and alias is None
+        """Whether no reviewer is configured: then reviews are off (CR-35 as amended). An
+        alias whose model is unavailable is a reviewer that fails, as CR-F10 says."""
         self.persistent = persistent
         self.author_alias = author_alias
         self.memory = memory
@@ -466,6 +475,10 @@ class ReviewController:
     async def _dispatch(self, kind: ReviewType, classifier: Json | None = None) -> str | None:
         if self.role != "main":
             return None
+        if self.off:
+            # No reviewer is configured: reviews are off, said once, not failed (lab 43's B6).
+            await asyncio.to_thread(self.store.off, *self.scope, REVIEWS_OFF)
+            return None
         await asyncio.to_thread(self.findings.supersede, *self.scope)
         review = await asyncio.to_thread(
             self.store.dispatch,
@@ -557,6 +570,9 @@ class ReviewController:
         summary: Json = {"classifier": label, "reviews": self.review_ids, "counts": counts}
         if label["label"] == "conversation" or not config.enabled or self.role != "main":
             return summary
+        if self.off:
+            await self._dispatch("terminal", label)
+            return {**summary, "off": REVIEWS_OFF}
         if self.task is not None:
             message = await self._wait(self.task)
             if message is not None:
