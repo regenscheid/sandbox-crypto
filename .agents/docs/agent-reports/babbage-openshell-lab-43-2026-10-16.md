@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # OpenShell Lab43: meaning search, the GPT and Claude adapters, and history across runs
 
-Run on babbage on 2026-10-16 (UTC), from 08:36 to 09:24, against the OpenShell 0.1.3 lab that `.agents/labs/lab_up.sh` brings up, with the images `sandbox-science/minimal:02f85b3`, `sandbox-science/crypto-base:02f85b3` and `sandbox-science/mcp-proxy:e5e55c86` (no image input changed since lab 41; nothing was built). Everything ran from main `4e4709d0`. A short lab for live evidence of what merged since [lab 42](babbage-openshell-lab-42-2026-10-16.md): meaning search (#446), the GPT Responses adapter (#452), the Claude Messages adapter (#455), the session view (#454), the history tools (#443), and the workspace's Skills page (#468) and research-state views (#463). The state block's digest (#465) had not merged. Teardown was complete.
+Run on babbage on 2026-10-16 (UTC), from 08:36 to 09:24, against the OpenShell 0.1.3 lab that `.agents/labs/lab_up.sh` brings up, with the images `sandbox-science/minimal:02f85b3`, `sandbox-science/crypto-base:02f85b3` and `sandbox-science/mcp-proxy:e5e55c86` (no image input changed since lab 41; nothing was built). Everything ran from main `4e4709d0`. A short lab for live evidence of what merged since [lab 42](babbage-openshell-lab-42-2026-10-16.md): meaning search (#446), the GPT Responses adapter (#452), the Claude Messages adapter (#455), the session view (#454), the history tools (#443), and the workspace's Skills page (#468) and research-state views (#463). The state block's digest (#465) merged at 08:43, during the lab, so the instance, started from `4e4709d0`, did not have it. Teardown was complete.
 
 ## Setup
 
@@ -28,7 +28,7 @@ Run on babbage on 2026-10-16 (UTC), from 08:36 to 09:24, against the OpenShell 0
 | 3d. CM-F30 fails or is refused on 1.102.1 | Fails, before replay | "the first answer has no thinking to replay": adaptive thinking chose none on the calculator task. Replay stayed off in every call: "off: no thinking replay setting" |
 | 3e. A short real session on Claude | Pass | Session `claude`, two runs: two Python calls and an answer, then `history_search` and `history_read`. Costs were recorded: $0.5665 and $0.2582 |
 | 4a. History tools across runs | Pass | GPT run 3 called `history_search` ("twist_order =") and `history_read` on run 1's Sage result. Run 4, after run 3's gateway failure, quoted the 78-digit twist order exactly with its message ID, `msg-a81580636688e93b`. Its view held run 3's read, so it called no history tool itself. Claude run B found `333986` and its own earlier sentence the same way |
-| 4b. State block and digest | Not exercised | No view reached half its input, so none folded and no state block was made. #465, the digest, had not merged. The ledger held C-1 |
+| 4b. State block and digest | Not exercised | No view reached half its input, so none folded and no state block was made. #465, the digest, was not in the instance. The ledger held C-1 |
 | 5a. Skills page (#468) | Pass, with B5 | It lists the 169 skills a run is given with revisions and descriptions, the settings form, overrides, both pins and the import ("Derived by sandbox-orchestrator"). The Topic column is empty for every skill, and no entry skill is marked, though the runs' index has 4 topics and 6 entry skills |
 | 5b. Research-state views (#463) | Pass | C-1's page shows "Research state: Basis interpreted: the agent's own reading; Kind observation; Statement …; Evidence Supports, exact computation: artifact … r1" and its gate |
 
