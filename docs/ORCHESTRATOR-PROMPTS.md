@@ -19,10 +19,10 @@ IDs are the version strings in the code.
 
 | Input | ID in code | Source | When it is sent |
 | --- | --- | --- | --- |
-| MAIN base system | `sandbox-main-6` (`loop.py` `MAIN_VERSION`) | [loop.py](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py) `SYSTEM_PROMPT` | Every MAIN run, unless the caller supplies a custom `system` |
+| MAIN base system | `sandbox-main-7` (`loop.py` `MAIN_VERSION`) | [loop.py](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py) `SYSTEM_PROMPT` | Every MAIN run, unless the caller supplies a custom `system` |
 | MAIN planning guidance | `sandbox-main-plan-1` | [plan_tools.py](../packages/orchestrator/src/sandbox_science/orchestrator/plan_tools.py) `GUIDANCE` | Appended when the six plan tools are offered (stateful MAIN runs) |
 | Delegated check system | `sandbox-delegated-check-6` (`delegation/prompt.py` `CHECK_VERSION`) | [delegation/prompt.py](../packages/orchestrator/src/sandbox_science/orchestrator/delegation/prompt.py) `CHECK_PROMPT`; its first user message is the brief the platform writes (`check_task`, `evidence_line`, `brief_text`): the task, the entry's evidence and the parent's note | Every delegated run, which checks one ledger entry ([plans and delegation](specs/plans-and-delegation.md), PD-13) |
-| Delegated task system | `sandbox-delegated-task-4` (`delegation/prompt.py` `TASK_VERSION`) | [delegation/prompt.py](../packages/orchestrator/src/sandbox_science/orchestrator/delegation/prompt.py) `TASK_PROMPT`; its first user message is the parent's brief (`task_text`): the task, the context and the inputs | Every delegated run that does a task ([plans and delegation](specs/plans-and-delegation.md), PD-11) |
+| Delegated task system | `sandbox-delegated-task-5` (`delegation/prompt.py` `TASK_VERSION`) | [delegation/prompt.py](../packages/orchestrator/src/sandbox_science/orchestrator/delegation/prompt.py) `TASK_PROMPT`; its first user message is the parent's brief (`task_text`): the task, the context and the inputs | Every delegated run that does a task ([plans and delegation](specs/plans-and-delegation.md), PD-11) |
 | Project memory framings | `sandbox-memory-run-1`, `sandbox-memory-reviewer-1`, `sandbox-memory-watcher-1` | [memory_prompt.py](../packages/orchestrator/src/sandbox_science/orchestrator/memory_prompt.py) `RUN_FRAMING`, `REVIEWER_FRAMING`, `WATCHER_FRAMING`, each followed by the accepted entries | With the project's stores, when the project memory has entries: every main and delegated run, every reviewer call (the reviewed run's memory) and every watcher check (the memory at the check) ([project memory](MEMORY.md)) |
 | Skills index framing | `sandbox-skills-index-3` | [skills/index.py](../packages/orchestrator/src/sandbox_science/orchestrator/skills/index.py) `FRAMING_VERSION` | With the project's pinned skills, less those it excludes, and the skills it loads at a run's start, in the system message of every main and delegated run whose project pins skills ([skills](SKILLS.md#a-runs-skills)) |
 | Research templates | `sandbox-stock-intake-1`, `sandbox-stock-literature-2`, `sandbox-stock-experiment-1`, `sandbox-stock-proof-audit-1`, `sandbox-stock-report-1` | [stock_prompts.py](../packages/orchestrator/src/sandbox_science/orchestrator/stock_prompts.py) | Only with `--research-template` ([research framing](STOCK-RESEARCH-PROMPTS.md)) |
@@ -197,7 +197,7 @@ authority or proof of provider behavior:
 
 - **MAIN** ([MAIN provenance](MAIN-PROMPT-PROVENANCE.md)). Pins made once per run
   and not checked again. `RunRecord.prompt_provenance` records each system section's
-  version, byte length and hash, the ordered tool pins and the notice framings. `sandbox-main-6`
+  version, byte length and hash, the ordered tool pins and the notice framings. `sandbox-main-7`
   labels exact built-in content, including identical caller text; it does not attest
   to who supplied it. Other custom text has no catalog version. Old `sandbox-main-1`
   and `sandbox-main-2` records keep their text and pins; `sandbox-main-3` adds ledger
@@ -213,8 +213,10 @@ authority or proof of provider behavior:
   rejected decision with its reopen condition; a failed attempt as a work record ending
   `limit`; a finding's caveats; disagreeing sources as a contradiction; and nothing called
   impossible that the ledger has not settled ([context management](specs/context-management.md),
-  CM-48). The delegated prompts follow (`sandbox-delegated-task-4`, CM-48a;
-  `sandbox-delegated-check-6`, CM-48b). Task and tool messages are not pinned; the
+  CM-48); `sandbox-main-7` adds that a record names its basis and anchors, a
+  standing constraint `user_quoted` with a quote of the user's message (CM-9). The
+  delegated prompts follow (`sandbox-delegated-task-5`, CM-48a; `sandbox-delegated-check-6`,
+  CM-48b). Task and tool messages are not pinned; the
   notice framings are.
 - **Research framing** ([research framing](STOCK-RESEARCH-PROMPTS.md)). A selected
   template is the section between the base and the planning guidance, pinned

@@ -25,6 +25,8 @@ const record = (fields: Partial<WorkRecord> = {}): WorkRecord => ({
   record_id: 'work-0123456789abcdef01234567',
   standing: null,
   decision: null,
+  basis: null,
+  anchors: [],
   position: 7,
   entry_id: 'entry-0123456789abcdef01234567',
   handle: 'I-1',

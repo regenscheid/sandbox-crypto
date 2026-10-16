@@ -226,6 +226,48 @@ _FIELDS = {
     },
     "additionalProperties": False,
 }
+_BASIS = {
+    "type": "string",
+    "enum": ["user_quoted", "observed", "interpreted"],
+    "description": (
+        "Where it comes from: user_quoted, what the user said (anchor the user's message "
+        "with a quote of at least 20 characters of it, word for word); observed, what a tool "
+        "result, an artifact or a source's text shows (anchor it there: every number must "
+        "occur in it); interpreted (the default), your own reading or inference"
+    ),
+}
+_ANCHORS = {
+    "type": "array",
+    "maxItems": 16,
+    "description": (
+        "Where it comes from, besides this call: needed to create an entry, change its "
+        "statement or fields, or put a decision in effect, reject or reverse it, and for "
+        "every work record, unless its evidence or references already show it"
+    ),
+    "items": {
+        "type": "object",
+        "description": (
+            "One of: message (an archive ID, msg-…, from a message's header; quote for the "
+            "user's words), call (a tool call's ID, for its result; start and end for a "
+            "range of its output), artifact with revision, document with revision and "
+            "block, or entry (with revision)"
+        ),
+        "properties": {
+            "message": {"type": "string"},
+            "call": {"type": "string"},
+            "quote": {"type": "string"},
+            "start": {"type": "integer", "minimum": 0},
+            "end": {"type": "integer", "minimum": 0},
+            "artifact": {"type": "string"},
+            "document": {"type": "string"},
+            "entry": {"type": "string"},
+            "revision": {"type": "integer", "minimum": 1},
+            "block": {"type": "string"},
+            "sha256": {"type": "string"},
+        },
+        "additionalProperties": False,
+    },
+}
 _WORK = {
     "type": "object",
     "description": (
@@ -275,6 +317,8 @@ _WORK = {
             },
         },
         "part_of": {"type": "string", "description": "A work record's ID, or new:<key>"},
+        "basis": _BASIS,
+        "anchors": _ANCHORS,
     },
     "required": ["entry", "tried", "ending"],
     "additionalProperties": False,
@@ -311,6 +355,8 @@ _CHANGE = {
         "links": {"type": "array", "items": _LINK, "maxItems": 64},
         "evidence": {"type": "array", "items": _EVIDENCE, "maxItems": 32},
         "evidence_removed": {"type": "array", "items": {"type": "string"}, "maxItems": 32},
+        "basis": _BASIS,
+        "anchors": _ANCHORS,
     },
     "additionalProperties": False,
 }

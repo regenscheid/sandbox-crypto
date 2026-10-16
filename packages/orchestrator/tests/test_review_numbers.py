@@ -14,9 +14,9 @@ import pytest
 from sandbox_science.orchestrator.consistency.ledger import ingest_ledger
 from sandbox_science.orchestrator.consistency.numbers import copied_numbers, near, numbers
 from sandbox_science.orchestrator.consistency.runner import ReviewerRunner
-from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.model import ScriptedModel
 
+from .ledger_support import AnchoredLedger as Ledger
 from .test_artifact_review import dispatch, publish
 from .test_artifact_review import state as state
 from .test_consistency import MAIN

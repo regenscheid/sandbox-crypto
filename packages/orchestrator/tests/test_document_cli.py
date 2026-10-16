@@ -186,7 +186,7 @@ def test_an_imported_revision_is_scheduled_for_a_math_check(
 
 def test_the_user_records_a_ledger_check(state: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """``ledger check``: the user's record that they checked an entry at a revision."""
-    from sandbox_science.orchestrator.ledger import Ledger
+    from .ledger_support import AnchoredLedger as Ledger
 
     documents = DocumentStore(store_path(state))
     claim = {"type": "claim", "origin": "project", "title": "K", "statement": "s"}
@@ -207,8 +207,7 @@ def test_the_user_records_a_ledger_check(state: Path, capsys: pytest.CaptureFixt
 def test_the_user_checks_a_reference(state: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """``ledger check`` of a reference, which vouches for the PDF the revision names
     (LG-16 as the coordinator decided)."""
-    from sandbox_science.orchestrator.ledger import Ledger
-
+    from .ledger_support import AnchoredLedger as Ledger
     from .test_ledger import REFERENCE_FIELDS
 
     documents = DocumentStore(store_path(state))
@@ -228,7 +227,7 @@ def test_the_user_assesses_a_claimed_obstruction(
     state: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """``ledger assess``: the user accepts an obstruction claimed on an issue (LG-7)."""
-    from sandbox_science.orchestrator.ledger import Ledger
+    from .ledger_support import AnchoredLedger as Ledger
 
     documents = DocumentStore(store_path(state))
     ledger = Ledger(documents)
@@ -256,8 +255,8 @@ def test_the_user_assesses_a_claimed_obstruction(
 def test_the_user_drops_a_dominates_link(state: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """``ledger drop``: the user drops a dominates link an entry holds, with the reason."""
     from sandbox_science.orchestrator.documents import USER
-    from sandbox_science.orchestrator.ledger import Ledger
 
+    from .ledger_support import AnchoredLedger as Ledger
     from .test_ledger_frontier import CLASSICAL, KEY_RECOVERY, published
 
     documents = DocumentStore(store_path(state))
@@ -282,7 +281,7 @@ def test_the_user_drops_a_dominates_link(state: Path, capsys: pytest.CaptureFixt
 
 def test_the_user_clears_ledger_flags(state: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """``ledger clear``: the user clears open flags on an entry with the reason."""
-    from sandbox_science.orchestrator.ledger import Ledger
+    from .ledger_support import AnchoredLedger as Ledger
 
     documents = DocumentStore(store_path(state))
     ledger = Ledger(documents)

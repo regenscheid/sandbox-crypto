@@ -12,7 +12,6 @@ import pytest
 
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.documents.models import Author
-from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.workspace.ledger import (
     LedgerCitations,
     LedgerEntry,
@@ -21,6 +20,7 @@ from sandbox_science.workspace.ledger import (
     LedgerWork,
 )
 
+from .ledger_support import AnchoredLedger as Ledger
 from .route_support import ClientFactory, assert_security_headers, error_of, origin, workspace
 
 MAIN = Author(kind="agent", session_id="a", run_id="run-1", role="main", model="scripted")

@@ -13,9 +13,9 @@ from typing import Any
 import pytest
 
 from sandbox_science.orchestrator.documents import USER, DocumentError
-from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.projects import ProjectStore
 
+from .ledger_support import AnchoredLedger as Ledger
 from .test_ledger import DELEGATED, NEW, change, events
 from .test_ledger import ledger as ledger
 
@@ -300,9 +300,10 @@ def test_entries_of_a_version_21_store_hold_no_evidence_after_the_migration(
         migrated = Ledger(documents)
         after = migrated.entry("p", "C-1")
         assert (after.evidence, after.asserted_only) == ([], True)
-        assert after.model_dump(exclude={"evidence", "asserted_only"}) == before.model_dump(
-            exclude={"evidence", "asserted_only"}
-        )
+        # The store's revisions also predate provenance (CM-9): they show no basis.
+        unrecorded = {"evidence", "asserted_only", "basis", "anchors"}
+        assert after.basis is None
+        assert after.model_dump(exclude=unrecorded) == before.model_dump(exclude=unrecorded)
         migrated.change(
             "p",
             {

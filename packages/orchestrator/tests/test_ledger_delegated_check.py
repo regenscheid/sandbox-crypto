@@ -29,7 +29,7 @@ from sandbox_science.orchestrator.delegation.specs import CheckBrief
 from sandbox_science.orchestrator.documents import USER, DocumentError
 from sandbox_science.orchestrator.documents.models import Author
 from sandbox_science.orchestrator.history import body
-from sandbox_science.orchestrator.ledger import Ledger, gate
+from sandbox_science.orchestrator.ledger import gate
 from sandbox_science.orchestrator.ledger.models import EvidenceLink, GateClause
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.model import ToolCall
@@ -37,6 +37,7 @@ from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
+from .ledger_support import AnchoredLedger as Ledger
 from .loop_harness import PROJECT, TOKEN, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness

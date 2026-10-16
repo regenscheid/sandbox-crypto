@@ -17,10 +17,10 @@ from sandbox_science.orchestrator.delegation.prompt import TASK_PROMPT
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
 from sandbox_science.orchestrator.documents import DocumentError
 from sandbox_science.orchestrator.history import body
-from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.projects import ProjectStore
 
 from .control_versions import older_store
+from .ledger_support import AnchoredLedger as Ledger
 from .loop_harness import PROJECT, SESSION, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
@@ -89,7 +89,12 @@ async def test_a_task_runs_with_its_own_prompt_brief_and_limits(delegating: Harn
 async def test_a_task_has_a_delegated_agents_ledger_authority(delegating: Harness) -> None:
     """LG-13: unlike a check, a task records new entries in their first status, and
     changes no entry's status."""
-    task = {"type": "task", "title": "Recheck", "statement": "Recheck C-1 for p = 2."}
+    task = {
+        "type": "task",
+        "title": "Recheck",
+        "statement": "Recheck C-1 for p = 2.",
+        "anchors": [{"entry": "C-1"}],
+    }
     root = await delegating.run(
         "root",
         [Reply(calls=[TASK]), wait(), Reply("Done.")],

@@ -23,8 +23,9 @@ from sandbox_science.orchestrator.documents import (
     DocumentStore,
     store_path,
 )
-from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.projects import ProjectStore
+
+from .ledger_support import AnchoredLedger as Ledger
 
 MAIN = Author(kind="agent", session_id="s", run_id="r1", role="main", model="scripted")
 DELEGATED = Author(kind="agent", session_id="s", run_id="r2", role="delegated")
@@ -377,7 +378,7 @@ def test_several_mutations_apply_together_with_their_provenance(ledger: Ledger) 
     assert [r.entries[0].handle for r in results] == ["T-1", "T-2"]
     (revision,) = ledger.history("p", "T-2").revisions
     assert revision.provenance == {**source, "line": 2}
-    again = ledger.apply("p", [(lines[0], None)], MAIN)
+    again = ledger.apply("p", [(lines[0], {**source, "line": 1})], MAIN)
     assert again[0].replayed
 
 

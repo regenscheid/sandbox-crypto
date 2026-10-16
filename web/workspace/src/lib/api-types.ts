@@ -307,6 +307,8 @@ export interface EntryRevision {
   operation_id: string;
   provenance: Record<string, unknown> | null;
   created: string;
+  basis: "user" | "user_quoted" | "observed" | "interpreted" | null;
+  anchors: Record<string, unknown>[];
 }
 
 /** An entry as a list shows it. */
@@ -324,6 +326,7 @@ export interface EntrySummary {
   kind: string | null;
   session: string | null;
   standing: Standing | null;
+  basis: "user" | "user_quoted" | "observed" | "interpreted" | null;
 }
 
 /** An entry at one revision, with what it says, its outgoing links and who wrote it, and (at its current revision) the links other entries hold to it. */
@@ -341,6 +344,7 @@ export interface EntryView {
   kind: string | null;
   session: string | null;
   standing: Standing | null;
+  basis: "user" | "user_quoted" | "observed" | "interpreted" | null;
   statement: string;
   fields: Record<string, unknown>;
   links: EntryLink[];
@@ -352,6 +356,7 @@ export interface EntryView {
   head: number;
   author: Record<string, unknown>;
   reason: string;
+  anchors: Record<string, unknown>[];
 }
 
 export type EnvironmentState = "creating" | "ready" | "stopped" | "deleted";
@@ -1268,6 +1273,8 @@ export interface WorkRecord {
   created: string;
   standing: Standing | null;
   decision: string | null;
+  basis: "user" | "user_quoted" | "observed" | "interpreted" | null;
+  anchors: Record<string, unknown>[];
 }
 
 /** The worker's observation plus the project it belongs to. */

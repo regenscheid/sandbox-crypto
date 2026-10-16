@@ -113,6 +113,8 @@ const holder = (note: string | null, revision = 4): EntryView => ({
   kind: null,
   session: null,
   standing: null,
+  basis: null,
+  anchors: [],
   origin: 'project',
   revision,
   head: revision,

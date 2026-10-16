@@ -14,8 +14,8 @@ from typing import Any
 import pytest
 
 from sandbox_science.orchestrator.documents import DocumentError
-from sandbox_science.orchestrator.ledger import Ledger
 
+from .ledger_support import AnchoredLedger as Ledger
 from .test_ledger import NEW, REFERENCE_FIELDS, change
 from .test_ledger import ledger as ledger
 from .test_ledger_evidence import publish

@@ -17,9 +17,9 @@ from sandbox_science.orchestrator.consistency.citations import record_citation
 from sandbox_science.orchestrator.consistency.ledger import ingest_ledger
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import USER, Author, DocumentError
-from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.tools import format_pdf
 
+from .ledger_support import AnchoredLedger as Ledger
 from .test_consistency import MAIN, dispatch
 from .test_consistency import store as store
 from .test_ledger import REFERENCE_FIELDS

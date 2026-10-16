@@ -13,10 +13,10 @@ import pytest
 from sandbox_science.orchestrator.consistency.findings import Findings
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import USER, Author, DocumentStore, store_path
-from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.mathchecks.jobs import MathJobs
 from sandbox_science.orchestrator.mathchecks.notices import MathNotices
 
+from .ledger_support import AnchoredLedger as Ledger
 from .test_document_math import BAD, MAIN, ScriptedChecker, drain
 from .test_document_math import stores as stores
 

@@ -36,6 +36,8 @@ const entry = (fields: Partial<EntryView> = {}): EntryView => ({
   kind: null,
   session: null,
   standing: null,
+  basis: null,
+  anchors: [],
   origin: 'project',
   revision: 3,
   head: 3,

@@ -10,10 +10,10 @@ import json
 from typing import Any
 
 from sandbox_science.orchestrator.documents import USER
-from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.ledger.models import WorkRecord
 from sandbox_science.orchestrator.session_plans import PlanBody, PlanRef, SessionPlans
 
+from .ledger_support import AnchoredLedger as Ledger
 from .loop_harness import PLAN, PROJECT, USER_PLANS, Harness, Reply, call
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
@@ -290,7 +290,12 @@ async def test_a_task_that_found_nothing_ran_out_of_ideas(delegating: Harness) -
 
 async def test_a_task_that_made_entries_produced_them(delegating: Harness) -> None:
     issue = an_issue(delegating)
-    made = {"type": "task", "title": "Recheck", "statement": "Recheck for p = 2."}
+    made = {
+        "type": "task",
+        "title": "Recheck",
+        "statement": "Recheck for p = 2.",
+        "anchors": [{"entry": issue}],
+    }
     task = call("delegate", task="Break it down.", issue=issue)
     await delegating.run(
         "root",

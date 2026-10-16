@@ -11,8 +11,8 @@ from typing import Any
 import pytest
 
 from sandbox_science.orchestrator.documents import USER, DocumentError
-from sandbox_science.orchestrator.ledger import Ledger
 
+from .ledger_support import AnchoredLedger as Ledger
 from .test_ledger import DELEGATED, MAIN, change, events
 from .test_ledger import ledger as ledger
 

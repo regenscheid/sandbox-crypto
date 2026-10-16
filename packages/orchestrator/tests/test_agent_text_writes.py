@@ -18,9 +18,10 @@ from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import USER, DocumentError, DocumentStore, store_path
 from sandbox_science.orchestrator.documents.annotations import Annotations
 from sandbox_science.orchestrator.documents.models import Author
-from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.ledger.models import Mutation
 from sandbox_science.orchestrator.projects import ProjectStore
+
+from .ledger_support import AnchoredLedger as Ledger
 
 FIXTURES = Path(__file__).resolve().parents[3] / "web" / "workspace" / "src" / "lib"
 FIXTURE: dict[str, Any] = json.loads((FIXTURES / "hidden.fixtures.json").read_text())

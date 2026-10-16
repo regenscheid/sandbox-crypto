@@ -65,7 +65,7 @@ CHECK_PROMPT: Final = (
 )
 CHECK: Final = Section("delegated-check", CHECK_VERSION, CHECK_PROMPT)
 
-TASK_VERSION: Final = "sandbox-delegated-task-4"
+TASK_VERSION: Final = "sandbox-delegated-task-5"
 """The version of ``TASK_PROMPT``'s text."""
 TASK_PROMPT: Final = (
     "You are a delegated research agent. Another agent of this session, your parent, "
@@ -84,7 +84,8 @@ TASK_PROMPT: Final = (
     "proposed decision to exclude it, with its reason and its reopen condition; a "
     "failed attempt as a work record ending limit, saying what ran out; findings as "
     "proposed claims with their evidence's scope and their caveats; and two sources or "
-    "results that disagree as an issue of kind contradiction that concerns both. Call "
+    "results that disagree as an issue of kind contradiction that concerns both; give "
+    "each its basis and anchors. Call "
     "nothing impossible that the ledger has not settled, and keep to the constraints "
     "your brief gives. You reopen no obstructed issue or rejected approach: give the "
     "reason to reopen it in open_questions, and your parent decides. "

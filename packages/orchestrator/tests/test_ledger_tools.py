@@ -19,7 +19,6 @@ import pytest
 from sandbox_science.contracts import ErrorKind, ExecutionContext, FileContent, ReadFileRequest
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.hooks import Effect, Refusal, TurnHook
-from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.ledger.tool import SPECS, LedgerTool
 from sandbox_science.orchestrator.loop import SYSTEM_PROMPT
 from sandbox_science.orchestrator.model import ToolCall
@@ -28,6 +27,8 @@ from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.session_plans import SessionPlans
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
+
+from .ledger_support import AnchoredLedger as Ledger
 
 CONTEXT = ExecutionContext(project_id="p", session_id="s", environment_id="env")
 OTHER = ExecutionContext(project_id="p", session_id="s2", environment_id="env2")
@@ -441,11 +442,13 @@ async def test_a_shared_results_file_records_once_across_sessions(ledger: Ledger
 async def test_a_direct_change_and_an_import_share_their_operation_ids(ledger: Ledger) -> None:
     files = Files()
     ledgers = tool(ledger, files)
+    # The same change both ways, its anchor included (CM-9).
+    anchored = {**TASK, "anchors": [{"message": ledger.anchor("p", "s")}]}
     direct = await use(
-        ledgers, "ledger_change", reason="From the helper.", changes=[TASK], operation_id="h1"
+        ledgers, "ledger_change", reason="From the helper.", changes=[anchored], operation_id="h1"
     )
     assert direct["entries"][0]["handle"] == "T-1"
-    files.files["a.jsonl"] = lines(mutation("h1", TASK))
+    files.files["a.jsonl"] = lines(mutation("h1", anchored))
     assert (await imports(ledgers, files, "a.jsonl"))["imported"][0]["replayed"]
     files.files["b.jsonl"] = lines(mutation("h2", TASK), mutation("h1", {**TASK, "title": "x"}))
     refused = await imports(ledgers, files, "b.jsonl")

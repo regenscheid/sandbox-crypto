@@ -14,9 +14,9 @@ from typing import Any
 import pytest
 
 from sandbox_science.orchestrator.documents import USER, Author, DocumentError
-from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.ledger.tool import LedgerTool
 
+from .ledger_support import AnchoredLedger as Ledger
 from .test_ledger import DELEGATED, MAIN, NEW, change, events
 from .test_ledger import ledger as ledger
 from .test_ledger_evidence import publish

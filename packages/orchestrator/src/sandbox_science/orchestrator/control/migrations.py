@@ -2732,6 +2732,21 @@ BEGIN SELECT RAISE(ABORT, 'reads are kept'); END""",
         schema.execute(statement)
 
 
+def _provenance(schema: Schema) -> None:
+    """Version 51: the basis and anchors of each ledger revision and work record
+    (docs/specs/context-management.md, CM-9): where it comes from, ``user``,
+    ``user_quoted``, ``observed`` or ``interpreted``, and the places it rests on, as a
+    JSON array. Written with the row; the rows written before hold neither."""
+    basis = "basis IS NULL OR basis IN ('user', 'user_quoted', 'observed', 'interpreted')"
+    anchors = (
+        "anchors IS NULL OR (json_valid(anchors) AND json_type(anchors) = 'array' "
+        "AND length(CAST(anchors AS BLOB)) <= 65536)"
+    )
+    for table in ("ledger_revisions", "ledger_work"):
+        schema.execute(f"ALTER TABLE {table} ADD COLUMN basis TEXT CHECK ({basis})")
+        schema.execute(f"ALTER TABLE {table} ADD COLUMN anchors TEXT CHECK ({anchors})")
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -2782,6 +2797,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _archived_answers,
     _adapter_state,
     _read_register,
+    _provenance,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""
