@@ -36,6 +36,7 @@ from .loop_harness import (
     Reply,
     call,
     start_job,
+    user_text,
 )
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
@@ -129,7 +130,7 @@ async def test_a_message_during_a_run_reaches_the_next_model_call(harness: Harne
     )
     _, second = harness.gateway.main
     # The user's own words, after the tool result, before the second call.
-    assert second[-1] == {"role": "user", "content": "Also check $p = 7$."}
+    assert user_text(second[-1]) == "Also check $p = 7$."
     assert record.delivered["messages"] == ["m-1"]
     state = runs(harness)
     (message,) = state.messages(PROJECT, SESSION)
@@ -147,7 +148,7 @@ async def test_a_message_at_the_last_answer_continues_the_run(harness: Harness) 
         "run-1", [Reply("First answer.", before=write), Reply("The one more thing.")]
     )
     assert record.final_text == "The one more thing."
-    assert harness.gateway.main[1][-1] == {"role": "user", "content": "One more thing."}
+    assert user_text(harness.gateway.main[1][-1]) == "One more thing."
     assert record.delivered["messages"] == ["m-1"]
 
 
@@ -163,7 +164,7 @@ async def test_a_message_a_failed_call_saw_stays_queued(harness: Harness) -> Non
     (message,) = runs(harness).messages(PROJECT, SESSION)
     assert message.state == "queued"
     again = await harness.run("run-2", [Reply("It did.")])
-    assert harness.gateway.main[0][-1] == {"role": "user", "content": "Did it work?"}
+    assert user_text(harness.gateway.main[0][-1]) == "Did it work?"
     assert again.delivered["messages"] == ["m-1"]
 
 
@@ -194,7 +195,7 @@ async def test_a_message_ends_a_job_wait(harness: Harness) -> None:
     )
     _, _, third = harness.gateway.main
     assert '"reason":"user_message"' in third[-2]["content"]
-    assert third[-1] == {"role": "user", "content": "How far is it?"}
+    assert user_text(third[-1]) == "How far is it?"
     assert record.delivered["messages"] == ["m-1"]
     state = runs(harness)
     (entry,) = ProjectStore(harness.state).runs(PROJECT, SESSION)

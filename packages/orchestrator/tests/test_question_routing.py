@@ -17,6 +17,7 @@ import pytest
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator import question_tool
 from sandbox_science.orchestrator.control import ControlError
+from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.projects import ProjectStore, run_name
 from sandbox_science.orchestrator.question_tool import CANCELLED, QuestionTool
 from sandbox_science.orchestrator.questions import (
@@ -317,7 +318,7 @@ async def test_a_message_answers_the_question_a_service_run_waits_on(
     assert record.final_text == "Signed with Ed448."
     assert question.run == run_name(record.started_at, record.run_id)
     (result,) = [m for m in harness.gateway.main[1] if m["role"] == "tool"]
-    assert json.loads(str(result["content"])) == {
+    assert json.loads(body(str(result["content"]))) == {
         "question_id": question.question_id,
         "answer": "own_words",
         "text": "Ed448, please.",

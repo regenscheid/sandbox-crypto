@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 
 from sandbox_science.orchestrator.consistency.models import ReviewConfig
+from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.projects import RunRecord
 
 from .loop_harness import (
@@ -368,7 +369,7 @@ async def test_job_and_document_notices_ride_on_tool_results(harness: Harness) -
         calls("list_jobs"), RESULT,
     ]  # fmt: skip
     assert all_delivered(record) == {**NOTHING, "jobs": sorted([first, second])}
-    attached = json.loads(last[-3]["content"])
+    attached = json.loads(body(last[-3]["content"]))
     assert [n["job_id"] for n in attached["job_notices"]] == [second]
     assert len(last[-3]["content"]) <= 20000
     # A-02 changed this: attaching job notices to a long result keeps its head and its

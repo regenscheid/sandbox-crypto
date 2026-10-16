@@ -16,6 +16,7 @@ from sandbox_science.orchestrator.delegation.outcome import TASK_FORMAT, parse_t
 from sandbox_science.orchestrator.delegation.prompt import TASK_PROMPT
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
 from sandbox_science.orchestrator.documents import DocumentError
+from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.projects import ProjectStore
 
@@ -61,7 +62,7 @@ async def test_a_task_runs_with_its_own_prompt_brief_and_limits(delegating: Harn
     )
     first = delegating.gateway.children[0]
     assert str(first[0]["content"]).startswith(TASK_PROMPT[:60])
-    brief = str(first[1]["content"])
+    brief = body(str(first[1]["content"]))
     assert brief == (
         "Task: Tabulate a^16 mod 17 for a = 1..16 and save it as table.txt.\n\n"
         "Context from your parent: We need the table for C-1's proof.\n\n"

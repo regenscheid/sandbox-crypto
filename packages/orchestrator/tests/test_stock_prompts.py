@@ -16,6 +16,7 @@ from sandbox_science.contracts import ErrorKind, ExecutionContext
 from sandbox_science.orchestrator import cli, stock_prompts
 from sandbox_science.orchestrator.documents import USER, DocumentStore, DocumentTool
 from sandbox_science.orchestrator.harness import save
+from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.hooks import TurnHook
 from sandbox_science.orchestrator.loop import SYSTEM_PROMPT, Transcript, run_task
 from sandbox_science.orchestrator.model import (
@@ -133,7 +134,7 @@ async def test_document_injection_catalog_change_and_schema_mutation_do_not_rese
     class Model:
         async def complete(self, messages: Sequence[Message], tools: Sequence[ToolSpec]):
             assert messages[0]["content"] == expected_system
-            assert messages[1]["content"] == INJECTION
+            assert body(messages[1]["content"]) == INJECTION
             assert tools == expected_tools
             calls.append(messages[0]["content"])
             if len(calls) == 1:
@@ -385,7 +386,7 @@ async def test_actual_cli_keeps_selected_input_and_safe_failed_record(
             assert messages[0]["content"] == "\n\n".join(
                 [SYSTEM_PROMPT, select_template("report").text, GUIDANCE]
             )
-            assert messages[1]["content"] == INJECTION
+            assert body(messages[1]["content"]) == INJECTION
             if failure:
                 raise ModelError(HOSTILE)
             return ModelTurn("Observed")

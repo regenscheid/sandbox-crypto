@@ -9,6 +9,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import re
 import sys
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
@@ -33,6 +34,7 @@ from sandbox_science.orchestrator.consistency.models import ReviewConfig
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import USER, Author, DocumentStore, store_path
 from sandbox_science.orchestrator.documents.annotations import Annotations
+from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.mathcheck import Formula, MathCheck
 from sandbox_science.orchestrator.mathchecks.jobs import MathJobs
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
@@ -56,6 +58,7 @@ API_KEY = "test-secret-loop-characterization-gateway"
 POLICY = "sha256:" + "c" * 64
 PROJECT, SESSION = "p", "s"
 TASK = "Characterize the loop."
+GATEWAY_VERSION = "1.102.1"
 DELEGATED = "You are a delegated research agent."
 """How a delegated run's system prompt begins, which tells its calls apart."""
 PRIOR = Author(kind="agent", session_id=SESSION, run_id="prior", role="main", model="scripted")
@@ -122,6 +125,8 @@ def shape(messages: Sequence[Message]) -> list[Shape]:
     result: list[Shape] = []
     for message in messages:
         role, content = str(message["role"]), message.get("content")
+        if role in ("user", "tool"):  # after its archive header (CM-4a)
+            content = body(str(content))
         if role == "system":
             result.append((role, "system", ()))
         elif role == "assistant":
@@ -144,6 +149,19 @@ def shape(messages: Sequence[Message]) -> list[Shape]:
             assert kind is not None, text[:200]
             result.append((role, kind, _detail(kind, text)))
     return result
+
+
+USER_HEADER = re.compile(r"\[msg-[0-9a-f]{16} · user message\]\n")
+
+
+def user_text(message: Message) -> str:
+    """A delivered user message's text, after the header naming its archive ID (RS-7,
+    CM-4a)."""
+    assert message["role"] == "user", message
+    content = str(message["content"])
+    found = USER_HEADER.match(content)
+    assert found is not None, content[:200]
+    return content[found.end() :]
 
 
 def plans(planning: str, reread: bool) -> Shape:
@@ -310,6 +328,8 @@ class Gateway:
     answers, until the test sets it."""
     embedded: list[list[str]] = field(default_factory=list[list[str]])
     """The texts of each ``/embeddings`` request, in order."""
+    version: str = GATEWAY_VERSION
+    """What ``x-litellm-version`` names on each chat completion."""
 
     @property
     def main(self) -> list[list[Message]]:
@@ -396,6 +416,7 @@ class Gateway:
         if tool_calls:
             message["tool_calls"] = tool_calls
         priced = {} if reply.cost is None else {"x-litellm-response-cost": reply.cost}
+        priced["x-litellm-version"] = self.version
         return web.json_response(
             {
                 "model": f"scripted-{alias}",

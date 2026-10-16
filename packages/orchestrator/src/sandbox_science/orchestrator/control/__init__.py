@@ -17,6 +17,7 @@ from .store import (
     ControlStore,
     Subscriber,
     Tx,
+    require_search,
     store_path,
 )
 
@@ -31,5 +32,6 @@ __all__ = [
     "Receipts",
     "Subscriber",
     "Tx",
+    "require_search",
     "store_path",
 ]

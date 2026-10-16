@@ -2578,6 +2578,77 @@ def _skill_overrides(schema: Schema) -> None:
     )
 
 
+def _archive(schema: Schema) -> None:
+    """Version 46: the sessions' archive (docs/specs/context-management.md, CM-3 to CM-7):
+    every message a run adds to its conversation, written whole as the run goes and never
+    changed, with its ID, unique in the project, its position in the session, its run
+    and parent run, its kind and source, a tool result's call and links, and an
+    answer's tool calls, native payload, model and gateway version; and the texts the
+    search covers, numbered as the documents of two FTS5 indexes, by words
+    (``unicode61``, ranked by BM25) and by substrings (``trigram``): each message's, and
+    each saved file's behind a sample, kept up to 1 MiB. The indexes hold no copy of the
+    text (``content=''``)."""
+    bounded = "{0} IS NULL OR length(CAST({0} AS BLOB)) BETWEEN 1 AND {1}"
+    for statement in (
+        f"""CREATE TABLE archive_messages (
+    project TEXT NOT NULL,
+    message_id TEXT NOT NULL CHECK (length(message_id) = 20 AND message_id GLOB 'msg-*'
+        AND substr(message_id, 5) NOT GLOB '*[^0-9a-f]*'),
+    session TEXT NOT NULL,
+    position INTEGER NOT NULL CHECK (position BETWEEN 1 AND 999999999999),
+    run TEXT NOT NULL CHECK (length(CAST(run AS BLOB)) BETWEEN 1 AND 256),
+    parent TEXT CHECK ({bounded.format("parent", 256)}),
+    created TEXT NOT NULL CHECK (length(created) BETWEEN 1 AND 64),
+    role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'tool')),
+    kind TEXT NOT NULL CHECK (length(kind) BETWEEN 1 AND 32 AND kind NOT GLOB '*[^a-z_]*'),
+    content TEXT CHECK (length(CAST(content AS BLOB)) <= 67108864),
+    source TEXT CHECK ({bounded.format("source", 512)}),
+    refs TEXT NOT NULL CHECK (json_valid(refs) AND json_type(refs) = 'array'
+        AND length(refs) <= 65536),
+    call_id TEXT CHECK ({bounded.format("call_id", 512)}),
+    tool_calls TEXT CHECK (tool_calls IS NULL OR (json_valid(tool_calls)
+        AND json_type(tool_calls) = 'array')),
+    files TEXT CHECK (files IS NULL OR (json_valid(files) AND json_type(files) = 'object')),
+    model TEXT CHECK ({bounded.format("model", 512)}),
+    gateway_version TEXT CHECK ({bounded.format("gateway_version", 128)}),
+    native_format TEXT CHECK ({bounded.format("native_format", 64)}),
+    native BLOB CHECK (native IS NULL OR length(native) <= 67108864),
+    CHECK (content IS NOT NULL OR role = 'assistant'),
+    CHECK ((native IS NULL) = (native_format IS NULL)),
+    PRIMARY KEY (project, message_id),
+    UNIQUE (project, session, position),
+    FOREIGN KEY (project, session) REFERENCES sessions (project_id, session_id)
+) STRICT""",
+        "CREATE INDEX archive_messages_run ON archive_messages (project, session, run, position)",
+        """CREATE TRIGGER archive_messages_no_update BEFORE UPDATE ON archive_messages
+BEGIN SELECT RAISE(ABORT, 'archived messages are written once'); END""",
+        """CREATE TRIGGER archive_messages_no_delete BEFORE DELETE ON archive_messages
+BEGIN SELECT RAISE(ABORT, 'archived messages are kept'); END""",
+        f"""CREATE TABLE archive_docs (
+    doc INTEGER PRIMARY KEY,
+    project TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    path TEXT CHECK ({bounded.format("path", 4096)}),
+    size INTEGER CHECK (size IS NULL OR size >= 0),
+    text TEXT,
+    left_out TEXT CHECK ({bounded.format("left_out", 512)}),
+    CHECK (path IS NOT NULL OR (size IS NULL AND text IS NULL AND left_out IS NULL)),
+    CHECK (path IS NULL OR size IS NOT NULL),
+    CHECK (text IS NULL OR left_out IS NULL),
+    FOREIGN KEY (project, message_id) REFERENCES archive_messages (project, message_id)
+) STRICT""",
+        "CREATE INDEX archive_docs_message ON archive_docs (project, message_id)",
+        """CREATE TRIGGER archive_docs_no_update BEFORE UPDATE ON archive_docs
+BEGIN SELECT RAISE(ABORT, 'archived texts are written once'); END""",
+        """CREATE TRIGGER archive_docs_no_delete BEFORE DELETE ON archive_docs
+BEGIN SELECT RAISE(ABORT, 'archived texts are kept'); END""",
+        "CREATE VIRTUAL TABLE archive_words USING fts5(body, content='', "
+        "tokenize='unicode61 remove_diacritics 2')",
+        "CREATE VIRTUAL TABLE archive_trigrams USING fts5(body, content='', tokenize='trigram')",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -2623,6 +2694,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _skill_vectors,
     _skill_metadata,
     _skill_overrides,
+    _archive,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

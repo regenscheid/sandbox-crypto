@@ -21,6 +21,7 @@ import pytest
 
 from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator.documents import USER
+from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.notices import SKILLS, SKILLS_WORDS
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
 from sandbox_science.orchestrator.runstate import RunState
@@ -62,12 +63,8 @@ def pinned(harness: Harness, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
 
 
 def _notices(messages: list[dict[str, Any]]) -> list[str]:
-    return [
-        cast(str, m["content"])
-        for m in messages
-        if m.get("role") == "user"
-        and cast(str, m["content"]).startswith((SKILLS.text, SKILLS_WORDS.text))
-    ]
+    texts = [body(cast(str, m["content"])) for m in messages if m.get("role") == "user"]
+    return [text for text in texts if text.startswith((SKILLS.text, SKILLS_WORDS.text))]
 
 
 def _discoveries(record: RunRecord) -> list[dict[str, Any]]:
@@ -95,8 +92,8 @@ async def test_matching_skills_are_shown_for_the_task_and_each_message(pinned: H
     assert record.tools[0]["tool"] == "plan_read"
     assert "error" not in record.tools[0]
     # The notice for the message comes just before it, and does not repeat beta.
-    assert second[-1] == {"role": "user", "content": "What does the alpha marker say?"}
-    later = cast(str, second[-2]["content"])
+    assert body(second[-1]["content"]) == "What does the alpha marker say?"
+    later = body(cast(str, second[-2]["content"]))
     assert later.startswith(SKILLS_WORDS.text)  # words alone: the run has no embeddings
     assert shown.startswith(SKILLS_WORDS.text)
     assert "ss/alpha" in later

@@ -21,6 +21,7 @@ import pytest
 
 from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator.documents import USER
+from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
 from sandbox_science.orchestrator.prompts import PromptPins
 from sandbox_science.orchestrator.skills import Entry, SkillStore, from_git, snapshot
@@ -94,7 +95,7 @@ def _skill_records(record: RunRecord) -> list[dict[str, Any]]:
 
 
 def _results(record: RunRecord) -> list[str]:
-    return [cast(str, m["content"]) for m in record.messages if m.get("role") == "tool"]
+    return [body(cast(str, m["content"])) for m in record.messages if m.get("role") == "tool"]
 
 
 async def test_the_index_lists_skills_without_bodies(harness: Harness, pack: Path) -> None:

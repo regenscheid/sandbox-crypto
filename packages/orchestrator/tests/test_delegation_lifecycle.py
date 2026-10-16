@@ -27,6 +27,7 @@ from sandbox_science.orchestrator.delegation.records import (
     Ending,
 )
 from sandbox_science.orchestrator.documents import USER, DocumentStore, store_path
+from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.notices import DELEGATIONS
@@ -252,7 +253,8 @@ async def test_a_run_that_fails_after_a_wait_leaves_the_outcome_to_the_next(
     later = await delegating.run("later", [Reply("Noted.")])
     first = delegating.gateway.main[0]
     assert any(
-        str(m.get("content", "")).startswith(DELEGATIONS.text) and delegation_id in m["content"]
+        body(str(m.get("content", ""))).startswith(DELEGATIONS.text)
+        and delegation_id in m["content"]
         for m in first
     )
     assert delegation(delegating, delegation_id).acknowledged == name(later)

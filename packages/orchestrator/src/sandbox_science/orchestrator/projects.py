@@ -163,6 +163,9 @@ class ModelUsage(Contract):
     cost: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     """What the call cost, as the gateway reported it, in its currency (LiteLLM's is
     USD); null when it reported none. It is never estimated."""
+    gateway_version: str | None = Field(default=None, max_length=128)
+    """The gateway's version, as its ``x-litellm-version`` header named it
+    (docs/specs/context-management.md, CM-39); null when it sent none."""
 
 
 def _summary(value: JsonValue | None) -> dict[str, JsonValue]:

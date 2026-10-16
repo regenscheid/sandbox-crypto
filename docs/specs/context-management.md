@@ -1,6 +1,6 @@
 # Context management for long research sessions
 
-Date: 2026-10-15, revised the same day after two reviews and a re-check. **Status: Approved (2026-10-15, by the owner). Nothing in it is built.** The owner set its requirements ([below](#the-owners-requirements-2026-10-15)) and decided its questions 1 to 11 as recommended ([decided questions](#decided-questions)). The other specs it changes are amended, each amendment marked as not built ([changes to other specs](#changes-to-other-specs)). The build plan is in the [BACKLOG](../../.agents/BACKLOG.md). W0 behavior specification; conventions in the [index](README.md).
+Date: 2026-10-15, revised the same day after two reviews and a re-check. **Status: Approved (2026-10-15, by the owner). The archive, the first part of step (a) of its build plan, is built ([as built](#as-built)); the rest is not.** The owner set its requirements ([below](#the-owners-requirements-2026-10-15)) and decided its questions 1 to 11 as recommended ([decided questions](#decided-questions)). The other specs it changes are amended, each amendment marked as built or not ([changes to other specs](#changes-to-other-specs)). The build plan is in the [BACKLOG](../../.agents/BACKLOG.md). W0 behavior specification; conventions in the [index](README.md).
 
 ## Scope
 
@@ -451,6 +451,17 @@ The owner does not treat cost as a driver. In plain terms, at the prices publish
 - `RunRecord`: each call's view by its parts and how its fold records were rendered, each call's total input as normalized (CM-28), the gateway's version, whether thinking replay was on and why not, and the context settings used, λ included (CM-39, CM-46, CM-47).
 - Fold records and spill records are stored once and never changed: their marker lines whole, each with its kind and subject (CM-17). Whether a marker is current or retired is computed at each rebuild, never stored in the record (CM-21a).
 - The control store gains tables for the archive and its two indexes, fold records, spill records, fold proposals and the read register, each in one migration step.
+
+## As built
+
+The archive (CM-3 to CM-7, CM-4a), the first part of step (a), is built (2026-10-16; `orchestrator/history`, control store version 45); the history tools, its second part, are not. How it reads the requirements where they leave a choice:
+
+- **Writing** (CM-3, CM-4). The loop hands each message it adds to the run's message log (`hooks.MessageLog`), which archives it, one change each, before the next model call; a failed write fails the run. Delegated runs archive into their session too, naming their parent run. The kinds are `task`, `user` (the user's chat messages), `comment` (the work requests' notices), `notice`, `outcome` (delegation handbacks), `assistant` and `tool_result`; state blocks and fold records come with their steps. The earlier conversation that RS-10 gives a run, until the session view replaces it, is not archived again: it copies earlier runs' messages.
+- **Headers** (CM-4a). `[msg-… · kind]`, with the source of a notice or the tool of a result. A line that begins, after spaces or tabs, with `[` and `msg-` in any case gets a backslash before it, in every message the platform writes, the user's included; the session's message row keeps the user's text as written. A JSON result's strings hold no lines, so nothing in them is escaped.
+- **Native payloads** (CM-5). The chat-completions client keeps its whole answer, as the format `chat_completions`; the Messages and Responses adapters, steps (c) and (d), will keep theirs. Each call's `x-litellm-version` is in its usage in the run record and on the archived answer.
+- **Files** (CM-6). A tool result links to its saved files and its recorded revisions. The archive keeps a saved file's text up to 1 MiB, and names the reason for one it leaves out, which `read_file` reads.
+- **Indexes** (CM-7). Two FTS5 tables hold no copy of the text. The control store checks for FTS5 and the trigram tokenizer whenever it is opened, so the run service, the command line and the workspace all refuse to start without them, saying which is missing.
+- **Fixtures.** `test_history_archive.py` covers CM-F1's archive: messages kept whole as they were sent, by a run that failed too, their headers and escaping, delegated runs' messages, saved files, and the start check.
 
 ## Changes to other specs
 

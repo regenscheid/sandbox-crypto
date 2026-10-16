@@ -58,6 +58,7 @@ from .delegation.tracks import TrackTools, grant
 from .documents import DocumentError, DocumentStore, DocumentTool
 from .documents.tool import REQUESTS_TASK, WorkRequests
 from .file_settings import ProjectFiles
+from .history import Archive, RunArchive
 from .hooks import TurnHook
 from .jobs import JobTools
 from .jobstate import JobState
@@ -537,6 +538,13 @@ class Harness:
                         hooks = (*hooks, discovery)
                     if chat is not None:
                         hooks = (*hooks, *await self._chat_hooks(admitted, chat, discovery))
+                    log = None
+                    if self.stores is not None and chat is not None:
+                        # Each message is kept in the session's archive as it is added (CM-4).
+                        archive = Archive(self.stores.projects.control, clock=self.clock)
+                        log = RunArchive(
+                            archive, admitted.context, run=chat.run, parent=chat.parent
+                        )
                     transcript = await run_task(
                         self.role(request).model,
                         toolbox,
@@ -558,6 +566,7 @@ class Harness:
                         hooks=hooks,
                         memory=for_run(*memory) if memory is not None else None,
                         role=request.role,
+                        log=log,
                     )
         except BaseException as error:
             if transcript is not None and user_cancelled(error, stop):

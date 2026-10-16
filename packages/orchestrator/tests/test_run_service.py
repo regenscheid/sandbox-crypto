@@ -33,6 +33,7 @@ from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.harness import Harness as Core
 from sandbox_science.orchestrator.harness import Role, Settings, Stores
 from sandbox_science.orchestrator.harness import admit as harness_admit
+from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.model import Message, OpenAICompatibleModel, ScriptedModel
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
@@ -41,7 +42,17 @@ from sandbox_science.orchestrator.service import RunService, earlier_conversatio
 from sandbox_science.orchestrator.worker_client import WorkerClient
 from sandbox_science.testing import FakeClock, eventually
 
-from .loop_harness import API_KEY, PROJECT, SESSION, TOKEN, Harness, Reply, call, start_job
+from .loop_harness import (
+    API_KEY,
+    PROJECT,
+    SESSION,
+    TOKEN,
+    Harness,
+    Reply,
+    call,
+    start_job,
+    user_text,
+)
 from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
@@ -146,7 +157,7 @@ async def test_a_first_message_starts_a_run(harness: Harness) -> None:
     assert record.delivered["messages"] == ["m-1"]
     assert states(harness) == {"m-1": "delivered"}
     (first,) = harness.gateway.main
-    assert first[-1] == {"role": "user", "content": "What is $2+2$?"}
+    assert user_text(first[-1]) == "What is $2+2$?"
     events = runs(harness).events(PROJECT, SESSION, names(harness)[0])
     assert [e.kind for e in events] == ["started", "user", "model", "assistant", "stopped"]
     assert events[0].data["message_ids"] == ["m-1"]
@@ -193,7 +204,7 @@ async def test_a_later_message_starts_a_run_with_the_earlier_conversation(
         {"role": "user", "content": "First question."},
         {"role": "assistant", "content": "First answer."},
     ]
-    assert conversation[-1] == {"role": "user", "content": "Second question."}
+    assert user_text(conversation[-1]) == "Second question."
     assert not any("tool_calls" in m or m["role"] == "tool" for m in conversation)
     # Lab 41: the review controller observes the second run's own messages, not the
     # earlier conversation it starts with, which the first run's window already holds.
@@ -208,7 +219,8 @@ async def test_a_later_message_starts_a_run_with_the_earlier_conversation(
     observed: dict[str, list[str]] = {}
     for locator, payload in rows:
         message = json.loads(json.loads(payload)["content"])
-        observed.setdefault(json.loads(locator)["run"], []).append(message["content"])
+        content = message["content"]  # after its archive header (CM-4a)
+        observed.setdefault(json.loads(locator)["run"], []).append(content and body(content))
     first_run, second_run = observed
     assert "First question." in observed[first_run]
     assert "Second question." in observed[second_run]
