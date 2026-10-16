@@ -19,7 +19,7 @@
   } from '../lib/ledgerWork';
   import { CATEGORY_NAME, ENTRY_NAME, ledgerEntryHref, treeHref } from '../lib/router';
   import { visible } from '../lib/text';
-  import { reopenedText } from '../lib/researchState';
+  import { provenanceView, reopenedText } from '../lib/researchState';
   import StandingBadge from './StandingBadge.svelte';
 
   let {
@@ -43,6 +43,7 @@
   const produced = $derived(producedLinks(projectId, record));
   const references = $derived(record.references.map((r) => referenceView(projectId, r, read)));
   const reopened = $derived(reopenedText(record));
+  const provenance = $derived(provenanceView(projectId, record));
 </script>
 
 <li class="work">
@@ -87,6 +88,17 @@
         </li>
       {/each}
     </ul>
+  {/if}
+  {#if provenance.basis !== null || provenance.anchors.length}
+    <p class="muted">
+      {#if provenance.basis !== null}Basis: {provenance.basis}.{/if}
+      {#if provenance.anchors.length}Anchored on {#each provenance.anchors as anchor, i (i)}{i > 0
+            ? '; '
+            : ''}{#if anchor.href}<a href={anchor.href}>{anchor.text}</a
+            >{:else}{anchor.text}{/if}{#if anchor.quote !== null}: “<span class="tried"
+              >{anchor.quote}</span
+            >”{/if}{/each}.{/if}
+    </p>
   {/if}
   {#if record.part_of}<p class="muted">Part of work record {visible(record.part_of)}</p>{/if}
   <p class="muted">

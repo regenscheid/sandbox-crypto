@@ -3,13 +3,14 @@
      ledger labels it, with the label's text, its scope, the assumptions it rests on and who
      settled it; its kind and, for a decision, the one session it is meant for; its reopen
      condition, saying when its flag is open; its caveats; and, for a reference, how far the
-     project's sessions read each of its sources. The provenance of its revision (basis,
-     anchors, the user's quote) belongs here too, as rows of the same list. Only props, so
-     a test renders it on the server. -->
+     project's sessions read each of its sources; and where the revision shown comes from
+     (CM-9): its basis and its anchors, each leading where the workspace has a page, and
+     beside a standing constraint, the user's words it quotes, which code found word for
+     word in the user's message. Only props, so a test renders it on the server. -->
 <script lang="ts">
   import type { EntryView, SourceRead } from '../lib/api-types';
   import { statusText } from '../lib/ledger';
-  import { readText, standingView, stateFields } from '../lib/researchState';
+  import { provenanceView, readText, standingView, stateFields } from '../lib/researchState';
   import { visible } from '../lib/text';
 
   let {
@@ -19,8 +20,12 @@
   }: { projectId: string; entry: EntryView; read?: SourceRead[] } = $props();
   const standing = $derived(standingView(projectId, entry.standing));
   const state = $derived(stateFields(entry));
+  const provenance = $derived(provenanceView(projectId, entry));
+  const quotes = $derived(provenance.anchors.filter((anchor) => anchor.quote !== null));
   const shown = $derived(
-    standing !== null ||
+    provenance.basis !== null ||
+      provenance.anchors.length > 0 ||
+      standing !== null ||
       entry.kind !== null ||
       entry.session !== null ||
       state.reopen !== null ||
@@ -36,6 +41,30 @@
 {#if shown}
   <h2>Research state</h2>
   <dl class="facts">
+    {#if provenance.constraint}
+      <dt>Standing constraint</dt>
+      <dd>
+        A decision in effect on the user's words{#if quotes.length}; their words, as the platform
+          found them in their message:{/if}
+        {#each quotes as anchor, i (i)}<blockquote class="text">{anchor.quote}</blockquote>{/each}
+      </dd>
+    {/if}
+    {#if provenance.basis !== null}
+      <dt>Basis</dt>
+      <dd>{provenance.basis}</dd>
+    {/if}
+    {#if provenance.anchors.length}
+      <dt>Anchors</dt>
+      <dd>
+        <ul>
+          {#each provenance.anchors as anchor, i (i)}<li>
+              {@render link(anchor)}{#if anchor.quote !== null && !provenance.constraint}: “<bdi
+                  class="text">{anchor.quote}</bdi
+                >”{/if}
+            </li>{/each}
+        </ul>
+      </dd>
+    {/if}
     {#if standing}
       <dt>Standing</dt>
       <dd>

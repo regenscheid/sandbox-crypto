@@ -4,12 +4,14 @@
  * CM-10 to CM-12): how the ledger labels an entry or a record (`standing`: an attempt, a
  * claimed or disputed obstruction, flagged, or impossible, with its scope and who settled
  * it), an issue's kind, a decision meant for one session, a reopen condition and the
- * caveats, a reopening the agent made, and how far a reference's sources were read. All of
+ * caveats, a reopening the agent made, how far a reference's sources were read, and where a
+ * revision or a record comes from (CM-9: its basis and anchors, with the user's words a
+ * standing constraint quotes, which code found word for word in the user's message). All of
  * it is agents' text, shown with each character a person may not see as its code point.
  */
 import type { EntrySummary, EntryView, SourceRead, Standing, WorkRecord } from './api-types';
 import { type LinkTarget, statusText } from './ledger';
-import { ENTRY_NAME, ledgerEntryHref } from './router';
+import { documentHref, ENTRY_NAME, ledgerEntryHref } from './router';
 import { visible } from './text';
 
 export const STANDING_WORDS: Record<Standing['label'], string> = {
@@ -148,4 +150,86 @@ export function readText(read: SourceRead): string {
   const extent = EXTENT_WORDS[read.extent] ?? visible(String(read.extent));
   const covered = coveredText(read.covered);
   return `${extent}${covered ? `: ${covered}` : ''}`;
+}
+
+type Basis = NonNullable<EntryView['basis']>;
+
+/** Where a revision or a work record comes from (CM-9), in words. */
+export const BASIS_WORDS: Record<Basis, string> = {
+  user: "the user's own words: the user made the change",
+  user_quoted: "the user's words, quoted by the agent",
+  observed: 'observed: what a tool result, an artifact or a source shows',
+  interpreted: "interpreted: the agent's own reading",
+};
+
+/** A place a revision or record comes from, leading to it where the workspace has a page. */
+export interface AnchorView extends LinkTarget {
+  /** The user's words, as the anchor quotes them; code found them in the message. */
+  quote: string | null;
+}
+
+const text = (value: unknown): string | null =>
+  typeof value === 'string' && value !== '' ? value : null;
+
+/** An anchor as the ledger keeps it, in words. */
+export function anchorView(project: string, anchor: Record<string, unknown>): AnchorView {
+  const revision = number(anchor.revision);
+  const at = revision === null ? '' : ` r${revision}`;
+  const message = text(anchor.message);
+  if (message !== null) {
+    const kind = text(anchor.kind);
+    const what = kind === 'tool_result' ? 'tool result' : kind === 'user' ? "user's message" : kind;
+    const start = number(anchor.start);
+    const end = number(anchor.end);
+    const range = start === null || end === null ? '' : `, characters ${start}–${end}`;
+    return {
+      text: visible(`${what ?? 'message'} ${message}${range}`),
+      href: null,
+      quote: text(anchor.quote) === null ? null : visible(String(anchor.quote)),
+    };
+  }
+  const artifact = text(anchor.artifact);
+  if (artifact !== null) {
+    const digest = text(anchor.sha256);
+    const sha = digest === null ? '' : ` (sha256 ${digest.slice(0, 12)}…)`;
+    return { text: visible(`artifact ${artifact}${at}${sha}`), href: null, quote: null };
+  }
+  const document = text(anchor.document);
+  const block = text(anchor.block);
+  if (document !== null && block !== null) {
+    return {
+      text: visible(`document ${document}${at}, block ${block}`),
+      href:
+        revision !== null && /^b[0-9]{1,9}$/.test(block)
+          ? documentHref(project, document, revision, block)
+          : null,
+      quote: null,
+    };
+  }
+  const entry = text(anchor.entry);
+  if (entry !== null) {
+    return {
+      text: visible(`entry ${entry}${at}`),
+      href: ENTRY_NAME.test(entry) ? ledgerEntryHref(project, entry, revision ?? undefined) : null,
+      quote: null,
+    };
+  }
+  return { text: visible(JSON.stringify(anchor)), href: null, quote: null };
+}
+
+/** A revision's basis and anchors, and whether it is the user's standing constraint. */
+export function provenanceView(
+  project: string,
+  record: Pick<EntryView, 'basis' | 'anchors'> & Partial<Pick<EntryView, 'type' | 'status'>>,
+): { basis: string | null; anchors: AnchorView[]; constraint: boolean } {
+  const basis = record.basis === null ? null : (BASIS_WORDS[record.basis] ?? visible(record.basis));
+  return {
+    basis,
+    anchors: record.anchors.map((anchor) => anchorView(project, anchor)),
+    // A decision in effect on the user's words is a standing constraint (CM-16).
+    constraint:
+      record.type === 'decision' &&
+      record.status === 'in_effect' &&
+      (record.basis === 'user' || record.basis === 'user_quoted'),
+  };
 }

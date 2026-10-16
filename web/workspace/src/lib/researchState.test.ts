@@ -13,7 +13,9 @@ import type { EntryFlag, EntryView, SourceRead, Standing, WorkRecord } from './a
 import { hostileMarkup } from './approvalTesting';
 import { fieldRows } from './ledger';
 import {
+  anchorView,
   coveredText,
+  provenanceView,
   entryTags,
   readText,
   reopenedText,
@@ -39,6 +41,8 @@ const entry = (fields: Partial<EntryView> = {}): EntryView => ({
   kind: 'hypothesis',
   session: null,
   standing: impossible,
+  basis: null,
+  anchors: [],
   origin: null,
   revision: 2,
   head: 2,
@@ -130,6 +134,53 @@ describe("an entry's research state", () => {
   });
 });
 
+describe('where a revision comes from', () => {
+  const words = 'only attacks with memory below 2^64, please';
+  const constraint = entry({
+    type: 'decision',
+    status: 'in_effect',
+    kind: null,
+    standing: null,
+    fields: {},
+    flags: [],
+    basis: 'user_quoted',
+    anchors: [
+      { message: 'msg-0123456789abcdef', kind: 'user', quote: `${words} ${HOSTILE}` },
+      { document: 'doc-1', revision: 3, block: 'b4' },
+    ],
+  });
+
+  it('names each anchor, leading to a document block or an entry at its revision', () => {
+    expect(anchorView('p1', { document: 'doc-1', revision: 3, block: 'b4' })).toEqual({
+      text: 'document doc-1 r3, block b4',
+      href: '#/projects/p1/documents/doc-1/revisions/3/blocks/b4',
+      quote: null,
+    });
+    const at = anchorView('p1', { entry: 'entry-0123456789abcdef01234567', revision: 2 });
+    expect(at.href).toBe('#/projects/p1/ledger/entry-0123456789abcdef01234567/revisions/2');
+    expect(
+      anchorView('p1', { message: 'msg-1', kind: 'tool_result', start: 0, end: 80 }).text,
+    ).toBe('tool result msg-1, characters 0–80');
+    expect(
+      anchorView('p1', { artifact: 'artifact-1', revision: 2, sha256: 'ab'.repeat(32) }).text,
+    ).toBe('artifact artifact-1 r2 (sha256 abababababab…)');
+    expect(provenanceView('p1', { basis: 'observed', anchors: [] }).basis).toBe(
+      'observed: what a tool result, an artifact or a source shows',
+    );
+  });
+
+  it("shows a standing constraint's basis, anchors and the user's words, as text", () => {
+    expect(provenanceView('p1', constraint).constraint).toBe(true);
+    expect(provenanceView('p1', { ...constraint, status: 'proposed' }).constraint).toBe(false);
+    const html = render(ResearchState, { props: { projectId: 'p1', entry: constraint } }).body;
+    expect(html).toContain('<dt>Standing constraint</dt>');
+    expect(html).toContain(words);
+    expect(html).toContain("the user's words, quoted by the agent");
+    expect(html).toContain('href="#/projects/p1/documents/doc-1/revisions/3/blocks/b4"');
+    expect(hostileMarkup(html)).toBe(false);
+  });
+});
+
 describe('how far a reference was read', () => {
   const read = (fields: Partial<SourceRead>): SourceRead => ({
     kind: 'pdf',
@@ -174,6 +225,8 @@ describe('a work record', () => {
     record_id: 'work-0123456789abcdef01234567',
     standing: null,
     decision: null,
+    basis: null,
+    anchors: [],
     position: 7,
     entry_id: 'entry-0123456789abcdef01234567',
     handle: 'I-1',
@@ -192,6 +245,16 @@ describe('a work record', () => {
     provenance: null,
     created: '2026-10-15T00:00:00Z',
     ...fields,
+  });
+
+  it('shows its basis and anchors', () => {
+    const anchored = record({
+      basis: 'interpreted',
+      anchors: [{ entry: 'D-3', revision: 1 }],
+    });
+    const html = render(WorkRecordItem, { props: { projectId: 'p1', record: anchored } }).body;
+    expect(html).toContain("Basis: interpreted: the agent's own reading.");
+    expect(html).toContain('href="#/projects/p1/ledger/D-3/revisions/1"');
   });
 
   it('shows its standing, so a failed attempt never reads as an impossibility', () => {
