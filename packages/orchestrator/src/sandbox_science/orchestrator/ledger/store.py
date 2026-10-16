@@ -872,11 +872,18 @@ class Ledger:
         return self.apply(project, [(mutation, provenance)], author)[0]
 
     def apply(
-        self, project: str, mutations: list[tuple[Mutation, Json | None]], author: Author
+        self,
+        project: str,
+        mutations: list[tuple[Mutation, Json | None]],
+        author: Author,
+        *,
+        within: Callable[[sqlite3.Connection, list[MutationResult]], None] | None = None,
     ) -> list[MutationResult]:
         """Apply several mutations in one change, all or none; each keeps its own
         operation ID and receipt. ``provenance`` names where a mutation came from, such
-        as the line of a results file (LG-41)."""
+        as the line of a results file (LG-41). ``within`` runs in the same change, after
+        them, and refuses it all by raising: so a fold's proposal is marked accepted, or
+        nothing is written (CM-15)."""
         role = self._authority(project, author)
         if role != "user":
             kept: list[tuple[Mutation, Json | None]] = []
@@ -920,6 +927,8 @@ class Ledger:
                     )
                 except DocumentError as error:
                     raise _labelled(error, provenance) from None
+            if within is not None:
+                within(tx.sql, results)
             return results
 
     def _apply(
@@ -1112,7 +1121,7 @@ class Ledger:
             basis, anchors = self._sources(
                 db, project, item.basis, item.anchors or [], author, pinned, provenance
             )
-            if author.kind != "user" and provenance is None:
+            if author.kind != "user" and not _platforms(provenance):
                 rests = [c for c in cited if "work" not in c]
                 if not anchors and not rests:
                     raise anchoring.refused(
@@ -2553,6 +2562,9 @@ class Ledger:
             return pinned[(name, revision, block, None)]
 
         kept = anchoring.resolve(db, project, anchors, block, find, _scope(db, project, author))
+        if author.kind == "user" and provenance_ is not None and "proposal" in provenance_:
+            # A fold's proposal the user accepts keeps its basis: its words are the model's.
+            return basis or "interpreted", kept
         if author.kind == "user":
             return "user", kept
         if provenance_ is not None and "file" in provenance_:
@@ -2591,7 +2603,7 @@ class Ledger:
         p.basis, p.anchors = self._sources(
             db, project, p.change.basis, p.change.anchors or [], author, pinned, provenance_
         )
-        if author.kind == "user" or provenance_ is not None:
+        if author.kind == "user" or _platforms(provenance_):
             return
         held = self._final_evidence(db, p)
         needs = (
@@ -3347,6 +3359,13 @@ def _agent_evidence(item: EvidenceInput, where: str) -> EvidenceInput:
         text = agent_text(item.quote.text, f"{where} quote")
         update["quote"] = item.quote.model_copy(update={"text": text})
     return item.model_copy(update=update) if update else item
+
+
+def _platforms(provenance: Json | None) -> bool:
+    """Whether a mutation is a record the platform makes for an agent, anchored by it: an
+    import's line or a delegation's outcome. A fold proposal's accepted is checked as the
+    acceptor's own (CM-15)."""
+    return provenance is not None and ("file" in provenance or "delegation" in provenance)
 
 
 def _labelled(error: DocumentError, provenance: Json | None) -> DocumentError:

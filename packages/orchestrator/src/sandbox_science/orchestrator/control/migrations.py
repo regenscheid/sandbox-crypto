@@ -2770,6 +2770,48 @@ def _cost_sources(schema: Schema) -> None:
         schema.execute(f"ALTER TABLE {table} ADD COLUMN cost_source TEXT CHECK ({source})")
 
 
+def _fold_proposals(schema: Schema) -> None:
+    """Version 54: the research-state updates folds propose, kept apart from the ledger
+    until the main agent or the user accepts or dismisses each
+    (docs/specs/context-management.md, CM-15): the typed operation as the fold's call gave
+    it, its anchors as resolved, the fold and run that proposed it, and how it was decided.
+    A proposal is never deleted; it waits, is accepted with the result the ledger wrote,
+    in the same change, or is dismissed with a reason."""
+    json_text = "{0} IS NULL OR (json_valid({0}) AND length(CAST({0} AS BLOB)) <= {1})"
+    for statement in (
+        f"""CREATE TABLE fold_proposals (
+    proposal_id TEXT PRIMARY KEY CHECK (length(proposal_id) = 29 AND proposal_id GLOB 'prop-*'
+        AND substr(proposal_id, 6) NOT GLOB '*[^0-9a-f]*'),
+    project TEXT NOT NULL,
+    session TEXT NOT NULL,
+    fold TEXT NOT NULL CHECK ({_ID.format("fold")}),
+    run TEXT NOT NULL CHECK (length(CAST(run AS BLOB)) BETWEEN 1 AND 256),
+    created TEXT NOT NULL CHECK (length(created) BETWEEN 1 AND 64),
+    body TEXT NOT NULL CHECK (json_valid(body) AND json_type(body) = 'object'
+        AND length(CAST(body AS BLOB)) <= 65536),
+    anchors TEXT NOT NULL CHECK (json_valid(anchors) AND json_type(anchors) = 'array'
+        AND length(CAST(anchors AS BLOB)) <= 65536),
+    state TEXT NOT NULL CHECK (state IN ('waiting', 'accepted', 'dismissed')),
+    result TEXT CHECK ({json_text.format("result", 65536)}),
+    reason TEXT CHECK (reason IS NULL OR length(CAST(reason AS BLOB)) BETWEEN 1 AND 4096),
+    decided_by TEXT CHECK ({json_text.format("decided_by", 4096)}),
+    decided_at TEXT CHECK (decided_at IS NULL OR length(decided_at) BETWEEN 1 AND 64),
+    CHECK ((state = 'waiting') = (decided_at IS NULL)),
+    CHECK ((state = 'accepted') = (result IS NOT NULL)),
+    CHECK ((state = 'dismissed') = (reason IS NOT NULL)),
+    FOREIGN KEY (project, session) REFERENCES sessions (project_id, session_id)
+) STRICT""",
+        "CREATE INDEX fold_proposals_waiting ON fold_proposals (project, session, state, created)",
+        """CREATE TRIGGER fold_proposals_kept BEFORE DELETE ON fold_proposals
+BEGIN SELECT RAISE(ABORT, 'proposals are kept'); END""",
+        """CREATE TRIGGER fold_proposals_decided BEFORE UPDATE ON fold_proposals
+WHEN OLD.state != 'waiting' OR NEW.body IS NOT OLD.body OR NEW.anchors IS NOT OLD.anchors
+OR NEW.fold IS NOT OLD.fold OR NEW.project IS NOT OLD.project OR NEW.session IS NOT OLD.session
+BEGIN SELECT RAISE(ABORT, 'a decided proposal is not changed'); END""",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -2823,6 +2865,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _provenance,
     _fold_events,
     _cost_sources,
+    _fold_proposals,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

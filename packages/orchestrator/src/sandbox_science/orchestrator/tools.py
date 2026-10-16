@@ -58,6 +58,7 @@ from .hooks import Effect, TurnHook
 from .jobs import BACKGROUND, JOB_EFFECTS, JOB_SPECS, STOP_AT_FAILURE, JobNotices, JobTools
 from .kernel_check import KernelCheck
 from .ledger.tool import LEDGER_EFFECTS, LedgerTool
+from .ledger.tool import PROPOSALS as LEDGER_PROPOSALS
 from .ledger.tool import SPECS as LEDGER_SPECS
 from .mathchecks.controller import MathChecks, MathController
 from .memory_tools import MEMORY_EFFECTS, MemoryTool
@@ -465,6 +466,7 @@ def _harness_tool_names() -> frozenset[str]:
         *AUTHOR_SPECS,
         *PLAN_SPECS,
         *LEDGER_SPECS,
+        LEDGER_PROPOSALS,
         *MEMORY_SPECS,
         *delegation_specs.SPECS,
         *TRACK_SPECS,

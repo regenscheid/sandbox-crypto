@@ -178,6 +178,9 @@ class Folder(TurnHook):
         cap a context error falls back to, the first call's among them."""
         self.on_cap: Callable[[int], None] | None = None
         """Told each cap, so later runs learn it."""
+        self.propose: Callable[[str, Sequence[Archived], Sequence[object]], Json] | None = None
+        """Checks and keeps the proposals of the fold archived as its first argument, over
+        the span of the second (CM-15); what they came to. The harness sets it."""
 
     @property
     def tripped(self) -> bool:
@@ -396,6 +399,17 @@ class Folder(TurnHook):
         async def save() -> None:
             assert running.done is not None  # noqa: S101 - set above
             running.kept = await self._keep(running.done.record, per_token)
+            done = running.done
+            first = done.record.level == 1  # an overview proposes nothing (CM-15, CM-21)
+            if self.propose is not None and done.proposals and done.failed is None and first:
+                # Checked against the span once the fold is kept, and kept apart (CM-15).
+                fold = running.kept[0].message_id
+                try:
+                    proposed = await threaded(self.propose, fold, running.rows, done.proposals)
+                except Exception as error:  # the fold stands without them
+                    _log.warning("the proposals of fold %s were not kept: %r", fold, error)
+                    proposed = {"kept": 0, "failed": type(error).__name__}
+                running.done = replace(done, proposed=proposed)
 
         running.saving = asyncio.create_task(save())
         await asyncio.shield(running.saving)
@@ -494,6 +508,8 @@ class Folder(TurnHook):
             made["reason"] = (
                 f"{'built by code' if record.parts else 'skeleton-only'}: {done.failed}"
             )
+        if done is not None and done.proposed is not None:
+            made["proposals"] = done.proposed
         self.folds.append(made)
         await self._event({**made, "calls": calls} if calls else made)
 

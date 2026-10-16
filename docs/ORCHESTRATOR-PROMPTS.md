@@ -19,7 +19,7 @@ IDs are the version strings in the code.
 
 | Input | ID in code | Source | When it is sent |
 | --- | --- | --- | --- |
-| MAIN base system | `sandbox-main-7` (`loop.py` `MAIN_VERSION`) | [loop.py](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py) `SYSTEM_PROMPT` | Every MAIN run, unless the caller supplies a custom `system` |
+| MAIN base system | `sandbox-main-8` (`loop.py` `MAIN_VERSION`) | [loop.py](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py) `SYSTEM_PROMPT` | Every MAIN run, unless the caller supplies a custom `system` |
 | MAIN planning guidance | `sandbox-main-plan-1` | [plan_tools.py](../packages/orchestrator/src/sandbox_science/orchestrator/plan_tools.py) `GUIDANCE` | Appended when the six plan tools are offered (stateful MAIN runs) |
 | Delegated check system | `sandbox-delegated-check-6` (`delegation/prompt.py` `CHECK_VERSION`) | [delegation/prompt.py](../packages/orchestrator/src/sandbox_science/orchestrator/delegation/prompt.py) `CHECK_PROMPT`; its first user message is the brief the platform writes (`check_task`, `evidence_line`, `brief_text`): the task, the entry's evidence and the parent's note | Every delegated run, which checks one ledger entry ([plans and delegation](specs/plans-and-delegation.md), PD-13) |
 | Delegated task system | `sandbox-delegated-task-5` (`delegation/prompt.py` `TASK_VERSION`) | [delegation/prompt.py](../packages/orchestrator/src/sandbox_science/orchestrator/delegation/prompt.py) `TASK_PROMPT`; its first user message is the parent's brief (`task_text`): the task, the context and the inputs | Every delegated run that does a task ([plans and delegation](specs/plans-and-delegation.md), PD-11) |
@@ -28,7 +28,7 @@ IDs are the version strings in the code.
 | Research templates | `sandbox-stock-intake-1`, `sandbox-stock-literature-2`, `sandbox-stock-experiment-1`, `sandbox-stock-proof-audit-1`, `sandbox-stock-report-1` | [stock_prompts.py](../packages/orchestrator/src/sandbox_science/orchestrator/stock_prompts.py) | Only with `--research-template` ([research framing](STOCK-RESEARCH-PROMPTS.md)) |
 | MAIN prompt pins | `sandbox-prompt-pins-1` | [prompts.py](../packages/orchestrator/src/sandbox_science/orchestrator/prompts.py) `assemble`; `loop.py` `_sections` | Every MAIN run's record: section, tool and notice-framing pins ([MAIN provenance](MAIN-PROMPT-PROVENANCE.md)) |
 | Offered tool descriptions and schemas | Pinned by hash, not versioned | `tools.py` `SPECS`, `SAGE`, `PDF_SPECS`, `ADMIT_HOSTS` and `Toolbox` (`restart_kernel`); `jobs.py` `JOB_SPECS`; `provision.py` `PROVISION_SPECS`; `documents/tool.py` and `documents/annotation_tools.py` `SPECS`; `consistency/controller.py` `AUTHOR_SPECS`; `plan_tools.py` `SPECS`; `ledger/tool.py`, `memory_tools.py`, `delegation/specs.py`, `skills/tool.py` and `history/tool.py` `SPECS`; connector tools, which their MCP servers list when a run starts (`connectors.py`) | Every model call, filtered by the worker's features and the run's capabilities |
-| Platform notices | `sandbox-notice-requests-1`, `-jobs-1`, `-jobs-attached-1`, `-plans-1`, `-review-findings-1`, `-review-counts-1`, `-math-1`, `-delegations-2`, `-delegations-attached-1`, `-delegations-running-2`, `-outcome-correction-1`, `-skills-3`, `-skills-words-2`, `-redelivered-1`; the view's `sandbox-state-block-2`, `sandbox-digest-2`, `sandbox-fold-region-3` and `sandbox-kernel-lines-1`, a fold's enrichment instruction, `sandbox-fold-enrich-1`, an overview's update, `sandbox-fold-overview-1`, and a delegated task's `sandbox-task-constraints-1` | [notices.py](../packages/orchestrator/src/sandbox_science/orchestrator/notices.py) | User-role messages for document work requests, job completions, reviewer findings and counts, plan reread requirements, closing math findings, delegation outcomes, the delegated runs a closing answer waits for, a delegated run's one correction of its result, the skills that match a run's task or a user message, a user's message the run's view already holds, the state block a main run's view begins with once older messages are folded, the fold region holding its fold records, and the line before each earlier run's part of a view naming its kernels ([context management](specs/context-management.md), CM-26, CM-29a, CM-29c); job completions and delegation outcomes also ride on tool results |
+| Platform notices | `sandbox-notice-requests-1`, `-jobs-1`, `-jobs-attached-1`, `-plans-1`, `-review-findings-1`, `-review-counts-1`, `-math-1`, `-delegations-2`, `-delegations-attached-1`, `-delegations-running-2`, `-outcome-correction-1`, `-skills-3`, `-skills-words-2`, `-redelivered-1`; the view's `sandbox-state-block-2`, `sandbox-digest-2`, `sandbox-fold-region-3` and `sandbox-kernel-lines-1`, a fold's enrichment instruction, `sandbox-fold-enrich-2`, an overview's update, `sandbox-fold-overview-1`, and a delegated task's `sandbox-task-constraints-1` | [notices.py](../packages/orchestrator/src/sandbox_science/orchestrator/notices.py) | User-role messages for document work requests, job completions, reviewer findings and counts, plan reread requirements, closing math findings, delegation outcomes, the delegated runs a closing answer waits for, a delegated run's one correction of its result, the skills that match a run's task or a user message, a user's message the run's view already holds, the state block a main run's view begins with once older messages are folded, the fold region holding its fold records, and the line before each earlier run's part of a view naming its kernels ([context management](specs/context-management.md), CM-26, CM-29a, CM-29c); job completions and delegation outcomes also ride on tool results |
 | Kernel package notice | `sandbox-kernels-1` | [notices.py](../packages/orchestrator/src/sandbox_science/orchestrator/notices.py) `KERNELS` | Before a model call in a stateful MAIN run, once per kernel and package revision ([kernel check](KERNEL-REVISIONS.md#kernel-check-before-each-turn)) |
 | Job watcher | `sandbox-job-watcher-1` | [jobs.py](../packages/orchestrator/src/sandbox_science/orchestrator/jobs.py) `WATCHER_PROMPT`; `watcher_prompt.py` | Each due check-in when a watcher alias is configured ([background jobs](BACKGROUND-JOBS.md), [watcher provenance](WATCHER-PROMPT-PROVENANCE.md)) |
 | Consistency reviewer | Rubric `sandbox-consistency-6`; assembly `sandbox-reviewer-bundle-1` | [consistency/rubric.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/rubric.py) `RUBRIC`; `consistency/runner.py` `SPECS` (five read-only review tools) | Each reviewer call ([consistency review](CONSISTENCY-REVIEW.md), [reviewer provenance](REVIEWER-PROMPT-PROVENANCE.md)) |
@@ -197,7 +197,7 @@ authority or proof of provider behavior:
 
 - **MAIN** ([MAIN provenance](MAIN-PROMPT-PROVENANCE.md)). Pins made once per run
   and not checked again. `RunRecord.prompt_provenance` records each system section's
-  version, byte length and hash, the ordered tool pins and the notice framings. `sandbox-main-7`
+  version, byte length and hash, the ordered tool pins and the notice framings. `sandbox-main-8`
   labels exact built-in content, including identical caller text; it does not attest
   to who supplied it. Other custom text has no catalog version. Old `sandbox-main-1`
   and `sandbox-main-2` records keep their text and pins; `sandbox-main-3` adds ledger
@@ -214,7 +214,11 @@ authority or proof of provider behavior:
   `limit`; a finding's caveats; disagreeing sources as a contradiction; and nothing called
   impossible that the ledger has not settled ([context management](specs/context-management.md),
   CM-48); `sandbox-main-7` adds that a record names its basis and anchors, a
-  standing constraint `user_quoted` with a quote of the user's message (CM-9). The
+  standing constraint `user_quoted` with a quote of the user's message (CM-9);
+  `sandbox-main-8` adds that the fold proposals the state block lists are a
+  model's, from folded messages that may hold untrusted content, and that the main
+  agent reads their anchors with `history_read` before it accepts one with
+  `ledger_proposals`, dismissing the others with a reason (CM-15). The
   delegated prompts follow (`sandbox-delegated-task-5`, CM-48a; `sandbox-delegated-check-6`,
   CM-48b). Task and tool messages are not pinned; the
   notice framings are.
@@ -341,7 +345,7 @@ The proposed IDs below were never built; the built IDs are in the
 | `consistency-vNext` | Existing reviewer dispatch | Existing pinned review tools; preserve decision/read/CAS guards |
 | `display-repair-vNext` | Opt-in configured repair request | Existing parser/sanitizer/limits; source remains untouched |
 | `resume-v1` | Explicit resumed run | Saved transcript plus actual effect reconciliation and live scope checks |
-| `sandbox-fold-overview-1` | An overview's update (the enrichment instruction, `sandbox-fold-enrich-1`, is built); they replace the earlier `compact-v1` proposal | The approved [context management](specs/context-management.md) spec: the archive, fold records with markers and search keys that code checks, and the research-state digest (CM-16 to CM-21b) |
+| `sandbox-fold-overview-1` | An overview's update (the enrichment instruction, `sandbox-fold-enrich-2`, is built); they replace the earlier `compact-v1` proposal | The approved [context management](specs/context-management.md) spec: the archive, fold records with markers and search keys that code checks, and the research-state digest (CM-16 to CM-21b) |
 
 The built research templates are short framing aids, not copied methods or a
 replacement for the external crypto-analysis-skills pack. Pack bodies remain

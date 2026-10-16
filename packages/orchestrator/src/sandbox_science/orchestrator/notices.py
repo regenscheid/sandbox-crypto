@@ -194,7 +194,7 @@ FOLD_REGION: Final = Framing(
 """The fold region (docs/specs/context-management.md, CM-17, CM-25)."""
 FOLD_ENRICH: Final = Framing(
     "fold-enrich",
-    "sandbox-fold-enrich-1",
+    "sandbox-fold-enrich-2",
     "Platform instruction, apart from your work: the platform is folding the oldest part "
     "of this conversation into a record, whose outline, built by code, follows. Write the "
     "narrative that connects it. Call no tool. Answer with one JSON object and nothing "
@@ -204,8 +204,19 @@ FOLD_ENRICH: Final = Framing(
     "messages show them, and add no cause the span does not state; call a read that was "
     "truncated, sampled or a preview incomplete, never reviewed; and give concepts and "
     "what values are for, not the values themselves, which the archive keeps. In keys, "
-    "list literal names and identifiers as they occur in the span, word for word. Leave "
-    "proposals empty. ",
+    "list literal names and identifiers as they occur in the span, word for word. In "
+    "proposals, propose at most 20 research-state updates the span shows and the ledger "
+    "lacks, each an object with op and its fields: issue (title, statement, kind question, "
+    "hypothesis or contradiction, concerns: handles, two at least for a contradiction); "
+    "decision nobody recorded (title, statement, status rejected for an approach abandoned "
+    "or in_effect for a method or scope chosen, reason, reopen_condition, none or what "
+    "reopen_on handles watch); work on an issue, claim or result that ran out (entry, "
+    "tried, limit: time, tools, context or ideas); caveat on a claim or result (entry, "
+    "caveat); assumption the span relied on (title, statement, relied_on_by: handles). "
+    "Give each its basis (user_quoted, observed or interpreted) and anchors: the span's "
+    "message IDs or call IDs, with quote for the user's words. Code drops any whose "
+    "anchors, numbers or handles are not in the span or the ledger; none is recorded until "
+    "the main agent or the user accepts it. ",
 )
 """A fold's enrichment instruction (docs/specs/context-management.md, CM-19)."""
 FOLD_OVERVIEW: Final = Framing(

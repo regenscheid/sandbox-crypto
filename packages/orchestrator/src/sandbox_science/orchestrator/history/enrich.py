@@ -5,8 +5,9 @@ CM-19, CM-20).
 The call is the run's own model, sent the run's view as it stands, tools included and
 ``tool_choice`` as the run sends it, so that it reads the view from the prompt cache,
 followed by one instruction: the contract, and the span's record as code built it. Its
-answer is one JSON object: the narrative, search keys, and proposals, which the fold
-proposals step reads (f3) and this one leaves aside. An answer that calls a tool, is not
+answer is one JSON object: the narrative, search keys, and proposals, which are kept as
+they came (``Enriched.proposals``) for the fold's proposals to check against the span
+(``ledger.proposals``, CM-15) once the fold is archived. An answer that calls a tool, is not
 that object, has no narrative, or whose narrative passes a quarter of the record's
 share fails the attempt; the one retry sets ``tool_choice`` to ``none`` after a tool
 call. Two failures leave the record skeleton-only.
@@ -73,6 +74,10 @@ class Enriched:
     record: FoldRecord
     calls: tuple[ModelUsage, ...]
     failed: str | None = None
+    proposals: tuple[object, ...] = ()
+    """The research-state updates the answer proposed, unchecked (CM-15)."""
+    proposed: Json | None = None
+    """What the fold's proposals came to once checked: kept, dropped and refused."""
 
 
 async def enrich(
@@ -124,7 +129,9 @@ async def enrich(
             check, turn.text or "", record, rows, share=share, exists=exists
         )
         if found is not None:
-            return Enriched(found, tuple(calls))
+            offered = (_object(turn.text or "") or {}).get("proposals")
+            proposals = tuple(cast(list[object], offered)) if isinstance(offered, list) else ()
+            return Enriched(found, tuple(calls), proposals=proposals)
         failed.append(why)
     return Enriched(record, tuple(calls), "; ".join(failed))
 

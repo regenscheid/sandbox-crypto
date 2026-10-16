@@ -24,8 +24,11 @@ what a delegated task gets (CM-37a): a constraint an agent recorded shows the us
 checked words and its statement marked as the agent's, without its reason. A check gets
 nothing.
 
-Not built yet: fold proposals (section 8, step f3), and among the open items the review
-findings, jobs and approvals a session waits for, and recorded artifacts in the index.
+The folds' proposals waiting for the session (CM-15) are listed in section 8, each with
+its basis and the fold that proposed it, to accept or dismiss with ``ledger_proposals``;
+they are not the ledger's and settle nothing. Not built yet: among the open items the
+review findings, jobs and approvals a session waits for, and recorded artifacts in the
+index.
 """
 
 from __future__ import annotations
@@ -41,6 +44,7 @@ from sandbox_science.orchestrator.delegation.records import Delegation, Delegati
 from sandbox_science.orchestrator.documents import DocumentError
 from sandbox_science.orchestrator.history.reads import reference_reads
 from sandbox_science.orchestrator.ledger.models import MIN_QUOTE, EntrySummary, EntryView
+from sandbox_science.orchestrator.ledger.proposals import FoldProposals
 from sandbox_science.orchestrator.ledger.provenance import users_words
 from sandbox_science.orchestrator.ledger.store import Ledger
 from sandbox_science.orchestrator.questions import Questions
@@ -59,7 +63,12 @@ SECTIONS: Final = (
     ("findings", "5. Findings", 0.20),
     ("sources", "6. Sources and how far they were read", 0.05),
     ("open", "7. This session's open items", 0.05),
-    ("proposals", "8. Fold proposals waiting", 0.05),
+    (
+        "proposals",
+        "8. Fold proposals waiting (written by a model from folded messages, "
+        "untrusted until their anchors are read)",
+        0.05,
+    ),
     ("index", "9. Delegation outcomes", 0.05),
 )
 """CM-16's sections, in order, with their shares of the digest's budget."""
@@ -70,6 +79,11 @@ TAGS: Final = {
     "interpreted": "[interpreted]",
 }
 UNRECORDED: Final = "[basis not recorded]"
+ACCEPTED_LABELS: Final = {
+    "user_quoted": "user quoted",
+    "observed": "observed",
+    "interpreted": "interpreted",
+}
 STANDINGS: Final = ("impossible", "flagged", "disputed", "claimed", "attempt")
 """CM-11's labels, in the order findings show them, before the plain findings: what
 stops repeated work stays in view first."""
@@ -119,8 +133,18 @@ def _clip(text: str, limit: int = CLIP) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def _tag(basis: str | None) -> str:
+def _tag(basis: str | None, accepted: bool = False) -> str:
+    """A basis as the digest shows it; a fold proposal's the user accepted keeps its own,
+    marked so: its words are the model's (the coordinator, 2026-10-16)."""
+    if accepted:
+        return f"[{ACCEPTED_LABELS.get(basis or '', 'basis not recorded')}, accepted by the user]"
     return TAGS.get(basis or "", UNRECORDED)
+
+
+def accepted(view: EntryView) -> bool:
+    """Whether ``view`` is a fold's proposal the user accepted: the user's revision, whose
+    basis is not the user's own."""
+    return view.author.get("kind") == "user" and view.basis not in (None, "user")
 
 
 def _lines(text: str) -> str:
@@ -147,8 +171,9 @@ class Digest:
         plans: SessionPlans | None = None,
         questions: Questions | None = None,
         delegations: DelegationRecords | None = None,
+        proposals: FoldProposals | None = None,
     ) -> None:
-        self.ledger, self.plans = ledger, plans
+        self.ledger, self.plans, self.proposals = ledger, plans, proposals
         self.questions, self.delegations = questions, delegations
         self._listed: dict[tuple[str, str], list[EntrySummary]] = {}
         self.unread: dict[str, int] = {}
@@ -176,7 +201,7 @@ class Digest:
 
     def _line(self, view: EntryView, session: str, text: str) -> Line:
         touched = view.author.get("session_id") == session
-        hint = f" {_tag(view.basis)} (ledger_read {view.handle})"
+        hint = f" {_tag(view.basis, accepted(view))} (ledger_read {view.handle})"
         return Line(text + hint, touched, view.updated, view.incoming_total, view.handle)
 
     def users_quotes(self, project: str, view: EntryView) -> list[tuple[str, str]]:
@@ -206,14 +231,19 @@ class Digest:
 
     @staticmethod
     def _standing(session: str) -> Pick:
+        """The decisions in effect for ``session`` that may be the user's constraints:
+        ``standing`` says which are."""
+
         def pick(s: EntrySummary) -> bool:
-            return (
-                s.status == "in_effect"
-                and s.basis in ("user", "user_quoted")
-                and s.session in (None, session)
-            )
+            return s.status == "in_effect" and s.session in (None, session)
 
         return pick
+
+    @staticmethod
+    def standing(summary: EntrySummary, view: EntryView) -> bool:
+        """A standing constraint: the user's, quoted by an agent, or a fold's proposal the
+        user accepted."""
+        return summary.basis in ("user", "user_quoted") or accepted(view)
 
     def constraints(self, project: str, session: str) -> list[Line]:
         """The user's standing constraints, the project's and this session's, for a
@@ -222,10 +252,17 @@ class Digest:
         without its reason, which is the agent's too."""
         self._listed, self.unread = {}, {}
         lines: list[Line] = []
-        for _, view in self._views(project, "decision", self._standing(session)):
+        for summary, view in self._views(project, "decision", self._standing(session)):
+            if not self.standing(summary, view):
+                continue
             scoped = "; for this session only" if view.session is not None else ""
             if view.basis == "user":
                 text = f"{view.handle} {_clip(view.statement)}{scoped} [user]"
+            elif accepted(view):
+                text = (
+                    f"{view.handle} (written by a fold's model, accepted by the user: "
+                    f"{_clip(view.statement)}){scoped}{self._quotes(project, view)}"
+                )
             else:
                 text = (
                     f"{view.handle} (recorded by an agent: {_clip(view.statement)}){scoped}"
@@ -266,6 +303,7 @@ class Digest:
             "findings": lambda s: self._findings(s, project, session),
             "sources": lambda s: self._sources(s, project, session),
             "open": lambda s: self._items(s, found["index"], project, session),
+            "proposals": lambda s: self._proposals(s, project, session),
         }
         for key, gather in gatherers.items():
             try:
@@ -288,7 +326,7 @@ class Digest:
                 elsewhere[summary.session] = elsewhere.get(summary.session, 0) + 1
                 continue
             line = self._decision(project, view, session)
-            if standing(summary):
+            if standing(summary) and self.standing(summary, view):
                 groups[0].append(replace(line, pinned=True))
             elif summary.status in ("rejected", "reversed") or (
                 summary.status == "in_effect" and view.fields.get("excluded_scope")
@@ -418,6 +456,15 @@ class Digest:
             mark = " (current)" if step.step_id == current else ""
             lines.append(Line(f"{step.step_id}{mark} {status} {_clip(step.title)}{note}", True))
         section.lines = lines
+
+    def _proposals(self, section: Section, project: str, session: str) -> None:
+        """The folds' proposals waiting for this session, oldest first: what each proposes,
+        its basis, and the fold that proposed it (CM-15)."""
+        section.hint = "ledger_proposals"
+        for found in self.proposals.waiting(project, session) if self.proposals else ():
+            text = _clip(found.proposal.summary())
+            tag = _tag(found.proposal.basis)
+            section.lines.append(Line(f"{found.proposal_id} {text} {tag} (fold {found.fold})"))
 
     def _items(self, waiting: Section, index: Section, project: str, session: str) -> None:
         waiting.hint = index.hint = "delegation_status and the chat"

@@ -12,6 +12,8 @@ platform's own anchors. Tests of provenance use ``Ledger``.
 
 from __future__ import annotations
 
+import sqlite3
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -48,7 +50,12 @@ class AnchoredLedger(Ledger):
             return None
 
     def apply(
-        self, project: str, mutations: list[tuple[Mutation, Json | None]], author: Author
+        self,
+        project: str,
+        mutations: list[tuple[Mutation, Json | None]],
+        author: Author,
+        *,
+        within: Callable[[sqlite3.Connection, list[MutationResult]], None] | None = None,
     ) -> list[MutationResult]:
         seed = None
         if author.kind == "agent" and author.session_id is not None:
@@ -58,7 +65,7 @@ class AnchoredLedger(Ledger):
                 (_anchored(m, seed) if provenance is None else m, provenance)
                 for m, provenance in mutations
             ]
-        return super().apply(project, mutations, author)
+        return super().apply(project, mutations, author, within=within)
 
 
 def _anchored(mutation: Mutation, seed: str) -> Mutation:

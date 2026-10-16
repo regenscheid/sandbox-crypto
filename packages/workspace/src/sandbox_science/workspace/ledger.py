@@ -9,11 +9,17 @@ with its handle, type, status and title; ``type`` and ``status`` filter, ``after
 sessions read its sources (``read``, from the read register: CM-12, LG-15); ``GET
 …/ledger/{entry}/history`` its revisions, newest first, before ``before``. An entry is
 named by its ID or its handle. Reads go through the read-only control store.
+
+A session's fold proposals (CM-15): ``GET /api/v0/projects/{project}/sessions/{session}/
+proposals`` lists those waiting; ``POST …/proposals/{proposal}/accepted`` accepts one
+with the user's authority under an ``operation_id``, and ``POST …/dismissed`` dismisses
+one with a ``reason``. Same-origin, the user's only.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -23,7 +29,8 @@ from aiohttp import web
 from pydantic import AwareDatetime, ConfigDict, Field, JsonValue, ValidationError
 
 from sandbox_science.contracts import Contract, ErrorKind, Identifier
-from sandbox_science.orchestrator.documents import USER, DocumentStore
+from sandbox_science.orchestrator.documents import USER, DocumentError, DocumentStore
+from sandbox_science.orchestrator.documents.errors import NOT_FOUND
 from sandbox_science.orchestrator.ledger import EntryHistory, EntryPage, EntryView, Ledger
 from sandbox_science.orchestrator.ledger.models import (
     MAX_CLEARED,
@@ -33,12 +40,15 @@ from sandbox_science.orchestrator.ledger.models import (
     GateView,
     WorkPage,
 )
+from sandbox_science.orchestrator.ledger.proposals import FoldProposals
 from sandbox_science.orchestrator.projects import ProjectError
 
 from . import documents
 from .context import CONTEXT, identifier, json_answer, json_body
 
 PATH: Final = "/api/v0/projects/{project}/ledger"
+PROPOSALS: Final = "/api/v0/projects/{project}/sessions/{session}/proposals"
+_PROPOSAL: Final = re.compile(r"prop-[0-9a-f]{24}")
 _ENTRY: Final = re.compile(r"entry-[0-9a-f]{24}|(?:I|C|R|A|D|T|REF)-[1-9][0-9]{0,8}")
 _NUMBER: Final = re.compile(r"[1-9][0-9]{0,8}")
 _POSITION: Final = re.compile(r"[1-9][0-9]{0,17}")
@@ -120,6 +130,9 @@ def add_routes(app: web.Application) -> None:
     app.router.add_post(PATH + "/{entry}/flags", clear)
     app.router.add_post(PATH + "/{entry}/flags/reopened", reopen)
     app.router.add_post(PATH + "/{entry}/dominates/dropped", drop)
+    app.router.add_get(PROPOSALS, proposals_read)
+    app.router.add_post(PROPOSALS + "/{proposal}/accepted", proposal_accepted)
+    app.router.add_post(PROPOSALS + "/{proposal}/dismissed", proposal_dismissed)
 
 
 def query_of(request: web.Request, allowed: set[str]) -> dict[str, str]:
@@ -444,3 +457,76 @@ async def reopen(request: web.Request) -> web.Response:
         return result.model_dump(mode="json")
 
     return await documents.answer(request, reopened, writer=True)
+
+
+async def proposals_read(request: web.Request) -> web.Response:
+    """GET …/sessions/{session}/proposals: the session's fold proposals waiting."""
+    project, session = identifier(request, "project"), identifier(request, "session")
+    query_of(request, set())
+
+    def read(ledger: Ledger) -> str:
+        waiting = FoldProposals(ledger).waiting(project, session)
+        return json.dumps({"proposals": [p.model_dump(mode="json") for p in waiting]})
+
+    return await read_answer(request, project, read)
+
+
+class AcceptRequest(Contract):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    operation_id: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")]
+
+
+class DismissRequest(Contract):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    reason: Annotated[str, Field(min_length=1, max_length=4096, pattern=r"\S")]
+
+
+async def proposal_accepted(request: web.Request) -> web.Response:
+    """POST …/proposals/{proposal}/accepted: the user accepts a fold's proposal, which the
+    ledger records with the user's authority; again, its first result."""
+    project, proposal = identifier(request, "project"), _proposal(request)
+    session = identifier(request, "session")
+    raw = await json_body(request, "proposal JSON")
+    try:
+        value = AcceptRequest.model_validate(raw)
+    except ValidationError:
+        raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid acceptance") from None
+
+    def accepted(store: DocumentStore) -> dict[str, object]:
+        proposals = _of_session(store, project, session, proposal)
+        return proposals.accept(project, proposal, value.operation_id, USER)
+
+    return await documents.answer(request, accepted, writer=True)
+
+
+async def proposal_dismissed(request: web.Request) -> web.Response:
+    """POST …/proposals/{proposal}/dismissed: the user dismisses a fold's proposal."""
+    project, proposal = identifier(request, "project"), _proposal(request)
+    session = identifier(request, "session")
+    raw = await json_body(request, "proposal JSON")
+    try:
+        value = DismissRequest.model_validate(raw)
+    except ValidationError:
+        raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid dismissal") from None
+
+    def dismissed(store: DocumentStore) -> dict[str, object]:
+        proposals = _of_session(store, project, session, proposal)
+        return proposals.dismiss(project, proposal, value.reason, USER).model_dump(mode="json")
+
+    return await documents.answer(request, dismissed, writer=True)
+
+
+def _of_session(store: DocumentStore, project: str, session: str, proposal: str) -> FoldProposals:
+    """The store's proposals, once ``proposal`` is found to be ``session``'s."""
+    proposals = FoldProposals(Ledger(store))
+    if proposals.get(project, proposal).session != session:
+        raise DocumentError(NOT_FOUND, f"no fold proposal {proposal} in this session")
+    return proposals
+
+
+def _proposal(request: web.Request) -> str:
+    value = matched(_PROPOSAL, request.match_info["proposal"], "fold proposal")
+    assert value is not None  # noqa: S101 - a path part is always there
+    return value
