@@ -102,7 +102,15 @@ from .memory import MemoryEntry, ProjectMemory
 from .memory_prompt import for_reviewer, for_run, for_watcher
 from .memory_tools import MemoryTool
 from .messages import MessagesModel
-from .model import ChatModel, GatewayModel, Limits, Message, ModelError, ModelGateway
+from .model import (
+    ChatModel,
+    GatewayModel,
+    Limits,
+    Message,
+    ModelError,
+    ModelGateway,
+    cached_for,
+)
 from .notices import DIGEST, TASK_CONSTRAINTS
 from .plan_tools import PlanTools
 from .projects import (
@@ -542,6 +550,12 @@ class Harness:
             raise ModelError(f"no model gateway serves {request.alias!r}")
         return Role(self.gateway.model(request.alias), request.alias)
 
+    def _model(self, admitted: Admitted) -> ChatModel:
+        """The model a run calls (``role``), calling as its session, so that all of the
+        session's calls share one prompt cache (CM-32)."""
+        context = admitted.context
+        return cached_for(self.role(admitted.request).model, context.project_id, context.session_id)
+
     async def run(self, request: RunRequest, sink: RunSink) -> Finished:
         """Admit the run (``admit``), then run it (``start``)."""
         projects = self.stores.projects if self.stores is not None else None
@@ -634,7 +648,7 @@ class Harness:
                             clock=self.clock,
                         )
                     transcript = await run_task(
-                        self.role(request).model,
+                        self._model(admitted),
                         toolbox,
                         None if request.queued else request.task,
                         run_id=admitted.run_id,
@@ -740,7 +754,7 @@ class Harness:
         switched = await threaded(_switched, stores.projects, project, session, self.main.alias)
         former = None
         if switched is not None and self.gateway is not None and not settings.skeleton_only:
-            former = self.gateway.model(switched[0])
+            former = cached_for(self.gateway.model(switched[0]), project, session)
         made = Folder(
             archive,
             context,
@@ -754,7 +768,7 @@ class Harness:
             earlier=earlier,
             kernels=kernels,
             digest=digest,
-            model=self._narrator(),
+            model=self._narrator(project, session),
             exists=exists,
             judge=judge,
             consolidating=request.consolidate,
@@ -798,15 +812,19 @@ class Harness:
             return ceiling(settings.ceiling, window=found.input, max_output=output or found.output)
         return ceiling(settings.ceiling, input_limit=found.input)
 
-    def _narrator(self) -> ChatModel | None:
+    def _narrator(self, project: str, session: str) -> ChatModel | None:
         """The model that writes MAIN's folds' narratives: the setting's alias through
         the gateway, or MAIN's own; none for skeleton-only folds, or for a model that is
-        not the gateway's, as a scripted one, whose answers are the run's (CM-19)."""
+        not the gateway's, as a scripted one, whose answers are the run's (CM-19). It
+        calls as the session does, so that it reads the run's view from the same prompt
+        cache (CM-32)."""
         if self.settings.skeleton_only:
             return None
         if self.settings.fold_alias is not None and self.gateway is not None:
-            return self.gateway.model(self.settings.fold_alias)
-        return self.main.model if isinstance(self.main.model, GatewayModel) else None
+            return cached_for(self.gateway.model(self.settings.fold_alias), project, session)
+        if isinstance(self.main.model, GatewayModel):
+            return cached_for(self.main.model, project, session)
+        return None
 
     async def _task_view(self, admitted: Admitted) -> View | None:
         """A delegated task's view, with stores: the user's standing constraints alone; a

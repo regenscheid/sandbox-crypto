@@ -192,6 +192,14 @@ def prefix_digest(parts: Mapping[str, object]) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+def session_cache_key(project: str, session: str) -> str:
+    """The key under which a session's calls ask a provider to share its prompt cache
+    (OpenAI's ``prompt_cache_key``, CM-32): the same for every call of a session, whichever
+    run or role makes it, and different for every other session. A digest, since the
+    provider keeps what it is given and the IDs are the deployment's."""
+    return "ss-" + hashlib.sha256(f"{project}\0{session}".encode()).hexdigest()[:32]
+
+
 class ModelError(Exception):
     """The model gateway failed or answered with something unusable."""
 
@@ -307,6 +315,7 @@ class GatewayModel(ABC):
         self._retries, self._backoff, self._clock = retries, backoff, clock
         self._prices = prices or PriceList(self.base_url, api_key, clock=clock)
         self._tool_choice = "auto"
+        self._cache_key: str | None = None
 
     def choosing(self, tool_choice: str) -> Self:
         """This model, sending ``tool_choice`` with its tools: ``none`` for a call that
@@ -316,6 +325,17 @@ class GatewayModel(ABC):
             self._session = aiohttp.ClientSession()
         other = copy.copy(self)
         other._tool_choice, other._owns_session = tool_choice, False
+        return other
+
+    def cached_as(self, key: str) -> Self:
+        """This model, asking the provider to route its calls by ``key``, so that those
+        of one session reach the same prompt cache (CM-32); only an adapter whose API
+        takes such a key sends it. It shares this one's session, which only this one
+        closes."""
+        if self._session is None:
+            self._session = aiohttp.ClientSession()
+        other = copy.copy(self)
+        other._cache_key, other._owns_session = key, False
         return other
 
     @property
@@ -491,6 +511,14 @@ class OpenAICompatibleModel(GatewayModel):
             ]
             body["tool_choice"] = self._tool_choice
         return await self._call(body, _parse_completion)
+
+
+def cached_for(model: ChatModel, project: str, session: str) -> ChatModel:
+    """``model`` calling as ``session`` of ``project``, for the prompt cache (``cached_as``);
+    a model that is not the gateway's, such as a scripted one, as it is."""
+    if isinstance(model, GatewayModel):
+        return model.cached_as(session_cache_key(project, session))
+    return model
 
 
 API_KINDS: Final = ("chat", "responses", "messages")

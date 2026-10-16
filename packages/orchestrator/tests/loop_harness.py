@@ -365,6 +365,8 @@ class Gateway:
     """Each ``/responses`` answer, as it was sent."""
     raw: list[bytes] = field(default_factory=list[bytes])
     """Each ``/responses`` request's body, as it arrived."""
+    enriching: list[int] = field(default_factory=list[int])
+    """Which of the ``/responses`` requests (by index) were fold enrichments."""
 
     async def respond(self, request: web.Request) -> web.Response:
         """The main alias's script through OpenAI's Responses API, as LiteLLM serves it:
@@ -375,7 +377,13 @@ class Gateway:
         body = cast(Json, json.loads(self.raw[-1]))
         assert body["model"] == "main", body["model"]
         self.responses.append(body)
-        reply = self.script.pop(0) if self.script else Reply("(the script has ended)")
+        last = cast(list[Json], body["input"])[-1:]
+        if last and str(last[0].get("content", "")).startswith(FOLD_ENRICH.text):
+            self.enriching.append(len(self.responses) - 1)
+            narrative = json.dumps({"narrative": "Earlier work, as its outline shows.", "keys": []})
+            reply = self.enrich.pop(0) if self.enrich else Reply(narrative)
+        else:
+            reply = self.script.pop(0) if self.script else Reply("(the script has ended)")
         if reply.before is not None:
             await reply.before()
         turn = len(self.responses)
@@ -399,7 +407,8 @@ class Gateway:
         text = json.dumps(
             {"id": f"resp_litellm_{turn}", "object": "response", "status": "completed",
              "model": "scripted-main", "output": output,
-             "usage": {"input_tokens": len(body["input"]), "output_tokens": 1}}
+             "usage": {"input_tokens": len(body["input"]) if self.per_token is None
+                       else int(len(json.dumps(body)) / self.per_token), "output_tokens": 1}}
         )  # fmt: skip
         self.responded.append(text)
         headers = {"x-litellm-version": self.version, "Content-Type": "application/json"}
