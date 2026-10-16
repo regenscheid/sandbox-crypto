@@ -1,20 +1,23 @@
 # SPDX-License-Identifier: MIT
 """Model access: a provider-neutral interface and its adapters (D61).
 
-The orchestrator reaches models only through the LiteLLM proxy, whose
-OpenAI-compatible endpoint is the first adapter. Messages use the OpenAI chat
-format internally for now; the Anthropic Messages adapter will translate.
-``ScriptedModel`` replays fixed turns, for tests and for exercising the
-worker boundary without a model.
+The orchestrator reaches models only through the LiteLLM proxy. Its chat-completions
+endpoint is the default adapter (``OpenAICompatibleModel``); its ``/v1/responses``
+endpoint is GPT's (``responses.ResponsesModel``, docs/specs/context-management.md,
+CM-40), chosen for each alias by a deployment setting. Messages use the OpenAI chat
+format internally; an adapter for another API renders them. ``ScriptedModel`` replays
+fixed turns, for tests and for exercising the worker boundary without a model.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
-from collections.abc import Sequence
+from abc import ABC, abstractmethod
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Final, Protocol, cast
+from typing import Any, ClassVar, Final, Protocol, cast
 
 import aiohttp
 
@@ -60,6 +63,11 @@ class ModelTurn:
     native_format: str | None = None
     gateway_version: str | None = None
     """The gateway's version, as ``VERSION_HEADER`` named it (CM-39)."""
+    alias: str | None = None
+    """The alias the call was made on, as the deployment names it."""
+    prefix: str | None = None
+    """The digest of what the model was given, as its adapter rendered the request
+    (``prefix_digest``)."""
 
 
 COST_HEADER: Final = "x-litellm-response-cost"
@@ -74,6 +82,73 @@ class ChatModel(Protocol):
     async def complete(
         self, messages: Sequence[Message], tools: Sequence[ToolSpec]
     ) -> ModelTurn: ...
+
+
+class AssistantMessage(dict[str, Any]):
+    """The model's answer as the conversation holds it: a chat message, whose keys are
+    all that any adapter sends, with what it came from beside them: the gateway's answer
+    as it sent it (``native``, in ``native_format``), the alias it was asked on and the
+    model that answered, the gateway's version, and ``prefix``, the digest of what the
+    model was given. The adapter that made it may send its native answer back as it was
+    (CM-40) while the alias and the model are its own; any other adapter sees a plain
+    chat message (CM-42). ``dict()`` of it, or its JSON, is a plain message too;
+    ``copy.copy`` and ``copy.deepcopy`` keep what it carries.
+
+    ``of`` makes one from a turn, as the loop adds it; the archive makes one from what it
+    kept (``history.Archived.chat``). ``read`` is an adapter's reading of ``native``,
+    kept so that it reads it once."""
+
+    __slots__ = ("alias", "gateway_version", "model", "native", "native_format", "prefix", "read")
+
+    def __init__(
+        self,
+        content: str | None,
+        tool_calls: Sequence[Message] = (),
+        *,
+        native: bytes | None = None,
+        native_format: str | None = None,
+        alias: str | None = None,
+        model: str | None = None,
+        gateway_version: str | None = None,
+        prefix: str | None = None,
+    ) -> None:
+        super().__init__(role="assistant", content=content)
+        if tool_calls:
+            self["tool_calls"] = [dict(call) for call in tool_calls]
+        self.native, self.native_format = native, native_format
+        self.alias, self.model, self.gateway_version = alias, model, gateway_version
+        self.prefix = prefix
+        self.read: object = None
+
+    @classmethod
+    def of(cls, reply: ModelTurn) -> AssistantMessage:
+        """A turn's answer, its calls in the chat format."""
+        calls = [
+            {
+                "id": call.id,
+                "type": "function",
+                "function": {"name": call.name, "arguments": call.arguments},
+            }
+            for call in reply.tool_calls
+        ]
+        return cls(
+            reply.text,
+            calls,
+            native=reply.native,
+            native_format=reply.native_format,
+            alias=reply.alias,
+            model=reply.model,
+            gateway_version=reply.gateway_version,
+            prefix=reply.prefix,
+        )
+
+
+def prefix_digest(parts: Mapping[str, object]) -> str:
+    """The SHA-256, in hexadecimal, of a request's parts that hold what the model was
+    given, as JSON with sorted keys: the same for the same content, however its objects
+    were built. Claude's binding of thinking to what came before it compares these."""
+    text = json.dumps(parts, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 class ModelError(Exception):
@@ -113,8 +188,9 @@ MAX_RETRY_WAIT: Final = 60.0
 """The longest wait before a retry, whatever the gateway's ``Retry-After`` asks."""
 
 
-class OpenAICompatibleModel:
-    """Chat completions with function calling, as the LiteLLM proxy serves them.
+class GatewayModel(ABC):
+    """A model the LiteLLM proxy serves, through one of its endpoints (``PATH``): what
+    its adapters share.
 
     ``max_tokens``, when given, limits each answer's length. An answer larger than
     ``max_response_bytes``, a redirect (never followed: it would carry the request to
@@ -124,8 +200,20 @@ class OpenAICompatibleModel:
     503, 504) is tried again up to ``retries`` times, after ``Retry-After`` or ``backoff``
     seconds doubling each time, at most a minute. A gateway that says the conversation
     exceeds the model's context raises ``ContextLimitError``. An error's message quotes
-    the gateway's answer, with the key replaced if the answer holds it.
+    the gateway's answer, with the key replaced if the answer holds it. Each turn keeps
+    the answer as the gateway sent it (``native``, in ``FORMAT``), the gateway's version,
+    the alias, and the digest of the request's ``PREFIX`` fields; its cost is
+    ``COST_HEADER``'s, or the answer's own without the header. An adapter may add headers
+    to a request (``_headers``), but not the key's.
     """
+
+    PATH: ClassVar[str]
+    """The endpoint, below the gateway's address."""
+    FORMAT: ClassVar[str]
+    """The native format of its answers, as the archive names it."""
+    PREFIX: ClassVar[tuple[str, ...]]
+    """The request's fields that hold what the model is given, which ``prefix_digest``
+    covers: its instructions, tools and conversation."""
 
     def __init__(
         self,
@@ -158,34 +246,38 @@ class OpenAICompatibleModel:
             await self._session.close()
             self._session = None
 
-    async def complete(self, messages: Sequence[Message], tools: Sequence[ToolSpec]) -> ModelTurn:
-        body: dict[str, Any] = {"model": self.model, "messages": list(messages)}
-        if self._max_tokens is not None:
-            body["max_tokens"] = self._max_tokens
-        if tools:
-            body["tools"] = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.parameters,
-                    },
-                }
-                for tool in tools
-            ]
-            body["tool_choice"] = "auto"
+    @abstractmethod
+    async def complete(
+        self, messages: Sequence[Message], tools: Sequence[ToolSpec]
+    ) -> ModelTurn: ...
+
+    def _headers(self, body: Mapping[str, Any]) -> dict[str, str]:
+        """The headers this adapter adds to a request, such as a beta flag."""
+        return {}
+
+    async def _call(
+        self, body: dict[str, Any], parse: Callable[[str, str | None], ModelTurn]
+    ) -> ModelTurn:
+        """Send ``body``, trying again as the class says; ``parse`` reads the answer's
+        text, with its cost header if it has one."""
+        prefix = prefix_digest({name: body[name] for name in self.PREFIX if name in body})
         wait = self._backoff
         for attempt in range(self._retries + 1):
             try:
                 text, priced, version = await self._post(body)
                 try:
-                    turn = _parse_completion(text, priced)
+                    turn = parse(text, priced)
                 except ModelError as error:  # answered, and charged, whatever it holds
-                    error.cost = _cost(priced) if priced is not None else None
+                    error.cost = reported_cost(priced) if priced is not None else None
                     raise
-                native, form = text.encode(), CHAT_COMPLETIONS
-                return replace(turn, native=native, native_format=form, gateway_version=version)
+                return replace(
+                    turn,
+                    native=text.encode(),
+                    native_format=self.FORMAT,
+                    gateway_version=version,
+                    alias=self.model,
+                    prefix=prefix,
+                )
             except _RetryableError as retry:
                 # A gateway that asks for a longer wait than the cap is not waited for.
                 if attempt == self._retries or (retry.after or 0) > MAX_RETRY_WAIT:
@@ -206,11 +298,12 @@ class OpenAICompatibleModel:
         """The answer's text, and its cost and version headers if it has them."""
         if self._session is None:
             self._session = aiohttp.ClientSession()
+        added = {k: v for k, v in self._headers(body).items() if k.lower() != "authorization"}
         try:
             async with self._session.post(
-                f"{self.base_url}/chat/completions",
+                f"{self.base_url}{self.PATH}",
                 json=body,
-                headers={"Authorization": f"Bearer {self._api_key}"},
+                headers={**added, "Authorization": f"Bearer {self._api_key}"},
                 timeout=self._timeout,
                 allow_redirects=False,
             ) as response:
@@ -218,7 +311,7 @@ class OpenAICompatibleModel:
                     data = await read_limited(response, self._max_response_bytes)
                 except ModelError as error:
                     if 200 <= response.status < 300:  # charged, though too long to read
-                        error.cost = _cost(response.headers.get(COST_HEADER))
+                        error.cost = reported_cost(response.headers.get(COST_HEADER))
                     raise
                 try:
                     text = data.decode("utf-8")
@@ -249,6 +342,73 @@ class OpenAICompatibleModel:
             ) from cause
 
 
+class OpenAICompatibleModel(GatewayModel):
+    """Chat completions with function calling, as the LiteLLM proxy serves them: the
+    default adapter (CM-41)."""
+
+    PATH = "/chat/completions"
+    FORMAT = CHAT_COMPLETIONS
+    PREFIX = ("messages", "tools")
+
+    async def complete(self, messages: Sequence[Message], tools: Sequence[ToolSpec]) -> ModelTurn:
+        body: dict[str, Any] = {"model": self.model, "messages": list(messages)}
+        if self._max_tokens is not None:
+            body["max_tokens"] = self._max_tokens
+        if tools:
+            body["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.parameters,
+                    },
+                }
+                for tool in tools
+            ]
+            body["tool_choice"] = "auto"
+        return await self._call(body, _parse_completion)
+
+
+API_KINDS: Final = ("chat", "responses")
+"""The adapters an alias may be called through, as the deployment names them (CM-41):
+``chat`` completions, every alias's unless the deployment says otherwise, and GPT's
+``responses`` (CM-40)."""
+
+
+def gateway_model(
+    base_url: str,
+    alias: str,
+    api_key: str,
+    *,
+    api: str = "chat",
+    options: Mapping[str, Any] | None = None,
+    session: aiohttp.ClientSession | None = None,
+    max_tokens: int | None = None,
+    max_response_bytes: int = MAX_RESPONSE_BYTES,
+) -> GatewayModel:
+    """The client for ``alias``, through the adapter ``api`` names (``API_KINDS``), with
+    that adapter's own ``options``. The one place an adapter is chosen."""
+    kind: type[GatewayModel]
+    if api == "chat":
+        kind = OpenAICompatibleModel
+    elif api == "responses":
+        from .responses import ResponsesModel  # which builds on this module
+
+        kind = ResponsesModel
+    else:
+        raise ValueError(f"no adapter {api!r}: one of {', '.join(API_KINDS)}")
+    return kind(
+        base_url,
+        alias,
+        api_key,
+        session=session,
+        max_tokens=max_tokens,
+        max_response_bytes=max_response_bytes,
+        **dict(options or {}),
+    )
+
+
 class ModelGateway:
     """The deployment's model gateway, for runs whose alias is chosen as they start, as
     a delegated run's is (plans-and-delegation spec, PD-28, PD-30): a model for an
@@ -258,20 +418,31 @@ class ModelGateway:
     LISTED_BYTES: Final = 1024 * 1024
     """The largest list of models read from the gateway."""
 
-    def __init__(self, base_url: str, api_key: str, *, timeout: float = 30) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        *,
+        timeout: float = 30,
+        apis: Mapping[str, str] | None = None,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._timeout = aiohttp.ClientTimeout(total=timeout)
         self._session: aiohttp.ClientSession | None = None
+        self.apis = dict(apis or {})
+        """The adapter of each alias the deployment names one for (``API_KINDS``); any
+        other alias's is ``chat``."""
 
     def _shared(self) -> aiohttp.ClientSession:
         if self._session is None:
             self._session = aiohttp.ClientSession()
         return self._session
 
-    def model(self, alias: str) -> OpenAICompatibleModel:
-        """A model that calls ``alias``, through the gateway's session."""
-        return OpenAICompatibleModel(self.base_url, alias, self._api_key, session=self._shared())
+    def model(self, alias: str) -> GatewayModel:
+        """A model that calls ``alias``, through its adapter and the gateway's session."""
+        api = self.apis.get(alias, "chat")
+        return gateway_model(self.base_url, alias, self._api_key, api=api, session=self._shared())
 
     async def aliases(self) -> frozenset[str] | None:
         """The model aliases the gateway lists (``GET /models``, as the LiteLLM proxy
@@ -438,7 +609,7 @@ async def read_limited(response: aiohttp.ClientResponse, limit: int) -> bytes:
     return b"".join(chunks)
 
 
-def _cost(value: object) -> float | None:
+def reported_cost(value: object) -> float | None:
     """A reported cost: a finite number, not negative; anything else is none."""
     if isinstance(value, bool):
         return None
@@ -481,7 +652,7 @@ def _parse_completion(text: str, priced: str | None = None) -> ModelTurn:
         model=resolved if isinstance(resolved, str) else None,
         input_tokens=_usage(data, "prompt_tokens"),
         output_tokens=_usage(data, "completion_tokens"),
-        cost=_cost(priced) if priced is not None else _cost(_usage_value(data, "cost")),
+        cost=reported_cost(priced if priced is not None else _usage_value(data, "cost")),
     )
 
 

@@ -328,6 +328,52 @@ class Gateway:
     answers, until the test sets it."""
     embedded: list[list[str]] = field(default_factory=list[list[str]])
     """The texts of each ``/embeddings`` request, in order."""
+    responses: list[Json] = field(default_factory=list[Json])
+    """The body of each ``/responses`` request, in order."""
+    responded: list[str] = field(default_factory=list[str])
+    """Each ``/responses`` answer, as it was sent."""
+    raw: list[bytes] = field(default_factory=list[bytes])
+    """Each ``/responses`` request's body, as it arrived."""
+
+    async def respond(self, request: web.Request) -> web.Response:
+        """The main alias's script through OpenAI's Responses API, as LiteLLM serves it:
+        each answer a reasoning item with synthetic encrypted content, then its text and
+        calls."""
+        assert request.headers.get("Authorization") == f"Bearer {API_KEY}"
+        self.raw.append(await request.read())
+        body = cast(Json, json.loads(self.raw[-1]))
+        assert body["model"] == "main", body["model"]
+        self.responses.append(body)
+        reply = self.script.pop(0) if self.script else Reply("(the script has ended)")
+        if reply.before is not None:
+            await reply.before()
+        turn = len(self.responses)
+        output: list[Json] = [
+            {"id": f"rs_litellm_{turn}", "type": "reasoning", "summary": [],
+             "encrypted_content": f"gAAAA-test-reasoning-{turn}"},
+        ]  # fmt: skip
+        if reply.text is not None:
+            output.append(
+                {"id": f"msg_litellm_{turn}", "type": "message", "status": "completed",
+                 "role": "assistant", "phase": "final_answer",
+                 "content": [{"type": "output_text", "text": reply.text, "annotations": []}]}
+            )  # fmt: skip
+        for name, arguments in reply.calls:
+            self.numbered += 1
+            output.append(
+                {"id": f"fc_litellm_{self.numbered}", "type": "function_call",
+                 "status": "completed", "call_id": f"call-{self.numbered}", "name": name,
+                 "arguments": json.dumps(arguments)}
+            )  # fmt: skip
+        text = json.dumps(
+            {"id": f"resp_litellm_{turn}", "object": "response", "status": "completed",
+             "model": "scripted-main", "output": output,
+             "usage": {"input_tokens": len(body["input"]), "output_tokens": 1}}
+        )  # fmt: skip
+        self.responded.append(text)
+        headers = {"x-litellm-version": self.version, "Content-Type": "application/json"}
+        return web.Response(text=text, headers=headers)
+
     version: str = GATEWAY_VERSION
     """What ``x-litellm-version`` names on each chat completion."""
 
@@ -432,6 +478,7 @@ async def gateway() -> AsyncIterator[Gateway]:
     found = Gateway()
     app = web.Application()
     app.router.add_post("/chat/completions", found.handle)
+    app.router.add_post("/responses", found.respond)
     app.router.add_get("/models", found.models)
     app.router.add_get("/model/info", found.model_info)
     app.router.add_post("/embeddings", found.embeddings)

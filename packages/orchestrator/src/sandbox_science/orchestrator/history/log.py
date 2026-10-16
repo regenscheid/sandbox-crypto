@@ -89,6 +89,8 @@ def entry_of(message: Message, appended: Appended, *, task_refs: Sequence[str] =
             gateway_version=reply.gateway_version,
             native_format=reply.native_format if native is not None else None,
             native=native,
+            alias=reply.alias,
+            prefix=reply.prefix,
         )
     text = str(content or "")
     if appended.kind == "tool_result" and appended.call is not None:

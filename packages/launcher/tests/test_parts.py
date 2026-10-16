@@ -293,6 +293,24 @@ def test_the_run_service_takes_the_review_limits_the_config_sets(
     assert "--review-token-budget" not in parts.harness_argv(unset, Layout(unset.state_dir))
 
 
+def test_the_run_service_calls_each_alias_through_the_api_the_config_names(
+    make_config: Any, commands: Path
+) -> None:
+    """CM-41: ``[model] api`` names each alias's gateway API, which the run service is
+    told; an alias it leaves out, and every alias by default, takes chat completions. An
+    API there is no adapter for, or an empty alias, is refused."""
+    model = {"delegated": "child", "api": {"sandbox-orchestrator": "responses", "child": "chat"}}
+    config = load_config(make_config({"bin_dir": str(commands), "model": model}))
+    harness = parts.harness_argv(config, Layout(config.state_dir))
+    named = [harness[i + 1] for i, flag in enumerate(harness) if flag == "--api"]
+    assert named == ["sandbox-orchestrator=responses", "child=chat"]
+    plain = load_config(make_config({"bin_dir": str(commands)}))
+    assert "--api" not in parts.harness_argv(plain, Layout(plain.state_dir))
+    for wrong in ({"main": "carrier-pigeon"}, {"": "chat"}):
+        with pytest.raises(LauncherError, match="api"):
+            load_config(make_config({"model": {"api": wrong}}))
+
+
 def fake_node(directory: Path, version: str) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     node = directory / "node"

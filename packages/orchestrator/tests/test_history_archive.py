@@ -10,6 +10,7 @@ import json
 import sqlite3
 import threading
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -32,6 +33,7 @@ from sandbox_science.orchestrator.history import (
     header,
 )
 from sandbox_science.orchestrator.hooks import Appended
+from sandbox_science.orchestrator.model import AssistantMessage
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord, run_name
 
 from .control_versions import older_store
@@ -362,6 +364,38 @@ def test_an_older_store_keeps_its_archive_and_its_indexes(tmp_path: Path, state:
         control.close()
     assert len(words) == len(parts) == 1
     assert check == "ok"
+
+
+def test_answers_archived_before_their_alias_was_kept_have_none(
+    tmp_path: Path, state: Path
+) -> None:
+    """Version 48: a store whose answers were archived without the alias they were asked
+    on and the digest of what the model was given opens with neither, so their native
+    items are not sent back (CM-42); answers archived after keep both."""
+    answer = Entry(
+        "assistant", "assistant", "Done.", model="gpt-x", native_format="responses",
+        native=b'{"output": []}', alias="main", prefix="ab" * 32,
+    )  # fmt: skip
+    projects = ProjectStore(state)
+    try:
+        Archive(projects.control).append(PROJECT, SESSION, "run-1", answer)
+    finally:
+        projects.close()
+    target = tmp_path / "older" / "control.sqlite3"
+    target.parent.mkdir()
+    older_store(state / "control.sqlite3", target, migrations.VERSION - 1)
+    control = ControlStore(target)
+    try:
+        archive = Archive(control)
+        (before,) = archive.messages(PROJECT, SESSION)
+        assert before.entry == replace(answer, alias=None, prefix=None)
+        message = before.chat()
+        assert isinstance(message, AssistantMessage)
+        assert (message.alias, message.model, message.native) == (None, "gpt-x", answer.native)
+        after = archive.append(PROJECT, SESSION, "run-2", answer)
+        assert archive.message(PROJECT, after.message_id).entry == answer
+    finally:
+        control.close()
 
 
 @pytest.mark.parametrize(

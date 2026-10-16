@@ -52,6 +52,7 @@ import sys
 from collections.abc import Callable
 from contextlib import AsyncExitStack
 from pathlib import Path
+from typing import cast
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -82,12 +83,14 @@ from .jobstate import JobState
 from .loop import MAX_INPUT_CHARS, Interruption
 from .mathcheck import MathChecker
 from .model import (
+    API_KINDS,
     MAX_RESPONSE_BYTES,
     ChatModel,
+    GatewayModel,
     ModelError,
     ModelGateway,
-    OpenAICompatibleModel,
     ScriptedModel,
+    gateway_model,
 )
 from .projects import ProjectError, ProjectStore, run_name
 from .runstate import RunState
@@ -120,10 +123,31 @@ def _gateway(
     max_tokens: int | None = None,
     max_response_bytes: int = MAX_RESPONSE_BYTES,
 ) -> ChatModel:
+    """The client for ``alias``, through the adapter ``--api`` names for it (CM-41)."""
     key = read_secret(args.api_key_file)
-    return OpenAICompatibleModel(
-        args.model_url, alias, key, max_tokens=max_tokens, max_response_bytes=max_response_bytes
+    return gateway_model(
+        args.model_url,
+        alias,
+        key,
+        api=_apis(args).get(alias, "chat"),
+        max_tokens=max_tokens,
+        max_response_bytes=max_response_bytes,
     )
+
+
+def _apis(args: argparse.Namespace) -> dict[str, str]:
+    """The adapter ``--api`` names for each alias; any other alias's is ``chat``."""
+    return dict(cast(list[tuple[str, str]], getattr(args, "api", None) or []))
+
+
+def _api(value: str) -> tuple[str, str]:
+    """An ``--api`` setting, ``ALIAS=KIND``."""
+    alias, equals, kind = value.partition("=")
+    if not equals or not alias.strip() or kind not in API_KINDS:
+        raise argparse.ArgumentTypeError(
+            f"{value!r} is not ALIAS=KIND, with KIND one of {', '.join(API_KINDS)}"
+        )
+    return alias, kind
 
 
 def _role(script: Path | None, flag: str, alias: str, gateway: Callable[[], ChatModel]) -> Role:
@@ -136,7 +160,7 @@ def _role(script: Path | None, flag: str, alias: str, gateway: Callable[[], Chat
 
 
 async def _close(model: ChatModel) -> None:
-    if isinstance(model, OpenAICompatibleModel):
+    if isinstance(model, GatewayModel):
         await model.close()
 
 
@@ -275,7 +299,11 @@ def _harness(
     gateway = None
     if getattr(args, "model_url", None) is not None:
         # The aliases a delegation chooses, and the list it checks them in (PD-28, PD-30).
-        gateway = ModelGateway(args.model_url, read_secret(args.api_key_file))
+        gateway = ModelGateway(
+            args.model_url,
+            read_secret(args.api_key_file),
+            apis=_apis(args),
+        )
         closing(stack, interruption, gateway.close)
     vectors = None
     if (embedding := getattr(args, "skills_embedding_model", None)) is not None:
@@ -382,6 +410,16 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
         "redirects are not followed",
     )
     command.add_argument("--model", default="main", help="model alias")
+    command.add_argument(
+        "--api",
+        action="append",
+        type=_api,
+        default=[],
+        metavar="ALIAS=KIND",
+        help="the gateway API a model alias is called through, in any role: chat "
+        "(/chat/completions, every alias's by default) or responses (/v1/responses, GPT's "
+        "Responses API, its reasoning sent back); repeat for more aliases",
+    )
     command.add_argument(
         "--skills-embedding-model",
         type=embedding_alias,
@@ -534,6 +572,10 @@ def _check_agent(parser: argparse.ArgumentParser, args: argparse.Namespace) -> N
         parser.error("--delegated-script needs --delegated-model")
     if args.model_url is not None and args.api_key_file is None:
         parser.error("--model-url needs --api-key-file")
+    if args.api and args.model_url is None:
+        parser.error("--api needs --model-url")
+    if len({alias for alias, _ in args.api}) < len(set(args.api)):
+        parser.error("--api names two adapters for one alias")
     if getattr(args, "skills_embedding_model", None) is not None and args.model_url is None:
         parser.error("--skills-embedding-model needs --model-url")
     if args.max_input_chars < 1:
