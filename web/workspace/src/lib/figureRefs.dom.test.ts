@@ -6,7 +6,15 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import Markdown from './Markdown.svelte';
-import { FIGURES_PER_TEXT, pinView, placeReferences, revisionText, type Pin } from './figureRefs';
+import {
+  chartPaths,
+  placeCharts,
+  FIGURES_PER_TEXT,
+  pinView,
+  placeReferences,
+  revisionText,
+  type Pin,
+} from './figureRefs';
 
 const SHA = 'ab'.repeat(32);
 const HOSTILE = '"><script>alert(1)</script><img src=x onerror=alert(1)>';
@@ -159,5 +167,109 @@ describe('the renderer', () => {
     draw[0]!.click();
     flushSync();
     expect(target.textContent).toContain(`p${count - 1}.csv is shown as a link`);
+  });
+});
+
+describe('a chart in text', () => {
+  const CHART = JSON.stringify({
+    title: 'Timing',
+    data: { url: 'data/t.csv' },
+    layer: [{ data: { url: 'data/u.csv' }, mark: 'point' }],
+    mark: 'bar',
+  });
+  const fence = (source: string) => '```vega-lite\n' + source + '\n```\n';
+  const data = (path: string, fields: Partial<Pin> = {}): Pin =>
+    pin(path, { kind: 'chart_data', media_type: 'text/csv', ...fields });
+
+  function show(source: string, pins: Pin[]) {
+    // Near the view at once: the frame is made when the figure comes near it.
+    vi.stubGlobal(
+      'IntersectionObserver',
+      class {
+        constructor(private readonly seen: (entries: { isIntersecting: boolean }[]) => void) {}
+        observe() {
+          this.seen([{ isIntersecting: true }]);
+        }
+        disconnect() {}
+      },
+    );
+    const target = document.createElement('div');
+    document.body.append(target);
+    mounted.push(mount(Markdown, { target, props: { source, pins, projectId: 'p1' } }));
+    return target;
+  }
+
+  it('names its data paths in order', () => {
+    expect(chartPaths(CHART)).toEqual(['data/t.csv', 'data/u.csv']);
+    expect(chartPaths('{not json')).toEqual([]);
+  });
+
+  it('takes one pin for each occurrence, and never another chart’s (review of #500, L3)', () => {
+    const twice = JSON.stringify({
+      data: { url: 'data/t.csv' },
+      layer: [{ data: { url: 'data/t.csv' } }],
+    });
+    const once = JSON.stringify({ data: { url: 'data/t.csv' } });
+    const code = (source: string, block?: string) =>
+      `<pre><code class="language-vega-lite"${block ? ` data-block="${block}"` : ''}>${source.replaceAll('<', '&lt;')}</code></pre>`;
+    const pins = [
+      data('data/t.csv', { block: 'b1', artifact: 'art-1', revision: 1 }),
+      data('data/t.csv', { block: 'b1', artifact: 'art-1', revision: 1 }),
+      data('data/t.csv', { block: 'b2', artifact: 'art-1', revision: 2 }),
+    ];
+    // In order, as chat and ledger texts have them: the second chart gets the third pin.
+    const chat = document.createElement('div');
+    chat.innerHTML = code(twice) + code(once);
+    const [first, second] = placeCharts(chat, pins);
+    expect(first!.data.map((file) => file.revision)).toEqual([1, 1]);
+    expect(second!.data.map((file) => file.revision)).toEqual([2]);
+    // In a document, by block, whatever the order of the pins.
+    const document_ = document.createElement('div');
+    document_.innerHTML = code(once, 'b2') + code(twice, 'b1');
+    const [own, other] = placeCharts(document_, pins);
+    expect(own!.data.map((file) => file.revision)).toEqual([2]);
+    expect(other!.data.map((file) => file.revision)).toEqual([1, 1]);
+  });
+
+  it('is drawn in the figure frame from the data its text pins, its source offered', async () => {
+    const asked: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        asked.push(url);
+        return new Response(
+          JSON.stringify({
+            url: 'http://127.0.0.1:8201/figures/#w=x',
+            capabilities: ['c1', 'c2'],
+            expires_at: '2026-10-16T00:10:00Z',
+          }),
+        );
+      }),
+    );
+    const target = show(fence(CHART), [
+      data('data/t.csv'),
+      data('data/u.csv', { artifact: 'art-2' }),
+    ]);
+    await settle();
+    expect(asked).toEqual([
+      `/api/v0/projects/p1/figures/chart?data=art-1%3A3%3A${SHA}&data=art-2%3A3%3A${SHA}`,
+    ]);
+    const frame = target.querySelector('iframe')!;
+    expect(frame.getAttribute('sandbox')).toBe('allow-scripts allow-same-origin');
+    expect(target.querySelector('details summary')?.textContent).toBe("The chart's source");
+  });
+
+  it('is not drawn when a data path is not pinned, and shows why and its source', async () => {
+    const fetched = vi.fn();
+    vi.stubGlobal('fetch', fetched);
+    const target = show(fence(CHART), [
+      data('data/t.csv'),
+      { block: 'b1', kind: 'chart_data', path: 'data/u.csv', unresolved: 'deleted' },
+    ]);
+    await settle();
+    expect(fetched).not.toHaveBeenCalled();
+    expect(target.textContent).toContain('Not drawn: data/u.csv (the file was deleted).');
+    expect(target.querySelector('details')?.open).toBe(true);
+    expect(target.querySelector('pre code')?.textContent).toContain('"mark":"bar"');
   });
 });

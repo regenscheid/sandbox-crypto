@@ -6,12 +6,12 @@ import type { OutputBundle } from 'rolldown';
 export function collectNotices(
   root: string,
   bundle: OutputBundle,
-  distribution?: 'gui' | 'math' | 'viewer',
+  distribution?: 'gui' | 'math' | 'viewer' | 'figures',
   sourceRoot?: string,
 ): Record<string, string>;
 
 /** Include checked runtime and asset notices in the production GUI distribution. */
-export function licenseNotices(distribution?: 'gui' | 'math' | 'viewer', gui?: string): Plugin;
+export function licenseNotices(distribution?: 'gui' | 'math' | 'viewer' | 'figures', gui?: string): Plugin;
 
 /** The viewer build's directories: the GUI's, the page's and the output's. */
 export const VIEWER: { gui: string; root: string; outDir: string };

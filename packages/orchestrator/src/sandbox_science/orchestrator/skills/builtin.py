@@ -37,6 +37,7 @@ ROLES: Final[dict[str, tuple[str, ...]]] = {
     "computation": ("main",),
     "delegating-work": ("main", "delegated"),
     "environment-setup": ("main",),
+    "figures": ("main",),
     "literature-search": ("main",),
     "pdf-reading": ("main",),
     "recording-results": ("main",),

@@ -1,10 +1,164 @@
 {
   "packages": {
+    "d3-array": {
+      "version": "3.2.4",
+      "license": "ISC",
+      "notices": {
+        "LICENSE": "3e6849627f74ff73c257a3ae1efb574015d94fc1035c05ec3c15805165efcbc4"
+      }
+    },
+    "d3-color": {
+      "version": "3.1.0",
+      "license": "ISC",
+      "notices": {
+        "LICENSE": "faa682e3e430941f958d26180458f5934a62f58dac4d70ccdd15608c15d0f884"
+      }
+    },
+    "d3-delaunay": {
+      "version": "6.0.4",
+      "license": "ISC",
+      "notices": {
+        "LICENSE": "582c3022bd01942336095f92b58a90b1be624dc547d987555c6c956512dd24c1"
+      }
+    },
+    "d3-dispatch": {
+      "version": "3.0.1",
+      "license": "ISC",
+      "notices": {
+        "LICENSE": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee"
+      }
+    },
+    "d3-dsv": {
+      "version": "3.0.1",
+      "license": "ISC",
+      "notices": {
+        "LICENSE": "7842a82012622e5a37bfe4f6c1b67cd3bae6350716b5bf87f36cea0bdc1319dc"
+      }
+    },
+    "d3-ease": {
+      "version": "3.0.1",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "b989d9085148d21ff64a75e14462aefa06b2589a55553b07b1460c70081c7d08"
+      }
+    },
+    "d3-force": {
+      "version": "3.0.0",
+      "license": "ISC",
+      "notices": {
+        "LICENSE": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee"
+      }
+    },
+    "d3-format": {
+      "version": "3.1.2",
+      "license": "ISC",
+      "notices": {
+        "LICENSE": "2a6d2d5f32ba0b755ddbc1c833f766e30cdbe6ebe9a6d4e3e24427721f0b63d3"
+      }
+    },
+    "d3-geo": {
+      "version": "3.1.1",
+      "license": "ISC",
+      "notices": {
+        "LICENSE": "3e3edc1224eec9c39cd26491a21304a62883c1e5b6a65c5283ccc7a6cc94baee"
+      }
+    },
+    "d3-geo-projection": {
+      "version": "4.0.0",
+      "license": "ISC",
+      "notices": {
+        "LICENSE": "8f4c30fd14045812de501fb1329e900c7507f96cfba1104caae929f0b217613d"
+      }
+    },
+    "d3-hierarchy": {
+      "version": "3.1.2",
+      "license": "ISC",
+      "notices": {
+        "LICENSE": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee"
+      }
+    },
+    "d3-interpolate": {
+      "version": "3.0.1",
+      "license": "ISC",
+      "notices": {
+        "LICENSE": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee"
+      }
+    },
+    "d3-path": {
+      "version": "3.1.0",
+      "license": "ISC",
+      "notices": {
+        "LICENSE": "a09b0d6d76e768fca2085fad05743ee81ddd11946bcda160a3cf5e1081a479aa"
+      }
+    },
+    "d3-quadtree": {
+      "version": "3.0.1",
+      "license": "ISC",
+      "notices": {
+        "LICENSE": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee"
+      }
+    },
+    "d3-scale": {
+      "version": "4.0.2",
+      "license": "ISC",
+      "notices": {
+        "LICENSE": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee"
+      }
+    },
+    "d3-scale-chromatic": {
+      "version": "3.1.0",
+      "license": "ISC",
+      "notices": {
+        "LICENSE": "0986d93944902cca9af86824b6a641b4b7c2d10602fc510c433a8bcd443919fe"
+      }
+    },
+    "d3-shape": {
+      "version": "3.2.0",
+      "license": "ISC",
+      "notices": {
+        "LICENSE": "faa682e3e430941f958d26180458f5934a62f58dac4d70ccdd15608c15d0f884"
+      }
+    },
+    "d3-time": {
+      "version": "3.1.0",
+      "license": "ISC",
+      "notices": {
+        "LICENSE": "faa682e3e430941f958d26180458f5934a62f58dac4d70ccdd15608c15d0f884"
+      }
+    },
+    "d3-time-format": {
+      "version": "4.1.0",
+      "license": "ISC",
+      "notices": {
+        "LICENSE": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee"
+      }
+    },
+    "d3-timer": {
+      "version": "3.0.1",
+      "license": "ISC",
+      "notices": {
+        "LICENSE": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee"
+      }
+    },
+    "delaunator": {
+      "version": "5.1.0",
+      "license": "ISC",
+      "notices": {
+        "LICENSE": "0b348fff56384b43dbb37593906904e56d0f9deb51eae590d4dc6d427fbf1808"
+      }
+    },
     "entities": {
       "version": "8.1.0",
       "license": "BSD-2-Clause",
       "notices": {
         "LICENSE": "cb992345949ccd6e8394b2cd6c465f7b897c864f845937dbf64e8997f389e164"
+      }
+    },
+    "internmap": {
+      "version": "2.0.3",
+      "license": "ISC",
+      "notices": {
+        "LICENSE": "9ea8903938dab5f12c4572d60725069bec2d1b0dc3bcc210b09bae946a5ebb1f"
       }
     },
     "katex": {
@@ -55,6 +209,13 @@
         "LICENSE-MIT.txt": "483acb265f182907d1caf6cff9c16c96f31325ed23792832cc5d8b12d5f88c8a"
       }
     },
+    "robust-predicates": {
+      "version": "3.0.3",
+      "license": "Unlicense",
+      "notices": {
+        "LICENSE": "88d9b4eb60579c191ec391ca04c16130572d7eedc4a86daa58bf28c6e14c9bcd"
+      }
+    },
     "rolldown": {
       "version": "1.2.12",
       "license": "MIT",
@@ -70,11 +231,242 @@
         "LICENSE.md": "06257f4847b13a49a039efb17b944c141e71b12fd8d231b362d86919067d77a3"
       }
     },
+    "topojson-client": {
+      "version": "3.1.0",
+      "license": "ISC",
+      "notices": {
+        "LICENSE": "4c4d15b635e04e691825a76db7d33f7f2033b55669a7430011694f31e6c65999"
+      }
+    },
     "uc.micro": {
       "version": "3.0.0",
       "license": "MIT",
       "notices": {
         "LICENSE.txt": "483acb265f182907d1caf6cff9c16c96f31325ed23792832cc5d8b12d5f88c8a"
+      }
+    },
+    "vega": {
+      "version": "6.4.0",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
+      }
+    },
+    "vega-canvas": {
+      "version": "2.0.0",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
+      }
+    },
+    "vega-crossfilter": {
+      "version": "5.1.3",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
+      }
+    },
+    "vega-dataflow": {
+      "version": "6.1.3",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
+      }
+    },
+    "vega-encode": {
+      "version": "5.2.2",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
+      }
+    },
+    "vega-event-selector": {
+      "version": "4.0.0",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
+      }
+    },
+    "vega-expression": {
+      "version": "6.2.2",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
+      }
+    },
+    "vega-force": {
+      "version": "5.1.3",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
+      }
+    },
+    "vega-format": {
+      "version": "2.1.3",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
+      }
+    },
+    "vega-functions": {
+      "version": "6.2.0",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
+      }
+    },
+    "vega-geo": {
+      "version": "5.1.3",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
+      }
+    },
+    "vega-hierarchy": {
+      "version": "5.1.3",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
+      }
+    },
+    "vega-interpreter": {
+      "version": "2.3.2",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
+      }
+    },
+    "vega-label": {
+      "version": "2.1.3",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
+      }
+    },
+    "vega-lite": {
+      "version": "6.4.3",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "f618900fd0d64046963b29f40590cdd1e341a2f41449f99110d82fd81fea808c"
+      }
+    },
+    "vega-lite/node_modules/vega-expression": {
+      "version": "6.1.0",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
+      }
+    },
+    "vega-loader": {
+      "version": "5.1.3",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
+      }
+    },
+    "vega-parser": {
+      "version": "7.1.3",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
+      }
+    },
+    "vega-projection": {
+      "version": "2.1.3",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
+      }
+    },
+    "vega-regression": {
+      "version": "2.1.3",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
+      }
+    },
+    "vega-runtime": {
+      "version": "7.1.3",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
+      }
+    },
+    "vega-scale": {
+      "version": "8.1.3",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
+      }
+    },
+    "vega-scenegraph": {
+      "version": "5.3.0",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
+      }
+    },
+    "vega-selections": {
+      "version": "6.1.5",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
+      }
+    },
+    "vega-statistics": {
+      "version": "2.0.0",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
+      }
+    },
+    "vega-time": {
+      "version": "3.3.0",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
+      }
+    },
+    "vega-transforms": {
+      "version": "5.2.2",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
+      }
+    },
+    "vega-util": {
+      "version": "2.1.3",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
+      }
+    },
+    "vega-view": {
+      "version": "6.2.0",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
+      }
+    },
+    "vega-view-transforms": {
+      "version": "5.2.2",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
+      }
+    },
+    "vega-voronoi": {
+      "version": "5.1.3",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
+      }
+    },
+    "vega-wordcloud": {
+      "version": "5.1.3",
+      "license": "BSD-3-Clause",
+      "notices": {
+        "LICENSE": "63727832aaf62004a2b249c933e327f3c90caf49e41a72f4bf436edf632cbda8"
       }
     },
     "vite": {

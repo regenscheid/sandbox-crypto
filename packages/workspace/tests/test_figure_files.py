@@ -55,6 +55,7 @@ def jpeg(width: int, height: int) -> bytes:
     return b"\xff\xd8" + app0 + sof + b"\xff\xd9"
 
 
+CSV = b"size,ms\n1024,3.5\n2048,7.1\n"
 HTML = b"<html><script>parent.postMessage('x', '*')</script></html>"
 SVG_BYTES = (
     b'<?xml version="1.0"?>\n<!-- a plot -->\n<svg xmlns="http://www.w3.org/2000/svg" '
@@ -79,6 +80,9 @@ def files(state_dir: Path) -> dict[str, Any]:
         "html_svg": publish(inventory, "op-hs", "plots/f.svg", HTML, "image/svg+xml"),
         "pdf": publish(inventory, "op-pdf2", "plots/g.pdf", PDF_BYTES, "application/pdf"),
         "text": publish(inventory, "op-txt2", "notes.txt", b"plain", "text/plain"),
+        "csv": publish(inventory, "op-csv", "data/t.csv", CSV, "text/csv"),
+        "json": publish(inventory, "op-json", "data/u.json", b'[{"a": 1}]', "application/json"),
+        "binary_csv": publish(inventory, "op-bcsv", "data/b.csv", b"\xff\xfe\x00", "text/csv"),
     }
     documents.close()
     return made
@@ -286,3 +290,48 @@ async def test_the_figure_frame_bundle_has_its_own_policy(
         response = await workspace.get(path)
         assert response.status == 404, path
         assert "figure" not in await response.text(), path
+
+
+def pinned(revision: Any) -> str:
+    return f"{revision.artifact_id}:{revision.revision}:{revision.sha256}"
+
+
+async def test_a_chart_gets_the_frame_and_a_capability_for_each_data_file(origins, files) -> None:
+    """FG-15: the frame's URL and the data files' capabilities, in the order asked; the
+    preview origin serves each as its data type, UTF-8 text only, to the frame alone."""
+    workspace, viewer, preview, _ = origins
+    asked = [("data", pinned(files["csv"])), ("data", pinned(files["json"]))]
+    answer = await workspace.get("/api/v0/projects/p1/figures/chart", params=asked)
+    assert answer.status == 200, await answer.text()
+    link = await answer.json()
+    assert link["url"] == f"{preview.origin}/figures/#{urlencode({'w': preview.workspace_origin})}"
+    first, second = link["capabilities"]
+    served = await viewer.get(f"/file/{first}")
+    assert (served.status, await served.read()) == (200, CSV)
+    assert served.headers["Content-Type"] == "text/csv; charset=utf-8"
+    assert served.headers["Cross-Origin-Resource-Policy"] == "same-origin"
+    assert served.headers["Content-Disposition"] == "attachment"
+    assert (
+        (await viewer.get(f"/file/{second}")).headers["Content-Type"].startswith("application/json")
+    )
+    # A chart with only a sequence gets the frame and no capability.
+    alone = await (await workspace.get("/api/v0/projects/p1/figures/chart")).json()
+    assert alone["capabilities"] == []
+    # Text that is not UTF-8 is refused when it is served.
+    bad = await workspace.get(
+        "/api/v0/projects/p1/figures/chart", params=[("data", pinned(files["binary_csv"]))]
+    )
+    (capability,) = (await bad.json())["capabilities"]
+    assert (await viewer.get(f"/file/{capability}")).status == 415
+
+
+async def test_a_chart_reads_only_data_files_named_exactly(origins, files) -> None:
+    workspace, _, _, _ = origins
+    path = "/api/v0/projects/p1/figures/chart"
+    for params, status in (
+        ([("data", pinned(files["png"]))], 422),  # an image is no chart data
+        ([("data", "art-x:1:abc")], 400),
+        ([("data", pinned(files["csv"]))] * 17, 400),
+        ([("other", "x")], 400),
+    ):
+        assert (await workspace.get(path, params=params)).status == status, params
