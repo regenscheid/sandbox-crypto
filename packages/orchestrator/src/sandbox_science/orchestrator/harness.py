@@ -58,7 +58,7 @@ from .delegation.tracks import TrackTools, grant
 from .documents import DocumentError, DocumentStore, DocumentTool
 from .documents.tool import REQUESTS_TASK, WorkRequests
 from .file_settings import ProjectFiles
-from .history import Archive, RunArchive
+from .history import Archive, HistoryTool, RunArchive
 from .hooks import TurnHook
 from .jobs import JobTools
 from .jobstate import JobState
@@ -987,6 +987,13 @@ class Harness:
             check=admitted.request.target is not None,
             tracks=tracks,
             skills=skills,
+            # Main and delegated runs read the archive; a delegated run its own run (CM-37).
+            history=HistoryTool(
+                Archive(stores.projects.control, clock=self.clock),
+                context,
+                run=run_name(admitted.started_at, admitted.run_id),
+                delegated=delegated,
+            ),
         )
 
 

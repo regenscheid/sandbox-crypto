@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""The sessions' archive (docs/specs/context-management.md, CM-3 to CM-7, CM-4a).
+"""The sessions' archive (docs/specs/context-management.md, CM-3 to CM-7, CM-4a, CM-33).
 
 Every message a run adds to its conversation is kept here whole, as the run adds it,
 and is never changed or removed: tasks, the user's messages, the comments, notices and
@@ -21,7 +21,12 @@ to 1 MiB: one by words (``unicode61``, ranked by BM25), one by trigrams, which f
 substrings. They are contentless: they hold no copy of the text, and SQLite cannot
 rebuild them from themselves. Rebuilding one means deleting its rows (``'delete-all'``)
 and inserting each document of ``archive_docs`` again under its ``doc``: a saved file's
-``text``, or for a message the ``Entry.text`` of its row.
+``text``, or for a message the ``Entry.searched`` of its row. ``search`` ranks the
+texts that hold every word of a query by BM25, those that also hold the whole query
+first; then those that hold the whole query inside longer words, newest first; and,
+when those are fewer than asked for, those that hold any of its words. ``coverage``
+says what a scope's indexes hold. The retrievals' own calls and results are kept but
+not indexed: they copy what the indexes cover.
 
 The session view reads the archive with ``messages`` and ``message``: an ``Archived``
 message is its ``entry`` as the run added it, with its ID, its position, its run, its
@@ -62,6 +67,16 @@ PAGE: Final = 200
 """The most messages ``messages`` returns at once."""
 KEPT_BYTES: Final = 1024 * 1024
 """The largest saved file the archive keeps and the indexes cover (CM-7)."""
+CANDIDATES: Final = 200
+"""The best hits of each way of matching that a search ranks."""
+COUNTED: Final = 1000
+"""Hits counted past this are reported as this many."""
+SNIPPET: Final = 400
+SEARCH: Final = "history_search"
+READ: Final = "history_read"
+UNINDEXED: Final = frozenset({SEARCH, READ})
+"""The retrievals, whose calls and results the archive keeps and the indexes leave out:
+they would answer each search with the searches made before it."""
 
 HEADER: Final = re.compile(r"\[(msg-[0-9a-f]{16}) · [^\]\n]*\]\n")
 _LOOKALIKE: Final = re.compile(r"(?:\W|_)*?\[\s*msg\s*-", re.IGNORECASE)
@@ -84,6 +99,11 @@ _FIELDS: Final = (
     "native",
 )
 _COLUMNS: Final = ", ".join((*_PLACE, *_FIELDS))
+_TERM: Final = re.compile(r'"([^"]*)"|(\S+)')
+_JOINED: Final = (
+    "JOIN archive_docs d ON d.doc = {0}.rowid JOIN archive_messages m "
+    "ON m.project = d.project AND m.message_id = d.message_id WHERE {0} MATCH ? AND "
+)
 _INDEXES: Final = ("archive_words", "archive_trigrams")
 
 
@@ -153,6 +173,16 @@ class Entry:
     def text(self) -> str:
         """Its whole text: its content, then an answer's tool calls, one JSON object a
         line."""
+        return self._text(frozenset())
+
+    @property
+    def searched(self) -> str | None:
+        """The text the indexes cover: ``text``, less the retrievals' calls and results."""
+        if self.kind == "tool_result" and self.source in UNINDEXED:
+            return None
+        return self._text(UNINDEXED)
+
+    def _text(self, left_out: frozenset[str]) -> str:
         calls = [
             json.dumps(
                 {
@@ -163,6 +193,7 @@ class Entry:
                 ensure_ascii=False,
             )
             for call in self.tool_calls
+            if cast(Json, call.get("function") or {}).get("name") not in left_out
         ]
         return "\n".join([*([self.content] if self.content else []), *calls])
 
@@ -179,6 +210,27 @@ class SavedFile:
     """Why the archive keeps no text of it."""
     artifact_id: str | None
     revision: int | None
+
+
+@dataclass(frozen=True)
+class Hit:
+    message: Archived
+    path: str | None
+    """The saved file the hit is in; ``None`` for the message itself."""
+    match: str
+    """``query`` (every word and the whole query), ``words`` (every word), ``substring``
+    (the whole query, inside longer words) or ``any word``."""
+    score: float | None
+    """Its BM25 relevance, for a hit by words."""
+    snippet: str
+
+
+@dataclass(frozen=True)
+class Found:
+    hits: list[Hit]
+    matched: dict[str, int]
+    """How many texts of the scope each way of matching that ran found, up to
+    ``COUNTED``: ``all_words``, ``whole_query`` and ``any_word``."""
 
 
 @dataclass(frozen=True)
@@ -247,7 +299,7 @@ class Archive:
                 )
             except sqlite3.IntegrityError as error:
                 raise ControlError(INVALID_REQUEST, f"the message is refused: {error}") from None
-            _document(db, project, message_id, entry.text)
+            _document(db, project, message_id, entry.searched)
             recorded = {
                 link.get("path"): link
                 for link in cast(list[Json], (entry.files or {}).get("recorded") or [])
@@ -319,6 +371,209 @@ class Archive:
                 (project, message_id),
             ).fetchall()
         return [SavedFile(*row) for row in rows]
+
+    def search(
+        self,
+        project: str,
+        query: str,
+        *,
+        session: str | None = None,
+        run: str | None = None,
+        start: int | None = None,
+        end: int | None = None,
+        kind: str | None = None,
+        limit: int = 10,
+    ) -> Found:
+        """The best hits for ``query`` among the project's messages and saved files, in
+        ``session`` and ``run`` if given (CM-33): the texts that hold every word and
+        quoted phrase, ranked by BM25, those that also hold the whole query, case aside,
+        first; then the texts that hold the whole query inside longer words, such as
+        part of a hash, newest first; and, when those are fewer than ``limit``, the texts
+        that hold any of its words, by BM25."""
+        terms, exact, needles = _query(query)
+        if not terms and exact is None:
+            raise ControlError(
+                INVALID_REQUEST, "give a word, a quoted phrase or at least 3 characters"
+            )
+        where, args = _scope(project, session, run, start, end, kind)
+        ranked: list[tuple[int, str, float | None]] = []
+        matched: dict[str, int] = {}
+        with self.control.read() as tx:
+            db = tx.sql
+            try:
+                if terms:
+                    scored = _ranked(db, " ".join(terms), where, args)
+                    held: set[int] = set()
+                    if exact is not None:
+                        held = {
+                            doc
+                            for (doc,) in db.execute(
+                                "SELECT rowid FROM archive_trigrams WHERE archive_trigrams "
+                                "MATCH ? AND rowid IN (SELECT value FROM json_each(?))",
+                                (exact, json.dumps([doc for doc, _ in scored])),
+                            )
+                        }
+                    ranked += [(doc, "query", score) for doc, score in scored if doc in held]
+                    ranked += [(doc, "words", score) for doc, score in scored if doc not in held]
+                    matched["all_words"] = _count(db, "archive_words", " ".join(terms), where, args)
+                if exact is not None:
+                    seen = {doc for doc, _, _ in ranked}
+                    inside = db.execute(
+                        "SELECT d.doc FROM archive_trigrams "  # noqa: S608 - its own names
+                        + _JOINED.format("archive_trigrams")
+                        + f"{where} ORDER BY d.doc DESC LIMIT ?",
+                        (exact, *args, CANDIDATES),
+                    ).fetchall()
+                    ranked += [(doc, "substring", None) for (doc,) in inside if doc not in seen]
+                    matched["whole_query"] = _count(db, "archive_trigrams", exact, where, args)
+                if len(terms) > 1 and len(ranked) < limit:
+                    seen = {doc for doc, _, _ in ranked}
+                    some = _ranked(db, " OR ".join(terms), where, args)
+                    ranked += [(doc, "any word", score) for doc, score in some if doc not in seen]
+                    matched["any_word"] = _count(
+                        db, "archive_words", " OR ".join(terms), where, args
+                    )
+            except sqlite3.OperationalError as error:
+                raise ControlError(
+                    INVALID_REQUEST, f"the query cannot be searched ({error})"
+                ) from None
+            hits = [_hit(db, doc, how, score, needles) for doc, how, score in ranked[:limit]]
+        return Found(hits, matched)
+
+    def coverage(self, project: str, *, session: str | None = None, run: str | None = None) -> Json:
+        """What the indexes cover in a scope (CM-7): its messages and their positions, the
+        saved files indexed and those left out with why, and the runs whose messages the
+        archive lacks, having run before it existed."""
+        where, args = _scope(project, session, run, None, None, None)
+        docs = (
+            "FROM archive_docs d JOIN archive_messages m ON m.project = d.project "
+            f"AND m.message_id = d.message_id WHERE {where} AND d.path IS NOT NULL"
+        )
+        with self.control.read() as tx:
+            db = tx.sql
+            count, first, last = db.execute(
+                "SELECT count(*), min(position), max(position) "  # noqa: S608
+                f"FROM archive_messages m WHERE {where}",
+                args,
+            ).fetchone()
+            indexed, left = db.execute(
+                "SELECT count(*) FILTER (WHERE d.left_out IS NULL), "
+                f"count(*) FILTER (WHERE d.left_out IS NOT NULL) {docs}",
+                args,
+            ).fetchone()
+            shown = db.execute(
+                f"SELECT d.message_id, d.path, d.left_out {docs} "
+                "AND d.left_out IS NOT NULL ORDER BY d.doc DESC LIMIT 10",
+                args,
+            ).fetchall()
+            earlier = 0
+            if run is None:
+                (earlier,) = db.execute(
+                    "SELECT count(*) FROM runs r WHERE r.project_id = ? AND (? IS NULL OR "
+                    "r.session_id = ?) AND NOT EXISTS (SELECT 1 FROM archive_messages a "
+                    "WHERE a.project = r.project_id AND a.session = r.session_id "
+                    "AND a.run = r.name)",
+                    (project, session, session),
+                ).fetchone()
+        found: Json = {"messages": count, "files_indexed": indexed}
+        if session is not None and count:
+            found["positions"] = [first, last]
+        if left:
+            found["files_left_out"] = left
+            found["left_out"] = [
+                {"message_id": message, "path": path, "reason": reason}
+                for message, path, reason in shown
+            ]
+        if earlier:
+            found["runs_not_archived"] = earlier
+        return found
+
+
+def _scope(
+    project: str,
+    session: str | None,
+    run: str | None,
+    start: int | None,
+    end: int | None,
+    kind: str | None,
+) -> tuple[str, list[object]]:
+    clauses, args = ["m.project = ?"], [cast(object, project)]
+    for clause, value in (
+        ("m.session = ?", session),
+        ("m.run = ?", run),
+        ("m.position >= ?", start),
+        ("m.position <= ?", end),
+        ("m.kind = ?", kind),
+    ):
+        if value is not None:
+            clauses.append(clause)
+            args.append(value)
+    return " AND ".join(clauses), args
+
+
+def _query(query: str) -> tuple[list[str], str | None, list[str]]:
+    """``query``'s words and quoted phrases as FTS5 strings; the whole query, quotes
+    aside, as one for the trigram index, when it has at least 3 characters; and the
+    texts a snippet centers on, the whole query first."""
+    found = [
+        " ".join((phrase or word).split())
+        for phrase, word in cast(list[tuple[str, str]], _TERM.findall(query))
+    ]
+    found = [term for term in found if any(c.isalnum() for c in term)]
+    whole = " ".join(query.replace('"', " ").split())
+    exact = f'"{whole}"' if len(whole) >= 3 else None
+    return ['"' + term.replace('"', '""') + '"' for term in found], exact, [whole, *found]
+
+
+def _ranked(
+    db: sqlite3.Connection, match: str, where: str, args: list[object]
+) -> list[tuple[int, float]]:
+    """The scope's best texts by words for an FTS5 ``match``, by BM25."""
+    return db.execute(
+        "SELECT d.doc, -bm25(archive_words) FROM archive_words "  # noqa: S608 - its own
+        + _JOINED.format("archive_words")
+        + f"{where} ORDER BY bm25(archive_words) LIMIT ?",
+        (match, *args, CANDIDATES),
+    ).fetchall()
+
+
+def _count(db: sqlite3.Connection, table: str, match: str, where: str, args: list[object]) -> int:
+    (found,) = db.execute(
+        f"SELECT count(*) FROM (SELECT d.doc FROM {table} "  # noqa: S608 - its own names
+        + _JOINED.format(table)
+        + f"{where} LIMIT ?)",
+        (match, *args, COUNTED),
+    ).fetchone()
+    return found
+
+
+def _hit(
+    db: sqlite3.Connection, doc: int, match: str, score: float | None, needles: Sequence[str]
+) -> Hit:
+    project, message_id, path, text = db.execute(
+        "SELECT project, message_id, path, text FROM archive_docs WHERE doc = ?", (doc,)
+    ).fetchone()
+    row = db.execute(
+        f"SELECT {_COLUMNS} FROM archive_messages "  # noqa: S608 - its own names
+        "WHERE project = ? AND message_id = ?",
+        (project, message_id),
+    ).fetchone()
+    message = _archived(row)
+    found = message.entry.text if path is None else text or ""
+    rounded = None if score is None else round(score, 3)
+    return Hit(message, path, match, rounded, _snippet(found, needles))
+
+
+def _snippet(text: str, needles: Sequence[str]) -> str:
+    """About ``SNIPPET`` characters of ``text`` around the first needle it holds."""
+    folded, at = text.lower(), 0
+    for needle in needles:
+        if (found := folded.find(needle.lower())) >= 0:
+            at = found
+            break
+    start = max(0, min(at - SNIPPET // 4, len(text) - SNIPPET))
+    part = text[start : start + SNIPPET]
+    return ("\u2026" if start else "") + part + ("\u2026" if start + SNIPPET < len(text) else "")
 
 
 def _document(

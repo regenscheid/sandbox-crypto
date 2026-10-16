@@ -12,7 +12,8 @@ This spec covers the agent's execution tools and the worker API operations behin
 - admitting network hosts ahead of use;
 - errors, cancellation and reconnection.
 
-These belong to other specs: Conda provisioning ([conda-provisioning](conda-provisioning.md)), artifact versioning beyond publication ([research-artifacts](research-artifacts.md)), and documents. So do the history tools, `history_search` and `history_read`, which read the session's archive in the control store, not a worker ([context management](context-management.md), CM-33, CM-34; amended 2026-10-15; not built).
+These belong to other specs: Conda provisioning ([conda-provisioning](conda-provisioning.md)), artifact versioning beyond publication ([research-artifacts](research-artifacts.md)), and documents. So do the history tools, `history_search` and `history_read`, which read the session's archive in the control store, not a worker ([context management](context-management.md), CM-33, CM-34; amended 2026-10-15; built
+2026-10-16).
 
 ## Principles
 
