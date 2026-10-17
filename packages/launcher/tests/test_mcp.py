@@ -88,6 +88,7 @@ def test_up_makes_the_proxys_sandbox_and_deletes_it_when_it_stops(mcp: dict[str,
     launcher.expect("Stop:")
     remote = "/sandbox/mcp-proxy"
     sandbox = ours(mcp["state"])
+    (runtime,) = [name for name in sandboxes(mcp["state"]) if name.startswith("ss-orch-")]
     steps = journal(mcp["journal"])
     made = steps.index("sandbox-science-mcp-proxy compile-policy")
     assert steps[made:] == [
@@ -101,11 +102,27 @@ def test_up_makes_the_proxys_sandbox_and_deletes_it_when_it_stops(mcp: dict[str,
         f"openshell exec {sandbox} /opt/sandbox-science/bin/sandbox-science-mcp-proxy bind "
         f"--state-dir {remote}/state --project crypto --policy {remote}/policy.yaml",
         "openshell forward start",
-        f"sandbox-science-harness has MCP http://{mcp['listen']} for crypto: "
-        "['crypto-research-mcp']",
-        "sandbox-science-harness start",
+        "sandbox-science-control start",
+        f"openshell sandbox create {runtime} sandbox-science/orchestrator:test sleep infinity",
+        f"openshell exec {runtime} mkdir -p /sandbox/runtime",
+        f"openshell upload {runtime} runtime-control.token /sandbox/runtime/runtime.token",
+        f"openshell upload {runtime} model.key /sandbox/runtime/model.key",
+        f"openshell upload {runtime} runtime.json /sandbox/runtime/runtime.json",
+        f"openshell exec {runtime} chmod 600 "
+        "/sandbox/runtime/runtime.token /sandbox/runtime/model.key",
+        f"openshell exec {runtime} /opt/sandbox-science/bin/python -m "
+        "sandbox_science.orchestrator.confinement.runtime --settings /sandbox/runtime/runtime.json",
         "sandbox-science-workspace start",
     ]
+    # Only the trusted capability host receives the MCP caller credential/configuration.
+    layout = Layout(load_config(launcher.config).state_dir)
+    host = json.loads((layout.root / "orchestrator" / "control.json").read_text())
+    assert host["proxy"]["url"] == f"http://{mcp['listen']}"
+    assert host["proxy"]["project"] == "crypto"
+    assert host["proxy"]["servers"] == ["crypto-research-mcp"]
+    agent = json.loads((layout.root / "orchestrator" / "upload" / "runtime.json").read_text())
+    assert "proxy" not in agent
+    assert "sandbox-science-harness start" not in steps
     # The proxy's one caller is the run service, by its token's digest only.
     layout = Layout(load_config(launcher.config).state_dir)
     token = layout.token("mcp-orchestrator").read_text().strip()
@@ -124,9 +141,10 @@ def test_up_makes_the_proxys_sandbox_and_deletes_it_when_it_stops(mcp: dict[str,
     assert f"the MCP proxy's sandbox: {sandbox}" in launcher.command("status").stdout
     launcher.process.send_signal(signal.SIGINT)
     assert launcher.finish() == 0
-    assert journal(mcp["journal"])[-5:] == [
+    assert journal(mcp["journal"])[-6:] == [
         "sandbox-science-workspace stop",
-        "sandbox-science-harness stop",
+        f"openshell sandbox delete {runtime}",
+        "sandbox-science-control stop",
         "openshell forward stop",
         f"openshell sandbox delete {sandbox}",
         "sandbox-science-worker stop",
@@ -252,11 +270,12 @@ def test_sandboxes_it_did_not_make_are_left_alone(mcp: dict[str, Any]) -> None:
     launcher = mcp["launch"]()
     launcher.expect("Stop:")
     sandbox = ours(mcp["state"], but=tuple(others))
+    (runtime,) = [name for name in sandboxes(mcp["state"]) if name.startswith("ss-orch-")]
     launcher.process.send_signal(signal.SIGINT)
     assert launcher.finish() == 0
     assert sandboxes(mcp["state"]) == others
     deleted = [step for step in journal(mcp["journal"]) if "delete" in step]
-    assert deleted == [f"openshell sandbox delete {sandbox}"]
+    assert deleted == [f"openshell sandbox delete {runtime}", f"openshell sandbox delete {sandbox}"]
 
 
 def test_a_record_without_an_id_deletes_only_the_name_it_recorded(mcp: dict[str, Any]) -> None:
