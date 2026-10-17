@@ -63,6 +63,7 @@ Every route needs `Authorization: Bearer <token>`: the pool's own token, which a
 | `GET /v1/artifacts/{id}/content` | → the bytes, with `X-Content-SHA256`, as a download (`Content-Disposition: attachment`, `nosniff` and a sandboxing content security policy), so no media type turns them into a page |
 | `POST /v1/environments` | `EnvironmentRequest` → `EnvironmentInfo`: 201 when created, 200 when the same environment exists, 409 when it exists with another project, profile or policy ([environments](#environments)) |
 | `GET /v1/environments` | → `EnvironmentList`: the environments of the client's projects (every project's for the pool token), deleted ones left out |
+| `POST /v1/environment-claims` | `EnvironmentClaim` → `EnvironmentClaimResult`: retain a ready sandbox for bounded active research, renew the same identity, or release that holder's claim |
 | `GET /v1/environments/{id}` | → `EnvironmentInfo` |
 | `POST /v1/environments/{id}/policy` | `PolicyRevisionRequest` → `EnvironmentInfo` under the new revision |
 | `DELETE /v1/environments/{id}` | → `EnvironmentInfo` in state `deleted` |
@@ -311,13 +312,14 @@ Things to know:
 
 Environments persist, but need not keep running ([projects and sessions](PROJECTS-AND-SESSIONS.md), "Provisioning and persistence"). With `suspend_after` set, the worker stops the sandbox of an environment nobody is using, and starts it again on the next use (W3):
 
-- **Idle** means three things for `suspend_after` seconds:
+- **Active research claims:** a stored root run retains its environment while it and its children run, including model-only work and waiting. `POST /v1/environment-claims` takes an execution context, holder, duration (120 seconds by default, at most 300), and the sandbox ID for renewal/release. Zero seconds releases only that holder's session and sandbox claim. The worker validates project ownership and policy, limits an environment to 32 live claims, and keeps expiry across restart. Renewals cannot silently protect a replacement sandbox. An unmanaged backend reports `unmanaged`; claims never start a VM or prevent explicit deletion.
+- **Idle** also requires no unexpired research claim, plus these three conditions for `suspend_after` seconds:
   - no execution ran there, and no other request was in flight (file operations, publication, kernel restarts, closing a session);
   - the environment did not change: it was not created, resumed, revised or given admitted hosts;
   - its kernels used almost no CPU: under 2% of one core, sampled from the executor (`usage`), so a computation left running in a kernel thread keeps the environment up. Two samples from the same executor are needed, and a counter that went down tells nothing.
 - **Not seen as use:** work that waits rather than computes (a download, a remote job being polled), and the CPU of children a process reaps automatically by ignoring `SIGCHLD`. Such work ends with the suspension; the next cell reports the lost kernel state.
 - **Suspending:**
-  1. The worker checks again, under the execution manager's lock, that nothing started meanwhile. It forgets the executor before closing it, so a request arriving during the close starts afresh instead of using an executor nobody tracks.
+  1. Under the environment lock, the worker checks research claims again, then checks under the execution manager's lock that nothing started meanwhile. It forgets the executor before closing it, so a request arriving during the close starts afresh instead of using an executor nobody tracks.
   2. It records the environment as `stopped`, then runs `openshell sandbox stop`.
   3. OpenShell keeps a stopped sandbox's writable disk: the session workspaces, the shared area and installed tools survive. Its identity and policy survive too, including hosts admitted on demand and the middleware's binding.
   4. Kernels do not survive. The next cell in a session that had a kernel reports `state_lost`, as after any executor restart.

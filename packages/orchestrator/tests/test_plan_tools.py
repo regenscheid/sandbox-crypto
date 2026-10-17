@@ -700,6 +700,13 @@ async def test_cli_cancelled_constructor_closes_owner_published_before_thread_re
         async def __aexit__(self, *args):
             closed.append("client")
 
+        async def claim_environment(self, request):
+            from sandbox_science.contracts.environment_claims import EnvironmentClaimResult
+
+            return EnvironmentClaimResult(
+                environment_id=request.context.environment_id, state="unmanaged"
+            )
+
         async def capabilities(self, *args):
             return SimpleNamespace(
                 languages=(),

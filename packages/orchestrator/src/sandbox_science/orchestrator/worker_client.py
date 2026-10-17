@@ -66,6 +66,7 @@ from sandbox_science.contracts import (
     WriteFileResult,
 )
 from sandbox_science.contracts.artifact_inventory import MAX_ARTIFACT_BYTES, ArtifactSnapshot
+from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
 from sandbox_science.contracts.revisions import (
     MAX_LOCKFILE_BYTES,
     MAX_REVISION_PAGE,
@@ -275,6 +276,20 @@ class WorkerClient:
 
     async def create_environment(self, request: EnvironmentRequest) -> EnvironmentInfo:
         return await self._call("POST", "/v1/environments", EnvironmentInfo, request)
+
+    async def claim_environment(self, request: EnvironmentClaim) -> EnvironmentClaimResult:
+        """Grant, renew or release a bounded idle-retention claim."""
+        return (
+            await self._request(
+                "POST",
+                "/v1/environment-claims",
+                EnvironmentClaimResult,
+                request,
+                max_bytes=4096,
+                total_timeout=10.0,
+                allow_redirects=False,
+            )
+        )[0]
 
     async def environment(self, environment_id: str) -> EnvironmentInfo:
         return await self._call("GET", f"/v1/environments/{environment_id}", EnvironmentInfo)

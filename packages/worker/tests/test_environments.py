@@ -620,6 +620,19 @@ async def test_readiness_retains_identity_before_phase_failure_and_refuses_repla
     assert len(setup.fake.calls("sandbox", "create")) == 1
 
 
+async def test_invalid_replacement_request_does_not_mutate_pending_creation(setup: Setup) -> None:
+    setup.fake.update(fail_create_after=True, fail_delete=True)
+    with pytest.raises(WorkerError):
+        await setup.environments.create(setup.request())
+    original = setup.environments.get("env-1")
+    before = setup.fake.calls("sandbox", "delete")
+    setup.fake.update(fail_create_after=False, fail_delete=False)
+    with pytest.raises(WorkerError, match="no profile"):
+        await setup.environments.create(setup.request(profile="unknown"))
+    assert setup.environments.get("env-1") == original
+    assert setup.fake.calls("sandbox", "delete") == before
+
+
 async def test_creation_cleanup_stays_owned_through_repeat_cancellation(setup: Setup) -> None:
     entered, free = asyncio.Event(), asyncio.Event()
 

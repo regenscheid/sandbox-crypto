@@ -57,6 +57,7 @@ from sandbox_science.contracts import (
     EnvironmentState,
     ErrorKind,
 )
+from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
 from sandbox_science.policy import (
     HardFloor,
     LoadedPolicy,
@@ -76,6 +77,7 @@ from sandbox_science.policy.openshell import (
 )
 from sandbox_science.policy.store import PolicyStore, StoreError
 
+from .claims import EnvironmentClaims
 from .errors import WorkerError
 from .provisioner import Governing
 from .settings import EnvironmentSettings, OpenShellBackendSettings
@@ -452,6 +454,7 @@ class Environments:
             raise WorkerError(ErrorKind.UNAVAILABLE, f"environment settings: {exc}") from exc
         self.root = state_dir / "environments"
         self.records = EnvironmentRecords(state_dir / "environments.sqlite3", clock)
+        self.claims = EnvironmentClaims(state_dir / "environment-claims.sqlite3", clock=clock)
         self.release: Release | None = None
         """Stops the environment's executor; the execution manager sets it."""
         self.release_idle: ReleaseIdle | None = None
@@ -475,6 +478,38 @@ class Environments:
 
     def close(self) -> None:
         self.records.close()
+        self.claims.close()
+
+    async def claim(self, request: EnvironmentClaim) -> EnvironmentClaimResult:
+        """Retain a ready environment for active research, within bounded expiry."""
+        context = request.context
+        async with self._lock(context.environment_id):
+            info = self.get(context.environment_id)
+            if info.project_id != context.project_id:
+                raise WorkerError(ErrorKind.NOT_FOUND, "no environment in this project")
+            if request.seconds == 0:
+                self.claims.release(request)
+                return EnvironmentClaimResult(
+                    environment_id=info.environment_id,
+                    state="released",
+                    sandbox_id=request.sandbox_id,
+                )
+            if info.state is not EnvironmentState.READY or info.sandbox_id is None:
+                raise WorkerError(ErrorKind.UNAVAILABLE, "only a ready sandbox can be retained")
+            if request.sandbox_id is not None and request.sandbox_id != info.sandbox_id:
+                raise WorkerError(ErrorKind.CONFLICT, "environment claim's sandbox was replaced")
+            if context.policy_revision is not None and context.policy_revision != info.policy:
+                raise WorkerError(ErrorKind.POLICY_DENIED, "environment claim's policy is stale")
+            return EnvironmentClaimResult(
+                environment_id=info.environment_id,
+                state="held",
+                sandbox_id=info.sandbox_id,
+                expires_at=self.claims.grant(request, info),
+            )
+
+    def protected(self, environment_id: str) -> bool:
+        """Whether active research protects this environment against idle suspension."""
+        return self.claims.held(self.get(environment_id))
 
     def sandbox(self, environment_id: str) -> str | None:
         """The sandbox a ready environment runs in, for the backend."""
@@ -564,10 +599,6 @@ class Environments:
                 # An ID stays with the project that first created it, deleted or not, so
                 # that nothing checked for one project can reach another's (D78).
                 raise taken
-            if existing is not None and existing.state is EnvironmentState.CREATING:
-                # Never overwrite the only ownership record for a possibly live VM.
-                # Cleanup must finish before another sandbox name is allocated.
-                existing = await _owned(self._cleanup_creation(existing))
             if existing is not None and existing.state is EnvironmentState.DELETED:
                 await self._forget(request.environment_id, reuse=True)
             if existing is not None and existing.state in (
@@ -596,6 +627,11 @@ class Environments:
             policy = self._policy(request.policy)
             compiled = self._compile(policy)
             providers = await self._check_providers(policy)
+            if existing is not None and existing.state is EnvironmentState.CREATING:
+                # Validate the replacement request before changing the old allocation.
+                # Never overwrite the only ownership record for a possibly live VM.
+                await _owned(self._cleanup_creation(existing))
+                await self._forget(request.environment_id, reuse=True)
             name = new_sandbox_name()
             while self.records.sandbox_taken(name):
                 name = new_sandbox_name()
@@ -848,6 +884,8 @@ class Environments:
         async with self._lock(environment_id):
             info = self.records.get(environment_id)
             if info is None or info.state is not EnvironmentState.READY:
+                return False
+            if self.claims.held(info):
                 return False
             if self.release_idle is not None and not await self.release_idle(
                 environment_id, idle_since

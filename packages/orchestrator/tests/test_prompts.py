@@ -376,6 +376,13 @@ async def test_the_cli_keeps_the_pins_without_credentials(tmp_path, monkeypatch,
         async def environment(self, environment_id):
             raise WorkerAPIError(ErrorKind.UNSUPPORTED, "a local worker manages no environments")
 
+        async def claim_environment(self, request):
+            from sandbox_science.contracts.environment_claims import EnvironmentClaimResult
+
+            return EnvironmentClaimResult(
+                environment_id=request.context.environment_id, state="unmanaged"
+            )
+
         async def capabilities(self, *args):
             location = SimpleNamespace(
                 isolation_evidence=None, pool_id="p", backend="local", sandbox_id="e", hostname="h"

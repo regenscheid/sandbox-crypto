@@ -11,6 +11,7 @@ from typing import cast
 import pytest
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext, KernelInfo, KernelObservation
+from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.harness import (
     Harness,
@@ -37,6 +38,11 @@ class Worker:
 
     async def environment(self, environment_id: str) -> None:
         raise WorkerAPIError(ErrorKind.UNSUPPORTED, "a local worker manages no environments")
+
+    async def claim_environment(self, request: EnvironmentClaim) -> EnvironmentClaimResult:
+        return EnvironmentClaimResult(
+            environment_id=request.context.environment_id, state="unmanaged"
+        )
 
     async def capabilities(self, environment_id: str) -> SimpleNamespace:
         self.environment_id = environment_id

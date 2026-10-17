@@ -67,6 +67,7 @@ from sandbox_science.contracts.documents import (
     CatalogSnapshotPage,
     CatalogStatus,
 )
+from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
 from sandbox_science.contracts.lockfile_diffs import LockfileDiffPage, LockfileSelection
 from sandbox_science.contracts.provision_observations import MAX_OBSERVATION_BYTES
 from sandbox_science.contracts.revision_packages import RevisionPackagePage
@@ -265,6 +266,7 @@ def create_app(
     app.add_routes(
         [
             web.post("/v1/environments", create_environment),
+            web.post("/v1/environment-claims", environment_claim),
             web.get("/v1/environments", list_environments),
             web.get("/v1/environments/{environment_id}", get_environment),
             web.post("/v1/environments/{environment_id}/policy", revise_environment),
@@ -624,13 +626,26 @@ async def suspend_environment(request: web.Request) -> web.Response:
     environments = _environments(request)
     environment_id = _environment(request, environments)
     manager = request.app[MANAGER]
-    if environments.get(environment_id).state is EnvironmentState.READY and await busy(
-        manager, environment_id, manager.clock
+    if environments.protected(environment_id) or (
+        environments.get(environment_id).state is EnvironmentState.READY
+        and await busy(manager, environment_id, manager.clock)
     ):
         suspended = False
     else:
         suspended = await environments.stop_now(environment_id, manager.clock.monotonic())
     return _json(SuspendResult(environment=environments.get(environment_id), suspended=suspended))
+
+
+async def environment_claim(request: web.Request) -> web.Response:
+    """A bounded claim for active research; never a request to create or resume a VM."""
+    body = EnvironmentClaim.model_validate_json(await _body(request))
+    _context(request, body.context, hide=True)
+    environments = request.app.get(ENVIRONMENTS)
+    if environments is None or environments.records.get(body.context.environment_id) is None:
+        return _json(
+            EnvironmentClaimResult(environment_id=body.context.environment_id, state="unmanaged")
+        )
+    return _json(await environments.claim(body))
 
 
 async def revise_environment(request: web.Request) -> web.Response:

@@ -202,6 +202,13 @@ async def test_cli_cleanup_failure_keeps_partial_record_and_closes_model(
             if cancel_phase:
                 raise RuntimeError(HOSTILE)
 
+        async def claim_environment(self, request):
+            from sandbox_science.contracts.environment_claims import EnvironmentClaimResult
+
+            return EnvironmentClaimResult(
+                environment_id=request.context.environment_id, state="unmanaged"
+            )
+
         async def capabilities(self, *args):
             return SimpleNamespace(
                 location=SimpleNamespace(

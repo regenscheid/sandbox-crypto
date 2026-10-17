@@ -60,6 +60,7 @@ from .delegation.tracks import TrackTools, grant
 from .digest import Digest, Rendered, constraints_block, render
 from .documents import DocumentError, DocumentStore, DocumentTool
 from .documents.tool import REQUESTS_TASK, WorkRequests
+from .environment_claim import environment_claim
 from .file_settings import ProjectFiles
 from .history import (
     CEILING,
@@ -596,6 +597,15 @@ class Harness:
         try:
             async with AsyncExitStack() as stack:
                 with interruption.protect():
+                    if admitted.stateful and admitted.request.parent is None:
+                        await stack.enter_async_context(
+                            environment_claim(
+                                self.client,
+                                admitted.context,
+                                run_name(admitted.started_at, admitted.run_id),
+                                clock=self.clock,
+                            )
+                        )
                     memory = await self.memory(admitted)
                     folder = await self._folder(admitted)
                     view = folder.view if folder is not None else None

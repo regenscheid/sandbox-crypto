@@ -1,6 +1,6 @@
 # Research continuity
 
-Date: 2026-10-16. **Status: Draft.** The owner's continuity requirements (D87) and separate orchestrator sandbox (D47) are confirmed; the lifecycle, storage design and implementation sequence are proposed. Nothing on this page establishes that recovery, bounded run memory or normal-launcher orchestrator confinement is built. Baseline: main `57e29536`. The [tool journal](#first-implementation-increment-durable-tool-journal), bounded retrieval/discovery and large-record retention are implemented locally; the remaining design is proposed.
+Date: 2026-10-16; local increments updated 2026-10-17. **Status: Draft with implementation increments.** The owner's continuity requirements (D87) and separate orchestrator sandbox (D47) are confirmed. Baseline: main `57e29536`. The journal, bounded tool retrieval/retention/export, delegated skeleton folds, live-parent waiting, active-tree environment claims and creation cleanup are implemented locally as described below. Durable work/attempt ownership, tree recovery, whole-run memory bounds and normal-launcher confinement remain proposed or incomplete. Local tests do not establish live acceptance.
 
 ## Purpose and confirmed requirements
 
@@ -322,6 +322,25 @@ deletion. A later retry can reconcile the original object once it appears. A req
 that never appears needs operator reconciliation of its upstream outcome; the worker
 does not infer a safe retry from elapsed time. This deliberately favors a visible
 blocked environment over losing an uncertain compute allocation.
+
+### Active-tree environment claim
+
+Each stored root attempt holds one renewable claim for its session and environment;
+its descendants share that claim while the root owns their lifetime. The worker
+stores the claim with the sandbox ID, a unique holder, and expiry. A claim lasts
+120 seconds, renews every 30 seconds, and the API refuses durations above 300 seconds
+or more than 32 active claims in one environment. Claims keep idle suspension from
+discarding kernel state during model-only work. They do not start a stopped VM,
+override explicit deletion or promise recovery of lost kernels.
+
+The worker checks project ownership and the current policy before a grant or renewal.
+A renewal pins the original sandbox ID and cannot protect a replacement silently.
+The root stops when renewal fails; a crash leaves at most the unexpired claim.
+Release is scoped to the original holder/session and does not release another root's
+claim. Claims survive worker restart; suspension checks them again under the same
+environment lock immediately before stopping. Unmanaged backends explicitly report
+that they have no managed idle suspension. This is an active-attempt safeguard;
+durable paused-work ownership and orchestrator-level Resume remain separate work.
 
 Each step is split into reviewable changes with a production caller; no unused recovery framework is merged.
 

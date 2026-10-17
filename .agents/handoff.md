@@ -1,10 +1,10 @@
 # Handoff
 
-Updated 2026-10-16 on `codex/research-foundations`, base `57e29536`. This file is replaced, not appended to, and stays under 8 KB. Read it with [STATUS.md](STATUS.md), the [plan](refactor-plan/PLAN.md) and [CONVENTIONS.md](CONVENTIONS.md).
+Updated 2026-10-17 on `codex/research-foundations`, base `57e29536`. Replace this file; keep it under 8 KB. Read with [STATUS.md](STATUS.md), the [plan](refactor-plan/PLAN.md) and [CONVENTIONS.md](CONVENTIONS.md).
 
 ## Where things stand
 
-- **Research foundations first (D47/D87).** Local code has a journal (schema 58), bounded reads/discovery and large-record previews. Forty 1 MiB results add about 10 MiB RSS through final save; originals remain retrievable ([report](docs/agent-reports/tool-retention-2026-10-16.md)). Whole-run memory, tree Resume, confinement and independent review/integration remain pending. Personal services remain untouched; no live lab was started.
+- **Research foundations (D47/D87):** local journal (schema 58), bounded tool records/export, delegated folds, no-model parent waits, expiring active-tree environment claims, and retained uncertain creation cleanup. Full run-memory bounds, durable ownership/tree Resume, generated skills restrictions and confinement remain unfinished. Independent review/integration and live acceptance remain; personal services are untouched.
 - **Context management is built (steps a to g); its acceptance is not met.** Lab 44 was round 1 on GPT models ([STATUS](STATUS.md#phase-and-focus)). The owner's checklist in its report is pending. Round 2 needs the Claude arms, 600,000 arms that fold twice, the control repeated and the state block's placement (CM-25) measured first. Lanes: CM-A (archive, history tools, session view, the cite-handle and gateway fixes), CM-B (the ledger's fields and provenance, cache key), CM-D (the adapters, figure charts), G (the GUI), K (skills, images).
 - **Figures** are built through F5 and F9 to F11. Left: F6, F7, F8, F11b, F12, F13 and the browser lab ([BACKLOG](BACKLOG.md#repository)). **Skills:** K7a and K7b are built; the deny-list's tool families should be generated from the images, not listed by hand.
 - **Waiting for the owner:** lab 44's checklist, and Q12 to 14 of the skills spec, still the coordinator's reversible acceptance. The state block's placement is a design question for round 2, not for the owner yet.
@@ -49,5 +49,5 @@ The owner's research on other products' prompts lives outside this repository. T
 ## What is next
 
 1. Bound historical messages, per-call metadata and review caches. A streamed stored-evidence export now resolves large-record references; external worker files remain referenced.
-2. Durable work/attempt ownership, parent waiting and one tree Resume; then scoped state access and separate orchestrator confinement in the normal launcher.
+2. Durable work/attempt ownership and one tree Resume; then scoped state access and separate orchestrator confinement. Current root claims protect only active attempts; turn-limit cleanup still cancels children.
 3. Child skeleton folds use their own archive/model limit (146 tests). Parent closing waits without model calls (122 tests), with user/Stop wakeups and an unsaved-outcome stop. Local cache prefix comparison is recorded; live continuity/cache acceptance and generated skills restrictions remain.
