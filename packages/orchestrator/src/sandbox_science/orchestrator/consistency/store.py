@@ -1780,6 +1780,7 @@ class ReviewStore:
         owner: str,
         cost: float | None = None,
         cost_source: CostSource | None = None,
+        intent_id: str | None = None,
     ) -> None:
         """What the call used and cost, with where the cost came from (the gateway, or
         its model information): the project's cost and its daily limit count it
@@ -1810,6 +1811,9 @@ class ReviewStore:
                     review,
                 ),
             )
+            from sandbox_science.orchestrator.continuity.materializations import link
+
+            link(db, "review_calls", call, intent_id)
             if updated.rowcount:
                 # What the call used replaces its estimate, so the budget counts the
                 # provider's usage rather than the estimates' overreach (lab 38).

@@ -319,6 +319,7 @@ def json_value(value: Any) -> JsonValue:
 
 
 class ModelReply(Contract):
+    intent_id: Identifier | None = None
     turn: WireTurn | None = None
     error: Literal["context_limit", "gateway_budget", "model"] | None = None
     message: str = Field(default="", max_length=512)
@@ -367,4 +368,5 @@ class EmbeddingReply(Contract):
     vectors: tuple[tuple[float, ...], ...] = Field(default=(), max_length=64)
     cost: float | None = None
     paid: tuple[tuple[str, int, float | None], ...] = Field(default=(), max_length=64)
+    paid_identities: tuple[Identifier, ...] = Field(default=(), max_length=64)
     error: str | None = Field(default=None, max_length=512)

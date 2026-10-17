@@ -506,13 +506,26 @@ class SkillStore:
             ).fetchone()
         return None if row is None else (str(row[0]), int(row[1]), bool(row[2]))
 
-    def add_embedding_call(self, project: str, model: str, texts: int, cost: float | None) -> None:
+    def add_embedding_call(
+        self,
+        project: str,
+        model: str,
+        texts: int,
+        cost: float | None,
+        *,
+        intent_id: str | None = None,
+    ) -> None:
         """Count one embedding call of ``project``'s, priced as the gateway reported."""
+        from sandbox_science.orchestrator.continuity.materializations import existing, link
+
         with self.control.write() as tx:
-            tx.sql.execute(
+            if existing(tx.sql, "skill_embedding_calls", intent_id) is not None:
+                return
+            written = tx.sql.execute(
                 "INSERT INTO skill_embedding_calls VALUES(?,?,?,?,?)",
                 (project, datetime.now(UTC).timestamp(), model, texts, cost),
             )
+            link(tx.sql, "skill_embedding_calls", int(written.lastrowid or 0), intent_id)
 
     def metadata(self, snapshot: str, alias: str, version: str) -> dict[str, Any] | None:
         """What the pass of ``version`` by ``alias`` derived from ``snapshot``, with what
@@ -552,16 +565,23 @@ class SkillStore:
         tokens: tuple[int | None, int | None],
         cost: float | None,
         cost_source: CostSource | None = None,
+        *,
+        intent_id: str | None = None,
     ) -> None:
         """Count one call of the pass, ``project``'s when the import names one (RS-6a),
         with where its cost came from (the gateway, or its model information)."""
         source = source_of(cost, cost_source)
+        from sandbox_science.orchestrator.continuity.materializations import existing, link
+
         with self.control.write() as tx:
-            tx.sql.execute(
+            if existing(tx.sql, "skill_metadata_calls", intent_id) is not None:
+                return
+            written = tx.sql.execute(
                 "INSERT INTO skill_metadata_calls(project,created,snapshot,model,input_tokens,"
                 "output_tokens,cost,cost_source) VALUES(?,?,?,?,?,?,?,?)",
                 (project, datetime.now(UTC).timestamp(), snapshot, model, *tokens, cost, source),
             )
+            link(tx.sql, "skill_metadata_calls", int(written.lastrowid or 0), intent_id)
 
     def settings(self, project: str) -> SkillSettings:
         if self.control.missing:

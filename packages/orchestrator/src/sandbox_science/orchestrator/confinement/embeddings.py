@@ -14,7 +14,9 @@ from sandbox_science.orchestrator.skills.embeddings import (
     Embedder,
     EmbeddingError,
     Paid,
+    PaidCall,
     Space,
+    paid_values,
 )
 
 from .paid import begin, observe
@@ -52,7 +54,15 @@ class CallbackEmbedder(Embedder):
             except TransportError as error:
                 raise EmbeddingError("confined embedding runtime unavailable") from error
             if paid is not None:
-                paid.extend(reply.paid)
+                if reply.paid_identities:
+                    if len(reply.paid_identities) != len(reply.paid):
+                        raise EmbeddingError("embedding charge identities do not match receipts")
+                    paid.extend(
+                        PaidCall(*call, identity)
+                        for call, identity in zip(reply.paid, reply.paid_identities, strict=True)
+                    )
+                else:
+                    paid.extend(reply.paid)
             if reply.error is not None:
                 raise EmbeddingError(reply.error)
             if reply.model is None or len(reply.vectors) != len(texts[start : start + BATCH]):
@@ -82,7 +92,15 @@ class RuntimeEmbeddings:
         try:
             result = await self.embedder.embed(request.texts, paid)
         except EmbeddingError as error:
-            return payload(EmbeddingReply(error=str(error)[:512], paid=tuple(paid)))
+            if paid:
+                await self._observe(request, identity, paid)
+            return payload(
+                EmbeddingReply(
+                    error=str(error)[:512],
+                    paid=tuple(map(paid_values, paid)),
+                    paid_identities=(identity,) if paid else (),
+                )
+            )
         await observe(
             self.channel,
             request.attempt,
@@ -99,6 +117,19 @@ class RuntimeEmbeddings:
                 dimensions=result.space.dimensions,
                 vectors=tuple(tuple(vector) for vector in result.vectors),
                 cost=result.cost,
-                paid=tuple(paid),
+                paid=tuple(map(paid_values, paid)),
+                paid_identities=(identity,),
             )
+        )
+
+    async def _observe(self, request: EmbeddingRequest, identity: str, paid: Paid) -> None:
+        # One request contains at most one embedder batch/HTTP charge.
+        if len(paid) != 1 or isinstance(paid[0], PaidCall):
+            raise TransportError("invalid_request", "embedding charge receipt is not one batch")
+        model, _, cost = paid[0]
+        await observe(
+            self.channel,
+            request.attempt,
+            identity,
+            ModelUsage(model=model, cost=cost, cost_source="gateway" if cost is not None else None),
         )

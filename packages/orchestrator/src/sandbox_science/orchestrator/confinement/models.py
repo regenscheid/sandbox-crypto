@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from typing import Self, cast
 
 from pydantic import JsonValue, TypeAdapter
@@ -20,6 +21,7 @@ from sandbox_science.orchestrator.model import (
     ModelTurn,
     ToolSpec,
 )
+from sandbox_science.orchestrator.projects import ModelUsage
 
 from .paid import begin, observe, usage
 from .transport import Capability, Channel, TransportError
@@ -108,7 +110,9 @@ class CallbackModel(GatewayModel):
                 "gateway_budget": GatewayBudgetError,
                 "model": ModelError,
             }[reply.error]
-            raise kind(reply.message, status=reply.status, cost=reply.cost)
+            raise kind(
+                reply.message, status=reply.status, cost=reply.cost, intent_id=reply.intent_id
+            )
         if reply.turn is None:
             raise ModelError("confined model runtime returned no turn")
         return reply.turn.turn()
@@ -169,6 +173,8 @@ class RuntimeModels:
                 [message.message() for message in request.messages], request.tools
             )
         except ModelError as error:
+            if error.cost is not None:
+                await observe(self.channel, request.attempt, identity, ModelUsage(cost=error.cost))
             kind = (
                 "context_limit"
                 if isinstance(error, ContextLimitError)
@@ -179,6 +185,7 @@ class RuntimeModels:
             return payload(
                 ModelReply.model_validate(
                     {
+                        "intent_id": identity if error.cost is not None else None,
                         "error": kind,
                         "message": str(error)[:512],
                         "status": error.status,
@@ -187,7 +194,7 @@ class RuntimeModels:
                 )
             )
         await observe(self.channel, request.attempt, identity, usage(turn))
-        return payload(ModelReply(turn=WireTurn.of(turn)))
+        return payload(ModelReply(turn=WireTurn.of(replace(turn, intent_id=identity))))
 
     async def info(self, value: JsonValue) -> JsonValue:
         request = typed(ModelInfo, value)

@@ -156,6 +156,7 @@ _LEGACY_SUMMARIES: Final = {"review_summary": "reviews", "math_summary": "math"}
 
 
 class ModelUsage(Contract):
+    intent_id: Identifier | None = None
     """One model call's usage, as the gateway reported it; a count it left out is null."""
 
     model: str | None = None

@@ -52,7 +52,19 @@ class EmbeddingError(Exception):
     """The gateway's embeddings could not be had, or are not of the vectors in use."""
 
 
-Paid = list[tuple[str, int, float | None]]
+@dataclass(frozen=True)
+class PaidCall:
+    model: str
+    texts: int
+    cost: float | None
+    intent_id: str
+
+
+def paid_values(call: tuple[str, int, float | None] | PaidCall) -> tuple[str, int, float | None]:
+    return (call.model, call.texts, call.cost) if isinstance(call, PaidCall) else call
+
+
+Paid = list[tuple[str, int, float | None] | PaidCall]
 """Calls the gateway answered, each with its model (the alias when the answer named none),
 the texts and the cost it reported: kept as they come, so a later failure loses none."""
 
@@ -263,8 +275,18 @@ async def count_paid(store: SkillStore, project: str | None, paid: Paid) -> None
     """Count ``project``'s calls the gateway answered, priced as it reported (RS-6a)."""
     if project is None:
         return
-    for model, texts, cost in paid:
-        await threaded(store.add_embedding_call, project, model, texts, cost)
+    for call in paid:
+        if isinstance(call, PaidCall):
+            await threaded(
+                store.add_embedding_call,
+                project,
+                call.model,
+                call.texts,
+                call.cost,
+                intent_id=call.intent_id,
+            )
+        else:
+            await threaded(store.add_embedding_call, project, *call)
 
 
 class SkillVectors:

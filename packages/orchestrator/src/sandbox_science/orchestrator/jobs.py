@@ -33,7 +33,7 @@ from .aio import lease, threaded
 from .hooks import Closing, Effect, Notice, Point, RunView, TurnHook
 from .jobstate import JobState
 from .memory_prompt import MemoryGiven
-from .model import ChatModel, ToolSpec
+from .model import ChatModel, ModelError, ToolSpec
 from .notices import JOBS, JOBS_ATTACHED
 from .pricing import CostSource
 from .recording import FileRecorder, Written
@@ -615,16 +615,20 @@ class JobTools:
         output_tokens: int | None = None
         cost: float | None = None
         cost_source: CostSource | None = None
+        intent_id: str | None = None
         try:
             async with asyncio.timeout(self.watcher_timeout):
                 reply = await self.watcher.complete(watcher_input.messages(), ())
             resolved = reply.model
+            intent_id = reply.intent_id
             input_tokens, output_tokens, cost = reply.input_tokens, reply.output_tokens, reply.cost
             cost_source = reply.cost_source
             if reply.tool_calls or reply.text is None or len(reply.text) > 1200:
                 raise ValueError("watcher returned tools, no text, or an oversized answer")
             answer = WatcherAnswer.model_validate_json(reply.text)
-        except (Exception, asyncio.CancelledError):
+        except (Exception, asyncio.CancelledError) as error:
+            if isinstance(error, ModelError):
+                cost, intent_id = error.cost, error.intent_id
             await asyncio.to_thread(
                 self.state.finish_call,
                 reservation,
@@ -634,6 +638,7 @@ class JobTools:
                 output_tokens,
                 cost,
                 cost_source,
+                intent_id,
             )
             # Failure wakes the main agent; the watcher never takes action on its own.
             current = asyncio.current_task()
@@ -649,6 +654,7 @@ class JobTools:
             output_tokens,
             cost,
             cost_source,
+            intent_id,
         )
         value: dict[str, object] = {
             "job_id": execution.execution_id,

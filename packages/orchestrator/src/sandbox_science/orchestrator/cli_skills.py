@@ -32,6 +32,7 @@ from .skills.embeddings import (
     Paid,
     count_paid,
     ensure,
+    paid_values,
 )
 from .skills.packs import Snapshot
 
@@ -136,7 +137,7 @@ async def _embed(
         made = await ensure(store, embedder, snapshot, paid=paid)
     except EmbeddingError as error:
         print(f"warning: embedding the skills failed: {error}", file=sys.stderr)
-        costs = [cost for _, _, cost in paid if cost is not None]
+        costs = [cost for _, _, cost in map(paid_values, paid) if cost is not None]
         return {"alias": args.embedding_model, "failed": str(error), "cost": sum(costs) or None}
     finally:
         await embedder.close()

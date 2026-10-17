@@ -111,7 +111,7 @@ async def enrich(
         try:
             turn = await caller.complete([*view, asked], specs)
         except ModelError as error:
-            calls.append(ModelUsage(cost=error.cost))
+            calls.append(ModelUsage(cost=error.cost, intent_id=error.intent_id))
             if spent is not None:
                 spent(calls[-1])
             failed.append(f"the call failed ({type(error).__name__})")
@@ -251,6 +251,8 @@ def _object(text: str) -> Json | None:
 def _usage(turn: ModelTurn) -> ModelUsage:
     return ModelUsage(
         model=turn.model,
+        intent_id=turn.intent_id,
+        cost_source=turn.cost_source,
         input_tokens=turn.input_tokens,
         output_tokens=turn.output_tokens,
         cost=turn.cost,

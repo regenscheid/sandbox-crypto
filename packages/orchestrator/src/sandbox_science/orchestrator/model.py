@@ -207,9 +207,15 @@ class ModelError(Exception):
     """The model gateway failed or answered with something unusable."""
 
     def __init__(
-        self, message: str, *, status: int | None = None, cost: float | None = None
+        self,
+        message: str,
+        *,
+        status: int | None = None,
+        cost: float | None = None,
+        intent_id: str | None = None,
     ) -> None:
         super().__init__(message)
+        self.intent_id = intent_id
         self.status = status
         """The gateway's HTTP status, when it answered with an error."""
         self.cost = cost

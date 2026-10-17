@@ -256,6 +256,7 @@ class JobState:
         output_tokens: int | None,
         cost: float | None = None,
         cost_source: CostSource | None = None,
+        intent_id: str | None = None,
     ) -> None:
         """The call's outcome, what it used and cost, with where the cost came from (the
         gateway, or its model information): the project's cost and its daily limit count
@@ -275,6 +276,10 @@ class JobState:
                     call,
                 ),
             )
+
+            from sandbox_science.orchestrator.continuity.materializations import link
+
+            link(db, "job_watcher_calls", call, intent_id)
 
     def last_check(self, context: ExecutionContext, job: str) -> float | None:
         with self.control.read() as tx:

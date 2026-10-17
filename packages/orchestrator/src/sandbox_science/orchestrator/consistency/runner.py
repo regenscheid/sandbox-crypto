@@ -485,6 +485,7 @@ class ReviewerRunner:
                 owner=self.owner,
                 cost=reply.cost,
                 cost_source=reply.cost_source,
+                intent_id=reply.intent_id,
             )
             content = reply.text or ""
             if (

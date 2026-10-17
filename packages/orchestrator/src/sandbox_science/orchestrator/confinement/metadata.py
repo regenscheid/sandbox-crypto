@@ -70,6 +70,7 @@ class Metadata:
                         (None, None),
                         error.cost,
                         "gateway",
+                        intent_id=error.intent_id,
                     )
                 continue
             await threaded(
@@ -80,6 +81,7 @@ class Metadata:
                 made.tokens,
                 made.cost,
                 made.cost_source,
+                intent_id=made.intent_id,
             )
             await threaded(
                 self.store.add_metadata,

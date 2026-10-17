@@ -57,7 +57,7 @@ call was made: the reviewer's, the job watcher's and the import pass's. Each kee
 its cost came from (``cost_source``, version 53)."""
 
 
-def _run_usage(project: str, since: datetime | None) -> tuple[str, tuple[object, ...]]:
+def _response_usage(project: str, since: datetime | None) -> tuple[str, tuple[object, ...]]:
     """Answered-call usage by role: journal first, then each unjournaled ordinal
     from the saved record, or its event if no record exists. Suppression ignores
     the time window so an old journal entry cannot reappear through a fallback.
@@ -76,6 +76,7 @@ def _run_usage(project: str, since: datetime | None) -> tuple[str, tuple[object,
         "AND c.run=json_extract(o.detail,'$.resolution.run') "
         "AND c.identity=json_extract(o.detail,'$.resolution.identity') "
         "WHERE o.project=? AND o.kind='resolution:model_usage' AND c.created>=? "
+        "AND (c.usage IS NULL OR c.kind IN ('main','delegated')) "
         "UNION ALL SELECT coalesce(json_extract(r.record,'$.role'),'main'), usage.value "
         "FROM runs r, json_each(r.record,'$.usage') usage "
         "WHERE r.project_id=? AND r.name>=? AND NOT EXISTS ("
@@ -91,6 +92,74 @@ def _run_usage(project: str, since: datetime | None) -> tuple[str, tuple[object,
         "AND j.session=e.session_id AND j.run=e.run AND j.ordinal=json_extract(e.data,'$.turn'))",
         (project, after, project, after, project, first, project, first),
     )
+
+
+def _run_usage(project: str, since: datetime | None) -> tuple[str, tuple[object, ...]]:
+    """Canonical observations, exactly linked legacy copies, then unlinked history."""
+    from .continuity.materializations import Table, fallback
+
+    query, values = _response_usage(project, since)
+    after = 0.0 if since is None else since.timestamp()
+    first = "" if since is None else run_name(since, "")
+    query += (
+        " UNION ALL SELECT CASE c.kind WHEN 'reviewer' THEN 'reviewer' "
+        "WHEN 'watcher' THEN 'watcher' WHEN 'skills' THEN 'metadata' "
+        "WHEN 'embedding' THEN 'embeddings' ELSE w.role END,c.usage "
+        "FROM research_model_calls c JOIN research_attempts a USING(project,session,run) "
+        "JOIN research_work w USING(project,session,work) WHERE c.project=? AND c.created>=? "
+        "AND c.kind NOT IN ('main','delegated') AND c.usage IS NOT NULL"
+    )
+    values += (project, after)
+    sources: tuple[tuple[str, Table, str], ...] = (
+        ("reviewer", "review_calls", "created"),
+        ("watcher", "job_watcher_calls", "requested_at"),
+        ("metadata", "skill_metadata_calls", "created"),
+        ("embeddings", "skill_embedding_calls", "created"),
+    )
+    for role, table, made in sources:
+        usage = (
+            "json_object('cost',cost,'cost_source',cost_source,"
+            "'input_tokens',input_tokens,'output_tokens',output_tokens)"
+            if table != "skill_embedding_calls"
+            else "json_object('cost',cost,'cost_source','gateway')"
+        )
+        query += (
+            f" UNION ALL SELECT '{role}',{usage} FROM {table} legacy "  # noqa: S608 - fixed tables
+            f"WHERE project=? AND {made}>=? AND {fallback(table, 'legacy')}"
+        )
+        values += (project, after)
+
+    # Fold usage is copied into collection, saved-summary and event forms. Preserve
+    # their old precedence, then suppress only an explicit observed intent identity.
+    def fold_copy(value: str, project_col: str, session: str, run: str) -> str:
+        return (
+            "NOT EXISTS (SELECT 1 FROM research_model_calls paid "  # noqa: S608 - fixed columns
+            f"WHERE paid.project={project_col} AND paid.session={session} AND paid.run={run} "
+            f"AND paid.identity=json_extract({value},'$.intent_id') "
+            "AND paid.kind='fold' AND paid.usage IS NOT NULL)"
+        )
+
+    query += (
+        " UNION ALL SELECT CASE WHEN EXISTS (SELECT 1 FROM archive_messages m "  # noqa: S608
+        "WHERE m.project=c.project AND m.session=c.session AND m.run=c.run "
+        "AND m.parent IS NOT NULL) THEN 'delegated' ELSE 'main' END,c.item "
+        "FROM run_collections c WHERE c.project=? AND c.run>=? AND c.collection='fold_calls' "
+        f"AND {fold_copy('c.item', 'c.project', 'c.session', 'c.run')} "
+        "UNION ALL SELECT coalesce(json_extract(r.record,'$.role'),'main'),u.value "
+        "FROM runs r,json_each(r.record,'$.summaries.folds.calls') u "
+        "WHERE r.project_id=? AND r.name>=? AND NOT EXISTS (SELECT 1 FROM run_collections h "
+        "WHERE h.project=r.project_id AND h.session=r.session_id AND h.run=r.name "
+        "AND h.collection='fold_calls') "
+        f"AND {fold_copy('u.value', 'r.project_id', 'r.session_id', 'r.name')} "
+        "UNION ALL SELECT 'main',u.value FROM run_events e,json_each(e.data,'$.calls') u "
+        "WHERE e.project_id=? AND e.run>=? AND e.kind='fold' "
+        "AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.project_id=e.project_id "
+        "AND r.session_id=e.session_id AND r.name=e.run) "
+        "AND NOT EXISTS (SELECT 1 FROM run_collections h WHERE h.project=e.project_id "
+        "AND h.session=e.session_id AND h.run=e.run AND h.collection='fold_calls') "
+        f"AND {fold_copy('u.value', 'e.project_id', 'e.session_id', 'e.run')}"
+    )
+    return query, (*values, project, first, project, first, project, first)
 
 
 WINDOW: Final = timedelta(hours=24)
@@ -574,33 +643,18 @@ class RunState:
                 f"SELECT count(*) FROM ({runs}) WHERE {unpriced}",  # noqa: S608
                 values,
             ).fetchone()
-            for table, made in TOKEN_CALLS:
-                (more,) = tx.sql.execute(
-                    f"SELECT count(*) FROM {table} WHERE project = ? AND {made} >= ? "  # noqa: S608
-                    "AND cost IS NULL AND coalesce(input_tokens, 0) + "
-                    "coalesce(output_tokens, 0) > 0",
-                    (project, since.timestamp()),
-                ).fetchone()
-                found += more
         return int(found)
 
     def model_info_cost(self, project: str, since: datetime | None = None) -> float | None:
         """The part of ``model_cost`` priced from the gateway's model information rather
         than reported by it (``cost_source``, lab 43, B2); ``None`` when no call's was."""
         runs, values = _run_usage(project, since)
-        after = 0.0 if since is None else since.timestamp()
         with self.control.read() as tx:
             rows = tx.sql.execute(
                 "SELECT sum(json_extract(u, '$.cost')), count(json_extract(u, '$.cost')) "  # noqa: S608
                 f"FROM ({runs}) WHERE json_extract(u, '$.cost_source') = 'model_info'",
                 values,
             ).fetchall()
-            for table, made in TOKEN_CALLS:
-                rows += tx.sql.execute(
-                    f"SELECT sum(cost), count(cost) FROM {table} WHERE project = ? "  # noqa: S608
-                    f"AND {made} >= ? AND cost_source = 'model_info'",
-                    (project, after),
-                ).fetchall()
         priced = [float(total) for total, count in rows if count]
         return sum(priced) if priced else None
 
@@ -618,47 +672,13 @@ class RunState:
         Fold enrichment retains its run-start cutoff and record/event precedence.
         Reviewer, watcher and skills embedding calls use their own timestamps.
         A role without any priced call is left out."""
-        first = "" if since is None else run_name(since, "")
-        after = 0.0 if since is None else since.timestamp()
         runs, values = _run_usage(project, since)
-        cost = "json_extract(u, '$.cost')"
         with self.control.read() as tx:
             rows = tx.sql.execute(
-                f"SELECT role, sum({cost}), count({cost}) FROM ("  # noqa: S608
-                f"{runs} "
-                # Paged fold usage is authoritative even when the compact final
-                # snapshot omits its historical calls; legacy records/events remain.
-                "UNION ALL SELECT CASE WHEN EXISTS (SELECT 1 FROM archive_messages m "
-                "WHERE m.project=c.project AND m.session=c.session AND m.run=c.run "
-                "AND m.parent IS NOT NULL) THEN 'delegated' ELSE 'main' END,c.item "
-                "FROM run_collections c WHERE c.project=? AND c.run>=? "
-                "AND c.collection='fold_calls' "
-                "UNION ALL SELECT coalesce(json_extract(runs.record, '$.role'), 'main'), "
-                "c.value FROM runs, json_each(runs.record, '$.summaries.folds.calls') AS c "
-                "WHERE runs.project_id = ? AND runs.name >= ? AND NOT EXISTS "
-                "(SELECT 1 FROM run_collections h WHERE h.project=runs.project_id "
-                "AND h.session=runs.session_id AND h.run=runs.name AND h.collection='fold_calls') "
-                "UNION ALL SELECT 'main', c.value FROM run_events AS e, "
-                "json_each(e.data, '$.calls') AS c WHERE e.project_id = ? AND e.run >= ? "
-                "AND e.kind = 'fold' AND NOT EXISTS (SELECT 1 FROM runs WHERE "
-                "runs.project_id = e.project_id AND runs.session_id = e.session_id "
-                "AND runs.name = e.run) AND NOT EXISTS "
-                "(SELECT 1 FROM run_collections h WHERE h.project=e.project_id "
-                "AND h.session=e.session_id AND h.run=e.run AND h.collection='fold_calls')) "
-                "GROUP BY role",
-                (*values, project, first, project, first, project, first),
+                "SELECT role,sum(json_extract(u,'$.cost')),count(json_extract(u,'$.cost')) "  # noqa: S608
+                f"FROM ({runs}) GROUP BY role",
+                values,
             ).fetchall()
-            for role, table, made in (
-                ("reviewer", "review_calls", "created"),
-                ("watcher", "job_watcher_calls", "requested_at"),
-                ("embeddings", "skill_embedding_calls", "created"),
-                ("metadata", "skill_metadata_calls", "created"),
-            ):
-                rows += tx.sql.execute(
-                    f"SELECT ?, sum(cost), count(cost) FROM {table} "  # noqa: S608
-                    f"WHERE project = ? AND {made} >= ?",
-                    (role, project, after),
-                ).fetchall()
         priced: dict[str, float] = {}
         for role, total, count in rows:
             if count:
