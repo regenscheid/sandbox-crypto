@@ -10,7 +10,9 @@ they came (``Enriched.proposals``) for the fold's proposals to check against the
 (``ledger.proposals``, CM-15) once the fold is archived. An answer that calls a tool, is not
 that object, has no narrative, or whose narrative passes a quarter of the record's
 share fails the attempt; the one retry sets ``tool_choice`` to ``none`` after a tool
-call. Two failures leave the record skeleton-only.
+call. A size rejection appends measured budget feedback and a tighter target to
+the same final retry; the rejected answer is not echoed. Two failures leave the
+record skeleton-only.
 
 Code checks the answer it keeps. A search key that no message of the span holds word
 for word is dropped. Every number in the narrative must occur in the span, both read
@@ -80,6 +82,61 @@ class Enriched:
     """What the fold's proposals came to once checked: kept, dropped and refused."""
 
 
+@dataclass(frozen=True)
+class _Size:
+    narrative: int
+    limit: int
+    rendered: int | None
+    share: int
+    fixed: int
+    target: int
+
+
+def _size(record: FoldRecord, share: int, narrative: int, rendered: int | None = None) -> _Size:
+    # Existing supported keys remain mandatory within their existing allowance.
+    keys: list[tuple[str, str]] = []
+    used = 0
+    for key, at in record.keys:
+        if used + len(key) + 24 <= share // 10:
+            keys.append((key, at))
+            used += len(key) + 24
+    # Remove only the temporary quoted content "> x", retaining its header/newline.
+    fixed = replace(record, narrative="x", keys=tuple(keys), state="applied").chars - 3
+    # Line quoting can take up to three rendered characters per content character.
+    # This target never replaces the final semantic and rendered-size validators.
+    target = min(share // 8, max(0, (share - fixed) // 3))
+    return _Size(narrative, share // 4, rendered, share, fixed, target)
+
+
+def _repair(size: _Size, framing: Framing) -> Message:
+    rendered = (
+        f"The validated candidate record measured {size.rendered:,} characters, "
+        f"{max(0, size.rendered - size.share):,} over its full-record share. "
+        if size.rendered is not None
+        else ""
+    )
+    return {
+        "role": "user",
+        "content": (
+            framing.text
+            + "Size repair for the existing final retry. The escaped narrative measured "
+            f"{size.narrative:,} characters against its {size.limit:,}-character cap "
+            f"(overage {max(0, size.narrative - size.limit):,}). "
+            + rendered
+            + f"The full-record share remains {size.share:,}; the unchanged outline, metadata "
+            f"retained keys and narrative framing occupy {size.fixed:,}, leaving "
+            f"{max(0, size.share - size.fixed):,} characters for narrative content and line "
+            "quoting. Return the same JSON contract "
+            f"with a narrative target of at most {size.target:,} characters and keys: []. "
+            "Preserve supported critical handoff facts, unresolved obligations, scope/version "
+            "limits and exact source/artifact references needed to continue. Remove repetition, "
+            "not qualifications; do not invent facts or references. All original semantic and "
+            "size checks still apply. If no nonempty supported narrative fits, the platform "
+            "will retain the skeleton-only record. Do not call tools."
+        ),
+    }
+
+
 async def enrich(
     model: ChatModel,
     view: Sequence[Message],
@@ -107,9 +164,10 @@ async def enrich(
     calls: list[ModelUsage] = []
     failed: list[str] = []
     caller = model
-    for _ in range(ATTEMPTS):
+    repair: Message | None = None
+    for attempt in range(ATTEMPTS):
         try:
-            turn = await caller.complete([*view, asked], specs)
+            turn = await caller.complete([*view, asked, *([repair] if repair else [])], specs)
         except ModelError as error:
             calls.append(ModelUsage(cost=error.cost, intent_id=error.intent_id))
             if spent is not None:
@@ -125,14 +183,17 @@ async def enrich(
                 caller = model.choosing("none")
             continue
         # A span, an overview's above all, can be millions of characters: off the loop.
+        sizes: list[_Size] = []
         found, why = await threaded(
-            check, turn.text or "", record, rows, share=share, exists=exists
+            check, turn.text or "", record, rows, share=share, exists=exists, size=sizes.append
         )
         if found is not None:
             offered = (_object(turn.text or "") or {}).get("proposals")
             proposals = tuple(cast(list[object], offered)) if isinstance(offered, list) else ()
             return Enriched(found, tuple(calls), proposals=proposals)
         failed.append(why)
+        if sizes and attempt + 1 < ATTEMPTS:
+            repair = _repair(sizes[-1], framing)
     return Enriched(record, tuple(calls), "; ".join(failed))
 
 
@@ -143,6 +204,7 @@ def check(
     *,
     share: int,
     exists: Callable[[str], bool] | None = None,
+    size: Callable[[_Size], None] | None = None,
 ) -> tuple[FoldRecord | None, str]:
     """``record`` with the answer's narrative and keys, as code checks them against the
     span ``rows``; ``None`` and why when the answer cannot be used."""
@@ -155,6 +217,8 @@ def check(
     if not narrative:
         return None, "its narrative was empty"
     if len(narrative) > share // 4:
+        if size is not None:
+            size(_size(record, share, len(narrative)))
         return None, f"its narrative passed {share // 4:,} characters"
     keys = dict(record.keys)
     found = numbers(span)
@@ -174,6 +238,8 @@ def check(
     narrative = _VALUES.sub(lambda m: _checked(m, span, found, kept, exists), narrative)
     made = replace(record, narrative=narrative, keys=tuple(kept), state="applied")
     if made.chars > share:
+        if size is not None:
+            size(_size(record, share, len(narrative), made.chars))
         return None, "the record passed its share"
     return made, ""
 

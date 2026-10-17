@@ -144,9 +144,10 @@ def test_the_geometry_scales_its_budgets_on_small_ceilings_and_refuses_too_littl
 
 
 async def test_the_gateways_input_limit_caps_the_ceiling(harness: Harness) -> None:
-    harness.gateway.limits = {"main": {"max_input_tokens": 90_000, "max_output_tokens": 8_000}}
+    # Keep this positive capping fixture above the system/tool geometry floor.
+    harness.gateway.limits = {"main": {"max_input_tokens": 100_000, "max_output_tokens": 8_000}}
     record = await harness.run("run-1", [Reply("Hi.")])
-    assert folds(record)["geometry"]["ceiling"] == 90_000  # the output is not in it
+    assert folds(record)["geometry"]["ceiling"] == 100_000  # the output is not in it
 
 
 async def test_a_claude_models_window_is_shared_with_its_answer(harness: Harness) -> None:
@@ -1449,3 +1450,105 @@ async def test_a_fold_whose_archiving_failed_counts_its_calls_once(archive: Arch
     summary = cast(Json, made.summary())
     assert [call.get("cancelled") for call in summary["calls"]] == [None]
     assert summary["calls"][0]["input_tokens"] == 40_000
+
+
+@pytest.mark.parametrize("failure", ["narrative", "record_share"])
+async def test_size_rejected_enrichment_gets_measured_bounded_repair(
+    archive: Archive,
+    failure: str,
+) -> None:
+    from sandbox_science.orchestrator.history.enrich import enrich
+    from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
+
+    rows, record = spanned(archive, "Known result; the proof obligation remains open.")
+    if failure == "record_share":
+        record = replace(record, skeleton=("x" * 3400,))
+        rejected = "A" * 600
+    else:
+        rejected = "A" * 1200
+    reference = rows[-1].message_id
+    repaired = f"Known result in {reference}; the proof obligation remains open."
+    model = ScriptedModel(
+        [
+            ModelTurn(answer_with(rejected), cost=1),
+            ModelTurn(answer_with(repaired, keys=[]), cost=2),
+        ]
+    )
+    view = [{"role": "system", "content": "Original cached prefix"}]
+    spent: list[ModelUsage] = []
+    made = await enrich(model, view, (), record, rows, share=4000, spent=spent.append)
+    assert made.failed is None
+    assert made.record.state == "applied"
+    assert made.record.narrative == repaired
+    assert made.record.chars <= 4000
+    assert len(model.requests) == 2
+    assert model.requests[1][:-1] == model.requests[0]
+    assert model.requests[0][:-1] == view
+    feedback = model.requests[1][-1]["content"]
+    assert len(feedback) < 4000
+    assert f"{len(rejected):,} characters" in feedback
+    assert "full-record share remains 4,000" in feedback
+    assert "leaving" in feedback
+    assert "keys: []" in feedback
+    assert "critical handoff" in feedback
+    assert "source/artifact references" in feedback
+    assert rejected not in feedback
+    if failure == "narrative":
+        assert "overage 200" in feedback
+        assert "target of at most 500 characters" in feedback
+    else:
+        measured = replace(record, narrative=rejected, state="applied").chars
+        assert f"record measured {measured:,} characters" in feedback
+        assert f"{measured - 4000:,} over its full-record share" in feedback
+    assert [call.cost for call in made.calls] == [1, 2]
+    assert spent == list(made.calls)
+
+
+async def test_second_size_failure_keeps_same_honest_skeleton_and_call_bound(
+    archive: Archive,
+) -> None:
+    from sandbox_science.orchestrator.history.enrich import enrich
+    from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
+
+    rows, record = spanned(archive, "Unresolved proof obligation and retained source.")
+    model = ScriptedModel(
+        [
+            ModelTurn(answer_with("x" * 1200), cost=1),
+            ModelTurn(answer_with("y" * 1300), cost=2),
+            ModelTurn(answer_with("A third call is forbidden."), cost=3),
+        ]
+    )
+    made = await enrich(model, (), (), record, rows, share=4000)
+    assert made.record == record
+    assert made.record.state == "skeleton_only"
+    assert (
+        made.failed
+        == "its narrative passed 1,000 characters; its narrative passed 1,000 characters"
+    )
+    assert len(model.requests) == 2
+    assert [call.cost for call in made.calls] == [1, 2]
+
+
+async def test_fold_size_repair_runs_through_gateway_and_keeps_cached_prefix(
+    harness: Harness,
+) -> None:
+    harness.gateway.per_token = 4.0
+    seed(harness, 13)
+    harness.gateway.enrich = [
+        Reply(answer_with("x" * 20_000)),
+        Reply(answer_with("Earlier work remains conditional.", keys=[])),
+    ]
+    outputs = Reply(calls=[("shell", {"script": PRINT}), ("shell", {"script": PRINT})])
+    record = await harness.run("run-1", [outputs, Reply("Done.")], options=ENRICHED)
+    (made,) = folds(record)["folds"]
+    assert made["state"] == "applied"
+    region = next(
+        str(message["content"])
+        for message in harness.gateway.main[-1]
+        if FOLD_REGION.text in str(message.get("content"))
+    )
+    assert "quoted:\n> Earlier work remains conditional." in region
+    first, repair = harness.gateway.requests["enrich"]
+    assert repair[:-1] == first
+    assert "Size repair for the existing final retry" in repair[-1]["content"]
+    assert len(folds(record)["calls"]) == 2
