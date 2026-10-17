@@ -39,7 +39,7 @@ from sandbox_science.orchestrator.control.errors import (
     UNAVAILABLE,
 )
 from sandbox_science.orchestrator.documents import DocumentStore
-from sandbox_science.orchestrator.runstate import close_events
+from sandbox_science.orchestrator.runstate import cancel_requested, close_events
 
 Ended = Literal["returned", "failed", "cancelled", "limit_reached", "interrupted"]
 """How a delegated run ended, as the harness observed it (PD-17)."""
@@ -245,6 +245,10 @@ class DelegationRecords:
         track = cast(dict[str, object], found).get("track_id") if isinstance(found, dict) else None
         with self.control.write() as tx:
             db = tx.sql
+            if cancel_requested(db, project, session, delegation.parent):
+                raise ControlError(
+                    CONFLICT, "the parent tree has an explicit Stop; no child starts"
+                )
             try:
                 written = db.execute(
                     "INSERT INTO delegations (delegation_id, project_id, session_id, parent, "  # noqa: S608
@@ -332,7 +336,8 @@ class DelegationRecords:
     ) -> list[tuple[str, str]]:
         """End a dead tree, in one transaction (PD-40): the session's delegations still
         running, or only those of ``parent``'s tree, its children's and theirs, end
-        ``interrupted``, and every run of those delegations that lacks its ``stopped`` event gets
+        ``interrupted`` (or ``cancelled`` under a durable Stop), and every run lacking its
+        ``stopped`` event gets
         it (``close_events``). Called as a main run starts, when none of the session's
         delegations can be running, and when the run service ends a dead run. The IDs
         and runs of the delegations it ended."""
@@ -346,11 +351,20 @@ class DelegationRecords:
         with self.control.write() as tx:
             db = tx.sql
             rows = db.execute(
-                f"{tree}UPDATE delegations SET ended = 'interrupted', stopped = 'interrupted', "  # noqa: S608
-                "ended_at = ? WHERE project_id = ? AND session_id = ? AND ended IS NULL "
-                "AND (? IS NULL OR parent IN (SELECT run FROM tree)) RETURNING delegation_id, run",
-                (*values, now.isoformat(), project, session, parent),
+                f"{tree}SELECT delegation_id, run FROM delegations "  # noqa: S608
+                "WHERE project_id = ? AND session_id = ? AND ended IS NULL "
+                "AND (? IS NULL OR parent IN (SELECT run FROM tree))",
+                (*values, project, session, parent),
             ).fetchall()
+            for delegation_id, run in rows:
+                reason = (
+                    "cancelled" if cancel_requested(db, project, session, run) else "interrupted"
+                )
+                db.execute(
+                    "UPDATE delegations SET ended = ?, stopped = ?, ended_at = ? "
+                    "WHERE project_id = ? AND session_id = ? AND delegation_id = ?",
+                    (reason, reason, now.isoformat(), project, session, delegation_id),
+                )
             unclosed = db.execute(
                 f"{tree}SELECT d.run FROM delegations AS d WHERE d.project_id = ? "  # noqa: S608
                 "AND d.session_id = ? AND (? IS NULL OR d.parent IN (SELECT run FROM tree)) "

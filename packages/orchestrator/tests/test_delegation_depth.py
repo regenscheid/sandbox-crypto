@@ -513,7 +513,7 @@ async def test_each_level_stops_its_children_within_its_parents_time(
         records = found.records
         leading = records.get(PROJECT, SESSION, json.loads(text)["delegation_id"])
         (part,) = records.handbacks(PROJECT, SESSION, parent=leading.run)
-        assert (leading.ended, part.ended) == ("cancelled", "interrupted")
+        assert (leading.ended, part.ended) == ("interrupted", "interrupted")
         assert part.ended_at is not None
         assert leading.ended_at is not None
         assert part.ended_at <= leading.ended_at
@@ -648,10 +648,10 @@ async def test_a_lost_lease_stops_the_tree_with_its_grandchild_mid_call(
     finally:
         free.set()
     try:
-        assert (child.stopped, grandchild.stopped) == ("cancelled", "cancelled")
+        assert (child.stopped, grandchild.stopped) == ("interrupted", "interrupted")
         assert grandchild.ended_at <= child.ended_at
         assert records.running(PROJECT, SESSION) == []
         ended = [d.ended for d in records.listed(PROJECT, SESSION)[0]]
-        assert ended == ["cancelled", "cancelled"]
+        assert ended == ["interrupted", "interrupted"]
     finally:
         store.close()

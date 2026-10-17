@@ -7,12 +7,14 @@ does the same for what a command-line run left; and the outcomes reach that run.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from sandbox_science.contracts import ExecutionContext
+from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.delegation import records as records_module
 from sandbox_science.orchestrator.delegation.records import (
     Delegation,
@@ -32,6 +34,60 @@ from .test_run_service import post, runs, serving, states
 
 PAST = datetime.now(UTC) - timedelta(minutes=5)
 ROOT = run_name(PAST, "crashed")
+
+
+@pytest.mark.parametrize("selected", ["root", "child"])
+def test_explicit_stop_survives_restart_and_applies_only_to_its_subtree(
+    tmp_path: Path, selected: str
+) -> None:
+    first, sibling, leaf, completed = [_delegation(n) for n in range(4)]
+    leaf = leaf.model_copy(update={"parent": first.run})
+    with closing(ProjectStore(tmp_path)) as store:
+        store.create(PROJECT, "minimal", "sha256:" + "a" * 64)
+        store.open_session(PROJECT, SESSION, dedicated=False)
+        store.open_session(PROJECT, "other", dedicated=False)
+        state, records = RunState(store.control), DelegationRecords(store.control)
+        for made in (first, sibling, leaf, completed):
+            records.start(PROJECT, SESSION, made)
+            state.append(PROJECT, SESSION, made.run, "started", {})
+        records.end(PROJECT, SESSION, completed.delegation_id, Ending("returned", "answered"))
+        state.cancel(PROJECT, SESSION, ROOT if selected == "root" else first.run)
+    # Reopen before any cleanup or outcome: the accepted intent is already durable.
+    with closing(ProjectStore(tmp_path)) as store:
+        state, records = RunState(store.control), DelegationRecords(store.control)
+        assert state.cancelled(PROJECT, SESSION, first.run)
+        assert state.cancelled(PROJECT, SESSION, leaf.run)
+        assert state.cancelled(PROJECT, SESSION, sibling.run) == (selected == "root")
+        assert not state.cancelled(PROJECT, "other", first.run)
+        assert not state.cancelled(PROJECT, SESSION, "unrelated")
+        later = _delegation(4).model_copy(update={"parent": leaf.run})
+        with pytest.raises(ControlError, match="explicit Stop"):
+            records.start(PROJECT, SESSION, later)
+        records.abandon(PROJECT, SESSION, parent=ROOT)
+        for made in (first, leaf, sibling):
+            expected = "cancelled" if made != sibling or selected == "root" else "interrupted"
+            found = records.get(PROJECT, SESSION, made.delegation_id)
+            assert (found.ended, found.stopped) == (expected, expected)
+            assert state.events(PROJECT, SESSION, made.run)[-1].data["stopped"] == expected
+        assert records.get(PROJECT, SESSION, completed.delegation_id).ended == "returned"
+        assert records.abandon(PROJECT, SESSION, parent=ROOT) == []
+
+
+async def test_service_recovery_preserves_a_stop_accepted_before_the_process_died(
+    delegating: Harness,
+) -> None:
+    state, records = _dead_tree(delegating)
+    state.cancel(PROJECT, SESSION, ROOT)
+    async with serving(delegating):
+        await eventually(lambda: runs(delegating).ended(PROJECT, SESSION, ROOT), timeout=10)
+        await eventually(lambda: records.running(PROJECT, SESSION) == [], timeout=10)
+    assert runs(delegating).events(PROJECT, SESSION, ROOT)[-1].data["stopped"] == "cancelled"
+    assert records.get(PROJECT, SESSION, _delegation(0).delegation_id).ended == "cancelled"
+    # A saved completed answer keeps its own event even though cleanup came later.
+    assert (
+        runs(delegating).events(PROJECT, SESSION, _delegation(1).run)[-1].data["stopped"]
+        == "answered"
+    )
 
 
 def _delegation(n: int) -> Delegation:

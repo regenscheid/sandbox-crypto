@@ -616,7 +616,7 @@ class Harness:
                     chat = self.chat(admitted)
                     if chat is not None and view is not None:
                         chat.shown = view.shown
-                    delegations = await self._delegations(admitted, chat, memory)
+                    delegations = await self._delegations(admitted, chat, memory, stop)
                     toolbox = await self._toolbox(
                         admitted,
                         chat,
@@ -960,6 +960,7 @@ class Harness:
         admitted: Admitted,
         chat: RunChat | None,
         memory: Snapshot | None,
+        stop: asyncio.Event | None,
     ) -> Delegations | None:
         """A main run's delegations: their handbacks always, and the delegate tools when
         its project lets its runs delegate (PD-33, PD-35); and a delegated task's own, when
@@ -1009,6 +1010,7 @@ class Harness:
             depth=depth,
             tokens=request.tokens if depth > 0 else None,
             stop_by=request.stop_by,
+            stop=stop,
             clock=clock,
         )
 
@@ -1017,7 +1019,8 @@ class Harness:
     ) -> ChildEnd:
         """Run a delegated run of ``parent`` to its end and save its record (PD-34): in
         the parent's session and environment, with the memory version its root was
-        given (PM-8). A cancel while ``stop`` is set ends it ``cancelled``."""
+        given (PM-8). Cleanup saves partial evidence; only an explicit Stop ends it
+        ``cancelled``, while parent failure or lease loss ends it ``interrupted``."""
         if self.stores is None:
             raise ValueError("a delegated run needs the state directory's stores")
         request = RunRequest(
@@ -1042,6 +1045,8 @@ class Harness:
         )
         sink = _ChildSink(child.run_id)
         finished = await self.start(admitted, sink, stop=stop)
+        if finished.transcript.stopped == "cancelled" and child.deadline.interrupted:
+            finished.transcript.stopped = "interrupted"
         await save(
             finished.fields(),
             finished.status,

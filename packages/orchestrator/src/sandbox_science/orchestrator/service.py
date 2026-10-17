@@ -291,7 +291,11 @@ class RunService:
             }
         else:
             stopped = {
-                "stopped": "interrupted",
+                "stopped": (
+                    "cancelled"
+                    if await threaded(runs.cancelled, project, session, run)
+                    else "interrupted"
+                ),
                 "failure": None,
                 "final_text": None,
                 "record": None,

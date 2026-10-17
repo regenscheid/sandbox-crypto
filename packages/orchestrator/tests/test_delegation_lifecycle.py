@@ -346,7 +346,7 @@ async def test_a_lost_lease_cancels_the_live_check(delegating: Harness) -> None:
 
             def cancelled() -> bool:
                 found = [c.stopped for c in kept_children(delegating, held.run)]
-                return found == ["cancelled"]
+                return found == ["interrupted"]
 
             await eventually(cancelled, timeout=20)
             # Its root lost the session, so the child could not write its stopped event:
@@ -358,11 +358,11 @@ async def test_a_lost_lease_cancels_the_live_check(delegating: Harness) -> None:
         free.set()
     records = DelegationRecords(ProjectStore(delegating.state).control)
     (outcome,) = records.handbacks(PROJECT, SESSION)
-    assert (outcome.ended, outcome.parent) == ("cancelled", held.run)
+    assert (outcome.ended, outcome.parent) == ("interrupted", held.run)
     stopped = state.events(PROJECT, SESSION, name)[-1]
     assert (stopped.kind, stopped.data["stopped"], stopped.data["record"]) == (
         "stopped",
-        "cancelled",
+        "interrupted",
         name,
     )
 
@@ -532,8 +532,9 @@ def _delegations(
 BRIEF = {"check": {"entry": "C-1", "revision": 1}}
 
 
+@pytest.mark.parametrize("explicit", [False, True])
 async def test_a_child_that_outlives_its_cancel_is_interrupted(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, explicit: bool
 ) -> None:
     monkeypatch.setattr(hook, "STOP_SECONDS", 0.05)
     never = asyncio.Event()
@@ -545,13 +546,19 @@ async def test_a_child_that_outlives_its_cancel_is_interrupted(
         return ChildEnd("cancelled", False, None)
 
     made, records, projects, documents = _delegations(tmp_path, stubborn)
+    made.stop = asyncio.Event()
     try:
         async with made.lease():
             text, _ = await made.call("delegate", BRIEF)
             await asyncio.sleep(0.01)  # it starts
+            if explicit:
+                made.stop.set()
         delegation_id = json.loads(text)["delegation_id"]
         found = records.get(PROJECT, SESSION, delegation_id)
-        assert (found.ended, found.stopped) == ("interrupted", "cancelled")
+        assert (found.ended, found.stopped) == (
+            "interrupted",
+            "cancelled" if explicit else "interrupted",
+        )
     finally:
         never.set()
         for child in made.children.values():
@@ -740,7 +747,7 @@ async def test_parent_closing_waits_for_all_children_and_remains_interruptible(
         projects.close()
 
 
-async def test_a_child_cancelled_before_it_starts_is_cancelled(tmp_path: Path) -> None:
+async def test_parent_cleanup_before_a_child_starts_is_interruption(tmp_path: Path) -> None:
     async def unused(child: Child, stop: asyncio.Event) -> ChildEnd:
         raise AssertionError
 
@@ -749,7 +756,7 @@ async def test_a_child_cancelled_before_it_starts_is_cancelled(tmp_path: Path) -
         async with made.lease():
             text, _ = await made.call("delegate", BRIEF)  # its parent ends at once
         found = records.get(PROJECT, SESSION, json.loads(text)["delegation_id"])
-        assert (found.ended, found.stopped) == ("cancelled", "cancelled")
+        assert (found.ended, found.stopped) == ("interrupted", "interrupted")
     finally:
         documents.close()
         projects.close()

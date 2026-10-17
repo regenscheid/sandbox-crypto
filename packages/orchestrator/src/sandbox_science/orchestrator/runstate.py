@@ -454,7 +454,9 @@ class RunState:
     # --- Cancels, the service's heartbeat and the budget -------------------------------
 
     def cancel(self, project: str, session: str, run: str) -> None:
-        """Ask for the run to be cancelled (RS-11); asking again changes nothing."""
+        """Persist an explicit Stop for this run and its subtree before signalling it.
+        The immutable delegation ancestry carries this intent across process loss.
+        Asking again changes nothing; an already saved outcome remains authoritative."""
         with self.control.write() as tx:
             _session(tx.sql, project, session)
             tx.sql.execute(
@@ -464,11 +466,7 @@ class RunState:
 
     def cancelled(self, project: str, session: str, run: str) -> bool:
         with self.control.read() as tx:
-            found = tx.sql.execute(
-                "SELECT 1 FROM run_cancels WHERE project_id = ? AND session_id = ? AND run = ?",
-                (project, session, run),
-            ).fetchone()
-        return found is not None
+            return cancel_requested(tx.sql, project, session, run)
 
     def beat(self, holder: str) -> None:
         """The run service is running (RS-3)."""
@@ -838,6 +836,22 @@ def _message(row: tuple[object, ...]) -> ChatMessage:
     )
 
 
+def cancel_requested(db: sqlite3.Connection, project: str, session: str, run: str) -> bool:
+    """Whether this run or an ancestor has a durable explicit Stop, in this transaction.
+    UNION also bounds traversal of malformed cyclic legacy ancestry."""
+    return (
+        db.execute(
+            "WITH RECURSIVE ancestry(run) AS (SELECT ? UNION SELECT d.parent "
+            "FROM delegations AS d JOIN ancestry AS a ON d.run = a.run "
+            "WHERE d.project_id = ? AND d.session_id = ?) "
+            "SELECT 1 FROM run_cancels WHERE project_id = ? AND session_id = ? "
+            "AND run IN (SELECT run FROM ancestry) LIMIT 1",
+            (run, project, session, project, session),
+        ).fetchone()
+        is not None
+    )
+
+
 def close_events(
     db: sqlite3.Connection, project: str, session: str, run: str, now: datetime
 ) -> bool:
@@ -866,7 +880,14 @@ def close_events(
             "record": run,
         }
         if saved is not None
-        else {"stopped": "interrupted", "failure": None, "final_text": None, "record": None}
+        else {
+            "stopped": "cancelled"
+            if cancel_requested(db, project, session, run)
+            else "interrupted",
+            "failure": None,
+            "final_text": None,
+            "record": None,
+        }
     )
     db.execute(
         "INSERT INTO run_events VALUES (?, ?, ?, ?, ?, 'stopped', ?)",

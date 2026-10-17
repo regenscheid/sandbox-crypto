@@ -328,6 +328,22 @@ that never appears needs operator reconciliation of its upstream outcome; the wo
 does not infer a safe retry from elapsed time. This deliberately favors a visible
 blocked environment over losing an uncertain compute allocation.
 
+### Explicit Stop and interrupted cleanup
+
+An accepted Stop is stored before signalling cancellation. The existing immutable
+delegation ancestry applies that intent to every descendant; another session or
+sibling subtree is unaffected. Starting a child checks the parent's Stop in the
+same transaction that admits the child, closing the Stop/admission race. Recovery
+of a dead attempt retains this distinction even when no final record was saved.
+Saved outcomes stay immutable.
+
+Cleanup after a lost lease, parent failure or service interruption still cancels
+live child tasks and saves their partial records, but labels them `interrupted`.
+Only an explicit root Stop or `cancel_delegation` makes their outcome `cancelled`.
+A child that fails to stop within the cleanup deadline remains `interrupted`, with
+its requested stop reason preserved; a request alone does not prove effects ended.
+This is the reason classification prerequisite for tree Resume, not a Resume path.
+
 ### Bounded legacy run reads
 
 Materializing a saved `RunRecord` defaults to an 8 MiB byte limit. SQLite incremental
