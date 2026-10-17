@@ -27,6 +27,10 @@ class ModelIntents:
             raise ValueError("unknown model intent kind")
         if not alias or len(alias) > 200:
             raise ValueError("invalid model alias")
+        from sandbox_science.orchestrator.runstate import RunState
+
+        if RunState(self.control).over_cost_limit(owner.project, self.clock.now()):
+            raise ControlError(CONFLICT, "model_budget: project budget is exhausted")
         identity = new_id("model")
         with self.control.write() as tx:
             check_owner(tx.sql, owner)

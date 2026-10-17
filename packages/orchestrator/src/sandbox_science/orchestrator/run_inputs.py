@@ -99,14 +99,31 @@ class RecordInputs(TurnHook):
         run: str,
         request: dict[str, JsonValue],
         configuration: dict[str, JsonValue],
+        *,
+        predecessor: str | None = None,
     ) -> None:
         self.store, self.context, self.run = store, context, run
         self.request, self.configuration = request, configuration
+        self.predecessor = predecessor
 
     async def notices(self, point: Point, run: RunView) -> Sequence[Notice]:
         if point == "start":
             if run.prompt_provenance is None:
                 raise ValueError("starting inputs need the assembled prompt pins")
+            if self.predecessor is not None:
+                try:
+                    previous = await threaded(
+                        self.store.get,
+                        self.context.project_id,
+                        self.context.session_id,
+                        self.predecessor,
+                    )
+                except ControlError as exc:
+                    if exc.kind != NOT_FOUND:
+                        raise
+                else:
+                    if previous.pins != run.prompt_provenance:
+                        raise ControlError(CONFLICT, "recovery prompt/tool/skill pins changed")
             await threaded(
                 self.store.save,
                 StartingInputs(

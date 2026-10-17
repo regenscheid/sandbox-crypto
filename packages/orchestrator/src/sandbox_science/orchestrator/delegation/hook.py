@@ -73,7 +73,7 @@ from .outcome import Target, proof_reads
 from .prompt import brief_text, check_task, evidence_line, task_text
 from .records import Delegation, DelegationRecords, DelegationSettings, Ended, Ending
 from .specs import CheckBrief, Named, TaskBrief, WaitRequest, brief_of, offered
-from .work import work_record
+from .work import record_work
 
 _log = logging.getLogger(__name__)
 
@@ -554,16 +554,10 @@ class Delegations(TurnHook):
     async def _worked(self, delegation: Delegation, created: tuple[str, ...] = ()) -> None:
         """Record an ended delegation's outcome as work on its entry; a record that
         cannot be written leaves the outcome as it is."""
-        found = work_record(delegation, self.context.session_id, created)
-        if found is None:
-            return
-        mutation, author = found
-        provenance = {"delegation": delegation.delegation_id}
         try:
-            await threaded(
-                self.ledger.change, self.context.project_id, mutation, author,
-                provenance=provenance,
-            )  # fmt: skip
+            await record_work(
+                self.ledger, self.context.project_id, self.context.session_id, delegation, created
+            )
         except Exception:
             _log.exception(
                 "the work of delegation %s could not be recorded", delegation.delegation_id

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -62,13 +63,13 @@ def _pending_children(db: sqlite3.Connection, project: str, session: str, work: 
             "AND state NOT IN ('completed','stopped') UNION ALL "
             "SELECT 1 FROM delegations d JOIN research_attempts a "
             "ON a.project=d.project_id AND a.session=d.session_id AND a.run=d.parent "
-            "WHERE a.project=? AND a.session=? AND a.work=? AND d.ended IS NOT NULL "
-            "AND NOT EXISTS (SELECT 1 FROM research_attempts ack WHERE ack.project=a.project "
+            "WHERE a.project=? AND a.session=? AND a.work=? AND (d.ended IS NULL OR "
+            "(NOT EXISTS (SELECT 1 FROM research_attempts ack WHERE ack.project=a.project "
             "AND ack.session=a.session AND ack.work=a.work AND ack.run=d.acknowledged) "
             "AND NOT EXISTS (SELECT 1 FROM response_receipts r "
             "JOIN research_attempts p ON p.project=r.project AND p.session=r.session "
             "AND p.run=r.run WHERE p.project=a.project AND p.session=a.session "
-            "AND p.work=a.work AND r.source='delegations' AND r.notice=d.delegation_id) LIMIT 1",
+            "AND p.work=a.work AND r.source='delegations' AND r.notice=d.delegation_id))) LIMIT 1",
             (project, session, work, project, session, work),
         ).fetchone()
         is not None
@@ -133,6 +134,16 @@ class WorkRecords:
                 "AND a.work=w.work WHERE a.project=? AND a.session=? AND a.run=?",
                 (project, session, run),
             ).fetchone()
+        if row is None:
+            with self.control.read() as tx:
+                row = tx.sql.execute(
+                    f"SELECT {_COLUMNS} FROM research_work w "  # noqa: S608
+                    "JOIN research_sessions s USING(project,session) JOIN research_observations o "
+                    "ON o.project=w.project AND o.session=w.session AND o.work=w.work "
+                    "WHERE w.project=? AND w.session=? AND o.kind='resume_lease' "
+                    "AND json_extract(o.detail,'$.run')=?",
+                    (project, session, run),
+                ).fetchone()
         return _work(row) if row is not None else None
 
     def owner(self, project: str, session: str, run: str) -> Ownership | None:
@@ -296,10 +307,58 @@ class WorkRecords:
                 "AND outcome IS NULL",
                 (record.stopped, project, session, run),
             )
+            if (
+                state == "completed"
+                and db.execute(
+                    "SELECT 1 FROM research_model_calls m JOIN research_attempts a "
+                    "ON a.project=m.project AND a.session=m.session AND a.run=m.run "
+                    "WHERE a.project=? AND a.session=? AND a.work=? AND m.usage IS NULL LIMIT 1",
+                    (project, session, work),
+                ).fetchone()
+            ):
+                state, reason = "blocked", "unknown_model_usage"
             db.execute(
                 "UPDATE research_work SET state=?,reason=? WHERE project=? AND session=? "
                 "AND work=? AND current=? AND state!='stopped'",
                 (state, reason, project, session, work, run),
+            )
+
+    def interrupt_run(self, project: str, session: str, run: str, *, stopped: bool = False) -> None:
+        """Late cleanup of a superseded attempt cannot interrupt its successor."""
+        with self.control.write() as tx:
+            row = tx.sql.execute(
+                "SELECT w.root FROM research_attempts a JOIN research_work w "
+                "ON w.project=a.project AND w.session=a.session AND w.work=a.work "
+                "JOIN research_sessions s ON s.project=a.project AND s.session=a.session "
+                "WHERE a.project=? AND a.session=? AND a.run=? AND w.current=a.run "
+                "AND a.epoch=s.epoch UNION ALL SELECT o.work FROM research_observations o "
+                "JOIN research_sessions s USING(project,session) JOIN research_resumes r "
+                "ON r.project=o.project AND r.session=o.session AND r.request=o.identity "
+                "WHERE o.project=? AND o.session=? AND o.kind='resume_lease' "
+                "AND json_extract(o.detail,'$.run')=? AND json_extract(o.detail,'$.epoch')=s.epoch "
+                "AND r.status='running' AND r.root=s.root LIMIT 1",
+                (project, session, run, project, session, run),
+            ).fetchone()
+            if row is None:
+                return
+            state, reason = ("stopped", "user_stop") if stopped else ("paused", "interrupted")
+            tx.sql.execute(
+                "UPDATE research_work SET state=?,reason=? WHERE project=? "
+                "AND session=? AND root=? AND state IN ('running','waiting','paused','blocked')",
+                (state, reason, project, session, row[0]),
+            )
+            tx.sql.execute(
+                "UPDATE research_resumes SET status='blocked',reason=? WHERE project=? "
+                "AND session=? AND root=? AND status='running'",
+                (reason, project, session, row[0]),
+            )
+
+    def reject_queued(self, project: str, session: str, request: str, reason: str) -> None:
+        with self.control.write() as tx:
+            tx.sql.execute(
+                "UPDATE research_resumes SET status='blocked',reason=? "
+                "WHERE project=? AND session=? AND request=? AND status='queued'",
+                (reason[:1000], project, session, request),
             )
 
     def interrupt(self, project: str, session: str, root: str) -> None:
@@ -308,6 +367,11 @@ class WorkRecords:
             tx.sql.execute(
                 "UPDATE research_work SET state='paused',reason='interrupted' "
                 "WHERE project=? AND session=? AND root=? AND state IN ('running','waiting')",
+                (project, session, root),
+            )
+            tx.sql.execute(
+                "UPDATE research_resumes SET status='blocked',reason='interrupted' "
+                "WHERE project=? AND session=? AND root=? AND status='running'",
                 (project, session, root),
             )
 
@@ -417,6 +481,17 @@ class WorkRecords:
                 "UPDATE research_resumes SET status='running' WHERE project=? "
                 "AND session=? AND request=?",
                 (project, session, request),
+            )
+            db.execute(
+                "INSERT INTO research_observations VALUES (?,?,?,'resume_lease',?,?,?)",
+                (
+                    project,
+                    session,
+                    root,
+                    request,
+                    self.clock.now().timestamp(),
+                    json.dumps({"run": lease_run, "epoch": epoch}),
+                ),
             )
             db.execute(
                 "UPDATE research_work SET state='waiting',reason=NULL WHERE project=? "

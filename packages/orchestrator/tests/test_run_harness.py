@@ -37,6 +37,9 @@ class Worker:
 
     base_url = "http://worker.invalid"
 
+    async def fence(self, request):
+        return request
+
     async def environment(self, environment_id: str) -> None:
         raise WorkerAPIError(ErrorKind.UNSUPPORTED, "a local worker manages no environments")
 
@@ -195,7 +198,7 @@ async def test_a_run_without_stores_uses_its_environment_and_keeps_nothing(
         await harness.run(RunRequest("p", "s", "Go"), Sink())
 
 
-async def test_a_delegated_runs_kernels_stop_when_it_ends(tmp_path: Path) -> None:
+async def test_unsettled_delegated_kernels_survive_until_explicit_stop(tmp_path: Path) -> None:
     """PD-37: a delegated run's own kernels stop with it; a main run uses the session's
     and first closes those its session's earlier runs left (PD-40)."""
 
@@ -233,7 +236,12 @@ async def test_a_delegated_runs_kernels_stop_when_it_ends(tmp_path: Path) -> Non
         assert worker.closed == ["left-behind"]  # never the session's own
         parent = run_name(first.started_at, "run-1")
         delegated = RunRequest("p", "s", "Look.", run_id="run-2", parent=parent, delegation="dlg-1")
-        await harness.run(delegated, Sink())
+        unfinished = await harness.run(delegated, Sink())
+        assert worker.closed == ["left-behind"]
+        from sandbox_science.orchestrator.continuity.records import WorkRecords
+
+        WorkRecords(projects.control).stop("p", "s", run_name(unfinished.started_at, "run-2"))
+        await harness.release_child(unfinished)
     finally:
         documents.close()
     assert worker.closed == ["left-behind", "run-2"]

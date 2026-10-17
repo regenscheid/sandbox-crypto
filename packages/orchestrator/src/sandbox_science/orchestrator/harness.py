@@ -37,6 +37,8 @@ from sandbox_science.contracts import (
     Location,
     new_id,
 )
+from sandbox_science.contracts.context import ExecutionAuthority
+from sandbox_science.contracts.recovery import RecoveryFence
 from sandbox_science.contracts.worker import Language
 
 from . import figurechecks, mathchecks
@@ -682,6 +684,19 @@ class Harness:
         await threaded(
             Blueprints(self.stores.projects.control).save, owner, self._blueprint(admitted)
         )
+        await self.client.fence(
+            RecoveryFence(project_id=owner.project, session_id=owner.session, epoch=owner.epoch)
+        )
+        admitted = dataclasses.replace(
+            admitted,
+            context=admitted.context.model_copy(
+                update={
+                    "authority": ExecutionAuthority(
+                        work=owner.work, run=owner.run, epoch=owner.epoch
+                    )
+                }
+            ),
+        )
         request = dataclasses.replace(request, work=owner.work, epoch=owner.epoch)
         admitted = dataclasses.replace(admitted, request=request)
         with authority(owner):
@@ -709,7 +724,11 @@ class Harness:
         try:
             async with AsyncExitStack() as stack:
                 with interruption.protect():
-                    if admitted.stateful and admitted.request.parent is None:
+                    if (
+                        admitted.stateful
+                        and admitted.request.parent is None
+                        and admitted.request.predecessor is None
+                    ):
                         await stack.enter_async_context(
                             environment_claim(
                                 self.client,
@@ -816,6 +835,7 @@ class Harness:
                                     dict[str, JsonValue],
                                     TypeAdapter(Settings).dump_python(self.settings, mode="json"),
                                 ),
+                                predecessor=request.predecessor,
                             ),
                             *hooks,
                         )
@@ -1171,14 +1191,15 @@ class Harness:
             clock=clock,
         )
 
-    @staticmethod
-    def _blueprint(admitted: Admitted) -> Blueprint:
+    def _blueprint(self, admitted: Admitted) -> Blueprint:
         return Blueprint(
             context=admitted.context,
             request=cast(
                 dict[str, JsonValue],
                 TypeAdapter(RunRequest).dump_python(
-                    admitted.request, mode="json", exclude={"history", "stop_by"}
+                    dataclasses.replace(admitted.request, alias=self.role(admitted.request).alias),
+                    mode="json",
+                    exclude={"history", "stop_by"},
                 ),
             ),
         )
@@ -1217,7 +1238,6 @@ class Harness:
         if self.stores is None:
             raise ValueError("a delegated run needs the state directory's stores")
         admitted = self._child_admitted(parent, memory_version, child)
-        request = admitted.request
         sink = _ChildSink(child.run_id)
         finished = await self.start(admitted, sink, stop=stop)
         if finished.transcript.stopped == "cancelled" and child.deadline.interrupted:
@@ -1229,19 +1249,29 @@ class Harness:
             projects=self.stores.projects,
             error=sink.error,
         )
-        transcript = finished.transcript
+        await self.release_child(finished)
+        return self.child_outcome(finished, saved_status)
+
+    async def release_child(self, finished: Finished) -> None:
+        """Release only completed/stopped child kernels after durable finalization."""
+        if self.stores is None:
+            return
         work = await threaded(
             WorkRecords(self.stores.projects.control).for_run,
-            request.project,
-            request.session,
-            run_name(admitted.started_at, admitted.run_id),
+            finished.context.project_id,
+            finished.context.session_id,
+            run_name(finished.started_at, finished.run_id),
         )
         if work is not None and work.state in ("completed", "stopped"):
             try:
                 async with asyncio.timeout(KERNEL_CLOSE_SECONDS):
-                    await self.client.close_session(admitted.context, run=work.kernel)
+                    await self.client.close_session(finished.context, run=work.kernel)
             except (WorkerAPIError, TimeoutError) as exc:
                 _log.warning("could not close completed work kernels: %r", exc)
+
+    def child_outcome(self, finished: Finished, saved_status: int) -> ChildEnd:
+        """Typed durable handback shared by first and continued child attempts."""
+        transcript = finished.transcript
         if saved_status == 1 and transcript.failure is None:
             # Saving or acknowledging failed after the child computed its answer.
             # Preserve its report, but never advertise an unsettled result as returned.
@@ -1250,7 +1280,7 @@ class Harness:
                 True,
                 transcript.final_text,
                 errors=("the child's record or delivery acknowledgements could not be saved",),
-                alias=request.alias or self.delegated.alias,
+                alias=finished.alias or self.delegated.alias,
             )
         fence = next((hook for hook in finished.hooks if isinstance(hook, ChildFence)), None)
         found = next((hook for hook in finished.hooks if isinstance(hook, Outcome)), None)
@@ -1264,7 +1294,7 @@ class Harness:
             fence.refused if fence is not None else None,
             result.model_dump(mode="json") if result is not None else None,
             tuple(found.errors) if found is not None else (),
-            request.alias or self.delegated.alias,
+            finished.alias or self.delegated.alias,
             tuple(dict.fromkeys(u.model for u in transcript.usage if u.model is not None))[:10],
             found.read if found is not None else None,
             found.read_proofs if found is not None else None,
