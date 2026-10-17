@@ -1,11 +1,12 @@
 # Handoff
 
-Updated 2026-10-17 on `codex/research-foundations`, base `57e29536`. Replace this file; keep it under 8 KB. Read with [STATUS.md](STATUS.md), the [plan](refactor-plan/PLAN.md) and [CONVENTIONS.md](CONVENTIONS.md).
+Updated 2026-10-17 on `codex/research-ui`, foundation base `631dc246`. Replace this file; keep it under 8 KB. Read with [STATUS.md](STATUS.md), the [plan](refactor-plan/PLAN.md) and [CONVENTIONS.md](CONVENTIONS.md).
 
 ## Where things stand
 
-- **Research foundations (D47/D87):** signed local implementation, unmerged/unpushed; see the [acceptance evidence](docs/agent-reports/foundation-acceptance-2026-10-17.md). Schema 65 supports durable tree Resume within original grants, child settlement, paged history and reconciliation. Model loops run in a separate OpenShell sandbox; replacement preserves UI/state/worker and never restarts paid work automatically. Memory bounds and installed-tool restrictions are implemented. The disposable lab passed and was fully torn down; personal services are untouched.
-- **Context management is built (steps a to g); its acceptance is not met.** Lab 44 was round 1 on GPT models ([STATUS](STATUS.md#phase-and-focus)). The owner's checklist in its report is pending. Round 2 needs the Claude arms, 600,000 arms that fold twice, the control repeated and the state block's placement (CM-25) measured first. Lanes: CM-A (archive, history tools, session view, the cite-handle and gateway fixes), CM-B (the ledger's fields and provenance, cache key), CM-D (the adapters, figure charts), G (the GUI), K (skills, images).
+- **Research UI:** local signed commits add sidebar/chat/research panes, file attachments and live agent observations. Schema 66 retains USER originals; worker copies are scoped and immutable-by-retry. See [UI validation](docs/agent-reports/research-ui-2026-10-17.md): 811 backend and 2,190 web tests pass, desktop/mobile browser checks pass, two GPT-6.1-Sol reviews clear. No real OpenShell upload lab yet. Preview stopped and port closed. No push/merge/deployment.
+- **Foundations (D47/D87):** preserved on `codex/research-foundations` at `631dc246`; [acceptance evidence](docs/agent-reports/foundation-acceptance-2026-10-17.md). Separate OpenShell orchestrator, explicit recursive Resume, child settlement, bounded memory/history, delegated folds and generated binding restrictions. The lab was torn down; personal services untouched.
+- **Context acceptance remains open:** Lab 44's checklist, Claude folding, the 600,000-token arms, repeated control and cache placement measurements need separate real-model acceptance ([STATUS](STATUS.md#phase-and-focus)).
 - **Figures** are built through F5 and F9 to F11. Left: F6, F7, F8, F11b, F12, F13 and the browser lab ([BACKLOG](BACKLOG.md#repository)). **Skills:** K7a and K7b are built; generated binding restrictions are implemented; remaining skill work stays in BACKLOG.
 - **Waiting for the owner:** lab 44's checklist, and Q12 to 14 of the skills spec, still the coordinator's reversible acceptance. The state block's placement is a design question for round 2, not for the owner yet.
 
@@ -15,7 +16,7 @@ Updated 2026-10-17 on `codex/research-foundations`, base `57e29536`. Replace thi
 - **Review by risk:** independent read-only review for security, storage, concurrency and new features; diff/latest-check review for tested code moves, docs and test-only fixes. Current session instructions govern whether delegation is available.
 - **Model routing:** this session uses the owner-requested GPT-6.1-Sol subagents for independent reviews. Current session instructions take precedence over historical routing conventions.
 - **Test hygiene:** one pytest suite, at most `-n 4`; unset `SS_LIVE_GATEWAY` and `SS_INTEGRATION` for ordinary checks. Logs use `~/.cache/pt/`. Foundation fixtures use `/var/tmp/sandbox-science-test-cache/` because `/home/andy` is itself a Git checkout and security tests reject fake CLIs below it. Other fixtures use the home cache. Delete scratch by exact absolute path.
-- **Migration numbers:** this branch is at 65, its base at 57. Recheck main before integration; whoever merges first takes the next number, and later migrations renumber. Never edit `baseline.sql` or a shipped step.
+- **Migration numbers:** this branch is at 66, its foundation base at 65. Recheck main before integration; whoever merges first takes the next number, and later migrations renumber. Never edit `baseline.sql` or a shipped step.
 - **Integration:** this session has no push or merge authorization. Preserve the primary checkout; use signed commits in the managed worktree. Recheck migration numbers and lockstep image/protocol compatibility before future integration.
 - **Tracking files:** only the coordinator, or an agent whose task says so, edits STATUS, this file, PLAN-CHANGES and the plan's progress. Other PRs put their summary in the description and update the `docs/` pages and BACKLOG items they touch.
 - **Never `cd` the coordinator's shell outside the repository.** It moves the Desktop session's working directory, and running subagents are told to work there. Use absolute paths.
@@ -39,7 +40,7 @@ The owner's research on other products' prompts lives outside this repository. T
 ## The code, briefly
 
 - **Loop and service:** features plug in as turn hooks (`hooks.py`). `Harness` is what `run` and `serve` build; `service.py` starts runs for chat messages and comments. Delegation is `delegation/`; skills are `skills/`, with the built-in pack in `skills/builtin/` at the repository root.
-- **Control store:** `orchestrator/control/`, schema version 65 on this branch; private runtime protocol and worker protocol are separately pinned.
+- **Control store:** `orchestrator/control/`, schema version 66 on this branch; private runtime protocol and worker protocol are separately pinned.
 - **Context:** `history/` holds the session archive, the history tools, the session view, the read register and its descriptors; `responses.py` and `messages.py` are the GPT and Claude clients (`model.gateway_model` picks one per alias), `folds.py`, `overview.py`, `bound.py` and `markers.py` hold the folds, and `digest.py` the state block's digest; `consistency/archived.py` ties reviews to the archive. Figures: `view_image` in the orchestrator, the frame and charts in `web/workspace/src/figures`.
 - **Ledger rule** (the owner): weakening a settled state needs no authority; strengthening needs the user or a passing gate. The main agent reopens an obstructed question by itself, with a reason.
 - **Worker:** a change to an existing request or response raises `PROTOCOL_VERSION` (8); a new route does not ([compatibility](../docs/COMPATIBILITY.md)).
@@ -50,4 +51,4 @@ The owner's research on other products' prompts lives outside this repository. T
 
 1. Review/integrate the signed foundation branch and its acceptance report. Upgrade components together; image and control source revisions must match. There is no host-loop fallback.
 2. Real-model scientific continuity, Claude folding and provider cache measurements still need separately budgeted acceptance. Production context order is unchanged after the offline comparison.
-3. Return to UI and remaining product work after acceptance. The authenticated recovery API supplies paged unresolved identities and explicit operator decisions; the workspace currently exposes Resume plus blocked reasons, not a full reconciliation editor.
+3. Review the UI branch and qualify real OpenShell upload delivery before integrating it; remaining product work stays in BACKLOG. The authenticated recovery API supplies paged unresolved identities and explicit operator decisions; the workspace currently exposes Resume plus blocked reasons, not a full reconciliation editor.

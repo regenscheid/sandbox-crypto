@@ -1,10 +1,11 @@
 # Status
 
-Updated 2026-10-17 on `codex/research-foundations`, based on main `57e29536`. This file is replaced, not appended to, and stays under 10 KB. History is in the git log, PR descriptions and [lab reports](docs/agent-reports/).
+Updated 2026-10-17 on `codex/research-ui`, based on foundation `631dc246` (main `57e29536`). This file is replaced, not appended to, and stays under 10 KB. History is in the git log, PR descriptions and [lab reports](docs/agent-reports/).
 
 ## Phase and focus
 
-- **Research foundations before UI work (D47/D87).** The signed local [implementation](docs/agent-reports/foundation-acceptance-2026-10-17.md) includes durable recursive Resume, child settlement, bounded history, delegated folds, generated tool restrictions and separate OpenShell orchestration. GPT-6.1-Sol reviews covered storage, recovery and confinement. Schema 65 journals model/tool effects and original grants. Changes remain unmerged/unpushed; process restart alone never restarts paid research.
+- **Research UI is implemented locally.** Left project/session navigation, central chat with file uploads, and an optional resizable Documents/Plan/Agents/Activity pane. Markdown/LaTeX rendering and existing revisioned editors are shared. Uploads retain immutable USER originals and use scoped worker delivery; schema 66. Independent GPT-6.1-Sol reviews are clear. See [UI validation](docs/agent-reports/research-ui-2026-10-17.md). Signed commits remain unmerged/unpushed; no personal service was started.
+- **Foundations (D47/D87):** preserved at `631dc246`; [acceptance](docs/agent-reports/foundation-acceptance-2026-10-17.md) covers recursive Resume, child settlement, bounded history, delegated folds, tool restrictions and separate OpenShell orchestration. Process restart alone never restarts paid research.
 
 - **Early prototype (owner assessment).** Historical labs exercised individual paths; they do not establish the intended long-running research product. Real-model scientific continuity and cache acceptance remain separate from deterministic and disposable-runtime qualification. The personal services were inactive at the [foundation review](docs/agent-reports/openshell-foundations-review-2026-10-16.md); this work has not started or changed them.
 - **Context management is built; its acceptance is not met.** The owner approved the [spec](../docs/specs/context-management.md) on 2026-10-15 (#439). Steps (a) to (g) are merged: the archive and history tools, the ledger's research state, both adapters, token accounting and the session view, the digest, folds and their enrichment, overviews and retired markers, the region within its bound, the `research_state` stop, the refit on a switch to a smaller model, fold proposals and their GUI.
@@ -12,34 +13,29 @@ Updated 2026-10-17 on `codex/research-foundations`, based on main `57e29536`. Th
   - **Next:** round 2 (the Claude arms, the 600,000 arms, the control repeated), measuring the state block's placement at rebuilds first (CM-25; an open design question), and the gateway: Claude thinking replay stays off until a stable LiteLLM 1.107.0 and the live check (CM-F30). It runs 1.102.1.
 - **Skills:** K1 to K7b are built. K7's allow rule is the owner's option 3 (#486), and helper staging came with it (#493, worker protocol 6). Left: K7c, K8, editing overrides in the GUI, and further skill authoring UI work. Generated installed-tool binding restrictions and runtime inventory digests are implemented locally ([report](docs/agent-reports/skills-inventory-2026-10-17.md)).
 - **Figures** ([spec](../docs/specs/figures.md), approved 2026-10-16, #436): F1 to F5 and F9 to F11 are built, so pinned references, the frame, Vega-Lite charts, the `figures` skill and `view_image` (drawing in the worker, protocol 7; the reviewer's too). The preview origin is another site by default (#506). Left: F6 (Mermaid), F7 (the check), F8, F11b, F12, F13 and the browser lab.
-- **Images:** base images `f09b3668` and MCP proxy `b0978e32` passed historical image tests. The foundation [runtime report](docs/agent-reports/openshell-qualification-2026-10-17.md) pins the live-qualified image; the acceptance report names final-checkout build metadata separately.
 - **How work is done:** the plan's [working rules](CONVENTIONS.md#working-rules) and the [handoff](handoff.md).
 
-## Real use (labs 40 to 44)
+## Prior real use
 
-All used the real model and crypto-research-mcp.
-
-- **Labs 40 to 42:** the whole path with delegation and connectors (162 skills imported), then skills in runs. Their bugs are fixed (#445 to #449 for lab 42).
-- **Lab 43** ([report](docs/agent-reports/babbage-openshell-lab-43-2026-10-16.md)): meaning search stores and scores vectors, but a paraphrase fell under the cutoff (fixed per model family, #474). Both adapters work across runs through LiteLLM 1.102.1. GPT calls had no cost, and an overloaded response ended a run (fixed, #476, #477). Reviews with no reviewer are off (#475). The digest was not in that instance.
-- **Lab 44:** above.
-- **Not yet seen live:** the figures, `view_image` and the K7 staging in real runs, and folds on Claude models.
+Labs 40–44 exercised real models and crypto-research-mcp; historical results and outstanding scientific-continuity acceptance are in the [foundation report](docs/agent-reports/foundation-acceptance-2026-10-17.md) and Lab 44. The UI browser session used explicit synthetic fixtures and made no model calls.
 
 ## What works today
 
 - **Launcher:** `sandbox-science up`, `down`, `status` and `skills update` run the worker, the run service, the workspace and the MCP proxy from one config ([quickstart](../docs/QUICKSTART.md)), including `[model] api` and `images`.
-- **Worker:** OpenShell VM sandboxes at tier 3 with persistent Python and Sage kernels, file handoff, PDF tools, drawing of figures, background jobs and provisioning. Protocol 8 and executor protocol 3 ([compatibility](../docs/COMPATIBILITY.md)); the control store is at version 65 on this branch (57 at its base).
+- **Worker:** OpenShell VM sandboxes at tier 3 with persistent Python and Sage kernels, file handoff, PDF tools, drawing of figures, background jobs and provisioning. Protocol 8 and executor protocol 3 ([compatibility](../docs/COMPATIBILITY.md)); the control store is at version 66 on this branch (65 at its foundation base).
 - **Harness:** the tool loop, the run service, MCP connectors, planning, living documents, comments, automatic consistency review (a rejected evidenced rebuttal leaves a finding `challenged`), math checks, the job watcher, recorded files, project memory, `ask_user`.
 - **Context** ([spec](../docs/specs/context-management.md)): the archive and history tools; a session view with folds, overviews and a state block with a digest; fold proposals the user accepts or dismisses. GPT (`/v1/responses`) and Claude (`/v1/messages`) clients are chosen per alias; every alias uses chat completions until the owner turns them on.
 - **Delegation, ledger, skills, cost:** as in the specs. Cost is the gateway's, or priced from its model information and marked so; with a daily limit, an unpriced call counts it as reached.
 - **Workspace GUI:** documents, comments, reviews, plans, chat, jobs, kernels, provisioning, artifacts, a PDF viewer, the ledger with its research state, figures in text, fold proposals, the Skills page, the Memory page, a session's run tree.
 - **Not built:** Mermaid and the figure check, exports of figures, helper lineage, per-pack thresholds, approvals in the GUI, execution-pinned evidence.
-- **Validation:** full run 14,028 passed and 49 opt-in skips; its sole outdated fixture was corrected and passed 2/2, with no later product change. Web: 2,180 passed; static checks and tier coverage pass. OpenShell interruption/Resume passed and the lab was torn down. Exact scope and hashes are in the [acceptance report](docs/agent-reports/foundation-acceptance-2026-10-17.md).
+- **UI validation:** 811 workspace/control/run-state tests and 2,190 web tests pass; static checks, generated API types, licenses and production builds pass. Desktop and 390-pixel browser checks cover math, drafts, uploads, text import and keyboard drawers. The temporary preview was stopped. Real OpenShell upload delivery remains unqualified.
+- **Foundation validation:** full run 14,028 passed and 49 opt-in skips; its sole outdated fixture was corrected and passed 2/2, with no later product change. Web: 2,180 passed; static checks and tier coverage pass. OpenShell interruption/Resume passed and the lab was torn down. Exact scope and hashes are in the [acceptance report](docs/agent-reports/foundation-acceptance-2026-10-17.md).
 
 ## What comes next
 
 1. Review and integrate the signed foundation branch with its acceptance evidence; upgrade the launcher, image, control, workspace and worker together.
 2. Separately budget real-model scientific continuity and provider cache measurements. Offline prefix comparison did not justify changing production context order.
-3. Return to the remaining [BACKLOG](BACKLOG.md) and UI work after foundational acceptance. Advanced unknown-outcome reconciliation currently uses the authenticated API; the workspace exposes Resume and blocked reasons.
+3. Review the local UI and run a disposable OpenShell upload lab before integration; continue the [BACKLOG](BACKLOG.md). Advanced unknown-outcome reconciliation currently uses the authenticated API; the workspace exposes Resume and blocked reasons.
 
 ## Known issues
 
