@@ -279,7 +279,7 @@ class Delegations(TurnHook):
         self.children: dict[str, _Running] = {}
         self.returned: set[str] = set()
         """Outcomes a wait returned that no model call has seen yet."""
-        scope = (self.context.project_id, self.context.session_id, run_id_of(parent) or parent)
+        scope = (self.context.project_id, self.context.session_id, parent)
         self.received = Members(records.control, scope, "delegations:received")
         """Outcomes a wait returned that a model call saw."""
 

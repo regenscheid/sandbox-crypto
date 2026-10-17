@@ -5,6 +5,8 @@ maximum20). Exact started identities commit atomically with admission into the
 exported run collection; consumed tool outcome IDs use disk-backed members. Final
 summaries retain at most100 IDs per category and name the exact backing table,
 collection, run and total. Final acknowledgement streams100 IDs at a time.
+The auxiliary received-members table is not directly exported by v4; canonical
+response receipts are exported and preserve the exact successful consumption.
 Canonical response receipts still protect the observed-before-final-save window.
 Completed historical cancellation resolves the immutable delegation parent/outcome.
 
@@ -28,3 +30,11 @@ no separate raw log file/hash was retained. No services were accessed.
 Independent review identified and fixed a fallible post-admission history-write
 window: history now commits within the admission transaction. Finding notice
 sets were separately checked: LeasedNotices.offer caps them at128 per run.
+
+Full attempt scope follow-up: both admission and hook bookkeeping use the complete
+parent name, including its timestamp. Two attempts reusing one CLI run ID retain
+separate started/received identities; each full-name EvidenceExport finds its own
+started collection. Four memory tests passed in4.31s; scoped strict pyright0errors,
+ruff and diff check passed. Root independent review cleared the scope correction.
+Raw log: /home/andy/.cache/pt/delegation-full-scope.log
+SHA256: 014cfbe7040de81244acdde9907e68b009d6f092a04692e9b8d24d32561a85ce

@@ -7,9 +7,11 @@ immutable terminal delegation record. A failed terminal write retains ownership
 and blocks admission at the cap; it never makes a child disappear successfully.
 
 Exact started and model-consumed outcome identities live in scoped disk-backed
-run collections/members, included in evidence exports. Started identities commit in
-the same transaction as child admission; failed bookkeeping cannot launch a child. The final summary retains
-at most100 identities per category plus an exact collection reference and count
+run collections/members scoped by the full timestamped attempt name. Started
+collections and canonical response receipts are included in evidence exports; the
+auxiliary members table itself is not part of export v4. Started identities commit in
+the same transaction as child admission; failed bookkeeping cannot launch a child.
+The final summary retains at most100 identities per category plus an exact collection reference and count
 when larger. Final acknowledgement streams consumed identities in batches100;
 canonical response receipts remain authoritative before final save. A completed
 child remains available to status/wait/cancel through its durable record, with

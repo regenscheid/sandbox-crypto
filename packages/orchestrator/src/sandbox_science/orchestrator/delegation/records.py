@@ -40,7 +40,6 @@ from sandbox_science.orchestrator.control.errors import (
     UNAVAILABLE,
 )
 from sandbox_science.orchestrator.documents import DocumentStore
-from sandbox_science.orchestrator.projects import run_id_of
 from sandbox_science.orchestrator.runstate import cancel_requested, close_events
 
 Ended = Literal["returned", "failed", "cancelled", "limit_reached", "interrupted"]
@@ -304,7 +303,7 @@ class DelegationRecords:
             except sqlite3.IntegrityError as error:
                 raise ControlError(INVALID_REQUEST, f"the delegation is refused: {error}") from None
             if written == 1:
-                scope = (project, session, run_id_of(delegation.parent) or delegation.parent)
+                scope = (project, session, delegation.parent)
                 db.execute(
                     "INSERT INTO run_collections SELECT ?,?,?,?,count(*),? "
                     "FROM run_collections WHERE project=? AND session=? AND run=? AND collection=?",

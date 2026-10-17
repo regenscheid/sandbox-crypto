@@ -13,12 +13,14 @@ from typing import Any, cast
 import pytest
 
 from sandbox_science.orchestrator.delegation.hook import Child, ChildEnd
+from sandbox_science.orchestrator.history.export import EvidenceExport
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.projects import RunRecord
 
 from .loop_harness import PROJECT, SESSION
 from .test_delegation_depth import ROOT, tree
 from .test_delegation_tasks import DONE
+from .test_evidence_export import decode
 
 
 async def test_long_child_loop_retrieval_receipts_and_finalization(tmp_path: Path) -> None:
@@ -120,3 +122,33 @@ async def test_started_history_failure_rolls_back_admission_before_child_runs(
         assert not hook.children
         assert not hook.started
         assert found.records.running(PROJECT, SESSION) == []
+
+
+async def test_reused_cli_run_id_keeps_full_attempt_history_and_export_scope(
+    tmp_path: Path,
+) -> None:
+    async def finished(child: Child, stop: asyncio.Event) -> ChildEnd:
+        return ChildEnd("answered", False, json.dumps(DONE))
+
+    first = "20261015T120000000000Z-run-reused"
+    second = "20261015T120001000000Z-run-reused"
+    with tree(tmp_path) as found:
+        hooks = [found.hook(finished, parent=parent) for parent in (first, second)]
+        identities: list[str] = []
+        for hook in hooks:
+            async with hook.lease():
+                text, _ = await hook.call("delegate", {"task": "Own attempt"})
+                identity = str(json.loads(text)["delegation_id"])
+                identities.append(identity)
+                await hook.call("wait_delegations", {"delegation_ids": [identity]})
+                await hook.model_returned(Transcript(messages=[]))
+        for parent, hook, identity in zip((first, second), hooks, identities, strict=True):
+            assert hook.started.scope == hook.received.scope == (PROJECT, SESSION, parent)
+            assert list(hook.started) == list(hook.received) == [identity]
+            _, rows = decode(
+                EvidenceExport(found.records.control, PROJECT, SESSION, parent).lines()
+            )
+            (started,) = [row for table, row in rows if table == "run_collections"]
+            assert started["run"] == parent
+            assert started["collection"] == "delegations:started"
+            assert json.loads(started["item"]) == identity
