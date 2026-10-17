@@ -45,3 +45,10 @@ v4 includes those rows and successful-response receipts; verification retains th
 unchanged v1/v2/v3 table contracts. The authenticated run history endpoint pages at
 most 100 rows and 128 KiB, with exact JSON bytes available in 64 KiB chunks when a
 single row exceeds the discovery bound. Mutable delivery caches are not evidence.
+
+Archive preflight reads byte-size metadata without retaining per-payload handles.
+SQLite3.43+ uses octet_length, which does not load TEXT/BLOB bodies. On older
+supported SQLite, the exact Blob-length check and bounded payload fetch share one
+short-lived readonly connection/read snapshot. Closing that connection also releases
+CPython's accumulated closed-Blob weakrefs. This preserves the existing SQLite
+baseline and rejects oversized reads before materializing their payload in Python.

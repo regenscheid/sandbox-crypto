@@ -42,7 +42,7 @@ import secrets
 import sqlite3
 import unicodedata
 from collections.abc import Iterator, Mapping, Sequence, Set
-from contextlib import nullcontext
+from contextlib import closing, nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC
 from typing import Any, Final, Literal, cast
@@ -338,6 +338,37 @@ _CHAIN_SCOPE = (
 )
 
 
+# octet_length reads the record's byte-size metadata without fetching TEXT/BLOB
+# bodies. Older supported SQLite uses Blob lengths on a short-lived read connection:
+# CPython retains a weakref for every closed Blob until its connection is closed.
+_OCTET_LENGTH = sqlite3.sqlite_version_info >= (3, 43, 0)
+
+
+def _payload_size(db: sqlite3.Connection, project: str, message: str) -> int | None:
+    if _OCTET_LENGTH:
+        row = db.execute(
+            "SELECT "  # noqa: S608 - fixed archive field names
+            + "+".join(f"coalesce(octet_length({name}),0)" for name in _FIELDS)
+            + " FROM archive_messages WHERE project=? AND message_id=?",
+            (project, message),
+        ).fetchone()
+        return None if row is None else int(row[0])
+    meta = db.execute(
+        "SELECT rowid,"  # noqa: S608 - fixed archive field names
+        + ",".join(f"typeof({name})" for name in _FIELDS)
+        + " FROM archive_messages WHERE project=? AND message_id=?",
+        (project, message),
+    ).fetchone()
+    if meta is None:
+        return None
+    total = 0
+    for name, kind in zip(_FIELDS, meta[1:], strict=True):
+        if kind != "null":
+            with db.blobopen("archive_messages", name, meta[0], readonly=True) as blob:
+                total += len(blob)
+    return total
+
+
 class Archive:
     """The sessions' archive in one control store, which its owner closes."""
 
@@ -441,29 +472,20 @@ class Archive:
         return archived
 
     def message(self, project: str, message_id: str, *, max_bytes: int | None = None) -> Archived:
-        """A message of the project, by its ID."""
-        with self.control.read() as tx:
+        """A message of the project, checked before loading any bounded payload."""
+        reader = (
+            closing(ControlStore(self.control.path, readonly=True, timeout=self.control.timeout))
+            if max_bytes is not None and not _OCTET_LENGTH
+            else nullcontext(self.control)
+        )
+        with reader as control, control.read() as tx:
             if max_bytes is not None:
-                fields = _FIELDS
-                meta = tx.sql.execute(
-                    "SELECT rowid,"  # noqa: S608 - fixed archive field names
-                    + ",".join(f"typeof({name})" for name in fields)
-                    + " FROM archive_messages WHERE project=? AND message_id=?",
-                    (project, message_id),
-                ).fetchone()
-                if meta is not None:
-                    total = 0
-                    for name, kind in zip(fields, meta[1:], strict=True):
-                        if kind != "null":
-                            with tx.sql.blobopen(
-                                "archive_messages", name, meta[0], readonly=True
-                            ) as blob:
-                                total += len(blob)
-                    if total > max_bytes:
-                        raise WorkingMemoryLimitError(
-                            "one archived message exceeds the working read limit; "
-                            "its original remains in stored evidence"
-                        )
+                total = _payload_size(tx.sql, project, message_id)
+                if total is not None and total > max_bytes:
+                    raise WorkingMemoryLimitError(
+                        "one archived message exceeds the working read limit; "
+                        "its original remains in stored evidence"
+                    )
             row = tx.sql.execute(
                 f"SELECT {_COLUMNS} FROM archive_messages "  # noqa: S608 - its own names
                 "WHERE project = ? AND message_id = ?",
@@ -474,15 +496,17 @@ class Archive:
         return _archived(row)
 
     def payload_bytes(self, project: str, message_id: str) -> int:
-        """Exact stored variable payload size, without reading the payload into Python."""
-        with self.control.read() as tx:
-            row = tx.sql.execute(
-                "SELECT "  # noqa: S608 - fixed archive field names
-                + "+".join(f"coalesce(length(CAST({name} AS BLOB)),0)" for name in _FIELDS)
-                + " FROM archive_messages WHERE project=? AND message_id=?",
-                (project, message_id),
-            ).fetchone()
-        return 0 if row is None else int(row[0])
+        """Stored variable byte size, without loading payloads or retaining Blob handles."""
+        reader = (
+            nullcontext(self.control)
+            if _OCTET_LENGTH
+            else closing(
+                ControlStore(self.control.path, readonly=True, timeout=self.control.timeout)
+            )
+        )
+        with reader as control, control.read() as tx:
+            total = _payload_size(tx.sql, project, message_id)
+        return 0 if total is None else total
 
     def tool_record(self, project: str, message_id: str, *, max_bytes: int = READ_BYTES) -> Json:
         """Full structured evidence behind one tool message, bounded before loading."""
