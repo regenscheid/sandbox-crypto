@@ -15,6 +15,16 @@ search, selection and unsaved drafts across navigation. Use readable names
 first, identifiers and provenance in details. Loading, empty, failed and stale
 observations remain distinct. Nothing starts research simply by being viewed.
 
+Desktop detail panes have a draggable divider, with continuous sizing up to
+half the browser window. The chosen width survives screen changes. The focused
+divider also supports arrow keys and Home/End; smaller screens retain drawers.
+Resizing must preserve selection, scroll and drafts without rebuilding content.
+
+The ledger keeps the same project and session sidebar as the rest of the
+workspace, with a direct return link to the last session. Ledger kinds belong
+in the list's filters, not in a replacement navigation sidebar. Moving between
+the ledger and a session preserves local view state and unsent drafts.
+
 ## Skills
 
 Separate Catalog, Pinned sources and Loading rules. The catalog shows each
