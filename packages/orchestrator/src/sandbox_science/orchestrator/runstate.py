@@ -423,6 +423,39 @@ class RunState:
             ).fetchall()
         return [(project, session) for project, session in rows]
 
+    def reconcile_inputs(self, project: str, session: str) -> None:
+        """Canonical response receipts win over a crash before chat delivery."""
+        with self.control.write() as tx:
+            tx.sql.execute(
+                "UPDATE session_messages AS m SET state='delivered',updated_at=?,run=("
+                "SELECT r.run FROM response_receipts r WHERE r.project=m.project_id "
+                "AND r.session=m.session_id AND r.source='messages' AND r.notice=m.message_id "
+                "ORDER BY r.run LIMIT 1) WHERE m.project_id=? AND m.session_id=? "
+                "AND m.state IN ('queued','held') AND EXISTS (SELECT 1 FROM response_receipts r "
+                "WHERE r.project=m.project_id AND r.session=m.session_id "
+                "AND r.source='messages' AND r.notice=m.message_id)",
+                (self._now().isoformat(), project, session),
+            )
+            tx.sql.execute(
+                "UPDATE session_messages AS m SET state='held',reason='interrupted',updated_at=? "
+                "WHERE m.project_id=? AND m.session_id=? AND m.state='queued' AND EXISTS "
+                "(SELECT 1 FROM research_attempts a JOIN research_work w "
+                "USING(project,session,work) WHERE a.project=m.project_id "
+                "AND a.session=m.session_id AND a.run=m.offered "
+                "AND w.state NOT IN ('completed','stopped') AND NOT EXISTS "
+                "(SELECT 1 FROM research_resumes q WHERE q.project=w.project "
+                "AND q.session=w.session AND q.root=w.root "
+                "AND q.status IN ('queued','running'))) AND NOT EXISTS "
+                "(SELECT 1 FROM run_leases l WHERE l.project_id=m.project_id "
+                "AND l.session_id=m.session_id AND l.run=m.offered AND l.renewed_at>?)",
+                (
+                    self._now().isoformat(),
+                    project,
+                    session,
+                    self._now().timestamp() - self.lease_seconds,
+                ),
+            )
+
     def waiting(self) -> list[tuple[str, str]]:
         """Every session with queued messages, as (project, session)."""
         with self.control.read() as tx:

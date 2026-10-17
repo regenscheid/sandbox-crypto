@@ -18,7 +18,7 @@ from sandbox_science.contracts import Identifier, new_id
 from sandbox_science.contracts.model import Contract
 from sandbox_science.orchestrator.control import Receipts
 from sandbox_science.orchestrator.control.notices import LeasedNotices, NoticeTable
-from sandbox_science.orchestrator.projects import ProjectError, recorded
+from sandbox_science.orchestrator.projects import ProjectError, recorded, run_id_of
 
 from . import comment_bodies
 from .agent_text import agent_text
@@ -43,6 +43,15 @@ REQUESTS: Final = NoticeTable(
     ("request_id",),
 )
 """Where the user's work requests are leased to the addressed session's runs."""
+
+
+_RESEARCH_OFFER = (
+    "SELECT 1 FROM run_members m JOIN research_attempts a USING(project,session,run) "
+    "JOIN research_work w USING(project,session,work) "
+    "WHERE m.project={0}.project_id AND m.session={0}.session_id "
+    "AND m.collection='offered:requests' AND m.value={0}.request_id "
+    "AND w.state!='completed'"
+)
 
 
 class AnchorInput(Contract):
@@ -874,6 +883,9 @@ class Annotations:
     ) -> list[Json]:
         """Lease a bounded batch; acknowledge only after the enclosing run is durable."""
 
+        self.reconcile_receipts(project, session)
+        attempt = self._attempt(project, session, run)
+
         def notice(row: tuple[Any, ...]) -> Json:
             request_id, thread_id, document, body, saved, head = row
             found: Json = {
@@ -893,22 +905,56 @@ class Annotations:
                 found["untrusted_context"]["context_omitted"] = True
             return found
 
-        return self.leases.offer(
+        found = self.leases.offer(
             run,
             seen,
             batch=100,
             max_chars=max_chars,
             select=(
-                "SELECT n.request_id,n.thread_id,t.document_id,e.body,t.anchor,"
+                "SELECT n.request_id,n.thread_id,t.document_id,e.body,t.anchor,"  # noqa: S608
                 "(SELECT max(number) FROM annotation_entries WHERE thread_id=t.thread_id) "
                 "FROM annotation_requests n JOIN annotation_threads t USING(thread_id) "
                 "JOIN annotation_entries e ON e.entry_id=n.entry_id "
                 "WHERE n.project_id=? AND n.session_id=? AND n.state!='responded' "
+                "AND NOT EXISTS (" + _RESEARCH_OFFER.format("n") + " AND NOT EXISTS "
+                "(SELECT 1 FROM research_attempts target WHERE target.project=a.project "
+                "AND target.session=a.session AND target.run=? AND (target.work=a.work OR "
+                "(w.state='stopped' AND EXISTS (SELECT 1 FROM run_inputs i "
+                "WHERE i.project=target.project AND i.session=target.session AND i.run=target.run "
+                "AND json_array_length(json_extract(i.snapshot,'$.request.message_ids'))>0))))) "
                 "AND {leased} ORDER BY n.rowid LIMIT ?"
             ),
-            parameters=(project, session),
+            parameters=(project, session, attempt or ""),
             project=notice,
         )
+        # Persist the original offer before returning it, even if the model never
+        # responds and the transient notice lease is subsequently released.
+        with self.store.control.write() as tx:
+            tx.sql.executemany(
+                "INSERT OR IGNORE INTO run_members SELECT project,session,run,'offered:requests',? "
+                "FROM research_attempts WHERE project=? AND session=? "
+                "AND run=?",
+                [(item["request_id"], project, session, attempt or "") for item in found],
+            )
+        return found
+
+    def _attempt(self, project: str, session: str, run: str) -> str | None:
+        # A caller-supplied short ID may be reused across distinct full run names.
+        from sandbox_science.orchestrator.continuity.records import CURRENT
+
+        owner = CURRENT.get()
+        if (
+            owner is not None
+            and (owner.project, owner.session) == (project, session)
+            and run_id_of(owner.run) == run
+        ):
+            return owner.run
+        with self.store.control.read() as tx:
+            row = tx.sql.execute(
+                "SELECT run FROM run_leases WHERE project_id=? AND session_id=?",
+                (project, session),
+            ).fetchone()
+        return str(row[0]) if row is not None and run_id_of(row[0]) == run else None
 
     def delivered_texts(self, project: str, session: str, run: str) -> list[tuple[float, str, str]]:
         """The requests ``run`` delivered, in the order they were written: each comment's
@@ -925,6 +971,22 @@ class Annotations:
             ).fetchall()
         return [(float(at), str(document), str(body)) for at, document, body in rows]
 
+    def reconcile_receipts(self, project: str, session: str) -> None:
+        """A committed response still consumes a request after its transient lease ends."""
+        with self.store.control.write() as tx:
+            tx.sql.execute(
+                "UPDATE annotation_requests AS n SET state=CASE WHEN state='queued' "
+                "THEN 'delivered' ELSE state END,delivered_at=?,claimed_run=NULL,claim_until=NULL,"
+                "delivered_run=(SELECT substr(r.run,instr(r.run,'-')+1) FROM response_receipts r "
+                "WHERE r.project=n.project_id AND r.session=n.session_id AND r.source='requests' "
+                "AND r.notice=n.request_id ORDER BY r.run LIMIT 1) "
+                "WHERE n.project_id=? AND n.session_id=? AND n.delivered_run IS NULL "
+                "AND n.state!='responded' AND EXISTS (SELECT 1 FROM response_receipts r "
+                "WHERE r.project=n.project_id AND r.session=n.session_id AND r.source='requests' "
+                "AND r.notice=n.request_id)",
+                (self.clock(), project, session),
+            )
+
     def waiting(self, scope: tuple[str, str] | None = None) -> list[tuple[str, str, str]]:
         """The requests that wait for a run, oldest first, as (project, session, request
         ID), in every session or in ``scope``'s alone: not answered, delivered by no saved
@@ -937,7 +999,9 @@ class Annotations:
             rows = tx.sql.execute(
                 "SELECT project_id,session_id,request_id FROM annotation_requests "  # noqa: S608
                 "WHERE state!='responded' AND delivered_run IS NULL "
-                f"AND (claimed_run IS NULL OR claim_until<=?) {where}ORDER BY rowid",
+                f"AND (claimed_run IS NULL OR claim_until<=?) {where}"
+                "AND NOT EXISTS (" + _RESEARCH_OFFER.format("annotation_requests") + ") "
+                "ORDER BY rowid",
                 (self.clock(), *parameters),
             ).fetchall()
         return [(project, session, request) for project, session, request in rows]

@@ -155,3 +155,11 @@ frame ceiling. A larger response is explicitly refused; its pre-dispatch intent
 remains unknown and blocks claiming the work complete or silently charging zero.
 The 8 MiB active-view ceiling independently accounts for decoded and native data.
 The launcher never widens these limits or retries an unknown paid call automatically.
+
+Runtime disconnection closes the trusted service's admitted tasks through the same
+owned cleanup as local service shutdown. It finishes receipt reconciliation and
+holds unconsumed original chat input before admitting a replacement connection.
+Queue admission independently reconciles committed message and annotation receipts;
+a consumed input cannot start another root if its transient lease has disappeared.
+Unconsumed annotation offers remain associated with their unfinished durable work,
+so explicit Resume can continue them while a new user request may start separate work.

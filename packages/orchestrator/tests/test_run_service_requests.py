@@ -14,6 +14,8 @@ import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.documents.annotations import Annotations
 from sandbox_science.orchestrator.documents.tool import REQUESTS_TASK
@@ -229,9 +231,21 @@ async def test_a_reached_cost_limit_makes_a_request_wait(harness: Harness) -> No
 async def test_a_failing_session_stops_starting_runs_for_its_requests(harness: Harness) -> None:
     request = harness.work_request()
     async with serving(harness, *[Reply(status=500) for _ in range(20)], retry=0.05) as service:
-        await eventually(lambda: service.held.get((PROJECT, SESSION)) == {request}, timeout=20)
+        await eventually(lambda: len(names(harness)) == 1, timeout=20)
         await asyncio.sleep(0.5)
-        assert len(names(harness)) == 5
+        # An unanswered paid intent belongs to the original unfinished work;
+        # retrying it as fresh work could silently repeat a charged request.
+        assert await service.waiting_work() == ()
+        assert len(names(harness)) == 1
+        from sandbox_science.orchestrator.continuity.records import WorkRecords
+
+        works = WorkRecords(service.stores.projects.control)
+        original = names(harness)[0]
+        assert works.get(PROJECT, SESSION, original).state == "paused"
+        assert works.request(PROJECT, SESSION, original) is not None
+        await eventually(lambda: works.get(PROJECT, SESSION, original).state == "blocked")
+        assert "unknown_model_usage" in (works.get(PROJECT, SESSION, original).reason or "")
+        assert len(names(harness)) == 1
     assert harness.request_states() == {request: "queued"}
 
 
@@ -245,3 +259,225 @@ async def test_a_comment_does_not_reopen_a_closed_session(harness: Harness) -> N
         post(harness, "m-1", "Back to work.")  # a message reopens it, and its run answers both
         (record,) = await ended(harness)
     assert (record.delivered["messages"], record.delivered["requests"]) == (["m-1"], [request])
+
+
+@pytest.mark.parametrize("incorporated", [False, True])
+async def test_confined_disconnect_consumes_receipts_before_replacement_queue(
+    harness: Harness,
+    incorporated: bool,
+) -> None:
+    from typing import Any
+
+    from sandbox_science.orchestrator.history.log import RunArchive
+    from sandbox_science.orchestrator.loop import Transcript
+
+    request = harness.work_request()
+    entered = asyncio.Event()
+    original: list[str] = []
+    async with serving(harness, serve=False) as service:
+        service.runs.post(PROJECT, SESSION, "runtime-input", "One original input", author="user")
+
+        async def lost_runtime(*args: Any, **options: Any) -> Transcript:
+            log = options["log"]
+            assert isinstance(log, RunArchive)
+            original.append(log.run)
+            service.runs.offer(PROJECT, SESSION, ["runtime-input"], log.run)
+            # A lease is transient. The receipt survives even if its lease was
+            # already released when the replacement runtime connects.
+            annotations = Annotations(service.stores.documents)
+            annotations.pending(PROJECT, SESSION, log.run.partition("-")[2], seen=set())
+            if incorporated:
+                Archive(service.stores.projects.control).append(
+                    PROJECT,
+                    SESSION,
+                    log.run,
+                    Entry("assistant", "assistant", "Original input incorporated"),
+                    model_usage=AnsweredUsage(
+                        ordinal=1, observed_at=datetime.now(UTC), usage=ModelUsage(cost=0)
+                    ),
+                    consumed={"messages": {"runtime-input"}, "requests": {request}},
+                )
+            annotations.release(PROJECT, SESSION, log.run.partition("-")[2])
+            entered.set()
+            await asyncio.Event().wait()
+            raise AssertionError("runtime must have disconnected")
+
+        service.harness.loop_runner = lost_runtime
+        assert await service.start_selected(PROJECT, SESSION)
+        await entered.wait()
+        await service.close()
+        assert states(harness)["runtime-input"] == ("delivered" if incorporated else "held")
+        assert harness.request_states()[request] == ("delivered" if incorporated else "queued")
+        assert not service.active
+    async with serving(harness, Reply("Must never repeat"), serve=False) as replacement:
+        await replacement.maintenance_tick()
+        assert await replacement.waiting_work() == ()
+        assert not await replacement.start_selected(PROJECT, SESSION)
+        assert harness.gateway.main == []
+        if incorporated:
+            assert runs(harness).messages(PROJECT, SESSION)[0].run == original[0]
+        else:
+            replacement.runs.post(
+                PROJECT, SESSION, "fresh-request", "New explicit work", author="user"
+            )
+            assert await replacement.waiting_work() == ((PROJECT, SESSION),)
+            assert states(harness)["runtime-input"] == "held"
+            from sandbox_science.orchestrator.continuity.records import WorkRecords
+
+            resume = WorkRecords(replacement.stores.projects.control).request(
+                PROJECT, SESSION, original[0]
+            )
+            assert resume is not None
+            replacement.runs.resume(PROJECT, SESSION)
+            await replacement.waiting_work()
+            assert states(harness)["runtime-input"] == "queued"
+            assert await replacement.start_selected(PROJECT, SESSION, request=resume)
+
+            async def ready() -> tuple[str, ...]:
+                return await replacement.resume_next(PROJECT, SESSION, resume)
+
+            selected = await eventually(ready, timeout=10)
+            assert selected == (original[0],)
+            await replacement.waiting_work()
+            assert states(harness)["runtime-input"] == "queued"
+            assert await replacement.resume_branch(PROJECT, SESSION, resume, original[0])
+            active = replacement.active[PROJECT, SESSION].task
+            assert active is not None
+            await active
+            assert states(harness)["runtime-input"] == "delivered"
+            await replacement.close()
+
+
+async def test_queue_reconciles_consumed_input_when_original_lease_already_disappeared(
+    harness: Harness,
+) -> None:
+    request = harness.work_request()
+    projects = ProjectStore(harness.state)
+    documents = harness.documents()
+    original = "20261017T000000000000Z-run-receipt-before-disconnect"
+    try:
+        state = RunState(projects.control)
+        state.acquire(PROJECT, SESSION, original, "vanished-holder")
+        state.post(PROJECT, SESSION, "orphaned-input", "Consumed once", author="user")
+        state.offer(PROJECT, SESSION, ["orphaned-input"], original)
+        annotations = Annotations(documents)
+        annotations.pending(PROJECT, SESSION, original.partition("-")[2], seen=set())
+        Archive(projects.control).append(
+            PROJECT,
+            SESSION,
+            original,
+            Entry("assistant", "assistant", "Committed before losing its lease"),
+            model_usage=AnsweredUsage(
+                ordinal=1, observed_at=datetime.now(UTC), usage=ModelUsage(cost=0)
+            ),
+            consumed={"messages": {"orphaned-input"}, "requests": {request}},
+        )
+        annotations.release(PROJECT, SESSION, original.partition("-")[2])
+        state.release(PROJECT, SESSION, "vanished-holder")
+    finally:
+        documents.close()
+        projects.close()
+    async with serving(harness, Reply("Must not dispatch"), serve=False) as replacement:
+        assert await replacement.waiting_work() == ()
+        assert not await replacement.start_selected(PROJECT, SESSION)
+        assert states(harness)["orphaned-input"] == "delivered"
+        assert harness.request_states()[request] == "delivered"
+        assert harness.gateway.main == []
+
+
+async def test_annotation_only_receipt_survives_a_released_lease(harness: Harness) -> None:
+    from sandbox_science.orchestrator.continuity.records import WorkRecords
+
+    request = harness.work_request()
+    projects = ProjectStore(harness.state)
+    documents = harness.documents()
+    original = "20261017T000000000000Z-run-annotation-receipt"
+    try:
+        works = WorkRecords(projects.control)
+        works.admit(PROJECT, SESSION, original)
+        state = RunState(projects.control)
+        state.acquire(PROJECT, SESSION, original, "annotation-holder")
+        annotations = Annotations(documents)
+        assert annotations.pending(PROJECT, SESSION, original.partition("-")[2], seen=set())
+        Archive(projects.control).append(
+            PROJECT,
+            SESSION,
+            original,
+            Entry("assistant", "assistant", "Annotation incorporated"),
+            model_usage=AnsweredUsage(
+                ordinal=1, observed_at=datetime.now(UTC), usage=ModelUsage(cost=0)
+            ),
+            consumed={"requests": {request}},
+        )
+        annotations.release(PROJECT, SESSION, original.partition("-")[2])
+        works.interrupt_run(PROJECT, SESSION, original)
+        state.release(PROJECT, SESSION, "annotation-holder")
+        # Ordinary queue reads may exclude unfinished offered work. The same-work
+        # notice path used by Resume must still reconcile its committed receipt.
+        assert annotations.waiting() == []
+        assert annotations.pending(PROJECT, SESSION, original.partition("-")[2], seen=set()) == []
+        assert harness.request_states()[request] == "delivered"
+    finally:
+        documents.close()
+        projects.close()
+
+
+async def test_annotation_offer_uses_exact_attempt_when_short_run_id_is_reused(
+    harness: Harness,
+) -> None:
+    from sandbox_science.orchestrator.continuity.records import WorkRecords
+    from sandbox_science.orchestrator.history.collections import Members
+
+    request = harness.work_request()
+    projects = ProjectStore(harness.state)
+    documents = harness.documents()
+    first = "20261016T000000000000Z-run-reused"
+    second = "20261017T000000000000Z-run-reused"
+    try:
+        works = WorkRecords(projects.control)
+        works.admit(PROJECT, SESSION, first)
+        works.interrupt_run(PROJECT, SESSION, first)
+        works.admit(PROJECT, SESSION, second)
+        state = RunState(projects.control)
+        state.acquire(PROJECT, SESSION, second, "exact-attempt-holder")
+        annotations = Annotations(documents)
+        assert annotations.pending(PROJECT, SESSION, "run-reused", seen=set())
+        assert request not in Members(
+            projects.control, (PROJECT, SESSION, first), "offered:requests"
+        )
+        assert request in Members(projects.control, (PROJECT, SESSION, second), "offered:requests")
+        annotations.release(PROJECT, SESSION, "run-reused")
+        state.release(PROJECT, SESSION, "exact-attempt-holder")
+    finally:
+        documents.close()
+        projects.close()
+
+
+async def test_stopped_annotation_is_not_restarted_by_replacement_service(harness: Harness) -> None:
+    from sandbox_science.orchestrator.continuity.records import WorkRecords
+
+    original_request = harness.work_request()
+    projects = ProjectStore(harness.state)
+    documents = harness.documents()
+    original = "20261017T000000000000Z-run-stopped-annotation"
+    try:
+        works = WorkRecords(projects.control)
+        works.admit(PROJECT, SESSION, original)
+        state = RunState(projects.control)
+        state.acquire(PROJECT, SESSION, original, "stopped-holder")
+        annotations = Annotations(documents)
+        assert annotations.pending(PROJECT, SESSION, original.partition("-")[2], seen=set())
+        annotations.release(PROJECT, SESSION, original.partition("-")[2])
+        works.interrupt_run(PROJECT, SESSION, original, stopped=True)
+        state.release(PROJECT, SESSION, "stopped-holder")
+    finally:
+        documents.close()
+        projects.close()
+    async with serving(harness, Reply("Must not restart stopped work"), serve=False) as replacement:
+        assert await replacement.waiting_work() == ()
+        assert not await replacement.start_selected(PROJECT, SESSION)
+        assert harness.gateway.main == []
+        fresh = harness.work_request("fresh-after-stop", "A new independent request")
+        waiting = replacement.annotations.waiting()
+        assert (PROJECT, SESSION, fresh) in waiting
+        assert (PROJECT, SESSION, original_request) not in waiting

@@ -52,7 +52,6 @@ configured figure checker: a check never holds up a run.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import dataclasses
 import logging
 import secrets
@@ -64,7 +63,7 @@ from pydantic import JsonValue
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 
-from .aio import threaded
+from .aio import owned, threaded
 from .chat import SOURCE, session_lease
 from .continuity.records import WorkRecords
 from .continuity.recovery import Recovery
@@ -177,22 +176,27 @@ class RunService:
                 await self.tick()
                 await self.clock.sleep(self.poll)
         finally:
-            for task in self.local_branches:
+            await self.close()
+
+    async def close(self) -> None:
+        """Join admitted work and reconcile inputs before another runtime may select it."""
+        await owned(self._close())
+
+    async def _close(self) -> None:
+        tasks: list[asyncio.Task[object]] = [*self.local_branches]
+        if self.checking is not None:
+            tasks.append(self.checking)
+        active = tuple(self.active.items())
+        tasks.extend(value.task for _, value in active if value.task is not None)
+        for task in tasks:
+            if not task.done():
                 task.cancel()
-            if self.local_branches:
-                await asyncio.gather(*self.local_branches, return_exceptions=True)
-            if self.checking is not None:
-                self.checking.cancel()
-                with contextlib.suppress(BaseException):
-                    await self.checking
-            for (project, session), active in list(self.active.items()):
-                if active.task is None or active.task.done():
-                    continue  # it ended on its own
-                active.task.cancel()
-                with contextlib.suppress(BaseException):
-                    await active.task
-                if active.run is not None:
-                    await self._ended(project, session, active.run)
+        await asyncio.gather(*tasks, return_exceptions=True)
+        for (project, session), value in active:
+            if value.run is not None:
+                await self._ended(project, session, value.run)
+        self.active.clear()
+        self.local_branches.clear()
 
     async def tick(self) -> None:
         """One local-service cycle; confined runtimes select work through capabilities."""
@@ -249,10 +253,19 @@ class RunService:
         for project, session, request in await threaded(self.annotations.waiting):
             if request not in self.held.get((project, session), ()):
                 waiting.add((project, session))
+        for project, session in waiting:
+            await threaded(self.runs.reconcile_inputs, project, session)
+            await threaded(self.annotations.reconcile_receipts, project, session)
+        eligible = set(await threaded(self.runs.waiting))
+        eligible.update(
+            (p, s)
+            for p, s, request in await threaded(self.annotations.waiting)
+            if request not in self.held.get((p, s), ())
+        )
         now = self.clock.monotonic()
         return tuple(
             key
-            for key in sorted(waiting)
+            for key in sorted(waiting & eligible)
             if key not in self.active and self.waiting_until.get(key, now) <= now
         )
 
@@ -287,6 +300,8 @@ class RunService:
         The configured harness loop runner owns actual agent-loop execution.
         """
         key = project, session
+        await threaded(self.runs.reconcile_inputs, project, session)
+        await threaded(self.annotations.reconcile_receipts, project, session)
         if request is not None:
             if (project, session, request) not in await self.waiting_resumes():
                 return False
@@ -377,6 +392,7 @@ class RunService:
                 self.annotations.acknowledge, project, session, run.partition("-")[2], list(page)
             )
             after = page[-1]
+        await threaded(self.annotations.reconcile_receipts, project, session)
         stopped: dict[str, JsonValue]
         if record is not None:
             # It died after saving its record, before acknowledging it.
@@ -401,13 +417,13 @@ class RunService:
                 "final_text": None,
                 "record": None,
             }
-            if hold:
-                offered = await threaded(runs.offered_to, project, session, run)
-                await threaded(runs.hold, project, session, offered)
-                # A run's name is its start time, a dash and its ID, which leased them.
-                run_id = run.partition("-")[2]
-                claimed = await threaded(self.annotations.claimed, project, session, run_id)
-                self._hold(project, session, claimed)
+        if hold:
+            offered = await threaded(runs.offered_to, project, session, run)
+            await threaded(runs.hold, project, session, offered)
+            # A run's name is its start time, a dash and its ID, which leased them.
+            run_id = run.partition("-")[2]
+            claimed = await threaded(self.annotations.claimed, project, session, run_id)
+            self._hold(project, session, claimed)
         if not await threaded(runs.ended, project, session, run):
             await threaded(runs.append, project, session, run, "stopped", stopped)
 

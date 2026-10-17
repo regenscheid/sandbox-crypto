@@ -345,12 +345,7 @@ def create_app(settings: ControlSettings) -> web.Application:
                 await serve_socket(socket, channel)
         finally:
             if service is not None:
-                tasks = [
-                    active.task for active in service.active.values() if active.task is not None
-                ]
-                for task in tasks:
-                    task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
+                await service.close()
             if service is not None and service.harness.vectors is not None:
                 await service.harness.vectors.close()
             if proxy is not None:
