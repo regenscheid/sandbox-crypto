@@ -41,7 +41,7 @@ import re
 import secrets
 import sqlite3
 import unicodedata
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC
 from typing import Any, Final, Literal, cast
@@ -445,18 +445,86 @@ class Archive:
         end: int | None = None,
         run: str | None = None,
         limit: int = PAGE,
+        kinds: Sequence[str] = (),
+        main_only: bool = False,
     ) -> list[Archived]:
         """The session's messages from position ``start`` to ``end``, in order, at most
-        ``limit`` of them; with ``run``, that run's alone."""
+        ``limit`` of them; with ``run``, that run's alone. Kind/parent filters apply
+        before loading payloads, including native provider messages."""
+        kinds_sql = f" AND kind IN ({','.join('?' for _ in kinds)})" if kinds else ""
         with self.control.read() as tx:
             rows = tx.sql.execute(
                 f"SELECT {_COLUMNS} FROM archive_messages "  # noqa: S608 - its own names
                 "WHERE project = ? AND session = ? AND position >= ? "
                 "AND (? IS NULL OR position <= ?) AND (? IS NULL OR run = ?) "
-                "ORDER BY position LIMIT ?",
-                (project, session, start, end, end, run, run, max(1, min(limit, PAGE))),
+                "AND (? = 0 OR parent IS NULL) " + kinds_sql + " ORDER BY position LIMIT ?",
+                (
+                    project,
+                    session,
+                    start,
+                    end,
+                    end,
+                    run,
+                    run,
+                    main_only,
+                    *kinds,
+                    max(1, min(limit, PAGE)),
+                ),
             ).fetchall()
         return [_archived(row) for row in rows]
+
+    def scan(
+        self,
+        project: str,
+        session: str,
+        *,
+        run: str | None = None,
+        start: int = 1,
+        end: int | None = None,
+        kinds: Sequence[str] = (),
+        main_only: bool = False,
+    ) -> Iterator[Archived]:
+        """Scan scoped evidence one payload at a time, without a held read transaction."""
+        while page := self.messages(
+            project,
+            session,
+            run=run,
+            start=start,
+            end=end,
+            kinds=kinds,
+            main_only=main_only,
+            limit=1,
+        ):
+            row = page[0]
+            start = row.position + 1
+            yield row
+
+    def view_scope(
+        self,
+        project: str,
+        session: str,
+        *,
+        run: str | None,
+        end: int,
+    ) -> tuple[tuple[str, ...], int | None]:
+        """Run identities and first folded position, without reading message bodies."""
+        args = (project, session, run, run, run)
+        with self.control.read() as tx:
+            names = tx.sql.execute(
+                "SELECT DISTINCT run FROM archive_messages WHERE "
+                "project=? AND session=? AND (? IS NULL OR run=?) "
+                "AND (? IS NOT NULL OR parent IS NULL) "
+                "AND kind NOT IN ('state_block','spill') ORDER BY run",
+                args,
+            ).fetchall()
+            first = tx.sql.execute(
+                "SELECT min(position) FROM archive_messages WHERE "
+                "project=? AND session=? AND (? IS NULL OR run=?) "
+                "AND (? IS NOT NULL OR parent IS NULL) "
+                "AND position<=? AND kind NOT IN ('state_block','spill','fold')",
+                (*args, end),
+            ).fetchone()[0]
+        return tuple(name for (name,) in names), first
 
     def files(self, project: str, message_id: str) -> list[SavedFile]:
         """The files saved behind a tool result's sample."""

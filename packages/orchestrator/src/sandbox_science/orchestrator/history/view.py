@@ -63,7 +63,7 @@ from sandbox_science.orchestrator.skills.tool import given
 from sandbox_science.orchestrator.tokens import DEFAULT_CHARS, estimate, view_tokens
 from sandbox_science.orchestrator.worker_client import dump
 
-from .archive import PAGE, Archive, Archived, Entry
+from .archive import KINDS, PAGE, Archive, Archived, Entry
 from .bound import SPILL, Bounded, bound
 from .geometry import Geometry
 from .log import PATIENCE, patiently
@@ -237,7 +237,7 @@ def session_view(
     changes nothing: ``settle`` archives its state block and spill record and adds its
     kernel lines."""
     # Delegated views must never draw on the parent's or a sibling's reasoning.
-    every_row = _rows(archive, context, run=scope_run)
+    every_row = _rows(archive, context, run=scope_run, kinds=("fold", "spill"))
     # A spill record already archived that holds the same lines, in whatever order.
     spills = {
         _lines(row.entry.content or ""): row.message_id
@@ -252,11 +252,30 @@ def session_view(
         ((row, found) for row, found in every if row.message_id not in merged),
         key=lambda pair: pair[1].first[0],
     )
-    gone = (judge or Judge()).retired([(row.message_id, found) for row, found in every], rows)
-    retired = {row.message_id: gone[row.message_id] for row, _ in records if row.message_id in gone}
     end = max((found.last[0] for _, found in every), default=0)
-    folded = [row for row in rows if row.position <= end and row.entry.kind != "fold"]
-    raw = [row for row in rows if row.position > end and row.entry.kind != "fold"]
+    gone = (judge or Judge()).retired(
+        [(row.message_id, found) for row, found in every],
+        archive.scan(
+            context.project_id,
+            context.session_id,
+            run=scope_run,
+            main_only=scope_run is None,
+            kinds=("assistant", "tool_result"),
+        ),
+    )
+    retired = {row.message_id: gone[row.message_id] for row, _ in records if row.message_id in gone}
+    folded = _rows(archive, context, run=scope_run, end=end, kinds=("task", "user", "comment"))
+    raw = [
+        row
+        for row in _rows(archive, context, run=scope_run, start=end + 1)
+        if row.entry.kind not in ("fold", "spill")
+    ]
+    archived, first_folded = archive.view_scope(
+        context.project_id,
+        context.session_id,
+        run=scope_run,
+        end=end,
+    )
     stubs = {at for _, found in every for at in found.stubs}
     units = [_stubbed(unit, stubs) for unit in _units(raw)]
     budget, cap = int(geometry.region * per_token), int(geometry.region_cap * per_token)
@@ -274,7 +293,6 @@ def session_view(
         region = Part("fold_region", {"role": "user", "content": _pointed(pending, spilled)})
         pending = None
     kept = [part for unit in units for part in unit]
-    archived = {row.run for row in rows}
     before = [run for run in runs if run not in archived]
     recorded = list(earlier(before)) if earlier is not None and before else []
     words, quoted = _words(folded, int(geometry.words * per_token), recorded)
@@ -312,9 +330,9 @@ def session_view(
         spilled=spilled,
         digest=digest.text if digest is not None else None,
         consolidating=consolidating,
-        folded=(folded[0].position, end) if folded else None,
+        folded=(first_folded, end) if first_folded is not None else None,
         stubs=tuple(p.row.message_id for p in kept if p.kind == "stub" and p.row),
-        words=words if folded or before or left else None,
+        words=words if first_folded is not None or before or left else None,
         unarchived=len(before),
         recorded=len(recorded),
         shown=shown,
@@ -585,13 +603,20 @@ def _rows(
     run: str | None = None,
     start: int = 1,
     end: int | None = None,
+    kinds: Sequence[str] = (),
 ) -> list[Archived]:
     """The session's main runs' archived messages, fold records among them, but their
     state blocks, in order."""
     found: list[Archived] = []
     while True:
         page = archive.messages(
-            context.project_id, context.session_id, start=start, end=end, run=run
+            context.project_id,
+            context.session_id,
+            start=start,
+            end=end,
+            run=run,
+            kinds=kinds or tuple(kind for kind in KINDS if kind != "state_block"),
+            main_only=run is None,
         )
         found += [
             row

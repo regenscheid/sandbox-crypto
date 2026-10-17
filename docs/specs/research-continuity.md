@@ -323,6 +323,17 @@ that never appears needs operator reconciliation of its upstream outcome; the wo
 does not infer a safe retry from elapsed time. This deliberately favors a visible
 blocked environment over losing an uncertain compute allocation.
 
+### Streaming folded-history reads
+
+View rebuilds select fold records and spills independently from raw messages. Folded
+model/tool payloads are read one row at a time only when a failure marker needs a
+later-success check, then discarded; matching keeps argument digests and message
+positions. The raw tail and the user's preserved words retain their existing
+rendering and role boundaries. Scope selection happens in SQL, before payloads are
+loaded, so a parent's rebuild does not read a child's payloads. Exact evidence stays
+in the archive. This removes folded-output accumulation at rebuilds; the live
+transcript, fold metadata and preserved user words still need their own memory bounds.
+
 ### Active-tree environment claim
 
 Each stored root attempt holds one renewable claim for its session and environment;

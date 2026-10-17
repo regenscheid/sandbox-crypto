@@ -48,6 +48,6 @@ The owner's research on other products' prompts lives outside this repository. T
 
 ## What is next
 
-1. Bound historical messages, per-call metadata and review caches. A streamed stored-evidence export now resolves large-record references; external worker files remain referenced.
+1. Bound live messages, per-call metadata and review caches. Folded rebuild payloads and stored-evidence exports now stream; view metadata and external artifact packaging remain.
 2. Durable work/attempt ownership and one tree Resume; then scoped state access and separate orchestrator confinement. Current root claims protect only active attempts; turn-limit cleanup still cancels children.
 3. Child skeleton folds use their own archive/model limit (146 tests). Parent closing waits without model calls (122 tests), with user/Stop wakeups and an unsaved-outcome stop. Local cache prefix comparison is recorded; live continuity/cache acceptance and generated skills restrictions remain.
