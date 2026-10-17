@@ -46,9 +46,9 @@ ANSWER_HELD = (
 OPEN: Final = frozenset({"pending", "in_progress"})
 MAX_REQUEST_BYTES = 96 * 1024
 MAX_RESPONSE_BYTES = 256 * 1024
-GUIDANCE_VERSION = "sandbox-main-plan-1"
+GUIDANCE_VERSION = "sandbox-main-plan-2"
 GUIDANCE = (
-    "Planning guidance (sandbox-main-plan-1): The offered plan tools retain this session's "
+    "Planning guidance (sandbox-main-plan-2): The offered plan tools retain this session's "
     "plan and progress. For substantive research, read and resume the current plan by stable "
     "step IDs, or create a short plan with goal, feasibility, outputs and evidence standards. "
     "Small factual replies need no plan. Activate a draft and continue work under the user's "
@@ -56,7 +56,15 @@ GUIDANCE = (
     "Record in_progress when a step starts and completed, blocked or skipped as results or "
     "obstacles become known, rather than waiting for the final answer. Preserve USER edits "
     "and reread the current plan when notified. A replay receipt is historical, not current "
-    "state. Finishing requires an explicit achieved, partially_achieved or not_achieved "
+    "state. "
+    "For explicitly extended exploratory work, keep hypotheses, baseline evidence and "
+    "stopping criteria in the plan's existing fields. Reassess results and child evidence; "
+    "add justified follow-on branches by revising the active plan. Finish when the requested "
+    "evidence or stopping criteria justify it, or report a genuine obstacle or resource limit. "
+    "Preserve stable IDs and record why the plan's direction changed. Completing the first "
+    "checklist or a pilot is not research completion. Keep child briefs finite. Bounded "
+    "tasks may finish at their requested scope; budgets are ceilings, not spending targets. "
+    "Finishing requires an explicit achieved, partially_achieved or not_achieved "
     "outcome with evidence and remaining work. Terminal workflow status does not prove the "
     "research succeeded. Never invent completion, clear recovery or self-approve a waiting "
     "plan. On failure or resume, inspect committed progress and uncertain effects before "

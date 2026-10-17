@@ -63,6 +63,13 @@ HOSTILE = "Authorization: Bearer test-secret-prompt-not-a-credential"
 # Each installed version and the SHA-256 of its UTF-8 text. Changing a text means a new
 # version: add it here, and keep the old version's entry for its records.
 GOLDEN = {
+    "sandbox-main-10": "e8b5e21ed6aa88254c3b40661874fea44954d4c4d4ef7d577c198ee4419f5f23",
+    "sandbox-main-plan-2": "768cd18b5403bf7d316a60eb89ca100ba270ec29f5195343baf41d0d55a301df",
+    "sandbox-stock-intake-2": "2bdb3f65587f99c7f78555349196c27f7bb2cbe1429b0adebb3ca549e93e6572",
+    "sandbox-stock-experiment-2": (
+        "2de1561e772650fc64280da0aaf60b650eab5063526416a6635fd51c2f8a50dd"
+    ),
+    "sandbox-stock-report-2": "c612dd1f37614dc0ea8e317b2ade2f320ec79bc327604b01ff0cbe59f1a7e63f",
     "sandbox-main-9": "6ad2ced30036974bde1ecfc642f56c6eca32d3149652563c702b4bbc8e59f2d6",
     "sandbox-main-plan-1": "efb031b0fab2b9855dc3c9adcb869108dd835b725f878b977eec9ba118feb866",
     "sandbox-stock-intake-1": "e846770bc153995c6da1c87cca1913400d0008f3983361246d04d9b9a94f45ab",
@@ -183,7 +190,9 @@ def test_each_installed_version_names_its_exact_text() -> None:
     sha = {
         version: hashlib.sha256(text.encode()).hexdigest() for version, text in installed().items()
     }
-    assert sha == GOLDEN
+    # Retired versions remain pinned for historical records as the installed
+    # catalog advances; every installed version must still match its exact hash.
+    assert sha.items() <= GOLDEN.items()
 
 
 def spec(parameters: dict[str, object] | None = None, *, name: str = "inspect") -> ToolSpec:

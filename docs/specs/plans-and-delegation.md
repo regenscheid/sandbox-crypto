@@ -41,6 +41,27 @@ Terms:
   *Built 2026-10-15, for delegated tasks:* a task that names a `track` of the session's active plan works under a grant, that plan version and that track. Its run is offered `track_read` (the track's steps, each with its status) and `track_progress` (a step's status and a note), and the plan store refuses its progress on any other step. A plan revised since the task started refuses its progress (the coordinator, 2026-10-15, which the owner can reverse): the fence keeps the refusal, `plan_changed: … the parent can delegate the track again`, and the outcome reports it (`refused`). The parent's plan tools ask it to read the plan again after the child's progress, as after any other author's change.
 - PD-10. Marking a plan `completed` requires every step to be `completed`, `blocked` or `skipped`; otherwise the request is refused with the list of open steps (new; the pack's completion contract requires terminal steps).
 
+**Extended exploratory research (owner amendment, 2026-10-17).** When the user
+explicitly requests an extended investigation, the initial checklist is a first
+iteration, not the definition of completion. The plan records the question,
+competing hypotheses, relevant literature/reference baseline, useful evidence and
+stopping criteria in its existing fields. Results inform new prioritized branches
+and meaningful experiments; the parent evaluates children's evidence and limitations
+and revises the active plan before closing it. A completed pilot or scoped child
+task does not establish research completion. Before promoting a toy observation,
+check version-specific prior art and build a faithful reference bridge: state the
+target's exact version, parameters and assumptions, validate the relevant reference
+behavior, and identify which toy observations transfer and which do not.
+
+Continue while a justified, feasible next branch serves the authorized objective.
+Stop when its evidence standard is met, an evidence-based stopping criterion holds,
+the user stops the work, or a real obstacle or resource limit prevents useful work;
+report partial results and remaining branches honestly. Bounded tasks may finish
+at their requested scope. Budgets are ceilings, not spending targets; no minimum
+duration, call count or exhaustive-search requirement is introduced. This is
+versioned prompt guidance, not a new schema, research-quality verifier, runtime
+completion gate, permission or allowance. Child briefs remain scoped and finite.
+
 ### Delegation
 
 - PD-11. A parent run starts a delegation with the task, the track (if any), a context summary, pinned input references, an output schema (the platform default, or one a skill supplies), a role profile (tools, skill set, model setting) and limits (turns, wall time, cost). The platform assigns a delegation ID that the request, the outcome and every related record carry (the pack's convention).

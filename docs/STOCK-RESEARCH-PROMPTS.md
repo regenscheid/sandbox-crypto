@@ -16,22 +16,29 @@ with the configured model gateway. It creates no additional model call.
 
 | ID | Version | Original framing |
 | --- | --- | --- |
-| `intake` | `sandbox-stock-intake-1` | Establish goal, known inputs, useful evidence, assumptions and feasibility; ask only for a decision that blocks progress. |
+| `intake` | `sandbox-stock-intake-2` | Establish goal, known inputs, useful evidence, assumptions and feasibility; ask only for a decision that blocks progress. |
 | `literature` | `sandbox-stock-literature-2` | Inspect available sources, distinguish source claims and deductions, compare methods and limits, and disclose inaccessible material; state each search's source, query and date, and treat no hits as bounding only that search. |
-| `experiment` | `sandbox-stock-experiment-1` | State hypothesis, controls, inputs, stopping condition and expected evidence; preserve actual execution scope and partial/negative results. |
+| `experiment` | `sandbox-stock-experiment-2` | State hypothesis, controls, inputs, stopping condition and expected evidence; preserve actual execution scope and partial/negative results. |
 | `proof-audit` | `sandbox-stock-proof-audit-1` | Separate assumptions and deductions from finite computation, examples and heuristics; distinguish gaps from counterexamples. |
-| `report` | `sandbox-stock-report-1` | Connect claims to inspected evidence and existing artifacts; separate conclusions, workflow status, uncertainty and remaining work. |
+| `report` | `sandbox-stock-report-2` | Connect claims to inspected evidence and existing artifacts; separate conclusions, workflow status, uncertainty and remaining work. |
 
 These are original framing aids, independently written under D56. No upstream
 prompt, code or schema is copied, and no parity with an upstream product is claimed.
 Scripted tests prove selection and input integrity; improved research behavior
 would need a separate budgeted evaluation.
 
+Intake, experiment and report version 2 reinforce the MAIN guidance for explicitly
+extended exploration: an intake result, pilot or interim report does not complete
+the investigation. Reassess hypotheses and justified follow-on branches against
+the requested evidence and stopping criteria; bridge toy results to the target
+version and parameters before promoting them. Bounded intake, experiments and
+report requests remain finite, and resource ceilings are not spending targets.
+
 ## Assembly and authority
 
 Selected system content is exactly the existing MAIN base, two newlines, the
 selected template, and—only when the six real plan tools are offered—two newlines
-plus the unchanged planning guidance. The original user task remains its exact
+plus the versioned planning guidance. The original user task remains its exact
 user message. Ordered tool schemas, descriptions, grants, dispatch, policy,
 isolation checks and closing budgets are unchanged. Templates name no extra tool
 or permission; unavailable retrieval, execution or planning is disclosed instead
