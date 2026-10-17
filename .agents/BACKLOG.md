@@ -312,7 +312,8 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 ## Repository
 
 - [ ] Research continuity before the UI redesign (owner, 2026-10-16; D87; [design](../docs/specs/research-continuity.md)). Local signed implementation on `codex/research-foundations`; checkboxes remain open until integration/acceptance:
-  - [ ] Configure and record model effort per role; preserve profiles on ordinary Resume and support explicit audited effort changes. Verify actual `max` responses and the requested in-depth, literature-grounded Discover plan in the real SNOVA trial.
+  - [x] Configure and pin model effort by role and audit explicit Resume changes (`43889b45`, `0d320dba`); actual parent/child Responses `max` verified in SNOVA. Pin-ancestor retry guard: `0d2d5e66`.
+  - [ ] Complete scientific review of the generated in-depth SNOVA plan and live child-fold/meaningful-computation acceptance. Narrative size retries need corrective feedback; archive/outline fallback is preserved.
   - [ ] Implement [adaptive research allowances](../docs/specs/adaptive-research-resources.md): durable warnings to calling agents, evidence-based renewals within policy, aggregate reservations, safe-point pause and root-level recovery; keep hard user/security ceilings distinct.
   - [ ] Incremental evidence and bounded historical memory; RC-F9/F10/F14. Schema 61/63 collections, 64 MiB active replay with provider-envelope projection (full archive unchanged), streaming exports and fixed-size legacy reads are implemented; 10x scale/reopen/evidence results in the [memory report](docs/agent-reports/memory-bounds-2026-10-17.md).
   - [ ] Paid-call intent and observed usage accounting; RC-10/13/14. Main responses commit archive/usage/receipts together. Auxiliary observations count before their legacy reports, with exact identity links preventing duplicate charges ([spec](../docs/specs/auxiliary-usage.md)). Unknown outcomes require explicit reconciliation.
