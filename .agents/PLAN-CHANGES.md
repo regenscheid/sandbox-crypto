@@ -4,7 +4,7 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 ## 2026-10-17
 
-- The owner requested streaming model requests and ten increasingly delayed attempts after SNOVA's 524 timeouts. The GPT Responses adapter now requests SSE and commits only a matching terminal response; a short live gateway probe passed. Ten-attempt 524 handling remains pending durable per-attempt cost and token accounting after independent review; long pre-response behavior and runtime rollout still need acceptance (D88, RS-6e).
+- The owner requested streaming model requests and ten increasingly delayed attempts after SNOVA's 524 timeouts. The GPT Responses adapter now requests SSE and commits only a matching terminal response; a short live gateway probe and isolated `141ba43e` image deployment passed. Ten-attempt 524 handling remains pending durable per-attempt cost and token accounting after independent review; long pre-response behavior still needs acceptance (D88, RS-6e).
 
 - The owner clarified that an unknown provider price should not indefinitely block SNOVA research when the operator has made an explicit conservative reservation. A legacy fold estimate without an intent ID now requires an exact audited USER link to that reserved intent; unrelated unknowns and known charges remain counted ([run service](../docs/specs/run-service.md), [recovery controls](../docs/specs/recovery-controls.md)).
 
