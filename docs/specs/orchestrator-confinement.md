@@ -1,8 +1,9 @@
 # Orchestrator confinement transport
 
 Status: Implementation contract for RC-27 to RC-29. The normal launcher uses this
-boundary. Disposable OpenShell replacement qualification remains required; local
-fixtures do not establish runtime confinement acceptance.
+boundary. The [2026-10-17 qualification](../../.agents/docs/agent-reports/openshell-qualification-2026-10-17.md)
+verified actual VM replacement and explicit parent/child Resume on the recorded
+revision, with synthetic model responses; its scope and limits remain explicit.
 
 The agent-facing runtime runs in a dedicated OpenShell sandbox. It owns root and
 child scheduling, prompt assembly, model adapters, model response parsing and the
@@ -122,8 +123,9 @@ service. The launcher requires its full embedded revision and the runtime compar
 that revision, control protocol, control schema and worker protocol before readiness.
 The deployed OpenShell must support the VM driver, image uploads, immutable sandbox
 IDs, providerless create and REST WebSocket upgrades through compiled endpoint policy.
-OpenShell v0.1.3 source contains the REST upgrade relay tests; this is source evidence,
-not a successful local or deployed VM qualification.
+OpenShell v0.1.3 passed the recorded disposable normal-launcher qualification,
+including the actual scoped control transport through compiled endpoint policy.
+That report distinguishes verified runtime behavior from untested live integrations.
 
 The configured model key must itself be scoped by the gateway to the intended model
 aliases and budget, without administrative access. Runtime adapter allowlists constrain
