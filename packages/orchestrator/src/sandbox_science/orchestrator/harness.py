@@ -52,6 +52,7 @@ from .consistency.findings import Findings
 from .consistency.models import ReviewConfig
 from .consistency.store import ReviewStore
 from .continuity.blueprints import Blueprint, Blueprints
+from .continuity.child_settlement import ChildSettlement
 from .continuity.hook import WorkHook
 from .continuity.kernels import KernelJournal
 from .continuity.models import IntentModel, ModelIntents
@@ -1246,7 +1247,8 @@ class Harness:
         finished = await self.start(admitted, sink, stop=stop)
         if finished.transcript.stopped == "cancelled" and child.deadline.interrupted:
             finished.transcript.stopped = "interrupted"
-        saved_status = await save(
+        settlement = await self.checkpoint_child(finished)
+        await save(
             finished.fields(),
             finished.status,
             finished.hooks,
@@ -1254,7 +1256,26 @@ class Harness:
             error=sink.error,
         )
         await self.release_child(finished)
-        return self.child_outcome(finished, saved_status)
+        return await settlement.settle(
+            finished.context.project_id,
+            finished.context.session_id,
+            run_name(finished.started_at, finished.run_id),
+        )
+
+    async def checkpoint_child(self, finished: Finished) -> ChildSettlement:
+        """Save typed validation evidence before final persistence can complete work."""
+        if self.stores is None or finished.delegation is None:
+            raise ValueError("child settlement requires a durable delegated run")
+        settlement = ChildSettlement(self.stores.projects.control, Ledger(self.stores.documents))
+        await threaded(
+            settlement.keep,
+            finished.context.project_id,
+            finished.context.session_id,
+            run_name(finished.started_at, finished.run_id),
+            finished.delegation,
+            self.child_outcome(finished, finished.status),
+        )
+        return settlement
 
     async def release_child(self, finished: Finished) -> None:
         """Release only completed/stopped child kernels after durable finalization."""

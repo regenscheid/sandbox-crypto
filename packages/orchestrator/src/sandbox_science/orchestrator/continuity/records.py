@@ -61,16 +61,27 @@ def _pending_children(db: sqlite3.Connection, project: str, session: str, work: 
         db.execute(
             "SELECT 1 FROM research_work WHERE project=? AND session=? AND parent=? "
             "AND state NOT IN ('completed','stopped') UNION ALL "
-            "SELECT 1 FROM delegations d JOIN research_attempts a "
-            "ON a.project=d.project_id AND a.session=d.session_id AND a.run=d.parent "
+            "SELECT 1 FROM delegations d JOIN research_work a "
+            "ON a.project=d.project_id AND a.session=d.session_id "
+            "AND (EXISTS (SELECT 1 FROM research_attempts p WHERE p.project=a.project "
+            "AND p.session=a.session AND p.run=d.parent AND p.work=a.work) OR EXISTS "
+            "(SELECT 1 FROM research_continuations p WHERE p.project=a.project "
+            "AND p.session=a.session AND p.run=d.parent AND p.work=a.work)) "
             "WHERE a.project=? AND a.session=? AND a.work=? AND (d.ended IS NULL OR "
             "(NOT EXISTS (SELECT 1 FROM research_attempts ack WHERE ack.project=a.project "
             "AND ack.session=a.session AND ack.work=a.work AND ack.run=d.acknowledged) "
             "AND NOT EXISTS (SELECT 1 FROM response_receipts r "
             "JOIN research_attempts p ON p.project=r.project AND p.session=r.session "
             "AND p.run=r.run WHERE p.project=a.project AND p.session=a.session "
-            "AND p.work=a.work AND r.source='delegations' AND r.notice=d.delegation_id))) LIMIT 1",
-            (project, session, work, project, session, work),
+            "AND p.work=a.work AND r.source='delegations' AND r.notice=d.delegation_id))) "
+            "UNION ALL "
+            "SELECT 1 FROM research_child_settlements c JOIN research_attempts a "
+            "ON a.project=c.project AND a.session=c.session AND a.run=c.run "
+            "JOIN research_work w ON w.project=a.project AND w.session=a.session AND w.work=a.work "
+            "WHERE w.project=? AND w.session=? AND w.parent=? AND c.settled=0 "
+            "AND EXISTS (SELECT 1 FROM runs r WHERE r.project_id=c.project "
+            "AND r.session_id=c.session AND r.name=c.run) LIMIT 1",
+            (project, session, work, project, session, work, project, session, work),
         ).fetchone()
         is not None
     )
@@ -284,6 +295,11 @@ class WorkRecords:
             if found is None:
                 return  # historical runs have no invented work authority
             work = str(found[0])
+            db.execute(
+                "UPDATE research_child_settlements SET saved_status=? "
+                "WHERE project=? AND session=? AND run=? AND saved_status IS NULL",
+                (0 if persisted else 1, project, session, run),
+            )
             children = _pending_children(db, project, session, work)
             state = (
                 "stopped"

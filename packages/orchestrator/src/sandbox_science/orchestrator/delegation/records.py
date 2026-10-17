@@ -70,8 +70,12 @@ _OFFERED: Final = (
 )
 """Normal roots retain the session-wide PD-35 handback contract."""
 _WORK_OFFERED: Final = (
-    "EXISTS (SELECT 1 FROM research_attempts a WHERE a.project=d.project_id "
-    "AND a.session=d.session_id AND a.run=d.parent AND a.work=?)"
+    "EXISTS (SELECT 1 FROM research_work w WHERE w.project=d.project_id "
+    "AND w.session=d.session_id AND w.work=? AND (EXISTS "
+    "(SELECT 1 FROM research_attempts a WHERE a.project=w.project AND a.session=w.session "
+    "AND a.run=d.parent AND a.work=w.work) OR EXISTS "
+    "(SELECT 1 FROM research_continuations a WHERE a.project=w.project AND a.session=w.session "
+    "AND a.run=d.parent AND a.work=w.work)))"
 )
 _WORK_ACKNOWLEDGED: Final = (
     "EXISTS (SELECT 1 FROM research_attempts a WHERE a.project=d.project_id "
@@ -403,7 +407,11 @@ class DelegationRecords:
             rows = db.execute(
                 f"{tree}SELECT delegation_id, run FROM delegations "  # noqa: S608
                 "WHERE project_id = ? AND session_id = ? AND ended IS NULL "
-                "AND (? IS NULL OR parent IN (SELECT run FROM tree))",
+                "AND (? IS NULL OR parent IN (SELECT run FROM tree)) "
+                "AND NOT EXISTS (SELECT 1 FROM research_child_settlements c JOIN runs r "
+                "ON r.project_id=c.project AND r.session_id=c.session AND r.name=c.run "
+                "WHERE c.project=delegations.project_id AND c.session=delegations.session_id "
+                "AND c.run=delegations.run AND c.settled=0)",
                 (*values, project, session, parent),
             ).fetchall()
             for delegation_id, run in rows:

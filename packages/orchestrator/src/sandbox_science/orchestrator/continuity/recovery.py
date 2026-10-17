@@ -18,9 +18,7 @@ from sandbox_science.orchestrator.aio import threaded
 from sandbox_science.orchestrator.chat import session_lease
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.control.errors import CONFLICT, NOT_FOUND
-from sandbox_science.orchestrator.delegation.hook import observed
-from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords, Ending
-from sandbox_science.orchestrator.delegation.work import record_work
+from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords
 from sandbox_science.orchestrator.environment_claim import environment_claim
 from sandbox_science.orchestrator.harness import Admitted, RunRequest, save, tier_in_effect
 from sandbox_science.orchestrator.ledger import Ledger
@@ -28,6 +26,7 @@ from sandbox_science.orchestrator.projects import run_id_of, run_name
 from sandbox_science.orchestrator.run_inputs import RunInputs
 
 from .blueprints import Blueprints
+from .child_settlement import ChildSettlement
 from .kernels import KernelJournal
 from .plans import Plans
 from .reconcile import Reconciler
@@ -100,6 +99,9 @@ class Recovery:
                     )
                 )
                 with self.plans.authority(self.epoch, name):
+                    await ChildSettlement(
+                        self.stores.projects.control, Ledger(self.stores.documents)
+                    ).drain(self.project, self.session, root=root)
                     await threaded(self.plans.prepare, root, run=name, started=started)
                 self.started = True
                 while True:
@@ -166,36 +168,21 @@ class Recovery:
             if self.sink is None:
                 raise RuntimeError("Resume has no sink")
             finished = await self.harness.start(admitted, self.sink, stop=self.stop)
-            status = await save(
+            settlement = (
+                await self.harness.checkpoint_child(finished)
+                if admitted.request.delegation is not None
+                else None
+            )
+            await save(
                 finished.fields(),
                 finished.status,
                 finished.hooks,
                 projects=self.stores.projects,
                 error=self.sink.error,
             )
-            if admitted.request.delegation is not None:
-                child = self.harness.child_outcome(finished, status)
-                kept = await threaded(
-                    DelegationRecords(self.stores.projects.control).end,
-                    self.project,
-                    self.session,
-                    admitted.request.delegation,
-                    Ending(
-                        observed(child),
-                        child.stopped,
-                        child.final_text,
-                        child.refused,
-                        child.result,
-                        child.errors,
-                        child.alias,
-                        child.models,
-                        child.read_entry,
-                        child.read_proofs,
-                        child.files,
-                    ),
-                )
-                await record_work(
-                    Ledger(self.stores.documents), self.project, self.session, kept, child.created
+            if settlement is not None:
+                await settlement.settle(
+                    self.project, self.session, run_name(finished.started_at, finished.run_id)
                 )
                 await self.harness.release_child(finished)
             return True

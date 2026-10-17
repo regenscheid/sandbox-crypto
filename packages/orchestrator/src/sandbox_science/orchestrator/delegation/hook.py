@@ -537,7 +537,16 @@ class Delegations(TurnHook):
         """Write an outcome, trying again on failure, then record it as work on the entry
         it checked (LG-F8); one never written is ended at the session's next main run
         (``DelegationRecords.abandon``)."""
+        from sandbox_science.orchestrator.continuity.child_settlement import ChildSettlement
+
         context = self.context
+        settlement = ChildSettlement(self.records.control, self.ledger)
+        saved = await threaded(
+            settlement.candidate, context.project_id, context.session_id, delegation_id
+        )
+        if saved is not None:
+            await settlement.settle(context.project_id, context.session_id, saved)
+            return
         for attempt in range(WRITES):
             try:
                 kept = await threaded(
@@ -715,6 +724,11 @@ class Delegations(TurnHook):
         context = self.context
         # A main run ends the session's dead trees; a delegated run's tree is its root's.
         if self.depth == 0:
+            from sandbox_science.orchestrator.continuity.child_settlement import ChildSettlement
+
+            await ChildSettlement(self.records.control, self.ledger).drain(
+                context.project_id, context.session_id
+            )
             abandoned = await threaded(self.records.abandon, context.project_id, context.session_id)
             for delegation_id, _ in abandoned:
                 _log.warning("delegation %s lost its process: interrupted", delegation_id)

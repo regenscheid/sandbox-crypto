@@ -3037,6 +3037,13 @@ def _recovery_dispatch(schema: Schema) -> None:
     install(schema)
 
 
+def _child_settlements(schema: Schema) -> None:
+    """Version65: replayable typed delegated outcomes."""
+    from sandbox_science.orchestrator.continuity.child_settlement import install
+
+    install(schema)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -3101,6 +3108,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _research_work,
     _immutable_run_collections,
     _recovery_dispatch,
+    _child_settlements,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

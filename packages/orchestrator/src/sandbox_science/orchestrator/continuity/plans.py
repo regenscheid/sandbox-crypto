@@ -115,7 +115,14 @@ class Plans:
                 "AND NOT EXISTS (SELECT 1 FROM research_work c JOIN delegations d "
                 "ON d.project_id=c.project AND d.session_id=c.session AND d.run=c.current "
                 "WHERE c.project=w.project AND c.session=w.session AND c.parent=w.work "
-                "AND d.ended IS NULL) ORDER BY p.work LIMIT 4",
+                "AND d.ended IS NULL) AND NOT EXISTS (SELECT 1 FROM research_child_settlements cs "
+                "JOIN research_attempts ca ON ca.project=cs.project AND ca.session=cs.session "
+                "AND ca.run=cs.run JOIN research_work cw ON cw.project=ca.project "
+                "AND cw.session=ca.session AND cw.work=ca.work WHERE cw.project=w.project "
+                "AND cw.session=w.session AND cw.parent=w.work AND cs.settled=0 "
+                "AND EXISTS (SELECT 1 FROM runs rr WHERE rr.project_id=cs.project "
+                "AND rr.session_id=cs.session AND rr.name=cs.run)) "
+                "ORDER BY p.work LIMIT 4",
                 (self.project, self.session, self.request),
             ).fetchall()
         return tuple(row[0] for row in rows)
