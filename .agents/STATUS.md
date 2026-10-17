@@ -23,7 +23,7 @@ Updated 2026-10-17 on `codex/research-ui`, based on foundation `631dc246` (main 
 - Local UI has project/session navigation, chat and immutable 100 MiB file uploads, a drag-resizable half-window Documents/Plan/Agents/Activity pane, document filters and tabs, shared Markdown/LaTeX and revisioned editors. Validation: 2,194 web tests plus focused backend gates; [UI report](docs/agent-reports/research-ui-refinements-2026-10-17.md). The context inspector design is browser-checked but integration remains pending ([report](docs/agent-reports/context-inspector-2026-10-17.md)).
 - Figures are built through F5 and F9–F11; Mermaid, figure checks/exports and browser acceptance remain. Skills K7a/K7b and generated binding restrictions are built; remaining items stay in BACKLOG.
 - Advanced unknown-outcome reconciliation uses authenticated API routes. The UI exposes Resume and blocked reasons; a full graphical reconciliation editor remains open.
-- Next: review the generated five-track SNOVA plan (document `doc-09311a5e9ed7702548d7eabf`, corrected rev3), continue child-fold/sustained-computation acceptance, qualify improved fold repair, preserve artifacts and exact evidence, then fully tear down the disposable lab. Do not merge or push.
+- Next: review the generated five-track SNOVA plan (document `doc-09311a5e9ed7702548d7eabf`, corrected rev3), continue child-fold/sustained-computation acceptance, qualify measured fold-retry repair `46ccc5a9` (51 tests and independent review clear), preserve artifacts and exact evidence, then fully tear down the disposable lab. Do not merge or push.
 
 ## Known issues
 
