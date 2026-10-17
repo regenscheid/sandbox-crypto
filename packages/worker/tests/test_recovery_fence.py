@@ -106,7 +106,10 @@ async def test_epoch_advance_while_waiting_on_channel_write_lock_refuses_dispatc
     async def closed(channel):
         pass
 
-    channel = ExecutorChannel([], lambda message: None, closed)
+    async def on_event(message):
+        pass
+
+    channel = ExecutorChannel([], on_event, closed)
     channel._process = cast(Any, type("Process", (), {"stdin": Input()})())
     await channel._write_lock.acquire()
     try:
@@ -144,7 +147,10 @@ async def test_command_written_before_fence_is_still_an_observation_obligation(
     async def closed(channel):
         pass
 
-    channel = ExecutorChannel([], lambda message: None, closed)
+    async def on_event(message):
+        pass
+
+    channel = ExecutorChannel([], on_event, closed)
     channel._process = cast(Any, type("Process", (), {"stdin": Input()})())
     try:
         with store.recovery_fences.bind(owner(1)):
