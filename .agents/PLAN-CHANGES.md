@@ -4,6 +4,8 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 ## 2026-10-17
 
+- **UI review refinements (D80):** research pane can use 50% of the window; Documents gets a searchable/filterable library and named tabs retaining drafts. Ledger redesign is being explored separately through Local Codex, with list/detail and optional board views.
+
 - **Return to the UI (D80 amended):** left project/session navigation, central chat with uploads, and an optional documents/editor/plan/agent pane. OpenScience web UI is an Apache-2.0 interaction reference; originals are immutable USER records and sandbox copies go through the worker API ([contract](../docs/specs/research-ui.md)).
 
 - Resume claims atomically admit only their selected tree's held, unconsumed inputs; the workspace no longer globally releases other trees or terminal input ([tree Resume](../docs/specs/tree-resume.md)).

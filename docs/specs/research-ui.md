@@ -11,6 +11,12 @@ explicit Resume, and sandbox execution boundaries remain authoritative.
   The right pane can be hidden or resized with pointer and keyboard. Hiding it or
   switching tabs preserves mounted editors and drafts. Documents are scoped to
   the project and current session; opening one keeps chat visible.
+- The desktop research pane can expand to 50% of the browser window, using its
+  drag handle, keyboard, or a half-window button. Smaller screens retain the drawer.
+- Documents has a library with search, scope and sort controls above its rows.
+  Uploaded originals and research artifacts remain reachable from the library.
+  Open documents appear as named, closable tabs beneath Documents. Switching or
+  closing a tab keeps its editor and unsaved draft available when reopened.
 - Agents shows observed parent/child runs, status, delegation brief, and live
   activity. Failed observations are visibly stale, never presented as current.
 - Chat accepts file selection and drag/drop, removable attachments, explicit

@@ -1,8 +1,11 @@
 <!-- SPDX-License-Identifier: MIT -->
 <script lang="ts">
-  let { width = $bindable(460) }: { width?: number } = $props();
+  let {
+    width = $bindable(460),
+    maxWidth = Math.floor(window.innerWidth / 2),
+  }: { width?: number; maxWidth?: number } = $props();
   let start: { x: number; width: number } | null = null;
-  const clamp = (value: number) => Math.min(760, Math.max(320, value));
+  const clamp = (value: number) => Math.min(maxWidth, Math.max(320, value));
 </script>
 
 <!-- A focusable separator is the ARIA window-splitter pattern; arrows adjust its value. -->
@@ -14,7 +17,7 @@
   aria-label="Resize research pane"
   aria-orientation="vertical"
   aria-valuemin="320"
-  aria-valuemax="760"
+  aria-valuemax={maxWidth}
   aria-valuenow={width}
   onkeydown={(event) => {
     if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
@@ -23,7 +26,7 @@
         event.key === 'Home'
           ? 320
           : event.key === 'End'
-            ? 760
+            ? maxWidth
             : width + (event.key === 'ArrowLeft' ? 24 : -24),
       );
     }

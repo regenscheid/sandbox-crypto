@@ -133,7 +133,8 @@ it('contains focus across closed details and hidden controls and restores it on 
   expect(document.activeElement).toBe(outside);
   action.destroy();
 });
-it('resizes with the keyboard within its declared bounds', () => {
+it('resizes with the keyboard up to half a wide window', () => {
+  vi.stubGlobal('innerWidth', 2400);
   const target = document.createElement('div');
   document.body.append(target);
   mounted.push(mount(PaneResizer, { target }));
@@ -143,8 +144,8 @@ it('resizes with the keyboard within its declared bounds', () => {
     ['ArrowLeft', '484'],
     ['Home', '320'],
     ['ArrowRight', '320'],
-    ['End', '760'],
-    ['ArrowLeft', '760'],
+    ['End', '1200'],
+    ['ArrowLeft', '1200'],
   ]) {
     separator.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
     flushSync();
@@ -174,4 +175,21 @@ it('gives focus to navigation when the simultaneously activated inspector has an
   expect(inspector.contains(document.activeElement)).toBe(true);
   nav.destroy();
   pane.destroy();
+});
+
+it('expands to half the viewport and clamps when the window shrinks', async () => {
+  vi.stubGlobal('innerWidth', 2400);
+  const root = session();
+  await settle();
+  root
+    .querySelector<HTMLButtonElement>('[aria-label="Expand research pane to half the window"]')!
+    .click();
+  flushSync();
+  expect(root.querySelector('[role="separator"]')!.getAttribute('aria-valuenow')).toBe('1200');
+  vi.stubGlobal('innerWidth', 1400);
+  window.dispatchEvent(new Event('resize'));
+  flushSync();
+  const separator = root.querySelector('[role="separator"]')!;
+  expect(separator.getAttribute('aria-valuemax')).toBe('700');
+  expect(separator.getAttribute('aria-valuenow')).toBe('700');
 });

@@ -164,6 +164,9 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 
 ## W4: integrate the initial research workspace
 
+- [x] Local UI review refinement: half-window research pane, searchable/filterable document library, and named closable document tabs preserving unsaved drafts. Not yet merged or deployed.
+- [ ] Review the Local Codex ledger prototype (list/detail with optional board), then adapt the chosen design to the production ledger.
+
 - [ ] Original system/stock prompt catalog and planning workflow (D86; [design](../docs/ORCHESTRATOR-PROMPTS.md)): independently reviewed design `e3ba766` and source corrections `fd7ecea` merged as PR #100 after all four fresh checks passed. MAIN/watcher/reviewer already have individual prompts; the complete catalog is not wired
   - [x] Correct current MAIN execution-location/control-tool guidance and obsolete background-job worker-restart wording; reviewed signed `fd7ecea`, 30 affected tests, source-only text changes and two actual-model-input cases. Root gates pass 10,034 Python/43 opt-in skips/two existing warnings and required static checks; PR #100 merged after all four fresh checks passed, actual tool grants/calls unchanged
   - [x] Durable internal session plans: immutable attributed CAS versions, stable step IDs/tracks, append-only progress, explicit goal outcome and bounded replay/quotas; independently cleared signed `4deb2dc` and 80 focused cases; root combined gates pass 10,312 Python/43 skips/two existing warnings and corrected 127 core/API cases; delivered as PR #102 at `25510ab` after all four fresh checks passed on reviewed signed `1d4205f` (run `38332303702`)

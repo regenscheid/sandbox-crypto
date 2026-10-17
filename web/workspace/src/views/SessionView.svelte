@@ -35,7 +35,9 @@
   );
   let visited = $state<Panel[]>(untrack(() => (reviewId ? ['activity'] : ['plan'])));
   let width = $state(460);
-  let narrow = $state(window.innerWidth <= 1120);
+  let viewportWidth = $state(window.innerWidth);
+  const narrow = $derived(viewportWidth <= 1120);
+  const maxWidth = $derived(Math.max(320, Math.floor(viewportWidth / 2)));
   function closePane() {
     const id = panel;
     panel = null;
@@ -73,7 +75,8 @@
 
 <svelte:window
   onresize={() => {
-    narrow = window.innerWidth <= 1120;
+    viewportWidth = window.innerWidth;
+    width = Math.min(width, maxWidth);
   }}
 />
 <div class="session-workspace" style:--inspector-width={`${width}px`}>
@@ -99,7 +102,7 @@
         <ChatPanel {projectId} {sessionId} closed={view.data.session.closed_at !== null} />
       {/if}
     </div>
-    {#if panel}<PaneResizer bind:width />{/if}
+    {#if panel}<PaneResizer bind:width {maxWidth} />{/if}
     <aside
       id="research-pane"
       class="research-pane"
@@ -111,10 +114,14 @@
       tabindex="-1"
     >
       <div class="pane-heading">
-        <span class="eyebrow">{tabs.find((tab) => tab.id === panel)?.label}</span><button
-          class="icon-button"
-          aria-label="Close research pane"
-          onclick={closePane}>×</button
+        <span class="eyebrow">{tabs.find((tab) => tab.id === panel)?.label}</span>
+        {#if !narrow}<button
+            class="pane-expand"
+            title="Expand to half the window"
+            aria-label="Expand research pane to half the window"
+            onclick={() => (width = maxWidth)}>↔</button
+          >{/if}<button class="icon-button" aria-label="Close research pane" onclick={closePane}
+          >×</button
         >
       </div>
       <div class="pane-content">

@@ -906,7 +906,8 @@ button:disabled {
 }
 .research-pane {
   width: var(--inspector-width);
-  max-width: 52%;
+  max-width: 50vw;
+  flex-shrink: 0;
   min-width: 320px;
   background: var(--surface);
   display: flex;
@@ -920,6 +921,14 @@ button:disabled {
   justify-content: space-between;
   padding: 12px 20px;
   border-bottom: 1px solid var(--border);
+}
+.pane-heading .eyebrow {
+  flex: 1;
+}
+.pane-expand {
+  border: 0;
+  background: transparent;
+  margin-right: 8px;
 }
 .pane-content {
   overflow: auto;
@@ -1069,9 +1078,9 @@ button.primary-button:hover:not(:disabled) {
   color: var(--accent);
 }
 .document-list {
-  display: grid;
-  gap: 8px;
-  margin: 20px 0;
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 20px;
 }
 .document-card {
   width: 100%;
@@ -1079,8 +1088,19 @@ button.primary-button:hover:not(:disabled) {
   align-items: center;
   text-align: left;
   gap: 12px;
-  padding: 14px;
+  padding: 13px 8px;
   background: var(--surface);
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+}
+.document-card:hover {
+  background: var(--accent-soft);
+}
+.document-card time {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
 }
 .document-card > span:nth-child(2) {
   flex: 1;
@@ -1099,7 +1119,83 @@ button.primary-button:hover:not(:disabled) {
 }
 .document-glyph {
   color: var(--accent);
-  font-size: 24px;
+  font-size: 19px;
+}
+.document-tabs {
+  display: flex;
+  overflow-x: auto;
+  position: sticky;
+  top: -22px;
+  margin: -22px -22px 20px;
+  padding: 0 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  z-index: 3;
+}
+.document-tabs > button,
+.document-tab {
+  flex-shrink: 0;
+}
+.document-tab {
+  display: flex;
+  align-items: center;
+}
+.document-tabs button {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 13px 10px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.document-tab [role='tab'] {
+  max-width: 210px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.document-tabs > [aria-selected='true'],
+.document-tab.active {
+  background: var(--accent-soft);
+  box-shadow: inset 0 -2px var(--accent);
+  color: var(--accent);
+}
+.document-tabs .document-tab-close {
+  padding: 10px 9px;
+  font-size: 16px;
+}
+.document-filters {
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.document-filters label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.document-search input {
+  width: 100%;
+  font-size: 13px;
+}
+.document-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+.document-filter-row label {
+  flex: 1;
+  min-width: 115px;
+}
+.document-filter-row select {
+  width: 100%;
+  font-size: 12px;
+}
+.document-count {
+  color: var(--muted);
+  font-size: 11px;
+  margin: 14px 0 0;
 }
 .back-link {
   display: inline-block;
