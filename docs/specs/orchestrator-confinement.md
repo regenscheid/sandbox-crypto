@@ -128,6 +128,10 @@ Local fixtures and historical image labs do not establish this acceptance.
 Build the orchestrator image from the same source revision as the host control
 service. The launcher requires its full embedded revision and the runtime compares
 that revision, control protocol, control schema and worker protocol before readiness.
+Private control protocol 2 carries typed active-memory exhaustion so runtime loops
+can drain their children before pausing. Protocol 1 peers are refused; deploy host
+control and the orchestrator image together. The control store is now schema 68,
+including durable artifact blob mappings and transfer reservations.
 The deployed OpenShell must support the VM driver, image uploads, immutable sandbox
 IDs, providerless create and REST WebSocket upgrades through compiled endpoint policy.
 OpenShell v0.1.3 passed the recorded disposable normal-launcher qualification,

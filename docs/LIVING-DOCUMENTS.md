@@ -55,6 +55,7 @@ In the code, `sandbox_science.orchestrator.control` owns the connection. `Contro
 | `math_block_owners` | The revision and author that last changed each block, for attributing math findings |
 | `math_finding_state`, `math_notices`, `math_ignored` | The current mechanical finding for each formula, its closing notices with their claim and delivery, and findings staged as left unaddressed by a run |
 | `artifact_objects`, `artifact_revisions`, `artifact_operations`, `artifact_events`, `artifact_usage` | Artifacts, their immutable revisions with their bytes (or only their hash and size, or a tombstone), the publication operations, the inventory's events, and its retention figures per project and overall, kept by triggers (version 20) ([artifacts](ARTIFACTS.md)) |
+| `artifact_revision_blobs`, `artifact_transfers` | Immutable revision-to-filesystem-blob mappings and durable staging reservations, independent of worker containers (version 68; [durable artifacts](specs/durable-artifact-blobs.md)). Backup the database and its adjacent blob directory together |
 | `session_plan_records`, `session_plan_projections` | Session plans' append-only versions, progress and status changes, and the current plan and heads derived from them ([session plans](SESSION-PLANS.md)) |
 | `job_runs`, `job_origins`, `job_acknowledged`, `job_waits`, `job_watcher_calls` | Background jobs' run leases, originating runs, acknowledged completions, active waits and watcher calls ([background jobs](BACKGROUND-JOBS.md)) |
 
