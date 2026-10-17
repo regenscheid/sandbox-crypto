@@ -179,3 +179,7 @@ so explicit Resume can continue them while a new user request may start separate
 
 Private control protocol 3 additionally carries attempt-pinned requested model profiles
 for role-specific reasoning effort. Older control/runtime peers are refused.
+
+Unexpected capability failures retain a local diagnostic with capability name, exception
+class and stack locations, never request payloads, exception text or local variables.
+Prepared host callbacks restore both captured ownership and model-profile context.

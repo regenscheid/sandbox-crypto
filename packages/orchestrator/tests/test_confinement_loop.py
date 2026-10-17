@@ -100,6 +100,16 @@ async def test_vm_loop_commits_host_state_without_a_local_harness_fallback(
         if memory_pause:
             monkeypatch.setattr(Transcript, "sent", property(guarded_sent))
 
+        class ProfileGuard(TurnHook):
+            name = "profile_context_fixture"
+
+            async def notices(self, point, run):
+                if point == "start":
+                    assert service.harness.gateway is not None
+                    model = service.harness.gateway.model("main", role="fold")
+                    assert model.requested_profile.reasoning_effort == "high"
+                return ()
+
         forged = False
         requested_profiles: list[object] = []
 
@@ -151,11 +161,14 @@ async def test_vm_loop_commits_host_state_without_a_local_harness_fallback(
             ),
             "main",
         )
-        service.harness.gateway = CallbackGateway(host_channel)
+        service.harness.gateway = CallbackGateway(host_channel, reasoning_effort={"fold": "high"})
 
         async def runner(
             model: ChatModel, toolbox: Toolbox, task: str | None, **options: Any
         ) -> Transcript:
+            assert service.harness.gateway is not None
+            service.harness.gateway.reasoning_effort["fold"] = "low"
+            options["hooks"] = (*options["hooks"], ProfileGuard())
             if memory_pause:
                 options["hooks"] = (*options["hooks"], MemoryGuard())
             return await host.run(model, toolbox, task, **options)

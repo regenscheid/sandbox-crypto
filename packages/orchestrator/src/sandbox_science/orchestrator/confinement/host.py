@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import logging
 import secrets
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
@@ -33,7 +34,7 @@ from sandbox_science.orchestrator.loop import (
     notice_message,
 )
 from sandbox_science.orchestrator.model import AssistantMessage, ChatModel, ToolCall
-from sandbox_science.orchestrator.model_profiles import PROFILES, ModelProfile, ModelRole
+from sandbox_science.orchestrator.model_profiles import PROFILES, ModelProfile, ModelRole, profiles
 from sandbox_science.orchestrator.notices import DELEGATIONS, REPORT
 from sandbox_science.orchestrator.plan_tools import Plans
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome, operation_id
@@ -66,6 +67,8 @@ from .wire import (
     typed,
 )
 
+_log = logging.getLogger(__name__)
+
 
 def remote_outcome(outcome: ToolOutcome) -> ToolOutcome:
     """Send bounded control-flow metadata while full evidence stays with its host owner."""
@@ -95,6 +98,7 @@ class Prepared:
     ) -> None:
         self.given, self.toolbox, self.hooks = given, toolbox, tuple(hooks)
         self.owner = owner
+        self.model_profiles = dict(PROFILES.get() or {})
         self.log, self.folds, self.on_tool = log, folds, on_tool
         self.leases: dict[int, AbstractAsyncContextManager[None]] = {}
         self.shadow: Transcript | None = None
@@ -153,7 +157,7 @@ class Prepared:
 
     async def call(self, kind: Capability, value: JsonValue) -> JsonValue:
         """Restore captured epoch authority; a caller supplies neither scope nor epoch."""
-        with authority(self.owner):
+        with authority(self.owner), profiles(self.model_profiles):
             if not isinstance(self.log, RunArchive):
                 raise TransportError("internal", "missing canonical attempt archive")
             with self.log.archive.control.read() as tx:
@@ -261,7 +265,16 @@ class Prepared:
             if kind is Capability.NOTICES:
                 if request.point is None:
                     raise TransportError("invalid_request", "notices require a safe point")
-                result = await hook.notices(request.point, run)
+                try:
+                    result = await hook.notices(request.point, run)
+                except Exception:
+                    _log.error(
+                        "notice hook failed: slot=%d type=%s point=%s",
+                        request.slot,
+                        type(hook).__name__,
+                        request.point,
+                    )
+                    raise
                 if request.point == "tool":
                     self.tool_notices.extend(result)
                 else:
