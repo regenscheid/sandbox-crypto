@@ -42,12 +42,13 @@ import secrets
 import sqlite3
 import unicodedata
 from collections.abc import Iterator, Mapping, Sequence, Set
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC
 from typing import Any, Final, Literal, cast
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock
-from sandbox_science.orchestrator.control import ControlError, ControlStore
+from sandbox_science.orchestrator.control import ControlError, ControlStore, Tx
 from sandbox_science.orchestrator.control.errors import INVALID_REQUEST, NOT_FOUND
 from sandbox_science.orchestrator.documents.store import DocumentStore
 from sandbox_science.orchestrator.messages import MESSAGES, thoughts
@@ -365,6 +366,7 @@ class Archive:
         tool_record: ToolRecord | None = None,
         model_usage: AnsweredUsage | None = None,
         consumed: Mapping[str, Set[str]] | None = None,
+        transaction: Tx | None = None,
     ) -> Archived:
         """Keep a message ``run`` adds to its conversation, and index it, with the sources
         a tool result read (the read register, CM-12), in one change; the message as
@@ -376,7 +378,11 @@ class Archive:
         if model_usage is not None and entry.kind != "assistant":
             raise ControlError(INVALID_REQUEST, "model usage must accompany an assistant response")
         created = self.clock.now().astimezone(UTC).isoformat()
-        with self.control.write() as tx:
+        # Trusted repositories may join an already-authorized write so their durable
+        # decision and visible archive entry commit together; external input cannot set Tx.
+        if transaction is not None and not transaction.sql.in_transaction:
+            raise ValueError("archive transaction is not active")
+        with self.control.write() if transaction is None else nullcontext(transaction) as tx:
             db = tx.sql
             (last,) = db.execute(
                 "SELECT coalesce(max(position), 0) FROM archive_messages "

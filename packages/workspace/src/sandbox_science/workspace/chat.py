@@ -52,7 +52,7 @@ from sandbox_science.orchestrator.runstate import PAGE, ChatMessage, RunEvent, R
 from sandbox_science.orchestrator.runtree import RunTrees
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 
-from . import api
+from . import api, recovery_controls
 from .context import (
     CONTEXT,
     USER_ID,
@@ -117,6 +117,7 @@ class EventPage(Contract):
 
 
 def add_routes(app: web.Application) -> None:
+    recovery_controls.add_routes(app)
     app.router.add_get(PATH + "/messages", listed)
     app.router.add_post(PATH + "/messages", post)
     app.router.add_get(PATH + "/runs/{run}/events", events)

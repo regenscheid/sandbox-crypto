@@ -67,6 +67,15 @@ def _run_usage(project: str, since: datetime | None) -> tuple[str, tuple[object,
     return (
         "SELECT j.role, j.usage AS u FROM archive_model_usage j "
         "WHERE j.project=? AND j.observed>=? "
+        "UNION ALL SELECT CASE c.kind WHEN 'reviewer' THEN 'reviewer' "
+        "WHEN 'watcher' THEN 'watcher' WHEN 'embedding' THEN 'embeddings' "
+        "WHEN 'skills' THEN 'metadata' ELSE w.role END, "
+        "json_object('cost',json_extract(o.detail,'$.resolution.cost')) "
+        "FROM research_observations o JOIN research_work w USING(project,session,work) "
+        "JOIN research_model_calls c ON c.project=o.project AND c.session=o.session "
+        "AND c.run=json_extract(o.detail,'$.resolution.run') "
+        "AND c.identity=json_extract(o.detail,'$.resolution.identity') "
+        "WHERE o.project=? AND o.kind='resolution:model_usage' AND c.created>=? "
         "UNION ALL SELECT coalesce(json_extract(r.record,'$.role'),'main'), usage.value "
         "FROM runs r, json_each(r.record,'$.usage') usage "
         "WHERE r.project_id=? AND r.name>=? AND NOT EXISTS ("
@@ -80,7 +89,7 @@ def _run_usage(project: str, since: datetime | None) -> tuple[str, tuple[object,
         "AND r.session_id=e.session_id AND r.name=e.run) "
         "AND NOT EXISTS (SELECT 1 FROM archive_model_usage j WHERE j.project=e.project_id "
         "AND j.session=e.session_id AND j.run=e.run AND j.ordinal=json_extract(e.data,'$.turn'))",
-        (project, after, project, first, project, first),
+        (project, after, project, after, project, first, project, first),
     )
 
 
@@ -650,7 +659,10 @@ class RunState:
                     f"WHERE project = ? AND {made} >= ?",
                     (role, project, after),
                 ).fetchall()
-        priced = {str(role): float(total) for role, total, count in rows if count}
+        priced: dict[str, float] = {}
+        for role, total, count in rows:
+            if count:
+                priced[str(role)] = priced.get(str(role), 0.0) + float(total)
         return {role: priced[role] for role in COST_ROLES if role in priced}
 
     def offered_to(self, project: str, session: str, run: str) -> list[str]:
