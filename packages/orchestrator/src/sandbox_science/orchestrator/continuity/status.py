@@ -23,6 +23,9 @@ class ResumeStatus(Contract):
 
 
 class StatusPage(Contract):
+    root: str | None
+    unfinished: int
+    active: bool
     works: tuple[Work, ...] = Field(max_length=100)
     resumes: tuple[ResumeStatus, ...] = Field(max_length=100)
     next_work: str | None
@@ -69,12 +72,37 @@ class RecoveryStatus:
         if not 1 <= limit <= 100:
             raise ValueError("page limit is 1..100")
         with self.control.read() as tx:
+            current = tx.sql.execute(
+                "SELECT s.root,coalesce(max(w.state='running'),0) FROM research_sessions s "
+                "JOIN research_work w ON w.project=s.project AND w.session=s.session "
+                "AND w.root=s.root WHERE s.project=? AND s.session=? GROUP BY s.root",
+                (project, session),
+            ).fetchone()
+            pending = tx.sql.execute(
+                "SELECT root FROM research_resumes WHERE project=? AND session=? "
+                "AND status IN ('queued','running') LIMIT 1",
+                (project, session),
+            ).fetchone()
+            candidate = tx.sql.execute(
+                "SELECT work FROM research_work WHERE project=? AND session=? "
+                "AND parent IS NULL AND state IN ('paused','blocked','waiting') "
+                "ORDER BY work DESC LIMIT 1",
+                (project, session),
+            ).fetchone()
+            selected = pending or candidate or current
+            root = selected[0] if selected else None
+            unfinished = tx.sql.execute(
+                "SELECT count(*) FROM research_work WHERE project=? AND session=? AND root=? "
+                "AND state NOT IN ('completed','stopped')",
+                (project, session, root),
+            ).fetchone()[0]
             rows = tx.sql.execute(
                 "SELECT w.project,w.session,w.work,w.root,w.parent,w.current,w.role,w.kernel,"
                 "w.state,w.reason,s.epoch FROM research_work w JOIN research_sessions s "
                 "USING(project,session) WHERE w.project=? AND w.session=? AND w.work>? "
+                "AND w.root=? "
                 "ORDER BY w.work LIMIT ?",
-                (project, session, after_work, limit),
+                (project, session, after_work, root, limit),
             ).fetchall()
             fields = tuple(Work.model_fields)
             works = tuple(Work.model_validate(dict(zip(fields, row, strict=True))) for row in rows)
@@ -88,6 +116,9 @@ class RecoveryStatus:
                 for row in rows
             )
         return StatusPage(
+            root=root,
+            unfinished=int(unfinished),
+            active=bool((current and current[1]) or pending),
             works=works,
             resumes=resumes,
             next_work=works[-1].work if len(works) == limit else None,

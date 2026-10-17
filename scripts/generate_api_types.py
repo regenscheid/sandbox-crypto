@@ -34,6 +34,7 @@ from sandbox_science.contracts.provision_observations import (
     RevisionSummaryPage,
 )
 from sandbox_science.contracts.revision_packages import RevisionPackagePage
+from sandbox_science.orchestrator.continuity.status import StatusPage
 from sandbox_science.orchestrator.memory import MemoryChange
 from sandbox_science.orchestrator.runtree import RunTree
 from sandbox_science.workspace.api import ProjectAnswer, ProjectListing, SessionDetail
@@ -53,8 +54,8 @@ from sandbox_science.workspace.frontier import (
     FrontierHistoryAnswer,
     FrontierPastAnswer,
 )
-from sandbox_science.workspace.kernels import WorkspaceObservation
 from sandbox_science.workspace.history import HistoryChunk, HistoryPage
+from sandbox_science.workspace.kernels import WorkspaceObservation
 from sandbox_science.workspace.ledger import (
     FoldProposalList,
     LedgerCitations,
@@ -73,6 +74,7 @@ from sandbox_science.workspace.skills import ProjectSkills, SkillSettingsChange,
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "web" / "workspace" / "src" / "lib" / "api-types.ts"
 MODELS: tuple[type[BaseModel], ...] = (
+    StatusPage,
     HistoryChunk,
     HistoryPage,
     ToolRecordChunk,

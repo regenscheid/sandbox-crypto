@@ -94,6 +94,7 @@ function detail(): OperationDetail {
     request: {
       operation_id: 'op-one',
       context: {
+        authority: null,
         project_id: 'p',
         session_id: 's',
         environment_id: 'e',

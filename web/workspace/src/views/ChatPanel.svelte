@@ -37,6 +37,7 @@
   } from '../lib/questions';
   import { idle, submit } from '../lib/submit';
   import ChatQuestion from './ChatQuestion.svelte';
+  import ChatRecovery from './ChatRecovery.svelte';
   import ChatRun from './ChatRun.svelte';
   import ChatWaiting from './ChatWaiting.svelte';
   import ErrorMessage from './ErrorMessage.svelte';
@@ -176,7 +177,7 @@
       {#if thinking(current)}<p role="status">The agent is thinking…</p>{/if}
     {/if}
     <ChatWaiting messages={waiting} {starting} />
-    {#if held}<button disabled={asking.busy} onclick={resume}>Resume held messages</button>{/if}
+    <ChatRecovery {projectId} {sessionId} {held} busy={asking.busy} {closed} {resume} />
     {#if asking.error}<ErrorMessage error={asking.error} />{/if}
   {/if}
   {#each open as question (question.question_id)}

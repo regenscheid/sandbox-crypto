@@ -419,6 +419,13 @@ export interface EvidenceLink {
   locator: Record<string, unknown> | null;
 }
 
+/** Host-control ownership, never supplied by an agent's tool arguments. */
+export interface ExecutionAuthority {
+  work: string;
+  run: string;
+  epoch: number;
+}
+
 /** Who asks for an execution, and for which project, session and environment. ``environment_id`` names the logical environment (the project's default environment or a dedicated session environment). The worker reports the concrete sandbox and the environment revision it used in ``Location``. */
 export interface ExecutionContext {
   project_id: string;
@@ -426,6 +433,7 @@ export interface ExecutionContext {
   environment_id: string;
   policy_revision: string | null;
   actor: string;
+  authority: ExecutionAuthority | null;
 }
 
 /** How a page shows a pinned figure file, and when its capability stops opening it: ``image``, an ``<img>`` of ``url``; ``svg``, the figure frame at ``url``, posted ``capability``; ``html``, a frame without scripts whose page is ``url``; ``pdf``, the viewer's figure mode at ``url``. */
@@ -1190,6 +1198,7 @@ export interface QuoteChecks {
 /** A resume or a cancel, written for the run service. */
 export interface Requested {
   requested: boolean;
+  resume_request: string | null;
   resumed: number;
 }
 
@@ -1208,6 +1217,14 @@ export interface ResolvedFile {
   agpl: boolean;
   action: "allow" | "alert" | "escalate" | "deny";
   rule: string | null;
+}
+
+export interface ResumeStatus {
+  request: string;
+  root: string;
+  status: string;
+  reason: string | null;
+  created: number;
 }
 
 /** One recorded package and its declared license, including unchanged packages. */
@@ -1406,6 +1423,16 @@ export interface Standing {
   by: string | null;
 }
 
+export interface StatusPage {
+  root: string | null;
+  unfinished: number;
+  active: boolean;
+  works: Work[];
+  resumes: ResumeStatus[];
+  next_work: string | null;
+  next_resume: string | null;
+}
+
 /** One page of exact JSON bytes; join decoded bytes before UTF-8/JSON parsing. */
 export interface ToolRecordChunk {
   message: string;
@@ -1449,6 +1476,21 @@ export interface ViewerLink {
   url: string;
   expires_at: string;
   path: string;
+}
+
+/** One research responsibility, independent of the attempt currently carrying it. */
+export interface Work {
+  project: string;
+  session: string;
+  work: string;
+  root: string;
+  parent: string | null;
+  current: string;
+  role: "main" | "delegated";
+  kernel: string | null;
+  state: "running" | "waiting" | "paused" | "blocked" | "completed" | "stopped";
+  reason: string | null;
+  epoch: number;
 }
 
 /** An entry's work records, newest first, with where the next page begins. */
