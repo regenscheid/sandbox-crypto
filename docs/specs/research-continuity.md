@@ -480,8 +480,11 @@ The parent's responsibility, orchestrator-led recovery at every level and separa
 ### Explicit tree recovery coordinator
 
 The normal run service accepts a durable explicit Resume request even when there is
-no queued chat message. One request claims a new session epoch and environment
-claim, reserves immutable continuation names for every unfinished branch, and
+no queued chat message. One request claims a new session epoch, prepares the
+recorded worker environment through its capabilities handshake (waking a suspended
+sandbox), and then acquires its environment claim. Preparation failure blocks
+recovery before any branch or model dispatch. It does not create a replacement
+for a missing environment. The request reserves immutable continuation names for every unfinished branch, and
 offers at most four ready branches to the configured runtime. Descendants settle
 before their parent is offered. Completed and explicitly stopped work is skipped;
 unknown paid calls, uncertain effects, missing kernel generations, changed policy

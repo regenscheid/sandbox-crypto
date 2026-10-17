@@ -37,8 +37,14 @@ class RecoveryWorker(Worker):
     def __init__(self):
         self.claims = []
         self.closed = []
+        self.ready = False
+
+    async def capabilities(self, environment_id):
+        self.ready = True
+        return await super().capabilities(environment_id)
 
     async def claim_environment(self, request):
+        assert self.ready, "cannot retain a suspended environment"
         self.claims.append(request)
         return await super().claim_environment(request)
 
@@ -166,6 +172,42 @@ async def test_one_resume_recovers_three_levels_and_preserves_stopped_branch(tmp
         assert worker.claims
         assert worker.claims[0].context.authority.work == RUN
         assert works.request("p", "s") is None
+    finally:
+        documents.close()
+        state.projects.close()
+
+
+async def test_failed_environment_preparation_prevents_claim_and_model_dispatch(tmp_path: Path):
+    from sandbox_science.contracts import ErrorKind
+    from sandbox_science.orchestrator.worker_client import WorkerAPIError
+
+    class MissingWorker(RecoveryWorker):
+        async def capabilities(self, environment_id):
+            raise WorkerAPIError(ErrorKind.NOT_FOUND, "original environment missing")
+
+    state, documents, works = prepare_tree(tmp_path)
+    worker = MissingWorker()
+    model = ScriptedModel([ModelTurn("Must not run")])
+    harness = Harness(
+        cast(WorkerClient, worker),
+        Role(model, "scripted"),
+        stores=state,
+        settings=Settings(min_isolation_tier=None),
+    )
+    request = works.request("p", "s")
+    assert request is not None
+    try:
+        with pytest.raises(WorkerAPIError, match="original environment missing"):
+            await drive(Recovery(harness, "p", "s", request), Sink(), asyncio.Event())
+        assert not worker.claims
+        assert not model.requests
+        assert works.attempts("p", "s", RUN) == [RUN]
+        with state.projects.control.read() as tx:
+            status, reason = tx.sql.execute(
+                "SELECT status, reason FROM research_resumes WHERE request=?", (request,)
+            ).fetchone()
+        assert status == "blocked"
+        assert reason == "interrupted"
     finally:
         documents.close()
         state.projects.close()

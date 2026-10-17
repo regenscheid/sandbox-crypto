@@ -93,6 +93,9 @@ class Recovery:
                 owned_context = blueprint.context.model_copy(
                     update={"authority": ExecutionAuthority(work=root, run=name, epoch=self.epoch)}
                 )
+                # Claims deliberately cannot wake a suspended VM. Prepare the existing
+                # environment first, as ordinary admission does before retaining it.
+                await self.harness.client.capabilities(owned_context.environment_id)
                 await resources.enter_async_context(
                     environment_claim(
                         self.harness.client, owned_context, name, clock=self.harness.clock

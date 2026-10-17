@@ -4,6 +4,7 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 ## 2026-10-17
 
+- Local recovery acceptance exposed suspended environments at explicit Resume: prepare the recorded worker before its retention claim, without recreating missing environments or dispatching research before readiness.
 - Local Babbage acceptance may use the owner's authorized arrcodex models, with a $200 total ceiling for SNOVA planning, literature/MCP/PDF, Sage, delegation and long-context trials. Expose the existing context ceiling through the confined launcher for bounded fold/recovery tests; retain the default and provider cap ([continuity](../docs/specs/research-continuity.md)).
 
 - **Agent context inspection (D80):** the owner requested a secondary embedded debug dialog for every agent, including the orchestrator: usage/fold timeline, cache performance, current-view provenance and searchable original history ([proposal](../docs/specs/context-inspector.md)).
