@@ -3058,6 +3058,32 @@ def _larger_user_uploads(schema: Schema) -> None:
     expand_limit(schema)
 
 
+def _artifact_blobs(schema: Schema) -> None:
+    """Version 68: external immutable content and durable bounded transfer admission."""
+    schema.execute("""CREATE TABLE artifact_revision_blobs (
+        artifact TEXT NOT NULL, number INTEGER NOT NULL, project TEXT NOT NULL,
+        sha256 TEXT NOT NULL, size INTEGER NOT NULL CHECK(size>=0),
+        PRIMARY KEY(artifact,number),
+        FOREIGN KEY(artifact,number) REFERENCES artifact_revisions(artifact,number)) STRICT""")
+    for action in ("UPDATE", "DELETE"):
+        schema.execute(
+            f"CREATE TRIGGER artifact_revision_blobs_no_{action.lower()} BEFORE {action} "
+            "ON artifact_revision_blobs BEGIN "
+            "SELECT RAISE(ABORT,'artifact blobs are immutable'); END"
+        )
+    schema.execute("""CREATE TABLE artifact_transfers (
+        identity TEXT PRIMARY KEY, project TEXT NOT NULL,
+        bytes INTEGER NOT NULL CHECK(bytes>=0),sha256 TEXT NOT NULL) STRICT""")
+    schema.execute("DROP TRIGGER artifact_usage_revision")
+    schema.execute(
+        "CREATE TRIGGER artifact_usage_revision AFTER INSERT ON artifact_revisions BEGIN "  # noqa: S608 - fixed SQL
+        f"{_USAGE_ROWS} UPDATE artifact_usage SET revisions=revisions+1,"
+        "bytes=bytes+CASE WHEN json_extract(NEW.record,'$.content_retained') "
+        "THEN NEW.size ELSE 0 END,metadata=metadata+length(CAST(NEW.record AS BLOB)) "
+        f"{_USAGE_OF}; END"
+    )
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -3125,6 +3151,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _child_settlements,
     _user_uploads,
     _larger_user_uploads,
+    _artifact_blobs,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

@@ -227,7 +227,7 @@ class Pool:
             not isinstance(timeout, int | float)
             or isinstance(timeout, bool)
             or not math.isfinite(timeout)
-            or not 0 < timeout <= 60
+            or not 0 < timeout <= 600
         ):
             raise CaptureError("invalid_request", "invalid capture budget")
         parameters({**data, "root": str(self.root)})

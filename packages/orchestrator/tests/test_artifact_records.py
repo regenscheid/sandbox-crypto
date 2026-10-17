@@ -138,7 +138,7 @@ def test_a_revision_says_consistently_what_it_kept(
 def test_room_follows_the_budget(tmp_path: Path) -> None:
     inventory = inventory_at(tmp_path, project_bytes=10, project_revisions=2)
     assert inventory.room("p1", 5) == "content"
-    assert inventory.room("p1", 9 * 1024 * 1024) == "metadata"  # over 8 MiB a revision
+    assert inventory.room("p1", 1024**3 + 1) == "metadata"  # over 1 GiB a revision
     record(inventory, "op1", b"12345678")  # 8 of 10 bytes
     assert inventory.room("p1", 5) == "metadata"
     assert inventory.room("p1", 2) == "content"

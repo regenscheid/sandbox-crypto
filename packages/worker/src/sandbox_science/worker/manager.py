@@ -102,7 +102,7 @@ class ExecutionManager:
         state_dir: Path,
         shared: SharedSync | None = None,
         package_cache: str | None = None,
-        capture_timeout: float = 30.0,
+        capture_timeout: float = 240.0,
         capture_ack_timeout: float = 1.0,
         timeouts: ManagerTimeouts = MANAGER_TIMEOUTS,
         lifecycle: EnvironmentLifecycle = UNMANAGED,
@@ -112,8 +112,9 @@ class ExecutionManager:
             ("capture_timeout", capture_timeout),
             ("capture_ack_timeout", capture_ack_timeout),
         ):
-            if isinstance(value, bool) or not math.isfinite(value) or not 0.05 <= value <= 60:
-                raise ValueError(f"{name} must be between 0.05 and 60 seconds")
+            maximum = 600 if name == "capture_timeout" else 60
+            if isinstance(value, bool) or not math.isfinite(value) or not 0.05 <= value <= maximum:
+                raise ValueError(f"{name} must be between 0.05 and {maximum} seconds")
         self.store = store
         self.backend = backend
         self._timeouts = timeouts

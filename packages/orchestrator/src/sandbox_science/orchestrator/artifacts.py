@@ -12,12 +12,14 @@ rather than replayed.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Final, Literal
+from typing import BinaryIO, Final, Literal
 
 from pydantic import Field, TypeAdapter
 
@@ -37,6 +39,7 @@ from sandbox_science.contracts.artifact_inventory import (
 )
 from sandbox_science.contracts.model import MAX_COUNTER, Contract
 
+from .artifact_blobs import INLINE_BYTES, ArtifactBlobs, Blob
 from .documents.errors import CONFLICT, INTERNAL, INVALID_REQUEST, NOT_FOUND, DocumentError
 from .documents.store import DocumentStore
 
@@ -79,8 +82,8 @@ class ArtifactLimits(Contract):
     artifact_bytes: int = Field(
         default=MAX_ARTIFACT_BYTES, strict=True, ge=1, le=MAX_ARTIFACT_BYTES
     )
-    project_bytes: int = Field(default=2 * _GiB, strict=True, ge=1, le=64 * _GiB)
-    total_bytes: int = Field(default=8 * _GiB, strict=True, ge=1, le=256 * _GiB)
+    project_bytes: int = Field(default=16 * _GiB, strict=True, ge=1, le=64 * _GiB)
+    total_bytes: int = Field(default=64 * _GiB, strict=True, ge=1, le=256 * _GiB)
     project_revisions: int = Field(default=50_000, strict=True, ge=1, le=10_000_000)
     total_revisions: int = Field(default=200_000, strict=True, ge=1, le=10_000_000)
     project_operations: int = Field(default=100_000, strict=True, ge=1, le=10_000_000)
@@ -113,6 +116,53 @@ class ArtifactInventory:
     def __init__(self, documents: DocumentStore, *, limits: ArtifactLimits | None = None) -> None:
         self.documents = documents
         self.limits = limits or ArtifactLimits()
+        self.blobs = ArtifactBlobs(documents.control.path)
+
+    def _reserved(self, db: sqlite3.Connection, project: str | None) -> tuple[int, int]:
+        row = db.execute(
+            "SELECT count(*),coalesce(sum(bytes),0) FROM artifact_transfers "
+            "WHERE (? IS NULL OR project=?)",
+            (project, project),
+        ).fetchone()
+        return row[0], row[1]
+
+    def reserve_transfer(self, project: str, size: int, sha256: str) -> str:
+        """Hold staging/retention headroom until the actual owned transfer finishes.
+
+        Crash reservations remain held for explicit operator recovery; a timeout is
+        never evidence that another process stopped writing its temporary file.
+        """
+        self._scope(project)
+        self.blobs.path(sha256)
+        if type(size) is not int or not 0 <= size <= self.limits.artifact_bytes:
+            raise DocumentError(INVALID_REQUEST, "artifact transfer exceeds its size limit")
+        identity = new_id("transfer")
+        with self.documents.control.write() as tx:
+            self._budget(tx.sql, project)
+            for scope, count_limit, stage_limit, retained_limit in (
+                (None, 4, 4 * _GiB, self.limits.total_bytes),
+                (project, 2, 2 * _GiB, self.limits.project_bytes),
+            ):
+                count, staged = self._reserved(tx.sql, scope)
+                if (
+                    count >= count_limit
+                    or staged + size > stage_limit
+                    or self._usage(tx.sql, scope)[1] + staged + size > retained_limit
+                ):
+                    raise DocumentError(
+                        INVALID_REQUEST, "artifact transfer admission or quota is full"
+                    )
+            tx.sql.execute(
+                "INSERT INTO artifact_transfers VALUES (?,?,?,?)", (identity, project, size, sha256)
+            )
+        return identity
+
+    def release_transfer(self, project: str, identity: str) -> None:
+        """Release this caller's drained staging reservation; never remove content."""
+        with self.documents.control.write() as tx:
+            tx.sql.execute(
+                "DELETE FROM artifact_transfers WHERE identity=? AND project=?", (identity, project)
+            )
 
     def _scope(self, project: str) -> None:
         _IDENTIFIER.validate_python(project)
@@ -133,7 +183,11 @@ class ArtifactInventory:
             (project, limits.project_bytes, limits.project_revisions, limits.project_operations),
         ):
             count, size, operations, _ = self._usage(db, scope)
-            if count > revision_limit or size > byte_limit or operations > operation_limit:
+            if (
+                count > revision_limit
+                or size + self._reserved(db, scope)[1] > byte_limit
+                or operations > operation_limit
+            ):
                 raise DocumentError(
                     INVALID_REQUEST, "artifact retention quota is full or has tightened"
                 )
@@ -168,7 +222,10 @@ class ArtifactInventory:
                 count, held, operations, _ = self._usage(db, scope)
                 if count >= revision_limit or not spare:
                     return "full"
-                if held + size > byte_limit or operations >= operation_limit:
+                if (
+                    held + size + self._reserved(db, scope)[1] > byte_limit
+                    or operations >= operation_limit
+                ):
                     room = "metadata"
             return room
 
@@ -324,6 +381,9 @@ class ArtifactInventory:
         media_type: str | None,
         worker: ArtifactRef,
         data: bytes,
+        *,
+        blob: Blob | None = None,
+        transfer: str | None = None,
     ) -> ArtifactReceipt:
         """Commit bytes, immutable revision, head, event and operation receipt atomically."""
         _, digest = self.publication_request(source, path, media_type)
@@ -337,8 +397,15 @@ class ArtifactInventory:
             raise DocumentError(
                 INVALID_REQUEST, "worker snapshot does not match publication scope/path/media"
             )
-        if (
-            len(data) > self.limits.artifact_bytes
+        if snapshot.size > self.limits.artifact_bytes:
+            raise DocumentError(INVALID_REQUEST, "artifact exceeds its byte quota")
+        if blob is not None:
+            if data or (blob.sha256, blob.size) != (snapshot.sha256, snapshot.size):
+                raise DocumentError(INVALID_REQUEST, "artifact blob differs from pinned snapshot")
+            with self.blobs.open(blob):
+                pass
+        elif (
+            len(data) > min(INLINE_BYTES, self.limits.artifact_bytes)
             or len(data) != snapshot.size
             or hashlib.sha256(data).hexdigest() != snapshot.sha256
         ):
@@ -349,6 +416,14 @@ class ArtifactInventory:
         with self.documents.control.write() as tx:
             db = tx.sql
             found = self.find_operation(db, source, operation, digest)
+            if transfer is not None:
+                row = db.execute(
+                    "SELECT bytes,sha256 FROM artifact_transfers WHERE identity=? AND project=?",
+                    (transfer, project),
+                ).fetchone()
+                if row != (snapshot.size, snapshot.sha256):
+                    raise DocumentError(CONFLICT, "artifact transfer reservation differs")
+                db.execute("DELETE FROM artifact_transfers WHERE identity=?", (transfer,))
             if found is not None and found.state == "done" and found.receipt is not None:
                 return found.receipt
             if (
@@ -370,9 +445,17 @@ class ArtifactInventory:
                 media_type=snapshot.media_type,
                 snapshot=snapshot,
                 data=data,
+                blob=blob,
             )
             assert appended is not None  # noqa: S101 - only a deletion appends nothing
             reference, reproduced = appended
+            if blob is not None:
+                # A reproduction of legacy inline content can use the durable
+                # blob too, without rewriting the original immutable revision.
+                db.execute(
+                    "INSERT OR IGNORE INTO artifact_revision_blobs VALUES (?,?,?,?,?)",
+                    (reference.artifact_id, reference.revision, project, blob.sha256, blob.size),
+                )
             receipt = ArtifactReceipt(
                 state="recorded",
                 operation_id=operation,
@@ -399,6 +482,7 @@ class ArtifactInventory:
         media_type: str,
         snapshot: ArtifactSnapshot | None = None,
         data: bytes = b"",
+        blob: Blob | None = None,
         note: Literal["too_large", "quota"] | None = None,
         deleted: bool = False,
     ) -> tuple[ArtifactRevisionRef, bool] | None:
@@ -464,6 +548,11 @@ class ArtifactInventory:
                 "INSERT INTO artifact_revisions VALUES (?,?,?,?,?,?)",
                 (artifact, head + 1, project, size, _json(revision), data),
             )
+            if blob is not None:
+                db.execute(
+                    "INSERT INTO artifact_revision_blobs VALUES (?,?,?,?,?)",
+                    (artifact, head + 1, project, blob.sha256, blob.size),
+                )
             kind = "artifact.deleted" if deleted else "artifact.revision_created"
         (sequence,) = db.execute("SELECT coalesce(max(seq),0)+1 FROM artifact_events").fetchone()
         event = ArtifactEvent(
@@ -584,7 +673,7 @@ class ArtifactInventory:
     ) -> bytes:
         """Exact pinned bytes for future evidence consumers; never parse rich content."""
         self._scope(project)
-        bound = self.limits.artifact_bytes if max_bytes is None else max_bytes
+        bound = min(INLINE_BYTES, self.limits.artifact_bytes) if max_bytes is None else max_bytes
         if type(bound) is not int or not 0 <= bound <= self.limits.artifact_bytes:
             raise DocumentError(INVALID_REQUEST, "invalid artifact content bound")
         if project != reference.project_id:
@@ -605,29 +694,82 @@ class ArtifactInventory:
                 )
             if reference.size > bound:
                 raise DocumentError(INVALID_REQUEST, "artifact content exceeds consumer bound")
-            row = db.execute(
-                "SELECT CASE WHEN length(data)=0 THEN x'' ELSE substr(data,1,?) END "
-                "FROM artifact_revisions "
+            external = db.execute(
+                "SELECT sha256,size FROM artifact_revision_blobs "
                 "WHERE project=? AND artifact=? AND number=?",
-                (
-                    bound + 1,
-                    project,
-                    reference.artifact_id,
-                    reference.revision,
-                ),
+                (project, reference.artifact_id, reference.revision),
             ).fetchone()
-            assert row is not None  # noqa: S101 - same read transaction validated revision
-            data = row[0]
-            if (
-                not isinstance(data, bytes)
-                or len(data) > bound
-                or len(data) != reference.size
-                or hashlib.sha256(data).hexdigest() != reference.sha256
-            ):
-                raise DocumentError(
-                    INTERNAL, "retained artifact content fails exact integrity verification"
-                )
+            if external is not None:
+                if external != (reference.sha256, reference.size):
+                    raise DocumentError(INTERNAL, "artifact blob reference differs")
+                data = None
+            else:
+                data = self._inline(db, project, reference, bound)
+        if data is not None:
             return data
+        with self.blobs.open(Blob(reference.sha256, reference.size)) as stream:
+            return stream.read(bound + 1)
+
+    def _inline(
+        self, db: sqlite3.Connection, project: str, reference: ArtifactRevisionRef, bound: int
+    ) -> bytes:
+        row = db.execute(
+            "SELECT CASE WHEN length(data)=0 THEN x'' ELSE substr(data,1,?) END "
+            "FROM artifact_revisions "
+            "WHERE project=? AND artifact=? AND number=?",
+            (
+                bound + 1,
+                project,
+                reference.artifact_id,
+                reference.revision,
+            ),
+        ).fetchone()
+        assert row is not None  # noqa: S101 - same read transaction validated revision
+        data = row[0]
+        if (
+            not isinstance(data, bytes)
+            or len(data) > bound
+            or len(data) != reference.size
+            or hashlib.sha256(data).hexdigest() != reference.sha256
+        ):
+            raise DocumentError(
+                INTERNAL, "retained artifact content fails exact integrity verification"
+            )
+        return data
+
+    @contextmanager
+    def open_content(self, project: str, reference: ArtifactRevisionRef) -> Generator[BinaryIO]:
+        """Yield verified pinned content at offset zero, without a held DB transaction.
+
+        Opening and reading can block: async consumers perform both off their loop.
+        A stream owns its descriptor until exit; container lifetime is irrelevant.
+        """
+        self._scope(project)
+        if project != reference.project_id:
+            raise DocumentError(NOT_FOUND, "no such artifact in project")
+        with self.documents.control.read() as tx:
+            revision = self._revision(tx.sql, project, reference.artifact_id, reference.revision)
+            if revision.reference != reference:
+                raise DocumentError(CONFLICT, "artifact revision reference differs")
+            if not revision.content_retained:
+                raise DocumentError(NOT_FOUND, "artifact bytes were not retained")
+            external = tx.sql.execute(
+                "SELECT sha256,size FROM artifact_revision_blobs "
+                "WHERE project=? AND artifact=? AND number=?",
+                (project, reference.artifact_id, reference.revision),
+            ).fetchone()
+        if external is not None:
+            if external != (reference.sha256, reference.size):
+                raise DocumentError(INTERNAL, "artifact blob reference differs")
+            with self.blobs.open(Blob(reference.sha256, reference.size)) as stream:
+                yield stream
+        else:
+            with io.BytesIO(
+                self.content(
+                    project, reference, max_bytes=min(INLINE_BYTES, self.limits.artifact_bytes)
+                )
+            ) as stream:
+                yield stream
 
     def list(self, project: str, *, after: str = "") -> ArtifactPage:
         """At most ten head records, in stable ID order, without content allocation."""

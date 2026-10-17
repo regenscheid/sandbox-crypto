@@ -4,8 +4,8 @@ artifacts, RA-27 to RA-35).
 
 After a call ends, the recorder takes the files the worker reported written and
 deleted, leaves out the project's ignore patterns, and records each one: its bytes up
-to 8 MiB while the project's budget allows, otherwise its hash and size; a deleted
-artifact gets a tombstone. One call records at most 100 files and 64 MiB of bytes; what
+to 1 GiB while the project's budget allows, otherwise its hash and size; a deleted
+artifact gets a tombstone. One call records at most 100 files and 2 GiB of bytes; what
 it leaves out, and why, is reported with the call. A project that records results only
 records nothing here. The worker reported the files written while the call ran; that
 is what a revision says, never that the call wrote them (RA-34).
@@ -47,7 +47,7 @@ _log = logging.getLogger(__name__)
 
 MAX_FILES: Final = 100
 """Files one call records (RA-30)."""
-MAX_BYTES: Final = 64 * 1024 * 1024
+MAX_BYTES: Final = 2 * 1024**3
 """Bytes one call records (RA-30)."""
 MAX_HASHED: Final = 4 * 1024**3
 """The largest file hashed; a larger one is a gap (RA-31)."""
@@ -224,8 +224,7 @@ class FileRecorder:
                     )
                     break
                 if room == "content" and size > budget:
-                    recorded.left_out["over the 64 MiB limit of a call"] += 1
-                    continue
+                    room = "metadata"
                 entry = await (
                     self._content(path, key, tool_call, model, attribution, budget)
                     if room == "content"

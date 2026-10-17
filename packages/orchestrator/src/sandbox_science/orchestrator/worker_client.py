@@ -99,7 +99,7 @@ CALL_TIMEOUT: Final = 600.0
 """Seconds a request may go without data from the worker before it is given up."""
 STREAM_TIMEOUT: Final = 4 * EVENT_HEARTBEAT_SECONDS
 """Seconds an event stream may go without even a heartbeat before it counts as dropped."""
-TRANSFER_TIMEOUT: Final = 10.0
+TRANSFER_TIMEOUT: Final = 300.0
 """Seconds an artifact publication or content transfer may take as a whole."""
 RESULT_GRACE: Final = 300.0
 """Seconds past an execution's own limit that ``run`` waits for its result. The worker's
@@ -710,9 +710,25 @@ class WorkerClient:
             ) from exc
 
     async def verified_artifact_content(
-        self, reference: ArtifactRef, *, max_bytes: int = MAX_ARTIFACT_BYTES
+        self, reference: ArtifactRef, *, max_bytes: int = 8 * 1024 * 1024
     ) -> bytes:
         """Fetch exact project/hash/size-bound bytes, with total deadline and hard cap."""
+        data = bytearray()
+
+        async def write(chunk: bytes) -> None:
+            data.extend(chunk)
+
+        await self.stream_artifact_content(reference, write, max_bytes=max_bytes)
+        return bytes(data)
+
+    async def stream_artifact_content(
+        self,
+        reference: ArtifactRef,
+        write: Callable[[bytes], Awaitable[None]],
+        *,
+        max_bytes: int = MAX_ARTIFACT_BYTES,
+    ) -> None:
+        """Verify a pinned download into a bounded sink; partial sinks are never committed."""
         try:
             snapshot = ArtifactSnapshot.model_validate(reference.model_dump())
         except (ValidationError, UnicodeError) as exc:
@@ -749,15 +765,17 @@ class WorkerClient:
                     raise WorkerAPIError(
                         ErrorKind.INTERNAL, "encoded artifact transfer is unsupported"
                     )
-                data = await _bounded_body(response.content, snapshot.size)
-                if (
-                    len(data) != snapshot.size
-                    or hashlib.sha256(data).hexdigest() != snapshot.sha256
-                ):
+                size, digest = 0, hashlib.sha256()
+                async for chunk in response.content.iter_chunked(512 * 1024):
+                    size += len(chunk)
+                    if size > snapshot.size:
+                        raise WorkerAPIError(ErrorKind.INTERNAL, "artifact exceeds pinned size")
+                    digest.update(chunk)
+                    await write(chunk)
+                if size != snapshot.size or digest.hexdigest() != snapshot.sha256:
                     raise WorkerAPIError(
                         ErrorKind.INTERNAL, "artifact content fails exact size/hash verification"
                     )
-                return data
         except (aiohttp.ClientError, TimeoutError) as exc:
             raise WorkerAPIError(
                 ErrorKind.UNAVAILABLE, "artifact content transport failed"
