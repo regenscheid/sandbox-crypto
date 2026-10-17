@@ -831,4 +831,6 @@ async def test_working_projection_preserves_exact_responses_replay(fake: Fake, g
     assert fake.bodies[-2] == fake.bodies[-1]
     assert reasonings(fake.bodies[-1]["input"]) == ["rs_litellm_kept"]
     assert original.native == full_native
-    assert len(original.replay().native) < 1000
+    projected = original.replay().native
+    assert projected is not None
+    assert len(projected) < 1000

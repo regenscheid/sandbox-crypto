@@ -8,6 +8,7 @@ import pytest
 
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator.history import Archive, Entry, RunArchive
+from sandbox_science.orchestrator.history.collections import Collection
 from sandbox_science.orchestrator.history.geometry import Geometry
 from sandbox_science.orchestrator.history.limits import WorkingMemoryLimitError
 from sandbox_science.orchestrator.history.memory import RunMemory
@@ -29,6 +30,7 @@ def test_live_and_rebuilt_context_exclude_echoes_but_archive_keeps_exact_origina
         )
         memory = RunMemory.archived(RunArchive(archive, context, run="run-test", parent=None))
         transcript = Transcript(messages=memory.messages([]), memory=memory)
+        assert isinstance(transcript.messages, Collection)
         originals = []
         for index in range(40):
             output = [
@@ -56,14 +58,22 @@ def test_live_and_rebuilt_context_exclude_echoes_but_archive_keeps_exact_origina
             transcript.messages.append_encoded({"archive_message": row.message_id})
         sent = transcript.sent
         assert len(sent) == 40
-        assert sum(len(m.native or b"") for m in sent) < 20000
+        native_bytes = 0
+        for message in sent:
+            assert isinstance(message, AssistantMessage)
+            native_bytes += len(message.native or b"")
+        assert native_bytes < 20000
         view = session_view(
             archive,
             context,
             geometry=Geometry(ceiling=200000, prompt=20000, chunk=50000, scale=1.0),
         )
         assert len(view.parts) == 40
-        assert sum(len(part.row.entry.native or b"") for part in view.parts) < 20000
+        rebuilt_bytes = 0
+        for part in view.parts:
+            assert part.row is not None
+            rebuilt_bytes += len(part.row.entry.native or b"")
+        assert rebuilt_bytes < 20000
         assert [
             (identifier, archive.message("p", identifier).entry.native)
             for identifier, _ in originals
