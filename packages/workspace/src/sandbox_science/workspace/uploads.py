@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
+from collections.abc import Callable
 from typing import Final
 from urllib.parse import quote, unquote
 
@@ -59,9 +61,18 @@ def add_routes(app: web.Application) -> None:
 
 
 async def uploaded(request: web.Request) -> web.Response:
+    context = request.app[CONTEXT]
+    try:
+        async with asyncio.timeout(context.timeouts.upload), context.uploads:
+            return await _uploaded(request)
+    except TimeoutError:
+        raise ProjectError(ErrorKind.UNAVAILABLE, "upload timed out; retry the file") from None
+
+
+async def _uploaded(request: web.Request) -> web.Response:
     project, session = identifier(request, "project"), identifier(request, "session")
     context = request.app[CONTEXT]
-    found = await asyncio.to_thread(session_record, context.projects, project, session)
+    found = await _offload(session_record, context.projects, project, session)
     if found.closed_at is not None:
         raise ProjectError(ErrorKind.CONFLICT, "the session is closed")
     if request.query:
@@ -85,7 +96,7 @@ async def uploaded(request: web.Request) -> web.Response:
         raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid upload body") from None
     except TimeoutError:
         raise ProjectError(ErrorKind.UNAVAILABLE, "upload timed out; retry the file") from None
-    result = await asyncio.to_thread(
+    result = await _offload(
         UserUploads(context.writer).create,
         project,
         session,
@@ -108,27 +119,49 @@ async def listed(request: web.Request) -> web.Response:
         session_record(context.projects, project, session)
         return UserUploads(context.documents).list(project, session, int(after)).model_dump_json()
 
-    return json_answer(await asyncio.to_thread(read))
+    return json_answer(await _offload(read))
 
 
-async def downloaded(request: web.Request) -> web.Response:
+async def downloaded(request: web.Request) -> web.StreamResponse:
     context = request.app[CONTEXT]
     project, session, upload = (
         identifier(request, key) for key in ("project", "session", "upload")
     )
     no_query(request, "upload download")
-    store = UserUploads(context.documents)
-    found = await asyncio.to_thread(store.get, project, session, upload)
-    data = await asyncio.to_thread(store.content, project, session, upload)
-    return web.Response(
-        body=data,
-        content_type="application/octet-stream",
-        headers={
-            hdrs.CONTENT_DISPOSITION: "attachment; filename*=UTF-8''"
-            + quote(found.filename, safe=""),
-            hdrs.CACHE_CONTROL: "no-store",
-        },
-    )
+    response: web.StreamResponse | None = None
+    try:
+        async with asyncio.timeout(context.timeouts.upload), context.uploads:
+            store = UserUploads(context.documents)
+            found = await _offload(store.get, project, session, upload)
+            data = await _offload(store.content, project, session, upload)
+            response = web.StreamResponse(
+                headers={
+                    hdrs.CONTENT_TYPE: "application/octet-stream",
+                    hdrs.CONTENT_LENGTH: str(found.size),
+                    hdrs.CONTENT_DISPOSITION: "attachment; filename*=UTF-8''"
+                    + quote(found.filename, safe=""),
+                    hdrs.CACHE_CONTROL: "no-store",
+                }
+            )
+            await response.prepare(request)
+            # Keep transfer admission until the socket has drained, not just until a
+            # Response object holding 100 MiB has been returned to aiohttp.
+            view = memoryview(data)
+            for offset in range(0, len(data), 1024 * 1024):
+                await response.write(view[offset : offset + 1024 * 1024])
+            await response.write_eof()
+            return response
+    except (ConnectionError, TimeoutError):
+        if response is None or not response.prepared:
+            raise ProjectError(
+                ErrorKind.UNAVAILABLE, "download timed out; retry the file"
+            ) from None
+        # Once headers were sent, an error JSON response would corrupt the download.
+        # Close the incomplete body so Content-Length exposes the truncation to clients.
+        response.force_close()
+        if request.transport is not None:
+            request.transport.close()
+        return response
 
 
 async def document(request: web.Request) -> web.Response:
@@ -173,7 +206,7 @@ async def document(request: web.Request) -> web.Response:
         )
         return json.dumps({"document_id": result.document_id})
 
-    return json_answer(await asyncio.to_thread(create))
+    return json_answer(await _offload(create))
 
 
 def attachments(
@@ -211,13 +244,26 @@ def message_text(text: str, files: list[UserUpload]) -> str:
     )
 
 
+def _encoded(data: bytes) -> str:
+    return base64.b64encode(data).decode()
+
+
 async def deliver(
     context: WorkspaceContext, project: str, session: str, files: list[UserUpload]
 ) -> None:
     """Create copies without overwriting research edits; recheck an uncertain receipt."""
     if not files:
         return
-    record = await asyncio.to_thread(session_record, context.projects, project, session)
+    async with asyncio.timeout(context.timeouts.upload), context.uploads:
+        await _deliver(context, project, session, files)
+
+
+async def _deliver(
+    context: WorkspaceContext, project: str, session: str, files: list[UserUpload]
+) -> None:
+    if not files:
+        return
+    record = await _offload(session_record, context.projects, project, session)
     if record.closed_at is not None:
         raise ProjectError(ErrorKind.CONFLICT, "the session is closed")
     worker = context.worker
@@ -229,7 +275,7 @@ async def deliver(
         project_id=project, session_id=session, environment_id=record.environment_id, actor="user"
     )
     for found in files:
-        data = await asyncio.to_thread(
+        data = await _offload(
             UserUploads(context.documents).content, project, session, found.upload_id
         )
         try:
@@ -239,7 +285,7 @@ async def deliver(
                         WriteFileRequest(
                             context=scope,
                             path=found.path,
-                            content_b64=base64.b64encode(data).decode(),
+                            content_b64=await _offload(_encoded, data),
                             create_only=True,
                         )
                     )
@@ -267,3 +313,23 @@ async def deliver(
                 ErrorKind.UNAVAILABLE,
                 "file retained; sandbox delivery is unavailable, retry the message",
             ) from None
+
+
+async def _offload[**P, T](operation: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+    """Keep admission until the actual thread ends, then propagate caller cancellation."""
+    work = asyncio.create_task(asyncio.to_thread(operation, *args, **kwargs))
+    interrupted: asyncio.CancelledError | None = None
+    while not work.done():
+        try:
+            await asyncio.shield(work)
+        except asyncio.CancelledError as error:
+            interrupted = interrupted or error
+        except BaseException:
+            if interrupted is None:
+                raise
+            break
+    if interrupted is not None:
+        with contextlib.suppress(BaseException):
+            work.result()
+        raise interrupted
+    return work.result()

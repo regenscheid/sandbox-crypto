@@ -347,3 +347,131 @@ async def test_incompatible_worker_retains_upload_with_actionable_refusal(
     assert "recreate the environment" in await response.text()
     assert len((await (await client.get(UPLOADS)).json())["uploads"]) == 1
     assert (await (await client.get(SESSION + "/messages")).json())["messages"] == []
+
+
+async def test_retained_uploads_are_serialized_across_tabs(
+    aiohttp_client: ClientFactory,
+    state_dir: Path,
+    static_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    import threading
+
+    from sandbox_science.orchestrator.uploads import UserUploads
+
+    client = await workspace(aiohttp_client, state_dir, static_dir)
+    started, release = asyncio.Event(), threading.Event()
+    loop = asyncio.get_running_loop()
+    create = UserUploads.create
+    calls = 0
+
+    def held(self: UserUploads, *args: Any) -> UserUpload:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            loop.call_soon_threadsafe(started.set)
+            assert release.wait(2)
+        return create(self, *args)
+
+    monkeypatch.setattr(UserUploads, "create", held)
+    first = asyncio.create_task(
+        client.post(UPLOADS, data=b"first", headers=binary_headers(client, "first"))
+    )
+    second = None
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        second = asyncio.create_task(
+            client.post(UPLOADS, data=b"second", headers=binary_headers(client, "second"))
+        )
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(second), 0.02)
+        assert calls == 1
+        release.set()
+        assert (await first).status == 200
+        assert (await second).status == 200
+    finally:
+        release.set()
+        await first
+        if second is not None:
+            await second
+
+
+async def test_stalled_original_download_releases_transfer_capacity_without_appending_json(
+    aiohttp_client: ClientFactory,
+    state_dir: Path,
+    static_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from aiohttp import ClientPayloadError
+
+    from sandbox_science.workspace.api import Timeouts
+
+    client = await workspace(aiohttp_client, state_dir, static_dir, timeouts=Timeouts(upload=0.1))
+    assert (await client.post(UPLOADS, json=body(), headers=origin(client))).status == 200
+
+    async def stalled(response: web.StreamResponse, data: bytes) -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(web.StreamResponse, "write", stalled)
+    response = await client.get(UPLOADS + "/upload-test/content")
+    assert response.status == 200
+    with pytest.raises(ClientPayloadError):
+        await response.read()
+    # The download's failure releases admission; retained originals remain untouched.
+    uploaded = await client.post(UPLOADS, json=body(identity="next"), headers=origin(client))
+    assert uploaded.status == 200
+    assert len((await (await client.get(UPLOADS)).json())["uploads"]) == 2
+
+
+async def test_timed_out_store_write_keeps_admission_until_its_thread_finishes(
+    aiohttp_client: ClientFactory,
+    state_dir: Path,
+    static_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    import threading
+
+    from sandbox_science.orchestrator.uploads import UserUploads
+    from sandbox_science.workspace.api import Timeouts
+
+    client = await workspace(aiohttp_client, state_dir, static_dir, timeouts=Timeouts(upload=0.05))
+    started, release = asyncio.Event(), threading.Event()
+    loop = asyncio.get_running_loop()
+    create = UserUploads.create
+    calls = 0
+
+    def held(self: UserUploads, *args: Any) -> UserUpload:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            loop.call_soon_threadsafe(started.set)
+            assert release.wait(2)
+        return create(self, *args)
+
+    monkeypatch.setattr(UserUploads, "create", held)
+    first = asyncio.create_task(
+        client.post(UPLOADS, data=b"first", headers=binary_headers(client, "first"))
+    )
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        # The request deadline expires while the actual disk writer still owns memory.
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(first), 0.15)
+        second = await client.post(
+            UPLOADS, data=b"second", headers=binary_headers(client, "second")
+        )
+        assert second.status == 503
+        assert calls == 1
+        release.set()
+        assert (await first).status == 503
+        # The committed original can be recovered by the same retry identity.
+        replay = await client.post(UPLOADS, data=b"first", headers=binary_headers(client, "first"))
+        assert replay.status == 200
+        assert len((await (await client.get(UPLOADS)).json())["uploads"]) == 1
+    finally:
+        release.set()
+        await first

@@ -93,6 +93,7 @@ from .recovery_fence import operator_scope
 from .settings import ClientSettings, token_digest
 from .suspend import busy
 from .timeouts import seconds
+from .transfers import offload
 
 _log = logging.getLogger(__name__)
 
@@ -106,6 +107,9 @@ CREATING: Final = web.AppKey("creating", dict[str, set[str]])
 """The environments each limited client is creating right now, which its limit counts too."""
 LOCKFILE_DIFFS: Final = web.AppKey("lockfile_diffs", LockfileDiffs)
 HEARTBEAT: Final = web.AppKey("heartbeat", float)
+FILE_WRITE_TIMEOUT: Final = web.AppKey("file_write_timeout", float)
+FILE_WRITES: Final = web.AppKey("file_writes", asyncio.Lock)
+"""Admit one file body before materializing JSON/base64, across all clients/projects."""
 MAX_BODY: Final = 16 * 1024 * 1024
 _REQUEST = TypeAdapter[ExecutionRequest](ExecutionRequest)
 _EVENT = TypeAdapter[Event](Event)
@@ -168,10 +172,12 @@ def create_app(
     document_catalog: DocumentsCatalog | None = None,
     *,
     heartbeat: float = EVENT_HEARTBEAT_SECONDS,
+    file_write_timeout: float = 300.0,
 ) -> web.Application:
     """The worker's HTTP API; event streams carry an empty line after ``heartbeat`` quiet
     seconds."""
     seconds("heartbeat", heartbeat)
+    seconds("file_write_timeout", file_write_timeout)
     if clients and environments is None:
         raise ValueError("clients need managed environments to keep their projects apart")
     expected = f"Bearer {token}".encode()
@@ -235,6 +241,8 @@ def create_app(
 
     app = web.Application(middlewares=[guard], client_max_size=MAX_BODY)
     app.on_response_prepare.append(_speak_protocol)
+    app[FILE_WRITES] = asyncio.Lock()
+    app[FILE_WRITE_TIMEOUT] = file_write_timeout
     app[MANAGER] = manager
     app[HEARTBEAT] = heartbeat
     app[CREATING] = {}
@@ -1204,11 +1212,17 @@ async def read_file(request: web.Request) -> web.Response:
 
 
 async def write_file(request: web.Request) -> web.Response:
-    body = WriteFileRequest.model_validate_json(
-        await request.clone(client_max_size=MAX_FILE_WRITE_BODY).read()
-    )
-    _context(request, body.context)
-    return _json(await request.app[MANAGER].write_file(body))
+    try:
+        async with asyncio.timeout(request.app[FILE_WRITE_TIMEOUT]), request.app[FILE_WRITES]:
+            raw = await request.clone(client_max_size=MAX_FILE_WRITE_BODY).read()
+            body = await offload(WriteFileRequest.model_validate_json, raw)
+            del raw
+            _context(request, body.context)
+            return _json(await request.app[MANAGER].write_file(body))
+    except TimeoutError:
+        raise WorkerError(
+            ErrorKind.UNAVAILABLE, "file transfer timed out; retry the write"
+        ) from None
 
 
 async def skills_check(request: web.Request) -> web.Response:

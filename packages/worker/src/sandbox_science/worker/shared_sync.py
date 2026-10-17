@@ -64,16 +64,18 @@ from pathlib import Path
 from typing import Any, Final, Protocol, cast
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ErrorKind
+from sandbox_science.contracts.worker import MAX_FILE_WRITE_BYTES
 
 from .artifacts import Blobs
 from .errors import WorkerError
 from .recovery_fence import check_dispatch
+from .transfers import offload
 
 _log = logging.getLogger(__name__)
 
 MAX_FILE_BYTES: Final = 32 * 1024 * 1024
 """The ordinary shared-file bound; upload copies have their separate limit below."""
-MAX_UPLOAD_BYTES: Final = 100 * 1024 * 1024
+MAX_UPLOAD_BYTES: Final = MAX_FILE_WRITE_BYTES
 """Upload originals under shared/uploads/ can travel with the project."""
 MAX_PROJECT_BYTES: Final = 2 * 1024 * 1024 * 1024
 """The most a project's copy of its shared files may hold."""
@@ -466,6 +468,8 @@ class SharedSync:
         """Each project's blob store is a directory here, named by a hash of its ID."""
         self.max_file_bytes = max_file_bytes
         self.max_upload_bytes = max_upload_bytes
+        self._transfers = asyncio.Lock()
+        """One encoded project blob at a time, shared by down and conflict restoration."""
         self.max_project_bytes = max_project_bytes
         self.max_project_files = max_project_files
         self.hash_budget = hash_budget
@@ -927,17 +931,17 @@ class SharedSync:
                         elif copy is None and path in scan.files:
                             continue  # the environment's own file there, which ``up`` decides
                         else:
-                            content = await asyncio.to_thread(_encoded, store, current.sha256)
                             precondition: dict[str, Any] = (
                                 {"expected_sha256": copy.sha256}
                                 if copy is not None
                                 else {"create_only": True}
                             )
-                            reply = await channel.request(
-                                "write",
+                            reply = await self._write_blob(
+                                channel,
+                                store,
+                                current.sha256,
                                 session=session_id,
                                 path=path,
-                                content_b64=content,
                                 executable=current.executable,
                                 if_unused=True,
                                 **precondition,
@@ -1020,12 +1024,12 @@ class SharedSync:
     ) -> Stamp | None:
         """Write the project's version of a file just moved away; its stamp, or None."""
         try:
-            content = await asyncio.to_thread(_encoded, self.blobs(project_id), file.sha256)
-            reply = await channel.request(
-                "write",
+            reply = await self._write_blob(
+                channel,
+                self.blobs(project_id),
+                file.sha256,
                 session=session_id,
                 path=file.path,
-                content_b64=content,
                 executable=file.executable,
                 create_only=True,
             )
@@ -1036,6 +1040,15 @@ class SharedSync:
                 raise
             return None
         return _stamp(reply.get("stamp"))
+
+    async def _write_blob(
+        self, channel: Channel, store: Blobs, sha256: str, **fields: Any
+    ) -> dict[str, Any]:
+        # Separate from HTTP admission: holding the HTTP gate while waiting for a
+        # project's sync lock must never block another sync that holds that lock.
+        async with self._transfers:
+            content = await offload(_encoded, store, sha256)
+            return await channel.request("write", content_b64=content, **fields)
 
     def _kept_back(self, environment_id: str, path: str, version: int) -> list[str]:
         self._held.setdefault(environment_id, set()).add(_key(path))

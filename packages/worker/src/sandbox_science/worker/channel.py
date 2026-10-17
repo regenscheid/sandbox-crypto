@@ -24,6 +24,7 @@ from sandbox_science.contracts import ErrorKind, new_id
 from .errors import ExecutorRefusalError, WorkerError
 from .recovery_fence import check_dispatch
 from .timeouts import seconds
+from .transfers import offload
 
 _log = logging.getLogger(__name__)
 
@@ -209,18 +210,32 @@ class ExecutorChannel:
                 reply_timeout = self.timeouts.transfer_reply
         write_timeout = self.timeouts.transfer_write if large_write else self.timeouts.write
         request_id = next(self._ids)
+
+        def encode() -> bytes:
+            return (
+                json.dumps({"id": request_id, "op": op, **fields}, separators=(",", ":")) + "\n"
+            ).encode()
+
+        line = await offload(encode) if large_write else encode()
         future: asyncio.Future[Message] = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
-        line = json.dumps({"id": request_id, "op": op, **fields}, separators=(",", ":")) + "\n"
+        writing_started = False
         try:
             try:
                 async with asyncio.timeout(write_timeout), self._write_lock:
                     check_dispatch(op)
-                    process.stdin.write(line.encode())
+                    writing_started = True
+                    process.stdin.write(line)
                     await process.stdin.drain()
             except TimeoutError as exc:
-                # A request half written leaves the stream unusable: this executor is done.
-                self._abandoned = asyncio.ensure_future(self.close())
+                # Waiting behind a large frame has written nothing and must not kill
+                # its sender's healthy executor. Only a partial frame makes it unusable.
+                if writing_started:
+                    self._abandoned = asyncio.ensure_future(self.close())
+                else:
+                    raise WorkerError(
+                        ErrorKind.UNAVAILABLE, "the executor transport is busy"
+                    ) from exc
                 raise WorkerError(
                     ErrorKind.UNAVAILABLE, "the executor stopped reading its requests"
                 ) from exc

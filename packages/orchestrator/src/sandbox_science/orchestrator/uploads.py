@@ -16,11 +16,12 @@ from pydantic import Field, TypeAdapter
 
 from sandbox_science.contracts import Identifier
 from sandbox_science.contracts.model import Contract
+from sandbox_science.contracts.worker import MAX_FILE_WRITE_BYTES
 
 from .control.migrations import Schema
 from .documents import DocumentError, DocumentStore
 
-MAX_UPLOAD_BYTES: Final = 100 * 1024 * 1024
+MAX_UPLOAD_BYTES: Final = MAX_FILE_WRITE_BYTES
 MAX_PROJECT_BYTES: Final = 2 * 1024 * 1024 * 1024
 MAX_TOTAL_BYTES: Final = 8 * 1024 * 1024 * 1024
 _IDENTIFIER: Final = TypeAdapter[str](Identifier)

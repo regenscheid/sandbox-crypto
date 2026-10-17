@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import time
 from collections.abc import Iterator
@@ -883,3 +884,88 @@ async def test_upload_limit_does_not_widen_other_shared_files(tmp_path: Path) ->
         assert "shared/uploads/s1/big/source.pdf" not in hashed
     finally:
         records.close()
+
+
+async def test_project_blob_transfers_are_bounded_across_projects(sync: SharedSync) -> None:
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class Blocked(Environment):
+        async def request(self, op: str, **fields: Any) -> dict[str, Any]:
+            if op == "write":
+                entered.set()
+                await release.wait()
+            return await super().request(op, **fields)
+
+    first, second, target, other = Environment(), Environment(), Blocked(), Environment()
+    first.put("shared/uploads/s1/a/source.pdf", b"first")
+    second.put("shared/uploads/s2/b/source.pdf", b"second")
+    await sync.up("p1", "first", "s1", first)
+    await sync.up("p2", "second", "s2", second)
+    copying = asyncio.create_task(sync.down("p1", "target", "s1", target))
+    queued = None
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        queued = asyncio.create_task(sync.down("p2", "other", "s2", other))
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(queued), 0.02)
+        assert other.files == {}
+        release.set()
+        assert await copying == []
+        assert await queued == []
+        assert other.files == second.files
+    finally:
+        release.set()
+        await copying
+        if queued is not None:
+            await queued
+
+
+async def test_cancelled_blob_read_keeps_admission_until_thread_finishes(
+    sync: SharedSync, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    started, release = asyncio.Event(), threading.Event()
+    loop = asyncio.get_running_loop()
+    first, second, target, other = Environment(), Environment(), Environment(), Environment()
+    first.put("shared/uploads/s1/a/source.pdf", b"first")
+    second.put("shared/uploads/s2/b/source.pdf", b"second")
+    await sync.up("p1", "first", "s1", first)
+    await sync.up("p2", "second", "s2", second)
+    blocked = sync.blobs("p1").path(_sha(b"first"))
+    read = Path.read_bytes
+
+    def held(path: Path) -> bytes:
+        if path == blocked:
+            loop.call_soon_threadsafe(started.set)
+            assert release.wait(2)
+        return read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", held)
+    copying = asyncio.create_task(sync.down("p1", "target", "s1", target))
+    queued = None
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        copying.cancel()
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(copying), 0.02)
+        queued = asyncio.create_task(sync.down("p2", "other", "s2", other))
+        copying.cancel()  # repeated cancellation still cannot release the thread's gate
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(queued), 0.02)
+        assert other.files == {}
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await copying
+        assert await queued == []
+        assert other.files == second.files
+        assert await sync.down("p1", "target", "s1", target) == []
+        assert target.files == first.files
+    finally:
+        release.set()
+        if not copying.done():
+            copying.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await copying
+        if queued is not None:
+            await queued

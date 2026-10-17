@@ -250,7 +250,13 @@ class WorkerClient:
         allow_redirects: bool = True,
     ) -> tuple[_Model, int]:
         """The response as ``model``, and its status; a body over ``max_bytes`` is an error."""
-        data = body.model_dump_json() if body else None
+        if isinstance(body, WriteFileRequest) and len(body.content_b64) > 8 * 1024 * 1024:
+            data = await _selected_owned(
+                asyncio.create_task(asyncio.to_thread(body.model_dump_json)),
+                cancel_on_interrupt=False,
+            )
+        else:
+            data = body.model_dump_json() if body else None
         try:
             async with self._http().request(
                 method,

@@ -10,8 +10,9 @@ raised and answered by the guard through ``errors``.
 
 from __future__ import annotations
 
+import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Final, cast
 
 from aiohttp import hdrs, web
@@ -39,6 +40,8 @@ class WorkspaceContext:
     worker: WorkerClient | None
     job_state: JobState | None
     timeouts: Timeouts
+    uploads: asyncio.Lock = field(default_factory=asyncio.Lock)
+    """One upload, original download or delivery is materialized at a time across tabs."""
 
 
 CONTEXT: Final = web.AppKey("workspace_context", WorkspaceContext)
