@@ -58,7 +58,7 @@ async def status(request: web.Request) -> web.Response:
     def read() -> str:
         session_record(context.projects, project, session)
         return (
-            RecoveryStatus(context.documents.control)
+            RecoveryStatus(context.documents)
             .page(project, session, after_work=after_work, after_resume=after_resume, limit=limit)
             .model_dump_json()
         )
@@ -85,7 +85,7 @@ async def pending(request: web.Request) -> web.Response:
     def read() -> str:
         session_record(context.projects, project, session)
         return (
-            RecoveryStatus(context.documents.control)
+            RecoveryStatus(context.documents)
             .pending(
                 project,
                 session,
@@ -111,7 +111,7 @@ async def resolve(request: web.Request) -> web.Response:
     def write() -> str:
         session_record(context.projects, project, session)
         return (
-            RecoveryControls(context.writer.control)
+            RecoveryControls(context.writer)
             .resolve(project, session, body, operator=USER_ID or "user")
             .model_dump_json()
         )

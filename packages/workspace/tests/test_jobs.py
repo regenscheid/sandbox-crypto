@@ -63,7 +63,9 @@ class Worker:
             stdout=StreamOutput(name="stdout", text="<script>untrusted</script>", total_bytes=26),
         )
 
-    async def cancel(self, job: str, *, project_id: str) -> Execution:
+    async def cancel(self, job: str, *, project_id: str, context: ExecutionContext) -> Execution:
+        assert context == self.context
+        assert project_id == context.project_id
         self.cancelled.append(job)
         return self.execution
 

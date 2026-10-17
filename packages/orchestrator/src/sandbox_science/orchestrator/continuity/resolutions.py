@@ -14,6 +14,7 @@ from sandbox_science.contracts import SYSTEM_CLOCK, Clock, Contract
 from sandbox_science.contracts.model import Revision
 from sandbox_science.orchestrator.control import ControlError, ControlStore, Tx
 from sandbox_science.orchestrator.control.errors import CONFLICT, INVALID_REQUEST, NOT_FOUND
+from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.history import Archive, Entry
 from sandbox_science.orchestrator.history.operations import READ_BYTES, ToolRecord
 from sandbox_science.orchestrator.projects import ModelUsage, RunName
@@ -62,8 +63,11 @@ class Decision(Contract):
 
 
 class RecoveryControls:
-    def __init__(self, control: ControlStore, *, clock: Clock = SYSTEM_CLOCK) -> None:
-        self.control, self.clock = control, clock
+    def __init__(
+        self, control: ControlStore | DocumentStore, *, clock: Clock = SYSTEM_CLOCK
+    ) -> None:
+        self.control = control.control if isinstance(control, DocumentStore) else control
+        self.clock = clock
 
     def resolve(
         self, project: str, session: str, request: Resolution, *, operator: str

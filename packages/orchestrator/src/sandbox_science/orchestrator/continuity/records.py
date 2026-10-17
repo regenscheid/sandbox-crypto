@@ -16,6 +16,7 @@ from sandbox_science.contracts import SYSTEM_CLOCK, Clock, Contract, Identifier,
 from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.control.errors import BUSY, CONFLICT, NOT_FOUND
 from sandbox_science.orchestrator.control.guard import guarded
+from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.projects import RunName, RunRecord, run_id_of, run_name
 
 State = Literal["running", "waiting", "paused", "blocked", "completed", "stopped"]
@@ -122,8 +123,11 @@ def authority(owner: Ownership) -> Generator[None, None, None]:
 class WorkRecords:
     """Small transactional operations; history and tree enumeration are paged."""
 
-    def __init__(self, control: ControlStore, *, clock: Clock = SYSTEM_CLOCK) -> None:
-        self.control, self.clock = control, clock
+    def __init__(
+        self, control: ControlStore | DocumentStore, *, clock: Clock = SYSTEM_CLOCK
+    ) -> None:
+        self.control = control.control if isinstance(control, DocumentStore) else control
+        self.clock = clock
 
     def get(self, project: str, session: str, work: str) -> Work:
         with self.control.read() as tx:

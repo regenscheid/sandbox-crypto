@@ -81,7 +81,7 @@ async def listing(request: web.Request) -> web.Response:
 
     def read(store: DocumentStore) -> dict[str, object]:
         session_record(context.projects, *scope[:2])
-        values = Collection[object](store.control, scope, collection)
+        values = Collection[object](store, scope, collection)
         items, following = values.page(**query)
         return HistoryPage.model_validate(
             {
@@ -103,7 +103,7 @@ async def chunk(request: web.Request) -> web.Response:
 
     def read(store: DocumentStore) -> dict[str, object]:
         session_record(context.projects, *scope[:2])
-        result = Collection[object](store.control, scope, collection).chunk(**query)
+        result = Collection[object](store, scope, collection).chunk(**query)
         return HistoryChunk(
             collection=collection,
             offset=result.offset,

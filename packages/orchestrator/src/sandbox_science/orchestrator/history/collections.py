@@ -8,6 +8,7 @@ from collections.abc import Callable, Iterable, Iterator, MutableSequence, Mutab
 from typing import Any, cast, overload
 
 from sandbox_science.orchestrator.control import ControlError, ControlStore
+from sandbox_science.orchestrator.documents import DocumentStore
 
 from .operations import CHUNK_BYTES, RecordChunk
 
@@ -53,13 +54,14 @@ class Collection[T](MutableSequence[T]):
 
     def __init__(
         self,
-        control: ControlStore,
+        control: ControlStore | DocumentStore,
         scope: tuple[str, str, str],
         name: str,
         *,
         encode: Callable[[T], object] = lambda value: value,
         decode: Callable[[Any], T] | None = None,
     ) -> None:
+        control = control.control if isinstance(control, DocumentStore) else control
         self.control, self.scope, self.name = control, scope, name
         self.current: tuple[int, T] | None = None
         self.encode = encode

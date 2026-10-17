@@ -10,6 +10,7 @@ from pydantic import Field
 from sandbox_science.contracts import Contract
 from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.control.errors import NOT_FOUND
+from sandbox_science.orchestrator.documents import DocumentStore
 
 from .records import Work
 
@@ -57,8 +58,8 @@ class PendingPage(Contract):
 
 
 class RecoveryStatus:
-    def __init__(self, control: ControlStore) -> None:
-        self.control = control
+    def __init__(self, control: ControlStore | DocumentStore) -> None:
+        self.control = control.control if isinstance(control, DocumentStore) else control
 
     def page(
         self,
