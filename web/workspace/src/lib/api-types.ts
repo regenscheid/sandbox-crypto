@@ -1471,6 +1471,25 @@ export interface TreeRun {
   limits: Record<string, JsonValue> | null;
 }
 
+export interface UploadPage {
+  uploads: UserUpload[];
+  next_after: number | null;
+}
+
+export interface UserUpload {
+  upload_id: string;
+  project: string;
+  session: string;
+  filename: string;
+  media_type: string;
+  sha256: string;
+  size: number;
+  created_at: string;
+  author: string;
+  path: string;
+  number: number;
+}
+
 /** The viewer's URL for one PDF revision, and when it stops opening it. */
 export interface ViewerLink {
   url: string;

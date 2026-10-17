@@ -3044,6 +3044,13 @@ def _child_settlements(schema: Schema) -> None:
     install(schema)
 
 
+def _user_uploads(schema: Schema) -> None:
+    """Version 66: immutable original user uploads."""
+    from sandbox_science.orchestrator.uploads import install
+
+    install(schema)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -3109,6 +3116,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _immutable_run_collections,
     _recovery_dispatch,
     _child_settlements,
+    _user_uploads,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

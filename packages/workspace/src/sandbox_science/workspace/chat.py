@@ -47,12 +47,12 @@ from pydantic import TypeAdapter, ValidationError
 from sandbox_science.contracts import Contract, EnvironmentState, ErrorKind, Identifier
 from sandbox_science.orchestrator.continuity.records import WorkRecords
 from sandbox_science.orchestrator.projects import ProjectError
-from sandbox_science.orchestrator.questions import Answer, Question, Questions
+from sandbox_science.orchestrator.questions import MAX_ANSWER, Answer, Question, Questions
 from sandbox_science.orchestrator.runstate import PAGE, ChatMessage, RunEvent, RunLease, RunState
 from sandbox_science.orchestrator.runtree import RunTrees
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 
-from . import api, recovery_controls
+from . import api, recovery_controls, uploads
 from .context import (
     CONTEXT,
     USER_ID,
@@ -145,7 +145,11 @@ async def post(request: web.Request) -> web.Response:
     project, session = _scope(request)
     body = await json_body(request, "message")
     fields = cast(dict[str, object], body) if isinstance(body, dict) else {}
-    if not {"message_id", "text"} <= set(fields) <= {"message_id", "text", "question_id"}:
+    if (
+        not {"message_id", "text"}
+        <= set(fields)
+        <= {"message_id", "text", "question_id", "attachments"}
+    ):
         raise ProjectError(
             ErrorKind.INVALID_REQUEST, "a message is {message_id, text, question_id}"
         )
@@ -163,6 +167,23 @@ async def post(request: web.Request) -> web.Response:
     if not isinstance(text, str):
         raise ProjectError(ErrorKind.INVALID_REQUEST, "a message's text is a string")
     context = request.app[CONTEXT]
+    files = await asyncio.to_thread(
+        uploads.attachments, context, project, session, fields.get("attachments", [])
+    )
+    text = uploads.message_text(text, files)
+    if len(text.encode()) > 65536:
+        raise ProjectError(
+            ErrorKind.INVALID_REQUEST, "message and attachment manifest exceed 64 KiB"
+        )
+    if answers is not None and len(text.strip()) > MAX_ANSWER:
+        raise ProjectError(
+            ErrorKind.INVALID_REQUEST, "answer and attachments exceed 16000 characters"
+        )
+    replay = await asyncio.to_thread(
+        RunState(context.writer).replay_message, project, session, message_id, text
+    )
+    if replay is None:
+        await uploads.deliver(context, project, session, files)
 
     def write() -> str:
         session_record(context.projects, project, session)

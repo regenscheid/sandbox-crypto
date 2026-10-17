@@ -284,6 +284,15 @@ class RunState:
                 raise ControlError(CONFLICT, f"message {message_id!r} answered a question")
             return _queue(db, project, session, message_id, text, author, now)
 
+    def replay_message(
+        self, project: str, session: str, message_id: str, text: str
+    ) -> ChatMessage | Question | None:
+        """Return an identical already-accepted send before repeating attachment delivery."""
+        with self.control.read() as tx:
+            return _found(tx.sql, project, session, message_id, text) or answered_by(
+                tx.sql, project, session, message_id, text
+            )
+
     def say(
         self,
         project: str,
