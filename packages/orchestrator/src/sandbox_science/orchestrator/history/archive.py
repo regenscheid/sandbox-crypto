@@ -41,7 +41,7 @@ import re
 import secrets
 import sqlite3
 import unicodedata
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence, Set
 from dataclasses import dataclass, field
 from datetime import UTC
 from typing import Any, Final, Literal, cast
@@ -64,6 +64,7 @@ from .operations import (
 )
 from .operations import PAGE as RECORD_PAGE
 from .reads import Read, encoded
+from .receipts import save_receipts
 from .usage import AnsweredUsage, save_usage
 
 Json = dict[str, Any]
@@ -345,6 +346,7 @@ class Archive:
         reads: Sequence[Read] = (),
         tool_record: ToolRecord | None = None,
         model_usage: AnsweredUsage | None = None,
+        consumed: Mapping[str, Set[str]] | None = None,
     ) -> Archived:
         """Keep a message ``run`` adds to its conversation, and index it, with the sources
         a tool result read (the read register, CM-12), in one change; the message as
@@ -382,6 +384,8 @@ class Archive:
                 save_record(db, project, session, run, message_id, tool_record)
             if model_usage is not None:
                 save_usage(db, project, message_id, model_usage)
+                if consumed is not None:
+                    save_receipts(db, (project, session, run), message_id, consumed)
             _document(db, project, message_id, entry.searched)
             for read in reads:
                 _read(db, project, session, message_id, entry.source or "", read)

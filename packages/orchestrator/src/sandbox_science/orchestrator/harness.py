@@ -84,6 +84,9 @@ from .history import (
 )
 from .history.delegated import delegated_folder
 from .history.geometry import DEFAULT_SHARES, Shares
+from .history.limits import WorkingMemoryLimitError
+from .history.receipts import Receipts
+from .history.snapshot import inline
 from .hooks import TurnHook
 from .jobs import JobTools
 from .jobstate import JobState
@@ -478,7 +481,24 @@ class Finished:
     def fields(self) -> dict[str, object]:
         """The run record's fields, as the harness has them."""
         transcript = self.transcript
+        memory = transcript.memory
+        messages = inline(transcript.messages) if memory is not None else transcript.messages
+        tools = inline(transcript.tool_records) if memory is not None else transcript.tool_records
+        usage = (
+            inline(transcript.usage)
+            if memory is not None
+            else [item.model_dump(mode="json") for item in transcript.usage]
+        )
+        delivered: dict[str, object] = {}
+        complete = True
+        for source, ids in transcript.delivered.items():
+            page = inline(ids) if memory is not None else sorted(ids)
+            if page is None:
+                complete = False
+            else:
+                delivered[source] = sorted(page)
         return {
+            "stored_history": memory.reference() if memory is not None else None,
             "run_id": self.run_id,
             "role": "main" if self.parent is None else "delegated",
             "parent": self.parent,
@@ -493,15 +513,15 @@ class Finished:
             "failure": transcript.failure,
             "final_text": transcript.final_text,
             "answer": transcript.answer,
-            "messages": transcript.messages,
+            "messages": messages or [],
             "prompt_provenance": (
                 transcript.prompt_provenance.model_dump(mode="json")
                 if transcript.prompt_provenance is not None
                 else None
             ),
-            "tools": transcript.tool_records,
-            "delivered": {s: sorted(ids) for s, ids in transcript.delivered.items() if ids},
-            "usage": [usage.model_dump(mode="json") for usage in transcript.usage],
+            "tools": tools or [],
+            "delivered": delivered if complete else {},
+            "usage": usage or [],
             "summaries": transcript.summaries,
         }
 
@@ -523,6 +543,7 @@ class Harness:
         gateway: ModelGateway | None = None,
         vectors: SkillVectors | None = None,
         skills_metadata: str | None = None,
+        loop_runner: Callable[..., Awaitable[Transcript]] = run_task,
     ) -> None:
         """``checker`` is the configured math checker; without it, math checks report
         the renderer unavailable. A reviewer and a checker need stores. ``delegated`` is
@@ -536,6 +557,7 @@ class Harness:
         if stores is None and (reviewer is not None or checker is not None):
             raise ValueError("a reviewer and a math checker need the state directory's stores")
         self.client, self.main, self.stores = client, main, stores
+        self.loop_runner = loop_runner
         self.vectors = vectors
         self.derived = None if skills_metadata is None else (skills_metadata, PASS_VERSION)
         self.watcher, self.reviewer, self.checker = watcher, reviewer, checker
@@ -693,7 +715,7 @@ class Harness:
                             ),
                             *hooks,
                         )
-                    transcript = await run_task(
+                    transcript = await self.loop_runner(
                         self._model(admitted),
                         toolbox,
                         None if request.queued else request.task,
@@ -722,6 +744,10 @@ class Harness:
                 pass  # it came as the run closed: the run's own outcome stands
             elif interruption.error is not None:
                 raise interruption.error from None
+            elif isinstance(error, WorkingMemoryLimitError):
+                transcript = transcript or Transcript(messages=[])
+                transcript.stopped = "memory_limit"
+                transcript.summaries["memory"] = {"blocked": str(error)}
             elif not isinstance(error, Exception) or transcript is None:
                 raise
             else:
@@ -1592,7 +1618,24 @@ async def save(
         return 1
     for hook in hooks:
         try:
-            await hook.acknowledge(record)
+            if record.stored_history is not None and hook.name not in ("events",):
+                receipts = Receipts(
+                    projects.control,
+                    record.context.project_id,
+                    record.context.session_id,
+                    run_name(record.started_at, record.run_id),
+                )
+                source = hook.name
+                after = ""
+                while page := await threaded(receipts.page, source, after=after):
+                    await hook.acknowledge(
+                        record.model_copy(update={"delivered": {source: list(page)}})
+                    )
+                    after = page[-1]
+                if not after:
+                    await hook.acknowledge(record)
+            else:
+                await hook.acknowledge(record)
         except Exception as exc:
             error(f"the run's {hook.name} could not be acknowledged: {exc}")
             status = 1

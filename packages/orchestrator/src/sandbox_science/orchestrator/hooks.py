@@ -112,6 +112,7 @@ class Appended:
     outcome: ToolOutcome | None = None
     operation_id: str | None = None
     """The intent saved before entering the toolbox; absent for report-round refusals."""
+    consumed: Mapping[str, AbstractSet[str]] | None = None
     usage: ModelUsage | None = None
     usage_index: int | None = None
     """One-based answered-response index, independent of refused model attempts."""
@@ -196,7 +197,7 @@ class RunView(Protocol):
         last closing then has no turn to take."""
         ...
 
-    def delivered_ids(self, source: str) -> frozenset[str]: ...
+    def delivered_ids(self, source: str) -> AbstractSet[str]: ...
 
 
 class TurnHook:

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence, Set
 from functools import partial
 from typing import Any, Final, cast
 
@@ -58,6 +58,7 @@ class RunArchive:
         self.archive, self.context, self.run, self.parent = archive, context, run, parent
         self.message_ids, self.patience, self.clock = tuple(message_ids), patience, clock
         self.last_tool: str | None = None
+        self.last_message: str | None = None
 
     async def start_tool(self, call: ToolCall, operation_id: str) -> None:
         await _write(
@@ -97,6 +98,7 @@ class RunArchive:
                 if appended.kind == "tool_result" and call is not None and outcome is not None
                 else None
             ),
+            consumed=appended.consumed,
             model_usage=(
                 AnsweredUsage(
                     ordinal=appended.usage_index,
@@ -109,6 +111,7 @@ class RunArchive:
             patience=self.patience,
             clock=self.clock,
         )
+        self.last_message = archived.message_id
         # The model's answer goes on as it wrote it; the platform's messages with headers.
         if appended.kind == "tool_result" and call is not None and outcome is not None:
             self.last_tool = archived.message_id
@@ -131,6 +134,7 @@ async def patiently(
     reads: Sequence[Read] = (),
     tool_record: ToolRecord | None = None,
     model_usage: AnsweredUsage | None = None,
+    consumed: Mapping[str, Set[str]] | None = None,
     patience: float = PATIENCE,
     clock: Clock = SYSTEM_CLOCK,
 ) -> Archived:
@@ -147,6 +151,7 @@ async def patiently(
             reads=reads,
             tool_record=tool_record,
             model_usage=model_usage,
+            consumed=consumed,
         ),
         run=run,
         patience=patience,

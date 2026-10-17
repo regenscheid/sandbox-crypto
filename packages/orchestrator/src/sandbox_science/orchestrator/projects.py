@@ -252,6 +252,8 @@ class RunRecord(Contract):
     closing rounds that followed, such as its responses to review findings, whose texts
     the messages keep (lab 42, B4). Later runs' earlier conversation shows it (RS-10).
     Records from before it have none: their ``final_text`` stands in."""
+    stored_history: dict[str, JsonValue] | None = None
+    """Explicit scoped paged history reference when historical collections are not inline."""
     messages: list[dict[str, JsonValue]]
     """The conversation in the OpenAI chat format the harness uses, system prompt first."""
     tools: list[dict[str, JsonValue]]

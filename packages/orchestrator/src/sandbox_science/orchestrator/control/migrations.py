@@ -2978,6 +2978,42 @@ def _model_usage(schema: Schema) -> None:
         )
 
 
+def _run_collections(schema: Schema) -> None:
+    """Version 61: paged run history and immutable successful-response receipts."""
+    schema.execute("""CREATE TABLE run_collections (
+    project TEXT NOT NULL,
+    session TEXT NOT NULL,
+    run TEXT NOT NULL,
+    collection TEXT NOT NULL,
+    position INTEGER NOT NULL CHECK (position >= 0),
+    item TEXT NOT NULL CHECK (json_valid(item)),
+    PRIMARY KEY (project,session,run,collection,position)
+) STRICT""")
+    schema.execute("""CREATE TABLE run_members (
+    project TEXT NOT NULL,
+    session TEXT NOT NULL,
+    run TEXT NOT NULL,
+    collection TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (project,session,run,collection,value)
+) STRICT""")
+    schema.execute("""CREATE TABLE response_receipts (
+    project TEXT NOT NULL,
+    session TEXT NOT NULL,
+    run TEXT NOT NULL,
+    source TEXT NOT NULL,
+    notice TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    PRIMARY KEY (project,session,run,source,notice),
+    FOREIGN KEY (project,message_id) REFERENCES archive_messages (project,message_id)
+) STRICT""")
+    for action in ("UPDATE", "DELETE"):
+        schema.execute(
+            f"CREATE TRIGGER response_receipts_no_{action.lower()} BEFORE {action} "
+            "ON response_receipts BEGIN SELECT RAISE(ABORT, 'response receipts are immutable'); END"
+        )
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -3038,6 +3074,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _tool_journal,
     _run_inputs,
     _model_usage,
+    _run_collections,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

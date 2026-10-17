@@ -6,7 +6,16 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Sequence
+from collections.abc import (
+    AsyncGenerator,
+    Awaitable,
+    Callable,
+    Generator,
+    Iterator,
+    MutableSequence,
+    Sequence,
+)
+from collections.abc import Set as AbstractSet
 from contextlib import (
     AbstractAsyncContextManager,
     AsyncExitStack,
@@ -16,6 +25,10 @@ from contextlib import (
 from dataclasses import dataclass, field, replace
 from typing import Any, Final, Literal, Protocol, TypeVar, cast
 
+from .history.collections import Collection, Members
+from .history.limits import WorkingMemoryLimitError
+from .history.log import RunArchive
+from .history.memory import VIEW_BYTES, RunMemory
 from .hooks import RESPONSE_ROUNDS, Appended, MessageLog, Notice, Point, TurnHook
 from .images import IMAGE
 from .memory_prompt import MemoryGiven
@@ -176,10 +189,10 @@ class Interruption:
 
 @dataclass
 class Transcript:
-    messages: list[Message]
+    messages: MutableSequence[Message]
     prompt_provenance: PromptPins | None = None
-    tool_records: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
-    delivered: dict[str, set[str]] = field(default_factory=dict[str, set[str]])
+    tool_records: MutableSequence[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
+    delivered: dict[str, set[str] | Members] = field(default_factory=dict[str, set[str] | Members])
     """Each notice source's IDs that a successful model call saw."""
     summaries: dict[str, Any] = field(default_factory=dict[str, Any])
     """What each source reports at the run's end, such as a review's outcome."""
@@ -195,7 +208,7 @@ class Transcript:
     max_input_chars: int = MAX_INPUT_CHARS
     tools_chars: int = 0
     """The size of the tool schemas, which every model call sends with the messages."""
-    usage: list[ModelUsage] = field(default_factory=list[ModelUsage])
+    usage: MutableSequence[ModelUsage] = field(default_factory=list[ModelUsage])
     """Each answered model call's usage, in order."""
     pending: str | None = field(default=None, repr=False)
     """The answer a closing round was taken for, until the next reply."""
@@ -210,7 +223,9 @@ class Transcript:
     """Why a hook stopped the run before a model call, such as a spent budget."""
     failure: FailurePhase | None = None
     phase: FailurePhase = field(default="harness", repr=False)
-    offered: dict[str, set[str]] = field(default_factory=dict[str, set[str]], repr=False)
+    offered: dict[str, set[str] | Members] = field(
+        default_factory=dict[str, set[str] | Members], repr=False
+    )
     """Each hook source's notice IDs in the messages, delivered or not."""
     log: MessageLog | None = field(default=None, repr=False)
     """Keeps each message the run adds, which then begins with its ID header."""
@@ -225,13 +240,31 @@ class Transcript:
     overflowed: bool = field(default=False, repr=False)
     """Whether the last model call was refused for the conversation's length."""
 
+    memory: RunMemory | None = field(default=None, repr=False)
+
+    def identities(self, source: str, *, delivered: bool = False) -> set[str] | Members:
+        mapping = self.delivered if delivered else self.offered
+        if source not in mapping:
+            mapping[source] = (
+                self.memory.members(("delivered:" if delivered else "offered:") + source)
+                if self.memory is not None
+                else set()
+            )
+        return mapping[source]
+
+    def working(self) -> Iterator[Message]:
+        if self.rebuilt is None:
+            yield from self.messages
+        else:
+            yield self.messages[0]
+            yield from self.rebuilt
+            yield from self.messages[self.base :]
+
     @property
     def sent(self) -> list[Message]:
         """What the next model call sends: the system message, the view a fold rebuilt,
         if one did, and the messages added since."""
-        if self.rebuilt is None:
-            return self.messages
-        return [self.messages[0], *self.rebuilt, *self.messages[self.base :]]
+        return list(self.working())
 
     def rebuild(self, view: Sequence[Message]) -> None:
         """Send ``view`` after the system message from now on, in place of everything
@@ -250,7 +283,7 @@ class Transcript:
     @property
     def size(self) -> int:
         """What the next model call would send, in characters."""
-        return len(dump(self.sent)) + self.tools_chars
+        return 2 + sum(len(dump(message)) + 2 for message in self.working()) + self.tools_chars
 
     def has_room(self, notices: Sequence[Notice] = ()) -> bool:
         """Whether another model call can be made, with these notices added."""
@@ -259,8 +292,8 @@ class Transcript:
         added = len(dump([_message(notice) for notice in notices])) if notices else 0
         return self.size + added <= self.max_input_chars
 
-    def delivered_ids(self, source: str) -> frozenset[str]:
-        return frozenset(self.delivered.get(source, ()))
+    def delivered_ids(self, source: str) -> AbstractSet[str]:
+        return self.delivered.get(source, frozenset())
 
     def fail(self, phase: FailurePhase) -> None:
         """Keep the first failure classification without retaining exception data."""
@@ -295,17 +328,23 @@ async def _append(transcript: Transcript, message: Message, appended: Appended) 
     if transcript.log is not None:
         if appended.kind == "assistant":
             appended = replace(
-                appended, usage=transcript.usage[-1], usage_index=len(transcript.usage)
+                appended,
+                usage=transcript.usage[-1],
+                usage_index=len(transcript.usage),
+                consumed=transcript.offered,
             )
         message = await transcript.log.append(message, appended)
-    transcript.messages.append(message)
+    if isinstance(transcript.messages, Collection) and isinstance(transcript.log, RunArchive):
+        transcript.messages.append_encoded({"archive_message": transcript.log.last_message})
+    else:
+        transcript.messages.append(message)
 
 
 async def _offer(transcript: Transcript, notices: Sequence[Notice]) -> None:
     """Notices as user messages; their IDs count as delivered once a model call sees them."""
     for notice in notices:
         await _append(transcript, _message(notice), Appended("notice", notice=notice))
-        transcript.offered.setdefault(notice.source, set()).update(notice.ids)
+        transcript.identities(notice.source).update(notice.ids)
 
 
 async def _notices(hooks: Sequence[TurnHook], point: Point, transcript: Transcript) -> None:
@@ -315,7 +354,7 @@ async def _notices(hooks: Sequence[TurnHook], point: Point, transcript: Transcri
 
 async def _model_returned(hooks: Sequence[TurnHook], transcript: Transcript) -> None:
     for source, ids in transcript.offered.items():
-        transcript.delivered.setdefault(source, set()).update(ids)
+        transcript.identities(source, delivered=True).update(ids)
     for hook in hooks:
         await hook.model_returned(transcript)
 
@@ -422,7 +461,7 @@ async def _attach(
             _log.warning("a %s notice is too long to attach; not attached", notice.source)
         else:
             extra[notice.framing] = notice.payload
-            transcript.offered.setdefault(notice.source, set()).update(notice.ids)
+            transcript.identities(notice.source).update(notice.ids)
     if not extra:
         return
     text, size = outcome.text, len(outcome.text)
@@ -735,6 +774,8 @@ async def _run_task(
             retained = (
                 transcript.log.retained_tool(record) if transcript.log is not None else record
             )
+            if isinstance(transcript.tool_records, Collection):
+                transcript.tool_records.expose_current(index, record)
             try:
                 for hook in hooks:
                     await hook.observe_tool(transcript, outcome.record)
@@ -837,6 +878,7 @@ async def run_task(
     role: str = "main",
     log: MessageLog | None = None,
     folds: Folds | None = None,
+    memory_store: RunMemory | None = None,
 ) -> Transcript:
     """Run a task, keeping an active originating-run lease while it waits or computes.
 
@@ -886,6 +928,14 @@ async def run_task(
                     log=log,
                     folds=folds,
                 )
+                if memory_store is None and isinstance(log, RunArchive):
+                    memory_store = RunMemory.archived(log)
+                if memory_store is not None:
+                    transcript.messages = memory_store.messages(transcript.messages)
+                    transcript.tool_records = memory_store.tools()
+                    transcript.usage = memory_store.usage()
+                    transcript.memory = memory_store
+                    transcript.max_input_chars = min(transcript.max_input_chars, VIEW_BYTES)
                 try:
                     await _run_task(
                         model,
@@ -902,6 +952,10 @@ async def run_task(
                         ) is not None:
                             transcript.stopped = reason
                             transcript.final_text = transcript.answer = None
+                except WorkingMemoryLimitError as error:
+                    transcript.stopped = "memory_limit"
+                    transcript.final_text = transcript.answer = None
+                    transcript.summaries["memory"] = {"blocked": str(error)}
                 except Exception:
                     # Catch inside the leases: retain only successfully delivered claims
                     # until the caller durably saves this partial record, then ACKs them.
