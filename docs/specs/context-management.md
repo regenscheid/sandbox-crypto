@@ -867,3 +867,16 @@ changes alone do not change a continuation. An explicit authenticated operator d
 may change requested effort for a new attempt, preserving the original blueprint and
 an audit record. Fold and overview narratives are independently selectable callers;
 finite limits and budgets remain unchanged.
+
+### Bounded fold-size repair (2026-10-17)
+
+A fold or overview narrative rejected for length or rendered record share uses its
+existing single retry with bounded corrective feedback, rather than repeating an
+identical request. Feedback states measured escaped narrative length/overage, the
+rendered candidate length/overage when evaluated, unchanged record footprint and
+remaining full-record headroom. It requests a tighter narrative target, no added keys,
+and preservation of supported critical handoff references and unresolved obligations.
+It never echoes the oversized answer or adds calls beyond the existing two attempts.
+Every repaired answer passes the same source/value/framing and full-record validators;
+no truncation or cap increase occurs. A second rejection retains the original honest
+skeleton-only fallback and both calls' accounting.
