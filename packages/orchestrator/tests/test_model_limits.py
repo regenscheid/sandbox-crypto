@@ -552,6 +552,7 @@ async def test_a_run_rides_out_a_rate_limit_and_records_its_usage(harness: Harne
     first, _, last = (len(messages) for messages in harness.gateway.main)
     assert [usage.model_dump(exclude={"characters"}) for usage in record.usage] == [
         {
+            "intent_id": None,  # the main response intent is journaled separately
             "model": "scripted-main",
             "input_tokens": tokens,
             "output_tokens": 1,

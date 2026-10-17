@@ -30,7 +30,7 @@ from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
 from .test_delegation import delegating as delegating
-from .test_run_service import post, runs, serving, states
+from .test_run_service import ended, post, runs, serving, states
 
 PAST = datetime.now(UTC) - timedelta(minutes=5)
 ROOT = run_name(PAST, "crashed")
@@ -156,6 +156,9 @@ async def test_the_run_service_ends_a_dead_roots_tree(delegating: Harness) -> No
     async with serving(delegating, Reply("Yes.")):
         await eventually(lambda: runs(delegating).ended(PROJECT, SESSION, ROOT), timeout=10)
         await eventually(lambda: states(delegating) == {"m-1": "delivered"}, timeout=20)
+        # Canonical delivery precedes finalization; wait for the new main record
+        # beside the saved child before shutting down its owning service.
+        await ended(delegating, 2)
     state = runs(delegating)
     running, saved = _delegation(0), _delegation(1)
     assert records.get(PROJECT, SESSION, running.delegation_id).ended == "interrupted"

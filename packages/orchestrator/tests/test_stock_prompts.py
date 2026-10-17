@@ -374,6 +374,9 @@ async def test_actual_cli_keeps_selected_input_and_safe_failed_record(
                 environment_id=request.context.environment_id, state="unmanaged"
             )
 
+        async def fence(self, request):
+            return request
+
         async def capabilities(self, *args):
             return SimpleNamespace(
                 languages=(),
