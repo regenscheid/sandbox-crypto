@@ -18,6 +18,7 @@ from typing import Literal, Protocol
 from sandbox_science.contracts import ErrorKind
 
 from . import (
+    binding_inventory,
     capture,
     daemon,
     executor,
@@ -42,6 +43,7 @@ PROVISIONING_SOURCE = Path(provisioning.__file__)
 """The package-command wrappers and hook (provisioning.py), which the executor loads."""
 SANDBOX_FILES: tuple[Path, ...] = (
     EXECUTOR_SOURCE,
+    Path(binding_inventory.__file__),
     PROVISIONING_SOURCE,
     PDF_HELPER_SOURCE,
     DAEMON_SOURCE,

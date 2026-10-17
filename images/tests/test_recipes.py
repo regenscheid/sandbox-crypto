@@ -489,3 +489,13 @@ def test_the_harness_run_check_answers_on_this_checkouts_harness(tmp_path: Path)
     assert done.stdout.rstrip().endswith(checks.MARKER)
     assert requests[:1] == [f"/v1/capabilities?environment_id={checks.SESSION}"]
     assert json.loads(transcript.read_text())["stopped"] == "answered"
+
+
+def test_binding_inventory_generator_is_shared_by_build_and_executor() -> None:
+    recipe = (IMAGES / "Containerfile").read_text()
+    assert "from=binding-inventory,source=binding_inventory.py" in recipe
+    assert "python -I -B /tmp/binding_inventory.py" in recipe
+    build = (IMAGES / "build.sh").read_text()
+    revision = (IMAGES / "revision.sh").read_text()
+    assert "binding-inventory=$here/../packages/worker/src/sandbox_science/worker" in build
+    assert "../packages/worker/src/sandbox_science/worker/binding_inventory.py" in revision

@@ -296,3 +296,12 @@ Every image has run in OpenShell VM sandboxes on babbage, under the compiled pol
 - **A private registry** for crypto-base, and for multi-platform images. OpenShell's VM driver can create sandboxes from images in the local Docker store, so babbage needs none yet.
 - **An SBOM** in a standard format (SPDX or CycloneDX) before `minimal` is published. The image record lists every package and license, but in its own format.
 - **Restore and rebuild.** The record and lockfile are there; capturing an environment's changes and rebuilding it from the lockfile belong to the environment manager (W3, D48).
+
+Research images also contain `/usr/share/sandbox-science/binding-inventory.json`, a
+canonical static inventory generated after the final package installation by the
+same scanner shipped to executors. Its version, extractor hash, package ownership,
+source-built revisions, restriction provenance and coverage notes are recorded in
+its content digest. No installed tool or skill helper is executed to discover
+variable names. Runtime provisioning requires a new observation; the base image's
+inventory is not treated as current after package changes. See the
+[binding inventory contract](specs/skill-binding-inventory.md).

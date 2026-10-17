@@ -58,6 +58,7 @@ PREFIX = "/opt/sandbox-science"
 EXECUTOR_DIR = Path("/sandbox/.sandbox-science")
 WORKER_FILES = (
     "executor.py",
+    "binding_inventory.py",
     "provisioning.py",
     "pdfhelper.py",
     "daemon.py",
