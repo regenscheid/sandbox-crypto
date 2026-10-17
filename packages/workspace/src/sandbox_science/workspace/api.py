@@ -52,6 +52,8 @@ class Timeouts:
 
     call: float = 6.0
     """A kernel, plan, plan-edit or provisioning request as a whole."""
+    upload: float = 300.0
+    """One upload body or worker file operation; observations keep their short deadlines."""
     comparison: float = 10.0
     """A lockfile comparison or a revision's package page as a whole."""
     worker_call: float = 5.0

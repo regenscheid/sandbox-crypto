@@ -864,3 +864,22 @@ async def test_a_moved_files_name_is_never_left_empty(sync: SharedSync) -> None:
     await sync.up("p1", "e1", "s1", e1)
     await sync.up("p1", "e2", "s2", e2)  # an ``up`` alone, with no ``down`` after it
     assert e2.files == {"shared/notes.md": b"b", "shared/notes.conflict-e2.md": b"c"}
+
+
+async def test_upload_limit_does_not_widen_other_shared_files(tmp_path: Path) -> None:
+    records = SharedRecords(tmp_path / "uploads.sqlite3")
+    sync = SharedSync(records, tmp_path / "blobs", max_file_bytes=4, max_upload_bytes=8)
+    e1, e2 = Environment(), Environment()
+    e1.put("shared/uploads/s1/u/source.pdf", b"12345678")
+    e1.put("shared/ordinary.pdf", b"12345")
+    e1.put("shared/uploads/s1/big/source.pdf", b"123456789")
+    try:
+        notices = await sync.up("p1", "e1", "s1", e1)
+        assert len(notices) == 2
+        assert await sync.down("p1", "e2", "s2", e2) == []
+        assert e2.files == {"shared/uploads/s1/u/source.pdf": b"12345678"}
+        hashed = [path for op, fields in e1.log if op == "shared" for path in fields["hash"]]
+        assert "shared/ordinary.pdf" not in hashed
+        assert "shared/uploads/s1/big/source.pdf" not in hashed
+    finally:
+        records.close()

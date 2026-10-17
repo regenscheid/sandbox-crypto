@@ -20,9 +20,9 @@ from sandbox_science.contracts.model import Contract
 from .control.migrations import Schema
 from .documents import DocumentError, DocumentStore
 
-MAX_UPLOAD_BYTES: Final = 8 * 1024 * 1024
-MAX_PROJECT_BYTES: Final = 128 * 1024 * 1024
-MAX_TOTAL_BYTES: Final = 512 * 1024 * 1024
+MAX_UPLOAD_BYTES: Final = 100 * 1024 * 1024
+MAX_PROJECT_BYTES: Final = 2 * 1024 * 1024 * 1024
+MAX_TOTAL_BYTES: Final = 8 * 1024 * 1024 * 1024
 _IDENTIFIER: Final = TypeAdapter[str](Identifier)
 
 
@@ -59,6 +59,33 @@ def install(schema: Schema) -> None:
         UNIQUE(project, session, upload_id),
         FOREIGN KEY(project, session) REFERENCES sessions(project_id, session_id)
     ) STRICT""")
+    for action in ("UPDATE", "DELETE"):
+        schema.execute(
+            f"CREATE TRIGGER user_uploads_no_{action.lower()} BEFORE {action} ON user_uploads "
+            "BEGIN SELECT RAISE(ABORT, 'original uploads are immutable'); END"
+        )
+
+
+def expand_limit(schema: Schema) -> None:
+    """Version 67: retain every original while widening the immutable size constraint."""
+    schema.execute("ALTER TABLE user_uploads RENAME TO user_uploads_previous")
+    for action in ("update", "delete"):
+        schema.execute(f"DROP TRIGGER user_uploads_no_{action}")
+    # Rebuild the table in the enclosing migration transaction, never edit schema text.
+    schema.execute("""CREATE TABLE user_uploads (
+        seq INTEGER PRIMARY KEY,
+        project TEXT NOT NULL,
+        session TEXT NOT NULL,
+        upload_id TEXT NOT NULL,
+        digest TEXT NOT NULL,
+        record TEXT NOT NULL CHECK (json_valid(record)),
+        size INTEGER NOT NULL CHECK (size BETWEEN 0 AND 104857600),
+        content BLOB NOT NULL CHECK (length(content) = size),
+        UNIQUE(project, session, upload_id),
+        FOREIGN KEY(project, session) REFERENCES sessions(project_id, session_id)
+    ) STRICT""")
+    schema.execute("INSERT INTO user_uploads SELECT * FROM user_uploads_previous")
+    schema.execute("DROP TABLE user_uploads_previous")
     for action in ("UPDATE", "DELETE"):
         schema.execute(
             f"CREATE TRIGGER user_uploads_no_{action.lower()} BEFORE {action} ON user_uploads "

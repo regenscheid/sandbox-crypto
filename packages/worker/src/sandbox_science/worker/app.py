@@ -76,6 +76,7 @@ from sandbox_science.contracts.revision_packages import RevisionPackagePage
 from sandbox_science.contracts.revisions import MAX_REVISION_PAGE
 from sandbox_science.contracts.worker import (
     EVENT_HEARTBEAT_SECONDS,
+    MAX_FILE_WRITE_BODY,
     PROTOCOL_HEADER,
     PROTOCOL_VERSION,
     MediaType,
@@ -1203,7 +1204,9 @@ async def read_file(request: web.Request) -> web.Response:
 
 
 async def write_file(request: web.Request) -> web.Response:
-    body = WriteFileRequest.model_validate_json(await _body(request))
+    body = WriteFileRequest.model_validate_json(
+        await request.clone(client_max_size=MAX_FILE_WRITE_BODY).read()
+    )
     _context(request, body.context)
     return _json(await request.app[MANAGER].write_file(body))
 

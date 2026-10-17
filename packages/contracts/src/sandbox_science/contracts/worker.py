@@ -17,7 +17,7 @@ from pydantic import AfterValidator, AwareDatetime, Field, StringConstraints, mo
 from .context import ExecutionContext
 from .model import Contract, Counter, Identifier, Sha256
 
-PROTOCOL_VERSION: Final = 8
+PROTOCOL_VERSION: Final = 9
 """The worker API's version. Releases are lockstep (docs/COMPATIBILITY.md): it changes with
 any change to what the worker or its clients send, and each side refuses another version."""
 PROTOCOL_HEADER: Final = "X-Worker-Protocol"
@@ -618,14 +618,30 @@ class FileContent(Contract):
     eof: bool
 
 
+MAX_FILE_WRITE_BYTES: Final = 100 * 1024 * 1024
+MAX_FILE_WRITE_BODY: Final = 4 * ((MAX_FILE_WRITE_BYTES + 2) // 3) + 64 * 1024
+"""A 100 MiB write plus its bounded JSON context and path metadata."""
+
+
 class WriteFileRequest(Contract):
     """Create or replace a file. Writes to the shared area need a precondition."""
 
     context: ExecutionContext
     path: RelativePath
-    content_b64: str
+    content_b64: str = Field(max_length=4 * ((MAX_FILE_WRITE_BYTES + 2) // 3))
     expected_sha256: Sha256 | None = None
     create_only: bool = False
+
+    @model_validator(mode="after")
+    def bounded_content(self) -> Self:
+        """The final base64 quartet must not allow bytes past the 100 MiB bound."""
+        padding = (
+            2 if self.content_b64.endswith("==") else 1 if self.content_b64.endswith("=") else 0
+        )
+        size = len(self.content_b64) // 4 * 3 - padding
+        if size > MAX_FILE_WRITE_BYTES:
+            raise ValueError("file write exceeds 100 MiB")
+        return self
 
 
 class WriteFileResult(Contract):

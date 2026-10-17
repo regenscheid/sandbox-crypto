@@ -45,10 +45,14 @@ class ChannelTimeouts:
     """Seconds a channel waits for its executor; the defaults are the production values."""
 
     write: float = WRITE_TIMEOUT
+    transfer_write: float = 120.0
+    transfer_reply: float = 240.0
     close_grace: float = CLOSE_GRACE
 
     def __post_init__(self) -> None:
         seconds("write", self.write)
+        seconds("transfer_write", self.transfer_write)
+        seconds("transfer_reply", self.transfer_reply)
         seconds("close_grace", self.close_grace)
 
 
@@ -191,13 +195,26 @@ class ExecutorChannel:
         process = self._process
         if self.closed or process is None or process.stdin is None:
             raise WorkerError(ErrorKind.UNAVAILABLE, "the executor is not running")
+        large_write = op == "write" and len(str(fields.get("content_b64", ""))) > 8 * 1024 * 1024
+        if large_write:
+            capacity = self.hello.get("max_request_bytes", 64 * 1024 * 1024)
+            if (
+                not isinstance(capacity, int)
+                or len(str(fields.get("content_b64", ""))) + 65536 > capacity
+            ):
+                raise WorkerError(
+                    ErrorKind.UNSUPPORTED, "recreate this environment to accept larger file uploads"
+                )
+            if reply_timeout == REPLY_TIMEOUT:
+                reply_timeout = self.timeouts.transfer_reply
+        write_timeout = self.timeouts.transfer_write if large_write else self.timeouts.write
         request_id = next(self._ids)
         future: asyncio.Future[Message] = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
         line = json.dumps({"id": request_id, "op": op, **fields}, separators=(",", ":")) + "\n"
         try:
             try:
-                async with asyncio.timeout(self.timeouts.write), self._write_lock:
+                async with asyncio.timeout(write_timeout), self._write_lock:
                     check_dispatch(op)
                     process.stdin.write(line.encode())
                     await process.stdin.drain()

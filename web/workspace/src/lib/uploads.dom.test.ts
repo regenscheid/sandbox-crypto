@@ -43,7 +43,7 @@ it('refuses an oversized file before reading bytes or making a request', async (
       name: 'large.pdf',
       arrayBuffer: read,
     } as unknown as File),
-  ).rejects.toThrow('8 MiB');
+  ).rejects.toThrow('100 MiB');
   expect(read).not.toHaveBeenCalled();
   expect(fetch).not.toHaveBeenCalled();
 });
@@ -68,10 +68,11 @@ it('retains queued bytes and ID after failure and persists only metadata after r
   await flushUploads('p1', 'retry');
   expect(draft.pending).toHaveLength(0);
   expect(draft.files).toHaveLength(1);
-  expect(fetch.mock.calls.map((call) => JSON.parse(call[1].body).upload_id)).toEqual([
-    'stable-upload',
-    'stable-upload',
-  ]);
+  expect(
+    fetch.mock.calls.map(
+      (call) => JSON.parse(decodeURIComponent(call[1].headers['X-Upload-Metadata'])).upload_id,
+    ),
+  ).toEqual(['stable-upload', 'stable-upload']);
   expect(attachmentDrafts.load('p1:retry').draft).toEqual(draft.files);
   expect(JSON.stringify(sessionStorage)).not.toContain('content_b64');
   const done = new Event('beforeunload', { cancelable: true });
@@ -94,10 +95,31 @@ it('a stalled upload releases its queue at the deadline while retaining its ID',
     ),
   );
   const pending = flushUploads('p1', 'deadline');
-  await vi.advanceTimersByTimeAsync(60_001);
+  await vi.advanceTimersByTimeAsync(300_001);
   await pending;
   expect(draft.busy).toBe(false);
   expect(draft.error).toBeTruthy();
   expect(draft.pending[0]!.id).toBe('deadline-id');
   draft.pending = [];
+});
+
+it('sends a 100 MiB File directly without reading or base64 encoding its contents', async () => {
+  const original = new File(['fixture'], 'équation-𝛼.pdf', { type: 'application/pdf' });
+  Object.defineProperty(original, 'size', { value: MAX_UPLOAD_BYTES });
+  const read = vi.spyOn(original, 'arrayBuffer');
+  const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify(file)));
+  vi.stubGlobal('fetch', fetch);
+  await uploadFile('p1', 's1', 'stable', original);
+  expect(read).not.toHaveBeenCalled();
+  const [url, options] = fetch.mock.calls[0]!;
+  expect(url).toBe('/api/v0/projects/p1/sessions/s1/uploads');
+  expect(options.body).toBe(original);
+  expect(options.headers['Content-Type']).toBe('application/octet-stream');
+  expect(JSON.parse(decodeURIComponent(options.headers['X-Upload-Metadata']))).toEqual({
+    upload_id: 'stable',
+    filename: 'équation-𝛼.pdf',
+    media_type: 'application/pdf',
+  });
+  expect(options.redirect).toBe('error');
+  expect(options.cache).toBe('no-store');
 });

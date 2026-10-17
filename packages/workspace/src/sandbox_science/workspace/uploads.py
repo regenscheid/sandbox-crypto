@@ -7,7 +7,7 @@ import asyncio
 import base64
 import json
 from typing import Final
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 from aiohttp import hdrs, web
 from pydantic import Field, TypeAdapter, ValidationError
@@ -32,6 +32,7 @@ from .context import (
     json_answer,
     json_body,
     no_query,
+    read_body,
     session_record,
 )
 
@@ -39,11 +40,15 @@ PATH: Final = "/api/v0/projects/{project}/sessions/{session}/uploads"
 _IDS: Final = TypeAdapter[list[Identifier]](list[Identifier])
 
 
-class UploadBody(Contract):
+class UploadMetadata(Contract):
     upload_id: Identifier
     filename: str = Field(min_length=1, max_length=240)
     media_type: str = Field(default="application/octet-stream", max_length=128)
-    content_b64: str = Field(max_length=4 * ((MAX_UPLOAD_BYTES + 2) // 3))
+
+
+class UploadBody(UploadMetadata):
+    # Old JSON clients remain compatible without materializing 133 MiB JSON bodies.
+    content_b64: str = Field(max_length=4 * ((8 * 1024 * 1024 + 2) // 3))
 
 
 def add_routes(app: web.Application) -> None:
@@ -59,12 +64,27 @@ async def uploaded(request: web.Request) -> web.Response:
     found = await asyncio.to_thread(session_record, context.projects, project, session)
     if found.closed_at is not None:
         raise ProjectError(ErrorKind.CONFLICT, "the session is closed")
-    raw = await json_body(request, "upload", limit=12 * 1024 * 1024)
+    if request.query:
+        raise ProjectError(ErrorKind.INVALID_REQUEST, "uploads take no query parameters")
     try:
-        body = UploadBody.model_validate(raw)
-        data = base64.b64decode(body.content_b64, validate=True)
+        async with asyncio.timeout(context.timeouts.upload):
+            if request.content_type == "application/octet-stream":
+                metadata = request.headers.get("X-Upload-Metadata", "")
+                if len(metadata) > 2048:
+                    raise ValueError("upload metadata too large")
+                body = UploadMetadata.model_validate_json(unquote(metadata, errors="strict"))
+                data = await read_body(request, "upload", limit=MAX_UPLOAD_BYTES)
+            else:
+                raw = await json_body(request, "upload", limit=12 * 1024 * 1024)
+                legacy = UploadBody.model_validate(raw)
+                body = legacy
+                data = base64.b64decode(legacy.content_b64, validate=True)
+                if len(data) > 8 * 1024 * 1024:
+                    raise ValueError("legacy JSON upload exceeds 8 MiB; use binary upload")
     except (ValidationError, ValueError):
         raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid upload body") from None
+    except TimeoutError:
+        raise ProjectError(ErrorKind.UNAVAILABLE, "upload timed out; retry the file") from None
     result = await asyncio.to_thread(
         UserUploads(context.writer).create,
         project,
@@ -214,7 +234,7 @@ async def deliver(
         )
         try:
             try:
-                async with asyncio.timeout(context.timeouts.call):
+                async with asyncio.timeout(context.timeouts.upload):
                     written = await worker.write_file(
                         WriteFileRequest(
                             context=scope,
@@ -224,10 +244,16 @@ async def deliver(
                         )
                     )
                 size, sha256 = written.size, written.sha256
-            except (WorkerAPIError, TimeoutError):
+            except (WorkerAPIError, TimeoutError) as error:
+                if isinstance(error, WorkerAPIError) and error.kind is ErrorKind.UNSUPPORTED:
+                    raise ProjectError(
+                        ErrorKind.UNSUPPORTED,
+                        "file retained; this environment cannot accept this upload; "
+                        "update the worker and recreate the environment before retrying",
+                    ) from None
                 # A lost acknowledgement or create-only conflict may already contain
                 # our exact bytes. An operator client remains required by worker fences.
-                async with asyncio.timeout(context.timeouts.call):
+                async with asyncio.timeout(context.timeouts.upload):
                     existing = await worker.read_file(
                         ReadFileRequest(context=scope, path=found.path, length=0)
                     )

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 /** Original upload metadata only; file bytes never enter a browser draft store. */
-import { get, post } from './http';
+import { get, post, request } from './http';
 import { DraftStore } from './mutation';
 
-export const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
+export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 export type { UserUpload, UploadPage } from './api-types';
 import type { UserUpload, UploadPage } from './api-types';
 const at = (project: string, session: string) =>
@@ -52,21 +52,21 @@ export async function uploadFile(
   id: string,
   file: File,
 ): Promise<UserUpload> {
-  if (file.size > MAX_UPLOAD_BYTES) throw new Error(`${file.name} exceeds the 8 MiB upload limit.`);
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  let binary = '';
-  for (let offset = 0; offset < bytes.length; offset += 8192)
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
-  return post<UserUpload>(
-    at(project, session),
-    {
-      upload_id: id,
-      filename: file.name,
-      media_type: file.type || 'application/octet-stream',
-      content_b64: btoa(binary),
-    },
-    { deadlineMs: 60_000 },
-  );
+  if (file.size > MAX_UPLOAD_BYTES)
+    throw new Error(`${file.name} exceeds the 100 MiB upload limit.`);
+  return request<UserUpload>(at(project, session), {
+    method: 'POST',
+    binaryBody: file,
+    uploadMetadata: encodeURIComponent(
+      JSON.stringify({
+        upload_id: id,
+        filename: file.name,
+        media_type: file.type || 'application/octet-stream',
+      }),
+    ),
+    deadlineMs: 300_000,
+    maxBytes: 16_384,
+  });
 }
 
 /** Matches the server's manifest exactly for message and question-answer budgets. */

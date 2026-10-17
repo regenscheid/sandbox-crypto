@@ -3051,6 +3051,13 @@ def _user_uploads(schema: Schema) -> None:
     install(schema)
 
 
+def _larger_user_uploads(schema: Schema) -> None:
+    """Version 67: 100 MiB immutable original uploads."""
+    from sandbox_science.orchestrator.uploads import expand_limit
+
+    expand_limit(schema)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -3117,6 +3124,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _recovery_dispatch,
     _child_settlements,
     _user_uploads,
+    _larger_user_uploads,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

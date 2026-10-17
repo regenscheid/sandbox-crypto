@@ -72,7 +72,9 @@ from .recovery_fence import check_dispatch
 _log = logging.getLogger(__name__)
 
 MAX_FILE_BYTES: Final = 32 * 1024 * 1024
-"""The largest file copied between environments: a write to the executor is one line."""
+"""The ordinary shared-file bound; upload copies have their separate limit below."""
+MAX_UPLOAD_BYTES: Final = 100 * 1024 * 1024
+"""Upload originals under shared/uploads/ can travel with the project."""
 MAX_PROJECT_BYTES: Final = 2 * 1024 * 1024 * 1024
 """The most a project's copy of its shared files may hold."""
 MAX_PROJECT_FILES: Final = 10_000
@@ -446,6 +448,7 @@ class SharedSync:
         root: Path,
         *,
         max_file_bytes: int = MAX_FILE_BYTES,
+        max_upload_bytes: int = MAX_UPLOAD_BYTES,
         max_project_bytes: int = MAX_PROJECT_BYTES,
         max_project_files: int = MAX_PROJECT_FILES,
         hash_budget: int = HASH_BUDGET,
@@ -462,6 +465,7 @@ class SharedSync:
         self.root = root
         """Each project's blob store is a directory here, named by a hash of its ID."""
         self.max_file_bytes = max_file_bytes
+        self.max_upload_bytes = max_upload_bytes
         self.max_project_bytes = max_project_bytes
         self.max_project_files = max_project_files
         self.hash_budget = hash_budget
@@ -484,6 +488,10 @@ class SharedSync:
         """By project: digests whose blobs were lost, to read again from an environment."""
         self._held: dict[str, set[bytes]] = {}
         """By environment: files kept back because a process there is writing them."""
+
+    def file_limit(self, path: str) -> int:
+        """Uploads have their own bound; other shared research outputs keep theirs."""
+        return self.max_upload_bytes if path.startswith("shared/uploads/") else self.max_file_bytes
 
     def blobs(self, project_id: str) -> Blobs:
         """The project's blob store: no other project's sync reads or deletes its blobs."""
@@ -704,7 +712,10 @@ class SharedSync:
             ):
                 candidates.append(path)
         if candidates:
-            scan = await self._scan(channel, candidates)
+            scan = await self._scan(
+                channel,
+                [path for path in candidates if scan.files[path][0][1] <= self.file_limit(path)],
+            )
         self._note_scan(environment_id, scan)
         removed = (
             []
@@ -1072,7 +1083,7 @@ class SharedSync:
     ) -> _Scan:
         fields: dict[str, Any] = {
             "hash": list(hashed),
-            "hash_limit": self.max_file_bytes,
+            "hash_limit": max(self.max_file_bytes, self.max_upload_bytes),
             "hash_budget": self.hash_budget,
         }
         if mark is not None:
@@ -1126,6 +1137,8 @@ class SharedSync:
                     digests[path] = digest
         too_large = frozenset(
             path for path in _strings(reply.get("too_large"), len(files)) if path in files
+        ) | frozenset(
+            path for path, (stamp, _) in files.items() if stamp[1] > self.file_limit(path)
         )
         odd = tuple(_shown(name) for name in [*_strings(reply.get("odd"), 10), *refused])
         mark, now = reply.get("mark"), reply.get("now")
@@ -1166,7 +1179,7 @@ class SharedSync:
                     return None
                 if offset == 0 and reply.get("sha256") != sha256:
                     return None
-                if offset + len(data) > self.max_file_bytes:
+                if len(data) > READ_BYTES or offset + len(data) > self.file_limit(path):
                     return None
                 await asyncio.to_thread(writer.write, data)
                 offset += len(data)
@@ -1204,7 +1217,7 @@ class SharedSync:
         mib = 1024 * 1024
         return self._once(
             ("large", project_id, path, str(size)),
-            f"{_shown(path)} ({size // mib} MiB) is over {self.max_file_bytes // mib} MiB, so it "
+            f"{_shown(path)} ({size // mib} MiB) is over {self.file_limit(path) // mib} MiB, so it "
             "is not copied to the project's other environments; publish it as an artifact "
             "instead",
         )

@@ -232,3 +232,118 @@ def test_manifest_unicode_encoding_matches_browser_budget() -> None:
     text = message_text("Check $x$  \n", [file])
     assert '"filename": "équation-\U0001d6fc.md"' in text
     assert len(text.encode()) == 312
+
+
+def binary_headers(
+    client: Any, identity: str = "binary", name: str = "équation-\U0001d6fc.pdf"
+) -> dict[str, str]:
+    from urllib.parse import quote
+
+    return origin(client) | {
+        "Content-Type": "application/octet-stream",
+        "X-Upload-Metadata": quote(
+            json.dumps(
+                {"upload_id": identity, "filename": name, "media_type": "application/pdf"},
+                ensure_ascii=False,
+            )
+        ),
+    }
+
+
+async def test_binary_upload_accepts_exactly_100_mib_and_retains_immutable_original(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    from sandbox_science.orchestrator.uploads import MAX_UPLOAD_BYTES
+
+    client = await workspace(aiohttp_client, state_dir, static_dir)
+    raw = b"x" * MAX_UPLOAD_BYTES
+    response = await client.post(UPLOADS, data=raw, headers=binary_headers(client))
+    assert response.status == 200, await response.text()
+    found = await response.json()
+    assert found["size"] == 100 * 1024 * 1024
+    assert found["filename"] == "équation-\U0001d6fc.pdf"
+    assert found["sha256"] == hashlib.sha256(raw).hexdigest()
+    content = await client.get(UPLOADS + "/binary/content")
+    assert hashlib.sha256(await content.read()).hexdigest() == found["sha256"]
+    replay = await client.post(UPLOADS, data=raw, headers=binary_headers(client))
+    assert await replay.json() == found
+    conflict = await client.post(UPLOADS, data=b"changed", headers=binary_headers(client))
+    assert conflict.status == 409
+    too_big = await client.post(UPLOADS, data=raw + b"!", headers=binary_headers(client, "too-big"))
+    assert too_big.status == 413
+    assert len((await (await client.get(UPLOADS)).json())["uploads"]) == 1
+
+
+async def test_binary_upload_keeps_auth_scope_and_metadata_guards(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    client = await workspace(aiohttp_client, state_dir, static_dir)
+    headers = binary_headers(client)
+    assert (
+        await client.post(
+            UPLOADS, data=b"x", headers={k: v for k, v in headers.items() if k != "Origin"}
+        )
+    ).status == 403
+    for changed in (
+        {"X-Upload-Metadata": "{}"},
+        {"X-Upload-Metadata": "%ff"},
+        {"X-Upload-Metadata": "a" * 2049},
+        {
+            "X-Upload-Metadata": json.dumps(
+                {"upload_id": "binary", "filename": "../escape", "author": "agent"}
+            )
+        },
+    ):
+        assert (await client.post(UPLOADS, data=b"x", headers=headers | changed)).status == 400
+    assert (await client.post(UPLOADS + "?project=p2", data=b"x", headers=headers)).status == 400
+    assert (
+        await client.post(UPLOADS.replace("/a/", "/b/"), data=b"x", headers=headers)
+    ).status == 409
+    assert (await (await client.get(UPLOADS)).json())["uploads"] == []
+
+
+async def test_stalled_binary_upload_has_its_own_bounded_deadline(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    import asyncio
+    from collections.abc import AsyncIterator
+
+    from sandbox_science.workspace.api import Timeouts
+
+    client = await workspace(aiohttp_client, state_dir, static_dir, timeouts=Timeouts(upload=0.05))
+
+    async def stalled() -> AsyncIterator[bytes]:
+        yield b"initial bytes"
+        await asyncio.Event().wait()
+
+    response = await client.post(UPLOADS, data=stalled(), headers=binary_headers(client))
+    assert response.status == 503
+    assert "upload timed out" in await response.text()
+    assert (await (await client.get(UPLOADS)).json())["uploads"] == []
+
+
+async def test_incompatible_worker_retains_upload_with_actionable_refusal(
+    aiohttp_client: ClientFactory, aiohttp_server: ServerFactory, state_dir: Path, static_dir: Path
+) -> None:
+    async def refuse(request: web.Request) -> web.Response:
+        await request.read()
+        return web.json_response(
+            {"error": {"kind": "unsupported", "message": "old executor"}}, status=422
+        )
+
+    app = fake_worker_app()
+    app.router.add_post("/v1/files/write", refuse)
+    server = await aiohttp_server(app)
+    client = await workspace(
+        aiohttp_client, state_dir, static_dir, worker_url=str(server.make_url("/"))
+    )
+    assert (await client.post(UPLOADS, json=body(), headers=origin(client))).status == 200
+    response = await client.post(
+        SESSION + "/messages",
+        json={"message_id": "unsupported", "text": "Read this", "attachments": ["upload-test"]},
+        headers=origin(client),
+    )
+    assert response.status == 422
+    assert "recreate the environment" in await response.text()
+    assert len((await (await client.get(UPLOADS)).json())["uploads"]) == 1
+    assert (await (await client.get(SESSION + "/messages")).json())["messages"] == []

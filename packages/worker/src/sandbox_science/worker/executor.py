@@ -109,7 +109,7 @@ PROTOCOL = 3
 launch and surviving-kernel cell. Older executors must be recycled (SK-16, RC-24)."""
 MAX_LINE = 16 * 1024 * 1024
 """The longest line the executor sends; the worker drops longer ones."""
-MAX_REQUEST = 64 * 1024 * 1024
+MAX_REQUEST = 4 * ((100 * 1024 * 1024 + 2) // 3) + 64 * 1024
 """The longest request line it reads (a file write carries the file)."""
 MAX_READ = 8 * 1024 * 1024
 MAX_LIST = 5000
@@ -1218,6 +1218,7 @@ class Executor:
         await self.reply(
             request,
             protocol=PROTOCOL,
+            max_request_bytes=MAX_REQUEST,
             package_gate=self.package_gate_id,
             languages=languages,
             location={

@@ -83,7 +83,7 @@
       disabled={disabled || loading}
       onclick={() => (showPrevious ? (showPrevious = false) : void readPrevious())}
       >Stored files</button
-    ><span class="muted">or drop here · up to 8 MiB each</span>
+    ><span class="muted">or drop here · up to 100 MiB each</span>
   </div>
   {#if files.length || pending.length}<ul class="attachment-cards" aria-label="Message attachments">
       {#each files as file (file.upload_id)}<li>
