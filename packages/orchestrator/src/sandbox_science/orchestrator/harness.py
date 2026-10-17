@@ -1144,6 +1144,7 @@ class Harness:
             Ledger(stores.documents),
             context,
             parent=run_name(admitted.started_at, admitted.run_id),
+            work=request.work if request.predecessor is not None else None,
             runner=functools.partial(self.run_child, admitted, version),
             blueprint=lambda child: self._blueprint(self._child_admitted(admitted, version, child)),
             max_turns=request.max_turns or self.settings.max_turns,

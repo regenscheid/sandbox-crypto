@@ -219,6 +219,7 @@ class Delegations(TurnHook):
         context: ExecutionContext,
         *,
         parent: str,
+        work: str | None = None,
         runner: ChildRunner,
         blueprint: Callable[[Child], Blueprint] | None = None,
         max_turns: int,
@@ -246,6 +247,7 @@ class Delegations(TurnHook):
         together take at most ``max_chars``, and a wait's result at most ``output_chars``."""
         self.records, self.ledger, self.context = records, ledger, context
         self.parent, self.runner = parent, runner
+        self.work = work
         self.blueprint = blueprint
         self.wake, self.over_budget, self.clock = wake, over_budget, clock
         self.waiting = waiting
@@ -903,6 +905,7 @@ class Delegations(TurnHook):
                 sorted(ids),
                 self.parent,
                 parent=self.parent if self.depth > 0 else None,
+                work=self.work,
             )
 
     # --- Helpers --------------------------------------------------------------------
@@ -919,9 +922,16 @@ class Delegations(TurnHook):
             context.project_id,
             context.session_id,
             parent=self.parent if self.depth > 0 else None,
+            work=self.work,
         )
-        held = set(run.offered.get(self.name, ())) | self.returned | self.received
-        found = [d for d in found if d.delegation_id not in held]
+        offered = run.offered.get(self.name, ())
+        found = [
+            d
+            for d in found
+            if d.delegation_id not in offered
+            and d.delegation_id not in self.returned
+            and d.delegation_id not in self.received
+        ]
         left = await self._unreceived(found)
         fresh: list[tuple[str, dict[str, object]]] = []
         for delegation in found:

@@ -68,8 +68,21 @@ _OFFERED: Final = (
     "(d.parent = ? OR (? IS NULL AND NOT EXISTS (SELECT 1 FROM delegations AS p "
     "WHERE p.project_id = d.project_id AND p.session_id = d.session_id AND p.run = d.parent)))"
 )
-"""The delegations whose outcomes go to a run (PD-35): ``parent``'s, or without it those
-a main run started, which the session's main runs take; one parameter, twice."""
+"""Normal roots retain the session-wide PD-35 handback contract."""
+_WORK_OFFERED: Final = (
+    "EXISTS (SELECT 1 FROM research_attempts a WHERE a.project=d.project_id "
+    "AND a.session=d.session_id AND a.run=d.parent AND a.work=?)"
+)
+_WORK_ACKNOWLEDGED: Final = (
+    "EXISTS (SELECT 1 FROM research_attempts a WHERE a.project=d.project_id "
+    "AND a.session=d.session_id AND a.run=d.acknowledged AND a.work=?)"
+)
+_WORK_RECEIVED: Final = (
+    "EXISTS (SELECT 1 FROM response_receipts r JOIN research_attempts a "
+    "ON a.project=r.project AND a.session=r.session AND a.run=r.run "
+    "WHERE r.project=d.project_id AND r.session=d.session_id AND r.source='delegations' "
+    "AND r.notice=d.delegation_id AND a.work=?)"
+)
 _ON_TRACK: Final = (
     "SELECT delegation_id FROM delegations WHERE project_id = ? AND session_id = ? "
     "AND ended IS NULL AND json_extract(brief, '$.track.track_id') = ?"
@@ -411,12 +424,23 @@ class DelegationRecords:
         return [_delegation(row) for row in reversed(rows)], int(total)
 
     def handbacks(
-        self, project: str, session: str, *, parent: str | None = None
+        self, project: str, session: str, *, parent: str | None = None, work: str | None = None
     ) -> list[Delegation]:
         """The session's ended delegations that no run has acknowledged, oldest first:
         ``parent``'s, or without it those a main run started, which the session's next
-        main run takes (PD-35); a delegated run's children hand back to it alone."""
+        main run takes (PD-35); a delegated run's children hand back to it alone.
+        Explicit continuations instead select ``work``'s parent attempts and exclude
+        only that responsibility's acknowledgements or atomic response receipts."""
         with self.control.read() as tx:
+            if work is not None:
+                rows = tx.sql.execute(
+                    f"SELECT {_COLUMNS} FROM delegations AS d "  # noqa: S608 - fixed predicates
+                    "WHERE project_id=? AND session_id=? AND ended IS NOT NULL "
+                    f"AND {_WORK_OFFERED} AND NOT {_WORK_ACKNOWLEDGED} AND NOT {_WORK_RECEIVED} "
+                    "ORDER BY ended_at,delegation_id LIMIT ?",
+                    (project, session, work, work, work, PAGE),
+                ).fetchall()
+                return [_delegation(row) for row in rows]
             rows = tx.sql.execute(
                 f"SELECT {_COLUMNS} FROM delegations AS d WHERE project_id = ? AND session_id = ? "  # noqa: S608
                 f"AND acknowledged IS NULL AND ended IS NOT NULL AND {_OFFERED} "
@@ -444,11 +468,22 @@ class DelegationRecords:
         run: str,
         *,
         parent: str | None = None,
+        work: str | None = None,
     ) -> None:
         """Mark ended delegations' outcomes received by ``run``, once its record is saved:
         only those ``handbacks`` offers it, ``parent``'s or without it a main run's, so
-        that a run that read another's outcome does not take it from that run (PD-35)."""
+        that a run that read another's outcome does not take it from that run (PD-35).
+        A continuation acknowledges only children of its stable ``work``; receipt
+        rows remain authoritative even if final-save acknowledgement never executes."""
         with self.control.write() as tx:
+            if work is not None:
+                tx.sql.executemany(
+                    "UPDATE delegations AS d SET acknowledged=? WHERE d.project_id=? "  # noqa: S608
+                    "AND d.session_id=? AND d.delegation_id=? AND d.ended IS NOT NULL "
+                    f"AND d.acknowledged IS NULL AND {_WORK_OFFERED}",
+                    [(run, project, session, identity, work) for identity in ids],
+                )
+                return
             tx.sql.executemany(
                 "UPDATE delegations AS d SET acknowledged = ? WHERE d.project_id = ? "  # noqa: S608
                 "AND d.session_id = ? AND d.delegation_id = ? AND d.ended IS NOT NULL "
