@@ -538,3 +538,13 @@ ordinary history readers remain scoped to the requested attempt. Required paused
 kernels are excluded from the harness idle sweep, and their concrete identity and
 generation are observed. This records evidence, not a promise that a kernel survived
 worker or sandbox replacement. Open questions of resumable work remain answerable.
+
+Recovery prompt/tool/skill pin comparison follows the same logical work's predecessor
+chain to the nearest saved starting inputs when a failed preflight attempt saved none.
+A missing immediate snapshot does not authorize changed prompts. Unknown ancestry or
+a chain exceeding the bounded lookup fails closed before model/tool dispatch.
+
+An admitted responsibility that provably never started may establish its first pins:
+its logical work has no paid intents, prior archived messages/events, saved run records
+or starting inputs. The active attempt's initial task/state and started/user events
+are excluded from this pre-start proof; any assistant/tool/model evidence still blocks.

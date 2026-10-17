@@ -318,6 +318,32 @@ async def test_resume_can_be_interrupted_again_before_parent_admission(tmp_path:
         stores=state,
         settings=Settings(min_isolation_tier=None),
     )
+    # This fixture injects a historical tool/question below the original loop.
+    # Supply that original loop's known scripted prompt pins as well; real started
+    # work without this evidence must not qualify as never-started recovery.
+    from sandbox_science.orchestrator.loop import run_task
+    from sandbox_science.orchestrator.run_inputs import RunInputs, StartingInputs
+
+    async def original_pins(run):
+        if run.prompt_provenance is not None and run.prompt_provenance.role == "main":
+            inputs = RunInputs(state.projects.control)
+            try:
+                inputs.get("p", "s", RUN)
+            except ControlError:
+                inputs.save(
+                    StartingInputs(
+                        run=RUN,
+                        context=context,
+                        request=Blueprints(state.projects.control).get("p", "s", RUN).request,
+                        configuration={},
+                        pins=run.prompt_provenance,
+                    )
+                )
+
+    async def fixture_loop(model, toolbox, task, **options):
+        return await run_task(model, toolbox, task, on_started=original_pins, **options)
+
+    harness.loop_runner = fixture_loop
     request = works.request("p", "s")
     assert request is not None
     assert request
