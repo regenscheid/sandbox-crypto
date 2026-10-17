@@ -38,7 +38,7 @@ Everything listens on loopback, so only your own computer can reach it. The step
 
 The parts get only a few of your environment's variables: `PATH`, `HOME`, `USER`, `LOGNAME`, the locale (`LANG`, `LANGUAGE`, `LC_*`), `TZ`, `TMPDIR`, `XDG_RUNTIME_DIR`, the proxies and the CA settings (`SSL_CERT_FILE`, `SSL_CERT_DIR`). An API key you exported in your shell reaches no part.
 
-Each part's table can name more with `pass_env`: `[worker]`, `[run_service]` (a table of its own, with only this) and `[workspace]`. The part gets those variables from your environment, and the other parts do not. The launcher's own OpenShell commands, and the MCP proxy's forward, get the worker's, with `[openshell] env`. The skills commands `up` runs (`sandbox-science-harness skills`) get `[run_service]`'s and `[skills] pass_env`'s. **Never pass a secret this way.** The run service and the workspace run in the control zone, which must hold no engine or cluster credentials ([threat model](THREAT-MODEL.md)). The model's key reaches the run service only as its file, `api_key_file`.
+Each part's table can name more with `pass_env`: `[worker]`, `[run_service]` (a table of its own, with only this) and `[workspace]`. The part gets those variables from your environment, and the other parts do not. The launcher's own OpenShell commands, and the MCP proxy's forward, get the worker's, with `[openshell] env`. The skills commands `up` runs (`sandbox-science-harness skills`) get `[run_service]`'s and `[skills] pass_env`'s. **Never pass a secret this way.** The run service and the workspace run in the control zone, which must hold no engine or cluster credentials ([threat model](THREAT-MODEL.md)). The configured `api_key_file` is uploaded to the separate agent runtime by path. The trusted control process does not run the research model loop.
 
 `[skills] pass_env` is for git, which fetches the packs on this computer as you, with your `HOME`, `~/.gitconfig` and credential helpers. An agent such as `SSH_AUTH_SOCK` is the usual one. The config names variables and never holds their values, and git can already run what your own git configuration says. So these names are not restricted beyond being variable names, and git's own options can run commands, as `GIT_SSH_COMMAND` does. Name only what your own git needs. These variables reach the skills commands alone, never the run service. The harness lets git use only the file, git, http, https and ssh transports, whatever they say.
 
@@ -47,6 +47,18 @@ The state directory must be yours and mode 700. If one is there already and open
 Before you start, set the `profiles` to the tags `images/build.sh` printed. Set `api_key_file` to your key's file.
 
 ## The first run
+
+After an interrupted research session, use **Resume research** in its chat panel.
+It resumes the selected unfinished tree, including children, within its original
+policy, prompt pins and remaining budget. Completed or explicitly stopped branches
+stay ended. A blocked reason identifies an unknown paid call, uncertain effect,
+lost kernel or changed prerequisite. Advanced reconciliation is available through
+the authenticated `/api/v0/projects/{project}/sessions/{session}/recovery` API and
+its `/resolve` route; it records an operator decision without replaying the effect.
+
+If the agent VM exits, the launcher keeps the worker, control service and workspace
+available. Run `sandbox-science replace-orchestrator --config CONFIG` to replace
+that VM, then explicitly Resume research. Replacement alone queues no research.
 
 ```bash
 uv run sandbox-science up --config examples/sandbox-science.toml

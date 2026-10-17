@@ -4,6 +4,8 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 ## 2026-10-17
 
+- **Initial recovery is explicit:** process restart and `replace-orchestrator` preserve unfinished work but do not authorize another paid call. Resume claims a new epoch, reconciles original effects and schedules descendants before parents ([contract](../docs/specs/research-continuity.md#explicit-tree-recovery-coordinator)).
+- **Durable boundary and bounded history:** the normal launcher uses a separate agent VM with fixed scoped host capabilities; historical collections and exact paid-call links replace whole-run in-memory copies ([confinement](../docs/specs/orchestrator-confinement.md), [accounting](../docs/specs/auxiliary-usage.md)). Provider cache ordering remains unchanged pending live measurements.
 - **Observed model usage (D87 implementation refinement):** save response usage/cost atomically with the archive and use its observation time for the daily budget, so multi-day runs keep counting. Legacy fallback retains run-start time; pre-dispatch model intent and unknown charges remain recovery work ([contract](../docs/specs/research-continuity.md#observed-model-usage-increment)).
 
 ## 2026-10-16

@@ -1,6 +1,6 @@
 # Research continuity
 
-Date: 2026-10-16; local increments updated 2026-10-17. **Status: Draft with implementation increments.** The owner's continuity requirements (D87) and separate orchestrator sandbox (D47) are confirmed. Baseline: main `57e29536`. The journal, bounded tool retrieval/retention/export, delegated skeleton folds, live-parent waiting, active-tree environment claims, creation cleanup and observed model usage are implemented locally as described below. Durable work/attempt ownership, tree recovery, whole-run memory bounds and normal-launcher confinement remain proposed or incomplete. Local tests do not establish live acceptance.
+Date: 2026-10-16; local implementation updated 2026-10-17. **Status: implemented on `codex/research-foundations`, unmerged.** The owner's continuity requirements (D87) and separate orchestrator sandbox (D47) are confirmed. Baseline: main `57e29536`. Durable work/attempt ownership, explicit recursive Resume, scoped operation reconciliation, child outcome settlement, bounded historical storage and generated binding restrictions are implemented with the separately confined normal-launcher runtime. Schema 65, worker protocol 8 and executor protocol 3 must be upgraded together. Deterministic tests and disposable OpenShell qualification are recorded separately from long-running scientific/model-quality acceptance.
 
 ## Purpose and confirmed requirements
 
@@ -10,7 +10,7 @@ The owner also accepted a restricted OpenShell sandbox for the agent-facing orch
 
 A research question can remain open across many process lifetimes. Reaching a limit or losing a process says nothing about whether the question is answered or an approach is exhausted. Existing ledger entries, work records and plan tracks keep that scientific meaning; recovery must not invent a competing research board.
 
-## Current implementation
+## Historical baseline
 
 | Area | At the baseline |
 | --- | --- |
@@ -24,9 +24,9 @@ A research question can remain open across many process lifetimes. Reaching a li
 | Cache layout | `history/view.py:settle` already places the state block before the fold region and raw tail. Every rebuild archives a new state block; its rendered header contains that new archive ID. The Responses adapter supplies a session cache key, which alone does not establish reuse. |
 | Skill binding restrictions | `skills/allow.py` holds manually maintained variable names and families. Staging also asks the worker which candidate command names exist; this is a namespace-collision check, not generation of the blocklist from all installed tools. |
 
-These are source findings, not a measurement of memory use or a new runtime acceptance result. Existing behavior remains authoritative until the corresponding implementation changes land.
+These describe the baseline used to design the increments below, not the current branch's behavior.
 
-## Proposed behavior
+## Required behavior
 
 ### Work and attempts
 
@@ -458,16 +458,14 @@ records interruption, migration, mixed-source accounting and daily-window checks
 
 ## Open decisions
 
-1. **After an unexpected restart:** automatically resume eligible work within its existing authorization and budget, or leave it paused for an explicit Resume. Asked of the owner; pending. Recommendation for the initial implementation: explicit Resume. Automatic recovery can follow once the same reconciliation path is proven. Explicit Stop stays stopped in either choice.
-2. **Implementation measurements:** choose numeric memory and concurrency budgets from a bounded baseline and the supported deployment profiles. This is engineering work, not a request for the owner to pick a RAM constant.
+1. **Automatic recovery:** the initial implementation requires explicit Resume after an unexpected restart or orchestrator replacement. Automatic paid research restart is outside this increment. Explicit Stop stays stopped.
+2. **Scientific and cache acceptance:** offline prefix comparisons and bounded deterministic scale fixtures do not establish model-family cache savings or the quality of extended research. Those require separately budgeted real-model runs.
 
-The parent's responsibility, orchestrator-led recovery at every level and separate orchestrator sandbox are confirmed requirements, not open questions. Proposed state names and schema details above are not approved or implemented merely by this draft.
+The parent's responsibility, orchestrator-led recovery at every level and separate orchestrator sandbox are confirmed requirements. The implementation sections and their reports define what has been exercised locally.
 
 ## Sources
 
 [Product](../PRODUCT.md), [architecture](../ARCHITECTURE.md), [projects and sessions](../PROJECTS-AND-SESSIONS.md), [plans and delegation](plans-and-delegation.md) PD-15/PD-22/PD-36 to PD-40, [run service](run-service.md) RS-6f/RS-12, [context management](context-management.md), [worker recovery](../WORKER.md#sandbox-daemon-and-recovery), and the owner's requirements of 2026-10-16 (D47, D87).
-
-### Dispatch recovery prerequisites (schema 64)
 
 ### Explicit tree recovery coordinator
 
@@ -481,7 +479,10 @@ or prompt pins, and exhausted budgets produce visible blocked reasons. Resume
 does not automatically replay an unknown effect or grant a new token allowance.
 
 Worker operation lookup and existing question/delegation identities recover exact
-results. Successful response receipts remain authoritative without a final run
+results. A recovered `start_job` acknowledges the original admission and restores
+its original run ownership without waiting for the background job to finish;
+foreground shell, Python, Sage and PDF calls still wait for their original result.
+Successful response receipts remain authoritative without a final run
 record, including chat and annotation requests. Delayed cleanup and writes are
 fenced by the claimed epoch and lease. Legacy inputs with no original model alias
 block explicitly. Child handback settlement must be durable before parent
@@ -491,6 +492,8 @@ The confined runtime drives branch selection through `resume_next` and
 `resume_branch`. Host control code owns scoped bookkeeping and persistence, while
 the development local-service loop uses the same methods directly. A process
 restart alone never queues Resume.
+
+### Dispatch recovery prerequisites (schema 64)
 
 Each main or delegated paid call records an intent before gateway dispatch. Its
 response observation commits with the assistant archive row and usage; auxiliary
