@@ -4,6 +4,9 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 ## 2026-10-17
 
+- The owner requires configurable model reasoning effort by role and normally uses `max` for research; the live trial had inherited `medium`. Pin requested profiles across Resume, and audit explicit operator effort overrides without rewriting original inputs.
+- Extended cryptanalysis must iterate beyond initial pilots/checklists. MAIN/planning/stock guidance now distinguishes bounded tasks from extended exploration; requested skill workflows also require reading applicable supporting references and applying their procedures, not just declaring Discover mode.
+
 - The owner wants renewable research allowances: resource warnings go to the calling agent, which can grant extensions within policy and hard outer budgets. [Adaptive resource policy](../docs/specs/adaptive-research-resources.md) records the direction; implementation remains planned.
 
 - Real SNOVA research reached the 8 MiB active-payload bound before token folding because provider responses echoed tool schemas and usage attribution. Preserve originals in the archive, project active native replay fields, and raise the per-agent active backstop to 64 MiB at the owner's request.
