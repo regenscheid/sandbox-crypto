@@ -2933,6 +2933,24 @@ def _tool_journal(schema: Schema) -> None:
             )
 
 
+def _run_inputs(schema: Schema) -> None:
+    """Version 59: mandatory immutable starting inputs before a stored run's calls."""
+    schema.execute("""CREATE TABLE run_inputs (
+    project TEXT NOT NULL,
+    session TEXT NOT NULL,
+    run TEXT NOT NULL CHECK (length(CAST(run AS BLOB)) BETWEEN 1 AND 256),
+    snapshot TEXT NOT NULL CHECK (json_valid(snapshot) AND json_type(snapshot) = 'object'
+        AND length(CAST(snapshot AS BLOB)) <= 1048576),
+    PRIMARY KEY (project, session, run),
+    FOREIGN KEY (project, session) REFERENCES sessions (project_id, session_id)
+) STRICT""")
+    for action in ("UPDATE", "DELETE"):
+        schema.execute(
+            f"CREATE TRIGGER run_inputs_no_{action.lower()} BEFORE {action} ON run_inputs "
+            "BEGIN SELECT RAISE(ABORT, 'starting inputs are written once'); END"
+        )
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -2991,6 +3009,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _statement_and_chat_pins,
     _figure_checks,
     _tool_journal,
+    _run_inputs,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

@@ -66,6 +66,7 @@ def verify(stream: BinaryIO) -> Manifest:
         if isinstance(item, Row):
             if (
                 current is not None
+                or item.table not in positions
                 or not positions[item.table]
                 < item.rowid
                 <= manifest.tables[item.table].through_rowid

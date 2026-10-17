@@ -26,6 +26,7 @@ from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.mathchecks.jobs import Checker
 from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
 from sandbox_science.orchestrator.projects import ProjectStore, run_name
+from sandbox_science.orchestrator.run_inputs import RunInputs
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.tools import ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
@@ -93,6 +94,7 @@ async def test_a_run_with_stores_resolves_its_session_runs_and_is_saved(tmp_path
     assert (finished.status, finished.transcript.final_text) == (0, "Answered.")
     names = [hook.name for hook in finished.hooks]
     assert names == [
+        "inputs",  # mandatory persistence before the first model call
         "requests",
         "delegations",  # handbacks, whether or not the project delegates
         "questions",  # where each reply begins, for ask_user's one question per reply
@@ -115,6 +117,13 @@ async def test_a_run_with_stores_resolves_its_session_runs_and_is_saved(tmp_path
     )
     (entry,) = projects.runs("p", "s")
     assert projects.run("p", "s", entry.name).final_text == "Answered."
+    inputs = RunInputs(projects.control).get("p", "s", entry.name)
+    assert inputs.context == finished.context
+    assert inputs.request["task"] == "Go"
+    assert inputs.request["run_id"] == "run-1"
+    assert inputs.request["alias"] == "scripted"
+    assert inputs.request["max_turns"] == 2000
+    assert inputs.pins == finished.transcript.prompt_provenance
 
 
 async def test_a_worker_below_the_minimum_isolation_is_refused(tmp_path: Path) -> None:

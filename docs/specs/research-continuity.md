@@ -275,7 +275,7 @@ quality preservation. Those remain separate acceptance requirements.
 ### Stored-evidence download contract
 
 The workspace exposes a read-only download of one run's stored evidence, including
-unfinished runs with an archive or tool intent. `sandbox-run-evidence-v1` is UTF-8
+unfinished runs with an archive or tool intent. `sandbox-run-evidence-v2` is UTF-8
 NDJSON: a manifest, scoped database rows, each text/blob field in at most 64 KiB
 base64 chunks, field checksums, and a final stream checksum. The manifest records
 the immutable row cutoffs captured together before export. Later appends are not
@@ -343,6 +343,22 @@ Only an explicit root Stop or `cancel_delegation` makes their outcome `cancelled
 A child that fails to stop within the cleanup deadline remains `interrupted`, with
 its requested stop reason preserved; a request alone does not prove effects ended.
 This is the reason classification prerequisite for tree Resume, not a Resume path.
+
+### Immutable starting inputs
+
+Before a stored run's first model call, a mandatory start hook saves a versioned
+snapshot of its resolved request, execution context, selected model alias, harness
+settings and prompt/tool/memory/skill pins. Root, child and grandchild runs all use
+the same hook. The snapshot excludes process-only cancellation/deadline objects,
+credentials and the historical transcript; the archive keeps the conversation.
+It is at most 1 MiB, scoped by project/session/run, and cannot be changed or deleted.
+A failed write or conflicting run identity prevents model and tool dispatch.
+
+Schema 59 adds this observational record without inventing starting inputs for older
+runs. Streamed evidence export includes it, even if the attempt never saved a final
+record; the verifier also accepts the earlier v1 export format. These inputs are evidence for recovery, not authority to replay work or an
+exact kernel checkpoint. Recovery still needs work/attempt ownership, policy and
+dependency revalidation, pending-operation reconciliation and delivery handling.
 
 ### Bounded legacy run reads
 

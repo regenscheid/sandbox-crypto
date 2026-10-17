@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: MIT
 """Versioned, bounded NDJSON line shapes for the stored-evidence interchange."""
 
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
-from pydantic import Field, StringConstraints, TypeAdapter
+from pydantic import Field, StringConstraints, TypeAdapter, model_validator
 
 from sandbox_science.contracts import Contract, Identifier
 from sandbox_science.contracts.model import Counter, Sha256
@@ -11,7 +11,9 @@ from sandbox_science.orchestrator.projects import RunName
 
 from .operations import CHUNK_BYTES
 
-Table = Literal["runs", "archive_messages", "archive_docs", "tool_intents", "archive_tool_records"]
+Table = Literal[
+    "runs", "archive_messages", "archive_docs", "tool_intents", "archive_tool_records", "run_inputs"
+]
 Name = Annotated[str, StringConstraints(pattern=r"^[a-z_]{1,64}$")]
 
 
@@ -22,14 +24,29 @@ class Selection(Contract):
 
 class Manifest(Contract):
     kind: Literal["manifest"]
-    format: Literal["sandbox-run-evidence-v1"]
+    format: Literal["sandbox-run-evidence-v1", "sandbox-run-evidence-v2"]
     project: Identifier
     session: Identifier
     run: RunName
     chunk_bytes: Literal[65536]
-    tables: Annotated[dict[Table, Selection], Field(min_length=5, max_length=5)]
+    tables: Annotated[dict[Table, Selection], Field(min_length=5, max_length=6)]
     external_files_included: Literal[False]
     scope: Annotated[str, StringConstraints(max_length=256)]
+
+    @model_validator(mode="after")
+    def _tables(self) -> Self:
+        expected = {
+            "runs",
+            "archive_messages",
+            "archive_docs",
+            "tool_intents",
+            "archive_tool_records",
+        }
+        if self.format == "sandbox-run-evidence-v2":
+            expected.add("run_inputs")
+        if set(self.tables) != expected:
+            raise ValueError("the manifest must name its version's complete table set")
+        return self
 
 
 class Row(Contract):

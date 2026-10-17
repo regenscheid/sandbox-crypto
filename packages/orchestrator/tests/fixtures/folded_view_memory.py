@@ -124,6 +124,7 @@ def measure(path: Path, inline: bool) -> None:
     with closing(ProjectStore(path)) as projects:
         archive = Archive(projects.control)
         gc.collect()
+
         # getrusage's high-water mark survives exec from a large pytest worker.
         # /proc's VmHWM belongs to this freshly exec'd process's address space.
         def rss() -> int:

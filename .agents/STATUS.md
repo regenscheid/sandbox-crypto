@@ -4,7 +4,7 @@ Updated 2026-10-17 on `codex/research-foundations`, based on main `57e29536`. Th
 
 ## Phase and focus
 
-- **Research foundations before UI work (D47/D87).** Local [continuity work](../docs/specs/research-continuity.md) includes the journal (schema 58), bounded tool previews/reads/export, delegated skeleton folds, parent waiting through limits, active-tree environment claims and retained creation-cleanup obligations. Cache layout has an offline comparison; production order is unchanged. Folded payloads stream; reads are bounded and Stop intent is durable. Whole-run RAM, durable ownership/tree Resume, generated skills, confinement and review/integration remain pending. Automatic crash resume is undecided.
+- **Research foundations before UI work (D47/D87).** Local [continuity work](../docs/specs/research-continuity.md) includes the journal and starting inputs (schema 59), bounded tool previews/reads/export, delegated skeleton folds, parent waiting through limits, active-tree environment claims and retained creation-cleanup obligations. Cache layout has an offline comparison; production order is unchanged. Folded payloads stream; reads are bounded and Stop intent is durable. Whole-run RAM, durable ownership/tree Resume, generated skills, confinement and review/integration remain pending. Automatic crash resume is undecided.
 
 - **Early prototype (owner assessment).** Historical labs exercised individual paths; they do not establish the intended long-running research product. The normal launcher still runs the orchestrator on the host. The personal services were inactive at the [foundation review](docs/agent-reports/openshell-foundations-review-2026-10-16.md); this work has not started or changed them.
 - **Context management is built; its acceptance is not met.** The owner approved the [spec](../docs/specs/context-management.md) on 2026-10-15 (#439). Steps (a) to (g) are merged: the archive and history tools, the ledger's research state, both adapters, token accounting and the session view, the digest, folds and their enrichment, overviews and retired markers, the region within its bound, the `research_state` stop, the refit on a switch to a smaller model, fold proposals and their GUI.
@@ -27,13 +27,13 @@ All used the real model and crypto-research-mcp.
 ## What works today
 
 - **Launcher:** `sandbox-science up`, `down`, `status` and `skills update` run the worker, the run service, the workspace and the MCP proxy from one config ([quickstart](../docs/QUICKSTART.md)), including `[model] api` and `images`.
-- **Worker:** OpenShell VM sandboxes at tier 3 with persistent Python and Sage kernels, file handoff, PDF tools, drawing of figures, background jobs and provisioning. Protocol 7 ([compatibility](../docs/COMPATIBILITY.md)); the control store is at version 58 on this branch (57 at its base).
+- **Worker:** OpenShell VM sandboxes at tier 3 with persistent Python and Sage kernels, file handoff, PDF tools, drawing of figures, background jobs and provisioning. Protocol 7 ([compatibility](../docs/COMPATIBILITY.md)); the control store is at version 59 on this branch (57 at its base).
 - **Harness:** the tool loop, the run service, MCP connectors, planning, living documents, comments, automatic consistency review (a rejected evidenced rebuttal leaves a finding `challenged`), math checks, the job watcher, recorded files, project memory, `ask_user`.
 - **Context** ([spec](../docs/specs/context-management.md)): the archive and history tools; a session view with folds, overviews and a state block with a digest; fold proposals the user accepts or dismisses. GPT (`/v1/responses`) and Claude (`/v1/messages`) clients are chosen per alias; every alias uses chat completions until the owner turns them on.
 - **Delegation, ledger, skills, cost:** as in the specs. Cost is the gateway's, or priced from its model information and marked so; with a daily limit, an unpriced call counts it as reached.
 - **Workspace GUI:** documents, comments, reviews, plans, chat, jobs, kernels, provisioning, artifacts, a PDF viewer, the ledger with its research state, figures in text, fold proposals, the Skills page, the Memory page, a session's run tree.
 - **Not built:** Mermaid and the figure check, exports of figures, helper lineage, per-pack thresholds, approvals in the GUI, execution-pinned evidence.
-- **Tests:** the combined orchestrator/workspace/worker/contracts run passed 6,196 tests with 14 stale-fixture failures; all affected modules pass after repair (249 tests). There were 51 opt-in/dependency skips. Static checks, 33 affected browser tests and the web build pass. The full repository suite has not been rerun.
+- **Tests:** the orchestrator/workspace gate passed 4,586 with two memory-fixture failures and 17 opt-in/dependency skips. After repairing the controls, all 106 affected tests passed. Ruff and pyright pass. No full-repository or live acceptance run was made.
 
 ## What comes next
 

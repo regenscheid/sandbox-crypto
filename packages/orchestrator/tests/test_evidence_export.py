@@ -155,3 +155,31 @@ def test_export_empty_strings_and_binary_fields(projects: ProjectStore) -> None:
     (message,) = [r for table, r in rows if table == "archive_messages"]
     assert message["content"] == ""
     assert message["native"] == b""
+
+
+def test_verifier_still_accepts_v1_and_checks_the_versions_table_set(
+    projects: ProjectStore,
+) -> None:
+    Archive(projects.control).append("p", "s", RUN, Entry("user", "task", "Legacy"))
+    encoded = list(EvidenceExport(projects.control, "p", "s", RUN).lines())
+    manifest = json.loads(encoded[0])
+    manifest["format"] = "sandbox-run-evidence-v1"
+    del manifest["tables"]["run_inputs"]
+    encoded[0] = json.dumps(manifest).encode() + b"\n"
+    encoded[-1] = (
+        json.dumps(
+            {
+                "kind": "complete",
+                "lines": len(encoded) - 1,
+                "sha256": hashlib.sha256(b"".join(encoded[:-1])).hexdigest(),
+            }
+        ).encode()
+        + b"\n"
+    )
+    assert verify(io.BytesIO(b"".join(encoded))).format == "sandbox-run-evidence-v1"
+    with pytest.raises(ValueError, match="complete table set"):
+        verify(
+            io.BytesIO(
+                b"".join(encoded).replace(b"sandbox-run-evidence-v1", b"sandbox-run-evidence-v2")
+            )
+        )

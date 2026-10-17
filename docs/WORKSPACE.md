@@ -504,7 +504,7 @@ npm install --ignore-scripts --before=2026-10-07T00:00:00Z some-package@1.2.3
 ### Stored run evidence download
 
 `GET /api/v0/projects/{project}/sessions/{session}/runs/{run}/evidence` downloads
-`sandbox-run-evidence-v1` NDJSON under the workspace's normal login and project
+`sandbox-run-evidence-v2` NDJSON under the workspace's normal login and project
 scope. It takes no query/body, supports unfinished runs with stored evidence,
 and returns 404 for an unknown run. Two downloads may be active; further requests
 receive 429. The route is read-only and leaves no server-side export file.

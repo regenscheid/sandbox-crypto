@@ -18,7 +18,7 @@ from sandbox_science.orchestrator.documents.store import DocumentStore
 from .export_format import LINE
 from .operations import CHUNK_BYTES
 
-FORMAT: Final = "sandbox-run-evidence-v1"
+FORMAT: Final = "sandbox-run-evidence-v2"
 PAGE: Final = 100
 
 
@@ -31,6 +31,7 @@ class _Table:
 
 _RUN: Final = "project=? AND session=? AND run=?"
 _TABLES: Final = (
+    _Table("run_inputs", ("project", "session", "run", "snapshot"), _RUN),
     _Table("runs", ("record",), "project_id=? AND session_id=? AND name=?"),
     _Table(
         "archive_messages",

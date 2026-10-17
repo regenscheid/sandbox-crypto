@@ -47,6 +47,7 @@ from sandbox_science.orchestrator.projects import (
     run_id_of,
     run_name,
 )
+from sandbox_science.orchestrator.run_inputs import RunInputs
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 from sandbox_science.testing import eventually
@@ -121,6 +122,14 @@ async def test_a_task_delegates_once_more_and_its_child_hands_back_to_it(
     store = ProjectStore(delegating.state)
     try:
         assert DelegationRecords(store.control).handbacks(PROJECT, SESSION) == []
+        for record, may_delegate in ((root, False), (child, True), (grandchild, False)):
+            inputs = RunInputs(store.control).get(PROJECT, SESSION, name(record))
+            assert inputs.request["parent"] == record.parent
+            assert inputs.request["delegation"] == record.delegation
+            assert inputs.request["may_delegate"] is may_delegate
+            assert inputs.pins == record.prompt_provenance
+            assert "history" not in inputs.request
+            assert "stop_by" not in inputs.request
     finally:
         store.close()
 

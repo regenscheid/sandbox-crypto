@@ -614,14 +614,15 @@ class ProjectStore:
     @staticmethod
     def _knows_run(db: sqlite3.Connection, project_id: str, session_id: str, name: str) -> bool:
         """Whether the session has a run of that name: kept, or still running (its
-        events). A parent's record is kept after its children's, so this is no foreign
-        key."""
+        events or mandatory starting inputs). A parent's record is kept after its
+        children's, so this is no foreign key."""
         return (
             db.execute(
                 "SELECT 1 FROM runs WHERE project_id = ? AND session_id = ? AND name = ? "
                 "UNION ALL SELECT 1 FROM run_events WHERE project_id = ? AND session_id = ? "
-                "AND run = ? LIMIT 1",
-                (project_id, session_id, name, project_id, session_id, name),
+                "AND run = ? UNION ALL SELECT 1 FROM run_inputs "
+                "WHERE project = ? AND session = ? AND run = ? LIMIT 1",
+                (project_id, session_id, name) * 3,
             ).fetchone()
             is not None
         )

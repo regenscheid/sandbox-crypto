@@ -129,6 +129,7 @@ from .projects import (
 from .question_tool import QuestionTool
 from .questions import Questions
 from .recording import FileRecorder, RecordedFiles
+from .run_inputs import RecordInputs, RunInputs
 from .runstate import RunState
 from .session_plans import PlanRef, SessionPlans
 from .skills import SkillStore, SkillTool
@@ -212,8 +213,8 @@ class Settings:
     min_isolation_tier: int | None = 3
     """``None`` accepts a worker with any isolation, for development."""
     max_turns: int = MAX_TURNS
-    """A main run's model calls before its report round (RS-6f), and the most a delegated
-    run of it may have: 2,000 by default, a safety net rather than a bound on the work."""
+    """A main run's model calls before its report round (RS-6f): 2,000 by default.
+    Delegated runs have independent role allowances; work may outlive an attempt."""
     max_input_chars: int | None = None
     """The longest conversation a run is sent, in characters; a longer one stops the
     run. ``None``: ``MAX_INPUT_CHARS`` for a run that does not fold, and none for a main
@@ -666,6 +667,31 @@ class Harness:
                             message_ids=request.message_ids
                             or ((operator_ref(chat.run),) if request.operator else ()),
                             clock=self.clock,
+                        )
+                        resolved = dataclasses.replace(
+                            request,
+                            run_id=admitted.run_id,
+                            memory_version=memory[0] if memory is not None else None,
+                            max_turns=request.max_turns or self.settings.max_turns,
+                            alias=self.role(request).alias,
+                        )
+                        hooks = (
+                            RecordInputs(
+                                RunInputs(self.stores.projects.control),
+                                admitted.context,
+                                chat.run,
+                                cast(
+                                    dict[str, JsonValue],
+                                    TypeAdapter(RunRequest).dump_python(
+                                        resolved, mode="json", exclude={"history", "stop_by"}
+                                    ),
+                                ),
+                                cast(
+                                    dict[str, JsonValue],
+                                    TypeAdapter(Settings).dump_python(self.settings, mode="json"),
+                                ),
+                            ),
+                            *hooks,
                         )
                     transcript = await run_task(
                         self._model(admitted),

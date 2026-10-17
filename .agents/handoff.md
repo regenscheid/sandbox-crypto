@@ -4,7 +4,7 @@ Updated 2026-10-17 on `codex/research-foundations`, base `57e29536`. Replace thi
 
 ## Where things stand
 
-- **Research foundations (D47/D87):** local journal (schema 58), bounded tool records/export, delegated folds, no-model parent waits, expiring active-tree environment claims, and retained uncertain creation cleanup. Full run-memory bounds, durable ownership/tree Resume, generated skills restrictions and confinement remain unfinished. Independent review/integration and live acceptance remain; personal services are untouched.
+- **Research foundations (D47/D87):** local journal/starting inputs (schema 59), bounded evidence, delegated folds, no-model parent waits, expiring active-tree environment claims, and retained uncertain creation cleanup. Full run-memory bounds, durable ownership/tree Resume, generated skills restrictions and confinement remain unfinished. Independent review/integration and live acceptance remain; personal services are untouched.
 - **Context management is built (steps a to g); its acceptance is not met.** Lab 44 was round 1 on GPT models ([STATUS](STATUS.md#phase-and-focus)). The owner's checklist in its report is pending. Round 2 needs the Claude arms, 600,000 arms that fold twice, the control repeated and the state block's placement (CM-25) measured first. Lanes: CM-A (archive, history tools, session view, the cite-handle and gateway fixes), CM-B (the ledger's fields and provenance, cache key), CM-D (the adapters, figure charts), G (the GUI), K (skills, images).
 - **Figures** are built through F5 and F9 to F11. Left: F6, F7, F8, F11b, F12, F13 and the browser lab ([BACKLOG](BACKLOG.md#repository)). **Skills:** K7a and K7b are built; the deny-list's tool families should be generated from the images, not listed by hand.
 - **Waiting for the owner:** lab 44's checklist, and Q12 to 14 of the skills spec, still the coordinator's reversible acceptance. The state block's placement is a design question for round 2, not for the owner yet.
@@ -15,7 +15,7 @@ Updated 2026-10-17 on `codex/research-foundations`, base `57e29536`. Replace thi
 - **Review by risk:** independent read-only review for security, storage, concurrency and new features; diff/latest-check review for tested code moves, docs and test-only fixes. Current session instructions govern whether delegation is available.
 - **Model routing:** Sonnet for low-risk implementation, tests, docs, light reviews, rebases, CI fixes and status syncs. Opus for security paths, migrations, concurrency, designs and specs.
 - **Test hygiene:** `pytest -n 4` at most, only the packages touched, one suite at a time: babbage is shared with labs. Tests marked `live` call the real gateway and run only when `SS_LIVE_GATEWAY` is set. `--basetemp` goes under `~/.cache/pt/<task>/`, never `/tmp`. Delete scratch by absolute path with no glob, or Claude Code stops to ask the owner. `--count` needs `-o tmp_path_retention_policy=failed`.
-- **Migration numbers:** this branch is at 58, its base at 57. Recheck main before integration; whoever merges first takes the next number, and later migrations renumber. Never edit `baseline.sql` or a shipped step.
+- **Migration numbers:** this branch is at 59, its base at 57. Recheck main before integration; whoever merges first takes the next number, and later migrations renumber. Never edit `baseline.sql` or a shipped step.
 - **Merging** green PRs, as the owner asked: `gh pr merge N --merge`, then delete the remote branch once the PR reads MERGED. Retarget each stacked dependent first (`gh pr edit N --base main`), since `--delete-branch` on its base closes it for good. Then merge the base, rebase the dependent, renumber its migration and wait for its checks. In a script, end each zsh step with `|| exit 1`. Then fast-forward the main checkout and run `uv sync --locked`.
 - **Tracking files:** only the coordinator, or an agent whose task says so, edits STATUS, this file, PLAN-CHANGES and the plan's progress. Other PRs put their summary in the description and update the `docs/` pages and BACKLOG items they touch.
 - **Never `cd` the coordinator's shell outside the repository.** It moves the Desktop session's working directory, and running subagents are told to work there. Use absolute paths.
@@ -39,7 +39,7 @@ The owner's research on other products' prompts lives outside this repository. T
 ## The code, briefly
 
 - **Loop and service:** features plug in as turn hooks (`hooks.py`). `Harness` is what `run` and `serve` build; `service.py` starts runs for chat messages and comments. Delegation is `delegation/`; skills are `skills/`, with the built-in pack in `skills/builtin/` at the repository root.
-- **Control store:** `orchestrator/control/`, schema version 58 on this branch.
+- **Control store:** `orchestrator/control/`, schema version 59 on this branch.
 - **Context:** `history/` holds the session archive, the history tools, the session view, the read register and its descriptors; `responses.py` and `messages.py` are the GPT and Claude clients (`model.gateway_model` picks one per alias), `folds.py`, `overview.py`, `bound.py` and `markers.py` hold the folds, and `digest.py` the state block's digest; `consistency/archived.py` ties reviews to the archive. Figures: `view_image` in the orchestrator, the frame and charts in `web/workspace/src/figures`.
 - **Ledger rule** (the owner): weakening a settled state needs no authority; strengthening needs the user or a passing gate. The main agent reopens an obstructed question by itself, with a reason.
 - **Worker:** a change to an existing request or response raises `PROTOCOL_VERSION` (7); a new route does not ([compatibility](../docs/COMPATIBILITY.md)).
@@ -49,5 +49,5 @@ The owner's research on other products' prompts lives outside this repository. T
 ## What is next
 
 1. Bound live messages, per-call metadata and review caches. Folded payloads/exports stream and legacy reads refuse oversize; view metadata and external artifact packaging remain.
-2. Durable work/attempt ownership and one tree Resume; then scoped state access and separate orchestrator confinement. Current claims protect active attempts; limited parents wait; Stop is distinct from interruption.
+2. Durable work/attempt ownership and one tree Resume; then scoped state access and separate orchestrator confinement. Claims protect live attempts; inputs are durable and Stop is distinct from interruption.
 3. Child skeleton folds use their own archive/model limit (146 tests). Parent closing waits without model calls (122 tests), with user/Stop wakeups and an unsaved-outcome stop. Local cache prefix comparison is recorded; live continuity/cache acceptance and generated skills restrictions remain.
