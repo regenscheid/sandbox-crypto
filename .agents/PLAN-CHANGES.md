@@ -373,3 +373,5 @@ Decisions made while carrying out Phase 1 and Phase 2 (PRs #141–#162):
 - **Plan snapshots tagged:** `plan-03-pre-review` and `plan-04-reviewed`.
 
 - 2026-10-16: Delegated tasks and checks now share the fold engine with attempt-scoped archive reads and pinned briefs; initially skeleton-only to preserve token-budget accounting ([contract](../docs/specs/research-continuity.md#delegated-folding-contract)). Live role-continuity acceptance remains pending.
+
+- 2026-10-16: Measured 24 offline requests through both production adapters for three context layouts. Moving changed state after history preserves a later-run byte prefix, but folds break it; no observed provider hits, so layout stays unchanged ([report](docs/agent-reports/cache-layout-2026-10-16.md)).
