@@ -286,9 +286,8 @@ class RuntimeLoops:
         if len(self.active) >= 64:
             raise TransportError("unavailable", "runtime active-tree limit reached")
         stop = asyncio.Event()
-        memory = RunMemory.scratch(
-            self.scratch / (given.attempt + ".sqlite3"), ("runtime", "attempt", given.attempt)
-        )
+        scratch = self.scratch / (given.attempt + ".sqlite3")
+        memory = RunMemory.scratch(scratch, ("runtime", "attempt", given.attempt))
         log = RemoteLog(self.channel, given.attempt)
         hooks = tuple(
             (RemotePlans if hook.planning else RemoteHook)(self.channel, given.attempt, slot, hook)
@@ -332,8 +331,18 @@ class RuntimeLoops:
                 )
             )
         finally:
-            self.active.pop(given.attempt, None)
-            memory.control.close()
+            # A cancelled transport handler must join its shielded model loop before
+            # closing scratch storage or dropping the only remaining task owner.
+            if not task.done():
+                task.cancel()
+            try:
+                with suppress(asyncio.CancelledError):
+                    await owned(task)
+            finally:
+                self.active.pop(given.attempt, None)
+                memory.control.close()
+                for suffix in ("", "-wal", "-shm"):
+                    scratch.with_name(scratch.name + suffix).unlink(missing_ok=True)
 
     async def cancel(self, value: JsonValue) -> JsonValue:
         request = typed(CancelRequest, value)
