@@ -324,35 +324,76 @@ async def test_a_parent_cannot_answer_while_its_check_runs(delegating: Harness) 
     assert [r.stopped for r in children(delegating, root)] == ["answered"]
 
 
-async def test_a_parents_end_cancels_its_check_and_the_next_run_gets_the_outcome(
+async def awaiting_children(harness: Harness, *, delegated: bool = False) -> str:
+    """Wait for a durable waiting event while the root's session lease is still held."""
+    store = ProjectStore(harness.state)
+    state, records = RunState(store.control), DelegationRecords(store.control)
+    found: list[str] = []
+
+    def waiting() -> bool:
+        held = state.lease(PROJECT, SESSION)
+        if held is None:
+            return False
+        candidates = (
+            [d.run for d in records.listed(PROJECT, SESSION)[0]] if delegated else [held.run]
+        )
+        for run in candidates:
+            if any(
+                event.kind == "waiting" and event.data.get("delegation_ids")
+                for event in state.events(PROJECT, SESSION, run)
+            ):
+                found.append(run)
+                return True
+        return False
+
+    try:
+        await eventually(waiting)
+        return found[0]
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("answer", ["Done.", None])
+async def test_a_limited_parent_keeps_its_check_and_the_next_run_gets_the_outcome(
     delegating: Harness,
+    answer: str | None,
 ) -> None:
-    """PD-21, PD-35, PD-39: at its turn limit the parent stops without an answer, its
-    running child ends cancelled with its record kept, and the outcome goes to the
-    session's next main run, which acknowledges it."""
+    """The parent's final call cannot cancel work with its own remaining allowance."""
     free = asyncio.Event()
 
     async def blocked() -> None:
         await free.wait()
 
-    try:
-        root = await delegating.run(
+    task = asyncio.create_task(
+        delegating.run(
             "root",
-            [Reply(calls=[CHECK]), Reply("Done.")],
-            delegated=[Reply(REPORT, before=blocked)],
+            [Reply(calls=[CHECK]), Reply(answer)],
+            delegated=[
+                Reply(calls=[call("ledger_read", entry="C-1")], before=blocked),
+                Reply(REPORT),
+            ],
             max_turns=2,
             status=3,
         )
+    )
+    try:
+        await awaiting_children(delegating)
+        assert len(delegating.gateway.main) == 2
+        assert not task.done()
+        assert kept(delegating) == {}
     finally:
-        free.set()  # lets the gateway answer the abandoned call
+        free.set()
+    root = await task
     assert (root.stopped, root.final_text) == ("turn_limit", None)
     (child,) = children(delegating, root)
-    assert child.stopped == "cancelled"
+    assert child.stopped == "answered"
+    assert len(delegating.gateway.children) == 2
+    assert child.ended_at <= root.ended_at
     (delegation_id,) = started(root)
     outcome = delegation(delegating, delegation_id)
-    assert (outcome.ended, outcome.acknowledged) == ("cancelled", None)
+    assert (outcome.ended, outcome.acknowledged) == ("returned", None)
 
-    later = await delegating.run("later", [Reply("Noted: the check was cancelled.")])
+    later = await delegating.run("later", [Reply("Noted: the check finished.")])
     first = delegating.gateway.main[0]
     handbacks = [m for m in first if body(str(m.get("content", ""))).startswith(DELEGATIONS.text)]
     assert len(handbacks) == 1

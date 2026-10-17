@@ -892,6 +892,12 @@ async def run_task(
                         task=task,
                         on_tool=on_tool,
                     )
+                    for hook in hooks:
+                        if (
+                            reason := await hook.finishing(transcript, transcript.stopped)
+                        ) is not None:
+                            transcript.stopped = reason
+                            transcript.final_text = transcript.answer = None
                 except Exception:
                     # Catch inside the leases: retain only successfully delivered claims
                     # until the caller durably saves this partial record, then ACKs them.

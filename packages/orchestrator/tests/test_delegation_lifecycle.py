@@ -44,6 +44,7 @@ from .test_delegation import (
     CHECK,
     REPORT,
     RESULT,
+    awaiting_children,
     children,
     delegation,
     name,
@@ -421,17 +422,48 @@ async def test_handbacks_are_summaries_and_waits_return_whole_outcomes_in_pages(
     assert {delegation(delegating, i).acknowledged for i in started(root)} == {name(root)}
 
 
+async def test_stop_while_the_parent_is_at_its_limit_cancels_the_owned_child(
+    delegating: Harness,
+) -> None:
+    free, answer = blocking()
+    delegating.gateway.delegated = [answer]
+    store = ProjectStore(delegating.state)
+    state = RunState(store.control)
+    state.post(PROJECT, SESSION, "m-1", "Check C-1.", author="user")
+    try:
+        async with serving(delegating, Reply(calls=[CHECK]), Reply("Done."), max_turns=2):
+            run = await awaiting_children(delegating)
+            assert len(delegating.gateway.main) == 2
+            state.cancel(PROJECT, SESSION, run)
+            await eventually(lambda: state.ended(PROJECT, SESSION, run), timeout=20)
+        root = store.run(PROJECT, SESSION, run)
+        (child,) = children(delegating, root)
+        assert (root.stopped, child.stopped) == ("cancelled", "cancelled")
+        assert child.ended_at <= root.ended_at
+        assert len(delegating.gateway.main) == 2
+    finally:
+        free.set()
+        store.close()
+
+
 async def test_a_project_that_stopped_delegating_still_gets_its_outcomes(
     delegating: Harness,
 ) -> None:
     free, answer = blocking()
+    task = asyncio.create_task(
+        delegating.run(
+            "root",
+            [Reply(calls=[CHECK]), Reply("Done.")],
+            delegated=[answer],
+            max_turns=2,
+            status=3,
+        )
+    )
     try:
-        root = await delegating.run(
-            "root", [Reply(calls=[CHECK]), Reply("Done.")], delegated=[answer],
-            max_turns=2, status=3,
-        )  # fmt: skip
+        await awaiting_children(delegating)
     finally:
         free.set()
+    root = await task
     depth(delegating, 0)
     later = await delegating.run("later", [Reply("Noted.")])
     (delegation_id,) = started(root)

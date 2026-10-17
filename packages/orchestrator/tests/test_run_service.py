@@ -36,6 +36,7 @@ from sandbox_science.orchestrator.harness import admit as harness_admit
 from sandbox_science.orchestrator.history import Folder, body
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.ledger import Ledger
+from sandbox_science.orchestrator.loop import MAX_TURNS
 from sandbox_science.orchestrator.model import OpenAICompatibleModel, ScriptedModel
 from sandbox_science.orchestrator.notices import CONSOLIDATION
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
@@ -79,6 +80,7 @@ async def serving(
     retry: float = 0.2,
     clock: Clock = SYSTEM_CLOCK,
     run_share: float | None = None,
+    max_turns: int = MAX_TURNS,
     serve: bool = True,
 ) -> AsyncIterator[RunService]:
     """The run service on the harness's state directory, worker and gateway, keeping the
@@ -99,7 +101,12 @@ async def serving(
                 client,
                 Role(model, "main"),
                 stores=stores,
-                settings=Settings(min_isolation_tier=None, cost_limits=True, run_share=run_share),
+                settings=Settings(
+                    min_isolation_tier=None,
+                    cost_limits=True,
+                    run_share=run_share,
+                    max_turns=max_turns,
+                ),
                 clock=clock,
             )
             service = RunService(core, poll=0.02, retry=retry, clock=clock)

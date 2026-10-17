@@ -299,10 +299,15 @@ with running children waits on those children in the existing session lease.
 It makes no model calls while waiting. Child completion supplies durable outcomes
 for the parent's next call; new user input wakes the parent early, and Stop cancels
 the wait through the existing subtree cancellation path. Waiting start/end events
-make this visible in chat. This increment does not change terminal cleanup at a
-turn/context/budget limit: preserving children through a paused parent still needs
-durable work ownership and continuation attempts. Nor does it implement recovery
-after process loss or redefine a limited child as completed work.
+make this visible in chat. At a turn/context/budget limit, a finalization hook keeps
+the parent's existing session and environment leases until its children finish and
+save their outcomes. Children receive their configured role turn allowance, independent
+of the parent's remaining calls; token, spending and concurrency limits remain in force. No additional parent model calls occur. New messages remain
+queued for a later run, and Stop still cancels the subtree. The limited attempt keeps
+its limit classification; unconsumed child outcomes are not acknowledged by waiting.
+This covers live ownership through a limit, without implementing durable paused-work
+identity, continuation attempts, recovery after process loss or redefining a limited
+child as completed work.
 If a child process ends but its durable outcome could not be saved, closing stops
 with `child_outcome_unavailable`; an empty live-task set is not completion evidence.
 

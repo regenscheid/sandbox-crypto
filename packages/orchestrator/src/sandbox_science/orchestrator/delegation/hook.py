@@ -23,7 +23,9 @@ otherwise its answer as returned with the errors (PD-17, PD-18, PD-20). As a tur
 - holds a closing answer while its children run (RC-5), waiting without model calls
   for their outcomes or user input. With no turn or room left it stops without an
   answer. Outcomes the answer has not seen continue the run, as other notices do;
-- cancels its running children when it ends, whatever ends it, and waits for their
+- at a model/context/budget limit, retains its lease until its children finish,
+  without further model calls; their unconsumed outcomes remain for the next run;
+- cancels its running children on Stop, interruption or failure, and waits for their
   records and outcomes (PD-39), since its lease holds their tasks. A child that has not
   ended in ``STOP_SECONDS``, or in what is left of the time its own parent gave it, is
   recorded ``interrupted``; each child is given half of that time for its own children,
@@ -226,14 +228,15 @@ class Delegations(TurnHook):
         output_chars: int = 20000,
         clock: Clock = SYSTEM_CLOCK,
     ) -> None:
-        """``offer`` says whether the run gets the tools; ``max_turns`` bounds a child's
-        turns; ``wake`` returns once the user writes to the session, which ends a wait;
+        """``offer`` says whether the run gets the tools; ``max_turns`` initializes the
+        parent's remaining calls; children get their role's configured turn allowance.
+        ``wake`` returns once the user writes to the session, which ends a wait;
         ``over_budget`` says whether the project reached its daily cost limit, if it has
         one. Nothing is reserved for a child: it is bounded by its own tokens and turns
         (PD-38). Notices
         together take at most ``max_chars``, and a wait's result at most ``output_chars``."""
         self.records, self.ledger, self.context = records, ledger, context
-        self.parent, self.runner, self.max_turns = parent, runner, max_turns
+        self.parent, self.runner = parent, runner
         self.wake, self.over_budget, self.clock = wake, over_budget, clock
         self.waiting = waiting
         self.limits = limits or DelegationSettings()
@@ -392,7 +395,7 @@ class Delegations(TurnHook):
             "check",
             {"task": task, "note": brief.note, "inputs": list(inputs), "check": check},
             brief_text(task, inputs, brief.note, flags),
-            min(self.limits.check_turns, self.max_turns, self.turns_left),
+            self.limits.check_turns,
             self.limits.check_tokens,
             Target(entry.entry_id, entry.handle, brief.check.revision, proof_reads(entry.evidence)),
             {"check": {"entry": entry.handle, "revision": brief.check.revision}},
@@ -448,7 +451,7 @@ class Delegations(TurnHook):
                 issue=issue,
                 delegate=brief.delegate,
             ),
-            min(self.limits.task_turns, self.max_turns, self.turns_left),
+            self.limits.task_turns,
             self.limits.task_tokens,
             None,
             shown,
@@ -755,8 +758,8 @@ class Delegations(TurnHook):
         if running:
             waiting = [{**_named(child.delegation), "state": "running"} for child in running]
             notices.append(Notice(self.name, (), DELEGATIONS_RUNNING.text, waiting))
-            # With no turn or room left, the run stops for its own reason; its end
-            # cancels them.
+            # With no turn or room left the loop stops for its own reason; finishing
+            # still owns and waits for the children before releasing their lease.
             limit = "turn_limit" if run.turns_left <= 0 else "context_limit"
             return Closing("retry", tuple(notices), stopped=run.halted or limit)
         for child in self.children.values():
@@ -766,6 +769,38 @@ class Delegations(TurnHook):
                 # from the live set is not evidence that its parent may finish.
                 return Closing("stop", tuple(notices), stopped="child_outcome_unavailable")
         return Closing("continue", tuple(notices)) if notices else Closing()
+
+    async def finishing(self, run: RunView, stopped: str) -> str | None:
+        """A limit pauses this parent's model work, not the authorized children's.
+
+        Keep the existing root/session and environment leases until every child saves
+        its outcome. New messages wait for the next run; Stop cancels this await and
+        the owning lease performs the usual subtree cleanup.
+        """
+        if stopped not in {
+            "turn_limit",
+            "context_limit",
+            "run_budget",
+            "budget",
+            "gateway_budget",
+            "runaway",
+            "research_state",
+        }:
+            return None
+        running = self._running()
+        if running:
+            if self.waiting is not None:
+                await self.waiting([child.delegation.delegation_id for child in running])
+            try:
+                await _ended({child.task for child in running}, asyncio.ALL_COMPLETED)
+            finally:
+                if self.waiting is not None:
+                    await self.waiting(None)
+        for child in self.children.values():
+            saved = await self._read(child.delegation.delegation_id)
+            if saved.ended is None:
+                return "child_outcome_unavailable"
+        return None
 
     def summary(self) -> object | None:
         if not self.children and not self.received:

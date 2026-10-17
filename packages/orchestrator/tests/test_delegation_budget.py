@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MIT
 """A delegated run's own limits (plans-and-delegation spec, PD-38; run-service spec, RS-6a
 and RS-6c). Nothing is reserved for a child from its root (the owner, 2026-10-15): each
-child is bounded by its project's check tokens and turns, no more turns than its parent
-has left, and the project's daily cost limit, if it has one, at every run's safe points.
+child is bounded by its project's check tokens and turns, independent of its parent's remaining
+calls, and the project's daily cost limit, if it has one, at every run's safe points.
 With no limit, nothing stops or refuses a run for spending."""
 
 from __future__ import annotations
@@ -86,7 +86,9 @@ async def test_with_nothing_set_delegate_wait_and_halt_all_work(delegating: Harn
     assert root.final_text == "Four checks ran."
 
 
-async def test_a_check_gets_no_more_turns_than_its_parent_has_left(delegating: Harness) -> None:
+async def test_a_check_gets_its_configured_turns_even_when_its_parent_has_fewer_left(
+    delegating: Harness,
+) -> None:
     root = await delegating.run(
         "root",
         [Reply(calls=[CHECK]), wait(), Reply("Done.")],
@@ -94,7 +96,7 @@ async def test_a_check_gets_no_more_turns_than_its_parent_has_left(delegating: H
         max_turns=3,
     )
     started = json.loads(results(root)[0])
-    assert started["limits"]["turns"] == 2
+    assert started["limits"]["turns"] == 12
 
 
 async def test_a_child_stops_before_a_call_that_would_pass_its_limit(tmp_path: Path) -> None:

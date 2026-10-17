@@ -239,6 +239,13 @@ class TurnHook:
     async def accept(self, run: RunView) -> None:
         """Every hook accepted the closing answer and no response round follows."""
 
+    async def finishing(self, run: RunView, stopped: str) -> str | None:
+        """After the loop ends normally, before releasing its leases. May wait for
+        owned work without model calls. Cancellation still follows lease cleanup.
+        Return a replacement stop reason only when finalization finds a missing outcome.
+        """
+        return None
+
     def summary(self) -> object | None:
         """What the run's record keeps for this source at the end, if anything."""
         return None

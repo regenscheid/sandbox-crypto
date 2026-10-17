@@ -58,6 +58,7 @@ from .loop_harness import worker as worker
 from .test_delegation import (
     CHECK,
     about,
+    awaiting_children,
     children,
     configure,
     delegation,
@@ -542,20 +543,18 @@ def _below(harness: Harness, parent: str) -> list[RunRecord]:
         store.close()
 
 
-async def test_a_leads_turn_limit_stops_its_child_mid_call_and_hands_the_outcome_up(
+async def test_a_leads_turn_limit_keeps_its_child_and_hands_the_unconsumed_outcome_up(
     delegating: Harness,
 ) -> None:
-    """The lead reaches its turn limit while its child is in a model call: the child is
-    cancelled and saved first, and the root receives the outcome the lead never did with
-    the lead's own."""
+    """A limited lead waits for its child, whose unconsumed result accompanies its own."""
     configure(delegating, depth=2, task_turns=2)
     working, free, part_answer = _working()
 
     async def after_it_started() -> None:
         await working.wait()
 
-    try:
-        root = await delegating.run(
+    task = asyncio.create_task(
+        delegating.run(
             "root",
             [Reply(calls=[LEAD]), wait(), Reply("Done.")],
             routed={
@@ -566,21 +565,27 @@ async def test_a_leads_turn_limit_stops_its_child_mid_call_and_hands_the_outcome
                 "Do a part.": [part_answer],
             },
         )
+    )
+    try:
+        await awaiting_children(delegating, delegated=True)
+        assert not task.done()
+        assert len(delegating.gateway.children) == 3
     finally:
         free.set()
+    root = await task
     (child,) = children(delegating, root)
     (grandchild,) = children(delegating, child)
-    assert (child.stopped, grandchild.stopped) == ("turn_limit", "cancelled")
+    assert (child.stopped, grandchild.stopped) == ("turn_limit", "answered")
     assert grandchild.ended_at <= child.ended_at
     (part,) = started(child)
     assert (delegation(delegating, part).ended, delegation(delegating, part).acknowledged) == (
-        "cancelled",
+        "returned",
         None,
     )
     (waited,) = answer(root, 1)["delegations"]
     assert waited["ended"] == "limit_reached"
     (left,) = waited["unreceived"]
-    assert (left["delegation_id"], left["ended"]) == (part, "cancelled")
+    assert (left["delegation_id"], left["ended"]) == (part, "returned")
 
 
 async def test_the_users_cancel_of_the_root_stops_its_grandchild_mid_call_first(
