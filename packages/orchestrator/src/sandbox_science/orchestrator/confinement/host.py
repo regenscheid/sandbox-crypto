@@ -33,7 +33,7 @@ from sandbox_science.orchestrator.loop import (
     notice_message,
 )
 from sandbox_science.orchestrator.model import AssistantMessage, ChatModel, ToolCall
-from sandbox_science.orchestrator.notices import REPORT
+from sandbox_science.orchestrator.notices import DELEGATIONS, REPORT
 from sandbox_science.orchestrator.plan_tools import Plans
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome, operation_id
 
@@ -110,6 +110,8 @@ class Prepared:
         self.observed_slots: set[int] = set()
         self._memory_close: Callable[[], None] | None = None
         self._lock = asyncio.Lock()
+        self._closing = False
+        self._child_wait = False
 
     def sync(self, state: LoopState) -> Transcript:
         """Apply loop metadata while retaining historical payloads at the host store."""
@@ -158,7 +160,7 @@ class Prepared:
             return await self._call(kind, value)
 
     async def _call(self, kind: Capability, value: JsonValue) -> JsonValue:
-        async with self._lock:
+        async with self._active(kind, value):
             if kind is Capability.LOG_INIT:
                 self.sync(typed(FoldRequest, value).state)
                 return None
@@ -400,9 +402,36 @@ class Prepared:
             self.tool_notices = []
         return payload(AppendReply(message=WireMessage.of(message), retained=retained))
 
+    @asynccontextmanager
+    async def _active(self, kind: Capability, value: JsonValue) -> AsyncGenerator[None]:
+        async with self._lock:
+            if self._closing:
+                raise TransportError("denied", "attempt capability is closing")
+            if kind is Capability.TOOL:
+                self._child_wait = typed(ToolRequest, value).call.name == "wait_delegations"
+            elif kind in (Capability.CLOSING, Capability.FINISHING):
+                slot = typed(HookRequest, value).slot
+                self._child_wait = (
+                    slot < len(self.hooks) and self.hooks[slot].name == DELEGATIONS.id
+                )
+            try:
+                yield
+            finally:
+                self._child_wait = False
+
     async def close(self) -> None:
-        for slot in reversed(tuple(self.leases)):
-            await self.leases.pop(slot).__aexit__(None, None, None)
+        """Drain admitted effects before the harness releases per-attempt resources."""
+        self._closing = True
+        if self._child_wait:
+            # A child wait holds _lock, but its delegation lease owns the child
+            # tasks that must settle to release that lock. An active admission
+            # cannot take this path: it must finish before the lease snapshots it.
+            for slot in reversed(tuple(self.leases)):
+                if self.hooks[slot].name == DELEGATIONS.id:
+                    await self.leases.pop(slot).__aexit__(None, None, None)
+        async with self._lock:
+            for slot in reversed(tuple(self.leases)):
+                await self.leases.pop(slot).__aexit__(None, None, None)
 
 
 def toolbox_given(toolbox: Toolbox) -> ToolboxGiven:

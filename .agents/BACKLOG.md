@@ -144,6 +144,8 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 
 ## W1: shared references and one worker adapter
 
+- [x] Local real-model recovery corrections: drain admitted attempt effects before closing publishers; reconcile interrupted child observations without fabricated results or redispatch. Independent review clear; 52 focused regressions pass (integration pending).
+
 - [x] `contracts` package (`ExecutionContext`, `ArtifactRef`, `Event`, the worker API types)
 - [x] First slice: one shell command and two stateful Python cells through the worker API, driven by the harness's tool loop with a scripted model. Done locally and on babbage in an OpenShell VM sandbox ([lab 4](docs/agent-reports/babbage-openshell-lab-4-2026-10-11.md)), after working around two OpenShell seccomp restrictions (scheduler shim, process-group signals)
 - [x] The control application in one container and execution in another: the harness in its own OpenShell sandbox under the compiled orchestrator policy (worker API only), the tools in a sandbox the worker created; location, state, the boundary in both directions and reconnection checked ([lab 7](docs/agent-reports/babbage-openshell-lab-7-2026-10-11.md))

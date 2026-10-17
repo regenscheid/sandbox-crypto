@@ -32,6 +32,13 @@ intents/results, fold checkpoints, exact evidence references and delivery cursor
 Success acknowledgements follow durable commits. The runtime's writable filesystem
 holds only replaceable scratch/configuration. No host state directory is mounted.
 
+Disconnect cleanup fences new attempt capabilities and drains each admitted call
+before releasing its publishers and stores. A parent waiting on its children first
+closes their owning delegation lease, so that draining does not form a lock cycle.
+An in-progress child admission must settle before that lease closes. The connection
+remains occupied throughout this drain; a replacement deadline can expire while a
+long worker call is still settling, and replacement can be retried afterward.
+
 ## Capability operations
 
 The policy compiler accepts an optional `orchestrator.state_service` endpoint and

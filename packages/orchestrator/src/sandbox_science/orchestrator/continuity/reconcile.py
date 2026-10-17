@@ -74,6 +74,16 @@ class Reconciler:
         elif tool == "delegate":
             record = await threaded(self.delegation, work, operation)
             text = json.dumps(record)
+        elif tool in {"wait_delegations", "delegation_status"}:
+            # These observe children; losing their response creates no uncertain
+            # effect. Do not invent the old observation or redispatch any child.
+            record = {
+                "reconciled": True,
+                "interrupted_observation": True,
+                "note": "The previous child observation was interrupted. Inspect the "
+                "durable child outcomes with delegation_status or wait_delegations.",
+            }
+            text = json.dumps(record)
         elif tool in {"shell", "python", "sage", "start_job", *(spec.name for spec in PDF_SPECS)}:
             found = await self.client.lookup(context, operation)
             execution = found.execution

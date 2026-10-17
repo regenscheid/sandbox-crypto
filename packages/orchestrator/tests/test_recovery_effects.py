@@ -214,3 +214,33 @@ def test_operator_observed_tokens_do_not_reset_or_duplicate_the_grant(projects: 
         operator="user",
     )
     assert Plans(projects.control, "p", "s", "unused").spent_tokens(RUN) == 23
+
+
+@pytest.mark.parametrize("tool", ["wait_delegations", "delegation_status", "cancel_delegation"])
+async def test_interrupted_child_observation_does_not_invent_results_or_dispatch(
+    projects: ProjectStore, tool: str
+):
+    works = WorkRecords(projects.control)
+    works.admit("p", "s", RUN)
+    journal = ToolJournal(projects.control)
+    call = ToolCall("child-observation", tool, '{"delegation_id":"original-child"}')
+    journal.start(CONTEXT, RUN, "child-observation-operation", call)
+    works.interrupt("p", "s", RUN)
+    worker = PassiveWorker(None)
+    reconciler = Reconciler(projects.control, cast(WorkerClient, worker))
+    if tool == "cancel_delegation":
+        with pytest.raises(ControlError, match="unknown_operation"):
+            await reconciler.work(works.get("p", "s", RUN))
+        assert len(journal.pending("p", "s", RUN)) == 1
+    else:
+        await reconciler.work(works.get("p", "s", RUN))
+        await reconciler.work(works.get("p", "s", RUN))
+        assert journal.pending("p", "s", RUN) == []
+        (message,) = Archive(projects.control).messages("p", "s", run=RUN)
+        assert message.entry.call_id == call.id
+        record = journal.record("p", message.message_id)
+        assert record["interrupted_observation"] is True
+        assert record["arguments"] == call.arguments
+        assert "execution" not in record
+        assert "report" not in record
+    assert not worker.lookups
