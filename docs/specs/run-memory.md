@@ -52,3 +52,13 @@ supported SQLite, the exact Blob-length check and bounded payload fetch share on
 short-lived readonly connection/read snapshot. Closing that connection also releases
 CPython's accumulated closed-Blob weakrefs. This preserves the existing SQLite
 baseline and rejects oversized reads before materializing their payload in Python.
+
+Every remaining incremental Blob reader uses a short-lived readonly snapshot for
+one bounded read: final run-record preflight/fetch, tool-record chunks, collection
+chunks and each evidence-export chunk. The connection closes before a value is
+returned or yielded, including on refusal and cancellation. Repeated API reads and
+one arbitrarily long export therefore cannot accumulate closed-Blob weakrefs on a
+persistent application connection. Search uses metadata-only sizing on modern
+SQLite; its older-SQLite fallback closes the whole search snapshot after the bounded
+result page. Project/session/run selectors and immutable-row checks remain in the
+same snapshot as the read. Original bytes and evidence format remain unchanged.

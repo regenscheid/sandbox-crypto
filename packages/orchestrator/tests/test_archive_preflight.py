@@ -9,6 +9,7 @@ import tracemalloc
 import pytest
 
 from sandbox_science.orchestrator.control import ControlStore
+from sandbox_science.orchestrator.control import store as stores
 from sandbox_science.orchestrator.history import Archive, Entry
 from sandbox_science.orchestrator.history import archive as module
 from sandbox_science.orchestrator.history.limits import WorkingMemoryLimitError
@@ -67,7 +68,7 @@ def test_exact_preflight_and_legacy_connections_close_on_success_and_refusal(
             temporary.append(self)
 
     monkeypatch.setattr(module, "_OCTET_LENGTH", not legacy)
-    monkeypatch.setattr(module, "ControlStore", Reader)
+    monkeypatch.setattr(stores, "ControlStore", Reader)
     assert archive.payload_bytes("p", row.message_id) == expected
     assert archive.message("p", row.message_id, max_bytes=expected).entry.native == native
     with pytest.raises(WorkingMemoryLimitError):

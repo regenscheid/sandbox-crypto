@@ -206,6 +206,24 @@ class ControlStore:
                 if db.in_transaction:
                     db.execute("COMMIT")
 
+    @contextmanager
+    def isolated_read(self) -> Generator[Tx]:
+        """One readonly snapshot whose connection also ends with the read.
+
+        Incremental Blob reads use this lifetime: CPython keeps a weakref for every
+        closed Blob until its connection closes, even after its transaction ends.
+        Never yield a Blob or cursor beyond this scope.
+        """
+        with self._lock:
+            # Preserve lazy writer initialization/migration and nested-read refusal.
+            self._unnested(self._connection())
+            reader = ControlStore(self.path, readonly=True, timeout=self.timeout)
+            try:
+                with reader.read() as tx:
+                    yield tx
+            finally:
+                reader.close()
+
     @staticmethod
     def _unnested(db: sqlite3.Connection) -> None:
         # The lock is held, so an open transaction is this thread's own.

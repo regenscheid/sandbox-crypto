@@ -160,7 +160,7 @@ class EvidenceExport:
         digest = hashlib.sha256()
         while total is None or offset < total:
             with (
-                self.control.read() as tx,
+                self.control.isolated_read() as tx,
                 tx.sql.blobopen(table.name, name, rowid, readonly=True) as blob,
             ):
                 size = len(blob)

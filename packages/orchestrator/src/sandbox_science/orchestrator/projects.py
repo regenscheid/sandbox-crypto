@@ -780,7 +780,7 @@ class ProjectStore:
         )
         if self._unmade():
             raise missing
-        with self.control.read() as tx:
+        with self.control.isolated_read() as tx:
             key = (project_id, session_id, name)
             row = tx.sql.execute(
                 "SELECT rowid FROM runs WHERE project_id = ? AND session_id = ? AND name = ?",

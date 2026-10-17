@@ -185,7 +185,7 @@ class ToolJournal:
             raise ControlError(INVALID_REQUEST, "invalid tool record byte offset")
         if type(limit) is not int or not 1 <= limit <= CHUNK_BYTES:
             raise ControlError(INVALID_REQUEST, f"tool record limit must be 1 to {CHUNK_BYTES}")
-        with self.control.read() as tx:
+        with self.control.isolated_read() as tx:
             row = tx.sql.execute(
                 "SELECT rowid,record_bytes FROM archive_tool_records WHERE project=? "
                 "AND message_id=?",

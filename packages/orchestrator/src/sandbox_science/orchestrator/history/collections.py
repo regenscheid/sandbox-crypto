@@ -158,7 +158,7 @@ class Collection[T](MutableSequence[T]):
         """Exact immutable stored bytes, checked in scope before bounded incremental I/O."""
         if position < 0 or offset < 0 or not 1 <= limit <= CHUNK_BYTES:
             raise ControlError("invalid_request", "invalid collection byte page")
-        with self.control.read() as tx:
+        with self.control.isolated_read() as tx:
             row = tx.sql.execute(
                 "SELECT rowid FROM run_collections WHERE project=? AND session=? AND run=? "
                 "AND collection=? AND position=?",

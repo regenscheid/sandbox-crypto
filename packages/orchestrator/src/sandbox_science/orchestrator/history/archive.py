@@ -42,7 +42,7 @@ import secrets
 import sqlite3
 import unicodedata
 from collections.abc import Iterator, Mapping, Sequence, Set
-from contextlib import closing, nullcontext
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC
 from typing import Any, Final, Literal, cast
@@ -474,11 +474,11 @@ class Archive:
     def message(self, project: str, message_id: str, *, max_bytes: int | None = None) -> Archived:
         """A message of the project, checked before loading any bounded payload."""
         reader = (
-            closing(ControlStore(self.control.path, readonly=True, timeout=self.control.timeout))
+            self.control.isolated_read
             if max_bytes is not None and not _OCTET_LENGTH
-            else nullcontext(self.control)
+            else self.control.read
         )
-        with reader as control, control.read() as tx:
+        with reader() as tx:
             if max_bytes is not None:
                 total = _payload_size(tx.sql, project, message_id)
                 if total is not None and total > max_bytes:
@@ -497,14 +497,8 @@ class Archive:
 
     def payload_bytes(self, project: str, message_id: str) -> int:
         """Stored variable byte size, without loading payloads or retaining Blob handles."""
-        reader = (
-            nullcontext(self.control)
-            if _OCTET_LENGTH
-            else closing(
-                ControlStore(self.control.path, readonly=True, timeout=self.control.timeout)
-            )
-        )
-        with reader as control, control.read() as tx:
+        reader = self.control.read if _OCTET_LENGTH else self.control.isolated_read
+        with reader() as tx:
             total = _payload_size(tx.sql, project, message_id)
         return 0 if total is None else total
 
@@ -669,7 +663,8 @@ class Archive:
         where, args = _scope(project, session, run, start, end, kind)
         ranked: list[tuple[int, str, float | None]] = []
         matched: dict[str, int] = {}
-        with self.control.read() as tx:
+        reader = self.control.read if _OCTET_LENGTH else self.control.isolated_read
+        with reader() as tx:
             db = tx.sql
             try:
                 if terms:
@@ -824,18 +819,9 @@ def _hit(
     project, message_id, path, text = db.execute(
         "SELECT project, message_id, path, text FROM archive_docs WHERE doc = ?", (doc,)
     ).fetchone()
-    fields = _FIELDS
-    rowid, *kinds = db.execute(
-        "SELECT rowid,"  # noqa: S608 - fixed archive field names
-        + ",".join(f"typeof({name})" for name in fields)
-        + " FROM archive_messages WHERE project=? AND message_id=?",
-        (project, message_id),
-    ).fetchone()
-    size = 0
-    for name, kind in zip(fields, kinds, strict=True):
-        if kind != "null":
-            with db.blobopen("archive_messages", name, rowid, readonly=True) as blob:
-                size += len(blob)
+    size = _payload_size(db, project, message_id)
+    if size is None:
+        raise ControlError(NOT_FOUND, "search hit's immutable message disappeared")
     if size > METADATA_BYTES:
         raise WorkingMemoryLimitError(
             "search hit exceeds the working read limit; use stored evidence"
