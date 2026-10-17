@@ -162,9 +162,15 @@ class Fake:
         self.paths.append(request.path)
         self.bodies.append(cast(Json, await request.json()))
         if request.path.endswith("/responses"):
+            assert self.bodies[-1]["stream"] is True
             item = {"type": "message", "role": "assistant",
                     "content": [{"type": "output_text", "text": "ok"}]}  # fmt: skip
-            return web.json_response({"status": "completed", "output": [item], "usage": {}})
+            answer = {"status": "completed", "output": [item], "usage": {}}
+            event = json.dumps({"type": "response.completed", "response": answer})
+            return web.Response(
+                text=f"event: response.completed\ndata: {event}\n\ndata: [DONE]\n\n",
+                content_type="text/event-stream",
+            )
         return web.json_response({"choices": [{"message": {"content": "ok"}}]})
 
     async def handle(self, request: web.Request) -> web.Response:

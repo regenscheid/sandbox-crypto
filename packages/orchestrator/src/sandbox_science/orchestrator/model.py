@@ -545,7 +545,11 @@ class GatewayModel(ABC):
                 allow_redirects=False,
             ) as response:
                 try:
-                    data = await read_limited(response, self._max_response_bytes)
+                    data = await (
+                        read_response_stream(response, self._max_response_bytes)
+                        if body.get("stream") is True and 200 <= response.status < 300
+                        else read_limited(response, self._max_response_bytes)
+                    )
                 except ModelError as error:
                     if 200 <= response.status < 300:  # charged, though too long to read
                         error.cost = reported_cost(response.headers.get(COST_HEADER))
@@ -973,6 +977,85 @@ async def read_limited(response: aiohttp.ClientResponse, limit: int) -> bytes:
             raise ModelError(f"the model gateway's answer is larger than {limit} bytes")
         chunks.append(chunk)
     return b"".join(chunks)
+
+
+async def read_response_stream(response: aiohttp.ClientResponse, limit: int) -> bytes:
+    """Read bounded Responses SSE and keep only its complete terminal response.
+
+    Deltas and keepalives keep the connection active, but are never exposed as an
+    answer or tool call. A missing terminal event leaves the outcome unknown.
+    """
+    if response.content_type != "text/event-stream":
+        raise ModelError("the model gateway did not stream its Responses answer")
+    line_buffer = bytearray()
+    data_lines: list[bytes] = []
+    event_name = ""
+    terminal: bytes | None = None
+    size = 0
+
+    def dispatch() -> None:
+        nonlocal event_name, terminal
+        if not data_lines:
+            event_name = ""
+            return
+        payload = b"\n".join(data_lines)
+        data_lines.clear()
+        if payload == b"[DONE]":
+            event_name = ""
+            return
+        try:
+            raw: object = json.loads(payload)
+        except (ValueError, UnicodeDecodeError):
+            raise ModelError("the model gateway sent invalid Responses SSE data") from None
+        if not isinstance(raw, dict):
+            raise ModelError("the model gateway sent a non-object Responses SSE event")
+        event = cast(dict[str, object], raw)
+        named = event.get("type")
+        kind = named if isinstance(named, str) else event_name
+        event_name = ""
+        if kind == "error":
+            raise ModelError("the model gateway's Responses stream failed")
+        if kind not in {"response.completed", "response.failed", "response.incomplete"}:
+            return
+        if terminal is not None or not isinstance(event.get("response"), dict):
+            raise ModelError("the model gateway sent an invalid terminal Responses event")
+        final = cast(dict[str, object], event["response"])
+        if final.get("status") != kind.removeprefix("response."):
+            raise ModelError(
+                "the model gateway's terminal Responses status does not match its event"
+            )
+        terminal = json.dumps(final, ensure_ascii=False, separators=(",", ":")).encode()
+        if len(terminal) > limit:
+            raise ModelError(f"the model gateway's answer is larger than {limit} bytes")
+
+    def line(raw: bytes) -> None:
+        nonlocal event_name
+        raw = raw.removesuffix(b"\r")
+        if not raw:
+            dispatch()
+        elif raw.startswith(b"data:"):
+            value = raw[5:]
+            data_lines.append(value[1:] if value.startswith(b" ") else value)
+        elif raw.startswith(b"event:"):
+            try:
+                event_name = raw[6:].strip().decode("ascii")
+            except UnicodeDecodeError:
+                raise ModelError("the model gateway sent an invalid Responses SSE event") from None
+
+    async for chunk in response.content.iter_chunked(64 * 1024):
+        size += len(chunk)
+        if size > limit:
+            raise ModelError(f"the model gateway's answer is larger than {limit} bytes")
+        line_buffer.extend(chunk)
+        while (end := line_buffer.find(b"\n")) >= 0:
+            line(bytes(line_buffer[:end]))
+            del line_buffer[: end + 1]
+    if line_buffer:
+        line(bytes(line_buffer))
+    dispatch()
+    if terminal is None:
+        raise ModelError("the model gateway's Responses stream ended without a final response")
+    return terminal
 
 
 def reported_cost(value: object) -> float | None:

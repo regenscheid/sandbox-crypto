@@ -87,6 +87,15 @@ class Fake:
     async def answer(self, request: web.Request) -> web.Response:
         assert request.headers["Authorization"] == f"Bearer {KEY}"
         body, status, headers = self.answers.pop(0)
+        if request.path.endswith("/responses") and status == 200:
+            assert (await request.json())["stream"] is True
+            decoded = json.loads(body)
+            kind = f"response.{decoded.get('status', 'completed')}"
+            event = json.dumps({"type": kind, "response": decoded})
+            return web.Response(
+                text=f"event: {kind}\ndata: {event}\n\ndata: [DONE]\n\n",
+                headers={"Content-Type": "text/event-stream", **headers},
+            )
         return web.Response(
             status=status, text=body, headers={"Content-Type": "application/json", **headers}
         )

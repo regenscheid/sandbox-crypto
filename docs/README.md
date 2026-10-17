@@ -39,6 +39,7 @@ Progress and history are not kept here: current state is in [STATUS](../.agents/
 | [Package cache](PACKAGE-CACHE.md) | The pull-through package cache for research sandboxes |
 | [Event store](EVENT-STORE.md) | The hash-chained store of monitor evidence, its record kinds and CLI |
 | **Orchestrator** | |
+| [Model profiles](MODEL-PROFILES.md) | Requested reasoning effort by agent role and model API |
 | [Session plans](SESSION-PLANS.md) | Session plans and progress in the control store |
 | [Plan editing](SESSION-PLAN-EDITING.md) | The USER plan-change route |
 | [Questions to the user](QUESTIONS.md) | The `ask_user` tool and the questions it keeps |
