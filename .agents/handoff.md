@@ -1,14 +1,15 @@
 # Handoff
 
-Updated 2026-10-17 on `codex/research-ui`, foundation base `631dc246`. Replace this file; keep it under 8 KB. Read with [STATUS.md](STATUS.md), the [plan](refactor-plan/PLAN.md) and [CONVENTIONS.md](CONVENTIONS.md).
+Updated 2026-10-17 on `codex/research-ui`, foundation base `631dc246`. Replace; under 8 KB. Read with [STATUS.md](STATUS.md), the [plan](refactor-plan/PLAN.md) and [CONVENTIONS.md](CONVENTIONS.md).
 
 ## Where things stand
 
-- **Research UI:** local signed commits add sidebar/chat/research panes, file attachments and live agent observations. Schema 66 retains USER originals; worker copies are scoped and immutable-by-retry. See [UI validation](docs/agent-reports/research-ui-2026-10-17.md): 811 backend and 2,190 web tests pass, desktop/mobile browser checks pass, two GPT-6.1-Sol reviews clear. No real OpenShell upload lab yet. Preview stopped and port closed. No push/merge/deployment.
+- **Research UI:** signed local work adds the sidebar/chat/research layout, 100 MiB attachments, half-window pane, document filters and retained tabs. Schema 67; worker protocol 9. [Validation](docs/agent-reports/research-ui-refinements-2026-10-17.md): 2,194 web tests, focused backend checks and independent review clear; browser retention and local two-environment transfers pass at 100 MiB. Real OpenShell upload qualification remains open. Synthetic preview stays on loopback port 29183 for owner review. No push/merge/deployment.
+- **Ledger:** Local Codex generated a separate list/detail/board prototype with synthetic entries; it awaits owner feedback. Production ledger is unchanged.
 - **Foundations (D47/D87):** preserved on `codex/research-foundations` at `631dc246`; [acceptance evidence](docs/agent-reports/foundation-acceptance-2026-10-17.md). Separate OpenShell orchestrator, explicit recursive Resume, child settlement, bounded memory/history, delegated folds and generated binding restrictions. The lab was torn down; personal services untouched.
 - **Context acceptance remains open:** Lab 44's checklist, Claude folding, the 600,000-token arms, repeated control and cache placement measurements need separate real-model acceptance ([STATUS](STATUS.md#phase-and-focus)).
 - **Figures** are built through F5 and F9 to F11. Left: F6, F7, F8, F11b, F12, F13 and the browser lab ([BACKLOG](BACKLOG.md#repository)). **Skills:** K7a and K7b are built; generated binding restrictions are implemented; remaining skill work stays in BACKLOG.
-- **Waiting for the owner:** lab 44's checklist, and Q12 to 14 of the skills spec, still the coordinator's reversible acceptance. The state block's placement is a design question for round 2, not for the owner yet.
+- **Open acceptance questions:** see [STATUS.md](STATUS.md#open-questions).
 
 ## How work is done
 
@@ -16,7 +17,7 @@ Updated 2026-10-17 on `codex/research-ui`, foundation base `631dc246`. Replace t
 - **Review by risk:** independent read-only review for security, storage, concurrency and new features; diff/latest-check review for tested code moves, docs and test-only fixes. Current session instructions govern whether delegation is available.
 - **Model routing:** this session uses the owner-requested GPT-6.1-Sol subagents for independent reviews. Current session instructions take precedence over historical routing conventions.
 - **Test hygiene:** one pytest suite, at most `-n 4`; unset `SS_LIVE_GATEWAY` and `SS_INTEGRATION` for ordinary checks. Logs use `~/.cache/pt/`. Foundation fixtures use `/var/tmp/sandbox-science-test-cache/` because `/home/andy` is itself a Git checkout and security tests reject fake CLIs below it. Other fixtures use the home cache. Delete scratch by exact absolute path.
-- **Migration numbers:** this branch is at 66, its foundation base at 65. Recheck main before integration; whoever merges first takes the next number, and later migrations renumber. Never edit `baseline.sql` or a shipped step.
+- **Migration numbers:** this branch is at 67, its foundation base at 65. Recheck main before integration; whoever merges first takes the next number, and later migrations renumber. Never edit `baseline.sql` or a shipped step.
 - **Integration:** this session has no push or merge authorization. Preserve the primary checkout; use signed commits in the managed worktree. Recheck migration numbers and lockstep image/protocol compatibility before future integration.
 - **Tracking files:** only the coordinator, or an agent whose task says so, edits STATUS, this file, PLAN-CHANGES and the plan's progress. Other PRs put their summary in the description and update the `docs/` pages and BACKLOG items they touch.
 - **Never `cd` the coordinator's shell outside the repository.** It moves the Desktop session's working directory, and running subagents are told to work there. Use absolute paths.

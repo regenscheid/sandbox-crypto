@@ -164,6 +164,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 
 ## W4: integrate the initial research workspace
 
+- [x] Local 100 MiB upload support, migration-preserved originals, larger worker delivery and shared upload copies; independent concurrency review clear; browser retention and local two-environment transfer verified. Real OpenShell qualification remains before integration.
 - [x] Local UI review refinement: half-window research pane, searchable/filterable document library, and named closable document tabs preserving unsaved drafts. Not yet merged or deployed.
 - [ ] Review the Local Codex ledger prototype (list/detail with optional board), then adapt the chosen design to the production ledger.
 

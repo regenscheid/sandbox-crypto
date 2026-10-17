@@ -4,6 +4,8 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 ## 2026-10-17
 
+- **Larger research files (D79/D80):** 100 MiB uploads with 2 GiB/project and 8 GiB/store retention; larger worker writes and shared upload copies, retaining ordinary read limits. Schema 67 and worker protocol 9 require coordinated upgrades.
+
 - **UI review refinements (D80):** research pane can use 50% of the window; Documents gets a searchable/filterable library and named tabs retaining drafts. Ledger redesign is being explored separately through Local Codex, with list/detail and optional board views.
 
 - **Return to the UI (D80 amended):** left project/session navigation, central chat with uploads, and an optional documents/editor/plan/agent pane. OpenScience web UI is an Apache-2.0 interaction reference; originals are immutable USER records and sandbox copies go through the worker API ([contract](../docs/specs/research-ui.md)).

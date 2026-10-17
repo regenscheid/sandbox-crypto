@@ -20,7 +20,8 @@ explicit Resume, and sandbox execution boundaries remain authoritative.
 - Agents shows observed parent/child runs, status, delegation brief, and live
   activity. Failed observations are visibly stale, never presented as current.
 - Chat accepts file selection and drag/drop, removable attachments, explicit
-  upload status, and retryable failures. Bytes are never put in browser storage.
+  upload status, and retryable failures. The file limit is 100 MiB; originals have
+  2 GiB/project and 8 GiB/store retention quotas. Bytes are never put in browser storage.
   Uploads are attributed to the user and delivered through the worker API;
   parsing or executing research files never happens in the workspace process.
 - Chat and documents share the existing Markdown/KaTeX renderer, including
