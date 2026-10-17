@@ -26,7 +26,7 @@ from sandbox_science.orchestrator.history.operations import CHUNK_BYTES
 from sandbox_science.orchestrator.history.operations import PAGE as RECORD_PAGE
 from sandbox_science.orchestrator.projects import RunName
 
-from . import documents
+from . import documents, evidence
 from .context import CONTEXT, identifier, session_record
 
 PATH: Final = "/api/v0/projects/{project}/messages/{message}"
@@ -71,6 +71,7 @@ class ToolRecordListing(Contract):
 
 
 def add_routes(app: web.Application) -> None:
+    evidence.add_routes(app)
     app.router.add_get(PATH, message)
     app.router.add_get(PATH + "/tool-record", tool_record)
     app.router.add_get(PATH + "/tool-record/chunks", tool_record_chunks)

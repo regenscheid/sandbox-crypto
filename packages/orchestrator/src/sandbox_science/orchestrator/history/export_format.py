@@ -1,0 +1,81 @@
+# SPDX-License-Identifier: MIT
+"""Versioned, bounded NDJSON line shapes for the stored-evidence interchange."""
+
+from typing import Annotated, Literal
+
+from pydantic import Field, StringConstraints, TypeAdapter
+
+from sandbox_science.contracts import Contract, Identifier
+from sandbox_science.contracts.model import Counter, Sha256
+from sandbox_science.orchestrator.projects import RunName
+
+from .operations import CHUNK_BYTES
+
+Table = Literal["runs", "archive_messages", "archive_docs", "tool_intents", "archive_tool_records"]
+Name = Annotated[str, StringConstraints(pattern=r"^[a-z_]{1,64}$")]
+
+
+class Selection(Contract):
+    through_rowid: Counter
+    rows: Counter
+
+
+class Manifest(Contract):
+    kind: Literal["manifest"]
+    format: Literal["sandbox-run-evidence-v1"]
+    project: Identifier
+    session: Identifier
+    run: RunName
+    chunk_bytes: Literal[65536]
+    tables: Annotated[dict[Table, Selection], Field(min_length=5, max_length=5)]
+    external_files_included: Literal[False]
+    scope: Annotated[str, StringConstraints(max_length=256)]
+
+
+class Row(Contract):
+    kind: Literal["row"]
+    table: Table
+    rowid: Counter
+
+
+class Value(Contract):
+    kind: Literal["value"]
+    field: Name
+    storage: Literal["null", "integer", "real"]
+    value: int | float | None
+
+
+class FieldStart(Contract):
+    kind: Literal["field"]
+    field: Name
+    storage: Literal["text", "blob"]
+    bytes: Counter
+
+
+class Chunk(Contract):
+    kind: Literal["chunk"]
+    offset: Counter
+    data_base64: Annotated[str, StringConstraints(max_length=4 * ((CHUNK_BYTES + 2) // 3))]
+
+
+class FieldEnd(Contract):
+    kind: Literal["field_end"]
+    sha256: Sha256
+
+
+class RowEnd(Contract):
+    kind: Literal["row_end"]
+
+
+class Complete(Contract):
+    kind: Literal["complete"]
+    lines: Counter
+    sha256: Sha256
+
+
+LINE = TypeAdapter[Manifest | Row | Value | FieldStart | Chunk | FieldEnd | RowEnd | Complete](
+    Annotated[
+        Manifest | Row | Value | FieldStart | Chunk | FieldEnd | RowEnd | Complete,
+        Field(discriminator="kind"),
+    ]
+)

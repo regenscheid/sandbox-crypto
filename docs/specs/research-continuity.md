@@ -272,6 +272,26 @@ These changes extend an attempt's working context; they do not by themselves
 implement continuation attempts, bound historical RAM, or establish research
 quality preservation. Those remain separate acceptance requirements.
 
+### Stored-evidence download contract
+
+The workspace exposes a read-only download of one run's stored evidence, including
+unfinished runs with an archive or tool intent. `sandbox-run-evidence-v1` is UTF-8
+NDJSON: a manifest, scoped database rows, each text/blob field in at most 64 KiB
+base64 chunks, field checksums, and a final stream checksum. The manifest records
+the immutable row cutoffs captured together before export. Later appends are not
+included. Every field retains its SQLite storage type, so JSON text, Unicode,
+NUL bytes and native provider payloads can be recovered exactly. A download without
+its verified final line is incomplete.
+
+This bundle contains the final run JSON when present, archive messages and saved
+text samples, tool intents, and full structured tool records. It does not claim to
+include external worker files, document revisions or referenced earlier runs:
+their references and existing truncation/omission metadata remain intact. It is
+an evidence interchange, not a restore instruction or permission to replay work.
+Queries and chunks have bounded memory; no read transaction is held across network
+backpressure. Concurrent downloads are limited by the workspace. Export failure or
+client cancellation releases the slot, and never writes to the source database.
+
 Each step is split into reviewable changes with a production caller; no unused recovery framework is merged.
 
 1. **Durable evidence, state access and bounded memory.** Characterize current consumers and settle the UI/orchestrator storage boundary for RC-29, then add incremental storage, output deduplication and bounded historical reads. Replace the full-record finalization path and verify RC-F9/F10/F14. This is independently useful and does not depend on the automatic-resume decision.

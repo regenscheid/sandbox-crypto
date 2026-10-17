@@ -48,6 +48,6 @@ The owner's research on other products' prompts lives outside this repository. T
 
 ## What is next
 
-1. Bound historical messages, per-call metadata and review caches; design a portable full-evidence export. The current JSON export keeps references for large records.
+1. Bound historical messages, per-call metadata and review caches. A streamed stored-evidence export now resolves large-record references; external worker files remain referenced.
 2. Durable work/attempt ownership, parent waiting and one tree Resume; then scoped state access and separate orchestrator confinement in the normal launcher.
 3. Child skeleton folds now use their own archive and model limit (146 tests passed locally); live continuity acceptance remains. Cache measurements and generated skills restrictions follow.
