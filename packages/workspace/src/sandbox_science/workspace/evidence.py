@@ -47,11 +47,11 @@ async def download(request: web.Request) -> web.StreamResponse:
     lines: Iterator[bytes] | None = None
     try:
         context = request.app[CONTEXT]
-        control = request.app[DOCUMENTS].control
+        store = request.app[DOCUMENTS]
 
         def prepare() -> EvidenceExport:
             session_record(context.projects, project, session)
-            return EvidenceExport(control, project, session, run)
+            return EvidenceExport(store, project, session, run)
 
         export = await threaded(prepare)
         lines = export.lines()

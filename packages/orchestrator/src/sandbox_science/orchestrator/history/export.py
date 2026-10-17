@@ -13,6 +13,7 @@ from typing import Final
 
 from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.control.errors import INTERNAL, NOT_FOUND
+from sandbox_science.orchestrator.documents.store import DocumentStore
 
 from .export_format import LINE
 from .operations import CHUNK_BYTES
@@ -108,9 +109,12 @@ class EvidenceExport:
     The caller owns the store. No database connection or blob survives a yielded line.
     """
 
-    def __init__(self, control: ControlStore, project: str, session: str, run: str) -> None:
-        self.control, self.key = control, (project, session, run)
-        with control.read() as tx:
+    def __init__(
+        self, control: ControlStore | DocumentStore, project: str, session: str, run: str
+    ) -> None:
+        self.control = control.control if isinstance(control, DocumentStore) else control
+        self.key = (project, session, run)
+        with self.control.read() as tx:
             self.cutoffs = {
                 table.name: tx.sql.execute(
                     f"SELECT coalesce(max(rowid),0),count(*) FROM {table.name} WHERE {table.where}",

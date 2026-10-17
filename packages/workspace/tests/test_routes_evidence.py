@@ -63,6 +63,8 @@ async def test_export_and_scoped_refusals(
     await error_of(await client.get(PATH.replace(RUN, RUN + "missing")), 404, "not_found")
     await error_of(await client.get(PATH.replace(RUN, "invalid")), 400, "invalid_request")
     assert (await client.head(PATH)).status == 404
+    anonymous = await workspace(aiohttp_client, state_dir, static_dir, login=False)
+    await error_of(await anonymous.get(PATH), 401, "policy_denied")
 
 
 async def test_exports_limit_concurrency_and_release_after_disconnect(
