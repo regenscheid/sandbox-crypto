@@ -10,6 +10,8 @@ The host handler remains their owner and reconciles them after disconnect.
 from __future__ import annotations
 
 import asyncio
+import logging
+import traceback
 from collections.abc import Awaitable, Callable
 from contextvars import Context
 from enum import StrEnum
@@ -20,6 +22,8 @@ from pydantic import Field, JsonValue, TypeAdapter
 
 from sandbox_science.contracts.model import Contract, Counter
 from sandbox_science.orchestrator.history.limits import WorkingMemoryLimitError
+
+_log = logging.getLogger(__name__)
 
 CONTROL_PROTOCOL: Final = 3
 CONTROL_HEADER: Final = "X-Sandbox-Control-Protocol"
@@ -195,7 +199,16 @@ class Channel:
             reply = Reply.model_validate(
                 {"id": frame.id, "error": kind, "message": str(error)[:512]}
             )
-        except Exception:
+        except Exception as error:
+            _log.error(
+                "control capability %s failed (%s):\n%s",
+                frame.capability,
+                type(error).__name__,
+                "".join(
+                    f"  {location.filename}:{location.lineno} in {location.name}\n"
+                    for location in traceback.extract_tb(error.__traceback__)
+                ),
+            )
             reply = Reply(id=frame.id, error="internal", message="control capability failed")
         if not self._closed:
             try:

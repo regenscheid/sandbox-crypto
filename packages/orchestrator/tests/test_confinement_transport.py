@@ -199,3 +199,24 @@ def test_handshake_request_and_reply_accept_three_and_reject_older() -> None:
         Hello.model_validate({**hello, "protocol": 2})
     with pytest.raises(ValidationError, match="literal_error"):
         Ready.model_validate({**ready, "protocol": 1})
+
+
+async def test_internal_diagnostic_keeps_stack_without_payload_or_exception_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    private = "test-secret-capability-payload"
+
+    async def fail(kind: Capability, value: JsonValue) -> JsonValue:
+        raise ValueError(private)
+
+    left = Channel(lambda frame: right.receive(frame), fail)
+    right = Channel(lambda frame: left.receive(frame), fail)
+    try:
+        with pytest.raises(TransportError, match="control capability failed"):
+            await left.request(Capability.NOTICES, {"private": private})
+        assert "control capability notices failed (ValueError)" in caplog.text
+        assert "test_internal_diagnostic" in caplog.text or "in fail" in caplog.text
+        assert private not in caplog.text
+    finally:
+        await left.close()
+        await right.close()
