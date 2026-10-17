@@ -299,3 +299,50 @@ def test_kernel_acknowledgement_cannot_clear_a_changed_observation(projects):
             "p", "s", body("kernel_recompute", identity), operator="user"
         )
     assert RecoveryStatus(projects.control).pending("p", "s", RUN).saved_kernel
+
+
+def test_child_resolution_uses_exact_original_parent_attempt(projects):
+    from sandbox_science.orchestrator.delegation.records import DelegationRecords
+
+    from .test_delegation_restart import _delegation
+
+    works = WorkRecords(projects.control)
+    works.admit("p", "s", RUN)
+    child = works.admit("p", "s", CHILD, parent=RUN)
+    original_parent = "20261016T020001000000Z-original-parent"
+    made = _delegation(0).model_copy(update={"parent": original_parent, "run": CHILD})
+    DelegationRecords(projects.control).start("p", "s", made)
+    identity = ModelIntents(projects.control).begin(child, kind="delegated", alias="fixture")
+    works.interrupt("p", "s", RUN)
+    decision = RecoveryControls(projects.control).resolve(
+        "p",
+        "s",
+        body(
+            "model_usage",
+            identity,
+            work=CHILD,
+            current=CHILD,
+            run=CHILD,
+            cost=1,
+            input_tokens=12,
+            output_tokens=3,
+        ),
+        operator="user",
+    )
+    assert Archive(projects.control).message("p", decision.message_id).parent == original_parent
+    with projects.control.read() as tx:
+        usage = tx.sql.execute(
+            "SELECT json_extract(usage,'$.input_tokens'),json_extract(usage,'$.output_tokens') "
+            "FROM research_model_calls "
+            "WHERE project='p' AND run=? AND identity=?",
+            (CHILD, identity),
+        ).fetchone()
+    assert usage == (12, 3)
+
+
+@pytest.mark.parametrize(
+    "tokens", [{"input_tokens": 1}, {"output_tokens": 2}, {"input_tokens": -1, "output_tokens": 2}]
+)
+def test_operator_tokens_require_both_explicit_nonnegative_counts(tokens):
+    with pytest.raises(ValidationError):
+        body("model_usage", "unknown", cost=1, **tokens)

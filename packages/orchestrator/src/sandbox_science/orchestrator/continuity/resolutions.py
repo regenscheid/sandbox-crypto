@@ -34,12 +34,19 @@ class Resolution(Contract):
     reason: str = Field(min_length=1, max_length=2000)
     cost: Annotated[float, Field(strict=True, ge=0, allow_inf_nan=False)] | None = None
 
+    input_tokens: int | None = Field(default=None, strict=True, ge=0)
+    output_tokens: int | None = Field(default=None, strict=True, ge=0)
+
     @model_validator(mode="after")
     def _explicit(self) -> Self:
         if not self.reason.strip():
             raise ValueError("operator reason must contain text")
         if (self.kind == "model_usage") != (self.cost is not None):
             raise ValueError("model_usage requires an explicit cost; other kinds have no cost")
+        if (self.input_tokens is None) != (self.output_tokens is None):
+            raise ValueError("input and output tokens must both be supplied or both unknown")
+        if self.kind != "model_usage" and self.input_tokens is not None:
+            raise ValueError("only model_usage accepts token observations")
         if self.kind == "kernel_recompute" and (
             re.fullmatch(r"[0-9a-f]{64}", self.identity) is None or self.run != self.current
         ):
@@ -78,6 +85,14 @@ class RecoveryControls:
             if row is None:
                 raise ControlError(NOT_FOUND, "no research work in this scope")
             current, state, parent, epoch = row
+            if parent is not None:
+                original_parent = db.execute(
+                    "SELECT parent FROM delegations WHERE project_id=? AND session_id=? AND run=?",
+                    (project, session, request.run),
+                ).fetchone()
+                if original_parent is None:
+                    raise ControlError(CONFLICT, "child attempt has no original parent")
+                parent = original_parent[0]
             if current != request.current or epoch != request.epoch:
                 raise ControlError(CONFLICT, "research attempt or epoch changed")
             if state not in {"paused", "blocked", "waiting"}:
@@ -116,6 +131,11 @@ class RecoveryControls:
             if request.kind == "model_usage":
                 self._model(tx, project, session, request)
                 text += f"\nOriginal model intent {request.identity}; supplied cost {request.cost}."
+                if request.input_tokens is not None:
+                    text += (
+                        f" Observed input tokens {request.input_tokens}; "
+                        f"output tokens {request.output_tokens}."
+                    )
                 entry = Entry("user", "notice", text, source="operator_recovery")
             elif request.kind == "operation":
                 entry, tool_record = self._operation(tx, project, session, request, text)
@@ -163,8 +183,21 @@ class RecoveryControls:
 
     @staticmethod
     def _model(tx: Tx, project: str, session: str, request: Resolution) -> None:
-        # Tokens/model remain unknown; this is an explicit operator cost, not a gateway report.
-        usage = ModelUsage(cost=request.cost)
+        bounded = tx.sql.execute(
+            "SELECT 1 FROM research_work w JOIN research_blueprints b "
+            "USING(project,session,work) WHERE w.project=? AND w.session=? AND w.work=? "
+            "AND w.parent IS NOT NULL AND json_extract(b.snapshot,'$.request.tokens') IS NOT NULL",
+            (project, session, request.work),
+        ).fetchone()
+        if bounded and request.input_tokens is None:
+            raise ControlError(
+                INVALID_REQUEST, "token-bounded child work requires observed input/output tokens"
+            )
+        usage = ModelUsage(
+            cost=request.cost,
+            input_tokens=request.input_tokens,
+            output_tokens=request.output_tokens,
+        )
         observed(tx.sql, project, session, request.run, request.identity, usage)
 
     @staticmethod

@@ -20,7 +20,10 @@ guard. They are never model tools and never contact a model, worker or executor.
   same original identity conflict. A retry never duplicates archive messages.
 - Model settlement updates only the exact original run's pending intent belonging
   to this work. It retains the operator's supplied cost and uncertainty note,
-  without fabricating model output or token counts. Supplied cost counts in budgets
+  without fabricating model output or token counts. Optional observed input/output
+  token counts must both be supplied or both unknown; delegated work with a token
+  grant requires both counts before settlement. Archive records retain the exact
+  original child attempt parent rather than the stable parent work identity. Supplied cost counts in budgets
   by the original intent's dispatch time and model role, explicitly labelled as an
   operator declaration in the decision and archive notice.
 - Operation settlement requires the original unresolved intent. Archive a clearly
