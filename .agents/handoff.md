@@ -11,8 +11,8 @@ Updated 2026-10-16 on `codex/research-foundations`, base `57e29536`. This file i
 
 ## How work is done
 
-- **Briefs:** one task per agent, in its own worktree on a branch from `origin/main`, with the plan's [working rules](CONVENTIONS.md#working-rules). A stacked PR names its base.
-- **Review by risk** (the owner, to save tokens). A full adversarial review by a separate read-only agent for security paths, storage migrations, concurrency and new features. A light check (read the diff, see every check green on its latest run) for code moves backed by tests, docs, test-only PRs and fixes a reviewer suggested.
+- **Briefs:** one task per worktree from `origin/main`; stacked PRs name their base. Follow the [working rules](CONVENTIONS.md#working-rules).
+- **Review by risk:** independent read-only review for security, storage, concurrency and new features; diff/latest-check review for tested code moves, docs and test-only fixes. Current session instructions govern whether delegation is available.
 - **Model routing:** Sonnet for low-risk implementation, tests, docs, light reviews, rebases, CI fixes and status syncs. Opus for security paths, migrations, concurrency, designs and specs.
 - **Test hygiene:** `pytest -n 4` at most, only the packages touched, one suite at a time: babbage is shared with labs. Tests marked `live` call the real gateway and run only when `SS_LIVE_GATEWAY` is set. `--basetemp` goes under `~/.cache/pt/<task>/`, never `/tmp`. Delete scratch by absolute path with no glob, or Claude Code stops to ask the owner. `--count` needs `-o tmp_path_retention_policy=failed`.
 - **Migration numbers:** this branch is at 58, its base at 57. Recheck main before integration; whoever merges first takes the next number, and later migrations renumber. Never edit `baseline.sql` or a shipped step.
@@ -50,4 +50,4 @@ The owner's research on other products' prompts lives outside this repository. T
 
 1. Bound historical messages, per-call metadata and review caches. A streamed stored-evidence export now resolves large-record references; external worker files remain referenced.
 2. Durable work/attempt ownership, parent waiting and one tree Resume; then scoped state access and separate orchestrator confinement in the normal launcher.
-3. Child skeleton folds now use their own archive and model limit (146 tests passed locally); live continuity acceptance remains. Cache measurements and generated skills restrictions follow.
+3. Child skeleton folds use their own archive/model limit (146 tests). Parent closing waits without model calls (122 tests), with user/Stop wakeups and an unsaved-outcome stop. Local cache prefix comparison is recorded; live continuity/cache acceptance and generated skills restrictions remain.

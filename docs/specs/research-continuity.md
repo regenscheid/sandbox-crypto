@@ -292,6 +292,20 @@ Queries and chunks have bounded memory; no read transaction is held across netwo
 backpressure. Concurrent downloads are limited by the workspace. Export failure or
 client cancellation releases the slot, and never writes to the source database.
 
+### Parent waiting increment
+
+While a parent still has room for another model call, an attempted final answer
+with running children waits on those children in the existing session lease.
+It makes no model calls while waiting. Child completion supplies durable outcomes
+for the parent's next call; new user input wakes the parent early, and Stop cancels
+the wait through the existing subtree cancellation path. Waiting start/end events
+make this visible in chat. This increment does not change terminal cleanup at a
+turn/context/budget limit: preserving children through a paused parent still needs
+durable work ownership and continuation attempts. Nor does it implement recovery
+after process loss or redefine a limited child as completed work.
+If a child process ends but its durable outcome could not be saved, closing stops
+with `child_outcome_unavailable`; an empty live-task set is not completion evidence.
+
 Each step is split into reviewable changes with a production caller; no unused recovery framework is merged.
 
 1. **Durable evidence, state access and bounded memory.** Characterize current consumers and settle the UI/orchestrator storage boundary for RC-29, then add incremental storage, output deduplication and bounded historical reads. Replace the full-record finalization path and verify RC-F9/F10/F14. This is independently useful and does not depend on the automatic-resume decision.

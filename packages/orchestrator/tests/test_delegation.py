@@ -35,12 +35,12 @@ from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.memory import ProjectMemory
 from sandbox_science.orchestrator.notices import (
     DELEGATIONS,
-    DELEGATIONS_RUNNING,
     OUTCOME_CORRECTION,
 )
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord, run_name
 from sandbox_science.orchestrator.prompts import PromptPins
 from sandbox_science.orchestrator.runstate import RunState
+from sandbox_science.testing import eventually
 
 from .control_versions import older_store
 from .loop_harness import DELEGATED, PRIOR, PROJECT, SESSION, Harness, Reply, call, own
@@ -285,30 +285,42 @@ async def test_a_check_starts_fresh_and_its_outcome_reaches_its_parent(
 
 
 async def test_a_parent_cannot_answer_while_its_check_runs(delegating: Harness) -> None:
-    """PD-36: a closing answer while a child runs takes another turn, with a notice."""
-    free, release = released()
+    """RC-5: a closing answer waits without a model turn, then incorporates the child."""
+    free = asyncio.Event()
 
     async def blocked() -> None:
         await free.wait()
 
-    root = await delegating.run(
-        "root",
-        [
-            Reply(calls=[CHECK]),
-            Reply("Done already."),
-            Reply(calls_from=wait().calls_from, before=release.before),
-            Reply("Done now."),
-        ],
-        delegated=[Reply(REPORT, before=blocked)],
+    task = asyncio.create_task(
+        delegating.run(
+            "root",
+            [Reply(calls=[CHECK]), Reply("Done already."), Reply("Done now.")],
+            delegated=[Reply(REPORT, before=blocked)],
+        )
     )
+    store = ProjectStore(delegating.state)
+    state = RunState(store.control)
+
+    def waiting() -> bool:
+        held = state.lease(PROJECT, SESSION)
+        return held is not None and any(
+            event.kind == "waiting" and event.data.get("delegation_ids")
+            for event in state.events(PROJECT, SESSION, held.run)
+        )
+
+    try:
+        await eventually(waiting)
+        assert len(delegating.gateway.main) == 2
+        assert not task.done()
+    finally:
+        free.set()
+        store.close()
+    root = await task
     assert root.final_text == "Done now."
     third = delegating.gateway.main[2]
-    (notice,) = [
-        body(str(m["content"]))
-        for m in third
-        if m["role"] == "user" and body(str(m["content"])).startswith(DELEGATIONS_RUNNING.text)
-    ]
-    assert _ID.search(notice)
+    assert any(
+        m["role"] == "user" and body(str(m["content"])).startswith(DELEGATIONS.text) for m in third
+    )
     assert [r.stopped for r in children(delegating, root)] == ["answered"]
 
 

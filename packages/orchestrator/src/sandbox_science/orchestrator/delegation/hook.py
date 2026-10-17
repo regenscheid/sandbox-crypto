@@ -20,9 +20,9 @@ otherwise its answer as returned with the errors (PD-17, PD-18, PD-20). As a tur
 - offers, at each safe point, the session's outcomes that no run has acknowledged,
   its own children's and those an earlier run left (PD-35), each as a short summary,
   together at most ``max_chars``; the rest wait for a later safe point;
-- refuses a closing answer while its children run (PD-36): the run takes another turn
-  with a notice naming them, or, with no turn or room left, stops without an answer.
-  Outcomes the answer has not seen continue the run, as other notices do;
+- holds a closing answer while its children run (RC-5), waiting without model calls
+  for their outcomes or user input. With no turn or room left it stops without an
+  answer. Outcomes the answer has not seen continue the run, as other notices do;
 - cancels its running children when it ends, whatever ends it, and waits for their
   records and outcomes (PD-39), since its lease holds their tasks. A child that has not
   ended in ``STOP_SECONDS``, or in what is left of the time its own parent gave it, is
@@ -214,6 +214,7 @@ class Delegations(TurnHook):
         max_turns: int,
         offer: bool,
         wake: Callable[[], Awaitable[None]] | None = None,
+        waiting: Callable[[Sequence[str] | None], Awaitable[None]] | None = None,
         over_budget: Callable[[], Awaitable[bool]] | None = None,
         limits: DelegationSettings | None = None,
         models: ModelChoice | None = None,
@@ -234,6 +235,7 @@ class Delegations(TurnHook):
         self.records, self.ledger, self.context = records, ledger, context
         self.parent, self.runner, self.max_turns = parent, runner, max_turns
         self.wake, self.over_budget, self.clock = wake, over_budget, clock
+        self.waiting = waiting
         self.limits = limits or DelegationSettings()
         """The project's cap and a check's tokens and turns (PD-38)."""
         self.models = models
@@ -543,20 +545,7 @@ class Delegations(TurnHook):
         reason = "ended"
         if pending:
             when = asyncio.FIRST_COMPLETED if request.mode == "first" else asyncio.ALL_COMPLETED
-            ending: asyncio.Future[None] = asyncio.ensure_future(_ended(pending, when))
-            waiting = [ending]
-            if self.wake is not None:
-                waiting.append(asyncio.ensure_future(self.wake()))
-            try:
-                done, _ = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
-                if ending not in done:
-                    reason = "user_message"
-            finally:
-                for future in waiting:
-                    future.cancel()  # the children's tasks go on
-                for future in waiting:
-                    with contextlib.suppress(asyncio.CancelledError, Exception):
-                        await future
+            reason = await self._wait_for(pending, when)
             found = {i: await self._read(i) for i in ids}
         left = await self._unreceived(found.values())
         shown: list[dict[str, object]] = []
@@ -566,6 +555,23 @@ class Delegations(TurnHook):
         result = {"reason": reason, "delegations": shown}
         ended = [i for i, d in found.items() if d.ended is not None]
         return dump(result), {"wait": {"reason": reason, "ended": ended}}
+
+    async def _wait_for(self, pending: set[asyncio.Task[None]], when: str) -> str:
+        """Wait without spending model turns; cancelling this wait leaves cleanup
+        of the children's tasks to the owning lease."""
+        ending: asyncio.Future[None] = asyncio.ensure_future(_ended(pending, when))
+        waiting = [ending]
+        if self.wake is not None:
+            waiting.append(asyncio.ensure_future(self.wake()))
+        try:
+            done, _ = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
+            return "ended" if ending in done else "user_message"
+        finally:
+            for future in waiting:
+                future.cancel()
+            for future in waiting:
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await future
 
     async def _status(self, delegation_id: str) -> tuple[str, dict[str, Any]]:
         found = await self._read(delegation_id)
@@ -734,6 +740,15 @@ class Delegations(TurnHook):
             self.tokens_left = self.tokens - sum(call_tokens(usage) for usage in run.usage)
 
     async def closing(self, run: RunView, answer: str | None) -> Closing:
+        running = self._running()
+        if running and run.can_respond and run.halted is None:
+            if self.waiting is not None:
+                await self.waiting([child.delegation.delegation_id for child in running])
+            try:
+                await self._wait_for({child.task for child in running}, asyncio.ALL_COMPLETED)
+            finally:
+                if self.waiting is not None:
+                    await self.waiting(None)
         found = await self._fresh(run)
         notices = [_handback(found)] if found else []
         running = self._running()
@@ -744,6 +759,12 @@ class Delegations(TurnHook):
             # cancels them.
             limit = "turn_limit" if run.turns_left <= 0 else "context_limit"
             return Closing("retry", tuple(notices), stopped=run.halted or limit)
+        for child in self.children.values():
+            saved = await self._read(child.delegation.delegation_id)
+            if saved.ended is None:
+                # A task can end after every outcome write failed. Its disappearance
+                # from the live set is not evidence that its parent may finish.
+                return Closing("stop", tuple(notices), stopped="child_outcome_unavailable")
         return Closing("continue", tuple(notices)) if notices else Closing()
 
     def summary(self) -> object | None:

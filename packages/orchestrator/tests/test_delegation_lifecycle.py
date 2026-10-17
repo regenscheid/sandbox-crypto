@@ -34,7 +34,7 @@ from sandbox_science.orchestrator.notices import DELEGATIONS
 from sandbox_science.orchestrator.projects import ProjectStore, run_name
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.session_plans import PlanBody, SessionPlans
-from sandbox_science.testing import eventually
+from sandbox_science.testing import FakeClock, eventually
 
 from .loop_harness import PLAN, PROJECT, SESSION, USER_PLANS, Harness, Reply, call
 from .loop_harness import gateway as gateway
@@ -556,6 +556,37 @@ async def test_an_outcome_is_written_again_after_a_failure(
         projects.close()
 
 
+async def test_parent_cannot_finish_when_child_outcome_was_not_saved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    writes: list[object] = []
+
+    async def quick(child: Child, stop: asyncio.Event) -> ChildEnd:
+        return ChildEnd("answered", False, REPORT)
+
+    def failed(*args: Any) -> None:
+        writes.append(args)
+        raise OSError("fixture storage unavailable")
+
+    made, records, projects, documents = _delegations(tmp_path, quick)
+    clock = FakeClock()
+    made.clock = clock
+    monkeypatch.setattr(records, "end", failed)
+    try:
+        async with made.lease():
+            text, _ = await made.call("delegate", BRIEF)
+            closing = asyncio.create_task(made.closing(Transcript(messages=[]), "Done."))
+            for count, seconds in enumerate((0.5, 1.0), start=1):
+                await eventually(lambda: len(writes) == count and clock.sleepers == 1)
+                clock.advance(seconds)
+            result = await closing
+            assert (result.action, result.stopped) == ("stop", "child_outcome_unavailable")
+            assert records.get(PROJECT, SESSION, json.loads(text)["delegation_id"]).ended is None
+    finally:
+        documents.close()
+        projects.close()
+
+
 def test_a_delegation_whose_process_ended_is_interrupted_at_the_next_run(tmp_path: Path) -> None:
     async def unused(child: Child, stop: asyncio.Event) -> ChildEnd:
         raise AssertionError
@@ -608,6 +639,71 @@ async def test_a_halt_with_children_running_keeps_its_reason(tmp_path: Path) -> 
             transcript.halted = None
             assert (await made.closing(transcript, "An answer.")).stopped == "context_limit"
     finally:
+        documents.close()
+        projects.close()
+
+
+@pytest.mark.parametrize("wake_by", ["children", "user", "stop"])
+async def test_parent_closing_waits_for_all_children_and_remains_interruptible(
+    tmp_path: Path, wake_by: str
+) -> None:
+    free = [asyncio.Event(), asyncio.Event()]
+    entered, user = asyncio.Event(), asyncio.Event()
+    started: list[Child] = []
+    transitions: list[object] = []
+
+    async def runner(child: Child, stop: asyncio.Event) -> ChildEnd:
+        index = len(started)
+        started.append(child)
+        await free[index].wait()
+        return ChildEnd("answered", False, "Arithmetic done.")
+
+    async def waiting(ids) -> None:
+        transitions.append(ids)
+        if ids:
+            entered.set()
+
+    async def wake() -> None:
+        await user.wait()
+
+    made, records, projects, documents = _delegations(tmp_path, runner)
+    made.waiting, made.wake = waiting, wake
+    try:
+        async with made.lease():
+            for _ in free:
+                await made.call("delegate", BRIEF)
+            closing = asyncio.create_task(made.closing(Transcript(messages=[]), "An answer."))
+            await entered.wait()
+            await eventually(lambda: len(started) == 2)
+            assert not closing.done()
+            if wake_by == "children":
+                free[0].set()
+                await eventually(
+                    lambda: records.get(PROJECT, SESSION, started[0].delegation_id).ended
+                )
+                assert not closing.done()
+                free[1].set()
+                result = await closing
+                assert result.action == "continue"
+                assert len(result.notices[0].ids) == 2
+            elif wake_by == "user":
+                user.set()
+                assert (await closing).action == "retry"
+            else:
+                closing.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await closing
+            assert transitions[-1] is None
+            if wake_by != "children":
+                assert all(
+                    records.get(PROJECT, SESSION, c.delegation_id).ended is None for c in started
+                )
+        assert all(
+            records.get(PROJECT, SESSION, c.delegation_id).ended is not None for c in started
+        )
+    finally:
+        for event in free:
+            event.set()
         documents.close()
         projects.close()
 

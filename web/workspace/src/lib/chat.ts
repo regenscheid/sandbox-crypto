@@ -494,12 +494,18 @@ export function chatEntries(events: readonly RunEvent[]): ChatEntry[] {
       });
     } else if (kind === 'waiting') {
       const jobs = list(data['job_ids']).map(String);
+      const children = list(data['delegation_ids']).map(String);
       entries.push({
         kind: 'note',
         seq,
-        text: jobs.length
-          ? `Waiting for ${data['mode'] === 'all' ? 'all of' : 'the first of'} jobs ${jobs.join(', ')}.`
-          : 'The wait for jobs ended.',
+        text:
+          'delegation_ids' in data
+            ? children.length
+              ? `Waiting for delegated work: ${children.join(', ')}.`
+              : 'The wait for delegated work ended.'
+            : jobs.length
+              ? `Waiting for ${data['mode'] === 'all' ? 'all of' : 'the first of'} jobs ${jobs.join(', ')}.`
+              : 'The wait for jobs ended.',
         problem: false,
       });
     } else if (kind === 'fold') {

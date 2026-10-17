@@ -967,6 +967,10 @@ class Harness:
         async def over_budget() -> bool:
             return await threaded(stores.runs.over_cost_limit, context.project_id, clock.now())
 
+        async def waiting(ids: Sequence[str] | None) -> None:
+            if chat is not None:
+                await chat.write("waiting", {"delegation_ids": ids, "mode": "all" if ids else None})
+
         # Every run of the tree is given the memory its root was (PM-8).
         version = memory[0] if memory is not None else None
         return Delegations(
@@ -978,6 +982,7 @@ class Harness:
             max_turns=request.max_turns or self.settings.max_turns,
             offer=limits.depth >= 1 + depth,
             wake=chat.arrived if chat is not None and depth == 0 else None,
+            waiting=waiting,
             over_budget=over_budget,
             limits=limits,
             models=ModelChoice(
