@@ -92,3 +92,20 @@ async def test_control_checks_auth_protocol_readiness_scope_and_rotation(tmp_pat
                 token.write_text("test-secret-replaced-capability-0123456789abcdef\n")
                 revoked = await ask(5, Capability.QUEUE, None)
                 assert revoked.error == "denied"
+
+
+def test_large_tool_evidence_stays_host_side_before_its_canonical_commit() -> None:
+    from sandbox_science.orchestrator.confinement.host import remote_outcome
+    from sandbox_science.orchestrator.history.retention import fits
+    from sandbox_science.orchestrator.tools import ToolOutcome
+
+    large = "x" * (25 * 1024 * 1024)
+    outcome = ToolOutcome(
+        "small model-facing text", {"execution": {"stdout": large}}, saved={"output": large}
+    )
+    remote = remote_outcome(outcome)
+    assert remote.text == outcome.text
+    assert fits(remote.record, 65536)
+    assert not remote.saved
+    assert outcome.record["execution"]["stdout"] == large
+    assert outcome.saved["output"] == large

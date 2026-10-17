@@ -33,6 +33,8 @@ class Capability(StrEnum):
     HANDSHAKE = "handshake"
     QUEUE = "queue"
     ADMIT = "admit"
+    RESUME_NEXT = "resume_next"
+    RESUME_BRANCH = "resume_branch"
     RUN = "run"
     CANCEL = "cancel"
     MODEL = "model"
@@ -109,7 +111,7 @@ class Channel:
         self._closed = False
 
     async def request(
-        self, capability: Capability, payload: JsonValue, *, timeout: float = 60
+        self, capability: Capability, payload: JsonValue, *, timeout: float | None = 60
     ) -> JsonValue:
         """Send one bounded call. Timeout is ambiguous for a mutating capability."""
         if self._closed:
@@ -190,9 +192,21 @@ class Channel:
         if not self._closed:
             try:
                 await self._write(reply)
-            except (ConnectionError, RuntimeError, TransportError):
-                # The effect remains committed/reconcilable at its owning handler;
-                # a disconnected peer has no acknowledgement to advance from.
+            except TransportError:
+                # Never turn a known bounded-reply violation into a long unknown
+                # timeout. The handler still owns its effect and full evidence.
+                try:
+                    await self._write(
+                        Reply(
+                            id=frame.id,
+                            error="invalid_request",
+                            message="capability reply exceeds its byte bound",
+                        )
+                    )
+                except (ConnectionError, RuntimeError, TransportError):
+                    return
+            except (ConnectionError, RuntimeError):
+                # A disconnected peer has no acknowledgement to advance from.
                 return
 
     async def close(self) -> None:

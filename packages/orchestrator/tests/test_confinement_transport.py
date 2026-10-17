@@ -122,3 +122,18 @@ def test_native_model_metadata_roundtrips_without_python_deserialization() -> No
     assert restored.adapter_state == message.adapter_state
     with pytest.raises(ValidationError):
         WireTurn.model_validate({**cast(dict[str, object], wire.model_dump()), "execute": "code"})
+
+
+async def test_oversized_reply_returns_a_bounded_error_instead_of_timing_out() -> None:
+    async def handler(kind: Capability, value: JsonValue) -> JsonValue:
+        return "x" * MAX_FRAME_BYTES
+
+    left = Channel(lambda frame: right.receive(frame), handler)
+    right = Channel(lambda frame: left.receive(frame), handler)
+    try:
+        with pytest.raises(TransportError, match="reply exceeds") as failed:
+            await left.request(Capability.TOOL, None, timeout=5)
+        assert failed.value.kind == "invalid_request"
+    finally:
+        await left.close()
+        await right.close()

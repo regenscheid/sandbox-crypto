@@ -321,7 +321,7 @@ def test_a_part_left_behind_is_shown_and_stopped_by_down(site: dict[str, Any]) -
     assert shown.returncode == 4
     assert "but the control-service an earlier launcher started still runs" in shown.stdout
     stopped = launcher.command("down")
-    assert "stopped the run-service" in stopped.stdout
+    assert "stopped the control-service" in stopped.stdout
     assert not alive(harness, record)
     assert not layout.record.exists()
 

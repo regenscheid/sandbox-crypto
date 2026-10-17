@@ -21,6 +21,7 @@ from sandbox_science.orchestrator.skills.embeddings import Embedder
 from .embeddings import RuntimeEmbeddings
 from .models import RuntimeModels
 from .runtime_loop import RuntimeLoops
+from .scheduling import Scheduling
 from .server import private_credential, private_token
 from .transport import (
     CONTROL_HEADER,
@@ -30,7 +31,7 @@ from .transport import (
     Channel,
     TransportError,
 )
-from .wire import Hello, ModelAlias, Queue, Ready, payload, typed
+from .wire import Hello, ModelAlias, Ready, payload, typed
 
 
 class RuntimeSettings(Contract):
@@ -129,6 +130,7 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
                     await asyncio.gather(channel.close(), loops.close())
 
             reader = asyncio.create_task(read())
+            scheduling: Scheduling | None = None
             try:
                 ready = typed(
                     Ready,
@@ -138,22 +140,21 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
                 )
                 if ready.control_schema != VERSION or ready.generation != settings.generation:
                     raise TransportError("conflict", "runtime state schema or generation mismatch")
+                scheduling = Scheduling(
+                    channel,
+                    frozenset(ready.projects),
+                    lambda: len(loops.active) < 64,
+                )
                 print("confined agent runtime ready", flush=True)
                 while not reader.done():
-                    queue = typed(Queue, await channel.request(Capability.QUEUE, None, timeout=30))
-                    for entry in queue.entries:
-                        if entry.project not in ready.projects:
-                            raise TransportError(
-                                "denied", "control returned work outside its scope"
-                            )
-                        if len(loops.active) >= 64:
-                            break
-                        await channel.request(Capability.ADMIT, payload(entry), timeout=30)
+                    await scheduling.poll()
                     await clock.sleep(2)
                 await reader
                 raise TransportError("unavailable", "control connection ended")
             finally:
-                await loops.close()
+                if scheduling is not None:
+                    await scheduling.close()
+                await asyncio.gather(channel.close(), loops.close())
                 await socket.close()
                 reader.cancel()
                 with contextlib.suppress(asyncio.CancelledError):

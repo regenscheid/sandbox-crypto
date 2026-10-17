@@ -22,6 +22,7 @@ from sandbox_science.orchestrator.continuity.records import (
 )
 from sandbox_science.orchestrator.control import ControlStore
 from sandbox_science.orchestrator.history.log import RunArchive
+from sandbox_science.orchestrator.history.retention import fits
 from sandbox_science.orchestrator.hooks import Appended, Closing, MessageLog, Notice, TurnHook
 from sandbox_science.orchestrator.images import IMAGE
 from sandbox_science.orchestrator.loop import (
@@ -32,6 +33,7 @@ from sandbox_science.orchestrator.loop import (
     notice_message,
 )
 from sandbox_science.orchestrator.model import ChatModel, ToolCall
+from sandbox_science.orchestrator.notices import REPORT
 from sandbox_science.orchestrator.plan_tools import Plans
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome, operation_id
 
@@ -64,6 +66,19 @@ from .wire import (
 )
 
 
+def remote_outcome(outcome: ToolOutcome) -> ToolOutcome:
+    """Send bounded control-flow metadata while full evidence stays with its host owner."""
+    record = (
+        outcome.record
+        if fits(outcome.record, 65536)
+        else {
+            "transport_preview": True,
+            **({"error": str(outcome.record["error"])[:256]} if "error" in outcome.record else {}),
+        }
+    )
+    return ToolOutcome(outcome.text, record, whole=outcome.whole, image=outcome.image)
+
+
 class Prepared:
     """Connection-owned authority; request payloads cannot replace its context/grants."""
 
@@ -82,6 +97,7 @@ class Prepared:
         self.log, self.folds, self.on_tool = log, folds, on_tool
         self.leases: dict[int, AbstractAsyncContextManager[None]] = {}
         self.shadow: Transcript | None = None
+        self.task_pending = given.task is not None
         self.tool: ToolOutcome | None = None
         self.tool_call: ToolRequest | None = None
         self.tool_notices: list[Notice] = []
@@ -152,7 +168,9 @@ class Prepared:
                 request = typed(LogTool, value)
                 if self.shadow is None or self.pending_calls.get(request.call.id) != request.call:
                     raise TransportError("conflict", "tool intent has no committed model call")
-                expected = operation_id(f"{self.given.run_id}-t{self.shadow.turns}", request.call)
+                expected = operation_id(
+                    f"{self.given.run_id}-t{self.shadow.turns - 1}", request.call
+                )
                 if request.operation != expected or self.intent is not None:
                     raise TransportError("conflict", "tool intent identity differs or is pending")
                 await self.log.start_tool(request.call, request.operation)
@@ -175,7 +193,9 @@ class Prepared:
                     request.call, request.operation, model=request.model, gates=self.hooks
                 )
                 self.tool, self.tool_call = outcome, request
-                return payload(ToolReply(outcome=outcome, toolbox=toolbox_given(self.toolbox)))
+                return payload(
+                    ToolReply(outcome=remote_outcome(outcome), toolbox=toolbox_given(self.toolbox))
+                )
             if kind in (Capability.FOLD_BEFORE, Capability.FOLD_OVERFLOW):
                 request = typed(FoldRequest, value)
                 run = self.sync(request.state)
@@ -276,13 +296,22 @@ class Prepared:
             raise TransportError("conflict", "loop state has not been initialized")
         call, outcome, operation = request.call, request.outcome, request.operation_id
         source = request.message.message()
+        if request.kind == "task":
+            if not self.task_pending or self.given.task is None:
+                raise TransportError("conflict", "this attempt has no uncommitted task")
+            source = {"role": "user", "content": self.given.task}
         if request.kind == "notice":
             notice = request.notice
             if notice is None:
                 raise TransportError("invalid_request", "notice body is absent")
             if notice in self.notices:
                 self.notices.remove(notice)
-            elif notice.source != "report" or notice.ids:
+            elif (
+                notice.source != "report"
+                or notice.ids
+                or notice.user
+                or notice.framing != REPORT.text
+            ):
                 raise TransportError("denied", "notice was not returned by trusted capabilities")
             source = notice_message(notice)
             for known, token in tuple(self.images):
@@ -343,6 +372,8 @@ class Prepared:
         if IMAGE in source:
             message = {**message, IMAGE: source[IMAGE]}
         self.shadow.messages.append(message)
+        if request.kind == "task":
+            self.task_pending = False
         if consumed is not None:
             for key, ids in consumed.items():
                 self.shadow.identities(key, delivered=True).update(ids)
@@ -520,7 +551,7 @@ class HostLoops:
         self.attempts[identity] = prepared
         try:
             result = typed(
-                RunReply, await self.channel.request(Capability.RUN, payload(given), timeout=86400)
+                RunReply, await self.channel.request(Capability.RUN, payload(given), timeout=None)
             )
             if result.attempt != identity:
                 raise TransportError("conflict", "runtime returned another attempt's receipt")

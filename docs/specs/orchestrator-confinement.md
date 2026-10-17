@@ -114,3 +114,27 @@ while the independently running UI retains history, evidence and delivery cursor
 Worker operations must retain their original identities; lost kernels must be
 reported. Validate confirmed teardown and absence of disposable processes/VMs.
 Local fixtures and historical image labs do not establish this acceptance.
+
+## Runtime prerequisites and evidence boundary
+
+Build the orchestrator image from the same source revision as the host control
+service. The launcher requires its full embedded revision and the runtime compares
+that revision, control protocol, control schema and worker protocol before readiness.
+The deployed OpenShell must support the VM driver, image uploads, immutable sandbox
+IDs, providerless create and REST WebSocket upgrades through compiled endpoint policy.
+OpenShell v0.1.3 source contains the REST upgrade relay tests; this is source evidence,
+not a successful local or deployed VM qualification.
+
+The configured model key must itself be scoped by the gateway to the intended model
+aliases and budget, without administrative access. Runtime adapter allowlists constrain
+normal callers, but cannot narrow the underlying authority of a raw credential in a
+compromised VM. Engine/provider/cluster credentials stay with trusted lifecycle code.
+The generated control token is scoped to configured projects; attempts derive their
+session, work and epoch from opaque host capabilities, never request-supplied context.
+
+The VM asks for bounded eligible recovery branches and schedules each selected branch
+through a typed admission request. The trusted coordinator owns dependency validation,
+reconciliation and the session lease. It never selects and runs the next agent loop by
+itself. A branch RPC has no arbitrary wall-clock lifetime; disconnect, explicit Stop
+and the attempt's own limits govern termination. Paid gateway dispatch first commits
+an intent, and an unobserved result remains unknown across replacement.

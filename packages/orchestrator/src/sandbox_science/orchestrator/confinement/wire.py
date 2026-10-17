@@ -26,7 +26,7 @@ from sandbox_science.orchestrator.model import (
     ToolSpec,
 )
 from sandbox_science.orchestrator.pricing import CostSource
-from sandbox_science.orchestrator.projects import FailurePhase, ModelUsage
+from sandbox_science.orchestrator.projects import FailurePhase, ModelUsage, RunName
 from sandbox_science.orchestrator.prompts import PromptPins, Section
 from sandbox_science.orchestrator.skills.index import SkillsGiven
 from sandbox_science.orchestrator.tools import ToolOutcome
@@ -55,6 +55,18 @@ class Ready(Contract):
 class Waiting(Contract):
     project: Identifier
     session: Identifier
+    request: Identifier | None = None
+
+
+class ResumeBranch(Contract):
+    project: Identifier
+    session: Identifier
+    request: Identifier
+    work: RunName
+
+
+class ResumeReady(Contract):
+    work: tuple[RunName, ...] = Field(max_length=4)
 
 
 class Queue(Contract):

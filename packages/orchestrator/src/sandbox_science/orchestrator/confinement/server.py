@@ -51,7 +51,17 @@ from .transport import (
     TransportError,
     serve_socket,
 )
-from .wire import Hello, ModelAlias, Queue, Ready, Waiting, payload, typed
+from .wire import (
+    Hello,
+    ModelAlias,
+    Queue,
+    Ready,
+    ResumeBranch,
+    ResumeReady,
+    Waiting,
+    payload,
+    typed,
+)
 
 
 class ProxySettings(Contract):
@@ -172,16 +182,42 @@ def create_app(settings: ControlSettings) -> web.Application:
                             raise TransportError("invalid_request", "queue accepts no caller scope")
                         await service.maintenance_tick()
                         waiting = [
+                            Waiting(project=project, session=session, request=request)
+                            for project, session, request in await service.waiting_resumes()
+                            if project in settings.projects
+                        ]
+                        waiting.extend(
                             Waiting(project=project, session=session)
                             for project, session in await service.waiting_work()
                             if project in settings.projects
-                        ]
+                        )
                         return payload(Queue(entries=tuple(waiting[:128]), more=len(waiting) > 128))
-                    if kind is Capability.ADMIT:
-                        selected = typed(Waiting, value)
+                    if kind in (Capability.ADMIT, Capability.RESUME_NEXT, Capability.RESUME_BRANCH):
+                        selected = typed(
+                            ResumeBranch if kind is Capability.RESUME_BRANCH else Waiting, value
+                        )
                         if selected.project not in settings.projects:
                             raise TransportError("denied", "project is outside this capability")
-                        return await service.start_selected(selected.project, selected.session)
+                        if kind is Capability.ADMIT:
+                            return await service.start_selected(
+                                selected.project, selected.session, request=selected.request
+                            )
+                        if selected.request is None:
+                            raise TransportError(
+                                "invalid_request", "Resume requires its explicit request"
+                            )
+                        if kind is Capability.RESUME_NEXT:
+                            return payload(
+                                ResumeReady(
+                                    work=await service.resume_next(
+                                        selected.project, selected.session, selected.request
+                                    )
+                                )
+                            )
+                        branch = typed(ResumeBranch, value)
+                        return await service.resume_branch(
+                            branch.project, branch.session, branch.request, branch.work
+                        )
                     return await loops.capability(kind, value)
 
                 channel = Channel(socket.send_str, handle)
