@@ -360,6 +360,14 @@ record; the verifier also accepts the earlier v1 export format. These inputs are
 exact kernel checkpoint. Recovery still needs work/attempt ownership, policy and
 dependency revalidation, pending-operation reconciliation and delivery handling.
 
+### Child persistence failure
+
+A child whose final record or delivery acknowledgement cannot be saved reports a
+failed attempt with `persistence_error`, retaining its partial report and withholding
+the structured successful result. A completed model answer alone is insufficient
+to report `returned`. Already committed evidence remains intact; this classification
+does not authorize replay of effects or pretend an acknowledgement succeeded.
+
 ### Bounded legacy run reads
 
 Materializing a saved `RunRecord` defaults to an 8 MiB byte limit. SQLite incremental

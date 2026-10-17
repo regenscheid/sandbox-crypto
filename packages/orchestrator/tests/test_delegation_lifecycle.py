@@ -17,10 +17,11 @@ from typing import Any, Final
 
 import pytest
 
-from sandbox_science.contracts import ExecutionContext
+from sandbox_science.contracts import ErrorKind, ExecutionContext
 from sandbox_science.orchestrator.delegation import hook
 from sandbox_science.orchestrator.delegation.fence import ChildFence
 from sandbox_science.orchestrator.delegation.hook import Child, ChildEnd, Delegations
+from sandbox_science.orchestrator.delegation.outcome import Outcome
 from sandbox_science.orchestrator.delegation.records import (
     Delegation,
     DelegationRecords,
@@ -31,7 +32,7 @@ from sandbox_science.orchestrator.history import body
 from sandbox_science.orchestrator.ledger import Ledger
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.notices import DELEGATIONS
-from sandbox_science.orchestrator.projects import ProjectStore, run_name
+from sandbox_science.orchestrator.projects import ProjectError, ProjectStore, run_name
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.session_plans import PlanBody, SessionPlans
 from sandbox_science.testing import FakeClock, eventually
@@ -56,6 +57,40 @@ from .test_delegation import delegating as delegating
 from .test_run_service import serving
 
 Message = dict[str, Any]
+
+
+@pytest.mark.parametrize("failure", ["save", "acknowledge"])
+async def test_child_persistence_failure_never_advertises_a_successful_result(
+    delegating: Harness, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    original = ProjectStore.save_run
+
+    def save(store, record):
+        if record.parent is not None:
+            raise ProjectError(ErrorKind.UNAVAILABLE, "fixture disk unavailable")
+        return original(store, record)
+
+    async def acknowledge(outcome, record):
+        raise OSError("fixture delivery acknowledgement unavailable")
+
+    if failure == "save":
+        monkeypatch.setattr(ProjectStore, "save_run", save)
+    else:
+        monkeypatch.setattr(Outcome, "acknowledge", acknowledge)
+    root = await delegating.run(
+        "root",
+        [Reply(calls=[CHECK]), wait(), Reply("The child's persistence failed.")],
+        delegated=[Reply(REPORT)],
+    )
+    (delegation_id,) = started(root)
+    outcome = delegation(delegating, delegation_id)
+    assert (outcome.ended, outcome.stopped) == ("failed", "persistence_error")
+    assert outcome.result is None
+    assert outcome.report == REPORT
+    assert "could not be saved" in outcome.errors[0]
+    assert len(children(delegating, root)) == (0 if failure == "save" else 1)
+
+
 FENCED = {
     "entry": "C-1",
     "revision": 1,

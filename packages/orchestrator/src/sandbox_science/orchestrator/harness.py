@@ -1073,7 +1073,7 @@ class Harness:
         finished = await self.start(admitted, sink, stop=stop)
         if finished.transcript.stopped == "cancelled" and child.deadline.interrupted:
             finished.transcript.stopped = "interrupted"
-        await save(
+        saved_status = await save(
             finished.fields(),
             finished.status,
             finished.hooks,
@@ -1081,6 +1081,16 @@ class Harness:
             error=sink.error,
         )
         transcript = finished.transcript
+        if saved_status == 1 and transcript.failure is None:
+            # Saving or acknowledging failed after the child computed its answer.
+            # Preserve its report, but never advertise an unsettled result as returned.
+            return ChildEnd(
+                "persistence_error",
+                True,
+                transcript.final_text,
+                errors=("the child's record or delivery acknowledgements could not be saved",),
+                alias=request.alias or self.delegated.alias,
+            )
         fence = next((hook for hook in finished.hooks if isinstance(hook, ChildFence)), None)
         found = next((hook for hook in finished.hooks if isinstance(hook, Outcome)), None)
         failed = transcript.failure is not None
