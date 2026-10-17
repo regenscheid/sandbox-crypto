@@ -63,9 +63,12 @@ async def test_control_checks_auth_protocol_readiness_scope_and_rotation(tmp_pat
             with pytest.raises(aiohttp.WSServerHandshakeError) as wrong:
                 await client.ws_connect("/control")
             assert wrong.value.status == 404
-            with pytest.raises(aiohttp.WSServerHandshakeError) as incompatible:
-                await client.ws_connect("/control", headers={**headers, CONTROL_HEADER: "999"})
-            assert incompatible.value.status == 422
+            for rejected in ("1", "999"):
+                with pytest.raises(aiohttp.WSServerHandshakeError) as incompatible:
+                    await client.ws_connect(
+                        "/control", headers={**headers, CONTROL_HEADER: rejected}
+                    )
+                assert incompatible.value.status == 422
             async with client.ws_connect("/control", headers=headers) as socket:
 
                 async def ask(identity: int, kind: Capability, value: object) -> Reply:
@@ -83,6 +86,8 @@ async def test_control_checks_auth_protocol_readiness_scope_and_rotation(tmp_pat
                 assert seen == []
                 hello = await ask(3, Capability.HANDSHAKE, {"image_revision": "a" * 40})
                 assert hello.error is None
+                assert isinstance(hello.payload, dict)
+                assert hello.payload["protocol"] == 2
                 assert seen == ["ready"]
                 with pytest.raises(aiohttp.WSServerHandshakeError) as duplicate:
                     await client.ws_connect("/control", headers=headers)

@@ -42,12 +42,12 @@ MAX_MODEL_RESPONSE_BYTES = 6 * 1024 * 1024
 
 
 class Hello(Contract):
-    protocol: Literal[1] = CONTROL_PROTOCOL
+    protocol: Literal[2] = CONTROL_PROTOCOL
     image_revision: str = Field(min_length=1, max_length=128)
 
 
 class Ready(Contract):
-    protocol: Literal[1] = CONTROL_PROTOCOL
+    protocol: Literal[2] = CONTROL_PROTOCOL
     generation: Identifier
     projects: tuple[Identifier, ...] = Field(min_length=1, max_length=128)
     control_schema: Counter

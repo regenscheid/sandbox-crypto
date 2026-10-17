@@ -16,7 +16,7 @@ from sandbox_science.orchestrator.confinement.transport import (
     Request,
     TransportError,
 )
-from sandbox_science.orchestrator.confinement.wire import WireMessage, WireTurn
+from sandbox_science.orchestrator.confinement.wire import Hello, Ready, WireMessage, WireTurn
 from sandbox_science.orchestrator.model import AssistantMessage, ModelTurn, ToolCall
 
 
@@ -186,3 +186,14 @@ async def test_near_response_cap_assistant_append_sends_native_once() -> None:
     finally:
         await left.close()
         await right.close()
+
+
+def test_handshake_request_and_reply_accept_two_and_reject_one() -> None:
+    hello = {"image_revision": "a" * 40}
+    ready = {"generation": "runtime-test", "projects": ["p"], "control_schema": 1}
+    assert Hello.model_validate({**hello, "protocol": 2}).protocol == 2
+    assert Ready.model_validate({**ready, "protocol": 2}).protocol == 2
+    with pytest.raises(ValidationError, match="literal_error"):
+        Hello.model_validate({**hello, "protocol": 1})
+    with pytest.raises(ValidationError, match="literal_error"):
+        Ready.model_validate({**ready, "protocol": 1})
