@@ -1,5 +1,6 @@
 <!-- SPDX-License-Identifier: MIT -->
 <script lang="ts">
+  import { formatFileSize } from '../lib/format';
   import { uploadsApi, type UploadPage, type UserUpload } from '../lib/uploads';
   import { initialPoll, Poller, type PollState } from '../lib/poller';
   import PollStatus from './PollStatus.svelte';
@@ -66,7 +67,7 @@
 <ul class="upload-list">
   {#each files as file (file.upload_id)}<li>
       <a href={uploadsApi.download(file)} download>{file.filename}</a><small
-        >{(file.size / 1024).toFixed(1)} KiB · Original</small
+        >{formatFileSize(file.size)} · Original</small
       >
       {#if /\.(md|markdown|txt|tex)$/i.test(file.filename) && file.size <= 1024 * 1024}<button
           disabled={busy}

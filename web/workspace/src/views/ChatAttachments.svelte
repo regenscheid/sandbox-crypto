@@ -1,5 +1,6 @@
 <!-- SPDX-License-Identifier: MIT -->
 <script lang="ts">
+  import { formatFileSize } from '../lib/format';
   import { untrack } from 'svelte';
   import { uploadsApi, type UserUpload } from '../lib/uploads';
   import { uploadDraft, flushUploads } from '../lib/uploadDrafts.svelte';
@@ -88,8 +89,7 @@
   {#if files.length || pending.length}<ul class="attachment-cards" aria-label="Message attachments">
       {#each files as file (file.upload_id)}<li>
           <span
-            ><strong>{file.filename}</strong><small
-              >Stored · {(file.size / 1024).toFixed(1)} KiB</small
+            ><strong>{file.filename}</strong><small>Stored · {formatFileSize(file.size)}</small
             ></span
           ><button
             type="button"

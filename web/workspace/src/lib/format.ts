@@ -33,3 +33,10 @@ export function shortRevision(revision: string | null | undefined): string {
   const match = /^(sha256:)([0-9a-f]{12})[0-9a-f]+$/.exec(revision);
   return match ? `${match[1]}${match[2]}…` : revision;
 }
+
+/** Attachment sizes use binary units, matching the upload limit. */
+export function formatFileSize(bytes: number): string {
+  return bytes >= 1024 ** 2
+    ? `${(bytes / 1024 ** 2).toFixed(1)} MiB`
+    : `${(bytes / 1024).toFixed(1)} KiB`;
+}
