@@ -515,6 +515,20 @@ class WorkRecords:
                 "AND root=? AND state NOT IN ('completed','stopped')",
                 (project, session, root),
             )
+            # Claim owns input admission too: an operator may have disconnected
+            # immediately after saving the Resume request. Never unhold another
+            # tree, a terminal branch, or an input already consumed canonically.
+            db.execute(
+                "UPDATE session_messages AS m SET state='queued',updated_at=? "
+                "WHERE m.project_id=? AND m.session_id=? AND m.state='held' AND EXISTS "
+                "(SELECT 1 FROM research_attempts a JOIN research_work w "
+                "USING(project,session,work) WHERE a.project=m.project_id "
+                "AND a.session=m.session_id AND a.run=m.offered AND w.root=? "
+                "AND w.state NOT IN ('completed','stopped')) AND NOT EXISTS "
+                "(SELECT 1 FROM response_receipts r WHERE r.project=m.project_id "
+                "AND r.session=m.session_id AND r.source='messages' AND r.notice=m.message_id)",
+                (self.clock.now().isoformat(), project, session, root),
+            )
         return root, epoch
 
     def complete_request(

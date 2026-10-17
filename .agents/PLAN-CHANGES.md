@@ -4,6 +4,8 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 ## 2026-10-17
 
+- Resume claims atomically admit only their selected tree's held, unconsumed inputs; the workspace no longer globally releases other trees or terminal input ([tree Resume](../docs/specs/tree-resume.md)).
+
 - Preserve consolidation context across Resume and service replacement; ledger changes clear the prerequisite but do not authorize paid continuation. Canonical receipts replace final-save-only delivery ([run service](../docs/specs/run-service.md)).
 
 - **Initial recovery is explicit:** process restart and `replace-orchestrator` preserve unfinished work but do not authorize another paid call. Resume claims a new epoch, reconciles original effects and schedules descendants before parents ([contract](../docs/specs/research-continuity.md#explicit-tree-recovery-coordinator)).

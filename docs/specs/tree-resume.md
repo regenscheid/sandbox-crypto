@@ -20,6 +20,12 @@ the epoch at the worker, and worker effect admission rejects older epochs. Alrea
 admitted effects remain obligations to reconcile. An old runtime cannot mint a new
 epoch or capability. Legacy unowned calls are refused once a session is fenced.
 
+Claiming Resume atomically queues held, unconsumed chat offered to unfinished work
+in the selected tree. This survives interruption immediately after the operator's
+durable request, before a coordinator exists. Other trees, terminal branches and
+canonical consumed receipts are excluded. The workspace does not globally unhold
+chat for a tree Resume; legacy sessions without durable work retain that fallback.
+
 Work states are running, waiting, paused, blocked, completed and stopped. A failed or
 limited attempt pauses work; a missing result blocks it. A completed parent has no
 unfinished descendant or unconsumed child outcome. Stop records a subtree intent

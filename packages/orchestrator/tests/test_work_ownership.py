@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from datetime import UTC, datetime
 
 import pytest
@@ -11,7 +12,9 @@ import pytest
 from sandbox_science.orchestrator.aio import threaded
 from sandbox_science.orchestrator.continuity.records import WorkRecords, authority
 from sandbox_science.orchestrator.control import ControlError
-from sandbox_science.orchestrator.projects import ProjectStore, RunRecord, run_id_of
+from sandbox_science.orchestrator.history import Archive, Entry
+from sandbox_science.orchestrator.history.usage import AnsweredUsage
+from sandbox_science.orchestrator.projects import ModelUsage, ProjectStore, RunRecord, run_id_of
 from sandbox_science.orchestrator.runstate import RunState
 
 from .test_tool_journal import CONTEXT, RUN
@@ -72,6 +75,66 @@ def test_attempts_and_pending_resume_survive_reopen_and_are_idempotent(projects:
     assert works.attempts("p", "s", RUN) == [RUN, CONTINUATION]
     with pytest.raises(ControlError, match="not claimed"):
         works.admit("p", "s", CONTINUATION + "x", work=RUN, predecessor=RUN, epoch=epoch)
+
+
+def test_resume_claim_atomically_recovers_only_its_unconsumed_input(projects: ProjectStore):
+    works, state = WorkRecords(projects.control), RunState(projects.control)
+    works.admit("p", "s", RUN)
+    works.admit("p", "s", CHILD, parent=RUN)
+    works.admit("p", "s", GRANDCHILD, parent=RUN)
+    other = "20261016T040000000000Z-other-root"
+    ids = {RUN: ["own", "consumed"], CHILD: ["done"], GRANDCHILD: ["stopped"]}
+    for run, messages in ids.items():
+        state.acquire("p", "s", run, "fixture")
+        for message in messages:
+            state.post("p", "s", message, "Original input", author="user")
+        state.offer("p", "s", messages, run)
+        state.release("p", "s", "fixture")
+    works.finish(record(CHILD))
+    works.stop("p", "s", GRANDCHILD)
+    works.interrupt("p", "s", RUN)
+    works.admit("p", "s", other)
+    state.acquire("p", "s", other, "fixture")
+    state.post("p", "s", "other", "Unrelated input", author="user")
+    state.offer("p", "s", ["other"], other)
+    state.release("p", "s", "fixture")
+    works.interrupt("p", "s", other)
+    state.hold("p", "s", ["own", "consumed", "done", "stopped", "other"])
+    Archive(projects.control).append(
+        "p",
+        "s",
+        RUN,
+        Entry("assistant", "assistant", "Already incorporated"),
+        model_usage=AnsweredUsage(
+            ordinal=1, observed_at=datetime.now(UTC), usage=ModelUsage(cost=0)
+        ),
+        consumed={"messages": {"consumed"}},
+    )
+    request = works.request("p", "s", RUN)
+    assert request is not None
+    projects.control.close()  # operator disappeared after saving only the request
+    before = works.get("p", "s", RUN).epoch
+    state.acquire("p", "s", CONTINUATION, "fixture")
+    with projects.control.write() as tx:
+        tx.sql.execute(
+            "CREATE TRIGGER fail_resume_input BEFORE UPDATE ON session_messages "
+            "WHEN NEW.state='queued' BEGIN SELECT RAISE(ABORT,'input admission failed'); END"
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="input admission failed"):
+        works.claim("p", "s", request, lease_run=CONTINUATION)
+    assert works.get("p", "s", RUN).epoch == before
+    assert works.queued() == [("p", "s", request, RUN)]
+    assert all(message.state == "held" for message in state.messages("p", "s"))
+    with projects.control.write() as tx:
+        tx.sql.execute("DROP TRIGGER fail_resume_input")
+    works.claim("p", "s", request, lease_run=CONTINUATION)
+    assert {m.message_id: m.state for m in state.messages("p", "s")} == {
+        "own": "queued",
+        "consumed": "held",
+        "done": "held",
+        "stopped": "held",
+        "other": "held",
+    }
 
 
 async def test_delayed_thread_mutations_are_fenced_inside_transaction(projects: ProjectStore):

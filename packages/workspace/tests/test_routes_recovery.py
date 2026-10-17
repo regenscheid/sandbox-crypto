@@ -8,6 +8,7 @@ from pathlib import Path
 from sandbox_science.orchestrator.continuity.models import ModelIntents
 from sandbox_science.orchestrator.continuity.records import WorkRecords
 from sandbox_science.orchestrator.projects import ProjectStore
+from sandbox_science.orchestrator.runstate import RunState
 
 from .route_support import ClientFactory, error_of, origin, workspace
 
@@ -38,6 +39,28 @@ def resolution(identity: str) -> dict[str, object]:
         "reason": "Operator checked provider records; result remains unknown.",
         "cost": 2,
     }
+
+
+async def test_tree_resume_does_not_globally_release_held_messages(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    seed(state_dir)
+    store = ProjectStore(state_dir)
+    try:
+        state = RunState(store.control)
+        state.post("p1", "a", "unrelated", "Held independent input", author="user")
+        state.hold("p1", "a", ["unrelated"])
+        client = await workspace(aiohttp_client, state_dir, static_dir)
+        response = await client.post(
+            ROOT.removesuffix("/recovery") + "/resume", json={}, headers=origin(client)
+        )
+        assert response.status == 200
+        body = await response.json()
+        assert body["resume_request"]
+        assert body["resumed"] == 0  # original inputs are admitted by the durable claim
+        assert state.messages("p1", "a")[0].state == "held"
+    finally:
+        store.close()
 
 
 async def test_status_and_resolution_need_login_and_resolution_needs_origin(

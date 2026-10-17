@@ -919,7 +919,6 @@ async def test_a_research_state_stop_holds_the_messages_until_the_decisions_chan
         works = WorkRecords(service.stores.projects.control)
         original = names(harness)[0]
         assert works.request(PROJECT, SESSION, original) is not None
-        runs(harness).resume(PROJECT, SESSION)  # same explicit action as the workspace endpoint
         await ended(harness, 3)
         assert states(harness)["m-1"] == "held"
         assert works.get(PROJECT, SESSION, original).current != original

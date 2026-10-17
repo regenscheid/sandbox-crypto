@@ -262,7 +262,9 @@ async def resume(request: web.Request) -> web.Response:
     def write() -> str:
         session_record(context.projects, project, session)
         recovery = WorkRecords(context.writer.control).request(project, session)
-        resumed = RunState(context.writer).resume(project, session)
+        # Durable tree claims admit only their own inputs atomically. Global legacy
+        # requeue here could release another tree's or a stopped branch's messages.
+        resumed = RunState(context.writer).resume(project, session) if recovery is None else 0
         return api.dumps(
             Requested(requested=True, resumed=resumed, resume_request=recovery).model_dump(
                 mode="json"
