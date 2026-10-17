@@ -779,10 +779,10 @@ async def _run_task(
             )
             record = {"tool": call.name, "arguments": call.arguments, **outcome.record}
             index = len(transcript.tool_records)
-            transcript.tool_records.append(record)
             retained = (
                 transcript.log.retained_tool(record) if transcript.log is not None else record
             )
+            transcript.tool_records.append(retained)
             if isinstance(transcript.tool_records, Collection):
                 transcript.tool_records.expose_current(index, record)
             try:
@@ -793,7 +793,10 @@ async def _run_task(
                 if outcome.image is not None:
                     viewed.append(outcome.image)
             finally:
-                transcript.tool_records[index] = retained
+                if isinstance(transcript.tool_records, Collection):
+                    transcript.tool_records.release_current(index)
+                else:
+                    transcript.tool_records[index] = retained
                 # Coroutine locals otherwise retain the full last result across the
                 # next model call, including after observer failure or cancellation.
                 del record, outcome

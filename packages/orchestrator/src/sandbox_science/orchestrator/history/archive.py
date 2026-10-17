@@ -53,6 +53,7 @@ from sandbox_science.orchestrator.documents.store import DocumentStore
 from sandbox_science.orchestrator.messages import MESSAGES, thoughts
 from sandbox_science.orchestrator.model import AssistantMessage
 
+from .limits import WorkingMemoryLimitError
 from .operations import (
     CHUNK_BYTES,
     READ_BYTES,
@@ -416,9 +417,30 @@ class Archive:
                 )
         return archived
 
-    def message(self, project: str, message_id: str) -> Archived:
+    def message(self, project: str, message_id: str, *, max_bytes: int | None = None) -> Archived:
         """A message of the project, by its ID."""
         with self.control.read() as tx:
+            if max_bytes is not None:
+                fields = ("content", "native", "tool_calls", "adapter_state")
+                meta = tx.sql.execute(
+                    "SELECT rowid,typeof(content),typeof(native),typeof(tool_calls),"
+                    "typeof(adapter_state) "
+                    "FROM archive_messages WHERE project=? AND message_id=?",
+                    (project, message_id),
+                ).fetchone()
+                if meta is not None:
+                    total = 0
+                    for name, kind in zip(fields, meta[1:], strict=True):
+                        if kind != "null":
+                            with tx.sql.blobopen(
+                                "archive_messages", name, meta[0], readonly=True
+                            ) as blob:
+                                total += len(blob)
+                    if total > max_bytes:
+                        raise WorkingMemoryLimitError(
+                            "one archived message exceeds the working read limit; "
+                            "its original remains in stored evidence"
+                        )
             row = tx.sql.execute(
                 f"SELECT {_COLUMNS} FROM archive_messages "  # noqa: S608 - its own names
                 "WHERE project = ? AND message_id = ?",
@@ -516,6 +538,7 @@ class Archive:
         *,
         run: str | None,
         end: int,
+        candidates: Sequence[str] | None = None,
     ) -> tuple[tuple[str, ...], int | None]:
         """Run identities and first folded position, without reading message bodies."""
         args = (project, session, run, run, run)
@@ -524,8 +547,13 @@ class Archive:
                 "SELECT DISTINCT run FROM archive_messages WHERE "
                 "project=? AND session=? AND (? IS NULL OR run=?) "
                 "AND (? IS NOT NULL OR parent IS NULL) "
-                "AND kind NOT IN ('state_block','spill') ORDER BY run",
-                args,
+                "AND kind NOT IN ('state_block','spill') "
+                "AND (? IS NULL OR run IN (SELECT value FROM json_each(?))) ORDER BY run",
+                (
+                    *args,
+                    json.dumps(candidates) if candidates is not None else None,
+                    json.dumps(candidates) if candidates is not None else None,
+                ),
             ).fetchall()
             first = tx.sql.execute(
                 "SELECT min(position) FROM archive_messages WHERE "

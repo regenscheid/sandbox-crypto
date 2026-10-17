@@ -32,3 +32,10 @@ fixes an additional Python allocation ceiling of 32 MiB, RSS ceiling of 64 MiB a
 final inline record ceiling of 1 MiB. Both scale cases must stay within these bounds;
 a positive full-history control must exceed one of the memory ceilings. This measures
 implementation memory, not model research quality or a live OpenShell deployment.
+
+The scoped history reference is `run-history-v1`. Its collections are internal paged
+indexes; tool rows contain retained references from their first write, while the one
+currently observed full record exists only as a transient overlay. Scratch runtimes
+encode native assistant bytes and adapter provenance explicitly as JSON/base64 rather
+than flattening them into chat dictionaries. Successful-response receipts retain the
+first incorporating assistant message for each source/notice identity.

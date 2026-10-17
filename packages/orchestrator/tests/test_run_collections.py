@@ -99,3 +99,66 @@ async def test_compact_final_record_retains_history_reference(
     assert kept.stored_history["run"] == RUN
     reopened = Collection(projects.control, ("p", "s", RUN), "messages")
     assert reopened[-1]["archive_message"].startswith("msg-")
+
+
+def test_scratch_history_preserves_native_messages_and_adapter_state(tmp_path: Path) -> None:
+    from sandbox_science.orchestrator.history.memory import RunMemory
+    from sandbox_science.orchestrator.model import AssistantMessage
+
+    memory = RunMemory.scratch(tmp_path / "scratch.sqlite3", ("p", "s", "r"))
+    original = AssistantMessage(
+        "Answer",
+        native=b"\x00\xffexact",
+        native_format="fixture",
+        alias="a",
+        model="m",
+        gateway_version="v",
+        prefix="prefix",
+        adapter_state={"generation": 3},
+    )
+    try:
+        messages = memory.messages([original])
+        messages.append(original)
+        for index in (0, 1):
+            restored = messages[index]
+            assert isinstance(restored, AssistantMessage)
+            assert restored.native == original.native
+            assert restored.native_format == original.native_format
+            assert restored.alias == original.alias
+            assert restored.model == original.model
+            assert restored.gateway_version == original.gateway_version
+            assert restored.prefix == original.prefix
+            assert restored.adapter_state == original.adapter_state
+    finally:
+        memory.control.close()
+
+
+async def test_tool_collection_persists_only_preview_during_live_observers(
+    projects: ProjectStore,
+) -> None:
+    from sandbox_science.orchestrator.tools import ToolOutcome
+
+    from .test_tool_journal import CALL
+
+    original = {"text": "x" * 2_000_000}
+
+    async def arithmetic(request):
+        return ToolOutcome("4 (sample)", {"payload": original, "state": "succeeded"})
+
+    class Observer(TurnHook):
+        async def observe_tool(self, run, record):
+            assert run.tool_records[-1]["payload"] is original
+            persisted = Collection(projects.control, ("p", "s", RUN), "tools")[-1]
+            assert "payload" not in persisted
+            assert persisted["_record_storage"]["format"] == "tool-record-v1"
+
+    result = await run_task(
+        ScriptedModel([ModelTurn(None, tool_calls=(CALL,)), ModelTurn("Done")]),
+        toolbox(arithmetic),
+        "Compute",
+        run_id="run-1",
+        hooks=(Observer(),),
+        log=logger(projects),
+    )
+    assert result.stopped == "answered"
+    assert "payload" not in result.tool_records[-1]

@@ -106,6 +106,17 @@ class Collection[T](MutableSequence[T]):
         """Keep only the current tool identity intact through live observers."""
         self.current = (self._index(index), value)
 
+    def release_current(self, index: int) -> None:
+        """Release an observed tool; its bounded representation is already persisted."""
+        if self.current is not None and self.current[0] == self._index(index):
+            self.current = None
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Sequence):
+            return NotImplemented
+        values = cast(Sequence[object], other)
+        return len(self) == len(values) and all(a == b for a, b in zip(self, values, strict=True))
+
     def append_encoded(self, value: object) -> None:
         text = json.dumps(value, ensure_ascii=False, allow_nan=False)
         with self.control.write() as tx:

@@ -76,6 +76,11 @@ def retain(record: dict[str, Any], *, project: str, message: str) -> dict[str, A
     return _copy(preview)
 
 
+def fits(value: object, limit: int) -> bool:
+    """Check a JSON allocation budget without first encoding oversized values."""
+    return _size(value, limit) is not None
+
+
 def _copy(record: dict[str, Any]) -> dict[str, Any]:
     # Called only after the size check; detach nested values before observers can
     # mutate them. JSON also matches the representation committed to the journal.
