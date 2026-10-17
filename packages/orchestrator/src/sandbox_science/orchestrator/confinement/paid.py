@@ -4,21 +4,32 @@
 from collections.abc import Sequence
 from dataclasses import replace
 
-from sandbox_science.orchestrator.model import ChatModel, Message, ModelTurn, ToolSpec
+from sandbox_science.orchestrator.model import (
+    ChatModel,
+    GatewayBudgetError,
+    Message,
+    ModelTurn,
+    ToolSpec,
+)
 from sandbox_science.orchestrator.projects import ModelUsage
 
-from .transport import Capability, Channel
+from .transport import Capability, Channel, TransportError
 from .wire import ModelIntent, ModelKind, ModelObserved, ModelTicket, payload, typed
 
 
 async def begin(channel: Channel, attempt: str, alias: str, kind: ModelKind) -> str:
-    ticket = typed(
-        ModelTicket,
-        await channel.request(
-            Capability.MODEL_INTENT,
-            payload(ModelIntent(attempt=attempt, alias=alias, kind=kind)),
-        ),
-    )
+    try:
+        ticket = typed(
+            ModelTicket,
+            await channel.request(
+                Capability.MODEL_INTENT,
+                payload(ModelIntent(attempt=attempt, alias=alias, kind=kind)),
+            ),
+        )
+    except TransportError as exc:
+        if exc.kind == "denied" and str(exc).startswith("model_budget:"):
+            raise GatewayBudgetError(str(exc)) from None
+        raise
     return ticket.identity
 
 

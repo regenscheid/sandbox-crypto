@@ -164,7 +164,7 @@ async def test_save_acknowledges_every_source_from_the_record(
         ended_at=now,
         stopped=transcript.stopped,
         final_text=transcript.final_text,
-        messages=transcript.messages,
+        messages=list(transcript.messages),
         tools=[],
         delivered={source: sorted(ids) for source, ids in transcript.delivered.items()},
     ).model_dump(mode="json")

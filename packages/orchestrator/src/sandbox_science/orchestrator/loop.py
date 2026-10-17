@@ -832,7 +832,9 @@ async def _run_task(
         # whose token each client turns into its API's image (docs/specs/figures.md, FG-37).
         for notice, token in viewed:
             await _append(
-                transcript, {**notice_message(notice), IMAGE: token}, Appended("notice", notice=notice)
+                transcript,
+                {**notice_message(notice), IMAGE: token},
+                Appended("notice", notice=notice),
             )
         viewed.clear()
         if toolbox.revision != revision:

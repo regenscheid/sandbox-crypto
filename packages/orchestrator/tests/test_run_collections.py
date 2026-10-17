@@ -129,10 +129,13 @@ async def test_compact_final_record_retains_history_reference(
     finished = Finished("run-1", CONTEXT, "Compute", START, result)
     fields = finished.fields()
     assert fields["messages"] == []
-    assert fields["stored_history"]["run"] == RUN
+    reference = fields["stored_history"]
+    assert isinstance(reference, dict)
+    assert reference["run"] == RUN
     assert await save(fields, finished.status, (), projects=projects, error=errors.append) == 0
     assert not errors
     kept = projects.run("p", "s", RUN)
+    assert kept.stored_history is not None
     assert kept.stored_history["run"] == RUN
     reopened = Collection(projects.control, ("p", "s", RUN), "messages")
     assert reopened[-1]["archive_message"].startswith("msg-")
@@ -211,12 +214,17 @@ def test_archive_page_counts_all_retained_payload_fields(
     archive = Archive(projects.control)
     payload = "x" * (60 * 1024 if field == "adapter_state" else 3 * 1024 * 1024)
     for index in range(150 if field == "adapter_state" else 3):
-        fields = (
-            {"adapter_state": {"payload": payload}}
+        entry = (
+            Entry("assistant", "assistant", "tiny", adapter_state={"payload": payload})
             if field == "adapter_state"
-            else {"tool_calls": ({"id": str(index), "function": {"arguments": payload}},)}
+            else Entry(
+                "assistant",
+                "assistant",
+                "tiny",
+                tool_calls=({"id": str(index), "function": {"arguments": payload}},),
+            )
         )
-        row = archive.append("p", "s", RUN, Entry("assistant", "assistant", "tiny", **fields))
+        row = archive.append("p", "s", RUN, entry)
         assert archive.payload_bytes("p", row.message_id) > len(payload)
     with pytest.raises(WorkingMemoryLimitError, match="working read limit"):
         archive.messages("p", "s", run=RUN, limit=200)

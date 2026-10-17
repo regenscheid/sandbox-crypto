@@ -545,11 +545,13 @@ async def test_a_project_that_stopped_delegating_still_gets_its_outcomes(
 
 async def test_a_reached_cost_limit_refuses_a_delegation(delegating: Harness) -> None:
     RunState(ProjectStore(delegating.state).control).set_cost_limit(PROJECT, 0.01)
-    root = await delegating.run("root", [Reply(calls=[CHECK], cost="0.02"), Reply("No budget.")])
+    root = await delegating.run("root", [Reply(calls=[CHECK], cost="0.02")], status=3)
     refused = json.loads(results(root)[0])["error"]
     assert refused["kind"] == "unavailable"
     assert "daily cost limit" in refused["message"]
     assert "delegations" not in root.summaries
+    assert root.stopped == "gateway_budget"
+    assert len(delegating.gateway.main) == 1
 
 
 @pytest.mark.parametrize(

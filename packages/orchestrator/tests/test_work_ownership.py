@@ -23,8 +23,10 @@ CONTINUATION = "20261017T030000000000Z-run-2"
 
 
 def record(name: str, *, stopped: str = "answered") -> RunRecord:
+    run_id = run_id_of(name)
+    assert run_id is not None
     return RunRecord(
-        run_id=run_id_of(name),
+        run_id=run_id,
         context=CONTEXT,
         task="Fixture",
         started_at=datetime.strptime(name.partition("-")[0], "%Y%m%dT%H%M%S%fZ").replace(
@@ -50,6 +52,7 @@ def test_attempts_and_pending_resume_survive_reopen_and_are_idempotent(projects:
     assert works.get("p", "s", RUN).state == "paused"
     assert works.get("p", "s", RUN).reason == "unfinished_children"
     request = works.request("p", "s")
+    assert request is not None
     assert works.request("p", "s") == request
     projects.control.close()
     assert works.queued() == [("p", "s", request, RUN)]
@@ -86,6 +89,7 @@ async def test_delayed_thread_mutations_are_fenced_inside_transaction(projects: 
     await entered.wait()
     works.interrupt("p", "s", RUN)
     request = works.request("p", "s")
+    assert request is not None
     RunState(projects.control).acquire("p", "s", CONTINUATION, "fixture")
     works.claim("p", "s", request, lease_run=CONTINUATION)
     release.set()

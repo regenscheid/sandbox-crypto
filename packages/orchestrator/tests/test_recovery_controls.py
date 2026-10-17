@@ -21,6 +21,7 @@ from sandbox_science.orchestrator.runstate import RunState
 
 from .test_tool_journal import CALL, CONTEXT, RUN
 from .test_tool_journal import projects as projects
+from .test_work_ownership import record
 
 CHILD = "20261016T030001000000Z-child-1"
 
@@ -178,6 +179,26 @@ def test_archive_failure_rolls_back_pending_settlement_and_decision(projects, mo
         assert tx.sql.execute("SELECT count(*) FROM research_observations").fetchone()[0] == 0
 
 
+def test_status_keeps_older_resumable_tree_visible_after_new_root_finishes(projects):
+    works, _ = paused(projects)
+    newer = "20261017T030000000000Z-new-root"
+    works.admit("p", "s", newer)
+    status = RecoveryStatus(projects.control)
+    assert status.page("p", "s").active
+    works.finish(record(newer))
+    page = status.page("p", "s")
+    assert page.root == RUN
+    assert page.unfinished == 1
+    assert not page.active
+    assert [work.work for work in page.works] == [RUN]
+    request = works.request("p", "s")
+    assert request is not None
+    pending = status.page("p", "s")
+    assert pending.root == RUN
+    assert pending.active
+    assert pending.resumes[0].root == RUN
+
+
 def test_status_pages_original_ids_and_resume_reasons(projects):
     works, identity = paused(projects)
     request = works.request("p", "s")
@@ -190,6 +211,9 @@ def test_status_pages_original_ids_and_resume_reasons(projects):
     status = RecoveryStatus(projects.control)
     page = status.page("p", "s", limit=1)
     assert page.works[0].work == RUN
+    assert page.root == RUN
+    assert page.unfinished == 1
+    assert not page.active
     assert page.resumes[0].reason == "unknown_model_outcome"
     pending = status.pending("p", "s", RUN, limit=1)
     assert pending.models[0].identity == identity

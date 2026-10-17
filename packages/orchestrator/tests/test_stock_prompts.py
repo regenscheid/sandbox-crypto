@@ -54,8 +54,8 @@ def kept(transcript: Transcript, context: ExecutionContext = CONTEXT) -> RunReco
         stopped=transcript.stopped,
         failure=transcript.failure,
         final_text=transcript.final_text,
-        messages=transcript.messages,
-        tools=transcript.tool_records,
+        messages=list(transcript.messages),
+        tools=list(transcript.tool_records),
         prompt_provenance=transcript.prompt_provenance,
     )
 

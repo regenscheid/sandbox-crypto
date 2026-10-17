@@ -31,6 +31,7 @@ def prepare(projects: ProjectStore) -> tuple[DelegationRecords, Delegation, Dele
     works.admit("p", "s", RUN)
     works.finish(record(RUN, stopped="turn_limit"))
     request = works.request("p", "s")
+    assert request is not None
     RunState(projects.control).acquire("p", "s", CONTINUATION, "fixture")
     _, epoch = works.claim("p", "s", request, lease_run=CONTINUATION)
     works.admit("p", "s", CONTINUATION, work=RUN, predecessor=RUN, epoch=epoch)
@@ -94,7 +95,7 @@ def test_handback_is_scoped_to_parent_work_and_received_once(
 async def test_continuation_hook_offers_only_prior_attempt_children(projects: ProjectStore) -> None:
     records, own, _ = prepare(projects)
 
-    async def unused(child):
+    async def unused(child, stop):
         raise AssertionError("no child may be started by a handback read")
 
     hook = Delegations(

@@ -12,6 +12,7 @@ from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.control.errors import CONFLICT
 from sandbox_science.orchestrator.history import Archive, Entry
 from sandbox_science.orchestrator.history.operations import ToolJournal, ToolRecord
+from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.question_tool import result
 from sandbox_science.orchestrator.questions import Questions
 from sandbox_science.orchestrator.tools import PDF_SPECS
@@ -80,7 +81,7 @@ class Reconciler:
                 raise ControlError(
                     CONFLICT, "unknown_operation: original worker operation not found"
                 )
-            if execution.state not in TERMINAL_STATES:
+            if execution.state not in TERMINAL_STATES and tool != "start_job":
                 async for _ in self.client.events(
                     execution.execution_id, execution.last_seq, project_id=work.project
                 ):
@@ -92,6 +93,9 @@ class Reconciler:
                     )
             if execution.state == ExecutionState.LOST:
                 raise ControlError(CONFLICT, "lost_operation: worker cannot determine its effect")
+            if tool == "start_job":
+                jobs = JobState(self.control.path.parent, control=self.control)
+                await threaded(jobs.origin, context, execution.execution_id, run)
             record = {"execution": execution.model_dump(mode="json"), "reconciled": True}
             text = json.dumps(record)
             if len(text.encode()) > 1024 * 1024:

@@ -11,7 +11,13 @@ from sandbox_science.contracts import SYSTEM_CLOCK, Clock, new_id
 from sandbox_science.orchestrator.aio import threaded
 from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.control.errors import CONFLICT
-from sandbox_science.orchestrator.model import ChatModel, Message, ModelTurn, ToolSpec
+from sandbox_science.orchestrator.model import (
+    ChatModel,
+    GatewayBudgetError,
+    Message,
+    ModelTurn,
+    ToolSpec,
+)
 from sandbox_science.orchestrator.projects import ModelUsage
 
 from .records import Ownership, check_owner
@@ -112,6 +118,13 @@ class IntentModel:
         self.kind = kind
 
     async def complete(self, messages: Sequence[Message], tools: Sequence[ToolSpec]) -> ModelTurn:
-        identity = await threaded(self.intents.begin, self.owner, kind=self.kind, alias=self.alias)
+        try:
+            identity = await threaded(
+                self.intents.begin, self.owner, kind=self.kind, alias=self.alias
+            )
+        except ControlError as exc:
+            if exc.message.startswith("model_budget:"):
+                raise GatewayBudgetError(exc.message) from None
+            raise
         reply = await self.model.complete(messages, tools)
         return replace(reply, intent_id=identity)

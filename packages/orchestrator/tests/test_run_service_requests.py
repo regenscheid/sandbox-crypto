@@ -17,8 +17,9 @@ from datetime import UTC, datetime, timedelta
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.documents.annotations import Annotations
 from sandbox_science.orchestrator.documents.tool import REQUESTS_TASK
-from sandbox_science.orchestrator.history import Archive, body
-from sandbox_science.orchestrator.projects import ProjectStore
+from sandbox_science.orchestrator.history import Archive, Entry, body
+from sandbox_science.orchestrator.history.usage import AnsweredUsage
+from sandbox_science.orchestrator.projects import ModelUsage, ProjectStore
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.worker_client import WorkerClient
 from sandbox_science.testing import FakeClock, eventually
@@ -40,6 +41,41 @@ from .loop_harness import gateway as gateway
 from .loop_harness import harness as harness
 from .loop_harness import worker as worker
 from .test_run_service import Gate, ended, names, post, runs, serving, states
+
+
+async def test_consumed_chat_and_annotation_survive_without_final_record(harness: Harness) -> None:
+    request = harness.work_request()
+    past = datetime.now(UTC) - timedelta(minutes=5)
+    projects = ProjectStore(harness.state)
+    documents = harness.documents()
+    run = "20261014T000000000000Z-receipt-crash"
+    try:
+        dead = RunState(projects.control, clock=FakeClock(past))
+        dead.acquire(PROJECT, SESSION, run, "a-dead-process")
+        dead.post(PROJECT, SESSION, "already-read", "Consumed question", author="user")
+        dead.offer(PROJECT, SESSION, ["already-read"], run)
+        Annotations(documents, clock=past.timestamp).pending(
+            PROJECT, SESSION, "receipt-crash", seen=set()
+        )
+        Archive(projects.control).append(
+            PROJECT,
+            SESSION,
+            run,
+            Entry("assistant", "assistant", "Both incorporated"),
+            model_usage=AnsweredUsage(
+                ordinal=1, observed_at=datetime.now(UTC), usage=ModelUsage(cost=0)
+            ),
+            consumed={"messages": {"already-read"}, "requests": {request}},
+        )
+    finally:
+        documents.close()
+        projects.close()
+    async with serving(harness, Reply("Must not repeat"), serve=False) as service:
+        await service.maintenance_tick()
+        assert states(harness)["already-read"] == "delivered"
+        assert harness.request_states()[request] == "delivered"
+        assert not service.held.get((PROJECT, SESSION))
+        assert harness.gateway.main == []
 
 
 async def test_a_comment_to_an_idle_session_starts_a_run(harness: Harness) -> None:

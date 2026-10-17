@@ -43,8 +43,8 @@ def record(transcript: Transcript, *, context: ExecutionContext = CONTEXT) -> Ru
         stopped=transcript.stopped,
         failure=transcript.failure,
         final_text=transcript.final_text,
-        messages=transcript.messages,
-        tools=transcript.tool_records,
+        messages=list(transcript.messages),
+        tools=list(transcript.tool_records),
         delivered={source: sorted(ids) for source, ids in transcript.delivered.items()},
     )
 

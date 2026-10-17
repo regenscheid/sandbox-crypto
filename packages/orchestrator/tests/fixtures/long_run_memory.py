@@ -169,7 +169,7 @@ async def measure(root: Path, count: int) -> dict[str, object]:
     _, control_peak = tracemalloc.get_traced_memory()
     assert len(control) == count
     tracemalloc.stop()
-    report = {
+    report: dict[str, object] = {
         "count": count,
         "python_peak": peak,
         "rss_growth": growth,

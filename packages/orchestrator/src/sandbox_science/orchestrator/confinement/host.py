@@ -20,7 +20,7 @@ from sandbox_science.orchestrator.continuity.records import (
     authority,
     check_owner,
 )
-from sandbox_science.orchestrator.control import ControlStore
+from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.history.log import RunArchive
 from sandbox_science.orchestrator.history.retention import fits
 from sandbox_science.orchestrator.hooks import Appended, Closing, MessageLog, Notice, TurnHook
@@ -488,9 +488,14 @@ class HostLoops:
                         raise TransportError(
                             "denied", "auxiliary model role is outside configuration"
                         )
-                    ticket = await threaded(
-                        intents.begin, owner, kind=request.kind, alias=request.alias
-                    )
+                    try:
+                        ticket = await threaded(
+                            intents.begin, owner, kind=request.kind, alias=request.alias
+                        )
+                    except ControlError as exc:
+                        if exc.message.startswith("model_budget:"):
+                            raise TransportError("denied", exc.message) from None
+                        raise
                     return payload(ModelTicket(identity=ticket))
                 observed = typed(ModelObserved, value)
                 with self.control.read() as tx:
