@@ -345,3 +345,94 @@ def test_migration_preserves_old_messages_without_inventing_tool_records(
         assert len(ToolJournal(old).pending("p", "s", RUN)) == 1
     finally:
         old.close()
+
+
+def test_record_pages_preserve_exact_bytes_across_reopen_and_mid_character_cuts(
+    projects: ProjectStore, tmp_path: Path
+) -> None:
+    import hashlib
+
+    from sandbox_science.orchestrator.history.operations import CHUNK_BYTES, READ_BYTES
+
+    full = {"output": "\u00e9\U0001f680\x00\n" * (READ_BYTES // 8), "value": "0123456789"}
+    raw = json.dumps(full, ensure_ascii=False, allow_nan=False).encode()
+    archived = Archive(projects.control).append(
+        "p", "s", RUN, Entry("tool", "tool_result", "sample"), tool_record=ToolRecord(full)
+    )
+    projects.close()
+    readonly = ControlStore(tmp_path / "control.sqlite3", readonly=True)
+    try:
+        archive = Archive(readonly)
+        with pytest.raises(ControlError, match="byte limit"):
+            archive.tool_record("p", archived.message_id)
+        # The API's offsets count bytes. A page may deliberately split a UTF-8 character.
+        cut = raw.index("\u00e9".encode()) + 1
+        first = archive.tool_record_chunk("p", archived.message_id, limit=cut)
+        assert first.data == raw[:cut]
+        with pytest.raises(UnicodeDecodeError):
+            first.data.decode()
+        assert archive.tool_record_chunk("p", archived.message_id, limit=cut) == first
+        offset, digest = 0, hashlib.sha256()
+        while True:
+            page = archive.tool_record_chunk("p", archived.message_id, offset=offset)
+            assert page.total == len(raw)
+            assert page.data == raw[offset : offset + CHUNK_BYTES]
+            assert len(page.data) <= CHUNK_BYTES
+            digest.update(page.data)
+            if page.next_offset is None:
+                break
+            assert page.next_offset == offset + len(page.data)
+            offset = page.next_offset
+        assert digest.digest() == hashlib.sha256(raw).digest()
+        last = archive.tool_record_chunk("p", archived.message_id, offset=len(raw))
+        assert (last.data, last.total, last.next_offset) == (b"", len(raw), None)
+    finally:
+        readonly.close()
+
+
+@pytest.mark.parametrize(
+    ("offset", "limit"),
+    [
+        (-1, 1),
+        (2**62 + 1, 1),
+        (False, 1),
+        (1.5, 1),
+        ("0", 1),
+        (0, 0),
+        (0, -1),
+        (0, 65537),
+        (0, True),
+        (0, 1.5),
+        (0, "1"),
+    ],
+)
+def test_record_pages_refuse_invalid_bounds(projects: ProjectStore, offset, limit) -> None:
+    with pytest.raises(ControlError) as error:
+        Archive(projects.control).tool_record_chunk("p", "missing", offset=offset, limit=limit)
+    assert error.value.kind == "invalid_request"
+
+
+def test_record_pages_are_scoped_and_release_their_read_transaction(projects: ProjectStore) -> None:
+    archive = Archive(projects.control)
+    saved = archive.append(
+        "p", "s", RUN, Entry("tool", "tool_result", "4"), tool_record=ToolRecord({"value": 4})
+    )
+    old = archive.append("p", "s", RUN, Entry("tool", "tool_result", "legacy"))
+    for project, message_id in [
+        ("other", saved.message_id),
+        ("p", old.message_id),
+        ("p", "absent"),
+    ]:
+        with pytest.raises(ControlError) as error:
+            archive.tool_record_chunk(project, message_id)
+        assert error.value.kind == "not_found"
+    first = archive.tool_record_chunk("p", saved.message_id, limit=1)
+    assert not projects.control.in_transaction
+    journal = ToolJournal(projects.control)
+    journal.start(CONTEXT, RUN, "op-between-pages", CALL)
+    assert archive.tool_record_chunk("p", saved.message_id, limit=1) == first
+    with pytest.raises(ControlError) as error:
+        archive.tool_record_chunk("p", saved.message_id, offset=first.total + 1)
+    assert error.value.kind == "invalid_request"
+    assert not projects.control.in_transaction
+    journal.start(CONTEXT, RUN, "op-after-refusal", CALL)

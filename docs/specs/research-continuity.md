@@ -115,10 +115,49 @@ returns 422 with byte counts, and an older message with no journal record return
 The migration preserves older evidence without synthesizing intents or results.
 
 This increment does **not** yet evict historical RAM, deduplicate the legacy final run
-record, implement large-record streaming, persist model-call intent, resume the work
-tree, or move the orchestrator into OpenShell. It supplies durable tool evidence for
+record, persist model-call intent, resume the work tree, or move the orchestrator into
+OpenShell. It supplies durable tool evidence for
 those later steps. Tests use benign in-process arithmetic, storage failures and
 cancellation; they do not establish a live OpenShell boundary or full crash recovery.
+
+## Bounded tool-record retrieval
+
+Full structured results can be retrieved in pages without materializing the complete
+record. `Archive.tool_record_chunk` resolves the project/message reference to the row
+inside a read transaction, then uses a read-only SQLite incremental blob handle on
+the stored JSON text. It closes that handle and transaction before returning bytes.
+Each read is at most 65,536 bytes. It reads the stored UTF-8 representation directly;
+it does not select, cast, parse or re-encode the entire payload. No schema migration or
+copy of existing evidence is required. This follows SQLite's [incremental I/O
+contract](https://www.sqlite.org/c3ref/blob_open.html), which permits read-only access
+to TEXT and BLOB columns.
+
+`GET /api/v0/projects/{project}/messages/{message}/tool-record/chunks` accepts `offset`
+(default 0) and `limit` (default 65,536, range 1–65,536). Offsets are byte offsets, not
+character positions. The typed JSON response contains the message ID, offset, total
+bytes, next offset (null at EOF), and base64-encoded bytes. Consumers decode each page
+and concatenate bytes before parsing UTF-8 JSON; a page may end inside a Unicode
+character. The immutable message reference allows an interrupted reader to retry the
+same page. An offset equal to the total returns an empty final page; a larger offset,
+unknown or duplicate parameters, malformed integers or a request body returns 400.
+Missing or differently scoped records return 404, including legacy messages without
+a journal record. Existing authentication and no-store response rules apply.
+
+Acceptance for this retrieval increment: exact bytes and SHA-256 after closing and
+reopening the store, repeated pages, multibyte boundary cuts, and bounded reads from
+small and 10-times-larger records. In fresh reader processes, the additional Python
+allocation peak must stay below 1 MiB and the additional peak RSS below 8 MiB while
+hashing all pages of each fixture. This gate measures retrieval only: whole-run RAM,
+concurrent-reader admission, record deduplication and bounded finalization remain
+separate requirements. No live OpenShell behavior is claimed.
+
+Local validation on 2026-10-16: 820 affected tests pass, with Python and web static
+checks. The 2 MiB and 20 MiB fixtures required 33 and 321 pages; their additional
+Python allocation peaks were 144,810 and 175,914 bytes, and peak RSS grew 2,072,576
+and 2,138,112 bytes. Both reconstructed hashes matched. A positive control using the
+full-read path on the 20 MiB fixture exceeded both budgets (41,946,627 Python bytes,
+40,280,064 RSS bytes), confirming that the gate detects whole-record loading.
+Independent review and integration remain pending.
 
 ## Acceptance
 

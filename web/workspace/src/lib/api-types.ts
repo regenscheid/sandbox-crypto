@@ -1385,6 +1385,15 @@ export interface Standing {
   by: string | null;
 }
 
+/** One page of exact JSON bytes; join decoded bytes before UTF-8/JSON parsing. */
+export interface ToolRecordChunk {
+  message: string;
+  offset: number;
+  total: number;
+  next_offset: number | null;
+  data_base64: string;
+}
+
 /** One run of the session's tree. */
 export interface TreeRun {
   name: string;

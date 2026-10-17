@@ -53,7 +53,7 @@ from sandbox_science.orchestrator.documents.store import DocumentStore
 from sandbox_science.orchestrator.messages import MESSAGES, thoughts
 from sandbox_science.orchestrator.model import AssistantMessage
 
-from .operations import READ_BYTES, ToolJournal, ToolRecord, save_record
+from .operations import CHUNK_BYTES, READ_BYTES, RecordChunk, ToolJournal, ToolRecord, save_record
 from .reads import Read, encoded
 
 Json = dict[str, Any]
@@ -412,6 +412,14 @@ class Archive:
     def tool_record(self, project: str, message_id: str, *, max_bytes: int = READ_BYTES) -> Json:
         """Full structured evidence behind one tool message, bounded before loading."""
         return ToolJournal(self.control).record(project, message_id, max_bytes=max_bytes)
+
+    def tool_record_chunk(
+        self, project: str, message_id: str, *, offset: int = 0, limit: int = CHUNK_BYTES
+    ) -> RecordChunk:
+        """Exact stored bytes of one tool record, in pages independent of its size."""
+        return ToolJournal(self.control).record_chunk(
+            project, message_id, offset=offset, limit=limit
+        )
 
     def messages(
         self,

@@ -11,23 +11,45 @@ one JSON object a line. It only reads.
 
 from __future__ import annotations
 
+import base64
 import re
-from typing import Final
+from typing import Annotated, Final
 
 from aiohttp import web
+from pydantic import Field, StringConstraints, ValidationError
 
+from sandbox_science.contracts import Contract, Identifier
+from sandbox_science.contracts.model import Counter
 from sandbox_science.orchestrator.documents import DocumentError, DocumentStore
 from sandbox_science.orchestrator.history import Archive
+from sandbox_science.orchestrator.history.operations import CHUNK_BYTES
 
 from . import documents
 
 PATH: Final = "/api/v0/projects/{project}/messages/{message}"
 _MESSAGE: Final = re.compile(r"msg-[0-9a-f]{16}")
+_INTEGER: Final = re.compile(r"[0-9]{1,19}")
+
+
+class ChunkQuery(Contract):
+    offset: Counter = 0
+    limit: Annotated[int, Field(strict=True, ge=1, le=CHUNK_BYTES)] = CHUNK_BYTES
+
+
+class ToolRecordChunk(Contract):
+    """One page of exact JSON bytes; join decoded bytes before UTF-8/JSON parsing."""
+
+    message: Identifier
+    offset: Counter
+    total: Counter
+    next_offset: Counter | None
+    data_base64: Annotated[str, StringConstraints(max_length=4 * ((CHUNK_BYTES + 2) // 3))]
 
 
 def add_routes(app: web.Application) -> None:
     app.router.add_get(PATH, message)
     app.router.add_get(PATH + "/tool-record", tool_record)
+    app.router.add_get(PATH + "/tool-record/chunks", tool_record_chunks)
 
 
 async def message(request: web.Request) -> web.Response:
@@ -70,3 +92,39 @@ async def tool_record(request: web.Request) -> web.Response:
     return await documents.answer(
         request, lambda store: Archive(store).tool_record(project, identifier)
     )
+
+
+async def tool_record_chunks(request: web.Request) -> web.Response:
+    """A bounded page behind the same project scope and authentication as the message."""
+    identifier = request.match_info["message"]
+    if not _MESSAGE.fullmatch(identifier):
+        raise DocumentError("invalid_request", "a message is named by its msg- ID")
+    query = dict(request.query)
+    if (
+        set(query) - {"offset", "limit"}
+        or len(query) != len(request.query)
+        or request.can_read_body
+        or any(not _INTEGER.fullmatch(value) for value in query.values())
+    ):
+        raise DocumentError("invalid_request", "give only offset and limit as byte counts")
+    try:
+        selected = ChunkQuery.model_validate({key: int(value) for key, value in query.items()})
+    except ValidationError:
+        raise DocumentError(
+            "invalid_request", "tool record offset or limit is out of range"
+        ) from None
+    project = request.match_info["project"]
+
+    def read(store: DocumentStore) -> dict[str, object]:
+        found = Archive(store).tool_record_chunk(
+            project, identifier, offset=selected.offset, limit=selected.limit
+        )
+        return ToolRecordChunk(
+            message=identifier,
+            offset=found.offset,
+            total=found.total,
+            next_offset=found.next_offset,
+            data_base64=base64.b64encode(found.data).decode("ascii"),
+        ).model_dump(mode="json")
+
+    return await documents.answer(request, read)

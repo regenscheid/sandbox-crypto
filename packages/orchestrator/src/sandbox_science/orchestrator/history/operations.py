@@ -17,13 +17,35 @@ from datetime import UTC
 from typing import Any, Final, cast
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ExecutionContext
+from sandbox_science.contracts.model import MAX_COUNTER
 from sandbox_science.orchestrator.control import ControlError, ControlStore
-from sandbox_science.orchestrator.control.errors import CONFLICT, INVALID_REQUEST, NOT_FOUND
+from sandbox_science.orchestrator.control.errors import (
+    CONFLICT,
+    INTERNAL,
+    INVALID_REQUEST,
+    NOT_FOUND,
+)
 from sandbox_science.orchestrator.model import ToolCall
 
 READ_BYTES: Final = 1024 * 1024
 """Default byte ceiling for one full intent or result read, checked before loading it."""
 PAGE: Final = 100
+CHUNK_BYTES: Final = 65536
+"""Largest payload page, independent of the size of the original record."""
+
+
+@dataclass(frozen=True)
+class RecordChunk:
+    """A byte range of immutable UTF-8 JSON; decode only after joining the bytes."""
+
+    offset: int
+    total: int
+    data: bytes
+
+    @property
+    def next_offset(self) -> int | None:
+        end = self.offset + len(self.data)
+        return end if end < self.total else None
 
 
 @dataclass(frozen=True)
@@ -135,6 +157,36 @@ class ToolJournal:
                 key,
             ).fetchone()
         return cast(dict[str, Any], json.loads(text))
+
+    def record_chunk(
+        self, project: str, message_id: str, *, offset: int = 0, limit: int = CHUNK_BYTES
+    ) -> RecordChunk:
+        """A bounded byte page, even for records too large for ``record``. Resolve the
+        row in the project scope; keep its read transaction and blob handle local to
+        this one call, never across network waits or consumer cancellation."""
+        if type(offset) is not int or not 0 <= offset <= MAX_COUNTER:
+            raise ControlError(INVALID_REQUEST, "invalid tool record byte offset")
+        if type(limit) is not int or not 1 <= limit <= CHUNK_BYTES:
+            raise ControlError(INVALID_REQUEST, f"tool record limit must be 1 to {CHUNK_BYTES}")
+        with self.control.read() as tx:
+            row = tx.sql.execute(
+                "SELECT rowid,record_bytes FROM archive_tool_records WHERE project=? "
+                "AND message_id=?",
+                (project, message_id),
+            ).fetchone()
+            if row is None:
+                raise ControlError(NOT_FOUND, "no tool record in this scope")
+            row_id, total = row
+            if offset > total:
+                raise ControlError(INVALID_REQUEST, "tool record offset exceeds its byte size")
+            # SELECT/substr/cast of the TEXT can materialize it inside SQLite. Its
+            # incremental byte interface reads only this range, including split UTF-8.
+            with tx.sql.blobopen("archive_tool_records", "record", row_id, readonly=True) as blob:
+                if len(blob) != total:
+                    raise ControlError(INTERNAL, "tool record byte size differs from its metadata")
+                blob.seek(offset)
+                data = blob.read(min(limit, total - offset))
+        return RecordChunk(offset, total, data)
 
 
 def save_record(

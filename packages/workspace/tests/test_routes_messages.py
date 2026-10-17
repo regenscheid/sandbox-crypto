@@ -5,9 +5,15 @@ views' links."""
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
 from pathlib import Path
 
+import pytest
+
 from sandbox_science.orchestrator.history import Archive, Entry
+from sandbox_science.orchestrator.history.operations import CHUNK_BYTES, ToolRecord
 from sandbox_science.orchestrator.projects import ProjectStore
 
 from .route_support import ClientFactory, error_of, workspace
@@ -78,4 +84,89 @@ async def test_tool_record_survives_run_loss_and_is_scoped_and_bounded(
         await client.get("/api/v0/projects/p2/messages/" + saved.message_id + "/tool-record"),
         404,
         "not_found",
+    )
+
+
+async def test_large_record_chunks_are_exact_resumable_scoped_and_authenticated(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    full = {"output": "\u00e9\U0001f680\x00\n" * 160000, "value": "000001"}
+    raw = json.dumps(full, ensure_ascii=False, allow_nan=False).encode()
+    store = ProjectStore(state_dir)
+    try:
+        archive = Archive(store.control)
+        saved = archive.append(
+            "p1", "a", RUN, Entry("tool", "tool_result", "sample"), tool_record=ToolRecord(full)
+        )
+        old = archive.append("p1", "a", RUN, Entry("tool", "tool_result", "old"))
+    finally:
+        store.close()
+    client = await workspace(aiohttp_client, state_dir, static_dir)
+    url = PATH + saved.message_id + "/tool-record/chunks"
+    offset, digest = 0, hashlib.sha256()
+    while True:
+        response = await client.get(url, params={"offset": offset})
+        assert response.status == 200
+        assert response.headers["Cache-Control"] == "no-store"
+        assert len(await response.read()) < 2 * CHUNK_BYTES
+        page = await response.json()
+        assert page["message"] == saved.message_id
+        assert page["offset"] == offset
+        assert page["total"] == len(raw)
+        data = base64.b64decode(page["data_base64"], validate=True)
+        assert data == raw[offset : offset + CHUNK_BYTES]
+        digest.update(data)
+        if offset == 0:
+            assert await (await client.get(url, params={"offset": offset})).json() == page
+        if page["next_offset"] is None:
+            break
+        assert page["next_offset"] == offset + len(data)
+        offset = page["next_offset"]
+    assert digest.digest() == hashlib.sha256(raw).digest()
+    eof = await (await client.get(url, params={"offset": len(raw)})).json()
+    assert eof["next_offset"] is None
+    assert eof["data_base64"] == ""
+    cut = raw.index("\u00e9".encode()) + 1
+    partial = await (await client.get(url, params={"limit": cut})).json()
+    assert base64.b64decode(partial["data_base64"]) == raw[:cut]
+    await error_of(await client.get(url, params={"offset": len(raw) + 1}), 400, "invalid_request")
+    await error_of(
+        await client.get(PATH + old.message_id + "/tool-record/chunks"), 404, "not_found"
+    )
+    await error_of(await client.get(url.replace("/p1/", "/p2/")), 404, "not_found")
+    await error_of(await client.get(url, data=b"unexpected body"), 400, "invalid_request")
+    client.session.cookie_jar.clear()
+    await error_of(await client.get(url), 401, "policy_denied")
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "limit=0",
+        "limit=65537",
+        "limit=-1",
+        "limit=1.5",
+        "limit=1.0",
+        "limit=true",
+        "offset=-1",
+        "offset=",
+        "offset=1e2",
+        "offset=+1",
+        "offset=%201",
+        "offset=0x10",
+        "offset=4611686018427387905",
+        "offset=" + "9" * 100,
+        "offset=0&offset=1",
+        "limit=1&limit=2",
+        "unknown=1",
+    ],
+)
+async def test_record_chunk_query_is_bounded_and_unambiguous(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path, query: str
+) -> None:
+    client = await workspace(aiohttp_client, state_dir, static_dir)
+    await error_of(
+        await client.get(PATH + "msg-" + "0" * 16 + "/tool-record/chunks?" + query),
+        400,
+        "invalid_request",
     )
