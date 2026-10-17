@@ -2,6 +2,8 @@
 
 Date: 2026-10-14. **Status: Approved and built** (`sandbox-science-harness serve`, the workspace's chat routes and the session page's chat panel; [workspace](../WORKSPACE.md#chat)). Waking a session when a detached job ends is not built, nor are the amendments of 2026-10-15 for the [context management](context-management.md) spec RS-9, RS-6c and RS-14; RS-7's, the message's archive header, is built, and so are RS-10's session view and RS-12's message named once, before folds ([as built](context-management.md#as-built)). The owner decided the outline (refactoring plan, decision 5): a small orchestrator run service, one active run per session, messages queued to the run's next safe point, a new run carries earlier tasks and final answers, and a message may start a run within the project's model budget. The questions below were decided on 2026-10-14 by the coordinator under the owner's autonomy mandate, each as recommended. Conventions in the [index](README.md).
 
+**Continuity follow-up (2026-10-16):** D87 confirms parent responsibility and resumability at every level. The [research-continuity draft](research-continuity.md) proposes changes to this specification; it does not change the as-built behavior below.
+
 ## Scope
 
 This spec covers:

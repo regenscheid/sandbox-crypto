@@ -4,10 +4,12 @@ Date: 2026-10-10. This is the design proposal, kept as written except where the 
 
 ## Component boundary
 
+**Confirmed direction, 2026-10-16 (D47):** the agent-facing orchestrator runs in a restricted OpenShell sandbox separate from research workloads. The trusted worker controller, gateway and enforcement services stay outside both. Parent and child model loops may share the orchestration service. Its permitted connections are the model gateway, policy-governed MCP proxy, scoped worker API and required scoped state access. Durable state and the UI's access to it must survive orchestrator replacement. The normal launcher still runs the orchestrator on the host; integrating this boundary is foundation work in [research continuity](specs/research-continuity.md), RC-27 to RC-29.
+
 ```mermaid
 flowchart LR
   B[Browser] --> W[Web GUI / API proxy container]
-  W --> O[Orchestrator / harness container]
+  W --> O[Orchestrator / harness OpenShell sandbox]
   O --> M[Model gateway]
   O --> D[(Project knowledge, documents, sessions and run records)]
   O --> C[Research connector broker]

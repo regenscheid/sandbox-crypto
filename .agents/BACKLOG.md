@@ -301,6 +301,19 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 
 ## Repository
 
+- [ ] Research continuity before the UI redesign (owner, 2026-10-16; D87; [draft](../docs/specs/research-continuity.md), implementation not started):
+  - [ ] Incremental evidence storage, output deduplication and bounded memory, including review, final save and export; RC-F9/F10/F14.
+  - [ ] Durable work/attempt relationships, parent waiting without model polling, environment claims across idle periods, and limit/Stop semantics; RC-F1/F2/F6/F7/F17.
+  - [ ] One orchestrator Resume for the whole selected tree, operation reconciliation, kernel checks and outcome delivery; RC-F3 to RC-F8 and RC-F12/F16. Automatic crash resume remains an owner decision.
+  - [ ] Preserve failed-creation cleanup obligations until the original OpenShell sandbox is confirmed absent; RC-F18 and [runtime review](docs/agent-reports/openshell-foundations-review-2026-10-16.md).
+  - [ ] Integrate the orchestrator's separate restricted OpenShell sandbox (D47): settle durable state and UI/store access, keep trusted lifecycle services outside, use scoped service credentials, then wire launcher startup/replacement and verify RC-F19/F20. Parent and child model loops may share the service.
+  - [ ] Delegated folding with role-specific context and continuity probes; RC-F11.
+  - [ ] Compare state/fold placement and immutable snapshot reuse against actual request prefixes and measured gateway cache usage at run starts and folds; RC-20/RC-21/F13. Context ordering is not decided.
+  - [ ] Generate a versioned skills binding inventory from the worker's installed tools, including provisioning changes, while preserving existing deny rules and namespace/approval checks; RC-23/RC-24/F15. Review the manifest contract first.
+  - [ ] Combined deterministic acceptance and the OpenShell restart cases; report implementation and live verification separately.
+
+- [ ] OpenShell review follow-ups ([2026-10-16 review](docs/agent-reports/openshell-foundations-review-2026-10-16.md)): enforce or explicitly reject unsupported policy CPU/RAM/PID/disk limits; qualify a complete release set and record immutable runtime/image identities. Proposed work, no live changes. The orchestrator boundary is decided in D47 and tracked above.
+
 - [x] Development conventions, uv workspace, CI with license check
 - [x] Plan snapshot tags
 - [x] Fix doc drift: IMPLEMENTATION-PLAN's harness default contradicts D61; ROADMAP M3 says hosted targets were established in M1 (PR #4)
