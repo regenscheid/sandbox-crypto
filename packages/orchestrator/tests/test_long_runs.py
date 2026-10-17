@@ -107,7 +107,7 @@ class Spent(TurnHook):
     name = "budget"
 
     async def halt(self, run: RunView) -> str | None:
-        return "budget"
+        return "budget" if run.turns else None
 
 
 async def test_a_spent_cost_limit_stops_the_run_without_a_report_round() -> None:

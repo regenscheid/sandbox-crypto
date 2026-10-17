@@ -373,6 +373,9 @@ async def test_the_cli_keeps_the_pins_without_credentials(tmp_path, monkeypatch,
         async def __aexit__(self, *args):
             pass
 
+        async def fence(self, request):
+            return request
+
         async def environment(self, environment_id):
             raise WorkerAPIError(ErrorKind.UNSUPPORTED, "a local worker manages no environments")
 

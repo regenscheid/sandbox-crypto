@@ -593,19 +593,17 @@ class ReviewController:
         config, _ = self.store.config(self.context.project_id)
         summary: Json = {
             "classifier": label,
-            "reviews": inline(self.review_ids) or [],
-            "reviews_total": len(self.review_ids),
             "counts": counts,
         }
         if label["label"] == "conversation" or not config.enabled or self.role != "main":
-            return summary
+            return self._review_summary(summary)
         if self.off:
             await self._dispatch("terminal", label)
-            return {**summary, "off": REVIEWS_OFF}
+            return self._review_summary({**summary, "off": REVIEWS_OFF})
         if self.task is not None:
             message = await self._wait(self.task)
             if message is not None:
-                return {**summary, "pending": True, "user_message": message}
+                return self._review_summary({**summary, "pending": True, "user_message": message})
             self.task = None
         # A confirmation consumes finding groups before new feed items, so a full
         # feed cannot starve claimed fixes. At most three windows run at this hold;
@@ -627,7 +625,7 @@ class ReviewController:
             assert self.task is not None  # noqa: S101
             message = await self._wait(self.task)
             if message is not None:
-                return {**summary, "pending": True, "user_message": message}
+                return self._review_summary({**summary, "pending": True, "user_message": message})
             self.task = None
             ended = await asyncio.to_thread(self.store.run, *self.scope, review)
             if ended["state"] in ("failed", "dropped"):
@@ -658,7 +656,16 @@ class ReviewController:
             else:
                 summary["pending"] = True
         summary["counts"] = await asyncio.to_thread(self.notice_store.counts, *self.scope)
-        return summary
+        return self._review_summary(summary)
+
+    def _review_summary(self, summary: Json) -> Json:
+        # A terminal hold may dispatch another window after the initial metadata
+        # snapshot. Refresh the bounded preview and exact count at every return.
+        return {
+            **summary,
+            "reviews": inline(self.review_ids) or [],
+            "reviews_total": len(self.review_ids),
+        }
 
     async def author_call(
         self, name: str, args: Json, operation: str, *, model: str | None = None

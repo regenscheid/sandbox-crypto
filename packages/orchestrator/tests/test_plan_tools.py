@@ -694,6 +694,9 @@ async def test_cli_cancelled_constructor_closes_owner_published_before_thread_re
         async def __aenter__(self):
             return self
 
+        async def fence(self, request):
+            return request
+
         async def environment(self, environment_id):
             raise WorkerAPIError(ErrorKind.UNSUPPORTED, "a local worker manages no environments")
 
