@@ -390,6 +390,9 @@ failed attempt with `persistence_error`, retaining its partial report and withho
 the structured successful result. A completed model answer alone is insufficient
 to report `returned`. Already committed evidence remains intact; this classification
 does not authorize replay of effects or pretend an acknowledgement succeeded.
+An execution that ended in a model error but whose final record and acknowledgements
+were saved remains an `error` attempt. Its unsuccessful exit status does not imply
+that persistence failed. Unknown model intents remain visible for reconciliation.
 
 ### Bounded legacy run reads
 

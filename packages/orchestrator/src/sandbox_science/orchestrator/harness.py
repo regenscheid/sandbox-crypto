@@ -1916,6 +1916,7 @@ async def _save(
     error: Callable[[str], None],
     transcript: Path | None,
 ) -> int:
+    persisted = True
     try:
         # A large record takes long to check and to write: off the event loop, which
         # the session's other runs share.
@@ -1930,6 +1931,7 @@ async def _save(
         except (OSError, ValueError, RecursionError) as exc:
             error(f"the transcript could not be written: {exc}")
             status = 1
+            persisted = False
     if projects is None:
         return status
     try:
@@ -1964,5 +1966,6 @@ async def _save(
         except Exception as exc:
             error(f"the run's {hook.name} could not be acknowledged: {exc}")
             status = 1
-    await threaded(WorkRecords(projects.control).finish, record, persisted=status != 1)
+            persisted = False
+    await threaded(WorkRecords(projects.control).finish, record, persisted=persisted)
     return status
