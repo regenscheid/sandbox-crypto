@@ -49,6 +49,8 @@ from .consistency.controller import ReviewController
 from .consistency.findings import Findings
 from .consistency.models import ReviewConfig
 from .consistency.store import ReviewStore
+from .continuity.hook import WorkHook
+from .continuity.records import WorkRecords, authority
 from .control import ControlError
 from .delegation import prompt as delegated_prompt
 from .delegation.fence import ChildFence
@@ -324,6 +326,10 @@ class RunRequest:
     ``None`` for a child of the root, whose parent is it."""
     may_delegate: bool = False
     """For a delegated task, whether it may delegate tasks once more (PD-15)."""
+    work: str | None = None
+    """A continuation's durable work identity; set only by explicit recovery."""
+    predecessor: str | None = None
+    epoch: int | None = None
     stop_by: Deadline | None = None
     """For a delegated run, when its end must have stopped its own children, which its
     parent sets as it cancels it (PD-39)."""
@@ -612,6 +618,39 @@ class Harness:
         user's, which ends the run ``cancelled``, or, once its loop has ended, leaves the
         run's own outcome.
         """
+        if self.stores is None:
+            return await self._start(admitted, sink, stop=stop)
+        request = admitted.request
+        records = WorkRecords(self.stores.projects.control, clock=self.clock)
+        owner = await threaded(
+            records.admit,
+            request.project,
+            request.session,
+            run_name(admitted.started_at, admitted.run_id),
+            parent=request.parent,
+            work=request.work,
+            predecessor=request.predecessor,
+            epoch=request.epoch,
+        )
+        request = dataclasses.replace(request, work=owner.work, epoch=owner.epoch)
+        admitted = dataclasses.replace(admitted, request=request)
+        with authority(owner):
+            try:
+                return await self._start(admitted, sink, stop=stop, work=WorkHook(records, owner))
+            except BaseException:
+                await threaded(
+                    records.block, owner.project, owner.session, owner.work, "interrupted"
+                )
+                raise
+
+    async def _start(
+        self,
+        admitted: Admitted,
+        sink: RunSink,
+        *,
+        stop: asyncio.Event | None = None,
+        work: WorkHook | None = None,
+    ) -> Finished:
         if admitted.stateful != (self.stores is not None):
             raise ValueError("the run was admitted with other stores than this harness has")
         transcript: Transcript | None = None
@@ -649,6 +688,8 @@ class Harness:
                         stop,
                     )
                     hooks = toolbox.turn_hooks()
+                    if work is not None:
+                        hooks = (*hooks, work)
                     request = admitted.request
                     if view is not None and toolbox.skills is not None:
                         toolbox.skills.hold(view.loaded)  # CM-29b
@@ -1593,6 +1634,41 @@ async def save(
     acknowledgement safely repeats those notices. A hook that fails to acknowledge is
     reported; the others still acknowledge theirs.
     """
+    owner = None
+    if projects is not None:
+        try:
+            candidate = RunRecord.model_validate(fields)
+            owner = await threaded(
+                WorkRecords(projects.control).owner,
+                candidate.context.project_id,
+                candidate.context.session_id,
+                run_name(candidate.started_at, candidate.run_id),
+            )
+        except (ValidationError, RecursionError):
+            pass  # _save preserves the invalid transcript and reports the exact error
+    try:
+        if owner is not None:
+            with authority(owner):
+                return await _save(
+                    fields, status, hooks, projects=projects, error=error, transcript=transcript
+                )
+        return await _save(
+            fields, status, hooks, projects=projects, error=error, transcript=transcript
+        )
+    except ControlError as exc:
+        error(f"the run's ownership or persistence failed: {exc}")
+        return 1
+
+
+async def _save(
+    fields: dict[str, object],
+    status: int,
+    hooks: Sequence[TurnHook],
+    *,
+    projects: ProjectStore | None,
+    error: Callable[[str], None],
+    transcript: Path | None,
+) -> int:
     try:
         # A large record takes long to check and to write: off the event loop, which
         # the session's other runs share.
@@ -1615,6 +1691,8 @@ async def save(
         await threaded(projects.save_run, record)
     except (ProjectError, DocumentError, OSError, ValueError, RecursionError, sqlite3.Error) as exc:
         error(f"the run's record could not be kept: {exc}")
+        if record is not None:
+            await threaded(WorkRecords(projects.control).finish, record, persisted=False)
         return 1
     for hook in hooks:
         try:
@@ -1639,4 +1717,5 @@ async def save(
         except Exception as exc:
             error(f"the run's {hook.name} could not be acknowledged: {exc}")
             status = 1
+    await threaded(WorkRecords(projects.control).finish, record, persisted=status != 1)
     return status

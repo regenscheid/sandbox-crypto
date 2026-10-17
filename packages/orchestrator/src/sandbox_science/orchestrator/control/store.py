@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from . import migrations
+from . import guard, migrations
 from .errors import BUSY, INTERNAL, NOT_FOUND, UNAVAILABLE, ControlError
 
 _log = logging.getLogger(__name__)
@@ -143,6 +143,7 @@ class ControlStore:
             after: list[Callable[[], None]] = []
             self._after = after
             try:
+                guard.check(db)
                 yield Tx(db)
                 db.execute("COMMIT")
             except BaseException:

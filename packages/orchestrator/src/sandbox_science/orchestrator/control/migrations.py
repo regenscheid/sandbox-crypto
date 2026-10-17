@@ -3014,6 +3014,13 @@ def _run_collections(schema: Schema) -> None:
         )
 
 
+def _research_work(schema: Schema) -> None:
+    """Version 62: durable responsibilities and explicit fenced Resume requests."""
+    from sandbox_science.orchestrator.continuity.schema import install
+
+    install(schema)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -3075,6 +3082,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _run_inputs,
     _model_usage,
     _run_collections,
+    _research_work,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

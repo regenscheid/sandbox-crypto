@@ -800,6 +800,10 @@ class Delegations(TurnHook):
             return ()
         return (_handback(found, DELEGATIONS_ATTACHED.text if point == "tool" else None),)
 
+    async def consumption(self) -> Sequence[str]:
+        """Outcomes already present in tool results, consumed by the next response."""
+        return tuple(self.returned)
+
     async def model_returned(self, run: RunView) -> None:
         self.received |= self.returned
         self.returned.clear()

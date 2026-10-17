@@ -215,7 +215,7 @@ class TurnHook:
         return ()
 
     async def halt(self, run: RunView) -> str | None:
-        """Before each model call after the first, and before its notices: the reason the
+        """Before every model call, including the first, and before its notices: the reason the
         run stops there instead, which becomes its ``stopped``, or ``None`` to go on."""
         return None
 
@@ -225,6 +225,10 @@ class TurnHook:
         round and becomes its ``stopped`` (a delegated run's tokens, ``run_budget``), or
         ``None`` to go on (run-service spec, RS-6f)."""
         return None
+
+    async def consumption(self) -> Sequence[str]:
+        """Input IDs already shown by tools, under this hook's source; no display change."""
+        return ()
 
     async def model_returned(self, run: RunView) -> None:
         """After each successful model call, once the loop has counted its deliveries and

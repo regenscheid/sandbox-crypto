@@ -83,7 +83,9 @@ async def test_child_persistence_failure_never_advertises_a_successful_result(
         "root",
         [Reply(calls=[CHECK]), wait(), Reply("The child's persistence failed.")],
         delegated=[Reply(REPORT)],
+        status=3,
     )
+    assert root.stopped == "unfinished_children"
     (delegation_id,) = started(root)
     outcome = delegation(delegating, delegation_id)
     assert (outcome.ended, outcome.stopped) == ("failed", "persistence_error")

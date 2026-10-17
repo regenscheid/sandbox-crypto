@@ -352,6 +352,13 @@ async def _notices(hooks: Sequence[TurnHook], point: Point, transcript: Transcri
         await _offer(transcript, await hook.notices(point, transcript))
 
 
+async def _consumption(hooks: Sequence[TurnHook], transcript: Transcript) -> None:
+    for hook in hooks:
+        ids = await hook.consumption()
+        if ids:
+            transcript.identities(hook.name).update(ids)
+
+
 async def _model_returned(hooks: Sequence[TurnHook], transcript: Transcript) -> None:
     for source, ids in transcript.offered.items():
         transcript.identities(source, delivered=True).update(ids)
@@ -673,6 +680,7 @@ async def _report(
         return  # no room for the call: the run stops as before, without a report
     await _offer(transcript, (notice,))
     transcript.turns += 1
+    await _consumption(hooks, transcript)
     reply = await _complete(model, toolbox, transcript)
     while reply is None and transcript.overflowed and folds is not None:
         if not await folds.overflow(transcript):
@@ -716,7 +724,7 @@ async def _run_task(
     revision = toolbox.revision
     guard = Runaway()
     for turn in range(transcript.max_turns):
-        if turn and await _halted(hooks, transcript):
+        if await _halted(hooks, transcript):
             return transcript
         if turn and (last := await _last_call(hooks, transcript)) is not None:
             await _report(model, toolbox, transcript, hooks, *last)
@@ -727,6 +735,7 @@ async def _run_task(
         if folds is not None and not await folds.before_call(transcript):
             await _out_of_room(hooks, transcript)
             return transcript
+        await _consumption(hooks, transcript)
         reply = await _complete(model, toolbox, transcript)
         # A context error folds once and tries once more; the fold engine says when not.
         while reply is None and transcript.overflowed and folds is not None:
