@@ -185,7 +185,13 @@ class RunService:
                     await self._ended(project, session, active.run)
 
     async def tick(self) -> None:
-        """One look at the control store."""
+        """One local-service cycle; confined runtimes select work through capabilities."""
+        await self.maintenance_tick()
+        for project, session in await self.waiting_work():
+            await self.start_selected(project, session)
+
+    async def maintenance_tick(self) -> None:
+        """Renew/reconcile existing authority without selecting or admitting new roots."""
         now = self.clock.monotonic()
         if now - self._beaten >= BEAT_SECONDS:
             await threaded(self.runs.beat, self.holder)
@@ -220,33 +226,51 @@ class RunService:
         for key in await threaded(self.runs.held_for, RESEARCH_STATE):
             if key not in self.active:
                 await self._consolidated(*key)
+
+    async def waiting_work(self) -> tuple[tuple[str, str], ...]:
+        """Enumerate eligible work without admitting or starting an agent loop."""
         waiting = set(await threaded(self.runs.waiting))
         for project, session, request in await threaded(self.annotations.waiting):
             if request not in self.held.get((project, session), ()):
                 waiting.add((project, session))
-        for key in sorted(waiting):
-            if key in self.active or self.waiting_until.get(key, now) > now:
-                continue
-            consolidate = False
-            if key in self.marks:
-                queued = await threaded(self.runs.messages, *key, state="queued")
-                held = [m.message_id for m in queued if m.reason == RESEARCH_STATE]
-                new = [m for m in queued if m.reason != RESEARCH_STATE]
-                if held and not new:  # the user resumed them alone: the run starts
-                    self.marks.pop(key)
-                else:
-                    # Writing again queued the held ones with the new one (RS-12): they
-                    # wait again, and the new one starts a consolidation run.
-                    await threaded(self.runs.hold, *key, held, RESEARCH_STATE)
-                    self._hold(*key, await self._requests(*key))
-                    if not new:
-                        continue
-                    consolidate = True
-            # Not while a lease is left, even an expired one: it may have expired since
-            # the look for dead leases above, and the next look ends its run first.
-            if not await threaded(self.runs.leased, *key):
-                active = self.active[key] = _Active(consolidate=consolidate)
-                active.task = asyncio.create_task(self._run(*key, active))
+        now = self.clock.monotonic()
+        return tuple(
+            key
+            for key in sorted(waiting)
+            if key not in self.active and self.waiting_until.get(key, now) <= now
+        )
+
+    async def start_selected(self, project: str, session: str) -> bool:
+        """Validate a runtime-selected queue entry and own its trusted bookkeeping.
+
+        Selection grants nothing: recheck queue eligibility and the session lease.
+        The configured harness loop runner owns actual agent-loop execution.
+        """
+        key = project, session
+        if key not in await self.waiting_work():
+            return False
+        consolidate = False
+        if key in self.marks:
+            queued = await threaded(self.runs.messages, *key, state="queued")
+            held = [m.message_id for m in queued if m.reason == RESEARCH_STATE]
+            new = [m for m in queued if m.reason != RESEARCH_STATE]
+            if held and not new:
+                self.marks.pop(key)
+            else:
+                await threaded(self.runs.hold, *key, held, RESEARCH_STATE)
+                self._hold(*key, await self._requests(*key))
+                if not new:
+                    return False
+                consolidate = True
+        if await threaded(self.runs.leased, *key):
+            return False
+        # No await separates this final active check from assignment. Concurrent
+        # runtime admissions cannot create duplicate bookkeeping tasks here.
+        if key in self.active:
+            return False
+        active = self.active[key] = _Active(consolidate=consolidate)
+        active.task = asyncio.create_task(self._run(*key, active))
+        return True
 
     async def _ended(self, project: str, session: str, run: str, *, hold: bool = True) -> None:
         """End a run whose holder is gone (RS-12): from its record if it was saved,

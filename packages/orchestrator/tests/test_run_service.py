@@ -901,3 +901,19 @@ async def test_a_research_state_stop_holds_the_messages_until_the_decisions_chan
         await eventually(lambda: states(harness)["m-1"] == "held", timeout=20)
         runs(harness).resume(PROJECT, SESSION)  # the user resumes: a run starts
         await eventually(lambda: len(names(harness)) == 4, timeout=20)
+
+
+async def test_confined_queue_selection_does_not_start_roots_until_selected(
+    harness: Harness,
+) -> None:
+    async with serving(harness, Reply("Selected."), serve=False) as service:
+        service.runs.post(PROJECT, SESSION, "msg-selected", "Do this", author="user")
+        await service.maintenance_tick()
+        assert await service.waiting_work() == ((PROJECT, SESSION),)
+        assert not service.active
+        assert not await service.start_selected(PROJECT, "not-queued")
+        assert await service.start_selected(PROJECT, SESSION)
+        assert not await service.start_selected(PROJECT, SESSION)
+        task = service.active[PROJECT, SESSION].task
+        assert task is not None
+        await task
