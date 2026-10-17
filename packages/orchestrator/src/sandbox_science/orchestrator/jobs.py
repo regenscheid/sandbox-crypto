@@ -416,7 +416,7 @@ class JobTools:
     async def cancel(self, args: dict[str, Any], operation: str) -> tuple[str, dict[str, Any]]:
         job = await self.owned(self.job_id(args))
         execution = await self.client.cancel(
-            job.execution.execution_id, project_id=self.context.project_id
+            job.execution.execution_id, project_id=self.context.project_id, context=self.context
         )
         self.check_owner(execution)
         if execution.execution_id != job.execution.execution_id:

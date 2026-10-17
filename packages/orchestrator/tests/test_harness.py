@@ -406,7 +406,13 @@ class AdmittingClient(WorkerClient):
         super().__init__("http://127.0.0.1:9", TOKEN)
         self.asked: list[tuple[str, list[HostPort]]] = []
 
-    async def admit_hosts(self, environment_id: str, hosts: Sequence[HostPort]) -> AdmissionResult:
+    async def admit_hosts(
+        self,
+        environment_id: str,
+        hosts: Sequence[HostPort],
+        *,
+        context: ExecutionContext | None = None,
+    ) -> AdmissionResult:
         self.asked.append((environment_id, list(hosts)))
         now = datetime.now(UTC)
         decisions = tuple(

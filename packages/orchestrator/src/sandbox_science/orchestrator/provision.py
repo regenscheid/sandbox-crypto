@@ -194,7 +194,9 @@ class ProvisionTools:
         if not isinstance(provision_id, str) or not _IDENTIFIER.fullmatch(provision_id):
             return _failure(ErrorKind.INVALID_REQUEST, "operation must be an operation's ID")
         if args.get("cancel") is True:
-            found = await self.client.cancel_provision(provision_id, project_id=project_id)
+            found = await self.client.cancel_provision(
+                provision_id, project_id=project_id, context=self._context(args)
+            )
         else:
             found = await self.client.provision_status(provision_id, project_id=project_id)
         wait = _seconds(args.get("wait_seconds"), 0.0)

@@ -80,6 +80,7 @@ from sandbox_science.policy.store import PolicyStore, StoreError
 from .claims import EnvironmentClaims
 from .errors import WorkerError
 from .provisioner import Governing
+from .recovery_fence import check_dispatch
 from .settings import EnvironmentSettings, OpenShellBackendSettings
 from .timeouts import seconds
 
@@ -164,6 +165,7 @@ class OpenShellCli:
 
     async def run(self, *args: str, timeout: float = 120.0) -> str:
         """Run a command and return its output; raise ``unavailable`` if it fails."""
+        check_dispatch()
         try:
             process = await asyncio.create_subprocess_exec(
                 self.cli,
@@ -484,6 +486,7 @@ class Environments:
         """Retain a ready environment for active research, within bounded expiry."""
         context = request.context
         async with self._lock(context.environment_id):
+            check_dispatch()
             info = self.get(context.environment_id)
             if info.project_id != context.project_id:
                 raise WorkerError(ErrorKind.NOT_FOUND, "no environment in this project")
@@ -732,11 +735,13 @@ class Environments:
                     ErrorKind.CONFLICT, f"environment {environment_id!r} is {info.state}"
                 )
             policy = self._policy(info.policy)
+            check_dispatch()
             decisions = await asyncio.to_thread(self._decide, policy, requests)
             compiled, decisions = await asyncio.to_thread(
                 self._settle, policy, info.admitted_hosts, decisions
             )
             admitted = compiled.admitted
+            check_dispatch()
             if set(admitted) != set(info.admitted_hosts):
                 new = sorted(set(admitted) - set(info.admitted_hosts))
                 await self._set_policy(info, info.policy, compiled)
@@ -1071,6 +1076,7 @@ class Environments:
             elif document.get("id") != info.sandbox_id:
                 await self._abandon(info, f"sandbox {info.sandbox} has another identity")
             elif document.get("phase") != "Ready":
+                check_dispatch()
                 await self.cli.run("sandbox", "start", info.sandbox, timeout=timeout)
             sandbox_id = await self._wait_ready(info.sandbox, timeout)
         except WorkerError as error:
@@ -1191,6 +1197,7 @@ class Environments:
     async def _set_policy(self, info: EnvironmentInfo, revision: str, compiled: Compiled) -> None:
         """Replace the sandbox's network sections, keeping the filesystem section it reports."""
         live = await self._live_filesystem(info.sandbox)
+        check_dispatch()
         document = compiled.policy.with_filesystem(live)
         path = self._write(info.environment_id, revision, document.to_yaml())
         await self.cli.run(

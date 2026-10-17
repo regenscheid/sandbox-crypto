@@ -67,6 +67,12 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.contracts.artifact_inventory import MAX_ARTIFACT_BYTES, ArtifactSnapshot
 from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
+from sandbox_science.contracts.recovery import (
+    EffectControl,
+    OperationLookup,
+    OperationLookupRequest,
+    RecoveryFence,
+)
 from sandbox_science.contracts.revisions import (
     MAX_LOCKFILE_BYTES,
     MAX_REVISION_PAGE,
@@ -305,13 +311,19 @@ class WorkerClient:
     async def delete_environment(self, environment_id: str) -> EnvironmentInfo:
         return await self._call("DELETE", f"/v1/environments/{environment_id}", EnvironmentInfo)
 
-    async def admit_hosts(self, environment_id: str, hosts: Sequence[HostPort]) -> AdmissionResult:
+    async def admit_hosts(
+        self,
+        environment_id: str,
+        hosts: Sequence[HostPort],
+        *,
+        context: ExecutionContext | None = None,
+    ) -> AdmissionResult:
         """Have the worker admit hosts before code contacts them (D69)."""
         return await self._call(
             "POST",
             f"/v1/environments/{environment_id}/admissions",
             AdmissionResult,
-            AdmissionRequest(hosts=tuple(hosts)),
+            AdmissionRequest(hosts=tuple(hosts), context=context),
         )
 
     async def revisions(
@@ -336,6 +348,34 @@ class WorkerClient:
             Lockfile,
             max_bytes=MAX_LOCKFILE_BYTES,
         )
+
+    async def fence(self, request: RecoveryFence) -> RecoveryFence:
+        """Install a session epoch; requires the host service's recovery-control credential."""
+        return (
+            await self._request(
+                "POST",
+                "/v1/recovery/fence",
+                RecoveryFence,
+                request,
+                max_bytes=4096,
+                total_timeout=10,
+                allow_redirects=False,
+            )
+        )[0]
+
+    async def lookup(self, context: ExecutionContext, operation_id: str) -> OperationLookup:
+        """Observe an original operation without resubmission, wake or executor connection."""
+        return (
+            await self._request(
+                "POST",
+                "/v1/operations/lookup",
+                OperationLookup,
+                OperationLookupRequest(context=context, operation_id=operation_id),
+                max_bytes=32 * 1024 * 1024,
+                total_timeout=10,
+                allow_redirects=False,
+            )
+        )[0]
 
     # Provisioning operations (Conda provisioning, CP-1 to CP-25).
 
@@ -366,12 +406,17 @@ class WorkerClient:
         )
 
     async def cancel_provision(
-        self, provision_id: str, *, project_id: str | None = None
+        self,
+        provision_id: str,
+        *,
+        project_id: str | None = None,
+        context: ExecutionContext | None = None,
     ) -> ProvisionOperation:
         return await self._call(
             "POST",
             f"/v1/provisioning/{provision_id}/cancel",
             ProvisionOperation,
+            EffectControl(context=context) if context is not None else None,
             params=_project(project_id),
         )
 
@@ -401,11 +446,18 @@ class WorkerClient:
             max_bytes=MAX_EVENT_BYTES,
         )
 
-    async def cancel(self, execution_id: str, *, project_id: str | None = None) -> Execution:
+    async def cancel(
+        self,
+        execution_id: str,
+        *,
+        project_id: str | None = None,
+        context: ExecutionContext | None = None,
+    ) -> Execution:
         return await self._call(
             "POST",
             f"/v1/executions/{execution_id}/cancel",
             Execution,
+            EffectControl(context=context) if context is not None else None,
             params=_project(project_id),
         )
 

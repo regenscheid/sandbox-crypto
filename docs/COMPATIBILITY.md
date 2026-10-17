@@ -13,6 +13,8 @@ The orchestrator, the workspace and the worker of one release are upgraded toget
 
 The executor ships inside the worker package, so its protocol with the worker is internal to one release. Executor protocol 3 enforces current generated binding restrictions and surviving-kernel inventory digests; earlier executors must be recycled before binding-bearing calls or cells are admitted. A policy that uses a new policy field, such as `packages.agpl_exceptions`, needs a policy library that knows it in the worker, the policy middleware and the MCP proxy, so they are upgraded together too.
 
+Worker protocol 8 also carries optional host-built execution authority, scoped operation lookup, and recovery epoch installation ([worker recovery authority](specs/worker-recovery-authority.md)). Missing authority preserves legacy context serialization; once a session is fenced, unowned agent mutations are denied. Authenticated operator permission is independent of the context's actor name.
+
 ## Request identity
 
 A client names each operation with an ID of its own. The worker stores the request's digest with the operation; the same ID sent again with the same request returns the same execution or provisioning operation, and with a different request it is a `conflict` ([tools spec](specs/tools.md#lifecycle-idempotency-and-reconnection)).

@@ -85,8 +85,13 @@ class ScriptedClient(WorkerClient):
         return self._next(after + 1)
 
     async def cancel_provision(
-        self, provision_id: str, *, project_id: str | None = None
+        self,
+        provision_id: str,
+        *,
+        project_id: str | None = None,
+        context: ExecutionContext | None = None,
     ) -> ProvisionOperation:
+        assert context == CONTEXT
         self.cancelled.append(provision_id)
         return self._next(9)
 

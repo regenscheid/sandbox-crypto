@@ -1339,7 +1339,9 @@ class Toolbox:
                 f"hosts must be a list of 1 to {MAX_ADMISSION_HOSTS} host names",
             )
         wanted = [_host_port(host) for host in cast(list[str], hosts)]
-        result = await self.client.admit_hosts(self.context.environment_id, wanted)
+        result = await self.client.admit_hosts(
+            self.context.environment_id, wanted, context=self.context
+        )
         decisions = [decision.model_dump(mode="json") for decision in result.decisions]
         lines = [
             f"{d.host}:{d.port} reachable"

@@ -14,6 +14,7 @@ from typing import Annotated, Final
 
 from pydantic import Field, StringConstraints
 
+from .context import ExecutionContext
 from .model import Contract, Identifier
 
 PolicyRevision = Annotated[str, StringConstraints(pattern=r"^sha256:[0-9a-f]{64}$")]
@@ -85,6 +86,7 @@ class AdmissionRequest(Contract):
     """
 
     hosts: tuple[HostPort, ...] = Field(min_length=1, max_length=MAX_ADMISSION_HOSTS)
+    context: ExecutionContext | None = Field(default=None, exclude_if=lambda v: v is None)
 
 
 class AdmissionDecision(Contract):

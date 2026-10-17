@@ -22,6 +22,7 @@ from typing import Any, Final, cast
 from sandbox_science.contracts import ErrorKind, new_id
 
 from .errors import ExecutorRefusalError, WorkerError
+from .recovery_fence import check_dispatch
 from .timeouts import seconds
 
 _log = logging.getLogger(__name__)
@@ -197,6 +198,7 @@ class ExecutorChannel:
         try:
             try:
                 async with asyncio.timeout(self.timeouts.write), self._write_lock:
+                    check_dispatch(op)
                     process.stdin.write(line.encode())
                     await process.stdin.drain()
             except TimeoutError as exc:

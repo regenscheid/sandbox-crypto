@@ -70,6 +70,7 @@ from sandbox_science.contracts.documents import (
 from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
 from sandbox_science.contracts.lockfile_diffs import LockfileDiffPage, LockfileSelection
 from sandbox_science.contracts.provision_observations import MAX_OBSERVATION_BYTES
+from sandbox_science.contracts.recovery import EffectControl, OperationLookupRequest, RecoveryFence
 from sandbox_science.contracts.revision_packages import RevisionPackagePage
 from sandbox_science.contracts.revisions import MAX_REVISION_PAGE
 from sandbox_science.contracts.worker import (
@@ -84,7 +85,9 @@ from .environments import Environments
 from .errors import WorkerError
 from .lockfile_diffs import LockfileDiffs, Pair
 from .manager import ExecutionManager
+from .operation_lookup import lookup
 from .provisioner import MAX_WAIT, RESERVED_OPERATION, Provisioner
+from .recovery_fence import operator_scope
 from .settings import ClientSettings, token_digest
 from .suspend import busy
 from .timeouts import seconds
@@ -122,6 +125,8 @@ class Client:
     projects: frozenset[str] | None
     max_environments: int | None = None
     document_catalog: bool = False
+    recovery_control: bool = False
+    operator: bool = False
 
     def allows(self, project_id: str) -> bool:
         return self.projects is None or project_id in self.projects
@@ -168,13 +173,15 @@ def create_app(
     if clients and environments is None:
         raise ValueError("clients need managed environments to keep their projects apart")
     expected = f"Bearer {token}".encode()
-    pool = Client("pool", None, document_catalog=True)
+    pool = Client("pool", None, document_catalog=True, recovery_control=True, operator=True)
     by_digest = {
         c.token_sha256: Client(
             c.name,
             frozenset(c.projects),
             c.max_environments,
             c.document_catalog,
+            c.recovery_control,
+            c.operator,
         )
         for c in clients
     }
@@ -207,7 +214,8 @@ def create_app(
         request[_CLIENT] = client
         try:
             _check_protocol(request)
-            response = await handler(request)
+            with operator_scope(client.operator):
+                response = await handler(request)
         except WorkerError as error:
             response = _error(error.kind, error.message, error.status)
         except ValidationError as exc:
@@ -311,6 +319,8 @@ def create_app(
             web.post("/v1/provisioning/{provision_id}/cancel", cancel_provision),
             web.get("/v1/capabilities", capabilities),
             web.post("/v1/executions", submit),
+            web.post("/v1/operations/lookup", lookup_operation),
+            web.post("/v1/recovery/fence", install_recovery_fence),
             web.get("/v1/jobs", list_jobs),
             web.get("/v1/jobs/{execution_id}", job_status),
             web.get("/v1/executions/{execution_id}", get_execution),
@@ -645,7 +655,8 @@ async def environment_claim(request: web.Request) -> web.Response:
         return _json(
             EnvironmentClaimResult(environment_id=body.context.environment_id, state="unmanaged")
         )
-    return _json(await environments.claim(body))
+    with request.app[MANAGER].store.recovery_fences.bind(body.context):
+        return _json(await environments.claim(body))
 
 
 async def revise_environment(request: web.Request) -> web.Response:
@@ -668,6 +679,22 @@ async def admit_hosts(request: web.Request) -> web.Response:
     body = AdmissionRequest.model_validate_json(await _body(request))
     environments = _environments(request)
     environment_id = _environment(request, environments)
+    if body.context is not None:
+        _context(request, body.context, hide=True)
+        if body.context.environment_id != environment_id:
+            raise WorkerError(ErrorKind.NOT_FOUND, "admission is outside the supplied context")
+        with request.app[MANAGER].store.recovery_fences.bind(body.context):
+            return await _admit_hosts(request, environments, environment_id, body)
+    if _client(request).operator or _client(request).recovery_control:
+        return await _admit_hosts(request, environments, environment_id, body)
+    project = environments.get(environment_id).project_id
+    with request.app[MANAGER].store.recovery_fences.bind_project(project):
+        return await _admit_hosts(request, environments, environment_id, body)
+
+
+async def _admit_hosts(
+    request: web.Request, environments: Environments, environment_id: str, body: AdmissionRequest
+) -> web.Response:
     if not environments.settings.admission:
         raise WorkerError(ErrorKind.UNSUPPORTED, "this pool does not admit hosts on demand")
     await environments.resume(environment_id)
@@ -779,6 +806,20 @@ async def capabilities(request: web.Request) -> web.Response:
     return _json(offered)
 
 
+async def install_recovery_fence(request: web.Request) -> web.Response:
+    if not _client(request).recovery_control:
+        raise WorkerError(ErrorKind.POLICY_DENIED, "client lacks recovery control permission")
+    body = RecoveryFence.model_validate_json(await _body(request))
+    _allowed(request, body.project_id)
+    return _json(request.app[MANAGER].store.recovery_fences.install(body))
+
+
+async def lookup_operation(request: web.Request) -> web.Response:
+    body = OperationLookupRequest.model_validate_json(await _body(request))
+    _allowed(request, body.context.project_id)
+    return _json(lookup(request.app[MANAGER].store, body))
+
+
 async def submit(request: web.Request) -> web.Response:
     execution_request = _REQUEST.validate_json(await _body(request))
     _context(request, execution_request.context)
@@ -855,7 +896,8 @@ async def get_provision(request: web.Request) -> web.Response:
 
 async def cancel_provision(request: web.Request) -> web.Response:
     operation = _provision(request)
-    return _json(await _provisioner(request).cancel(operation.provision_id))
+    context = await _effect_control(request)
+    return _json(await _provisioner(request).cancel(operation.provision_id, context=context))
 
 
 async def provisioning_queue(request: web.Request) -> web.Response:
@@ -1115,7 +1157,18 @@ async def events(request: web.Request) -> web.StreamResponse:
 
 
 async def cancel(request: web.Request) -> web.Response:
-    return _json(await request.app[MANAGER].cancel(_execution(request).execution_id))
+    execution = _execution(request)
+    context = await _effect_control(request)
+    return _json(await request.app[MANAGER].cancel(execution.execution_id, context=context))
+
+
+async def _effect_control(request: web.Request) -> ExecutionContext | None:
+    payload = await _body(request)
+    if not payload:
+        return None
+    context = EffectControl.model_validate_json(payload).context
+    _context(request, context, hide=True)
+    return context
 
 
 async def close_session(request: web.Request) -> web.Response:

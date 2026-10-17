@@ -80,6 +80,7 @@ from .package_changes import PackageChanges
 from .package_gate import PackageGate
 from .publication import Publication
 from .recovery import DaemonRecovery, RecoveryHooks
+from .recovery_fence import control_context
 from .revisions import Revisions
 from .shared_sync import SharedSync
 from .store import Store
@@ -449,10 +450,19 @@ class ExecutionManager:
         ``origin`` names the provisioning operation the execution is an install step of: a
         managed change its package commands make is recorded as that operation's.
         """
-        return await self._dispatcher.submit(request, origin=origin)
+        with self.store.recovery_fences.bind(request.context):
+            return await self._dispatcher.submit(request, origin=origin)
 
-    async def cancel(self, execution_id: str, project_id: str | None = None) -> Execution:
-        return await self._dispatcher.cancel(execution_id, project_id)
+    async def cancel(
+        self,
+        execution_id: str,
+        project_id: str | None = None,
+        *,
+        context: ExecutionContext | None = None,
+    ) -> Execution:
+        target = self.get(execution_id, project_id).context
+        with self.store.recovery_fences.bind(control_context(target, context)):
+            return await self._dispatcher.cancel(execution_id, project_id)
 
     async def kernel_status(self, request: KernelStatusRequest) -> KernelListing:
         """Observe only the authenticated context's kernels; admission gates stay unchanged."""
@@ -495,10 +505,15 @@ class ExecutionManager:
         return await self._journal.wait(execution_id)
 
     async def restart_kernel(self, request: KernelRestartRequest) -> KernelInfo:
-        return await self._kernels.restart(request)
+        with self.store.recovery_fences.bind(request.context):
+            return await self._kernels.restart(request)
 
     async def close_session(self, request: SessionCloseRequest) -> SessionClosed:
         """Cancel and reap jobs, then stop kernels. Starts racing the close are refused."""
+        with self.store.recovery_fences.bind(request.context):
+            return await self._close_owned_session(request)
+
+    async def _close_owned_session(self, request: SessionCloseRequest) -> SessionClosed:
         context = request.context
         self._kernels.invalidate(context)
         with self._usability.closing_session(context):
@@ -531,23 +546,29 @@ class ExecutionManager:
     # Files. Replies are checked like events: a malformed one is an internal error.
 
     async def read_file(self, request: ReadFileRequest) -> FileContent:
-        return await self._files.read(request)
+        with self.store.recovery_fences.bind(request.context):
+            return await self._files.read(request)
 
     async def write_file(self, request: WriteFileRequest) -> WriteFileResult:
-        return await self._files.write(request)
+        with self.store.recovery_fences.bind(request.context):
+            return await self._files.write(request)
 
     async def list_files(self, request: ListFilesRequest) -> FileListing:
-        return await self._files.listing(request)
+        with self.store.recovery_fences.bind(request.context):
+            return await self._files.listing(request)
 
     async def stage_check(self, request: StageCheckRequest) -> StageCheck:
-        return await self._files.stage_check(request)
+        with self.store.recovery_fences.bind(request.context):
+            return await self._files.stage_check(request)
 
     async def stage_put(self, request: StagePutRequest) -> StagePutResult:
-        return await self._files.stage_put(request)
+        with self.store.recovery_fences.bind(request.context):
+            return await self._files.stage_put(request)
 
     async def publish(self, request: PublishRequest) -> ArtifactRef:
         """Publish a file of the environment as an artifact, within ``capture_timeout``."""
-        return await self._publication.publish(request)
+        with self.store.recovery_fences.bind(request.context):
+            return await self._publication.publish(request)
 
     def artifact(self, artifact_id: str, project_id: str | None = None) -> ArtifactRef:
         return self._publication.artifact(artifact_id, project_id)

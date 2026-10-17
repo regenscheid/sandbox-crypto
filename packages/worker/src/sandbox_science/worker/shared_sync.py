@@ -67,6 +67,7 @@ from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ErrorKind
 
 from .artifacts import Blobs
 from .errors import WorkerError
+from .recovery_fence import check_dispatch
 
 _log = logging.getLogger(__name__)
 
@@ -647,7 +648,8 @@ class SharedSync:
             # A new sandbox under this ID, a mark removed, or one never synced: what the
             # records say it holds is checked again, and nothing reads as deleted.
             mark = f"{secrets.token_hex(16)} {project_id}"[:256]
-            await asyncio.to_thread(self.records.reclaim, environment_id, project_id, mark)
+            check_dispatch()
+            self.records.reclaim(environment_id, project_id, mark)
             self._reset(environment_id)
             scan = await self._scan(channel, (), mark=mark)
             if scan.mark != mark:
@@ -1033,7 +1035,8 @@ class SharedSync:
         )
 
     async def _apply(self, project_id: str, batch: _Batch) -> None:
-        unused = await asyncio.to_thread(self.records.apply, batch)
+        check_dispatch()
+        unused = self.records.apply(batch)
         if unused:
             await asyncio.to_thread(_unlink, self.blobs(project_id), unused)
 
@@ -1056,7 +1059,8 @@ class SharedSync:
         would gain nothing, and its record keeps naming the content to look for.
         """
         self._missing.setdefault(project_id, set()).add(sha256)
-        await asyncio.to_thread(self.records.unverify, project_id, sha256)
+        check_dispatch()
+        self.records.unverify(project_id, sha256)
 
     # The executor's replies.
 

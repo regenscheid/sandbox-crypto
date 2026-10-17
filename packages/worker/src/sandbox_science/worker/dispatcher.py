@@ -60,6 +60,7 @@ from .package_admission import LEGACY as PACKAGE_GATE_LEGACY
 from .package_admission import PackageAdmission
 from .package_changes import PackageChanges
 from .recovery import DaemonRecovery
+from .recovery_fence import check_dispatch
 from .replies import epoch, error, integer, outputs, seconds, size, stream
 from .shared_sync import SharedSync
 from .store import Store
@@ -777,6 +778,7 @@ class Dispatcher:
         return tuple(text for _, text in fresh)
 
     async def cancel(self, execution_id: str, project_id: str | None = None) -> Execution:
+        check_dispatch()
         execution = self.journal.get(execution_id, project_id)
         live = self.journal.live.get(execution_id)
         if live is None or live.execution.state in TERMINAL_STATES or live.final is not None:
@@ -808,6 +810,7 @@ class Dispatcher:
         if live.execution.state in TERMINAL_STATES or live.final is not None:
             return
         channel = live.channel
+        check_dispatch()  # stale cancellation must not tear down a newer owner's channel
         self.lose(live, "the executor that did not confirm job cancellation")
         if channel is not None:
             await channel.shutdown()

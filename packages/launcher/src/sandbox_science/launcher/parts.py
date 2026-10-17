@@ -159,7 +159,14 @@ def worker_settings(
         "pool_id": config.worker.pool_id,
         "openshell": config.openshell.model_dump(mode="json", exclude_none=True),
         "clients": [
-            {"name": name, "token_sha256": digests[name], "projects": projects} for name in CLIENTS
+            {
+                "name": name,
+                "token_sha256": digests[name],
+                "projects": projects,
+                "recovery_control": name == "harness",
+                "operator": name in {"workspace", "launcher"},
+            }
+            for name in CLIENTS
         ],
     }
 
