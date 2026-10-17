@@ -8,7 +8,7 @@ import json
 import re
 import sqlite3
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, Final, Literal
 
@@ -16,7 +16,7 @@ from pydantic import Field, TypeAdapter, ValidationError
 
 from sandbox_science.contracts import Identifier, new_id
 from sandbox_science.contracts.model import Contract
-from sandbox_science.orchestrator.control import Receipts
+from sandbox_science.orchestrator.control import Receipts, Tx
 from sandbox_science.orchestrator.control.notices import LeasedNotices, NoticeTable
 from sandbox_science.orchestrator.projects import ProjectError, recorded, run_id_of
 
@@ -905,7 +905,15 @@ class Annotations:
                 found["untrusted_context"]["context_omitted"] = True
             return found
 
-        found = self.leases.offer(
+        def retain(tx: Tx, offered: Sequence[Json]) -> None:
+            # Original-work provenance and its transient lease commit together.
+            tx.sql.executemany(
+                "INSERT OR IGNORE INTO run_members SELECT project,session,run,'offered:requests',? "
+                "FROM research_attempts WHERE project=? AND session=? AND run=?",
+                [(item["request_id"], project, session, attempt or "") for item in offered],
+            )
+
+        return self.leases.offer(
             run,
             seen,
             batch=100,
@@ -926,17 +934,8 @@ class Annotations:
             ),
             parameters=(project, session, attempt or ""),
             project=notice,
+            on_offer=retain,
         )
-        # Persist the original offer before returning it, even if the model never
-        # responds and the transient notice lease is subsequently released.
-        with self.store.control.write() as tx:
-            tx.sql.executemany(
-                "INSERT OR IGNORE INTO run_members SELECT project,session,run,'offered:requests',? "
-                "FROM research_attempts WHERE project=? AND session=? "
-                "AND run=?",
-                [(item["request_id"], project, session, attempt or "") for item in found],
-            )
-        return found
 
     def _attempt(self, project: str, session: str, run: str) -> str | None:
         # A caller-supplied short ID may be reused across distinct full run names.

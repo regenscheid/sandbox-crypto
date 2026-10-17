@@ -481,3 +481,40 @@ async def test_stopped_annotation_is_not_restarted_by_replacement_service(harnes
         waiting = replacement.annotations.waiting()
         assert (PROJECT, SESSION, fresh) in waiting
         assert (PROJECT, SESSION, original_request) not in waiting
+
+
+async def test_annotation_offer_membership_failure_rolls_back_its_claim(harness: Harness) -> None:
+    import sqlite3
+
+    from sandbox_science.orchestrator.continuity.records import WorkRecords
+    from sandbox_science.orchestrator.history.collections import Members
+
+    request = harness.work_request()
+    projects = ProjectStore(harness.state)
+    documents = harness.documents()
+    run = "20261017T000000000000Z-run-atomic-offer"
+    try:
+        WorkRecords(projects.control).admit(PROJECT, SESSION, run)
+        state = RunState(projects.control)
+        state.acquire(PROJECT, SESSION, run, "atomic-offer-holder")
+        with projects.control.write() as tx:
+            tx.sql.execute(
+                "CREATE TRIGGER fail_original_offer BEFORE INSERT ON run_members "
+                "WHEN NEW.collection='offered:requests' BEGIN "
+                "SELECT RAISE(ABORT,'membership persistence failed'); END"
+            )
+        annotations = Annotations(documents)
+        with pytest.raises(sqlite3.IntegrityError, match="membership persistence failed"):
+            annotations.pending(PROJECT, SESSION, "run-atomic-offer", seen=set())
+        assert annotations.claimed(PROJECT, SESSION, "run-atomic-offer") == []
+        assert request not in Members(projects.control, (PROJECT, SESSION, run), "offered:requests")
+        with projects.control.write() as tx:
+            tx.sql.execute("DROP TRIGGER fail_original_offer")
+        assert annotations.pending(PROJECT, SESSION, "run-atomic-offer", seen=set())
+        assert annotations.claimed(PROJECT, SESSION, "run-atomic-offer") == [request]
+        assert request in Members(projects.control, (PROJECT, SESSION, run), "offered:requests")
+        annotations.release(PROJECT, SESSION, "run-atomic-offer")
+        state.release(PROJECT, SESSION, "atomic-offer-holder")
+    finally:
+        documents.close()
+        projects.close()
