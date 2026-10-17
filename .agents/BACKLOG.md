@@ -321,6 +321,8 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
   - [ ] Generated skills restrictions; RC-23/24/F15. Installed-tool manifests, provisioning refresh, runtime inventory digest and stale-kernel refusal are implemented ([report](docs/agent-reports/skills-inventory-2026-10-17.md)). Existing deny, namespace and approval rules remain.
   - [ ] Combined deterministic/OpenShell acceptance. GPT-6.1-Sol independent reviews cover storage, concurrency, recovery and confinement; final evidence is recorded with the integration report. Tests and synthetic-model OpenShell qualification do not establish scientific research quality.
 
+- [ ] Confined launcher context ceiling: expose the existing fold threshold configuration for bounded real-model Babbage acceptance, retaining provider caps and cumulative budgets; integration pending.
+
 - [ ] OpenShell review follow-ups ([2026-10-16 review](docs/agent-reports/openshell-foundations-review-2026-10-16.md)): enforce or explicitly reject unsupported policy CPU/RAM/PID/disk limits; qualify a complete release set and record immutable runtime/image identities. Proposed work, no live changes. The orchestrator boundary is decided in D47 and tracked above.
 
 - [x] Development conventions, uv workspace, CI with license check

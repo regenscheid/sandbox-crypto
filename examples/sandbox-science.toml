@@ -44,6 +44,9 @@ revision = "0000000000000000000000000000000000000000"
 control_listen = "127.0.0.1:8202"
 
 [run_service]
+# Context tokens before the provider's input limit caps them; default 600,000.
+# Lower ceilings exercise the same folding path sooner, without changing budgets.
+# context_ceiling = 600000
 # The model calls a main run makes before its report round, a safety net rather than a
 # bound on its work: 2,000 unless set (0 is the default too), at most 100,000.
 # max_turns = 2000

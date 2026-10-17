@@ -146,6 +146,8 @@ def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
     write_private(directory / "generation", generation + "\n")
     model, service = config.model, config.run_service
     settings: dict[str, Any] = {"cost_limits": True, "image_aliases": list(model.images)}
+    if service.context_ceiling is not None:
+        settings["ceiling"] = service.context_ceiling
     if service.max_turns:
         settings["max_turns"] = service.max_turns
     if service.run_share is not None:

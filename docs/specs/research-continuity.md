@@ -1,6 +1,13 @@
 # Research continuity
 
-Date: 2026-10-16; local implementation updated 2026-10-17. **Status: implemented on `codex/research-foundations`, unmerged.** The owner's continuity requirements (D87) and separate orchestrator sandbox (D47) are confirmed. Baseline: main `57e29536`. Durable work/attempt ownership, explicit recursive Resume, scoped operation reconciliation, child outcome settlement, bounded historical storage and generated binding restrictions are implemented with the separately confined normal-launcher runtime. Schema 65, worker protocol 8 and executor protocol 3 must be upgraded together. Deterministic tests and disposable OpenShell qualification are recorded separately from long-running scientific/model-quality acceptance.
+Date: 2026-10-16; local implementation updated 2026-10-17. **Status: implemented on `codex/research-foundations`, unmerged.** The owner's continuity requirements (D87) and separate orchestrator sandbox (D47) are confirmed. Baseline: main `57e29536`. Durable work/attempt ownership, explicit recursive Resume, scoped operation reconciliation, child outcome settlement, bounded historical storage and generated binding restrictions are implemented with the separately confined normal-launcher runtime. Schema 67, worker protocol 9 and executor protocol 3 must be upgraded together. Deterministic tests and disposable OpenShell qualification are recorded separately from long-running scientific/model-quality acceptance.
+
+The normal launcher exposes `[run_service].context_ceiling`, a positive token
+count capped by the model's input limit when known. When omitted, the existing 600,000-token
+default remains. It configures the same folding mechanism used by the harness,
+including delegated contexts; it does not change role token budgets or authorize
+additional calls. Disposable acceptance may use a smaller ceiling to exercise
+folding through the confined runtime without a host-side agent loop.
 
 ## Purpose and confirmed requirements
 

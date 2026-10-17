@@ -4,6 +4,8 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 ## 2026-10-17
 
+- Local Babbage acceptance may use the owner's authorized arrcodex models. Expose the existing context ceiling through the confined launcher for bounded fold/recovery tests; retain the default and provider cap ([continuity](../docs/specs/research-continuity.md)).
+
 - **Agent context inspection (D80):** the owner requested a secondary embedded debug dialog for every agent, including the orchestrator: usage/fold timeline, cache performance, current-view provenance and searchable original history ([proposal](../docs/specs/context-inspector.md)).
 
 - **Larger research files (D79/D80):** 100 MiB uploads with 2 GiB/project and 8 GiB/store retention; larger worker writes and shared upload copies, retaining ordinary read limits. Schema 67 and worker protocol 9 require coordinated upgrades.

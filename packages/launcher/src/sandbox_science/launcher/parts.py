@@ -269,6 +269,8 @@ def harness_argv(config: LauncherConfig, layout: Layout) -> list[str]:
     shared = [] if service.run_share is None else ["--run-share", str(service.run_share)]
     if service.max_turns:  # unset or 0: the run service's default
         shared += ["--max-turns", str(service.max_turns)]
+    if service.context_ceiling is not None:
+        shared += ["--context-ceiling", str(service.context_ceiling)]
     if (embedding := config.skills.embedding_model) is not None:
         shared += ["--skills-embedding-model", embedding]  # the skills' imports used it too
     if (derived := config.skills.metadata_model) is not None:

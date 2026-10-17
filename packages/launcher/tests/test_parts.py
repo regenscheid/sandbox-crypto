@@ -13,13 +13,37 @@ from typing import Any
 
 import pytest
 
-from sandbox_science.launcher import parts, skills
+from sandbox_science.launcher import orchestrator, parts, skills
 from sandbox_science.launcher.config import LauncherError, load_config
 from sandbox_science.launcher.state import Layout, ensure_token, write_private
 
 
 def mode(path: Path) -> int:
     return stat.S_IMODE(path.stat().st_mode)
+
+
+@pytest.mark.parametrize("ceiling", [None, 80_000, 600_000])
+def test_context_ceiling_reaches_confined_control_and_harness(
+    make_config: Any, ceiling: int | None
+) -> None:
+    config = load_config(make_config({"run_service": {"context_ceiling": ceiling}}))
+    layout = parts.prepare(config)
+    directory, _ = orchestrator.prepare(config, layout)
+    configured = json.loads((directory / "control.json").read_text())["settings"]
+    argv = parts.harness_argv(config, layout)
+    if ceiling is None:
+        assert "ceiling" not in configured
+        assert "--context-ceiling" not in argv
+    else:
+        assert configured["ceiling"] == ceiling
+        assert argv[argv.index("--context-ceiling") + 1] == str(ceiling)
+    assert configured["cost_limits"] is True
+
+
+@pytest.mark.parametrize("ceiling", [0, -1])
+def test_nonpositive_context_ceiling_is_refused(make_config: Any, ceiling: int) -> None:
+    with pytest.raises(LauncherError, match="context_ceiling"):
+        load_config(make_config({"run_service": {"context_ceiling": ceiling}}))
 
 
 def test_prepare_makes_private_tokens_once_and_the_workers_settings(make_config: Any) -> None:
