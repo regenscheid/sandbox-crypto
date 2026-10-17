@@ -61,9 +61,16 @@ export function sendMessage(
   send: (message: OutgoingMessage) => Promise<MessageAnswer> = (message) =>
     chatApi.post(project, session, message),
   answers: string | null = null,
+  attachments: string[] = [],
 ): Promise<MessageAnswer> {
-  return guardedWrite('chat-message', `${project}:${session}`, { text }, (change) =>
-    send({ message_id: change.operation_id, text: change.text, question_id: answers }),
+  const body = attachments.length ? { text, attachments } : { text };
+  return guardedWrite('chat-message', `${project}:${session}`, body, (change) =>
+    send({
+      message_id: change.operation_id,
+      text: change.text,
+      question_id: answers,
+      ...(attachments.length ? { attachments } : {}),
+    }),
   );
 }
 
@@ -75,14 +82,24 @@ export interface OutgoingMessage {
   message_id: string;
   text: string;
   question_id: string | null;
+  attachments?: string[];
 }
 
 /**
  * Give up a message whose sending failed: the user changed the draft. The same text
  * written later, such as a second "yes", is then a new message, not a retry of this one.
  */
-export function forgetMessage(project: string, session: string, text: string): Promise<void> {
-  return forgetWrite('chat-message', `${project}:${session}`, { text });
+export function forgetMessage(
+  project: string,
+  session: string,
+  text: string,
+  attachments: string[] = [],
+): Promise<void> {
+  return forgetWrite(
+    'chat-message',
+    `${project}:${session}`,
+    attachments.length ? { text, attachments } : { text },
+  );
 }
 
 /** The most a message may hold, in UTF-8 bytes (RS-4). */
