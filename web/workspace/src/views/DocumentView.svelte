@@ -24,10 +24,14 @@
     documentId,
     revision,
     block = null,
+    observedHead = null,
+    compact = false,
   }: {
     projectId: string;
     documentId: string;
     revision: number | null;
+    observedHead?: number | null;
+    compact?: boolean;
     /** A block to bring into view and mark, as a finding's anchor names it. */
     block?: string | null;
   } = $props();
@@ -110,46 +114,58 @@
       : found.blocks}
   {@const input = { blocks, macros }}
   <h1>{found.title ?? info.title}</h1>
-  <dl class="facts">
-    <dt>Document</dt>
-    <dd>
-      <code>{info.name}</code>
-      <span class="muted">
-        {info.scope === 'project' ? "the project's" : `in session ${info.session_id}'s workbook`},
-        {info.document_id}
-      </span>
-    </dd>
-    <dt>Revision</dt>
-    <dd>
-      {shown.number} of {info.head}
-      {#if shown.number > 1}
-        · <a href={documentHref(projectId, info.document_id, shown.number - 1)}>previous</a>
+  {#if revision === null && observedHead !== null && observedHead > shown.number}
+    <p role="status">
+      A newer revision is available. Your unsaved draft will be kept. <button
+        onclick={() => {
+          refresh += 1;
+        }}>Read latest revision</button
+      >
+    </p>
+  {/if}
+  <details class="document-details" open={!compact}>
+    <summary>Revision {shown.number} · {describeAuthor(shown.author)} · Details & history</summary>
+    <dl class="facts">
+      <dt>Document</dt>
+      <dd>
+        <code>{info.name}</code>
+        <span class="muted">
+          {info.scope === 'project' ? "the project's" : `in session ${info.session_id}'s workbook`},
+          {info.document_id}
+        </span>
+      </dd>
+      <dt>Revision</dt>
+      <dd>
+        {shown.number} of {info.head}
+        {#if shown.number > 1}
+          · <a href={documentHref(projectId, info.document_id, shown.number - 1)}>previous</a>
+        {/if}
+        {#if shown.number < info.head}
+          · <a href={documentHref(projectId, info.document_id, shown.number + 1)}>next</a>
+          · <a href={documentHref(projectId, info.document_id)}>current</a>
+        {/if}
+        · <a href={historyHref(projectId, info.document_id)}>history</a>
+      </dd>
+      <dt>Written by</dt>
+      <dd>
+        {describeAuthor(shown.author)}
+        {#if shown.accepted_by}
+          <span class="muted">(a suggestion, accepted by {describeAuthor(shown.accepted_by)})</span>
+        {/if}
+      </dd>
+      <dt>When</dt>
+      <dd>{formatTime(shown.created_at)}</dd>
+      <dt>Reason</dt>
+      <dd>{shown.reason}</dd>
+      {#if shown.normalized.converted && Object.keys(shown.normalized.converted).length > 0}
+        <dt>Delimiters</dt>
+        <dd>saved in the dollar form (LD-42)</dd>
       {/if}
-      {#if shown.number < info.head}
-        · <a href={documentHref(projectId, info.document_id, shown.number + 1)}>next</a>
-        · <a href={documentHref(projectId, info.document_id)}>current</a>
-      {/if}
-      · <a href={historyHref(projectId, info.document_id)}>history</a>
-    </dd>
-    <dt>Written by</dt>
-    <dd>
-      {describeAuthor(shown.author)}
-      {#if shown.accepted_by}
-        <span class="muted">(a suggestion, accepted by {describeAuthor(shown.accepted_by)})</span>
-      {/if}
-    </dd>
-    <dt>When</dt>
-    <dd>{formatTime(shown.created_at)}</dd>
-    <dt>Reason</dt>
-    <dd>{shown.reason}</dd>
-    {#if shown.normalized.converted && Object.keys(shown.normalized.converted).length > 0}
-      <dt>Delimiters</dt>
-      <dd>saved in the dollar form (LD-42)</dd>
-    {/if}
-  </dl>
+    </dl>
+  </details>
 
   {#key `${info.document_id}:${shown.number}`}
-    <DocumentEditor {projectId} {found} refreshed={() => (refresh += 1)} />
+    <DocumentEditor {projectId} {found} {compact} refreshed={() => (refresh += 1)} />
   {/key}
 
   {#if shown.warnings.length > 0}

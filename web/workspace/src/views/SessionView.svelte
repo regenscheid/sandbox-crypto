@@ -1,11 +1,15 @@
 <!-- SPDX-License-Identifier: MIT -->
 <script lang="ts">
+  import { focusPanel } from '../lib/focusPanel';
+  import { untrack } from 'svelte';
   import { api, type SessionDetail } from '../lib/api';
   import { formatTime } from '../lib/format';
+  import SessionDocuments from './SessionDocuments.svelte';
+  import SessionAgents from './SessionAgents.svelte';
+  import PaneResizer from './PaneResizer.svelte';
   import { initialPoll, Poller, type PollState } from '../lib/poller';
-  import { projectHref, treeHref } from '../lib/router';
+  import { projectHref } from '../lib/router';
   import { kernelPanelScope } from '../lib/kernels';
-  import { planPanelScope } from '../lib/plans';
   import ChatPanel from './ChatPanel.svelte';
   import FoldProposals from './FoldProposals.svelte';
   import JobsPanel from './JobsPanel.svelte';
@@ -25,6 +29,32 @@
     /** A review to choose in the review panel, as a link names it. */
     reviewId?: string | null;
   } = $props();
+  type Panel = 'documents' | 'plan' | 'agents' | 'activity';
+  let panel = $state<Panel | null>(
+    untrack(() => (reviewId ? 'activity' : window.innerWidth > 1120 ? 'plan' : null)),
+  );
+  let visited = $state<Panel[]>(untrack(() => (reviewId ? ['activity'] : ['plan'])));
+  let width = $state(460);
+  let narrow = $state(window.innerWidth <= 1120);
+  function closePane() {
+    const id = panel;
+    panel = null;
+    queueMicrotask(() =>
+      document
+        .querySelector<HTMLButtonElement>(`.research-actions button[data-panel="${id}"]`)
+        ?.focus(),
+    );
+  }
+  const tabs: { id: Panel; label: string }[] = [
+    { id: 'documents', label: 'Documents' },
+    { id: 'plan', label: 'Plan' },
+    { id: 'agents', label: 'Agents' },
+    { id: 'activity', label: 'Activity' },
+  ];
+  function choose(id: Panel) {
+    if (!visited.includes(id)) visited = [...visited, id];
+    panel = panel === id ? null : id;
+  }
   // Polled, so that a run that ends and a session that closes show up.
   let view = $state<PollState<SessionDetail>>(initialPoll());
   $effect(() => {
@@ -41,59 +71,103 @@
   });
 </script>
 
-<nav class="trail">
-  <a href="#/">Projects</a> / <a href={projectHref(projectId)}>{projectId}</a> /
-</nav>
-<h1>Session {sessionId}</h1>
-<p>
-  <a href={treeHref(projectId, sessionId)}>The run tree</a>: its runs, the runs they delegated to,
-  and each delegation's brief and outcome.
-</p>
-
-<PollStatus phase={view.phase} hasData={view.data !== null} what="Session views" />
-{#if view.data}
-  {@const detail = view.data}
-  <dl class="facts">
-    <dt>Environment</dt>
-    <dd>
-      <code>{detail.session.environment_id}</code>
-      <span class="muted">
-        {detail.session.dedicated ? 'its own' : "the project's default, shared with its sessions"}
-      </span>
-    </dd>
-    <dt>Opened</dt>
-    <dd>{formatTime(detail.session.opened_at)}</dd>
-    <dt>State</dt>
-    <dd>
-      {detail.session.closed_at ? `closed ${formatTime(detail.session.closed_at)}` : 'open'}
-    </dd>
-  </dl>
-
-  <ChatPanel {projectId} {sessionId} closed={detail.session.closed_at !== null} />
-  <FoldProposals {projectId} {sessionId} />
-  {@const planScope = planPanelScope(projectId, sessionId, detail)}
-  {#if planScope}
-    <PlanPanel {projectId} {sessionId} closed={detail.session.closed_at !== null} />
-  {/if}
-  {@const kernelScope = kernelPanelScope(projectId, sessionId, detail)}
-  {#if kernelScope}
-    <KernelPanel {projectId} {sessionId} environmentId={kernelScope.environmentId} />
-  {/if}
-  <JobsPanel {projectId} {sessionId} />
-  {#await reviewComponent then component}
-    {@const Reviews = component.default}
-    <Reviews {projectId} {sessionId} {reviewId} />
-  {/await}
-
-  <h2>Runs</h2>
-  {#if detail.runs.length === 0}
-    <p>
-      No runs kept. The harness keeps a run when it runs with <code>--state-dir</code>.
-    </p>
-  {:else}
-    <p class="muted">Oldest first. The newest is open; open the others to read them.</p>
-    {#each detail.runs as run, index (run.name)}
-      <RunSection {projectId} {sessionId} {run} initiallyOpen={index === detail.runs.length - 1} />
-    {/each}
-  {/if}
-{/if}
+<svelte:window
+  onresize={() => {
+    narrow = window.innerWidth <= 1120;
+  }}
+/>
+<div class="session-workspace" style:--inspector-width={`${width}px`}>
+  <header class="session-header" inert={narrow && panel !== null}>
+    <div>
+      <span class="eyebrow">Research session</span>
+      <h1>{sessionId}</h1>
+    </div>
+    <div class="research-actions" aria-label="Research views">
+      {#each tabs as tab}<button
+          data-panel={tab.id}
+          class:active={panel === tab.id}
+          aria-pressed={panel === tab.id}
+          aria-controls="research-pane"
+          onclick={() => choose(tab.id)}>{tab.label}</button
+        >{/each}
+    </div>
+  </header>
+  <div class="session-columns">
+    <div class="conversation-column" inert={narrow && panel !== null}>
+      <PollStatus phase={view.phase} hasData={view.data !== null} what="Session views" />
+      {#if view.data}
+        <ChatPanel {projectId} {sessionId} closed={view.data.session.closed_at !== null} />
+      {/if}
+    </div>
+    {#if panel}<PaneResizer bind:width />{/if}
+    <aside
+      id="research-pane"
+      class="research-pane"
+      hidden={!panel}
+      aria-label="Research pane"
+      use:focusPanel={{ active: narrow && panel !== null, close: closePane }}
+      role={narrow ? 'dialog' : undefined}
+      aria-modal={narrow && panel !== null ? true : undefined}
+      tabindex="-1"
+    >
+      <div class="pane-heading">
+        <span class="eyebrow">{tabs.find((tab) => tab.id === panel)?.label}</span><button
+          class="icon-button"
+          aria-label="Close research pane"
+          onclick={closePane}>×</button
+        >
+      </div>
+      <div class="pane-content">
+        {#if visited.includes('documents')}<div hidden={panel !== 'documents'}>
+            <SessionDocuments {projectId} {sessionId} />
+          </div>{/if}
+        {#if visited.includes('agents')}<div hidden={panel !== 'agents'}>
+            <SessionAgents {projectId} {sessionId} />
+          </div>{/if}
+        {#if view.data}
+          {@const detail = view.data}
+          {@const kernelScope = kernelPanelScope(projectId, sessionId, detail)}
+          {#if visited.includes('plan')}<div hidden={panel !== 'plan'}>
+              <PlanPanel {projectId} {sessionId} closed={detail.session.closed_at !== null} />
+            </div>{/if}
+          {#if visited.includes('activity')}
+            <div hidden={panel !== 'activity'}>
+              <h2>Session activity</h2>
+              <details>
+                <summary>Session details</summary>
+                <dl class="facts">
+                  <dt>Environment</dt>
+                  <dd>{detail.session.environment_id}</dd>
+                  <dt>Opened</dt>
+                  <dd>{formatTime(detail.session.opened_at)}</dd>
+                  <dt>State</dt>
+                  <dd>{detail.session.closed_at ? 'Closed' : 'Open'}</dd>
+                </dl>
+                <a href={projectHref(projectId)}>Project settings</a>
+              </details>
+              <FoldProposals {projectId} {sessionId} />
+              {#if kernelScope}<KernelPanel
+                  {projectId}
+                  {sessionId}
+                  environmentId={kernelScope.environmentId}
+                />{/if}
+              <JobsPanel {projectId} {sessionId} />
+              {#await reviewComponent then component}{@const Reviews = component.default}<Reviews
+                  {projectId}
+                  {sessionId}
+                  {reviewId}
+                />{/await}
+              <h2>Run history</h2>
+              {#each detail.runs as run (run.name)}<RunSection
+                  {projectId}
+                  {sessionId}
+                  {run}
+                  initiallyOpen={false}
+                />{:else}<p class="muted">No completed runs yet.</p>{/each}
+            </div>
+          {/if}
+        {/if}
+      </div>
+    </aside>
+  </div>
+</div>

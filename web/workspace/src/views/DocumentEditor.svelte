@@ -21,7 +21,13 @@
     projectId,
     found,
     refreshed,
-  }: { projectId: string; found: DocumentRevision; refreshed: () => void } = $props();
+    compact = false,
+  }: {
+    projectId: string;
+    found: DocumentRevision;
+    refreshed: () => void;
+    compact?: boolean;
+  } = $props();
   const id = $derived(found.document.document_id);
   const scope = $derived(`${projectId}:${id}`);
   const initial = untrack(() => found);
@@ -40,6 +46,7 @@
   let result = $state<DocumentChange | null>(null);
   let current = $state<DocumentRevision | null>(null);
   let persisted = $state(true);
+  let moreActions = $state(false);
   let projectName = $state(initial.document.name);
   /** The move or restore the user is asked to confirm, with the text it adopts shown. */
   let confirming = $state<{ action: 'promote' | 'revert'; before: string | null } | null>(null);
@@ -141,19 +148,28 @@
   {#if !open}
     {#if !found.revision.tombstone && found.matched && found.revision.number === found.document.head}
       <button onclick={() => begin(null)}>Edit Markdown source</button>
-      <label
-        >Block <select bind:value={selected}
-          >{#each found.blocks as item (item.id)}<option value={item.id}
-              >{item.id} · {item.kind}</option
-            >{/each}</select
-        ></label
-      >
-      <button disabled={!selected} onclick={() => begin(selected)}>Edit selected block</button>
-      {#if found.document.scope === 'session'}
-        <label>Project document name <input bind:value={projectName} maxlength="64" /></label>
-        <button disabled={busy || confirming !== null} onclick={() => ask('promote')}
-          >Move to project…</button
+      {#if compact}<button
+          class="quiet-button"
+          aria-expanded={moreActions}
+          onclick={() => {
+            moreActions = !moreActions;
+          }}>More actions</button
+        >{/if}
+      {#if !compact || moreActions}
+        <label
+          >Block <select bind:value={selected}
+            >{#each found.blocks as item (item.id)}<option value={item.id}
+                >{item.id} · {item.kind}</option
+              >{/each}</select
+          ></label
         >
+        <button disabled={!selected} onclick={() => begin(selected)}>Edit selected block</button>
+        {#if found.document.scope === 'session'}
+          <label>Project document name <input bind:value={projectName} maxlength="64" /></label>
+          <button disabled={busy || confirming !== null} onclick={() => ask('promote')}
+            >Move to project…</button
+          >
+        {/if}
       {/if}
     {:else if !found.revision.tombstone && found.revision.number < found.document.head}
       <p>
