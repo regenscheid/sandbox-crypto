@@ -129,6 +129,7 @@ class WireTurn(Contract):
     notes: tuple[str, ...] = ()
     content: str | None = None
     native_b64: str | None = Field(default=None, max_length=24 * 1024 * 1024)
+    intent_id: str | None = Field(default=None, max_length=128)
 
     @classmethod
     def of(cls, turn: ModelTurn) -> WireTurn:
@@ -232,7 +233,25 @@ class ToolRequest(Attempt):
     model: str | None = Field(default=None, max_length=256)
 
 
-class ModelRequest(Contract):
+ModelKind = Literal["main", "delegated", "reviewer", "watcher", "fold", "skills", "embedding"]
+
+
+class ModelIntent(Attempt):
+    alias: ModelAlias
+    kind: ModelKind
+
+
+class ModelTicket(Contract):
+    identity: Identifier
+
+
+class ModelObserved(Attempt):
+    identity: Identifier
+    usage: ModelUsage
+
+
+class ModelRequest(Attempt):
+    kind: ModelKind = "fold"
     model: ModelAlias
     max_output: int | None = Field(default=None, ge=1, le=1_000_000)
     max_response_bytes: int = Field(default=16 * 1024 * 1024, ge=1, le=64 * 1024 * 1024)
@@ -320,7 +339,7 @@ class Consumed(Contract):
     ids: tuple[Identifier, ...] = Field(max_length=8192)
 
 
-class EmbeddingRequest(Contract):
+class EmbeddingRequest(Attempt):
     alias: ModelAlias
     texts: tuple[Annotated[str, Field(max_length=100_000)], ...] = Field(
         min_length=1, max_length=64

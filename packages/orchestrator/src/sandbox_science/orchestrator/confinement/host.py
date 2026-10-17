@@ -6,21 +6,24 @@ from __future__ import annotations
 import asyncio
 import copy
 import secrets
-from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any, cast
 
 from pydantic import JsonValue, TypeAdapter
 
-from sandbox_science.orchestrator.aio import owned
+from sandbox_science.orchestrator.aio import owned, threaded
+from sandbox_science.orchestrator.continuity.models import ModelIntents
 from sandbox_science.orchestrator.continuity.records import (
     CURRENT,
     Ownership,
     authority,
     check_owner,
 )
+from sandbox_science.orchestrator.control import ControlStore
 from sandbox_science.orchestrator.history.log import RunArchive
 from sandbox_science.orchestrator.hooks import Appended, Closing, MessageLog, Notice, TurnHook
+from sandbox_science.orchestrator.images import IMAGE
 from sandbox_science.orchestrator.loop import (
     Folds,
     Transcript,
@@ -46,6 +49,9 @@ from .wire import (
     LogAppend,
     LogTool,
     LoopState,
+    ModelIntent,
+    ModelObserved,
+    ModelTicket,
     RunGiven,
     RunReply,
     ToolboxGiven,
@@ -80,6 +86,8 @@ class Prepared:
         self.tool_call: ToolRequest | None = None
         self.tool_notices: list[Notice] = []
         self.notices: list[Notice] = []
+        self.images: list[tuple[Notice, str]] = []
+        self.observed_tool: tuple[ToolCall, ToolOutcome] | None = None
         self.pending_calls: dict[str, ToolCall] = {}
         self.intent: LogTool | None = None
         self.observation: dict[str, Any] | None = None
@@ -188,6 +196,15 @@ class Prepared:
                         since=run.since,
                     )
                 )
+            if kind is Capability.TOOL_DONE:
+                typed(Attempt, value)
+                if self.observed_tool is None:
+                    raise TransportError("conflict", "no completed tool observation")
+                call, outcome = self.observed_tool
+                if self.on_tool is not None:
+                    await self.on_tool(call.name, call.arguments, outcome)
+                self.observed_tool, self.observation = None, None
+                return None
             request = typed(HookRequest, value)
             if request.slot >= len(self.hooks):
                 raise TransportError("denied", "no such attempt hook capability")
@@ -268,6 +285,11 @@ class Prepared:
             elif notice.source != "report" or notice.ids:
                 raise TransportError("denied", "notice was not returned by trusted capabilities")
             source = notice_message(notice)
+            for known, token in tuple(self.images):
+                if known == notice:
+                    source = {**source, IMAGE: token}
+                    self.images.remove((known, token))
+                    break
             self.shadow.identities(notice.source).update(notice.ids)
         if request.kind == "tool_result":
             if self.tool_call is None or self.tool is None:
@@ -318,6 +340,8 @@ class Prepared:
             usage_index=request.usage_index,
         )
         message = await self.log.append(source, appended)
+        if IMAGE in source:
+            message = {**message, IMAGE: source[IMAGE]}
         self.shadow.messages.append(message)
         if consumed is not None:
             for key, ids in consumed.items():
@@ -332,10 +356,10 @@ class Prepared:
             retained = self.log.retained_tool(record)
             self.shadow.tool_records.append(retained)
             self.observation, self.observed_slots = outcome.record, set()
-            if self.on_tool is not None:
-                await self.on_tool(call.name, call.arguments, outcome)
+            self.observed_tool = call, outcome
             if outcome.image is not None:
                 self.notices.append(outcome.image[0])
+                self.images.append(outcome.image)
             self.pending_calls.pop(call.id, None)
             self.tool = self.tool_call = self.intent = None
             self.tool_notices = []
@@ -360,8 +384,16 @@ def toolbox_given(toolbox: Toolbox) -> ToolboxGiven:
 class HostLoops:
     """The harness runner seam: prepare capabilities, dispatch to VM, finalize its receipts."""
 
-    def __init__(self, channel: Channel, projects: frozenset[str]) -> None:
+    def __init__(
+        self,
+        channel: Channel,
+        projects: frozenset[str],
+        *,
+        control: ControlStore | None = None,
+        model_roles: Mapping[str, frozenset[str]] | None = None,
+    ) -> None:
         self.channel, self.projects = channel, projects
+        self.control, self.model_roles = control, model_roles or {}
         self.attempts: dict[str, Prepared] = {}
         self.owners: dict[str, Ownership] = {}
         self.tokens: dict[tuple[str, str, str], str] = {}
@@ -395,6 +427,49 @@ class HostLoops:
             Attempt, {"attempt": value.get("attempt") if isinstance(value, dict) else None}
         )
         prepared = self.attempts.get(identity.attempt)
+        if kind in (Capability.MODEL_INTENT, Capability.MODEL_OBSERVED):
+            owner = self.owners.get(identity.attempt)
+            if owner is None or self.control is None:
+                raise TransportError("denied", "model capability is absent or revoked")
+            with authority(owner):
+                intents = ModelIntents(self.control)
+                if kind is Capability.MODEL_INTENT:
+                    request = typed(ModelIntent, value)
+                    if request.kind in ("main", "delegated"):
+                        expected = (
+                            "delegated"
+                            if prepared is not None and prepared.toolbox.delegated
+                            else "main"
+                        )
+                        if (
+                            prepared is None
+                            or request.kind != expected
+                            or request.alias != prepared.given.model
+                        ):
+                            raise TransportError(
+                                "denied", "model dispatch is outside the admitted role"
+                            )
+                    elif request.alias not in self.model_roles.get(request.kind, frozenset()):
+                        raise TransportError(
+                            "denied", "auxiliary model role is outside configuration"
+                        )
+                    ticket = await threaded(
+                        intents.begin, owner, kind=request.kind, alias=request.alias
+                    )
+                    return payload(ModelTicket(identity=ticket))
+                observed = typed(ModelObserved, value)
+                with self.control.read() as tx:
+                    row = tx.sql.execute(
+                        "SELECT kind FROM research_model_calls WHERE project=? AND session=? "
+                        "AND run=? AND identity=?",
+                        (owner.project, owner.session, owner.run, observed.identity),
+                    ).fetchone()
+                if row is None or row[0] in ("main", "delegated"):
+                    raise TransportError(
+                        "denied", "main model receipts require the assistant archive transaction"
+                    )
+                await threaded(intents.observe, owner, observed.identity, observed.usage)
+                return None
         if prepared is None:
             raise TransportError("denied", "attempt capability is absent or revoked")
         return await prepared.call(kind, value)
@@ -408,10 +483,12 @@ class HostLoops:
         if not isinstance(model, CallbackModel):
             raise TransportError("denied", "host model execution is forbidden in confined mode")
         log = cast(MessageLog | None, options.get("log"))
-        if log is None:
+        if not isinstance(log, RunArchive):
             raise TransportError("denied", "confined attempts require durable archive logging")
         identity = self.model_capability()
         hooks = tuple(cast(Sequence[TurnHook], options.get("hooks") or toolbox.turn_hooks()))
+        if self.control is None:
+            self.control = log.archive.control
         given = RunGiven(
             attempt=identity,
             run_id=options["run_id"],

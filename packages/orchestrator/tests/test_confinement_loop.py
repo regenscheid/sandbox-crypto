@@ -18,6 +18,7 @@ from sandbox_science.orchestrator.confinement.runtime_loop import RuntimeLoops
 from sandbox_science.orchestrator.confinement.transport import Capability, Channel, TransportError
 from sandbox_science.orchestrator.harness import Role
 from sandbox_science.orchestrator.model import ModelGateway
+from sandbox_science.orchestrator.projects import ProjectStore
 
 from .loop_harness import API_KEY, PROJECT, SESSION, Harness, Reply, call
 from .loop_harness import gateway as gateway
@@ -31,14 +32,26 @@ pytestmark = pytest.mark.slow
 async def test_vm_loop_commits_host_state_without_a_local_harness_fallback(
     harness: Harness, tmp_path: Path
 ) -> None:
+    async def pending_before_provider() -> None:
+        store = ProjectStore(harness.state)
+        try:
+            with store.control.read() as tx:
+                assert (
+                    tx.sql.execute(
+                        "SELECT count(*) FROM research_model_calls WHERE usage IS NULL"
+                    ).fetchone()[0]
+                    == 1
+                )
+        finally:
+            store.close()
+
     async with serving(
         harness,
-        Reply(calls=[call("shell", command="printf confined")]),
+        Reply(calls=[call("shell", command="printf confined")], before=pending_before_provider),
         Reply("Done."),
         serve=False,
     ) as service:
         gateway_models = ModelGateway(harness.gateway.url, API_KEY)
-        vm_models = RuntimeModels(gateway_models, frozenset({"main"}))
 
         forged = False
 
@@ -71,6 +84,7 @@ async def test_vm_loop_commits_host_state_without_a_local_harness_fallback(
 
         host_channel = Channel(lambda text: vm_channel.receive(text), host_handle)
         vm_channel = Channel(lambda text: host_channel.receive(text), vm_handle)
+        vm_models = RuntimeModels(gateway_models, frozenset({"main"}), vm_channel)
         host = HostLoops(host_channel, frozenset({PROJECT}))
         runtime = RuntimeLoops(vm_channel, gateway_models, tmp_path / "scratch")
         runtime.scratch.mkdir()
@@ -94,8 +108,37 @@ async def test_vm_loop_commits_host_state_without_a_local_harness_fallback(
             assert not list(runtime.scratch.iterdir())
             assert not runtime.active
             assert not host.attempts
+            with service.stores.projects.control.read() as tx:
+                assert (
+                    tx.sql.execute(
+                        "SELECT count(*) FROM research_model_calls WHERE usage IS NULL"
+                    ).fetchone()[0]
+                    == 0
+                )
+                assert (
+                    tx.sql.execute(
+                        "SELECT count(*) FROM research_model_calls WHERE kind='main'"
+                    ).fetchone()[0]
+                    == 2
+                )
         finally:
             await runtime.close()
             await host_channel.close()
             await vm_channel.close()
             await gateway_models.close()
+
+
+def test_loop_metadata_never_iterates_historical_delivery_membership() -> None:
+    from sandbox_science.orchestrator.confinement.runtime_loop import state
+    from sandbox_science.orchestrator.loop import Transcript
+
+    class Historical(set[str]):
+        def __iter__(self):
+            raise AssertionError("historical identities must stay behind the capability")
+
+    transcript = Transcript(messages=[{"role": "system", "content": "bounded"}])
+    transcript.delivered["jobs"] = Historical()
+    transcript.offered["jobs"] = Historical()
+    wire = state(transcript)
+    assert wire.delivered == wire.offered == {}
+    assert len(wire.model_dump_json()) < 4096

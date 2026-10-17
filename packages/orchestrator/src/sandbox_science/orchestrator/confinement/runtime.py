@@ -21,7 +21,7 @@ from sandbox_science.orchestrator.skills.embeddings import Embedder
 from .embeddings import RuntimeEmbeddings
 from .models import RuntimeModels
 from .runtime_loop import RuntimeLoops
-from .server import private_token
+from .server import private_credential, private_token
 from .transport import (
     CONTROL_HEADER,
     CONTROL_PROTOCOL,
@@ -60,14 +60,15 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
         raise ValueError("runtime image has no qualified source revision")
     settings.scratch.mkdir(parents=True, exist_ok=True)
     embedder = (
-        Embedder(settings.model_url, settings.embedding, private_token(settings.model_key_file))
+        Embedder(
+            settings.model_url, settings.embedding, private_credential(settings.model_key_file)
+        )
         if settings.embedding
         else None
     )
-    embedding = RuntimeEmbeddings(embedder)
     gateway = ModelGateway(
         settings.model_url,
-        private_token(settings.model_key_file),
+        private_credential(settings.model_key_file),
         apis=settings.apis,
         options={
             **settings.options,
@@ -81,8 +82,8 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
     session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(sock_connect=10))
     loops: RuntimeLoops | None = None
     try:
-        # The one endpoint is fixed by trusted launcher configuration. No redirect
-        # may forward a runtime capability or gateway key to another host.
+        # The endpoint and egress are fixed by trusted launcher configuration;
+        # no caller or agent tool supplies a connection URL.
         async with session.ws_connect(
             settings.control_url,
             headers={
@@ -93,7 +94,6 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
             heartbeat=15,
             autoping=True,
         ) as socket:
-            models = RuntimeModels(gateway, frozenset(settings.models))
 
             async def handle(kind: Capability, value: JsonValue) -> JsonValue:
                 if kind is Capability.MODEL:
@@ -111,6 +111,8 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
                 raise TransportError("denied", "host requested an unavailable runtime capability")
 
             channel = Channel(socket.send_str, handle)
+            models = RuntimeModels(gateway, frozenset(settings.models), channel)
+            embedding = RuntimeEmbeddings(embedder, channel)
             loops = RuntimeLoops(channel, gateway, settings.scratch)
 
             async def read() -> None:

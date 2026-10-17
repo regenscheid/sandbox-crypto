@@ -3,10 +3,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from pydantic import JsonValue
 
+from sandbox_science.orchestrator.projects import ModelUsage
 from sandbox_science.orchestrator.skills.embeddings import (
     BATCH,
     Embedded,
@@ -16,13 +17,14 @@ from sandbox_science.orchestrator.skills.embeddings import (
     Space,
 )
 
+from .paid import begin, observe
 from .transport import Capability, Channel, TransportError
 from .wire import EmbeddingReply, EmbeddingRequest, payload, typed
 
 
 class CallbackEmbedder(Embedder):
-    def __init__(self, channel: Channel, alias: str) -> None:
-        self.channel, self.alias = channel, alias
+    def __init__(self, channel: Channel, alias: str, scope: Callable[[], str]) -> None:
+        self.channel, self.alias, self.scope = channel, alias, scope
 
     async def close(self) -> None:
         """The runtime owns the actual embedding client."""
@@ -39,7 +41,9 @@ class CallbackEmbedder(Embedder):
                         Capability.EMBEDDING,
                         payload(
                             EmbeddingRequest(
-                                alias=self.alias, texts=tuple(texts[start : start + BATCH])
+                                attempt=self.scope(),
+                                alias=self.alias,
+                                texts=tuple(texts[start : start + BATCH]),
                             )
                         ),
                         timeout=120,
@@ -66,18 +70,29 @@ class CallbackEmbedder(Embedder):
 
 
 class RuntimeEmbeddings:
-    def __init__(self, embedder: Embedder | None) -> None:
-        self.embedder = embedder
+    def __init__(self, embedder: Embedder | None, channel: Channel) -> None:
+        self.embedder, self.channel = embedder, channel
 
     async def embed(self, value: JsonValue) -> JsonValue:
         request = typed(EmbeddingRequest, value)
         if self.embedder is None or request.alias != self.embedder.alias:
             raise TransportError("denied", "embedding alias is outside runtime configuration")
+        identity = await begin(self.channel, request.attempt, request.alias, "embedding")
         paid: Paid = []
         try:
             result = await self.embedder.embed(request.texts, paid)
         except EmbeddingError as error:
             return payload(EmbeddingReply(error=str(error)[:512], paid=tuple(paid)))
+        await observe(
+            self.channel,
+            request.attempt,
+            identity,
+            ModelUsage(
+                model=result.space.model,
+                cost=result.cost,
+                cost_source="gateway" if result.cost is not None else None,
+            ),
+        )
         return payload(
             EmbeddingReply(
                 model=result.space.model,

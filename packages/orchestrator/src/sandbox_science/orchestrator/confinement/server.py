@@ -7,6 +7,7 @@ import argparse
 import asyncio
 import hashlib
 import hmac
+import stat
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -90,13 +91,20 @@ class ControlSettings(Contract):
     image_revision: str = Field(min_length=1, max_length=128)
 
 
-def private_token(path: Path) -> str:
-    if path.is_symlink() or path.stat().st_mode & 0o077:
-        raise ValueError("control capability token must be a private regular file")
+def private_credential(path: Path, *, minimum: int = 1, maximum: int = 4096) -> str:
+    mode = path.stat().st_mode
+    if path.is_symlink() or not stat.S_ISREG(mode) or mode & 0o077:
+        raise ValueError("capability credential must be a private regular file")
+    if path.stat().st_size > maximum + 2:
+        raise ValueError("capability credential exceeds its size bound")
     token = path.read_text(encoding="utf-8").strip()
-    if len(token) < 32 or len(token) > 256:
-        raise ValueError("control capability token has invalid size")
+    if not minimum <= len(token) <= maximum or any(not 33 <= ord(char) <= 126 for char in token):
+        raise ValueError("capability credential has invalid shape")
     return token
+
+
+def private_token(path: Path) -> str:
+    return private_credential(path, minimum=32, maximum=256)
 
 
 def create_app(settings: ControlSettings) -> web.Application:
@@ -177,8 +185,27 @@ def create_app(settings: ControlSettings) -> web.Application:
                     return await loops.capability(kind, value)
 
                 channel = Channel(socket.send_str, handle)
-                loops = HostLoops(channel, frozenset(settings.projects))
-                gateway = CallbackGateway(channel)
+                roles: dict[str, frozenset[str]] = {
+                    "fold": frozenset(
+                        alias for alias in (settings.main, settings.delegated) if alias
+                    ),
+                    "reviewer": frozenset((settings.reviewer,))
+                    if settings.reviewer
+                    else frozenset(),
+                    "watcher": frozenset((settings.watcher,)) if settings.watcher else frozenset(),
+                    "skills": frozenset((settings.metadata,)) if settings.metadata else frozenset(),
+                    "embedding": frozenset((settings.embedding,))
+                    if settings.embedding
+                    else frozenset(),
+                }
+                loops = HostLoops(
+                    channel,
+                    frozenset(settings.projects),
+                    control=documents.control,
+                    model_roles=roles,
+                )
+                scope = loops.model_capability
+                gateway = CallbackGateway(channel, scope)
                 stores = Stores(
                     projects,
                     documents,
@@ -195,7 +222,13 @@ def create_app(settings: ControlSettings) -> web.Application:
                 metadata = (
                     Metadata(
                         SkillStore(documents.control),
-                        CallbackModel(channel, settings.metadata, max_output=ANSWER_TOKENS),
+                        CallbackModel(
+                            channel,
+                            settings.metadata,
+                            scope=scope,
+                            kind="skills",
+                            max_output=ANSWER_TOKENS,
+                        ),
                         settings.metadata,
                     )
                     if settings.metadata
@@ -218,20 +251,25 @@ def create_app(settings: ControlSettings) -> web.Application:
                     else None
                 )
                 vectors = (
-                    SkillVectors(CallbackEmbedder(channel, settings.embedding))
+                    SkillVectors(CallbackEmbedder(channel, settings.embedding, scope))
                     if settings.embedding
                     else None
                 )
                 harness = Harness(
                     worker,
-                    Role(CallbackModel(channel, settings.main), settings.main),
+                    Role(CallbackModel(channel, settings.main, scope=scope), settings.main),
                     stores=stores,
                     gateway=gateway,
                     settings=settings.settings,
                     mcp=access,
                     watcher=Role(
                         CallbackModel(
-                            channel, settings.watcher, max_output=300, max_response_bytes=16384
+                            channel,
+                            settings.watcher,
+                            scope=scope,
+                            kind="watcher",
+                            max_output=300,
+                            max_response_bytes=16384,
                         ),
                         settings.watcher,
                     )
@@ -239,13 +277,20 @@ def create_app(settings: ControlSettings) -> web.Application:
                     else None,
                     reviewer=Role(
                         CallbackModel(
-                            channel, settings.reviewer, max_output=2048, max_response_bytes=65536
+                            channel,
+                            settings.reviewer,
+                            scope=scope,
+                            kind="reviewer",
+                            max_output=2048,
+                            max_response_bytes=65536,
                         ),
                         settings.reviewer,
                     )
                     if settings.reviewer
                     else None,
-                    delegated=Role(CallbackModel(channel, settings.delegated), settings.delegated)
+                    delegated=Role(
+                        CallbackModel(channel, settings.delegated, scope=scope), settings.delegated
+                    )
                     if settings.delegated
                     else None,
                     loop_runner=loops.run,

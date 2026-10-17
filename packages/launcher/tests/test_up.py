@@ -295,6 +295,8 @@ def test_parts_die_with_a_launcher_killed_outright(site: dict[str, Any]) -> None
         lambda: all(line in journal(site["journal"]) for line in STOPPED),
         "a part outlived the launcher",
     )
+    assert launcher.command("status").returncode == 4
+    assert launcher.command("down").returncode == 0
     assert launcher.command("status").returncode == 3
 
 
@@ -317,7 +319,7 @@ def test_a_part_left_behind_is_shown_and_stopped_by_down(site: dict[str, Any]) -
     assert alive(harness, record)  # it ignored the SIGTERM it got when the launcher died
     shown = launcher.command("status")
     assert shown.returncode == 4
-    assert "but the run-service an earlier launcher started still runs" in shown.stdout
+    assert "but the control-service an earlier launcher started still runs" in shown.stdout
     stopped = launcher.command("down")
     assert "stopped the run-service" in stopped.stdout
     assert not alive(harness, record)

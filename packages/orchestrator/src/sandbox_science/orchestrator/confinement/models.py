@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import copy
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Self, cast
 
 from pydantic import JsonValue, TypeAdapter
@@ -21,8 +21,18 @@ from sandbox_science.orchestrator.model import (
     ToolSpec,
 )
 
+from .paid import begin, observe, usage
 from .transport import Capability, Channel, TransportError
-from .wire import ModelInfo, ModelReply, ModelRequest, WireMessage, WireTurn, payload, typed
+from .wire import (
+    ModelInfo,
+    ModelKind,
+    ModelReply,
+    ModelRequest,
+    WireMessage,
+    WireTurn,
+    payload,
+    typed,
+)
 
 
 class CallbackModel(GatewayModel):
@@ -37,11 +47,14 @@ class CallbackModel(GatewayModel):
         channel: Channel,
         alias: str,
         *,
+        scope: Callable[[], str] | None = None,
+        kind: ModelKind = "fold",
         max_output: int | None = None,
         max_response_bytes: int = 16 * 1024 * 1024,
     ) -> None:
         # Deliberately do not initialize GatewayModel's key, session or PriceList.
         self.channel, self.model = channel, alias
+        self.scope, self.kind = scope, kind
         self._max_tokens = max_output
         self._max_response_bytes = max_response_bytes
         self._tool_choice, self._cache_key = "auto", None
@@ -66,8 +79,12 @@ class CallbackModel(GatewayModel):
         """The owning control connection closes the capability, never a host adapter."""
 
     async def complete(self, messages: Sequence[Message], tools: Sequence[ToolSpec]) -> ModelTurn:
+        if self.scope is None:
+            raise ModelError("confined model capability has no attempt scope")
         request = ModelRequest.model_validate(
             {
+                "attempt": self.scope(),
+                "kind": self.kind,
                 "model": self.model,
                 "messages": [payload(WireMessage.of(message)) for message in messages],
                 "tools": TypeAdapter(tuple[ToolSpec, ...]).dump_python(tuple(tools), mode="json"),
@@ -99,11 +116,11 @@ class CallbackModel(GatewayModel):
 class CallbackGateway(ModelGateway):
     """A host catalog handle whose fixed metadata calls also execute in the runtime."""
 
-    def __init__(self, channel: Channel) -> None:
-        self.channel = channel
+    def __init__(self, channel: Channel, scope: Callable[[], str] | None = None) -> None:
+        self.channel, self.scope = channel, scope
 
     def model(self, alias: str) -> CallbackModel:
-        return CallbackModel(self.channel, alias)
+        return CallbackModel(self.channel, alias, scope=self.scope)
 
     async def aliases(self) -> frozenset[str] | None:
         result = await self._info("aliases")
@@ -132,8 +149,8 @@ class CallbackGateway(ModelGateway):
 class RuntimeModels:
     """The runtime's model capabilities, restricted to configured deployment aliases."""
 
-    def __init__(self, gateway: ModelGateway, aliases: frozenset[str]) -> None:
-        self.gateway, self.aliases = gateway, aliases
+    def __init__(self, gateway: ModelGateway, aliases: frozenset[str], channel: Channel) -> None:
+        self.gateway, self.aliases, self.channel = gateway, aliases, channel
 
     async def complete(self, value: JsonValue) -> JsonValue:
         request = typed(ModelRequest, value)
@@ -145,6 +162,7 @@ class RuntimeModels:
         if request.cache_key is not None:
             model = model.cached_as(request.cache_key)
         model = model.choosing(request.tool_choice)
+        identity = await begin(self.channel, request.attempt, request.model, request.kind)
         try:
             turn = await model.complete(
                 [message.message() for message in request.messages], request.tools
@@ -167,6 +185,7 @@ class RuntimeModels:
                     }
                 )
             )
+        await observe(self.channel, request.attempt, identity, usage(turn))
         return payload(ModelReply(turn=WireTurn.of(turn)))
 
     async def info(self, value: JsonValue) -> JsonValue:

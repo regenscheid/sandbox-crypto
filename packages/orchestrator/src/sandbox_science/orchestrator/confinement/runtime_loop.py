@@ -30,9 +30,11 @@ from sandbox_science.orchestrator.plan_tools import Plans, PlanTools
 from sandbox_science.orchestrator.skills.tool import SkillTool
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome
 
+from .paid import PaidModel
 from .transport import Capability, Channel, TransportError
 from .wire import (
     AppendReply,
+    Attempt,
     CancelRequest,
     Consumed,
     FoldReply,
@@ -216,6 +218,7 @@ class RemoteLog(MessageLog):
     async def append(self, message: Message, appended: Appended) -> Message:
         reply = typed(
             AppendReply,
+            Attempt,
             await self.channel.request(
                 Capability.LOG_APPEND,
                 payload(
@@ -244,6 +247,9 @@ class RemoteLog(MessageLog):
         )
         self._retained = reply.retained
         return reply.message.message()
+
+    async def observed_tool(self, name: str, arguments: str, outcome: ToolOutcome) -> None:
+        await self.channel.request(Capability.TOOL_DONE, payload(Attempt(attempt=self.attempt)))
 
     def retained_tool(self, record: dict[str, Any]) -> dict[str, Any]:
         if self._retained is None:
@@ -304,7 +310,13 @@ class RuntimeLoops:
             model = model.cached_as(given.cache_key)
         task = asyncio.create_task(
             run_task(
-                model,
+                PaidModel(
+                    self.channel,
+                    model,
+                    given.attempt,
+                    given.model,
+                    "delegated" if given.role == "delegated" else "main",
+                ),
                 RemoteToolbox(self.channel, given),
                 given.task,
                 run_id=given.run_id,
@@ -321,6 +333,7 @@ class RuntimeLoops:
                 folds=RemoteFolds(self.channel, given.attempt) if given.folding else None,
                 memory_store=memory,
                 on_started=log.started,
+                on_tool=log.observed_tool,
             )
         )
         self.active[given.attempt] = task, stop
