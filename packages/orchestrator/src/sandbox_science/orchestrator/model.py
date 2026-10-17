@@ -186,6 +186,25 @@ class AssistantMessage(dict[str, Any]):
             adapter_state=reply.adapter_state,
         )
 
+    def replay(self) -> AssistantMessage:
+        """A bounded working copy; canonical provider evidence is left untouched."""
+        from .replay_payload import replay_native
+
+        native = replay_native(self.native, self.native_format)
+        if native == self.native:
+            return self
+        return AssistantMessage(
+            self.get("content"),
+            self.get("tool_calls", ()),
+            native=native,
+            native_format=self.native_format,
+            alias=self.alias,
+            model=self.model,
+            gateway_version=self.gateway_version,
+            prefix=self.prefix,
+            adapter_state=self.adapter_state,
+        )
+
 
 def prefix_digest(parts: Mapping[str, object]) -> str:
     """The SHA-256, in hexadecimal, of a request's parts that hold what the model was

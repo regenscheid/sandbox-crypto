@@ -5,6 +5,8 @@ from sandbox_science.orchestrator.control import ControlError
 
 METADATA_BYTES = 8 * 1024 * 1024
 METADATA_ROWS = 8192
+WORKING_BYTES = 64 * 1024 * 1024
+"""Per-agent active replay payload; token geometry normally triggers folding first."""
 
 
 class WorkingMemoryLimitError(ControlError):

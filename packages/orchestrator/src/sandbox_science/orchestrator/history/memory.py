@@ -14,10 +14,11 @@ from sandbox_science.orchestrator.projects import ModelUsage
 
 from .archive import Archive
 from .collections import Collection, Members
+from .limits import METADATA_BYTES, WORKING_BYTES
 from .log import RunArchive
 from .snapshot import compact
 
-VIEW_BYTES: Final = 8 * 1024 * 1024
+VIEW_BYTES: Final = WORKING_BYTES
 FINAL_BYTES: Final = 1024 * 1024
 
 
@@ -148,7 +149,7 @@ class RunMemory:
                     raise ValueError("tool evidence reference belongs to another project")
                 try:
                     return archive.tool_record(
-                        self.scope[0], str(reference["message"]), max_bytes=VIEW_BYTES
+                        self.scope[0], str(reference["message"]), max_bytes=METADATA_BYTES
                     )
                 except ControlError as error:
                     return {**record, "_evidence_unavailable": error.kind}

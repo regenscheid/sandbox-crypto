@@ -61,6 +61,7 @@ from sandbox_science.orchestrator.notices import (
     requests,
 )
 from sandbox_science.orchestrator.projects import ProjectError
+from sandbox_science.orchestrator.replay_payload import replay_native
 from sandbox_science.orchestrator.skills.discovery import shown_in
 from sandbox_science.orchestrator.skills.tool import given
 from sandbox_science.orchestrator.tokens import DEFAULT_CHARS, estimate, view_tokens
@@ -71,7 +72,7 @@ from .bound import SPILL, Bounded, bound
 from .collections import Collection
 from .fold_index import active, historical
 from .geometry import Geometry
-from .limits import METADATA_BYTES, METADATA_ROWS, WorkingMemoryLimitError
+from .limits import METADATA_ROWS, WORKING_BYTES, WorkingMemoryLimitError
 from .log import PATIENCE, patiently
 from .markers import Judge
 from .record import FoldRecord, marker_line, retired_line, stub
@@ -644,14 +645,21 @@ def _rows(
         run=run,
         kinds=kinds or tuple(kind for kind in KINDS if kind != "state_block"),
         main_only=run is None,
+        max_message_bytes=WORKING_BYTES,
     ):
-        used += archive.payload_bytes(context.project_id, row.message_id) + 1024
-        if used > METADATA_BYTES or len(found) >= METADATA_ROWS:
+        native = replay_native(row.entry.native, row.entry.native_format)
+        used += (
+            archive.payload_bytes(context.project_id, row.message_id)
+            - len(row.entry.native or b"")
+            + len(native or b"")
+            + 1024
+        )
+        if used > WORKING_BYTES or len(found) >= METADATA_ROWS:
             raise WorkingMemoryLimitError(
                 "the semantic history exceeds the working-state ceiling; "
                 "all original messages remain available through stored evidence"
             )
-        found.append(row)
+        found.append(replace(row, entry=replace(row.entry, native=native)))
     return found
 
 

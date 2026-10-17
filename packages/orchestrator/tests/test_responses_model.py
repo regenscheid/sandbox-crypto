@@ -811,3 +811,24 @@ class Scripted:
 
     async def complete(self, messages: Sequence[Message], tools: Sequence[ToolSpec]) -> ModelTurn:
         raise AssertionError("not called")
+
+
+async def test_working_projection_preserves_exact_responses_replay(fake: Fake, gpt: ResponsesModel):
+    fake.then(
+        response(
+            reasoning("kept"),
+            called("call_kept", script="ls"),
+            instructions="echoed instructions" * 10000,
+            tools=[{"echo": "large schema"}],
+        )
+    )
+    before = [{"role": "user", "content": TASK}]
+    original = AssistantMessage.of(await gpt.complete(before, TOOLS))
+    full_native = original.native
+    for answer in (original, original.replay()):
+        fake.then(response(said("ok")))
+        await gpt.complete([*before, answer, tool("call_kept", "result")], TOOLS)
+    assert fake.bodies[-2] == fake.bodies[-1]
+    assert reasonings(fake.bodies[-1]["input"]) == ["rs_litellm_kept"]
+    assert original.native == full_native
+    assert len(original.replay().native) < 1000

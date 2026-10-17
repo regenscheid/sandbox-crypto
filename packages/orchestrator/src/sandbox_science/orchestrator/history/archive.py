@@ -531,6 +531,7 @@ class Archive:
         limit: int = PAGE,
         kinds: Sequence[str] = (),
         main_only: bool = False,
+        max_bytes: int = METADATA_BYTES,
     ) -> list[Archived]:
         """The session's messages from position ``start`` to ``end``, in order, at most
         ``limit`` of them; with ``run``, that run's alone. Kind/parent filters apply
@@ -558,7 +559,7 @@ class Archive:
                 ),
             ).fetchall()
         found: list[Archived] = []
-        remaining = METADATA_BYTES
+        remaining = max_bytes
         for (identifier,) in rows:
             message = self.message(project, identifier, max_bytes=remaining)
             remaining -= self.payload_bytes(project, identifier) + 1024
@@ -577,6 +578,7 @@ class Archive:
         end: int | None = None,
         kinds: Sequence[str] = (),
         main_only: bool = False,
+        max_message_bytes: int = METADATA_BYTES,
     ) -> Iterator[Archived]:
         """Scan scoped evidence one payload at a time, without a held read transaction."""
         while page := self.messages(
@@ -588,6 +590,7 @@ class Archive:
             kinds=kinds,
             main_only=main_only,
             limit=1,
+            max_bytes=max_message_bytes,
         ):
             row = page[0]
             start = row.position + 1

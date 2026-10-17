@@ -267,6 +267,8 @@ class Transcript:
         kept: list[Message] = []
         used = 0
         for message in self.working():
+            if isinstance(message, AssistantMessage):
+                message = message.replay()
             used += len(dump(message).encode()) + 2
             if isinstance(message, AssistantMessage):
                 used += len(message.native or b"")

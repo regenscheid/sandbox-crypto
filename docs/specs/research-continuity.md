@@ -479,6 +479,18 @@ The parent's responsibility, orchestrator-led recovery at every level and separa
 
 ### Explicit tree recovery coordinator
 
+Active context retains only provider-native fields used for replay: Responses
+output items, or Messages content blocks and the token counters used by its replay
+calibration. Echoed instructions, tool schemas, usage attribution and unrelated
+response metadata stay in the immutable archive. This projection preserves native
+reasoning items, thinking signatures, alias/model identity and adapter state. Both
+live requests and rebuilt history apply it before their working-memory accounting.
+The per-agent active replay ceiling is 64 MiB, with a separate bounded single-row
+read of at most 64 MiB before projection. Model token geometry triggers folding;
+the byte ceiling is a backstop. Metadata collections and ordinary archive reads
+retain their separate 8 MiB defaults. Full-history
+reads and exports still return the original provider response.
+
 The normal run service accepts a durable explicit Resume request even when there is
 no queued chat message. One request claims a new session epoch, prepares the
 recorded worker environment through its capabilities handshake (waking a suspended

@@ -1106,3 +1106,22 @@ def test_the_replay_setting_needs_a_claude_alias(
         with pytest.raises(SystemExit):
             cli.main([*base, *options, "task"])
         assert said in capsys.readouterr().err
+
+
+async def test_working_projection_preserves_signed_thinking_and_calibration(fake: Fake):
+    model = claude(fake, replay=SETTING)
+    fake.then(LOOKING, DONE, DONE)
+    before = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": TASK}]
+    try:
+        turn = await model.complete(before, TOOLS)
+        original = AssistantMessage.of(turn)
+        full_native = original.native
+        results = [tool(call.id, "result") for call in turn.tool_calls]
+        for answer in (original, original.replay()):
+            follow = await model.complete([*before, answer, *results], TOOLS)
+            assert follow.thinking_replay == "on"
+    finally:
+        await model.close()
+    assert fake.bodies[-2] == fake.bodies[-1]
+    assert thoughts(fake.bodies[-1])
+    assert original.native == full_native
