@@ -678,23 +678,52 @@ class RunState:
         window used tokens and has no known cost (``unpriced_calls``), so that what was
         spent cannot be known (lab 43, B2): the limit counts as reached until that call
         leaves the window."""
-        limit = self.cost_limit(project)
-        if limit is None:
-            return False
+        return self.cost_gate(project, now)[1]
+
+    def cost_gate(
+        self, project: str, now: datetime, *, require_limit: bool = False
+    ) -> tuple[float | None, bool]:
+        """Read cap presence and its observed/reserved spend in one snapshot.
+
+        An explicitly renewed child requires a cap even if an operator removed the
+        project's general limit after issuing the grant.
+        """
+        from .continuity.reservations import RESERVATIONS
+
         since = now - WINDOW
-        spent = self.model_cost(project, since)
-        reserved = sum(self.model_reservations(project, since).values())
-        if (spent or 0) + reserved >= limit:
-            return True
-        if unknown := self.unpriced_calls(project, since):
+        runs, values = _run_usage(project, since)
+        with self.control.read() as tx:
+            db = tx.sql
+            row = db.execute(
+                "SELECT daily_cost FROM project_cost_limits WHERE project_id=?", (project,)
+            ).fetchone()
+            if row is None:
+                return None, require_limit
+            limit = float(row[0])
+            spent, unknown = db.execute(
+                "SELECT coalesce(sum(json_extract(u,'$.cost')),0), "  # noqa: S608 - fixed SQL
+                "count(*) FILTER (WHERE json_extract(u,'$.cost') IS NULL "
+                "AND coalesce(json_extract(u,'$.input_tokens'),0)+"
+                "coalesce(json_extract(u,'$.output_tokens'),0)>0) "
+                f"FROM ({runs})",
+                values,
+            ).fetchone()
+            reserved = db.execute(
+                f"SELECT coalesce(sum(cost),0) FROM ({RESERVATIONS}) "  # noqa: S608 - fixed SQL
+                "WHERE project=? AND created>=?",
+                (project, since.timestamp()),
+            ).fetchone()[0]
+        if float(spent) + float(reserved) >= limit:
+            return limit, True
+        if unknown:
             _log.warning(
                 "project %s keeps a daily cost limit, and %s of its model calls in the "
                 "last 24 hours have no known cost: it counts as at its limit",
                 project,
                 unknown,
             )
-            return True
-        return False
+            return limit, True
+        return limit, False
 
     def unpriced_calls(self, project: str, since: datetime) -> int:
         """How many of the project's model calls since ``since`` used tokens and have no

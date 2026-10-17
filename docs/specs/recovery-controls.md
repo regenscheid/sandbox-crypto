@@ -1,6 +1,6 @@
 # Operator recovery controls
 
-Implementation contract for explicit uncertainty resolution. These are authenticated
+Implementation contract for explicit uncertainty resolution and USER token renewal. These are authenticated
 workspace operator routes, protected by the existing login and same-origin write
 guard. They are never model tools and never contact a model, worker or executor.
 
@@ -39,6 +39,24 @@ guard. They are never model tools and never contact a model, worker or executor.
   original identity, with detail bounded to 16 KiB. Decision, pending-intent settlement
   and visible archive record commit atomically. Oversized original tool arguments
   fail closed rather than being truncated or executed.
+
+`POST .../sessions/{session}/recovery/token-grants` is a narrow USER recovery
+override for paused direct children of the root whose stop reason is `run_budget`.
+It takes the exact work, current attempt, epoch, expected grant revision, a new
+cumulative token ceiling, and a reason. The child must have an original durable
+blueprint and delegation. The new ceiling must exceed its previous grant without
+exceeding the current project check/task setting; the project must have a spending
+cap. An active work tree, live lease or queued Resume refuses it. The immutable
+decision and archive notice commit together; an identical retry returns the same
+decision, including after the work later resumes. A changed request for that revision
+conflicts. On Resume, the work's latest cumulative ceiling minus lifetime observed
+tokens and unknown-call token reservations becomes the next attempt's allowance.
+The original blueprint, delegation brief and prior usage remain intact. Grants follow
+the stable work identity across later attempts. Nested children are excluded until
+ancestor-aware allocation is built. This endpoint is an operator override, not a
+claim that the calling agent evaluated progress or approved the extension. The
+project's cost limit still checks observed/reserved spend at safe points; concurrent
+future calls are not pre-reserved by a token grant.
 
 Focused fixtures cover pagination/scope, all stale/active/terminal refusals, explicit
 cost validation, exact original-attempt matching, idempotence/conflicts, atomic

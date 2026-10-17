@@ -1,8 +1,10 @@
 # Adaptive research resource policy
 
-Status: architectural direction requested by the owner, 2026-10-17. The renewable
-grant protocol below is planned, not implemented. Existing fixed allowances remain
-in effect until a reviewed implementation replaces them.
+Status: architectural direction requested by the owner, 2026-10-17. The
+parent-authorized renewable grant protocol below is planned, not implemented. A
+narrow explicit USER recovery override can now increase a paused direct child's
+cumulative token ceiling before Resume; it does not automate the check-in or parent
+decision. Other fixed allowances remain in effect.
 
 ## Purpose
 

@@ -401,3 +401,5 @@ Decisions made while carrying out Phase 1 and Phase 2 (PRs #141–#162):
 - 2026-10-16: Measured 24 offline requests through both production adapters for three context layouts. Moving changed state after history preserves a later-run byte prefix, but folds break it; no observed provider hits, so layout stays unchanged ([report](docs/agent-reports/cache-layout-2026-10-16.md)).
 
 - 2026-10-17: The live parent-limit increment can retain the existing session/environment leases while children finish, before durable continuation identities land. Children receive their configured role turn allowance; finalization waits without model calls and Stop/interruption cleanup remains unchanged ([continuity](../docs/specs/research-continuity.md#parent-waiting-increment)).
+
+- 2026-10-17: Add a narrowly scoped USER recovery token override for paused direct children, preserving their work identity, lifetime usage and project spending cap; parent-authorized resource requests and decisions remain the target ([adaptive resources](../docs/specs/adaptive-research-resources.md)).

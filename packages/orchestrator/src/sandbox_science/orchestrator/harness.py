@@ -53,6 +53,7 @@ from .consistency.models import ReviewConfig
 from .consistency.store import ReviewStore
 from .continuity.blueprints import Blueprint, Blueprints
 from .continuity.child_settlement import ChildSettlement
+from .continuity.grants import TokenGrants
 from .continuity.hook import WorkHook
 from .continuity.kernels import KernelJournal
 from .continuity.models import IntentModel, ModelIntents
@@ -1193,7 +1194,13 @@ class Harness:
         if request.parent is not None and self.stores is not None:
             limit = ()
             if request.tokens is not None:
-                limit = (ModelBudget(chat, tokens=request.tokens),)
+                renewed = request.work is not None and await threaded(
+                    TokenGrants(self.stores.projects.control).extended,
+                    request.project,
+                    request.session,
+                    request.work,
+                )
+                limit = (ModelBudget(chat, tokens=request.tokens, require_cost_limit=renewed),)
             fence = await threaded(
                 ChildFence,
                 SessionPlans(self.stores.documents),

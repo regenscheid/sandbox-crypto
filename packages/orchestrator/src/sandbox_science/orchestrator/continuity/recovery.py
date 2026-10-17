@@ -28,6 +28,7 @@ from sandbox_science.orchestrator.run_inputs import RunInputs
 from .blueprints import Blueprints
 from .child_settlement import ChildSettlement
 from .effort import apply_resume_effort
+from .grants import GRANT_EXHAUSTED, TokenGrants
 from .kernels import KernelJournal
 from .plans import Plans
 from .reconcile import Reconciler
@@ -195,12 +196,17 @@ class Recovery:
             await threaded(self.records.block, self.project, self.session, work_id, "interrupted")
             raise
         except Exception as exc:
+            reason = (
+                "run_budget"
+                if isinstance(exc, ControlError) and exc.message == GRANT_EXHAUSTED
+                else f"{type(exc).__name__}: {exc}"
+            )
             await threaded(
                 self.records.block,
                 self.project,
                 self.session,
                 work_id,
-                f"{type(exc).__name__}: {exc}",
+                reason,
             )
             return False
 
@@ -231,14 +237,20 @@ class Recovery:
             )
         if await threaded(self.stores.runs.over_cost_limit, self.project, self.harness.clock.now()):
             raise ControlError(CONFLICT, "model_budget: project budget is exhausted")
-        # The original grant is immutable; a predecessor's saved remaining allowance
-        # must never be reduced a second time on the next Resume.
+        # The original blueprint is immutable. An explicit USER token grant extends
+        # the same work's cumulative ceiling; lifetime usage is deducted only once.
         original = TypeAdapter(RunRequest).validate_python(blueprint.request)
         tokens = original.tokens
         if tokens is not None:
+            grants = TokenGrants(control)
+            if await threaded(grants.extended, self.project, self.session, work.work):
+                cap = await threaded(self.stores.runs.cost_limit, self.project)
+                if cap is None or cap <= 0:
+                    raise ControlError(CONFLICT, "model_budget: renewed work requires a cost cap")
+            tokens = await threaded(grants.total, self.project, self.session, work.work, tokens)
             tokens -= await threaded(self.plans.spent_tokens, work.work)
             if tokens <= 0:
-                raise ControlError(CONFLICT, "model_budget: this work's token grant is exhausted")
+                raise ControlError(CONFLICT, GRANT_EXHAUSTED)
         alias = request.alias or original.alias
         if alias is None:
             raise ControlError(CONFLICT, "recovery configuration lacks the original model alias")

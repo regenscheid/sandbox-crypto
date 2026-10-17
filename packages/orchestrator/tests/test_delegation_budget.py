@@ -109,6 +109,19 @@ async def test_a_child_stops_before_a_call_that_would_pass_its_limit(tmp_path: P
         projects.close()
 
 
+async def test_renewed_child_stops_if_its_required_cost_cap_is_removed(tmp_path: Path) -> None:
+    projects, state, chat = _chat(tmp_path)
+    try:
+        child = ModelBudget(chat, tokens=500_000, require_cost_limit=True)
+        assert await child.halt(_sized(10_000)) == "budget"
+        state.set_cost_limit(PROJECT, 100)
+        assert await child.halt(_sized(10_000)) is None
+        state.set_cost_limit(PROJECT, None)
+        assert await child.halt(_sized(10_000)) == "budget"
+    finally:
+        projects.close()
+
+
 async def test_a_child_makes_the_call_its_tokens_leave_room_for_its_report(
     tmp_path: Path,
 ) -> None:
