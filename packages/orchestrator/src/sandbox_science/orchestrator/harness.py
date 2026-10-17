@@ -56,7 +56,7 @@ from .continuity.child_settlement import ChildSettlement
 from .continuity.hook import WorkHook
 from .continuity.kernels import KernelJournal
 from .continuity.models import IntentModel, ModelIntents
-from .continuity.records import WorkRecords, authority
+from .continuity.records import Work, WorkRecords, authority
 from .control import ControlError
 from .delegation import prompt as delegated_prompt
 from .delegation.fence import ChildFence
@@ -1287,12 +1287,30 @@ class Harness:
             finished.context.session_id,
             run_name(finished.started_at, finished.run_id),
         )
-        if work is not None and work.state in ("completed", "stopped"):
-            try:
-                async with asyncio.timeout(KERNEL_CLOSE_SECONDS):
-                    await self.client.close_session(finished.context, run=work.kernel)
-            except (WorkerAPIError, TimeoutError) as exc:
-                _log.warning("could not close completed work kernels: %r", exc)
+        if work is not None:
+            await self._release_child_kernel(finished.context, work)
+
+    async def release_completed_children(self, context: ExecutionContext, root: str) -> None:
+        """Reconcile terminal child kernels under the current Resume root's authority."""
+        if self.stores is None or context.authority is None or context.authority.work != root:
+            raise ValueError("child kernel recovery requires the current root authority")
+        records = WorkRecords(self.stores.projects.control)
+        after = ""
+        while page := await threaded(
+            records.page, context.project_id, context.session_id, root, after=after
+        ):
+            for work in page:
+                await self._release_child_kernel(context, work)
+            after = page[-1].work
+
+    async def _release_child_kernel(self, context: ExecutionContext, work: Work) -> None:
+        if work.parent is None or work.kernel is None or work.state not in ("completed", "stopped"):
+            return
+        try:
+            async with asyncio.timeout(KERNEL_CLOSE_SECONDS):
+                await self.client.close_session(context, run=work.kernel)
+        except (WorkerAPIError, TimeoutError) as exc:
+            _log.warning("could not close completed work kernels: %r", exc)
 
     def child_outcome(self, finished: Finished, saved_status: int) -> ChildEnd:
         """Typed durable handback shared by first and continued child attempts."""

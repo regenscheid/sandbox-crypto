@@ -102,6 +102,7 @@ class Recovery:
                     await ChildSettlement(
                         self.stores.projects.control, Ledger(self.stores.documents)
                     ).drain(self.project, self.session, root=root)
+                    await self.harness.release_completed_children(owned_context, root)
                     await threaded(self.plans.prepare, root, run=name, started=started)
                 self.started = True
                 while True:

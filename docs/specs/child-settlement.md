@@ -22,3 +22,9 @@ remain blocked while a saved checkpoint is unsettled, including the delegation-e
 A reserved future parent maps through `research_continuations` until it is admitted:
 its completed children remain handbacks of that stable parent work across repeated Resume.
 Acknowledgements and consumption receipts still require actual parent attempts.
+
+Resume startup then releases only terminal child kernels (completed or stopped),
+using the trusted saved work kernel ID and the current root's epoch authority while
+its environment claim is held. It pages at most100 work rows, closes sequentially,
+retains paused/blocked/running child kernels, and never closes the root kernel.
+Timeout/worker errors warn and preserve the recovery path for the next startup.

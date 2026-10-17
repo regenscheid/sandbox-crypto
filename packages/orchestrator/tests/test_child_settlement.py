@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -306,5 +306,97 @@ async def test_parent_completion_requires_ledger_receipt_even_after_outcome_ack(
         works.finish(record(RUN))
         assert works.get("p", "s", RUN).state == "completed"
     finally:
+        documents.close()
+        state.projects.close()
+
+
+async def test_resume_releases_saved_terminal_child_kernel_before_planning(tmp_path):
+    import asyncio
+    from typing import cast
+
+    from sandbox_science.contracts import ExecutionContext
+    from sandbox_science.contracts.environment_claims import EnvironmentClaimResult
+    from sandbox_science.orchestrator.continuity.blueprints import Blueprint, Blueprints
+    from sandbox_science.orchestrator.continuity.recovery import Recovery
+    from sandbox_science.orchestrator.harness import Harness, Settings
+    from sandbox_science.orchestrator.worker_client import WorkerClient
+    from sandbox_science.testing import eventually
+
+    from .test_run_harness import Sink, Worker, main
+
+    state, documents, works, records, _, child, _ = tree(tmp_path)
+    paused = "20261017T030001000000Z-paused"
+    stopped = "20261017T030002000000Z-stopped"
+    works.admit("p", "s", paused, parent=RUN)
+    works.finish(record(paused, stopped="turn_limit"))
+    works.admit("p", "s", stopped, parent=RUN)
+    works.stop("p", "s", stopped)
+    session = state.projects.get("p").sessions["s"]
+    context = ExecutionContext(
+        project_id="p",
+        session_id="s",
+        environment_id=session.environment_id,
+        policy_revision=state.projects.get("p").policy,
+    )
+    owner = works.owner("p", "s", RUN)
+    assert owner is not None
+    Blueprints(state.projects.control).save(
+        owner,
+        Blueprint(
+            context=context,
+            request={
+                "project": "p",
+                "session": "s",
+                "task": "Continue research",
+                "alias": "scripted",
+            },
+        ),
+    )
+    works.interrupt("p", "s", RUN)
+    request = works.request("p", "s")
+    assert request is not None
+
+    class ClosingWorker(Worker):
+        def __init__(self):
+            self.held = False
+            self.closed = []
+
+        async def claim_environment(self, request):
+            self.held = request.seconds != 0
+            return EnvironmentClaimResult(
+                environment_id=request.context.environment_id,
+                state="held" if self.held else "released",
+                sandbox_id="sandbox-fixture",
+                expires_at=datetime.now(UTC) + timedelta(seconds=60) if self.held else None,
+            )
+
+        async def close_session(self, context, *, run=None):
+            assert self.held
+            assert records.get("p", "s", child.delegation_id).ended == "returned"
+            assert not recovery.started  # no branch may begin before reconciliation
+            self.closed.append((context, run))
+
+    worker = ClosingWorker()
+    harness = Harness(
+        cast(WorkerClient, worker),
+        main("unused"),
+        stores=state,
+        settings=Settings(min_isolation_tier=None),
+    )
+    recovery = Recovery(harness, "p", "s", request)
+    task = asyncio.create_task(recovery.run(Sink(), asyncio.Event()))
+    try:
+        await eventually(lambda: recovery.started or task.done())
+        assert not task.done(), task.exception() if task.done() else None
+        assert [run for _, run in worker.closed] == ["child-1", "stopped"]
+        assert all(ctx.authority.work == RUN for ctx, _ in worker.closed)
+        assert all(ctx.authority.run == recovery.run_name for ctx, _ in worker.closed)
+        assert all(ctx.authority.epoch == recovery.epoch for ctx, _ in worker.closed)
+        assert all(ctx.authority.epoch > owner.epoch for ctx, _ in worker.closed)
+        assert "paused" not in [run for _, run in worker.closed]
+        assert "run-1" not in [run for _, run in worker.closed]
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
         documents.close()
         state.projects.close()
