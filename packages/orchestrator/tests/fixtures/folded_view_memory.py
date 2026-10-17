@@ -134,7 +134,10 @@ def measure(path: Path, inline: bool) -> None:
         baseline = rss()
         tracemalloc.start()
         if inline:
-            rows = archive.messages("p", "s")
+            # The public page API now rejects aggregate payloads above 8 MiB. The
+            # positive control deliberately retains every streamed large original,
+            # reproducing historical accumulation without weakening that guard.
+            rows = list(archive.scan("p", "s", run="r", kinds=("assistant", "tool_result")))
             assert len(rows) > pins["count"]
             size = sum(len(row.entry.content or "") for row in rows)
         else:

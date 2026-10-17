@@ -22,9 +22,10 @@ def run(mode: str, root: Path, count: int) -> dict[str, int]:
         [sys.executable, str(FIXTURE), mode, str(root), str(count)],
         capture_output=True,
         text=True,
-        check=True,
+        check=False,
         timeout=120,
     )
+    assert result.returncode == 0, f"{mode}: {result.stderr}"
     return json.loads(result.stdout) if mode != "prepare" else {}
 
 
