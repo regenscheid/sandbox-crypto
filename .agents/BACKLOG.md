@@ -186,6 +186,8 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
     - [ ] The first delegation piece, after the M2 exit lab (the owner, 2026-10-14): a "check this claim" delegation. The main agent hands a result derived by argument to a run that starts with a fresh context (PD-13), told the entry and its revision; the run's report is the `independent_check` link the ledger's gate asks for (LG-17). No human has to validate a claim; until this exists only a check the user produced counts, so the user checks proved results ([PLAN-CHANGES](PLAN-CHANGES.md))
 
 
+- [ ] Research UI layout (2026-10-17): sidebar, central chat, optional resizable Documents/Plan/Agents/Activity pane, retained drafts and shared Markdown/LaTeX rendering. Local implementation on `codex/research-ui`; integration pending.
+- [ ] USER file uploads (2026-10-17): bounded immutable originals, retryable scoped worker copies, manifest-backed chat, explicit text-to-document import. Local implementation on `codex/research-ui`; real OpenShell upload lab and integration pending.
 - [x] GUI stack (D80, confirmed by the user): Svelte 5 with TypeScript built by Vite (`web/workspace`), an aiohttp server (`packages/workspace`), markdown-it and KaTeX in the browser
 - [x] First slice ([workspace](../docs/WORKSPACE.md)): a read-only API v0 and views of projects, their sessions and environments, and each session's runs (messages, tool calls with arguments and results); Jupyter-like login, origin and host checks, a strict content policy; one Markdown component for all text; a `web` CI job and the npm lockfile check (licenses, registry, integrity, install scripts)
 - [x] The harness keeps each run's record with `--state-dir`, the same that `--transcript` writes

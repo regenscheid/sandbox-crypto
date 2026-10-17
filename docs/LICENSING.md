@@ -60,6 +60,7 @@ for embedded subcomponents.
 | syft, ScanCode | Apache-2.0 | SBOM / license scanning |
 | SeaweedFS | Apache-2.0 | Object storage candidate |
 | OpenSearch, NATS | Apache-2.0 | Only if search or a broker is ever needed |
+| OpenScience web UI (`synthetic-sciences/openscience`, revision `722ad051b7f601bab9e33749aedf942faf8c4737`) | Apache-2.0 | Interaction reference for the session sidebar, optional research pane, keyboard resizing and attachment cards. This change independently implements those behaviors in Svelte; no upstream source, prompts, skills, icons or fonts are copied or distributed. Any future code port must retain per-file license/NOTICE obligations and pass D56 checks. [License](https://github.com/synthetic-sciences/openscience/blob/722ad051b7f601bab9e33749aedf942faf8c4737/LICENSE), [NOTICE](https://github.com/synthetic-sciences/openscience/blob/722ad051b7f601bab9e33749aedf942faf8c4737/NOTICE) |
 | OpenScience Desktop upstream (`ai4s-research/open-science`) | MIT | Reuse candidate for code, subject to per-file checks and its NOTICE files: a permissive license does not settle D56. Its two derived skills are never imported (below) |
 | SageMath | GPLv2+ (distributions effectively GPLv3) | Tier 3 |
 | fpylll | GPLv2+ | Tier 3 |
