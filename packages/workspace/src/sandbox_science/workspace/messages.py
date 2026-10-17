@@ -16,19 +16,23 @@ import re
 from typing import Annotated, Final
 
 from aiohttp import web
-from pydantic import Field, StringConstraints, ValidationError
+from pydantic import Field, StringConstraints, TypeAdapter, ValidationError
 
 from sandbox_science.contracts import Contract, Identifier
 from sandbox_science.contracts.model import Counter
 from sandbox_science.orchestrator.documents import DocumentError, DocumentStore
 from sandbox_science.orchestrator.history import Archive
 from sandbox_science.orchestrator.history.operations import CHUNK_BYTES
+from sandbox_science.orchestrator.history.operations import PAGE as RECORD_PAGE
+from sandbox_science.orchestrator.projects import RunName
 
 from . import documents
+from .context import CONTEXT, identifier, session_record
 
 PATH: Final = "/api/v0/projects/{project}/messages/{message}"
 _MESSAGE: Final = re.compile(r"msg-[0-9a-f]{16}")
 _INTEGER: Final = re.compile(r"[0-9]{1,19}")
+_RUN: Final = TypeAdapter[str](RunName)
 
 
 class ChunkQuery(Contract):
@@ -46,10 +50,33 @@ class ToolRecordChunk(Contract):
     data_base64: Annotated[str, StringConstraints(max_length=4 * ((CHUNK_BYTES + 2) // 3))]
 
 
+class RecordQuery(Contract):
+    after: Counter = 0
+    limit: Annotated[int, Field(strict=True, ge=1, le=RECORD_PAGE)] = RECORD_PAGE
+
+
+class ToolRecordReference(Contract):
+    message: Identifier
+    position: Counter
+    operation_id: Annotated[str, StringConstraints(min_length=1, max_length=128)] | None
+    record_bytes: Counter | None
+    """Null marks a legacy message without a full record in the journal."""
+
+
+class ToolRecordListing(Contract):
+    after: Counter
+    next_after: Counter
+    has_more: bool
+    records: Annotated[tuple[ToolRecordReference, ...], Field(max_length=RECORD_PAGE)]
+
+
 def add_routes(app: web.Application) -> None:
     app.router.add_get(PATH, message)
     app.router.add_get(PATH + "/tool-record", tool_record)
     app.router.add_get(PATH + "/tool-record/chunks", tool_record_chunks)
+    app.router.add_get(
+        "/api/v0/projects/{project}/sessions/{session}/runs/{run}/tool-records", tool_records
+    )
 
 
 async def message(request: web.Request) -> web.Response:
@@ -99,20 +126,7 @@ async def tool_record_chunks(request: web.Request) -> web.Response:
     identifier = request.match_info["message"]
     if not _MESSAGE.fullmatch(identifier):
         raise DocumentError("invalid_request", "a message is named by its msg- ID")
-    query = dict(request.query)
-    if (
-        set(query) - {"offset", "limit"}
-        or len(query) != len(request.query)
-        or request.can_read_body
-        or any(not _INTEGER.fullmatch(value) for value in query.values())
-    ):
-        raise DocumentError("invalid_request", "give only offset and limit as byte counts")
-    try:
-        selected = ChunkQuery.model_validate({key: int(value) for key, value in query.items()})
-    except ValidationError:
-        raise DocumentError(
-            "invalid_request", "tool record offset or limit is out of range"
-        ) from None
+    selected = _query(request, ChunkQuery)
     project = request.match_info["project"]
 
     def read(store: DocumentStore) -> dict[str, object]:
@@ -128,3 +142,51 @@ async def tool_record_chunks(request: web.Request) -> web.Response:
         ).model_dump(mode="json")
 
     return await documents.answer(request, read)
+
+
+async def tool_records(request: web.Request) -> web.Response:
+    """Bounded discovery for unfinished and finished runs, without loading their bodies."""
+    project, session = identifier(request, "project"), identifier(request, "session")
+    try:
+        run = _RUN.validate_python(request.match_info["run"], strict=True)
+    except ValidationError:
+        raise DocumentError("invalid_request", "invalid run name") from None
+    selected = _query(request, RecordQuery)
+    context = request.app[CONTEXT]
+
+    def read(store: DocumentStore) -> dict[str, object]:
+        session_record(context.projects, project, session)
+        found = Archive(store).tool_records(
+            project, session, run, after=selected.after, limit=selected.limit
+        )
+        return ToolRecordListing(
+            after=selected.after,
+            next_after=found.next_after,
+            has_more=found.has_more,
+            records=tuple(
+                ToolRecordReference(
+                    message=record.message_id,
+                    position=record.position,
+                    operation_id=record.operation_id,
+                    record_bytes=record.record_bytes,
+                )
+                for record in found.records
+            ),
+        ).model_dump(mode="json")
+
+    return await documents.answer(request, read)
+
+
+def _query[Q: Contract](request: web.Request, model: type[Q]) -> Q:
+    query = dict(request.query)
+    if (
+        set(query) - model.model_fields.keys()
+        or len(query) != len(request.query)
+        or request.can_read_body
+        or any(not _INTEGER.fullmatch(value) for value in query.values())
+    ):
+        raise DocumentError("invalid_request", "invalid tool record paging query")
+    try:
+        return model.model_validate({key: int(value) for key, value in query.items()})
+    except ValidationError:
+        raise DocumentError("invalid_request", "tool record paging value is out of range") from None

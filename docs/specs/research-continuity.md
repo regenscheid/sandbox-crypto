@@ -1,6 +1,6 @@
 # Research continuity
 
-Date: 2026-10-16. **Status: Draft.** The owner's continuity requirements (D87) and separate orchestrator sandbox (D47) are confirmed; the lifecycle, storage design and implementation sequence are proposed. Nothing on this page establishes that recovery, bounded run memory or normal-launcher orchestrator confinement is built. Baseline: main `57e29536`. The [tool journal increment](#first-implementation-increment-durable-tool-journal) is implemented locally; the remaining design is proposed.
+Date: 2026-10-16. **Status: Draft.** The owner's continuity requirements (D87) and separate orchestrator sandbox (D47) are confirmed; the lifecycle, storage design and implementation sequence are proposed. Nothing on this page establishes that recovery, bounded run memory or normal-launcher orchestrator confinement is built. Baseline: main `57e29536`. The [tool journal](#first-implementation-increment-durable-tool-journal), bounded retrieval and metadata discovery increments are implemented locally; the remaining design is proposed.
 
 ## Purpose and confirmed requirements
 
@@ -158,6 +158,34 @@ and 2,138,112 bytes. Both reconstructed hashes matched. A positive control using
 full-read path on the 20 MiB fixture exceeded both budgets (41,946,627 Python bytes,
 40,280,064 RSS bytes), confirming that the gate detects whole-record loading.
 Independent review and integration remain pending.
+
+## Discovering a run's tool evidence
+
+The local discovery increment adds `Archive.tool_records` and the authenticated read route
+`GET /api/v0/projects/{project}/sessions/{session}/runs/{run}/tool-records`. It lists
+metadata for archived tool results, including results saved before an interruption
+with no final run record. It reads neither result payloads nor message contents.
+Each entry has the archive message ID, session position, toolbox operation ID (null
+for a result without a dispatch intent), and record byte size. A null byte size
+explicitly marks legacy messages with no full record in the journal.
+
+`after` is an exclusive session-position cursor (default 0); `limit` is 1–100 (default
+100). Entries are ordered by position. The reply includes `next_after` (last returned
+position, or the incoming cursor for an empty page) and `has_more`, computed within
+the page's read transaction. Readers can continue after appends without retaining
+previous pages. This is a live enumeration, not a completion or recovery claim.
+An empty page for a valid run name in an existing session means only that no matching
+tool messages were found; it does not prove the run exists or has finished. Missing
+projects/sessions return 404. Malformed scopes, paging values, duplicate or unknown
+query parameters and request bodies return 400. The existing byte-page route retrieves
+each full record by the returned message ID.
+
+Tests cover reopening without a final run record, appends between pages, legacy
+gaps, project/session/run scope, and the fixed 100-entry page bound. The fresh-process
+memory fixture also enumerates metadata for the 2 MiB and 20 MiB records under the
+same 1 MiB Python / 8 MiB RSS additional-allocation gates used for byte retrieval.
+The combined local gate passes 845 affected tests, including the workspace package;
+Python/web static checks pass. Independent review and integration remain pending.
 
 ## Acceptance
 

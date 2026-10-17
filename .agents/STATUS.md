@@ -4,7 +4,7 @@ Updated 2026-10-16 on `codex/research-foundations`, based on main `57e29536`. Th
 
 ## Phase and focus
 
-- **Owner priority, 2026-10-16:** research foundations before the UI redesign. Parent ownership and orchestrator-led tree resume (D87), plus a separate orchestrator sandbox (D47), are confirmed. [Research continuity](../docs/specs/research-continuity.md) now has a local durable tool journal (schema 58) and exact-byte pages. A 20 MiB read adds about 2 MiB peak RSS. Latest checks: 820 affected tests plus Python/web static checks pass. Independent review/integration, tree Resume, transcript RAM eviction and launcher confinement remain pending. Automatic crash resume is undecided.
+- **Owner priority, 2026-10-16:** research foundations before the UI redesign. Parent ownership and orchestrator-led tree resume (D87), plus a separate orchestrator sandbox (D47), are confirmed. [Research continuity](../docs/specs/research-continuity.md) has a local durable tool journal (schema 58), exact-byte pages and bounded discovery by run. A 20 MiB read adds about 2 MiB peak RSS. Latest checks: 845 affected tests plus Python/web static checks pass. Independent review/integration, tree Resume, transcript RAM eviction and launcher confinement remain pending. Automatic crash resume is undecided.
 
 - **Early prototype (owner assessment).** Historical labs exercised individual paths; they do not establish the intended long-running research product. The normal launcher still runs the orchestrator on the host. The personal services were inactive at the [foundation review](docs/agent-reports/openshell-foundations-review-2026-10-16.md); this work has not started or changed them.
 - **Context management is built; its acceptance is not met.** The owner approved the [spec](../docs/specs/context-management.md) on 2026-10-15 (#439). Steps (a) to (g) are merged: the archive and history tools, the ledger's research state, both adapters, token accounting and the session view, the digest, folds and their enrichment, overviews and retired markers, the region within its bound, the `research_state` stop, the refit on a switch to a smaller model, fold proposals and their GUI.
@@ -33,7 +33,7 @@ All used the real model and crypto-research-mcp.
 - **Delegation, ledger, skills, cost:** as in the specs. Cost is the gateway's, or priced from its model information and marked so; with a daily limit, an unpriced call counts it as reached.
 - **Workspace GUI:** documents, comments, reviews, plans, chat, jobs, kernels, provisioning, artifacts, a PDF viewer, the ledger with its research state, figures in text, fold proposals, the Skills page, the Memory page, a session's run tree.
 - **Not built:** Mermaid and the figure check, exports of figures, helper lineage, per-pack thresholds, approvals in the GUI, execution-pinned evidence.
-- **Tests:** 13,655 Python tests are collected, 891 of them in the slow tier, and 2,173 web tests (fresh counts at this sync).
+- **Tests:** this branch's affected gate passes 845 Python tests, including fresh-process retrieval/discovery memory checks. The full Python and browser suites have not been rerun on this branch.
 
 ## What comes next
 

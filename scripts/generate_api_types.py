@@ -64,7 +64,7 @@ from sandbox_science.workspace.ledger import (
     LedgerWork,
 )
 from sandbox_science.workspace.memory import MemoryAnswer, MemoryHistory, MemoryProposals
-from sandbox_science.workspace.messages import ToolRecordChunk
+from sandbox_science.workspace.messages import ToolRecordChunk, ToolRecordListing
 from sandbox_science.workspace.plan_edits import BodyChange, EditReceipt
 from sandbox_science.workspace.plans import WorkspacePlan
 from sandbox_science.workspace.skills import ProjectSkills, SkillSettingsChange, SkillSettingsView
@@ -73,6 +73,7 @@ ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "web" / "workspace" / "src" / "lib" / "api-types.ts"
 MODELS: tuple[type[BaseModel], ...] = (
     ToolRecordChunk,
+    ToolRecordListing,
     FigureLink,
     ChartLink,
     ProjectListing,

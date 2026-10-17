@@ -53,7 +53,16 @@ from sandbox_science.orchestrator.documents.store import DocumentStore
 from sandbox_science.orchestrator.messages import MESSAGES, thoughts
 from sandbox_science.orchestrator.model import AssistantMessage
 
-from .operations import CHUNK_BYTES, READ_BYTES, RecordChunk, ToolJournal, ToolRecord, save_record
+from .operations import (
+    CHUNK_BYTES,
+    READ_BYTES,
+    RecordChunk,
+    RecordPage,
+    ToolJournal,
+    ToolRecord,
+    save_record,
+)
+from .operations import PAGE as RECORD_PAGE
 from .reads import Read, encoded
 
 Json = dict[str, Any]
@@ -420,6 +429,12 @@ class Archive:
         return ToolJournal(self.control).record_chunk(
             project, message_id, offset=offset, limit=limit
         )
+
+    def tool_records(
+        self, project: str, session: str, run: str, *, after: int = 0, limit: int = RECORD_PAGE
+    ) -> RecordPage:
+        """Page tool evidence references, even when a final run record was never saved."""
+        return ToolJournal(self.control).records(project, session, run, after=after, limit=limit)
 
     def messages(
         self,

@@ -1394,6 +1394,20 @@ export interface ToolRecordChunk {
   data_base64: string;
 }
 
+export interface ToolRecordListing {
+  after: number;
+  next_after: number;
+  has_more: boolean;
+  records: ToolRecordReference[];
+}
+
+export interface ToolRecordReference {
+  message: string;
+  position: number;
+  operation_id: string | null;
+  record_bytes: number | null;
+}
+
 /** One run of the session's tree. */
 export interface TreeRun {
   name: string;

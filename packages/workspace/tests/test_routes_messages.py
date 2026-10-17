@@ -170,3 +170,113 @@ async def test_record_chunk_query_is_bounded_and_unambiguous(
         400,
         "invalid_request",
     )
+
+
+async def test_run_record_discovery_without_a_final_record_and_with_legacy_gaps(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    from sandbox_science.orchestrator.history.operations import ToolJournal
+    from sandbox_science.orchestrator.model import ToolCall
+
+    from .route_support import context_of
+
+    store = ProjectStore(state_dir)
+    try:
+        archive = Archive(store.control)
+        ToolJournal(store.control).start(
+            context_of(state_dir), RUN, "op-first", ToolCall("c", "sum", "{}")
+        )
+        first = archive.append(
+            "p1",
+            "a",
+            RUN,
+            Entry("tool", "tool_result", "4"),
+            tool_record=ToolRecord({"value": 4}, "op-first"),
+        )
+        old = archive.append("p1", "a", RUN, Entry("tool", "tool_result", "legacy"))
+        # Sibling runs and sessions must not leak into this run's listing.
+        archive.append("p1", "a", RUN + "other", Entry("tool", "tool_result", "other"))
+        archive.append("p1", "c", RUN, Entry("tool", "tool_result", "other"))
+        store.open_session("p2", "a", dedicated=False)
+        assert all(run.name != RUN for run in store.runs("p1", "a"))
+    finally:
+        store.close()
+    client = await workspace(aiohttp_client, state_dir, static_dir)
+    url = f"/api/v0/projects/p1/sessions/a/runs/{RUN}/tool-records"
+    response = await client.get(url, params={"limit": 1})
+    assert response.status == 200
+    assert response.headers["Cache-Control"] == "no-store"
+    page = await response.json()
+    assert page == {
+        "after": 0,
+        "next_after": first.position,
+        "has_more": True,
+        "records": [
+            {
+                "message": first.message_id,
+                "position": first.position,
+                "operation_id": "op-first",
+                "record_bytes": len(json.dumps({"value": 4})),
+            }
+        ],
+    }
+    assert await (await client.get(url, params={"limit": 1})).json() == page
+    # Its reference works on the bounded payload endpoint.
+    chunk = await (await client.get(PATH + first.message_id + "/tool-record/chunks")).json()
+    assert json.loads(base64.b64decode(chunk["data_base64"])) == {"value": 4}
+    last = await (await client.get(url, params={"after": first.position})).json()
+    assert last == {
+        "after": first.position,
+        "next_after": old.position,
+        "has_more": False,
+        "records": [
+            {
+                "message": old.message_id,
+                "position": old.position,
+                "operation_id": None,
+                "record_bytes": None,
+            }
+        ],
+    }
+    empty = await (await client.get(url, params={"after": old.position})).json()
+    assert empty == {
+        "after": old.position,
+        "next_after": old.position,
+        "has_more": False,
+        "records": [],
+    }
+    assert (await (await client.get(url.replace("/p1/", "/p2/"))).json())["records"] == []
+    assert (await (await client.get(url.replace(RUN, RUN + "missing"))).json())["records"] == []
+    await error_of(await client.get(url.replace("/a/", "/missing/")), 404, "not_found")
+    await error_of(await client.get(url.replace("/p1/", "/missing/")), 404, "not_found")
+    await error_of(await client.get(url.replace(RUN, "invalid")), 400, "invalid_request")
+    await error_of(await client.get(url.replace("/p1/", "/bad%20id/")), 400, "invalid_request")
+    await error_of(await client.get(url.replace("/a/", "/bad%20id/")), 400, "invalid_request")
+    await error_of(await client.get(url, data=b"unexpected"), 400, "invalid_request")
+    client.session.cookie_jar.clear()
+    await error_of(await client.get(url), 401, "policy_denied")
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "after=-1",
+        "after=true",
+        "after=1.5",
+        "after=+1",
+        "after=",
+        "after=0&after=1",
+        "after=" + "9" * 100,
+        "after=4611686018427387905",
+        "limit=0",
+        "limit=101",
+        "limit=1&limit=2",
+        "offset=1",
+    ],
+)
+async def test_record_listing_rejects_invalid_queries(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path, query: str
+) -> None:
+    client = await workspace(aiohttp_client, state_dir, static_dir)
+    url = f"/api/v0/projects/p1/sessions/a/runs/{RUN}/tool-records"
+    await error_of(await client.get(url + "?" + query), 400, "invalid_request")

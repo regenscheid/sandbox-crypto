@@ -44,9 +44,18 @@ initial_rss = peak_rss()
 tracemalloc.start()
 offset, pages, total, digest = 0, 0, 0, hashlib.sha256()
 try:
-    if len(sys.argv) > 3:
+    mode = sys.argv[3] if len(sys.argv) > 3 else 'chunks'
+    if mode == 'whole':
         # Positive control: the older full-read path must exceed the same budgets.
         whole = archive.tool_record('p', sys.argv[2], max_bytes=32 * 1024 * 1024)
+    elif mode == 'index':
+        while True:
+            page = archive.tool_records('p', 's', 'run', after=offset, limit=1)
+            total += sum(record.record_bytes for record in page.records)
+            pages += 1
+            if not page.has_more:
+                break
+            offset = page.next_after
     else:
         while True:
             page = archive.tool_record_chunk('p', sys.argv[2], offset=offset)
@@ -110,4 +119,18 @@ def test_reading_ten_times_more_evidence_does_not_materialize_the_record(tmp_pat
     materialized = json.loads(control.stdout)
     assert materialized["python_peak"] > 1024 * 1024, materialized
     assert materialized["rss_growth"] > 8 * 1024 * 1024, materialized
-    print(json.dumps({"pages": measurements, "full_read_control": materialized}))
+    listing = subprocess.run(
+        [sys.executable, "-c", READER, str(store.control.path), fixtures[-1][0], "index"],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    metadata = json.loads(listing.stdout)
+    assert metadata["bytes"] == sum(size for _, size, _ in fixtures)
+    assert metadata["pages"] == len(fixtures)
+    assert metadata["python_peak"] < 1024 * 1024, metadata
+    assert metadata["rss_growth"] < 8 * 1024 * 1024, metadata
+    print(
+        json.dumps({"pages": measurements, "full_read_control": materialized, "metadata": metadata})
+    )

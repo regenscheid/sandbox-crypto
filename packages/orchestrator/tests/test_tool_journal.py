@@ -436,3 +436,88 @@ def test_record_pages_are_scoped_and_release_their_read_transaction(projects: Pr
     assert error.value.kind == "invalid_request"
     assert not projects.control.in_transaction
     journal.start(CONTEXT, RUN, "op-after-refusal", CALL)
+
+
+def test_record_discovery_survives_restart_and_appends_without_loading_the_run(
+    projects: ProjectStore, tmp_path: Path
+) -> None:
+    archive = Archive(projects.control)
+    entry = Entry("tool", "tool_result", "sample")
+    record = {"value": "exact 0004"}
+    size = len(json.dumps(record, ensure_ascii=False, allow_nan=False).encode())
+    ToolJournal(projects.control).start(CONTEXT, RUN, "op-first", CALL)
+    first = archive.append("p", "s", RUN, entry, tool_record=ToolRecord(record, "op-first"))
+    archive.append("p", "s", RUN, Entry("assistant", "assistant", "next"))
+    old = archive.append("p", "s", RUN, entry)
+    archive.append("p", "s", "other-run", entry, tool_record=ToolRecord(record))
+    projects.open_session("p", "other-session", dedicated=False)
+    archive.append("p", "other-session", RUN, entry, tool_record=ToolRecord(record))
+    projects.create("other-project", "minimal", "sha256:" + "a" * 64)
+    projects.open_session("other-project", "s", dedicated=False)
+    archive.append("other-project", "s", RUN, entry, tool_record=ToolRecord(record))
+    refused = archive.append("p", "s", RUN, entry, tool_record=ToolRecord(record))
+    projects.close()
+    reopened = ProjectStore(tmp_path)
+    try:
+        assert reopened.runs("p", "s") == []
+        archive = Archive(reopened.control)
+        page = archive.tool_records("p", "s", RUN, limit=1)
+        assert [
+            (r.message_id, r.position, r.operation_id, r.record_bytes) for r in page.records
+        ] == [(first.message_id, first.position, "op-first", size)]
+        assert page.has_more
+        assert page.next_after == first.position
+        added = archive.append("p", "s", RUN, entry, tool_record=ToolRecord(record))
+        assert archive.tool_records("p", "s", RUN, limit=1) == page
+        following = archive.tool_records("p", "s", RUN, after=page.next_after, limit=2)
+        assert [(r.message_id, r.operation_id, r.record_bytes) for r in following.records] == [
+            (old.message_id, None, None),
+            (refused.message_id, None, size),
+        ]
+        assert following.has_more
+        last = archive.tool_records("p", "s", RUN, after=following.next_after)
+        assert [r.message_id for r in last.records] == [added.message_id]
+        assert last.next_after == added.position
+        assert not last.has_more
+        empty = archive.tool_records("p", "s", RUN, after=last.next_after)
+        assert (empty.records, empty.next_after, empty.has_more) == ((), last.next_after, False)
+        # Reaching the current end does not prevent discovery of a later append.
+        late = archive.append("p", "s", RUN, entry, tool_record=ToolRecord(record))
+        resumed = archive.tool_records("p", "s", RUN, after=empty.next_after)
+        assert [r.message_id for r in resumed.records] == [late.message_id]
+        assert archive.tool_records("p", "s", "absent").records == ()
+    finally:
+        reopened.close()
+
+
+def test_record_discovery_has_a_fixed_page_bound(projects: ProjectStore) -> None:
+    archive = Archive(projects.control)
+    for _ in range(PAGE + 1):
+        archive.append("p", "s", RUN, Entry("tool", "tool_result", "legacy"))
+    first = archive.tool_records("p", "s", RUN)
+    assert len(first.records) == PAGE
+    assert first.has_more
+    second = archive.tool_records("p", "s", RUN, after=first.next_after)
+    assert len(second.records) == 1
+    assert not second.has_more
+
+
+@pytest.mark.parametrize(
+    ("after", "limit"),
+    [
+        (-1, 1),
+        (2**62 + 1, 1),
+        (False, 1),
+        ("0", 1),
+        (1.5, 1),
+        (0, 0),
+        (0, PAGE + 1),
+        (0, True),
+        (0, "1"),
+        (0, 1.5),
+    ],
+)
+def test_record_discovery_refuses_invalid_bounds(projects: ProjectStore, after, limit) -> None:
+    with pytest.raises(ControlError) as error:
+        Archive(projects.control).tool_records("p", "s", RUN, after=after, limit=limit)
+    assert error.value.kind == "invalid_request"

@@ -62,6 +62,23 @@ class PendingTool:
     """Stable identity for retrieval, not permission to replay."""
 
 
+@dataclass(frozen=True)
+class RecordRef:
+    """Metadata only; null byte size identifies an older message without a record."""
+
+    message_id: str
+    position: int
+    operation_id: str | None
+    record_bytes: int | None
+
+
+@dataclass(frozen=True)
+class RecordPage:
+    records: tuple[RecordRef, ...]
+    next_after: int
+    has_more: bool
+
+
 class ToolJournal:
     def __init__(self, control: ControlStore, *, clock: Clock = SYSTEM_CLOCK) -> None:
         self.control, self.clock = control, clock
@@ -187,6 +204,29 @@ class ToolJournal:
                 blob.seek(offset)
                 data = blob.read(min(limit, total - offset))
         return RecordChunk(offset, total, data)
+
+    def records(
+        self, project: str, session: str, run: str, *, after: int = 0, limit: int = PAGE
+    ) -> RecordPage:
+        """Discover evidence without reading transcript or result bodies. The cursor
+        uses immutable session positions so appends cannot shift an earlier page.
+        Include legacy tool messages to make their missing journal evidence explicit."""
+        if type(after) is not int or not 0 <= after <= MAX_COUNTER:
+            raise ControlError(INVALID_REQUEST, "invalid tool record position")
+        if type(limit) is not int or not 1 <= limit <= PAGE:
+            raise ControlError(INVALID_REQUEST, f"tool record page limit must be 1 to {PAGE}")
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT m.message_id,m.position,r.operation_id,r.record_bytes "
+                "FROM archive_messages m LEFT JOIN archive_tool_records r "
+                "ON r.project=m.project AND r.message_id=m.message_id "
+                "AND r.session=m.session AND r.run=m.run "
+                "WHERE m.project=? AND m.session=? AND m.run=? AND m.position>? "
+                "AND m.role='tool' AND m.kind='tool_result' ORDER BY m.position LIMIT ?",
+                (project, session, run, after, limit + 1),
+            ).fetchall()
+        records = tuple(RecordRef(*row) for row in rows[:limit])
+        return RecordPage(records, records[-1].position if records else after, len(rows) > limit)
 
 
 def save_record(
