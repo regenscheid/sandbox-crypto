@@ -1,0 +1,224 @@
+# SPDX-License-Identifier: MIT
+"""Explicit Resume drives linked leaf-first attempts through the real harness."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import cast
+
+import pytest
+
+from sandbox_science.contracts import KernelObservation, new_id
+from sandbox_science.orchestrator.continuity.blueprints import Blueprint, Blueprints
+from sandbox_science.orchestrator.continuity.models import ModelIntents
+from sandbox_science.orchestrator.continuity.plans import Plans
+from sandbox_science.orchestrator.continuity.records import WorkRecords
+from sandbox_science.orchestrator.continuity.recovery import Recovery
+from sandbox_science.orchestrator.control import ControlError
+from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords, Ending
+from sandbox_science.orchestrator.harness import Harness, Role, RunRequest, Settings
+from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
+from sandbox_science.orchestrator.runstate import RunState
+from sandbox_science.orchestrator.worker_client import WorkerClient
+from sandbox_science.testing import eventually
+
+from .test_run_harness import Sink, Worker, main, stores
+from .test_tool_journal import RUN
+from .test_work_ownership import CHILD, CONTINUATION, GRANDCHILD, record
+
+STOPPED = "20261016T030003000000Z-stopped"
+COMPLETED = "20261016T030004000000Z-completed"
+
+
+class RecoveryWorker(Worker):
+    def __init__(self):
+        self.claims = []
+        self.closed = []
+
+    async def claim_environment(self, request):
+        self.claims.append(request)
+        return await super().claim_environment(request)
+
+    async def observe_kernels(self, context):
+        return KernelObservation(
+            environment_id=context.environment_id,
+            session_id=context.session_id,
+            observed_at=datetime.now(UTC),
+            kernels=(),
+        )
+
+    async def close_session(self, context, *, run=None):
+        self.closed.append(run)
+
+
+def prepare_tree(tmp_path: Path):
+    state, documents = stores(tmp_path)
+    session = state.projects.open_session("p", "s", dedicated=False)
+    from sandbox_science.contracts import ExecutionContext
+
+    context = ExecutionContext(
+        project_id="p",
+        session_id="s",
+        environment_id=session.environment_id,
+        policy_revision=state.projects.get("p").policy,
+    )
+    works = WorkRecords(state.projects.control)
+    blueprints = Blueprints(state.projects.control)
+    delegations = DelegationRecords(state.projects.control)
+    for run, parent in ((RUN, None), (CHILD, RUN), (GRANDCHILD, CHILD)):
+        owner = works.admit("p", "s", run, parent=parent)
+        delegation = None if parent is None else new_id("dlg")
+        request = RunRequest(
+            "p",
+            "s",
+            "Continue research",
+            parent=parent,
+            delegation=delegation,
+            tokens=100000 if parent else None,
+            alias="scripted",
+            memory_version=0,
+            root=RUN if parent else None,
+            may_delegate=run == CHILD,
+        )
+        from pydantic import TypeAdapter
+
+        blueprints.save(
+            owner,
+            Blueprint(
+                context=context,
+                request=TypeAdapter(RunRequest).dump_python(
+                    request, mode="json", exclude={"history", "stop_by"}
+                ),
+            ),
+        )
+        if parent:
+            delegations.start(
+                "p",
+                "s",
+                Delegation(
+                    delegation_id=delegation,
+                    parent=parent,
+                    run=run,
+                    kind="task",
+                    brief={"task": "Continue research"},
+                    started_at=datetime.now(UTC),
+                ),
+            )
+            delegations.end("p", "s", delegation, Ending("interrupted", "interrupted"))
+    works.admit("p", "s", STOPPED, parent=RUN)
+    works.stop("p", "s", STOPPED)
+    works.admit("p", "s", COMPLETED, parent=RUN)
+    works.finish(record(COMPLETED))
+    works.interrupt("p", "s", RUN)
+    return state, documents, works
+
+
+async def drive(recovery, sink, stop):
+    running = asyncio.create_task(recovery.run(sink, stop))
+    try:
+        await eventually(lambda: recovery.started or running.done())
+        while not running.done():
+            ready = await recovery.next()
+            if ready:
+                await asyncio.gather(*(recovery.branch(work) for work in ready))
+            else:
+                await asyncio.sleep(0)
+        return await running
+    finally:
+        if not running.done():
+            running.cancel()
+            await asyncio.gather(running, return_exceptions=True)
+
+
+async def test_one_resume_recovers_three_levels_and_preserves_stopped_branch(tmp_path: Path):
+    state, documents, works = prepare_tree(tmp_path)
+    worker = RecoveryWorker()
+    models = [
+        ModelTurn(json.dumps({"status": "complete", "summary": "Recovered"})) for _ in range(8)
+    ]
+    harness = Harness(
+        cast(WorkerClient, worker),
+        main("Recovered root"),
+        delegated=Role(ScriptedModel(models), "scripted"),
+        stores=state,
+        settings=Settings(min_isolation_tier=None),
+    )
+    request = works.request("p", "s")
+    assert request
+    recovery = Recovery(harness, "p", "s", request)
+    try:
+        sink = Sink()
+        failed = await drive(recovery, sink, asyncio.Event())
+        states = [(w.work, w.state, w.reason) for w in works.page("p", "s", RUN)]
+        assert not failed, (states, sink.errors)
+        assert all(
+            w.state == ("stopped" if w.work == STOPPED else "completed")
+            for w in works.page("p", "s", RUN)
+        ), states
+        assert all(len(works.attempts("p", "s", run)) == 2 for run in (RUN, CHILD, GRANDCHILD))
+        assert works.attempts("p", "s", STOPPED) == [STOPPED]
+        assert works.attempts("p", "s", COMPLETED) == [COMPLETED]
+        assert worker.claims
+        assert worker.claims[0].context.authority.work == RUN
+        assert works.request("p", "s") is None
+    finally:
+        documents.close()
+        state.projects.close()
+
+
+def test_late_cleanup_and_guard_cannot_mutate_new_resume(tmp_path: Path):
+    state, documents, works = prepare_tree(tmp_path)
+    try:
+        first = works.request("p", "s")
+        RunState(state.projects.control).acquire("p", "s", CONTINUATION, "fixture")
+        _, epoch = works.claim("p", "s", first, lease_run=CONTINUATION)
+        plans = Plans(state.projects.control, "p", "s", first)
+        works.admit("p", "s", CONTINUATION, work=RUN, predecessor=RUN, epoch=epoch)
+        works.admit("p", "s", "20261018T030000000000Z-next")
+        before = works.get("p", "s", RUN)
+        works.interrupt_run("p", "s", CONTINUATION)
+        assert works.get("p", "s", RUN) == before
+        with pytest.raises(ControlError, match="lost"), plans.authority(epoch, CONTINUATION):
+            works.block("p", "s", RUN, "stale")
+        assert works.get("p", "s", RUN) == before
+    finally:
+        documents.close()
+        state.projects.close()
+
+
+async def test_unknown_paid_child_blocks_aggregate_resume(tmp_path: Path):
+    state, documents, works = prepare_tree(tmp_path)
+    owner = works.owner("p", "s", GRANDCHILD)
+    # Simulate a paid dispatch whose provider response disappeared.
+    with state.projects.control.write() as tx:
+        tx.sql.execute("UPDATE research_work SET state='running' WHERE work=?", (GRANDCHILD,))
+    ModelIntents(state.projects.control).begin(owner, kind="delegated", alias="scripted")
+    works.interrupt("p", "s", RUN)
+    worker = RecoveryWorker()
+    harness = Harness(
+        cast(WorkerClient, worker),
+        main("Root waits"),
+        delegated=Role(
+            ScriptedModel([ModelTurn('{"status":"complete","summary":"Wait"}')] * 8), "scripted"
+        ),
+        stores=state,
+        settings=Settings(min_isolation_tier=None),
+    )
+    request = works.request("p", "s")
+    try:
+        assert await drive(Recovery(harness, "p", "s", request), Sink(), asyncio.Event())
+        assert works.get("p", "s", GRANDCHILD).state == "blocked"
+        assert len(works.attempts("p", "s", GRANDCHILD)) == 1
+        with state.projects.control.read() as tx:
+            assert (
+                tx.sql.execute(
+                    "SELECT status FROM research_resumes WHERE request=?", (request,)
+                ).fetchone()[0]
+                == "blocked"
+            )
+    finally:
+        documents.close()
+        state.projects.close()

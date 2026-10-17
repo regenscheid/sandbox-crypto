@@ -67,6 +67,7 @@ from sandbox_science.contracts import SYSTEM_CLOCK, Clock
 from .aio import threaded
 from .chat import SOURCE, session_lease
 from .continuity.records import WorkRecords
+from .continuity.recovery import Recovery
 from .control import ControlError
 from .control.errors import BUSY
 from .delegation.records import DelegationRecords
@@ -125,6 +126,7 @@ class _Active:
     message_ids: list[str] = field(default_factory=list[str])
     request_ids: list[str] = field(default_factory=list[str])
     """The work requests that waited when the run began."""
+    recovery: Recovery | None = None
     consolidate: bool = False
     """A consolidation run, for a message written after a ``research_state`` stop."""
 
@@ -159,6 +161,7 @@ class RunService:
         self._beaten = -BEAT_SECONDS
         self.ledger = Ledger(harness.stores.documents)
         self.figures = FigureChecks(harness.stores.documents, figures)
+        self.local_branches: set[asyncio.Task[bool]] = set()
         self.checking: asyncio.Task[int] | None = None
         """The figure checks running, which the next look does not start again."""
         self.marks: dict[tuple[str, str], tuple[tuple[int, int], tuple[Decided, ...]]] = {}
@@ -174,6 +177,10 @@ class RunService:
                 await self.tick()
                 await self.clock.sleep(self.poll)
         finally:
+            for task in self.local_branches:
+                task.cancel()
+            if self.local_branches:
+                await asyncio.gather(*self.local_branches, return_exceptions=True)
             if self.checking is not None:
                 self.checking.cancel()
                 with contextlib.suppress(BaseException):
@@ -190,6 +197,12 @@ class RunService:
     async def tick(self) -> None:
         """One local-service cycle; confined runtimes select work through capabilities."""
         await self.maintenance_tick()
+        for project, session, request in await self.waiting_resumes():
+            await self.start_selected(project, session, request=request)
+            for work in await self.resume_next(project, session, request):
+                task = asyncio.create_task(self.resume_branch(project, session, request, work))
+                self.local_branches.add(task)
+                task.add_done_callback(self.local_branches.discard)
         for project, session in await self.waiting_work():
             await self.start_selected(project, session)
 
@@ -243,13 +256,52 @@ class RunService:
             if key not in self.active and self.waiting_until.get(key, now) <= now
         )
 
-    async def start_selected(self, project: str, session: str) -> bool:
+    async def waiting_resumes(self) -> tuple[tuple[str, str, str], ...]:
+        queued = await threaded(WorkRecords(self.stores.projects.control).queued)
+        waiting = {(p, s, q) for p, s, q, _ in queued if (p, s) not in self.active}
+        waiting.update(
+            (p, s, active.recovery.request)
+            for (p, s), active in self.active.items()
+            if active.recovery is not None
+        )
+        return tuple(sorted(waiting))
+
+    async def resume_next(self, project: str, session: str, request: str) -> tuple[str, ...]:
+        active = self.active.get((project, session))
+        recovery = active.recovery if active else None
+        return () if recovery is None or recovery.request != request else await recovery.next()
+
+    async def resume_branch(self, project: str, session: str, request: str, work: str) -> bool:
+        active = self.active.get((project, session))
+        recovery = active.recovery if active else None
+        if recovery is None or recovery.request != request:
+            return False
+        return await recovery.branch(work)
+
+    async def start_selected(
+        self, project: str, session: str, *, request: str | None = None
+    ) -> bool:
         """Validate a runtime-selected queue entry and own its trusted bookkeeping.
 
         Selection grants nothing: recheck queue eligibility and the session lease.
         The configured harness loop runner owns actual agent-loop execution.
         """
         key = project, session
+        if request is not None:
+            if (project, session, request) not in await self.waiting_resumes():
+                return False
+            if await threaded(self.runs.leased, *key):
+                return False
+            if key in self.active or len(self.active) >= MAX_ACTIVE_ROOTS:
+                return False
+            recovery = Recovery(self.harness, project, session, request)
+            active = self.active[key] = _Active(
+                recovery=recovery, run=recovery.run_name, phase="running"
+            )
+            active.task = asyncio.create_task(self._run(*key, active))
+            return True
+        if any((p, s) == key for p, s, _ in await self.waiting_resumes()):
+            return False
         if key not in await self.waiting_work():
             return False
         consolidate = False
@@ -285,10 +337,7 @@ class RunService:
         work = await threaded(works.for_run, project, session, run)
         cancelled = await threaded(self.runs.cancelled, project, session, run)
         if work is not None:
-            if cancelled:
-                await threaded(works.stop, project, session, work.work)
-            else:
-                await threaded(works.interrupt, project, session, work.root)
+            await threaded(works.interrupt_run, project, session, run, stopped=cancelled)
         try:
             await self._root_ended(project, session, run, hold=hold)
         finally:
@@ -315,16 +364,23 @@ class RunService:
             record = await threaded(self.stores.projects.run, project, session, run)
         except ProjectError:
             record = None
+        # An assistant receipt is durable before final save. Recover it even when
+        # the process died with no RunRecord, so consumed user messages stay consumed.
+        receipts = Receipts(self.stores.projects.control, project, session, run)
+        after = ""
+        while page := await threaded(receipts.page, SOURCE, after=after):
+            await threaded(runs.deliver, project, session, list(page), run)
+            after = page[-1]
+        after = ""
+        while page := await threaded(receipts.page, WorkRequests.name, after=after):
+            await threaded(
+                self.annotations.acknowledge, project, session, run.partition("-")[2], list(page)
+            )
+            after = page[-1]
         stopped: dict[str, JsonValue]
         if record is not None:
             # It died after saving its record, before acknowledging it.
-            if record.stored_history is not None:
-                receipts = Receipts(self.stores.projects.control, project, session, run)
-                after = ""
-                while page := await threaded(receipts.page, SOURCE, after=after):
-                    await threaded(runs.deliver, project, session, list(page), run)
-                    after = page[-1]
-            else:
+            if record.stored_history is None:
                 await threaded(
                     runs.deliver, project, session, record.delivered.get(SOURCE, []), run
                 )
@@ -358,7 +414,11 @@ class RunService:
     async def _run(self, project: str, session: str, active: _Active) -> None:
         key = project, session
         try:
-            failed = await self._started(project, session, active)
+            failed = (
+                await active.recovery.run(LogSink(), active.stop)
+                if active.recovery is not None
+                else await self._started(project, session, active)
+            )
         except asyncio.CancelledError:
             if not active.stop.is_set():
                 raise

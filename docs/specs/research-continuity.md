@@ -469,6 +469,29 @@ The parent's responsibility, orchestrator-led recovery at every level and separa
 
 ### Dispatch recovery prerequisites (schema 64)
 
+### Explicit tree recovery coordinator
+
+The normal run service accepts a durable explicit Resume request even when there is
+no queued chat message. One request claims a new session epoch and environment
+claim, reserves immutable continuation names for every unfinished branch, and
+offers at most four ready branches to the configured runtime. Descendants settle
+before their parent is offered. Completed and explicitly stopped work is skipped;
+unknown paid calls, uncertain effects, missing kernel generations, changed policy
+or prompt pins, and exhausted budgets produce visible blocked reasons. Resume
+does not automatically replay an unknown effect or grant a new token allowance.
+
+Worker operation lookup and existing question/delegation identities recover exact
+results. Successful response receipts remain authoritative without a final run
+record, including chat and annotation requests. Delayed cleanup and writes are
+fenced by the claimed epoch and lease. Legacy inputs with no original model alias
+block explicitly. Child handback settlement must be durable before parent
+readiness; the checkpoint/replay increment closes the save-to-handback crash window.
+
+The confined runtime drives branch selection through `resume_next` and
+`resume_branch`. Host control code owns scoped bookkeeping and persistence, while
+the development local-service loop uses the same methods directly. A process
+restart alone never queues Resume.
+
 Each main or delegated paid call records an intent before gateway dispatch. Its
 response observation commits with the assistant archive row and usage; auxiliary
 call observations are recorded before delivery. An unobserved intent means unknown

@@ -45,6 +45,7 @@ from aiohttp import web
 from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.contracts import Contract, EnvironmentState, ErrorKind, Identifier
+from sandbox_science.orchestrator.continuity.records import WorkRecords
 from sandbox_science.orchestrator.projects import ProjectError
 from sandbox_science.orchestrator.questions import Answer, Question, Questions
 from sandbox_science.orchestrator.runstate import PAGE, ChatMessage, RunEvent, RunLease, RunState
@@ -103,6 +104,7 @@ class Requested(Contract):
     """A resume or a cancel, written for the run service."""
 
     requested: bool
+    resume_request: str | None = None
     resumed: int = 0
     """The held messages queued again, for a resume."""
 
@@ -258,8 +260,13 @@ async def resume(request: web.Request) -> web.Response:
 
     def write() -> str:
         session_record(context.projects, project, session)
+        recovery = WorkRecords(context.writer.control).request(project, session)
         resumed = RunState(context.writer).resume(project, session)
-        return api.dumps(Requested(requested=True, resumed=resumed).model_dump(mode="json"))
+        return api.dumps(
+            Requested(requested=True, resumed=resumed, resume_request=recovery).model_dump(
+                mode="json"
+            )
+        )
 
     return json_answer(await asyncio.to_thread(write))
 

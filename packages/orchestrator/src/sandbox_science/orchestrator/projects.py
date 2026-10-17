@@ -586,8 +586,12 @@ class ProjectStore:
                 raise ProjectError(
                     ErrorKind.CONFLICT, f"session {session_id!r} has a run {entry.name!r} already"
                 )
-            if record.parent is not None and not self._knows_run(
-                tx.sql, project_id, session_id, record.parent
+            if (
+                record.parent is not None
+                and not self._knows_run(tx.sql, project_id, session_id, record.parent)
+                and not self._planned_parent(
+                    tx.sql, project_id, session_id, entry.name, record.parent
+                )
             ):
                 raise ProjectError(
                     ErrorKind.INVALID_REQUEST,
@@ -614,6 +618,31 @@ class ProjectStore:
                     ErrorKind.INVALID_REQUEST, f"the store refuses run {entry.name!r}: {exc}"
                 ) from None
         return entry
+
+    @staticmethod
+    def _planned_parent(
+        db: sqlite3.Connection, project: str, session: str, child: str, parent: str
+    ) -> bool:
+        """Leaf-first Resume reserves the exact parent before its loop starts."""
+        return (
+            db.execute(
+                "SELECT 1 FROM research_continuations c JOIN research_continuations p "
+                "USING(project,session,request) JOIN research_work w ON w.project=c.project "
+                "AND w.session=c.session AND w.work=c.work AND w.parent=p.work "
+                "JOIN research_attempts a ON a.project=w.project AND a.session=w.session "
+                "AND a.work=w.work AND a.run=w.current JOIN research_resumes r "
+                "ON r.project=c.project AND r.session=c.session AND r.request=c.request "
+                "JOIN research_sessions s ON s.project=r.project AND s.session=r.session "
+                "AND s.root=r.root AND s.epoch=a.epoch JOIN research_continuations root "
+                "ON root.project=r.project AND root.session=r.session "
+                "AND root.request=r.request AND root.work=r.root JOIN run_leases l "
+                "ON l.project_id=r.project AND l.session_id=r.session AND l.run=root.run "
+                "WHERE c.project=? AND c.session=? AND c.run=? AND p.run=? "
+                "AND a.run=c.run AND r.status='running' LIMIT 1",
+                (project, session, child, parent),
+            ).fetchone()
+            is not None
+        )
 
     @staticmethod
     def _knows_run(db: sqlite3.Connection, project_id: str, session_id: str, name: str) -> bool:
