@@ -63,6 +63,9 @@ from .control import ControlStore, store_path
 from .prompts import PromptPins
 from .worker_client import WorkerAPIError, WorkerClient, WorkerProtocolError
 
+RUN_READ_BYTES: Final = 8 * 1024 * 1024
+"""Default limit for materializing a legacy run; larger evidence uses streamed export."""
+
 _MAX_ID: Final = 128
 _IDENTIFIER: Final = TypeAdapter(Identifier)
 _TAG_BYTES: Final = 6
@@ -671,7 +674,7 @@ class ProjectStore:
         return found
 
     def run(
-        self, project_id: str, session_id: str, name: str, *, max_bytes: int | None = None
+        self, project_id: str, session_id: str, name: str, *, max_bytes: int | None = RUN_READ_BYTES
     ) -> RunRecord:
         """A run the session keeps, by its name; larger than ``max_bytes`` is refused."""
         self._checked(project_id, session_id)
@@ -685,21 +688,23 @@ class ProjectStore:
         with self.control.read() as tx:
             key = (project_id, session_id, name)
             row = tx.sql.execute(
-                "SELECT length(CAST(record AS BLOB)) FROM runs WHERE project_id = ? AND "
-                "session_id = ? AND name = ?",
+                "SELECT rowid FROM runs WHERE project_id = ? AND session_id = ? AND name = ?",
                 key,
             ).fetchone()
             if row is None:
                 raise missing
-            if max_bytes is not None and row[0] > max_bytes:
-                raise ProjectError(
-                    ErrorKind.UNSUPPORTED,
-                    f"run {name!r} has a record larger than {max_bytes} bytes",
-                )
-            (text,) = tx.sql.execute(
-                "SELECT record FROM runs WHERE project_id = ? AND session_id = ? AND name = ?",
-                key,
-            ).fetchone()
+            # SQLite's incremental handle knows the size without materializing the
+            # legacy JSON value, including in SQLite's own allocation heap.
+            with tx.sql.blobopen("runs", "record", row[0], readonly=True) as blob:
+                size = len(blob)
+                if max_bytes is not None and size > max_bytes:
+                    raise ProjectError(
+                        ErrorKind.UNSUPPORTED,
+                        f"run {name!r} has a {size}-byte record, larger than {max_bytes} bytes; "
+                        "use the streamed stored-evidence download",
+                    )
+                text = blob.read()
+
         try:
             return RunRecord.model_validate(json.loads(text))
         except (ValueError, RecursionError) as exc:  # ValidationError is a ValueError

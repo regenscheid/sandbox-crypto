@@ -47,7 +47,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Final, cast
 
-from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ExecutionContext, KernelInfo
+from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ErrorKind, ExecutionContext, KernelInfo
 from sandbox_science.orchestrator.documents.tool import REQUESTS_TASK
 from sandbox_science.orchestrator.hooks import Point, RunView, TurnHook
 from sandbox_science.orchestrator.notices import (
@@ -444,6 +444,9 @@ def recorded_words(
         try:
             record = projects.run(project, session, run)
         except ProjectError as error:
+            if error.kind is ErrorKind.UNSUPPORTED:
+                # A size bound is not permission to omit the user's old constraints.
+                raise
             _log.warning("the record of run %s could not be read for the view: %s", run, error)
             continue
         summary = record.summaries.get("messages")

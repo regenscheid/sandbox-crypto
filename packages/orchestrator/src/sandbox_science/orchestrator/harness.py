@@ -1371,7 +1371,9 @@ def _learned(projects: ProjectStore, project: str, session: str, alias: str) -> 
             continue
         try:
             record = projects.run(project, session, entry.name)
-        except ProjectError:
+        except ProjectError as error:
+            if error.kind is ErrorKind.UNSUPPORTED:
+                raise  # Do not discard persisted fold/model constraints at a read bound.
             return None
         folds = record.summaries.get("folds")
         capped = folds.get("capped") if isinstance(folds, dict) else None
@@ -1387,7 +1389,9 @@ def _carried(projects: ProjectStore, project: str, session: str) -> tuple[str, s
             continue
         try:
             record = projects.run(project, session, entry.name)
-        except ProjectError:
+        except ProjectError as error:
+            if error.kind is ErrorKind.UNSUPPORTED:
+                raise  # Do not discard persisted fold/model constraints at a read bound.
             return None
         folds = record.summaries.get("folds")
         if not isinstance(folds, dict):  # it stopped before its first call
@@ -1409,7 +1413,9 @@ def _switched(
             continue
         try:
             record = projects.run(project, session, entry.name)
-        except ProjectError:
+        except ProjectError as error:
+            if error.kind is ErrorKind.UNSUPPORTED:
+                raise  # Do not discard persisted fold/model constraints at a read bound.
             return None
         folds = record.summaries.get("folds")
         shape = folds.get("geometry") if isinstance(folds, dict) else None

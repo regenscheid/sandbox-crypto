@@ -328,6 +328,16 @@ that never appears needs operator reconciliation of its upstream outcome; the wo
 does not infer a safe retry from elapsed time. This deliberately favors a visible
 blocked environment over losing an uncertain compute allocation.
 
+### Bounded legacy run reads
+
+Materializing a saved `RunRecord` defaults to an 8 MiB byte limit. SQLite incremental
+I/O checks the stored byte length before loading it, so refusal does not allocate the
+legacy JSON value in Python or SQLite. An oversized record returns a visible
+`unsupported` result directing the reader to streamed stored-evidence export. Explicit
+offline readers may opt out of the default; the workspace retains its own bound.
+Rebuilds propagate the refusal instead of silently discarding legacy user constraints
+or stored model/fold limits. This does not bound final-save serialization or metadata queries that inspect old JSON.
+
 ### Streaming folded-history reads
 
 View rebuilds select fold records and spills independently from raw messages. Folded
