@@ -234,6 +234,11 @@ match (name, args[:2]):
             print(json.dumps({**imported, "unchanged": False}, indent=2))
         else:
             print(json.dumps({"source": option("--source"), "pinned": imported, "changes": None}))
+    case ("sandbox-science-control", ["--settings", *_]):
+        for seen in ("LEAK_CHECK", "PASSED_ON"):
+            if seen in os.environ:
+                note(f"saw {seen}")
+        serve(None, ["control capability service ready"])
     case ("sandbox-science-harness", ["serve", *_]):
         for seen in ("LEAK_CHECK", "PASSED_ON"):
             if seen in os.environ:

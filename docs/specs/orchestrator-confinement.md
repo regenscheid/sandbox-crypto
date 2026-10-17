@@ -1,7 +1,8 @@
 # Orchestrator confinement transport
 
-Status: Proposed implementation contract for RC-27 to RC-29. This document does not
-claim that the normal launcher is confined or that replacement has been qualified.
+Status: Implementation contract for RC-27 to RC-29. The normal launcher uses this
+boundary. Disposable OpenShell replacement qualification remains required; local
+fixtures do not establish runtime confinement acceptance.
 
 The agent-facing runtime runs in a dedicated OpenShell sandbox. It owns root and
 child scheduling, prompt assembly, model adapters, model response parsing and the
@@ -78,11 +79,13 @@ before phase validation. An uncertain create retains its record; observed absenc
 without an identity is not deletion proof. Replacement waits for identity-checked,
 confirmed deletion or explicit operator reconciliation.
 
-Only project-scoped worker/state capabilities and the runtime's model/MCP
-credentials enter the sandbox. Engine, cluster, OpenShell/provider administration
+Only the scoped control capability and the runtime's model credential enter the
+sandbox. Worker and MCP credentials stay in trusted host handlers. Engine,
+cluster, OpenShell/provider administration
 credentials and management sockets never enter it. Software is read-only; scratch
-is explicitly writable. Image configuration uses image paths, including math and
-figure checking tools, rather than host executable/build paths.
+is explicitly writable. Runtime executables use image paths. Math and figure
+checking remain fixed trusted host capabilities using configured platform builds;
+they do not evaluate research code or accept arbitrary executable paths over RPC.
 
 The normal launcher has no host harness fallback. It publishes readiness only
 after the runtime handshake and application readiness succeed. Startup failure,

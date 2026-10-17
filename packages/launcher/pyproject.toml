@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 license = "MIT"
 dependencies = [
     "sandbox-science-contracts",
+    "sandbox-science-policy",
     "pydantic>=2.9",
 ]
 
@@ -15,6 +16,7 @@ sandbox-science = "sandbox_science.launcher.cli:main"
 
 [tool.uv.sources]
 sandbox-science-contracts = { workspace = true }
+sandbox-science-policy = { workspace = true }
 
 [build-system]
 requires = ["hatchling>=1.25"]

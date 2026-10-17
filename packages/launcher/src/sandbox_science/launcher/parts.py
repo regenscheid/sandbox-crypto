@@ -57,6 +57,10 @@ def check(config: LauncherConfig) -> None:
         )
         if not path.is_file()
     ]
+    if config.orchestrator is None:
+        problems.append(
+            "configure [orchestrator] image and revision; host agent execution is unavailable"
+        )
     problems += [p for p in key_problems(config) if not p.startswith("no model key file")]
     if not environments.policy_store.is_dir():
         problems.append(f"no policy store at {environments.policy_store}")
@@ -67,7 +71,7 @@ def check(config: LauncherConfig) -> None:
         )
     if shutil.which(config.openshell.cli) is None:
         problems.append(f"no OpenShell CLI {config.openshell.cli}")
-    names = [WORKER, HARNESS, WORKSPACE]
+    names = [WORKER, HARNESS, WORKSPACE, "sandbox-science-control"]
     if config.mcp_proxy is not None:
         names.append(mcp.COMMAND)
         problems.extend(

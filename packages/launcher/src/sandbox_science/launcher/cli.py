@@ -39,7 +39,7 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import instance, mcp, parts, sandboxes, skills
+from . import instance, mcp, orchestrator, parts, sandboxes, skills
 from .config import LauncherConfig, LauncherError, load_config
 from .instance import Record, RecordedPart
 from .state import Layout, check_private, write_private
@@ -278,20 +278,12 @@ async def _start(
     existing = await _existing(config, layout, supervisor, timeout, harness_env)
     for argv in parts.project_argvs(config, layout, digest.group(), existing):
         await supervisor.run(" ".join(argv[1:3]), argv, layout.control, timeout, harness_env)
-    lines, _ = await skills.keep(config, layout, supervisor, update=update)
+    lines, _ = await skills.keep(config, layout, supervisor, update=update, models=False)
     for line in lines:  # a pack that failed is said here, and the rest starts without it
         print(line, flush=True)
     if config.mcp_proxy is not None:
         await mcp.start(config, layout, supervisor, parts.commands(config))
-    print("starting the run service", flush=True)
-    harness = Part(
-        "run-service",
-        parts.harness_argv(config, layout),
-        layout.control,
-        ready_line="serving the sessions of",
-        env=harness_env,
-    )
-    await supervisor.start(harness, timeout)
+    await orchestrator.start(config, layout, supervisor)
     print(f"starting the workspace on {config.workspace.listen}", flush=True)
     layout.login.unlink(missing_ok=True)
     workspace = Part(
@@ -423,6 +415,8 @@ def _down_stopped(config: LauncherConfig, path: Path, layout: Layout, *, keep: b
     for part in stopped:
         print(f"stopped the {part.name} (process {part.pid}) an earlier launcher left running")
     layout.record.unlink(missing_ok=True)
+    if orchestrator.recorded(layout) is not None:
+        asyncio.run(orchestrator.delete_recorded(config, layout))
     made = mcp.recorded(layout)
     if made is not None and asyncio.run(mcp.delete_recorded(config, layout)):
         print(f"deleted the sandbox {made[0]} an earlier launcher made")
@@ -503,6 +497,12 @@ def status(config: LauncherConfig) -> int:
         print("Sandbox Science is not running")
         left = instance.left_behind(found)
         made = mcp.recorded(layout)
+        agent = orchestrator.recorded(layout)
+        if agent is not None:
+            print(
+                f"  but the orchestrator sandbox {agent[0]} may be left: "
+                "sandbox-science down deletes it"
+            )
         if made is not None:
             print(
                 f"  but the sandbox {made[0]} it made may be left: sandbox-science down deletes it"
@@ -515,7 +515,9 @@ def status(config: LauncherConfig) -> int:
         shown, research = sandboxes.lines(config, layout, None)
         for line in shown:
             print(line)
-        return DEGRADED if left or made is not None or research else NOT_RUNNING
+        return (
+            DEGRADED if left or made is not None or agent is not None or research else NOT_RUNNING
+        )
     if found is None:
         print(f"Sandbox Science is starting, from {layout.root}")
         return 0
@@ -541,6 +543,9 @@ def status(config: LauncherConfig) -> int:
     made = mcp.recorded(layout)
     if made is not None:
         print(f"  the MCP proxy's sandbox: {made[0]}")
+    agent = orchestrator.recorded(layout)
+    if agent is not None:
+        print(f"  the orchestrator's sandbox: {agent[0]}")
     api = sandboxes.WorkerApi(parts.worker_url(config), layout.token("launcher-worker"))
     try:
         listed = asyncio.run(api.sandboxes())

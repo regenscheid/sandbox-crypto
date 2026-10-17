@@ -495,6 +495,15 @@ class McpProxyConfig(_Strict):
         return self
 
 
+class OrchestratorConfig(_Strict):
+    """The required separate runtime for normal launcher agent loops."""
+
+    image: str = Field(min_length=1, max_length=512)
+    revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+    control_listen: Listen = "127.0.0.1:8202"
+    python: str = "/opt/sandbox-science/bin/python"
+
+
 class LauncherConfig(_Strict):
     state_dir: ConfigPath = Field(
         default=Path("~/.local/state/sandbox-science"), validate_default=True
@@ -513,6 +522,7 @@ class LauncherConfig(_Strict):
     openshell: OpenShellConfig
     mcp_proxy: McpProxyConfig | None = None
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
+    orchestrator: OrchestratorConfig | None = None
 
     @model_validator(mode="after")
     def _consistent(self) -> Self:
@@ -551,6 +561,8 @@ class LauncherConfig(_Strict):
         }
         if self.mcp_proxy is not None:
             addresses["MCP proxy's forward"] = self.mcp_proxy.listen
+        if self.orchestrator is not None:
+            addresses["control capability service"] = self.orchestrator.control_listen
         return addresses
 
     def mcp_project(self) -> str:

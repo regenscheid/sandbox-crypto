@@ -26,7 +26,7 @@ delegated = "sandbox-orchestrator"
 # back), or "messages" (/v1/messages, Claude's Messages API with its progress
 # notes). Leave it out until the labs confirm the others.
 # api = { sandbox-orchestrator = "responses" }
-# Only the run service reads this file; keep it mode 600.
+# Uploaded by path into the confined runtime; keep it mode 600.
 api_key_file = "~/.config/sandbox-science/secrets/litellm-harness.key"
 # Claude's thinking sent back, once the CM-F30 run passes against the deployed gateway
 # image (a LiteLLM release with its thinking fixes), which this names; off without it.
@@ -35,6 +35,13 @@ api_key_file = "~/.config/sandbox-science/secrets/litellm-harness.key"
 # version = "<its x-litellm-version>"
 # verified = 2026-11-02
 # run = "<the CM-F30 run's ID>"
+
+[orchestrator]
+# Build with images/build.sh orchestrator. Replace BOTH values with its tag and
+# complete source revision; startup checks the image's embedded revision.
+image = "sandbox-science/orchestrator:replace-with-built-tag"
+revision = "0000000000000000000000000000000000000000"
+control_listen = "127.0.0.1:8202"
 
 [run_service]
 # The model calls a main run makes before its report round, a safety net rather than a
