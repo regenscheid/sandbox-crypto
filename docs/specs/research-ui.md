@@ -22,7 +22,11 @@ explicit Resume, and sandbox execution boundaries remain authoritative.
 - Chat accepts file selection and drag/drop, removable attachments, explicit
   upload status, and retryable failures. The file limit is 100 MiB; originals have
   2 GiB/project and 8 GiB/store retention quotas. Bytes are never put in browser storage.
-  Uploads are attributed to the user and delivered through the worker API;
+  Uploads are attributed to the user and retained without starting a research VM.
+  Explicitly sending attachments prepares the session's configured environment
+  through the worker, under the project's profile and policy, before delivering
+  copies and queuing the message. A preparation failure retains the originals
+  and leaves the message unqueued for retry. Files are delivered through the worker API;
   parsing or executing research files never happens in the workspace process.
 - Chat and documents share the existing Markdown/KaTeX renderer, including
   inline/display dollar and backslash delimiters, safe links, and project macros.

@@ -23,7 +23,7 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.contracts.model import Contract
 from sandbox_science.orchestrator.documents import USER, DocumentError
-from sandbox_science.orchestrator.projects import ProjectError
+from sandbox_science.orchestrator.projects import ProjectError, ensure_environment
 from sandbox_science.orchestrator.uploads import MAX_UPLOAD_BYTES, UserUpload, UserUploads
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 
@@ -271,6 +271,21 @@ async def _deliver(
         raise ProjectError(
             ErrorKind.UNAVAILABLE, "files are stored; connect a worker before sending attachments"
         )
+    # A new session is lazy: no run has prepared its environment yet. Delivery
+    # precedes message admission, so it must do that preparation itself.
+    configured = await _offload(context.projects.get, project)
+    try:
+        await ensure_environment(worker, configured, record.environment_id)
+    except (WorkerAPIError, TimeoutError) as error:
+        if isinstance(error, WorkerAPIError) and error.kind is ErrorKind.UNSUPPORTED:
+            raise ProjectError(
+                ErrorKind.UNSUPPORTED,
+                "file retained; update the incompatible worker before retrying the message",
+            ) from None
+        raise ProjectError(
+            ErrorKind.UNAVAILABLE,
+            "file retained; sandbox preparation is unavailable, retry the message",
+        ) from None
     scope = ExecutionContext(
         project_id=project, session_id=session, environment_id=record.environment_id, actor="user"
     )

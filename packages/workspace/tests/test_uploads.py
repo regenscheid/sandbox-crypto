@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 from aiohttp import web
 
+from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.uploads import UserUpload
 from sandbox_science.testing import fake_worker_app
 from sandbox_science.workspace.uploads import message_text
@@ -31,6 +32,94 @@ def body(
         "media_type": "text/markdown",
         "content_b64": base64.b64encode(data).decode(),
     }
+
+
+async def unmanaged(request: web.Request) -> web.Response:
+    return web.json_response(
+        {"error": {"kind": "unsupported", "message": "unmanaged worker"}}, status=422
+    )
+
+
+@pytest.mark.parametrize("mode", ["create", "refused", "other-project", "other-profile"])
+async def test_first_attachment_prepares_only_the_configured_environment(
+    aiohttp_client: ClientFactory,
+    aiohttp_server: ServerFactory,
+    state_dir: Path,
+    static_dir: Path,
+    mode: str,
+) -> None:
+    store = ProjectStore(state_dir)
+    try:
+        project = store.get("p1")
+    finally:
+        store.close()
+    events: list[str] = []
+    info = {
+        "environment_id": project.sessions["a"].environment_id,
+        "project_id": project.project_id,
+        "profile": project.profile,
+        "policy": project.policy,
+        "image": "test:synthetic",
+        "sandbox": "test-sandbox",
+        "state": "ready",
+        "created_at": "2026-10-17T12:00:00Z",
+        "updated_at": "2026-10-17T12:00:00Z",
+    }
+
+    async def observe(request: web.Request) -> web.Response:
+        events.append("observe")
+        assert request.match_info["environment"] == info["environment_id"]
+        if mode.startswith("other-"):
+            changed = "project_id" if mode == "other-project" else "profile"
+            return web.json_response(info | {changed: "other"})
+        return web.json_response({"error": {"kind": "not_found", "message": "absent"}}, status=404)
+
+    async def create(request: web.Request) -> web.Response:
+        events.append("create")
+        assert await request.json() == {
+            key: info[key] for key in ("environment_id", "project_id", "profile", "policy")
+        }
+        if mode == "refused":
+            return web.json_response(
+                {"error": {"kind": "unavailable", "message": "cannot prepare"}}, status=503
+            )
+        return web.json_response(info)
+
+    async def write(request: web.Request) -> web.Response:
+        assert events == ["observe", "create"]
+        events.append("write")
+        sent = await request.json()
+        assert sent["context"]["environment_id"] == info["environment_id"]
+        assert sent["create_only"]
+        data = base64.b64decode(sent["content_b64"])
+        return web.json_response({"size": len(data), "sha256": hashlib.sha256(data).hexdigest()})
+
+    app = fake_worker_app()
+    app.router.add_get("/v1/environments/{environment}", observe)
+    app.router.add_post("/v1/environments", create)
+    app.router.add_post("/v1/files/write", write)
+    server = await aiohttp_server(app)
+    client = await workspace(
+        aiohttp_client, state_dir, static_dir, worker_url=str(server.make_url("/"))
+    )
+    assert (await client.post(UPLOADS, json=body(), headers=origin(client))).status == 200
+    assert events == []
+    response = await client.post(
+        SESSION + "/messages",
+        json={"message_id": "fresh", "text": "Read this", "attachments": ["upload-test"]},
+        headers=origin(client),
+    )
+    assert response.status == (200 if mode == "create" else 503), await response.text()
+    assert events == (
+        ["observe", "create", "write"]
+        if mode == "create"
+        else ["observe", "create"]
+        if mode == "refused"
+        else ["observe"]
+    )
+    messages = (await (await client.get(SESSION + "/messages")).json())["messages"]
+    assert len(messages) == (1 if mode == "create" else 0)
+    assert (await client.get(UPLOADS + "/upload-test/content")).status == 200
 
 
 async def test_original_roundtrip_replay_scope_and_text_derivative(
@@ -148,6 +237,7 @@ async def test_delivery_reconciles_identical_copy_and_replay_never_redelivers(
         )
 
     app = fake_worker_app()
+    app.router.add_get("/v1/environments/{environment}", unmanaged)
     app.router.add_post("/v1/files/write", write)
     app.router.add_post("/v1/files/read", read)
     server = await aiohttp_server(app)
@@ -332,6 +422,7 @@ async def test_incompatible_worker_retains_upload_with_actionable_refusal(
         )
 
     app = fake_worker_app()
+    app.router.add_get("/v1/environments/{environment}", unmanaged)
     app.router.add_post("/v1/files/write", refuse)
     server = await aiohttp_server(app)
     client = await workspace(
