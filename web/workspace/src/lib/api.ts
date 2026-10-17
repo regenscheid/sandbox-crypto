@@ -503,8 +503,8 @@ export const api = {
   changeMacros: (project: string, value: Record<string, unknown>) =>
     post<MacroContext>(`/projects/${part(project)}/macros`, value),
   projects: () => get<ProjectListing>('/projects'),
-  project: (project: string) =>
-    get<ProjectAnswer>(`/projects/${part(project)}`).then((found) => found.project),
+  project: (project: string, signal?: AbortSignal) =>
+    get<ProjectAnswer>(`/projects/${part(project)}`, { signal }).then((found) => found.project),
   session: (project: string, session: string, signal?: AbortSignal) =>
     get<SessionDetail>(`/projects/${part(project)}/sessions/${part(session)}`, { signal }),
   jobs: (project: string, session: string, signal?: AbortSignal) =>
@@ -512,14 +512,14 @@ export const api = {
   cancelJob: (project: string, session: string, job: string) =>
     post(`/projects/${part(project)}/sessions/${part(session)}/jobs/${part(job)}/cancel`, {}),
   /** The session's runs, running ones included, and its delegations (PD-42). */
-  runTree: (project: string, session: string) =>
-    get<RunTree>(`/projects/${part(project)}/sessions/${part(session)}/tree`),
+  runTree: (project: string, session: string, signal?: AbortSignal) =>
+    get<RunTree>(`/projects/${part(project)}/sessions/${part(session)}/tree`, { signal }),
   message: (project: string, message: string) =>
     get<ArchivedMessage>(`/projects/${part(project)}/messages/${part(message)}`),
   run: (project: string, session: string, run: string) =>
     get<RunRecord>(`/projects/${part(project)}/sessions/${part(session)}/runs/${part(run)}`),
-  documents: (project: string) =>
-    get<{ documents: DocumentInfo[] }>(`/projects/${part(project)}/documents`).then(
+  documents: (project: string, signal?: AbortSignal) =>
+    get<{ documents: DocumentInfo[] }>(`/projects/${part(project)}/documents`, { signal }).then(
       (found) => found.documents,
     ),
   document: (project: string, document: string, revision: number | null = null) =>

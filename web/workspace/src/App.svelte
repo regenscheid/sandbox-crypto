@@ -1,6 +1,9 @@
 <!-- SPDX-License-Identifier: MIT -->
 <script lang="ts">
+  import { guardPendingUploads } from './lib/uploadDrafts.svelte';
+  import { focusPanel } from './lib/focusPanel';
   import { api } from './lib/api';
+  import WorkspaceSidebar from './views/WorkspaceSidebar.svelte';
   import { parseRoute } from './lib/router';
   import DocumentView from './views/DocumentView.svelte';
   import HistoryView from './views/HistoryView.svelte';
@@ -25,6 +28,12 @@
   let hash = $state(window.location.hash);
   const route = $derived(parseRoute(hash));
   let loggedOut = $state(false);
+  let navigationOpen = $state(window.innerWidth > 760);
+  let narrow = $state(window.innerWidth <= 760);
+  const inSession = $derived(route.view === 'session' || route.view === 'review');
+  function closeDrawer() {
+    if (window.innerWidth <= 760) navigationOpen = false;
+  }
 
   $effect(() => {
     const follow = () => {
@@ -40,112 +49,181 @@
   }
 </script>
 
-<header class="top">
-  <a class="home" href="#/">Sandbox Science workspace</a>
+<svelte:window
+  onbeforeunload={guardPendingUploads}
+  onresize={() => {
+    narrow = window.innerWidth <= 760;
+  }}
+  onkeydown={(event) => {
+    if (event.key === 'Escape' && window.innerWidth <= 760) navigationOpen = false;
+  }}
+/>
+<a
+  class="skip-link"
+  href="#workspace-content"
+  onclick={(event) => {
+    event.preventDefault();
+    document.getElementById('workspace-content')?.focus();
+  }}>Skip to content</a
+>
+<div class="workspace-shell" class:nav-open={navigationOpen && !loggedOut}>
   {#if !loggedOut}
-    <button type="button" onclick={logout}>Log out</button>
+    <div
+      class="sidebar-slot"
+      id="workspace-navigation"
+      hidden={!navigationOpen}
+      use:focusPanel={{
+        active: navigationOpen && narrow,
+        close: () => {
+          navigationOpen = false;
+        },
+      }}
+      role={narrow ? 'dialog' : undefined}
+      aria-modal={narrow && navigationOpen ? true : undefined}
+      aria-label="Workspace navigation"
+      tabindex="-1"
+    >
+      {#if narrow}<button
+          class="drawer-close"
+          onclick={() => {
+            navigationOpen = false;
+          }}>Close navigation ×</button
+        >{/if}
+      <WorkspaceSidebar {route} close={closeDrawer} />
+    </div>
+    {#if navigationOpen}<button
+        class="navigation-scrim"
+        aria-label="Close navigation"
+        onclick={() => {
+          navigationOpen = false;
+        }}
+      ></button>{/if}
   {/if}
-</header>
-
-<main>
-  <ProjectMath projectId={'project' in route ? route.project : null}>
-    {#if loggedOut}
-      <p>Logged out. To log in again, open the login URL that sandbox-science-workspace printed.</p>
-    {:else if route.view === 'projects'}
-      <ProjectList />
-    {:else if route.view === 'project'}
-      {#key route.project}
-        <ProjectView projectId={route.project} />
-      {/key}
-    {:else if route.view === 'session'}
-      {#key `${route.project}/${route.session}`}
-        <SessionView projectId={route.project} sessionId={route.session} />
-      {/key}
-    {:else if route.view === 'files'}
-      {#key `${route.project}/${route.session}/${route.run}`}
-        <RunFilesView projectId={route.project} sessionId={route.session} run={route.run} />
-      {/key}
-    {:else if route.view === 'tree'}
-      {#key `${route.project}/${route.session}`}
-        <RunTreeView projectId={route.project} sessionId={route.session} />
-      {/key}
-    {:else if route.view === 'run'}
-      {#key `${route.project}/${route.session}/${route.run}`}
-        <RunEventsView projectId={route.project} sessionId={route.session} run={route.run} />
-      {/key}
-    {:else if route.view === 'review'}
-      {#key `${route.project}/${route.session}/${route.review}`}
-        <SessionView projectId={route.project} sessionId={route.session} reviewId={route.review} />
-      {/key}
-    {:else if route.view === 'finding'}
-      {#key `${route.project}/${route.session}/${route.finding}`}
-        <FindingView
-          projectId={route.project}
-          sessionId={route.session}
-          findingId={route.finding}
-        />
-      {/key}
-    {:else if route.view === 'document'}
-      {#key `${route.project}/${route.document}/${route.revision}`}
-        <DocumentView
-          projectId={route.project}
-          documentId={route.document}
-          revision={route.revision}
-          block={route.block}
-        />
-      {/key}
-    {:else if route.view === 'memory'}
-      {#key route.project}
-        <MemoryPage projectId={route.project} />
-      {/key}
-    {:else if route.view === 'skills'}
-      {#key route.project}
-        <SkillsPage projectId={route.project} />
-      {/key}
-    {:else if route.view === 'message'}
-      {#key `${route.project}/${route.message}`}
-        <MessageView projectId={route.project} messageId={route.message} />
-      {/key}
-    {:else if route.view === 'ledger'}
-      {#key route.project}
-        <LedgerBoard projectId={route.project} />
-      {/key}
-    {:else if route.view === 'issues'}
-      {#key route.project}
-        <IssueList projectId={route.project} />
-      {/key}
-    {:else if route.view === 'entry'}
-      {#key `${route.project}/${route.entry}/${route.revision}`}
-        <LedgerEntryView
-          projectId={route.project}
-          entryName={route.entry}
-          revision={route.revision}
-        />
-      {/key}
-    {:else if route.view === 'categories'}
-      {#key route.project}
-        <FrontierList projectId={route.project} />
-      {/key}
-    {:else if route.view === 'frontier'}
-      {#key `${route.project}/${route.category}`}
-        <FrontierView projectId={route.project} category={route.category} />
-      {/key}
-    {:else if route.view === 'pdf'}
-      {#key `${route.project}/${route.artifact}/${route.revision}/${route.sha256}/${route.page}`}
-        <PdfView
-          projectId={route.project}
-          artifactId={route.artifact}
-          revision={route.revision}
-          sha256={route.sha256}
-          page={route.page}
-        />
-      {/key}
-    {:else if route.view === 'history'}
-      {#key `${route.project}/${route.document}`}
-        <HistoryView projectId={route.project} documentId={route.document} />
-      {/key}
-    {:else}
-      <p>There is nothing at this address. <a href="#/">See the projects.</a></p>
-    {/if}
-  </ProjectMath>
-</main>
+  <div class="workspace-body" inert={navigationOpen && narrow}>
+    <header class="workspace-topbar">
+      <button
+        class="icon-button"
+        aria-label={navigationOpen ? 'Hide navigation' : 'Show navigation'}
+        aria-expanded={navigationOpen}
+        aria-controls="workspace-navigation"
+        onclick={() => {
+          navigationOpen = !navigationOpen;
+        }}>☰</button
+      >
+      <span class="topbar-location"
+        >{'project' in route ? route.project : 'Research workspace'}</span
+      >
+      <span class="topbar-spacer"></span>
+      {#if !loggedOut}<button class="quiet-button" type="button" onclick={logout}>Log out</button
+        >{/if}
+    </header>
+    <main id="workspace-content" class:session-main={inSession} tabindex="-1">
+      <ProjectMath projectId={'project' in route ? route.project : null}>
+        {#if loggedOut}
+          <p>
+            Logged out. To log in again, open the login URL that sandbox-science-workspace printed.
+          </p>
+        {:else if route.view === 'projects'}
+          <ProjectList />
+        {:else if route.view === 'project'}
+          {#key route.project}
+            <ProjectView projectId={route.project} />
+          {/key}
+        {:else if route.view === 'session'}
+          {#key `${route.project}/${route.session}`}
+            <SessionView projectId={route.project} sessionId={route.session} />
+          {/key}
+        {:else if route.view === 'files'}
+          {#key `${route.project}/${route.session}/${route.run}`}
+            <RunFilesView projectId={route.project} sessionId={route.session} run={route.run} />
+          {/key}
+        {:else if route.view === 'tree'}
+          {#key `${route.project}/${route.session}`}
+            <RunTreeView projectId={route.project} sessionId={route.session} />
+          {/key}
+        {:else if route.view === 'run'}
+          {#key `${route.project}/${route.session}/${route.run}`}
+            <RunEventsView projectId={route.project} sessionId={route.session} run={route.run} />
+          {/key}
+        {:else if route.view === 'review'}
+          {#key `${route.project}/${route.session}/${route.review}`}
+            <SessionView
+              projectId={route.project}
+              sessionId={route.session}
+              reviewId={route.review}
+            />
+          {/key}
+        {:else if route.view === 'finding'}
+          {#key `${route.project}/${route.session}/${route.finding}`}
+            <FindingView
+              projectId={route.project}
+              sessionId={route.session}
+              findingId={route.finding}
+            />
+          {/key}
+        {:else if route.view === 'document'}
+          {#key `${route.project}/${route.document}/${route.revision}`}
+            <DocumentView
+              projectId={route.project}
+              documentId={route.document}
+              revision={route.revision}
+              block={route.block}
+            />
+          {/key}
+        {:else if route.view === 'memory'}
+          {#key route.project}
+            <MemoryPage projectId={route.project} />
+          {/key}
+        {:else if route.view === 'skills'}
+          {#key route.project}
+            <SkillsPage projectId={route.project} />
+          {/key}
+        {:else if route.view === 'message'}
+          {#key `${route.project}/${route.message}`}
+            <MessageView projectId={route.project} messageId={route.message} />
+          {/key}
+        {:else if route.view === 'ledger'}
+          {#key route.project}
+            <LedgerBoard projectId={route.project} />
+          {/key}
+        {:else if route.view === 'issues'}
+          {#key route.project}
+            <IssueList projectId={route.project} />
+          {/key}
+        {:else if route.view === 'entry'}
+          {#key `${route.project}/${route.entry}/${route.revision}`}
+            <LedgerEntryView
+              projectId={route.project}
+              entryName={route.entry}
+              revision={route.revision}
+            />
+          {/key}
+        {:else if route.view === 'categories'}
+          {#key route.project}
+            <FrontierList projectId={route.project} />
+          {/key}
+        {:else if route.view === 'frontier'}
+          {#key `${route.project}/${route.category}`}
+            <FrontierView projectId={route.project} category={route.category} />
+          {/key}
+        {:else if route.view === 'pdf'}
+          {#key `${route.project}/${route.artifact}/${route.revision}/${route.sha256}/${route.page}`}
+            <PdfView
+              projectId={route.project}
+              artifactId={route.artifact}
+              revision={route.revision}
+              sha256={route.sha256}
+              page={route.page}
+            />
+          {/key}
+        {:else if route.view === 'history'}
+          {#key `${route.project}/${route.document}`}
+            <HistoryView projectId={route.project} documentId={route.document} />
+          {/key}
+        {:else}
+          <p>There is nothing at this address. <a href="#/">See the projects.</a></p>
+        {/if}
+      </ProjectMath>
+    </main>
+  </div>
+</div>
