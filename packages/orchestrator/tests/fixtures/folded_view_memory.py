@@ -6,7 +6,6 @@ from __future__ import annotations
 import gc
 import hashlib
 import json
-import resource
 import sys
 import tracemalloc
 from contextlib import closing
@@ -125,7 +124,13 @@ def measure(path: Path, inline: bool) -> None:
     with closing(ProjectStore(path)) as projects:
         archive = Archive(projects.control)
         gc.collect()
-        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
+        # getrusage's high-water mark survives exec from a large pytest worker.
+        # /proc's VmHWM belongs to this freshly exec'd process's address space.
+        def rss() -> int:
+            lines = Path("/proc/self/status").read_text().splitlines()
+            return next(int(line.split()[1]) * 1024 for line in lines if line.startswith("VmHWM:"))
+
+        baseline = rss()
         tracemalloc.start()
         if inline:
             rows = archive.messages("p", "s")
@@ -141,7 +146,7 @@ def measure(path: Path, inline: bool) -> None:
             size = len(json.dumps(view.messages))
         _, peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
-        growth = max(0, resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024 - rss)
+        growth = max(0, rss() - baseline)
         for message, index in pins["chosen"]:
             found = archive.message("p", message).entry.content
             assert found is not None

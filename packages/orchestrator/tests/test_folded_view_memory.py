@@ -10,7 +10,10 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.slow
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.skipif(sys.platform != "linux", reason="Linux RSS gate"),
+]
 FIXTURE = Path(__file__).parent / "fixtures" / "folded_view_memory.py"
 
 

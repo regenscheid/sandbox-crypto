@@ -60,7 +60,7 @@ else:
         assert count > size * 5
         assert largest < 90000
     else:
-        found = store.run('p','s',run)
+        found = store.run('p','s',run,max_bytes=None)  # intentional unbounded positive control
         assert len(found.messages[0]['content']) == size
     _, peak = tracemalloc.get_traced_memory()
     print(json.dumps(dict(mode=mode,size=size,python_peak=peak,rss_growth=rss()-baseline)))
