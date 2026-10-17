@@ -306,6 +306,23 @@ after process loss or redefine a limited child as completed work.
 If a child process ends but its durable outcome could not be saved, closing stops
 with `child_outcome_unavailable`; an empty live-task set is not completion evidence.
 
+### Creation cleanup contract
+
+A managed environment keeps its original `creating` record until its first observed
+sandbox identity has been removed and the gateway confirms absence. Readiness polling
+saves that identity before accepting or rejecting the phase. Retry reconciles this
+record before allocating a replacement name, and explicit deletion uses the same
+identity check. Delete failure, a still-present object or a changed identity leaves
+the obligation durable and visible. Cancellation cannot detach an active cleanup.
+
+If creation's response was lost and the gateway has not yet exposed an identity,
+absence alone is inconclusive: the original request could still create it later.
+The worker retains `creating` and refuses replacement or a claim of successful
+deletion. A later retry can reconcile the original object once it appears. A request
+that never appears needs operator reconciliation of its upstream outcome; the worker
+does not infer a safe retry from elapsed time. This deliberately favors a visible
+blocked environment over losing an uncertain compute allocation.
+
 Each step is split into reviewable changes with a production caller; no unused recovery framework is merged.
 
 1. **Durable evidence, state access and bounded memory.** Characterize current consumers and settle the UI/orchestrator storage boundary for RC-29, then add incremental storage, output deduplication and bounded historical reads. Replace the full-record finalization path and verify RC-F9/F10/F14. This is independently useful and does not depend on the automatic-resume decision.

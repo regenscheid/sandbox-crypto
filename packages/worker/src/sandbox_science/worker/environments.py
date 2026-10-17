@@ -564,6 +564,10 @@ class Environments:
                 # An ID stays with the project that first created it, deleted or not, so
                 # that nothing checked for one project can reach another's (D78).
                 raise taken
+            if existing is not None and existing.state is EnvironmentState.CREATING:
+                # Never overwrite the only ownership record for a possibly live VM.
+                # Cleanup must finish before another sandbox name is allocated.
+                existing = await _owned(self._cleanup_creation(existing))
             if existing is not None and existing.state is EnvironmentState.DELETED:
                 await self._forget(request.environment_id, reuse=True)
             if existing is not None and existing.state in (
@@ -612,18 +616,14 @@ class Environments:
             # Recorded first, so that a sandbox left by a crash is known to be ours. Only
             # this record's own leftover is ever deleted: a name is never another's.
             self.records.save(info)
-            if existing is not None and existing.state is EnvironmentState.CREATING:
-                await self._discard(existing.sandbox)
             try:
-                sandbox_id = await self._create_sandbox(name, image, compiled, providers)
+                sandbox_id = await self._create_sandbox(info, compiled)
                 self.store.bind(sandbox_id, request.policy)
             except BaseException:
-                await self._discard(name)
-                self.records.save(
-                    info.model_copy(
-                        update={"state": EnvironmentState.DELETED, "updated_at": self.clock.now()}
-                    )
-                )
+                try:
+                    await _owned(self._cleanup_creation(self.get(request.environment_id)))
+                except Exception as error:
+                    _log.warning("creation cleanup remains pending for sandbox %s: %s", name, error)
                 raise
             ready = info.model_copy(
                 update={
@@ -731,7 +731,36 @@ class Environments:
     async def delete(self, environment_id: str) -> EnvironmentInfo:
         """Stop the environment's executor and delete its sandbox and binding."""
         async with self._lock(environment_id):
+            info = self.get(environment_id)
+            if info.state is EnvironmentState.CREATING:
+                return await _owned(self._cleanup_creation(info))
             return await _owned(self._delete(environment_id))
+
+    async def _cleanup_creation(self, info: EnvironmentInfo) -> EnvironmentInfo:
+        """Reconcile one creation, retaining its record until deletion is confirmed."""
+        if info.sandbox_id is None:
+            document = await self.cli.sandbox(info.sandbox)
+            sandbox_id = document.get("id") if document is not None else None
+            if not isinstance(sandbox_id, str) or not sandbox_id:
+                raise WorkerError(
+                    ErrorKind.UNAVAILABLE,
+                    "sandbox creation outcome is unknown; its original name is retained "
+                    "until the gateway exposes an identity or an operator reconciles it",
+                )
+            # The worker allocated this random name before dispatch. Once an object
+            # appears, keep its identity before a delete or another fallible await.
+            info = self._creation_identity(info, sandbox_id)
+        return await self._delete(info.environment_id)
+
+    def _creation_identity(self, info: EnvironmentInfo, sandbox_id: str) -> EnvironmentInfo:
+        if info.sandbox_id is not None and info.sandbox_id != sandbox_id:
+            raise WorkerError(ErrorKind.UNAVAILABLE, "sandbox identity changed during creation")
+        if info.sandbox_id is None:
+            info = info.model_copy(
+                update={"sandbox_id": sandbox_id, "updated_at": self.clock.now()}
+            )
+            self.records.save(info)
+        return info
 
     async def _delete(self, environment_id: str) -> EnvironmentInfo:
         info = self.get(environment_id)
@@ -1179,18 +1208,19 @@ class Environments:
                 )
         return tuple(sorted(ref.name for ref in wanted))
 
-    async def _create_sandbox(
-        self, name: str, image: str, compiled: Compiled, providers: tuple[str, ...]
-    ) -> str:
+    async def _create_sandbox(self, info: EnvironmentInfo, compiled: Compiled) -> str:
+        name, image = info.sandbox, info.image
         path = self._write(name, compiled.policy_digest, compiled.policy.to_yaml())
         args = ["sandbox", "create", "--name", name, "--from", image, "--policy", str(path)]
-        for provider in providers:
+        for provider in info.providers:
             args += ["--provider", provider]
         args += ["--no-auto-providers", "--detach", "--", *_SANDBOX_COMMAND]
         await self.cli.run(*args, timeout=self.settings.create_timeout)
-        return await self._wait_ready(name)
+        return await self._wait_ready(name, creating=info.environment_id)
 
-    async def _wait_ready(self, name: str, timeout: float | None = None) -> str:
+    async def _wait_ready(
+        self, name: str, timeout: float | None = None, *, creating: str | None = None
+    ) -> str:
         """Wait until the sandbox is ready; return its ID. Phases that cannot lead there fail."""
         loop = asyncio.get_running_loop()
         limit = self.settings.create_timeout if timeout is None else timeout
@@ -1199,6 +1229,9 @@ class Environments:
             document = await self.cli.sandbox(name)
             if document is None:
                 raise WorkerError(ErrorKind.UNAVAILABLE, f"sandbox {name} vanished")
+            sandbox_id = document.get("id")
+            if creating is not None and isinstance(sandbox_id, str) and sandbox_id:
+                self._creation_identity(self.get(creating), sandbox_id)
             phase = document.get("phase")
             if phase in _DEAD_PHASES:
                 raise WorkerError(ErrorKind.UNAVAILABLE, f"sandbox {name} is {phase}")
@@ -1211,7 +1244,6 @@ class Environments:
                         ErrorKind.UNAVAILABLE,
                         f"OpenShell did not accept the policy: {error or state}",
                     )
-            sandbox_id = document.get("id")
             if document.get("phase") == "Ready" and isinstance(sandbox_id, str) and sandbox_id:
                 return sandbox_id
             if loop.time() > deadline:
@@ -1236,14 +1268,6 @@ class Environments:
             raise WorkerError(
                 ErrorKind.UNAVAILABLE, f"sandbox {name} reported no usable filesystem section"
             ) from exc
-
-    async def _discard(self, name: str) -> None:
-        try:
-            await self.cli.run("sandbox", "delete", name)
-        except WorkerError as error:
-            _log.warning(
-                "could not delete sandbox %s after a failed creation: %s", name, error.message
-            )
 
     def _write(self, owner: str, revision: str, text: str) -> Path:
         directory = self.root / owner
