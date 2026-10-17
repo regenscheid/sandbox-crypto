@@ -209,6 +209,9 @@ async def test_cli_cleanup_failure_keeps_partial_record_and_closes_model(
                 environment_id=request.context.environment_id, state="unmanaged"
             )
 
+        async def fence(self, request):
+            return request
+
         async def capabilities(self, *args):
             return SimpleNamespace(
                 location=SimpleNamespace(

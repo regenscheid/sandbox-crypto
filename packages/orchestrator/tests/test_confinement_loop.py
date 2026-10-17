@@ -47,7 +47,7 @@ async def test_vm_loop_commits_host_state_without_a_local_harness_fallback(
 
     async with serving(
         harness,
-        Reply(calls=[call("shell", command="printf confined")], before=pending_before_provider),
+        Reply(calls=[call("shell", script="printf confined")], before=pending_before_provider),
         Reply("Done."),
         serve=False,
     ) as service:
@@ -104,7 +104,15 @@ async def test_vm_loop_commits_host_state_without_a_local_harness_fallback(
             assert record.stopped == "answered"
             assert forged
             assert "FORGED" not in str(record.tools)
-            assert "confined" in str(record.tools)
+            execution = record.tools[0]["execution"]
+            assert isinstance(execution, dict)
+            assert execution["state"] == "succeeded"
+            result = execution["result"]
+            assert isinstance(result, dict)
+            stdout = result["stdout"]
+            assert isinstance(stdout, dict)
+            assert stdout["text"] == "confined"
+            assert record.tools[0]["replayed"] is False
             assert not list(runtime.scratch.iterdir())
             assert not runtime.active
             assert not host.attempts
