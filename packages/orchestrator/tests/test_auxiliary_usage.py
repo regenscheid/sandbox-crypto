@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import timedelta
+from typing import cast
 
 import pytest
+from pydantic import JsonValue
 
-from sandbox_science.orchestrator.continuity.materializations import link
+from sandbox_science.orchestrator.continuity.materializations import Table, link
 from sandbox_science.orchestrator.continuity.models import ModelIntents
 from sandbox_science.orchestrator.continuity.records import WorkRecords, authority
 from sandbox_science.orchestrator.history.collections import Collection
@@ -22,7 +24,7 @@ from .test_tool_journal import RUN
 from .test_tool_journal import projects as projects
 from .test_work_ownership import record
 
-SOURCES = {
+SOURCES: dict[str, tuple[Table, str]] = {
     "reviewer": ("review_calls", "reviewer"),
     "watcher": ("job_watcher_calls", "watcher"),
     "skills": ("skill_metadata_calls", "metadata"),
@@ -77,6 +79,7 @@ def test_canonical_auxiliary_usage_precedes_and_suppresses_exact_legacy_copy(
     assert state.unpriced_calls("p", START) == (1 if cost is None else 0)
     with authority(owner), projects.control.write() as tx:
         row = legacy(tx.sql, kind, usage)
+        assert row is not None
         link(tx.sql, SOURCES[kind][0], row, identity)
     projects.control.close()
     assert state.model_costs("p") == expected
@@ -164,7 +167,7 @@ async def test_runtime_auxiliary_identity_reaches_legacy_metadata_writer(
     from sandbox_science.orchestrator.confinement.models import CallbackModel, RuntimeModels
     from sandbox_science.orchestrator.confinement.transport import Capability, Channel
     from sandbox_science.orchestrator.confinement.wire import ModelIntent, ModelObserved
-    from sandbox_science.orchestrator.model import ModelTurn
+    from sandbox_science.orchestrator.model import ModelGateway, ModelTurn
 
     owner = WorkRecords(projects.control).admit("p", "s", RUN)
     intents = ModelIntents(projects.control)
@@ -182,7 +185,7 @@ async def test_runtime_auxiliary_identity_reaches_legacy_metadata_writer(
         async def complete(self, messages, tools):
             return ModelTurn("Metadata", cost=0.25, input_tokens=10, output_tokens=2)
 
-    async def host(kind, value):
+    async def host(kind, value) -> JsonValue:
         if kind is Capability.MODEL_INTENT:
             request = ModelIntent.model_validate(value)
             return {"identity": intents.begin(owner, kind=request.kind, alias=request.alias)}
@@ -197,7 +200,7 @@ async def test_runtime_auxiliary_identity_reaches_legacy_metadata_writer(
 
     left = Channel(lambda frame: right.receive(frame), host)
     right = Channel(lambda frame: left.receive(frame), runtime)
-    models = RuntimeModels(Gateway(), frozenset({"fixture"}), right)
+    models = RuntimeModels(cast(ModelGateway, Gateway()), frozenset({"fixture"}), right)
     try:
         callback = CallbackModel(left, "fixture", kind="skills", scope=lambda: "cap-" + "a" * 48)
         turn = await callback.complete([], [])
@@ -240,12 +243,13 @@ async def test_runtime_embedding_paid_identity_survives_charged_errors(
             self.alias = "embed"
 
         async def embed(self, texts, paid=None):
+            assert paid is not None
             paid.append(("model", len(texts), 0.25))
             if malformed:
                 raise EmbeddingError("charged malformed embeddings")
             return Embedded(Space("model", 2), [[1.0, 0.0]], 0.25)
 
-    async def host(kind, value):
+    async def host(kind, value) -> JsonValue:
         if kind is Capability.MODEL_INTENT:
             request = ModelIntent.model_validate(value)
             return {"identity": intents.begin(owner, kind=request.kind, alias=request.alias)}
