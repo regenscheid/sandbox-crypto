@@ -70,6 +70,7 @@ from sandbox_science.contracts.documents import (
 from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
 from sandbox_science.contracts.lockfile_diffs import LockfileDiffPage, LockfileSelection
 from sandbox_science.contracts.provision_observations import MAX_OBSERVATION_BYTES
+from sandbox_science.contracts.readiness import WorkerReadiness
 from sandbox_science.contracts.recovery import EffectControl, OperationLookupRequest, RecoveryFence
 from sandbox_science.contracts.revision_packages import RevisionPackagePage
 from sandbox_science.contracts.revisions import MAX_REVISION_PAGE
@@ -273,6 +274,7 @@ def create_app(
             environments.required_deleted.append(provisioner.forget)
     app.add_routes(
         [
+            web.get("/v1/ready", readiness),
             web.post("/v1/environments", create_environment),
             web.post("/v1/environment-claims", environment_claim),
             web.get("/v1/environments", list_environments),
@@ -644,6 +646,11 @@ async def suspend_environment(request: web.Request) -> web.Response:
     else:
         suspended = await environments.stop_now(environment_id, manager.clock.monotonic())
     return _json(SuspendResult(environment=environments.get(environment_id), suspended=suspended))
+
+
+async def readiness(request: web.Request) -> web.Response:
+    """Authenticated protocol readiness without an environment/backend lookup."""
+    return _json(WorkerReadiness(protocol=PROTOCOL_VERSION))
 
 
 async def environment_claim(request: web.Request) -> web.Response:

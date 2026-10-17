@@ -10,6 +10,7 @@ import pytest
 
 from sandbox_science.contracts import EnvironmentInfo, EnvironmentState, ExecutionContext
 from sandbox_science.contracts.environment_claims import MAX_ENVIRONMENT_CLAIMS, EnvironmentClaim
+from sandbox_science.contracts.worker import PROTOCOL_VERSION
 from sandbox_science.worker.claims import EnvironmentClaims
 from sandbox_science.worker.connections import Activity
 from sandbox_science.worker.errors import WorkerError
@@ -161,3 +162,11 @@ async def test_claim_api_enforces_project_bounds_and_explicit_release(api: Api) 
     assert status == 200
     assert released["state"] == "released"
     assert not api.setup.environments.protected("env-a")
+
+
+async def test_passive_readiness_authenticates_without_allocating_sandboxes(api: Api) -> None:
+    status, result = await api.call("GET", "/v1/ready", A_TOKEN)
+    assert status == 200
+    assert result == {"ready": True, "protocol": PROTOCOL_VERSION}
+    assert not api.setup.fake.calls("sandbox", "create")
+    assert await api.refused("GET", "/v1/ready", "bad-token") == (401, "policy_denied")

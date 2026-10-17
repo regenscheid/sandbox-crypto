@@ -67,6 +67,7 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.contracts.artifact_inventory import MAX_ARTIFACT_BYTES, ArtifactSnapshot
 from sandbox_science.contracts.environment_claims import EnvironmentClaim, EnvironmentClaimResult
+from sandbox_science.contracts.readiness import WorkerReadiness
 from sandbox_science.contracts.recovery import (
     EffectControl,
     OperationLookup,
@@ -279,6 +280,22 @@ class WorkerClient:
             ) from exc
 
     # Environments (D73): the worker creates sandboxes under stored policy revisions.
+
+    async def readiness(self) -> WorkerReadiness:
+        """Check authentication/protocol without starting any environment or executor."""
+        reply = (
+            await self._request(
+                "GET",
+                "/v1/ready",
+                WorkerReadiness,
+                max_bytes=4096,
+                total_timeout=10.0,
+                allow_redirects=False,
+            )
+        )[0]
+        if reply.protocol != PROTOCOL_VERSION:
+            raise WorkerProtocolError(ErrorKind.UNSUPPORTED, "worker readiness protocol mismatch")
+        return reply
 
     async def create_environment(self, request: EnvironmentRequest) -> EnvironmentInfo:
         return await self._call("POST", "/v1/environments", EnvironmentInfo, request)

@@ -61,6 +61,7 @@ Every route needs `Authorization: Bearer <token>`: the pool's own token, which a
 | `POST /v1/artifacts` | `PublishRequest` → `ArtifactRef` (201). A `media_type` must be `type/subtype`, with optional `; name=value` parameters |
 | `GET /v1/artifacts/{id}` | → `ArtifactRef` |
 | `GET /v1/artifacts/{id}/content` | → the bytes, with `X-Content-SHA256`, as a download (`Content-Disposition: attachment`, `nosniff` and a sandboxing content security policy), so no media type turns them into a page |
+| `GET /v1/ready` | Authenticated passive protocol readiness; creates no environment or executor |
 | `POST /v1/environments` | `EnvironmentRequest` → `EnvironmentInfo`: 201 when created, 200 when the same environment exists, 409 when it exists with another project, profile or policy ([environments](#environments)) |
 | `GET /v1/environments` | → `EnvironmentList`: the environments of the client's projects (every project's for the pool token), deleted ones left out |
 | `POST /v1/environment-claims` | `EnvironmentClaim` → `EnvironmentClaimResult`: retain a ready sandbox for bounded active research, renew the same identity, or release that holder's claim |
