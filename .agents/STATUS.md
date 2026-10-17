@@ -29,7 +29,7 @@ Labs 40–44 exercised real models and crypto-research-mcp; historical results a
 - **Workspace GUI:** documents, comments, reviews, plans, chat, jobs, kernels, provisioning, artifacts, a PDF viewer, the ledger with its research state, figures in text, fold proposals, the Skills page, the Memory page, a session's run tree.
 - **Not built:** Mermaid and the figure check, exports of figures, helper lineage, per-pack thresholds, approvals in the GUI, execution-pinned evidence.
 - **UI validation:** 2,194 web tests and focused backend checks pass; independent review is clear. Browser retention and local two-environment transfer pass at 100 MiB. The synthetic loopback preview remains running for owner review. Real OpenShell upload qualification remains open ([refinements](docs/agent-reports/research-ui-refinements-2026-10-17.md)).
-- **UI design:** dragging and ledger/session navigation browser-checked; [report](docs/agent-reports/pane-navigation-2026-10-17.md). Integration pending.
+- **UI design:** [context inspector](docs/agent-reports/context-inspector-2026-10-17.md) browser-checked and reviewed; integration pending.
 - **Foundation validation:** full run 14,028 passed and 49 opt-in skips; its sole outdated fixture was corrected and passed 2/2, with no later product change. Web: 2,180 passed; static checks and tier coverage pass. OpenShell interruption/Resume passed and the lab was torn down. Exact scope and hashes are in the [acceptance report](docs/agent-reports/foundation-acceptance-2026-10-17.md).
 
 ## What comes next
