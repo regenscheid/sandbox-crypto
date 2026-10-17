@@ -7,7 +7,9 @@ import json
 from collections.abc import Callable, Iterable, Iterator, MutableSequence, MutableSet, Sequence
 from typing import Any, cast, overload
 
-from sandbox_science.orchestrator.control import ControlStore
+from sandbox_science.orchestrator.control import ControlError, ControlStore
+
+from .operations import CHUNK_BYTES, RecordChunk
 
 
 class Slice[T](MutableSequence[T]):
@@ -138,17 +140,7 @@ class Collection[T](MutableSequence[T]):
     @overload
     def __setitem__(self, index: slice, value: Iterable[T]) -> None: ...
     def __setitem__(self, index: int | slice, value: T | Iterable[T]) -> None:
-        if isinstance(index, slice):
-            raise TypeError("run collections do not replace slices")
-        if self.current is not None and self.current[0] == self._index(index):
-            self.current = None
-        text = json.dumps(self.encode(cast(T, value)), ensure_ascii=False, allow_nan=False)
-        with self.control.write() as tx:
-            tx.sql.execute(
-                "UPDATE run_collections SET item=? WHERE project=? AND session=? AND run=? "
-                "AND collection=? AND position=?",
-                (text, *self.scope, self.name, self._index(index)),
-            )
+        raise TypeError("run history is immutable after append")
 
     def __delitem__(self, index: int | slice) -> None:
         raise TypeError("run evidence cannot be deleted")
@@ -161,6 +153,51 @@ class Collection[T](MutableSequence[T]):
     def __iter__(self) -> Iterator[T]:
         for index in range(self.length):
             yield self[index]
+
+    def chunk(self, position: int, *, offset: int = 0, limit: int = CHUNK_BYTES) -> RecordChunk:
+        """Exact immutable stored bytes, checked in scope before bounded incremental I/O."""
+        if position < 0 or offset < 0 or not 1 <= limit <= CHUNK_BYTES:
+            raise ControlError("invalid_request", "invalid collection byte page")
+        with self.control.read() as tx:
+            row = tx.sql.execute(
+                "SELECT rowid FROM run_collections WHERE project=? AND session=? AND run=? "
+                "AND collection=? AND position=?",
+                (*self.scope, self.name, position),
+            ).fetchone()
+            if row is None:
+                raise ControlError("not_found", "no collection item in this scope")
+            with tx.sql.blobopen("run_collections", "item", row[0], readonly=True) as blob:
+                total = len(blob)
+                if offset > total:
+                    raise ControlError("invalid_request", "collection offset exceeds its byte size")
+                blob.seek(offset)
+                data = blob.read(min(limit, total - offset))
+        return RecordChunk(offset, total, data)
+
+    def page(self, *, offset: int = 0, limit: int = 100) -> tuple[list[dict[str, Any]], int | None]:
+        """At most 128 KiB of raw JSON and 100 items; larger fields use ``chunk``."""
+        if offset < 0 or not 1 <= limit <= 100:
+            raise ControlError("invalid_request", "invalid collection page")
+        if not self.length:
+            raise ControlError("not_found", "no paged collection in this scope")
+        items: list[dict[str, Any]] = []
+        used, position = 0, offset
+        while position < self.length and len(items) < limit:
+            chunk = self.chunk(position, limit=CHUNK_BYTES)
+            if chunk.total > CHUNK_BYTES:
+                if items:
+                    break
+                raise ControlError(
+                    "unsupported",
+                    "collection item requires byte paging",
+                    {"position": position, "bytes": chunk.total},
+                )
+            if used + chunk.total > 128 * 1024:
+                break
+            items.append({"position": position, "value": json.loads(chunk.data)})
+            used += chunk.total
+            position += 1
+        return items, position if position < self.length else None
 
 
 class Members(MutableSet[str]):

@@ -39,3 +39,9 @@ currently observed full record exists only as a transient overlay. Scratch runti
 encode native assistant bytes and adapter provenance explicitly as JSON/base64 rather
 than flattening them into chat dictionaries. Successful-response receipts retain the
 first incorporating assistant message for each source/notice identity.
+
+Schema 63 makes collection rows immutable at the database boundary. Evidence export
+v4 includes those rows and successful-response receipts; verification retains the
+unchanged v1/v2/v3 table contracts. The authenticated run history endpoint pages at
+most 100 rows and 128 KiB, with exact JSON bytes available in 64 KiB chunks when a
+single row exceeds the discovery bound. Mutable delivery caches are not evidence.

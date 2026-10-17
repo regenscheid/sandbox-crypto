@@ -13,7 +13,16 @@
 
   let { run }: { run: RunRecord } = $props();
   const steps = $derived(entries(run));
-  const calls = $derived(run.tools.length);
+  const calls = $derived(run.stored_history?.collections?.tools ?? run.tools.length);
+  const paged = $derived(
+    (run.stored_history?.collections?.messages ?? run.messages.length) > run.messages.length ||
+      calls > run.tools.length,
+  );
+  const historyBase = $derived(
+    run.stored_history
+      ? `/api/v0/projects/${encodeURIComponent(run.context.project_id)}/sessions/${encodeURIComponent(run.context.session_id)}/runs/${encodeURIComponent(run.stored_history.run)}`
+      : '',
+  );
   const usage = $derived(usageLine(run.usage));
 </script>
 
@@ -50,6 +59,20 @@
     {/if}
   </dd>
 </dl>
+
+{#if paged}
+  <p class="notice">
+    This run's full history is stored separately from its bounded inline preview.
+    <a href={`${historyBase}/evidence`} download>Download exact stored evidence</a>
+    · <a href={`${historyBase}/history?collection=messages&limit=20`}>Read a history page</a>
+  </p>
+  {#if steps.length === 0 && (run.answer ?? run.final_text)}
+    <section class="message assistant final">
+      <h3>Answer preview</h3>
+      <Markdown source={run.answer ?? run.final_text ?? ''} />
+    </section>
+  {/if}
+{/if}
 
 <RunSkills {run} />
 <RunFolds {run} />

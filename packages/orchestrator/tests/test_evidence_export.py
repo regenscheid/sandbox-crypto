@@ -157,7 +157,34 @@ def test_export_empty_strings_and_binary_fields(projects: ProjectStore) -> None:
     assert message["native"] == b""
 
 
-@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_export_preserves_collection_rows_and_response_receipts(projects: ProjectStore) -> None:
+    from sandbox_science.orchestrator.history.collections import Collection
+    from sandbox_science.orchestrator.history.usage import AnsweredUsage
+
+    from .test_model_usage_journal import START, USAGE
+
+    exact = {"text": "\u03b1\x00😀" * 20000}
+    Collection(projects.control, ("p", "s", RUN), "fixture").append(exact)
+    answer = Archive(projects.control).append(
+        "p",
+        "s",
+        RUN,
+        Entry("assistant", "assistant", "Received"),
+        model_usage=AnsweredUsage(ordinal=1, observed_at=START, usage=USAGE),
+        consumed={"fixture": {"notice-1"}},
+    )
+    encoded = list(EvidenceExport(projects.control, "p", "s", RUN).lines())
+    manifest, rows = decode(encoded)
+    assert manifest["format"] == "sandbox-run-evidence-v4"
+    assert verify(io.BytesIO(b"".join(encoded))).run == RUN
+    (collection,) = [r for table, r in rows if table == "run_collections"]
+    assert json.loads(collection["item"]) == exact
+    (receipt,) = [r for table, r in rows if table == "response_receipts"]
+    assert receipt["message_id"] == answer.message_id
+    assert receipt["notice"] == "notice-1"
+
+
+@pytest.mark.parametrize("version", ["v1", "v2", "v3"])
 def test_verifier_still_accepts_older_versions_and_checks_the_table_set(
     projects: ProjectStore,
     version: str,
@@ -166,7 +193,10 @@ def test_verifier_still_accepts_older_versions_and_checks_the_table_set(
     encoded = list(EvidenceExport(projects.control, "p", "s", RUN).lines())
     manifest = json.loads(encoded[0])
     manifest["format"] = "sandbox-run-evidence-" + version
-    del manifest["tables"]["archive_model_usage"]
+    del manifest["tables"]["run_collections"]
+    del manifest["tables"]["response_receipts"]
+    if version != "v3":
+        del manifest["tables"]["archive_model_usage"]
     if version == "v1":
         del manifest["tables"]["run_inputs"]
     encoded[0] = json.dumps(manifest).encode() + b"\n"
@@ -185,13 +215,13 @@ def test_verifier_still_accepts_older_versions_and_checks_the_table_set(
         verify(
             io.BytesIO(
                 b"".join(encoded).replace(
-                    ("sandbox-run-evidence-" + version).encode(), b"sandbox-run-evidence-v3"
+                    ("sandbox-run-evidence-" + version).encode(), b"sandbox-run-evidence-v4"
                 )
             )
         )
 
 
-@pytest.mark.parametrize("version", ["v1", "v2", "v3"])
+@pytest.mark.parametrize("version", ["v1", "v2", "v3", "v4"])
 @pytest.mark.parametrize("fault", ["empty", "missing", "unknown", "duplicate"])
 def test_verifier_rejects_malformed_rows_even_with_valid_checksums(
     projects: ProjectStore, version: str, fault: str
@@ -199,7 +229,10 @@ def test_verifier_rejects_malformed_rows_even_with_valid_checksums(
     Archive(projects.control).append("p", "s", RUN, Entry("user", "task", "Evidence"))
     items = [json.loads(line) for line in EvidenceExport(projects.control, "p", "s", RUN).lines()]
     items[0]["format"] = "sandbox-run-evidence-" + version
-    if version != "v3":
+    if version != "v4":
+        del items[0]["tables"]["run_collections"]
+        del items[0]["tables"]["response_receipts"]
+    if version in ("v1", "v2"):
         del items[0]["tables"]["archive_model_usage"]
     if version == "v1":
         del items[0]["tables"]["run_inputs"]

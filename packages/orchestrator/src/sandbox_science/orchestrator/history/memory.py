@@ -175,7 +175,16 @@ class RunMemory:
         return {source: compact(value, f"summaries/{source}") for source, value in values.items()}
 
     def reference(self) -> dict[str, object]:
+        with self.control.read() as tx:
+            counts = dict(
+                tx.sql.execute(
+                    "SELECT collection,count(*) FROM run_collections WHERE project=? AND session=? "
+                    "AND run=? GROUP BY collection",
+                    self.scope,
+                )
+            )
         return {
+            "collections": counts,
             "format": "run-history-v1",
             "project": self.scope[0],
             "session": self.scope[1],

@@ -131,7 +131,7 @@ async def test_usage_is_durable_before_observers_and_effects_without_events_or_f
     reopened = ProjectStore(tmp_path)
     try:
         encoded = list(EvidenceExport(reopened.control, "p", "s", RUN).lines())
-        assert verify(io.BytesIO(b"".join(encoded))).format == "sandbox-run-evidence-v3"
+        assert verify(io.BytesIO(b"".join(encoded))).format == "sandbox-run-evidence-v4"
         _, rows = decode(encoded)
         (kept,) = [row for table, row in rows if table == "archive_model_usage"]
         assert (kept["ordinal"], kept["role"]) == (1, role)

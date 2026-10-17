@@ -3021,6 +3021,15 @@ def _research_work(schema: Schema) -> None:
     install(schema)
 
 
+def _immutable_run_collections(schema: Schema) -> None:
+    """Version 63: final history references resolve immutable collection rows."""
+    for action in ("UPDATE", "DELETE"):
+        schema.execute(
+            f"CREATE TRIGGER run_collections_no_{action.lower()} BEFORE {action} "
+            "ON run_collections BEGIN SELECT RAISE(ABORT, 'run collections are immutable'); END"
+        )
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -3083,6 +3092,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _model_usage,
     _run_collections,
     _research_work,
+    _immutable_run_collections,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

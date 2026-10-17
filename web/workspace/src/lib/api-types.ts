@@ -611,6 +611,27 @@ export interface HeldBinding {
   reason: string;
 }
 
+export interface HistoryChunk {
+  collection: string;
+  offset: number;
+  next_offset: number | null;
+  total: number;
+  data_base64: string;
+}
+
+export interface HistoryItem {
+  position: number;
+  value: JsonValue;
+}
+
+export interface HistoryPage {
+  collection: string;
+  offset: number;
+  next_offset: number | null;
+  total: number;
+  items: HistoryItem[];
+}
+
 export type JsonValue = unknown;
 
 /** A session's kernel; ``generation`` grows by one on every restart. */

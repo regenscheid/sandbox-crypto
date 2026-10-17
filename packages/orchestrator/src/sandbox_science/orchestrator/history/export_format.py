@@ -19,10 +19,17 @@ Table = Literal[
     "archive_tool_records",
     "run_inputs",
     "archive_model_usage",
+    "run_collections",
+    "response_receipts",
 ]
 Name = Annotated[str, StringConstraints(pattern=r"^[a-z_]{1,64}$")]
 
-Format = Literal["sandbox-run-evidence-v1", "sandbox-run-evidence-v2", "sandbox-run-evidence-v3"]
+Format = Literal[
+    "sandbox-run-evidence-v1",
+    "sandbox-run-evidence-v2",
+    "sandbox-run-evidence-v3",
+    "sandbox-run-evidence-v4",
+]
 # Versioned wire fields, independent of later database migrations. The exporter and
 # verifier share these so missing/unknown fields cannot pass a checksummed download.
 _V1_FIELDS: Final[dict[Table, tuple[str, ...]]] = {
@@ -89,21 +96,27 @@ _V2_FIELDS: Final[dict[Table, tuple[str, ...]]] = {
     "run_inputs": ("project", "session", "run", "snapshot"),
     **_V1_FIELDS,
 }
+_V3_FIELDS: Final[dict[Table, tuple[str, ...]]] = {
+    **_V2_FIELDS,
+    "archive_model_usage": (
+        "project",
+        "message_id",
+        "session",
+        "run",
+        "ordinal",
+        "role",
+        "observed",
+        "usage",
+    ),
+}
 TABLE_FIELDS: Final[dict[Format, dict[Table, tuple[str, ...]]]] = {
     "sandbox-run-evidence-v1": _V1_FIELDS,
     "sandbox-run-evidence-v2": _V2_FIELDS,
-    "sandbox-run-evidence-v3": {
-        **_V2_FIELDS,
-        "archive_model_usage": (
-            "project",
-            "message_id",
-            "session",
-            "run",
-            "ordinal",
-            "role",
-            "observed",
-            "usage",
-        ),
+    "sandbox-run-evidence-v3": _V3_FIELDS,
+    "sandbox-run-evidence-v4": {
+        **_V3_FIELDS,
+        "run_collections": ("project", "session", "run", "collection", "position", "item"),
+        "response_receipts": ("project", "session", "run", "source", "notice", "message_id"),
     },
 }
 
@@ -120,7 +133,7 @@ class Manifest(Contract):
     session: Identifier
     run: RunName
     chunk_bytes: Literal[65536]
-    tables: Annotated[dict[Table, Selection], Field(min_length=5, max_length=7)]
+    tables: Annotated[dict[Table, Selection], Field(min_length=5, max_length=9)]
     external_files_included: Literal[False]
     scope: Annotated[str, StringConstraints(max_length=256)]
 

@@ -134,6 +134,14 @@ export interface ToolRecord {
 }
 
 export interface RunRecord {
+  /** Exact historical collections are paged separately when inline snapshots reach their bound. */
+  stored_history?: {
+    format: 'run-history-v1';
+    project: string;
+    session: string;
+    run: string;
+    collections?: Record<string, number>;
+  } | null;
   run_id: string;
   context: {
     project_id: string;

@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
+
+import pytest
 
 from sandbox_science.orchestrator.harness import Finished, save
 from sandbox_science.orchestrator.history.collections import Collection, Members, Slice
@@ -24,8 +27,9 @@ def test_collection_slices_and_members_are_scoped_and_reopen(projects: ProjectSt
     assert isinstance(values[100:400], Slice)
     assert list(values[100:103]) == [{"i": 100}, {"i": 101}, {"i": 102}]
     assert values[::-1][0] == {"i": 499}
-    values[2] = {"i": 9}
-    assert values[2] == {"i": 9}
+    with pytest.raises(TypeError, match="immutable"):
+        values[2] = {"i": 9}
+    assert values[2] == {"i": 2}
     other = Collection[dict[str, int]](projects.control, ("p", "s", RUN + "x"), "fixture")
     assert not other
     first = Members(projects.control, ("p", "s", RUN), "a")
@@ -38,6 +42,39 @@ def test_collection_slices_and_members_are_scoped_and_reopen(projects: ProjectSt
     projects.control.close()
     assert values[499] == {"i": 499}
     assert len(second) == 500
+
+
+@pytest.mark.parametrize(
+    "statement", ["UPDATE run_collections SET item='null'", "DELETE FROM run_collections"]
+)
+def test_collection_sql_mutation_is_refused(projects: ProjectStore, statement: str) -> None:
+    values = Collection(projects.control, ("p", "s", RUN), "immutable")
+    values.append({"exact": "original"})
+    with (
+        pytest.raises(sqlite3.IntegrityError, match="immutable"),
+        projects.control.write() as tx,
+    ):
+        tx.sql.execute(statement)
+    assert values[0] == {"exact": "original"}
+
+
+def test_schema63_preserves_existing_collection_rows(
+    projects: ProjectStore, tmp_path: Path
+) -> None:
+    from sandbox_science.orchestrator.control import ControlStore
+
+    from .control_versions import older_store
+
+    Collection(projects.control, ("p", "s", RUN), "fixture").append({"original": "\x00😀"})
+    target = tmp_path / "version62.sqlite3"
+    older_store(projects.control.path, target, 62)
+    migrated = ControlStore(target)
+    try:
+        assert Collection(migrated, ("p", "s", RUN), "fixture")[0] == {"original": "\x00😀"}
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"), migrated.write() as tx:
+            tx.sql.execute("DELETE FROM run_collections")
+    finally:
+        migrated.close()
 
 
 async def test_response_receipts_survive_observer_failure_and_are_scoped(

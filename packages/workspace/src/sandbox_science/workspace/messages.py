@@ -26,7 +26,7 @@ from sandbox_science.orchestrator.history.operations import CHUNK_BYTES
 from sandbox_science.orchestrator.history.operations import PAGE as RECORD_PAGE
 from sandbox_science.orchestrator.projects import RunName
 
-from . import documents, evidence
+from . import documents, evidence, history
 from .context import CONTEXT, identifier, session_record
 
 PATH: Final = "/api/v0/projects/{project}/messages/{message}"
@@ -72,6 +72,7 @@ class ToolRecordListing(Contract):
 
 def add_routes(app: web.Application) -> None:
     evidence.add_routes(app)
+    history.add_routes(app)
     app.router.add_get(PATH, message)
     app.router.add_get(PATH + "/tool-record", tool_record)
     app.router.add_get(PATH + "/tool-record/chunks", tool_record_chunks)
@@ -89,7 +90,7 @@ async def message(request: web.Request) -> web.Response:
     project = request.match_info["project"]
 
     def read(store: DocumentStore) -> dict[str, object]:
-        found = Archive(store).message(project, identifier)
+        found = Archive(store).message(project, identifier, max_bytes=1024 * 1024)
         entry = found.entry
         return {
             "message": found.message_id,
