@@ -64,6 +64,7 @@ from .operations import (
 )
 from .operations import PAGE as RECORD_PAGE
 from .reads import Read, encoded
+from .usage import AnsweredUsage, save_usage
 
 Json = dict[str, Any]
 Role = Literal["user", "assistant", "tool"]
@@ -343,6 +344,7 @@ class Archive:
         parent: str | None = None,
         reads: Sequence[Read] = (),
         tool_record: ToolRecord | None = None,
+        model_usage: AnsweredUsage | None = None,
     ) -> Archived:
         """Keep a message ``run`` adds to its conversation, and index it, with the sources
         a tool result read (the read register, CM-12), in one change; the message as
@@ -351,6 +353,8 @@ class Archive:
             raise ControlError(INVALID_REQUEST, f"no {entry.role} message is of kind {entry.kind}")
         if tool_record is not None and (entry.kind != "tool_result" or entry.role != "tool"):
             raise ControlError(INVALID_REQUEST, "a tool record must accompany a tool result")
+        if model_usage is not None and entry.kind != "assistant":
+            raise ControlError(INVALID_REQUEST, "model usage must accompany an assistant response")
         created = self.clock.now().astimezone(UTC).isoformat()
         with self.control.write() as tx:
             db = tx.sql
@@ -376,6 +380,8 @@ class Archive:
                 raise ControlError(INVALID_REQUEST, f"the message is refused: {error}") from None
             if tool_record is not None:
                 save_record(db, project, session, run, message_id, tool_record)
+            if model_usage is not None:
+                save_usage(db, project, message_id, model_usage)
             _document(db, project, message_id, entry.searched)
             for read in reads:
                 _read(db, project, session, message_id, entry.source or "", read)

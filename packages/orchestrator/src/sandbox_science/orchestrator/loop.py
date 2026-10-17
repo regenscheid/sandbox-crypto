@@ -13,7 +13,7 @@ from contextlib import (
     asynccontextmanager,
     contextmanager,
 )
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Final, Literal, Protocol, TypeVar, cast
 
 from .hooks import RESPONSE_ROUNDS, Appended, MessageLog, Notice, Point, TurnHook
@@ -293,6 +293,10 @@ def _message(notice: Notice) -> Message:
 async def _append(transcript: Transcript, message: Message, appended: Appended) -> None:
     """Add a message to the conversation, kept first by the run's log if it has one."""
     if transcript.log is not None:
+        if appended.kind == "assistant":
+            appended = replace(
+                appended, usage=transcript.usage[-1], usage_index=len(transcript.usage)
+            )
         message = await transcript.log.append(message, appended)
     transcript.messages.append(message)
 

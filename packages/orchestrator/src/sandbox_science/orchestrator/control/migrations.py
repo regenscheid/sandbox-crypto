@@ -2951,6 +2951,33 @@ def _run_inputs(schema: Schema) -> None:
         )
 
 
+def _model_usage(schema: Schema) -> None:
+    """Version 60: observed main/delegated usage committed with each assistant row."""
+    schema.execute("""CREATE TABLE archive_model_usage (
+    project TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    session TEXT NOT NULL,
+    run TEXT NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 1 AND 999999999),
+    role TEXT NOT NULL CHECK (role IN ('main', 'delegated')),
+    observed REAL NOT NULL CHECK (observed >= 0),
+    usage TEXT NOT NULL CHECK (json_valid(usage) AND json_type(usage) = 'object'
+        AND length(CAST(usage AS BLOB)) <= 16384),
+    PRIMARY KEY (project, message_id),
+    UNIQUE (project, session, run, ordinal),
+    FOREIGN KEY (project, message_id) REFERENCES archive_messages (project, message_id)
+) STRICT""")
+    schema.execute(
+        "CREATE INDEX archive_model_usage_window ON archive_model_usage (project,observed)"
+    )
+    for action in ("UPDATE", "DELETE"):
+        schema.execute(
+            f"CREATE TRIGGER archive_model_usage_no_{action.lower()} "
+            f"BEFORE {action} ON archive_model_usage "
+            "BEGIN SELECT RAISE(ABORT, 'model usage is written once'); END"
+        )
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -3010,6 +3037,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _figure_checks,
     _tool_journal,
     _run_inputs,
+    _model_usage,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

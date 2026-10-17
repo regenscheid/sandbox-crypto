@@ -58,17 +58,29 @@ its cost came from (``cost_source``, version 53)."""
 
 
 def _run_usage(project: str, since: datetime | None) -> tuple[str, tuple[object, ...]]:
-    """A query of each usage entry (``u``) of the project's runs that started at ``since``
-    or later: saved records' and the ``assistant`` events' of runs without a record."""
+    """Answered-call usage by role: journal first, then each unjournaled ordinal
+    from the saved record, or its event if no record exists. Suppression ignores
+    the time window so an old journal entry cannot reappear through a fallback.
+    Journal timestamps are per response; legacy fallbacks retain run-start time."""
     first = "" if since is None else run_name(since, "")
+    after = 0.0 if since is None else since.timestamp()
     return (
-        "SELECT usage.value AS u FROM runs, json_each(runs.record, '$.usage') AS usage "
-        "WHERE runs.project_id = ? AND runs.name >= ? "
-        "UNION ALL SELECT json_extract(e.data, '$.usage') FROM run_events AS e "
-        "WHERE e.project_id = ? AND e.run >= ? AND e.kind = 'assistant' "
-        "AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.project_id = e.project_id "
-        "AND runs.session_id = e.session_id AND runs.name = e.run)",
-        (project, first, project, first),
+        "SELECT j.role, j.usage AS u FROM archive_model_usage j "
+        "WHERE j.project=? AND j.observed>=? "
+        "UNION ALL SELECT coalesce(json_extract(r.record,'$.role'),'main'), usage.value "
+        "FROM runs r, json_each(r.record,'$.usage') usage "
+        "WHERE r.project_id=? AND r.name>=? AND NOT EXISTS ("
+        "SELECT 1 FROM archive_model_usage j WHERE j.project=r.project_id "
+        "AND j.session=r.session_id AND j.run=r.name AND j.ordinal=CAST(usage.key AS INTEGER)+1) "
+        "UNION ALL SELECT coalesce((SELECT json_extract(s.data,'$.role') "
+        "FROM run_events s WHERE s.project_id=e.project_id AND s.session_id=e.session_id "
+        "AND s.run=e.run AND s.kind='started' LIMIT 1),'main'), json_extract(e.data,'$.usage') "
+        "FROM run_events e WHERE e.project_id=? AND e.run>=? AND e.kind='assistant' "
+        "AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.project_id=e.project_id "
+        "AND r.session_id=e.session_id AND r.name=e.run) "
+        "AND NOT EXISTS (SELECT 1 FROM archive_model_usage j WHERE j.project=e.project_id "
+        "AND j.session=e.session_id AND j.run=e.run AND j.ordinal=json_extract(e.data,'$.turn'))",
+        (project, after, project, first, project, first),
     )
 
 
@@ -539,10 +551,10 @@ class RunState:
 
     def unpriced_calls(self, project: str, since: datetime) -> int:
         """How many of the project's model calls since ``since`` used tokens and have no
-        cost, neither reported by the gateway nor priced from its model information: its
-        runs' that started then or later, from saved records' ``usage`` and the
-        ``assistant`` events of runs without a record, as ``model_costs`` reads them; and
-        the reviewer's, the job watcher's and the import pass's made then or later."""
+        cost, neither reported by the gateway nor priced from its model information.
+        Run responses use journal observation time, falling back to run-start time
+        for legacy records/events. Reviewer, watcher and import calls use their own
+        timestamps. Each run response is counted once, as in ``model_costs``."""
         unpriced = (
             "json_extract(u, '$.cost') IS NULL AND coalesce(json_extract(u, "
             "'$.input_tokens'), 0) + coalesce(json_extract(u, '$.output_tokens'), 0) > 0"
@@ -591,31 +603,20 @@ class RunState:
         return sum(costs.values()) if costs else None
 
     def model_costs(self, project: str, since: datetime | None = None) -> dict[CostRole, float]:
-        """What the project's model calls cost by role, as the gateway reported it, in
-        ``COST_ROLES``' order: the calls of its runs that started at ``since`` or later,
-        main and delegated, from saved records' ``usage`` and the ``assistant`` events of
-        runs without a record, and their folds' enrichment calls, from the records'
-        ``summaries.folds.calls`` and the ``fold`` events of runs without one; and the
-        reviewer's, the job watcher's and the skills'
-        embedding calls made at ``since`` or later (lab 40, B5). Every call without
-        ``since``. A role none of whose calls the gateway priced is left out."""
+        """Known model cost by role in ``COST_ROLES`` order, after ``since`` if given.
+        Main/delegated responses prefer the usage journal and observation time;
+        unjournaled ordinals use saved records or events and their run-start time.
+        Fold enrichment retains its run-start cutoff and record/event precedence.
+        Reviewer, watcher and skills embedding calls use their own timestamps.
+        A role without any priced call is left out."""
         first = "" if since is None else run_name(since, "")
         after = 0.0 if since is None else since.timestamp()
+        runs, values = _run_usage(project, since)
         cost = "json_extract(u, '$.cost')"
         with self.control.read() as tx:
             rows = tx.sql.execute(
                 f"SELECT role, sum({cost}), count({cost}) FROM ("  # noqa: S608
-                "SELECT coalesce(json_extract(runs.record, '$.role'), 'main') AS role, "
-                "usage.value AS u FROM runs, json_each(runs.record, '$.usage') AS usage "
-                "WHERE runs.project_id = ? AND runs.name >= ? "
-                "UNION ALL SELECT coalesce((SELECT json_extract(s.data, '$.role') "
-                "FROM run_events AS s WHERE s.project_id = e.project_id "
-                "AND s.session_id = e.session_id AND s.run = e.run AND s.kind = 'started' "
-                "LIMIT 1), 'main'), json_extract(e.data, '$.usage') "
-                "FROM run_events AS e WHERE e.project_id = ? AND e.run >= ? "
-                "AND e.kind = 'assistant' AND NOT EXISTS (SELECT 1 FROM runs WHERE "
-                "runs.project_id = e.project_id AND runs.session_id = e.session_id "
-                "AND runs.name = e.run) "
+                f"{runs} "
                 # A fold's enrichment calls: in its run's record, or its fold events.
                 "UNION ALL SELECT coalesce(json_extract(runs.record, '$.role'), 'main'), "
                 "c.value FROM runs, json_each(runs.record, '$.summaries.folds.calls') AS c "
@@ -625,7 +626,7 @@ class RunState:
                 "AND e.kind = 'fold' AND NOT EXISTS (SELECT 1 FROM runs WHERE "
                 "runs.project_id = e.project_id AND runs.session_id = e.session_id "
                 "AND runs.name = e.run)) GROUP BY role",
-                (project, first, project, first, project, first, project, first),
+                (*values, project, first, project, first),
             ).fetchall()
             for role, table, made in (
                 ("reviewer", "review_calls", "created"),

@@ -1,6 +1,6 @@
 # Research continuity
 
-Date: 2026-10-16; local increments updated 2026-10-17. **Status: Draft with implementation increments.** The owner's continuity requirements (D87) and separate orchestrator sandbox (D47) are confirmed. Baseline: main `57e29536`. The journal, bounded tool retrieval/retention/export, delegated skeleton folds, live-parent waiting, active-tree environment claims and creation cleanup are implemented locally as described below. Durable work/attempt ownership, tree recovery, whole-run memory bounds and normal-launcher confinement remain proposed or incomplete. Local tests do not establish live acceptance.
+Date: 2026-10-16; local increments updated 2026-10-17. **Status: Draft with implementation increments.** The owner's continuity requirements (D87) and separate orchestrator sandbox (D47) are confirmed. Baseline: main `57e29536`. The journal, bounded tool retrieval/retention/export, delegated skeleton folds, live-parent waiting, active-tree environment claims, creation cleanup and observed model usage are implemented locally as described below. Durable work/attempt ownership, tree recovery, whole-run memory bounds and normal-launcher confinement remain proposed or incomplete. Local tests do not establish live acceptance.
 
 ## Purpose and confirmed requirements
 
@@ -275,7 +275,7 @@ quality preservation. Those remain separate acceptance requirements.
 ### Stored-evidence download contract
 
 The workspace exposes a read-only download of one run's stored evidence, including
-unfinished runs with an archive or tool intent. `sandbox-run-evidence-v2` is UTF-8
+unfinished runs with an archive or tool intent. `sandbox-run-evidence-v3` is UTF-8
 NDJSON: a manifest, scoped database rows, each text/blob field in at most 64 KiB
 base64 chunks, field checksums, and a final stream checksum. The manifest records
 the immutable row cutoffs captured together before export. Later appends are not
@@ -286,7 +286,8 @@ complete table field set and rejects unknown or duplicate fields before retainin
 their names, so malformed rows cannot grow its working memory without bound.
 
 This bundle contains the final run JSON when present, archive messages and saved
-text samples, tool intents, and full structured tool records. It does not claim to
+text samples, tool intents, full structured tool records, starting inputs and
+observed model usage. It does not claim to
 include external worker files, document revisions or referenced earlier runs:
 their references and existing truncation/omission metadata remain intact. It is
 an evidence interchange, not a restore instruction or permission to replay work.
@@ -427,6 +428,33 @@ Each step is split into reviewable changes with a production caller; no unused r
 **Independent follow-up:** generated skill-binding restrictions (RC-23/RC-24/F15) can proceed without changing the task lifecycle. Keep its manifest contract, image/provisioning changes and binding enforcement in separately reviewable steps.
 
 Changes belong in existing storage, lifecycle and hook seams, not new subsystems inside `loop.py`. Update affected as-built documents only as each implementation lands. No running personal instance is migrated as part of this draft.
+
+## Observed model-usage increment
+
+Implemented locally (RC-10/RC-13/RC-14): schema 60 adds immutable
+`archive_model_usage`, one bounded usage record per answered main/delegated call,
+with project/session/run, one-based response ordinal, role, observation time and
+the archived assistant message ID. The response (including native data) and usage
+commit together before observers, delivery acknowledgements or tool dispatch.
+A failed write fails the run. Schema 59 data is retained without fabricated usage.
+
+Budget queries prefer this journal for each response ordinal, excluding its copies
+in a final run record or assistant event. Unjournaled ordinals still use the saved
+record, or its event when no final record exists. Existing event `turn` counts
+answered responses and aligns with the usage list's one-based index. This keeps
+legacy and partially persisted records usable without double charging.
+Journaled calls use observation time for the daily window, including a call made
+after a run has been active for more than a day. Legacy records keep their existing
+run-start cutoff because they have no trustworthy per-call time. Unknown reported
+cost stays unknown and retains the existing budget refusal rule.
+
+The evidence download is v3, adding the usage table; its verifier still accepts
+v1/v2 with their original field sets. This increment does not journal pre-dispatch
+model intent or recover a response/charge lost before observation; those remain
+explicit recovery work. No call is replayed and no upstream charge is invented.
+
+The [implementation report](../../.agents/docs/agent-reports/model-usage-2026-10-17.md)
+records interruption, migration, mixed-source accounting and daily-window checks.
 
 ## Open decisions
 

@@ -29,6 +29,7 @@ from .archive import Archive, Archived, Entry
 from .operations import ToolJournal, ToolRecord
 from .reads import Read, reads_of
 from .retention import retain
+from .usage import AnsweredUsage
 
 Json = dict[str, Any]
 _log = logging.getLogger(__name__)
@@ -96,6 +97,15 @@ class RunArchive:
                 if appended.kind == "tool_result" and call is not None and outcome is not None
                 else None
             ),
+            model_usage=(
+                AnsweredUsage(
+                    ordinal=appended.usage_index,
+                    observed_at=self.clock.now(),
+                    usage=appended.usage,
+                )
+                if appended.usage is not None and appended.usage_index is not None
+                else None
+            ),
             patience=self.patience,
             clock=self.clock,
         )
@@ -120,6 +130,7 @@ async def patiently(
     parent: str | None = None,
     reads: Sequence[Read] = (),
     tool_record: ToolRecord | None = None,
+    model_usage: AnsweredUsage | None = None,
     patience: float = PATIENCE,
     clock: Clock = SYSTEM_CLOCK,
 ) -> Archived:
@@ -135,6 +146,7 @@ async def patiently(
             parent=parent,
             reads=reads,
             tool_record=tool_record,
+            model_usage=model_usage,
         ),
         run=run,
         patience=patience,

@@ -77,7 +77,7 @@ async def test_starting_inputs_commit_before_model_and_tool_calls_without_final_
     try:
         assert RunInputs(reopened.control).get("p", "s", RUN) == original
         encoded = list(EvidenceExport(reopened.control, "p", "s", RUN).lines())
-        assert verify(io.BytesIO(b"".join(encoded))).format == "sandbox-run-evidence-v2"
+        assert verify(io.BytesIO(b"".join(encoded))).format == "sandbox-run-evidence-v3"
         _, rows = decode(encoded)
         assert rows == [
             (

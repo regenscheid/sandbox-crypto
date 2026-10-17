@@ -2,6 +2,10 @@
 
 Dated list of changes to the plan, decisions and conventions ([conventions](CONVENTIONS.md)), newest first, one or two lines each. Progress and lab results are in PR descriptions, [lab reports](docs/agent-reports/) and the git log. The earlier long-form log is in git: `git show 0e6a662:.agents/PLAN-CHANGES.md`.
 
+## 2026-10-17
+
+- **Observed model usage (D87 implementation refinement):** save response usage/cost atomically with the archive and use its observation time for the daily budget, so multi-day runs keep counting. Legacy fallback retains run-start time; pre-dispatch model intent and unknown charges remain recovery work ([contract](../docs/specs/research-continuity.md#observed-model-usage-increment)).
+
 ## 2026-10-16
 
 Decisions of the owner, later the same day (after #467):

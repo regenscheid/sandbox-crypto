@@ -112,6 +112,9 @@ class Appended:
     outcome: ToolOutcome | None = None
     operation_id: str | None = None
     """The intent saved before entering the toolbox; absent for report-round refusals."""
+    usage: ModelUsage | None = None
+    usage_index: int | None = None
+    """One-based answered-response index, independent of refused model attempts."""
 
 
 class MessageLog(Protocol):

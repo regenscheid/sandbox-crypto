@@ -504,13 +504,14 @@ npm install --ignore-scripts --before=2026-10-07T00:00:00Z some-package@1.2.3
 ### Stored run evidence download
 
 `GET /api/v0/projects/{project}/sessions/{session}/runs/{run}/evidence` downloads
-`sandbox-run-evidence-v2` NDJSON under the workspace's normal login and project
+`sandbox-run-evidence-v3` NDJSON under the workspace's normal login and project
 scope. It takes no query/body, supports unfinished runs with stored evidence,
 and returns 404 for an unknown run. Two downloads may be active; further requests
 receive 429. The route is read-only and leaves no server-side export file.
 
 The snapshot includes the final run JSON when present, archive messages and native
-provider bytes, saved text samples, tool intents and full structured tool records.
+provider bytes, saved text samples, tool intents, full structured tool records,
+starting inputs and observed model usage.
 It does not include external worker files or referenced document revisions. Each
 text/blob field has its storage type, byte count, base64 chunks of at most 64 KiB
 and a SHA-256. A final checksum covers every preceding byte of the download.
@@ -528,3 +529,4 @@ The manifest names the project/session/run and per-table row cutoffs and counts.
 `field`/`chunk`/`field_end` delimit exact text/blob bytes. Join a field's decoded
 chunks before UTF-8 or JSON decoding. Checksums detect corruption, not authenticity.
 See the [continuity contract](specs/research-continuity.md#stored-evidence-download-contract).
+The verifier also accepts v1/v2 bundles with their original table field sets.

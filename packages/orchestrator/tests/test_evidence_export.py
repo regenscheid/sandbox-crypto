@@ -157,14 +157,18 @@ def test_export_empty_strings_and_binary_fields(projects: ProjectStore) -> None:
     assert message["native"] == b""
 
 
-def test_verifier_still_accepts_v1_and_checks_the_versions_table_set(
+@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_verifier_still_accepts_older_versions_and_checks_the_table_set(
     projects: ProjectStore,
+    version: str,
 ) -> None:
     Archive(projects.control).append("p", "s", RUN, Entry("user", "task", "Legacy"))
     encoded = list(EvidenceExport(projects.control, "p", "s", RUN).lines())
     manifest = json.loads(encoded[0])
-    manifest["format"] = "sandbox-run-evidence-v1"
-    del manifest["tables"]["run_inputs"]
+    manifest["format"] = "sandbox-run-evidence-" + version
+    del manifest["tables"]["archive_model_usage"]
+    if version == "v1":
+        del manifest["tables"]["run_inputs"]
     encoded[0] = json.dumps(manifest).encode() + b"\n"
     encoded[-1] = (
         json.dumps(
@@ -176,24 +180,28 @@ def test_verifier_still_accepts_v1_and_checks_the_versions_table_set(
         ).encode()
         + b"\n"
     )
-    assert verify(io.BytesIO(b"".join(encoded))).format == "sandbox-run-evidence-v1"
+    assert verify(io.BytesIO(b"".join(encoded))).format == "sandbox-run-evidence-" + version
     with pytest.raises(ValueError, match="complete table set"):
         verify(
             io.BytesIO(
-                b"".join(encoded).replace(b"sandbox-run-evidence-v1", b"sandbox-run-evidence-v2")
+                b"".join(encoded).replace(
+                    ("sandbox-run-evidence-" + version).encode(), b"sandbox-run-evidence-v3"
+                )
             )
         )
 
 
-@pytest.mark.parametrize("version", ["v1", "v2"])
+@pytest.mark.parametrize("version", ["v1", "v2", "v3"])
 @pytest.mark.parametrize("fault", ["empty", "missing", "unknown", "duplicate"])
 def test_verifier_rejects_malformed_rows_even_with_valid_checksums(
     projects: ProjectStore, version: str, fault: str
 ) -> None:
     Archive(projects.control).append("p", "s", RUN, Entry("user", "task", "Evidence"))
     items = [json.loads(line) for line in EvidenceExport(projects.control, "p", "s", RUN).lines()]
+    items[0]["format"] = "sandbox-run-evidence-" + version
+    if version != "v3":
+        del items[0]["tables"]["archive_model_usage"]
     if version == "v1":
-        items[0]["format"] = "sandbox-run-evidence-v1"
         del items[0]["tables"]["run_inputs"]
     row = next(i for i, item in enumerate(items) if item["kind"] == "row")
     end = next(i for i, item in enumerate(items) if item["kind"] == "row_end")
