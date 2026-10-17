@@ -4,6 +4,8 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 ## 2026-10-17
 
+- The owner clarified that an unknown provider price should not indefinitely block SNOVA research when the operator has made an explicit conservative reservation. A legacy fold estimate without an intent ID now requires an exact audited USER link to that reserved intent; unrelated unknowns and known charges remain counted ([run service](../docs/specs/run-service.md), [recovery controls](../docs/specs/recovery-controls.md)).
+
 - The owner wants renewable research allowances: resource warnings go to the calling agent, which can grant extensions within policy and hard outer budgets. [Adaptive resource policy](../docs/specs/adaptive-research-resources.md) records the direction; implementation remains planned.
 
 - Real SNOVA research reached the 8 MiB active-payload bound before token folding because provider responses echoed tool schemas and usage attribution. Preserve originals in the archive, project active native replay fields, and raise the per-agent active backstop to 64 MiB at the owner's request.

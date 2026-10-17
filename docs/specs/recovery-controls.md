@@ -12,8 +12,9 @@ guard. They are never model tools and never contact a model, worker or executor.
   payloads are copied into listings. Cursor queries use indexed identities/sequences.
 - `POST .../sessions/{session}/recovery/resolve` accepts exact work, current attempt,
   epoch, original run, kind, identity and a nonempty bounded operator reason.
-  Kinds are `model_usage`, `operation`, `kernel_recompute`. Model usage requires an
-  explicitly supplied finite nonnegative cost; omitted cost never means zero.
+  Kinds are `model_usage`, `model_reservation`, `fold_estimate_link`, `operation`,
+  `kernel_recompute`. Model usage requires an explicitly supplied finite
+  nonnegative cost; omitted cost never means zero.
 - Inside one write transaction, reject wrong scope, stale current attempt/epoch,
   completed/stopped work, running work, a live session lease or queued/running
   Resume. Exact identical decisions are idempotent; different decisions for the
@@ -26,6 +27,20 @@ guard. They are never model tools and never contact a model, worker or executor.
   original child attempt parent rather than the stable parent work identity. Supplied cost counts in budgets
   by the original intent's dispatch time and model role, explicitly labelled as an
   operator declaration in the decision and archive notice.
+- `model_reservation` leaves actual usage and charge unknown and retains the
+  original unresolved intent. It requires a positive finite cost upper bound and
+  positive input/output token upper bounds. The bounds count in cost and token
+  gates until observed usage is available; the archive labels them as a reservation.
+- A legacy cancelled fold estimate without an intent ID remains unpriced even
+  when an unresolved fold intent has a reservation. `fold_estimate_link` explicitly
+  binds the stored copy's exact source, position, event sequence when applicable,
+  and JSON value to one already reserved unresolved fold intent in the same
+  original work. The reservation's input-token bound must cover the stored
+  estimate. The operator must supply evidence in the reason. The link creates
+  an archive notice and suppresses only that duplicate estimate; the reservation
+  still counts and the actual charge remains unknown. Missing, changed, already
+  linked or ambiguous copies are refused. Saved collection, summary and event
+  fallbacks retain their precedence.
 - Operation settlement requires the original unresolved intent. Archive a clearly
   labelled operator uncertainty tool result preserving original tool/call/arguments
   and operation ID; acknowledge result unavailability, never success or nonexecution.

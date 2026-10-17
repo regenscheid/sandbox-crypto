@@ -6,7 +6,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from typing import Annotated, Literal, Self
+import sqlite3
+from typing import Annotated, Literal, Self, cast
 
 from pydantic import Field, model_validator
 
@@ -22,7 +23,9 @@ from sandbox_science.orchestrator.runstate import LEASE_SECONDS
 
 from .models import observed
 
-Kind = Literal["model_usage", "model_reservation", "operation", "kernel_recompute"]
+Kind = Literal[
+    "model_usage", "model_reservation", "fold_estimate_link", "operation", "kernel_recompute"
+]
 
 
 class Resolution(Contract):
@@ -37,6 +40,10 @@ class Resolution(Contract):
 
     input_tokens: int | None = Field(default=None, strict=True, ge=0)
     output_tokens: int | None = Field(default=None, strict=True, ge=0)
+    source: Literal["collection", "summary", "event"] | None = None
+    position: int | None = Field(default=None, strict=True, ge=0, le=1_000_000)
+    event_seq: int | None = Field(default=None, strict=True, ge=1, le=999_999_999)
+    estimate_json: str | None = Field(default=None, min_length=1, max_length=4096)
 
     @model_validator(mode="after")
     def _explicit(self) -> Self:
@@ -61,6 +68,36 @@ class Resolution(Contract):
             re.fullmatch(r"[0-9a-f]{64}", self.identity) is None or self.run != self.current
         ):
             raise ValueError("kernel recompute requires the saved snapshot digest and current run")
+        if self.kind == "fold_estimate_link":
+            if (
+                self.source is None
+                or self.position is None
+                or self.estimate_json is None
+                or (self.source == "event") != (self.event_seq is not None)
+            ):
+                raise ValueError("fold estimate link requires an exact source, position and copy")
+            try:
+                raw: object = json.loads(self.estimate_json)
+            except ValueError:
+                raise ValueError("fold estimate link copy is not JSON") from None
+            if not isinstance(raw, dict):
+                raise ValueError("fold estimate link copy is not an object")
+            copied = cast(dict[str, object], raw)
+            input_tokens = copied.get("input_tokens")
+            if (
+                copied.get("cancelled") is not True
+                or copied.get("estimated") is not True
+                or copied.get("cost") is not None
+                or copied.get("intent_id") is not None
+                or type(input_tokens) is not int
+                or input_tokens <= 0
+            ):
+                raise ValueError("fold estimate link copy is not an unlinked cancelled estimate")
+        elif any(
+            value is not None
+            for value in (self.source, self.position, self.event_seq, self.estimate_json)
+        ):
+            raise ValueError("only fold estimate links name a stored copy")
         return self
 
 
@@ -182,6 +219,18 @@ class RecoveryControls:
                     f"{request.output_tokens}. No response was recovered or synthesized.",
                     source="operator_recovery",
                 )
+            elif request.kind == "fold_estimate_link":
+                self._fold_estimate_link(db, project, session, request)
+                entry = Entry(
+                    "user",
+                    "notice",
+                    text + f"\nLegacy cancelled fold estimate at {request.source} position "
+                    f"{request.position} (event {request.event_seq or 0}) is explicitly "
+                    f"linked to reserved model intent {request.identity}. Actual usage and "
+                    "charge remain UNKNOWN; the existing reservation is counted once. "
+                    "No response was recovered or synthesized.",
+                    source="operator_recovery",
+                )
             elif request.kind == "operation":
                 entry, tool_record = self._operation(tx, project, session, request, text)
             else:
@@ -225,6 +274,84 @@ class RecoveryControls:
                 "INSERT INTO research_observations VALUES (?,?,?,?,?,?,?)", (*key, now, detail)
             )
             return decision
+
+    @staticmethod
+    def _fold_estimate_link(
+        db: sqlite3.Connection, project: str, session: str, request: Resolution
+    ) -> None:
+        """Bind one immutable legacy estimate to one already reserved fold intent."""
+        assert request.source is not None  # noqa: S101 - validated by Resolution
+        assert request.position is not None  # noqa: S101 - validated by Resolution
+        assert request.estimate_json is not None  # noqa: S101 - validated by Resolution
+        reservation = db.execute(
+            "SELECT json_extract(o.detail,'$.resolution.input_tokens') "
+            "FROM research_model_calls m JOIN research_observations o "
+            "ON o.project=m.project AND o.session=m.session AND o.work=? "
+            "AND o.kind='resolution:model_reservation' "
+            "AND json_extract(o.detail,'$.resolution.run')=m.run "
+            "AND json_extract(o.detail,'$.resolution.identity')=m.identity "
+            "JOIN research_attempts a ON a.project=m.project AND a.session=m.session "
+            "AND a.work=o.work AND a.run=m.run "
+            "WHERE m.project=? AND m.session=? AND m.run=? AND m.identity=? "
+            "AND m.kind='fold' AND m.usage IS NULL",
+            (request.work, project, session, request.run, request.identity),
+        ).fetchone()
+        if reservation is None:
+            raise ControlError(CONFLICT, "fold intent has no unresolved reserved charge")
+        estimate = cast(dict[str, int], json.loads(request.estimate_json))
+        if reservation[0] < estimate["input_tokens"]:
+            raise ControlError(CONFLICT, "fold estimate exceeds reserved input bound")
+        if request.source == "collection":
+            row = db.execute(
+                "SELECT item FROM run_collections WHERE project=? AND session=? AND run=? "
+                "AND collection='fold_calls' AND position=?",
+                (project, session, request.run, request.position),
+            ).fetchone()
+        elif request.source == "summary":
+            if db.execute(
+                "SELECT 1 FROM run_collections WHERE project=? AND session=? AND run=? "
+                "AND collection='fold_calls' LIMIT 1",
+                (project, session, request.run),
+            ).fetchone():
+                raise ControlError(CONFLICT, "fold collection supersedes saved summary")
+            row = db.execute(
+                "SELECT u.value FROM runs r,json_each(r.record,'$.summaries.folds.calls') u "
+                "WHERE r.project_id=? AND r.session_id=? AND r.name=? AND u.key=?",
+                (project, session, request.run, request.position),
+            ).fetchone()
+        else:
+            if db.execute(
+                "SELECT 1 FROM run_collections WHERE project=? AND session=? AND run=? "
+                "AND collection='fold_calls' UNION ALL SELECT 1 FROM runs "
+                "WHERE project_id=? AND session_id=? AND name=? LIMIT 1",
+                (project, session, request.run, project, session, request.run),
+            ).fetchone():
+                raise ControlError(CONFLICT, "saved fold history supersedes event fallback")
+            row = db.execute(
+                "SELECT u.value FROM run_events e,json_each(e.data,'$.calls') u "
+                "WHERE e.project_id=? AND e.session_id=? AND e.run=? AND e.seq=? "
+                "AND e.kind='fold' AND u.key=?",
+                (project, session, request.run, request.event_seq, request.position),
+            ).fetchone()
+        if row is None or row[0] != request.estimate_json:
+            raise ControlError(CONFLICT, "fold estimate copy changed or was not found")
+        if db.execute(
+            "SELECT 1 FROM research_observations WHERE project=? AND session=? "
+            "AND kind='resolution:fold_estimate_link' "
+            "AND json_extract(detail,'$.resolution.run')=? "
+            "AND json_extract(detail,'$.resolution.source')=? "
+            "AND json_extract(detail,'$.resolution.position')=? "
+            "AND coalesce(json_extract(detail,'$.resolution.event_seq'),0)=? LIMIT 1",
+            (
+                project,
+                session,
+                request.run,
+                request.source,
+                request.position,
+                request.event_seq or 0,
+            ),
+        ).fetchone():
+            raise ControlError(CONFLICT, "fold estimate already linked to another intent")
 
     @staticmethod
     def _model(tx: Tx, project: str, session: str, request: Resolution) -> None:

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
@@ -21,6 +22,7 @@ from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.delegation.records import DelegationRecords
 from sandbox_science.orchestrator.history import Archive
 from sandbox_science.orchestrator.history.collections import Collection
+from sandbox_science.orchestrator.projects import ModelUsage
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.worker_client import WorkerClient
 from sandbox_science.testing import FakeClock
@@ -106,15 +108,23 @@ def test_cancelled_fold_copy_is_settled_by_its_durable_intent_reservation(projec
     identity = ModelIntents(projects.control, clock=clock).begin(
         owner, kind="fold", alias="fixture"
     )
-    Collection(projects.control, ("p", "s", RUN), "fold_calls").append(
-        {"cancelled": True, "estimated": True, "input_tokens": 154_824, "cost": None}
-    )
+    copy = {"cancelled": True, "estimated": True, "input_tokens": 154_824, "cost": None}
+    Collection(projects.control, ("p", "s", RUN), "fold_calls").append(copy)
     works.interrupt("p", "s", RUN)
     state = RunState(projects.control)
     state.set_cost_limit("p", 10)
     assert state.unpriced_calls("p", now - timedelta(hours=1)) == 1
     assert ModelIntents(projects.control).pending("p", "s", RUN) == (identity,)
     assert state.over_cost_limit("p", now)
+    link = body(
+        "fold_estimate_link",
+        identity,
+        source="collection",
+        position=0,
+        estimate_json=json.dumps(copy),
+    )
+    with pytest.raises(ControlError, match="no unresolved reserved charge"):
+        RecoveryControls(projects.control, clock=clock).resolve("p", "s", link, operator="user")
     RecoveryControls(projects.control, clock=clock).resolve(
         "p",
         "s",
@@ -125,6 +135,13 @@ def test_cancelled_fold_copy_is_settled_by_its_durable_intent_reservation(projec
             input_tokens=200_000,
             output_tokens=10_000,
         ),
+        operator="user",
+    )
+    assert state.unpriced_calls("p", now - timedelta(hours=1)) == 1
+    RecoveryControls(projects.control, clock=clock).resolve(
+        "p",
+        "s",
+        link,
         operator="user",
     )
     assert state.unpriced_calls("p", now - timedelta(hours=1)) == 0
@@ -142,6 +159,224 @@ def test_legacy_cancelled_fold_without_durable_intent_stays_unpriced(projects):
     state.set_cost_limit("p", 10)
     assert state.unpriced_calls("p", now - timedelta(hours=1)) == 1
     assert state.over_cost_limit("p", now)
+
+
+def test_reserved_unobserved_fold_does_not_hide_a_priced_copy(projects):
+    now = datetime(2026, 10, 16, 4, tzinfo=UTC)
+    clock = FakeClock(now - timedelta(minutes=30))
+    works = WorkRecords(projects.control)
+    owner = works.admit("p", "s", RUN)
+    identity = ModelIntents(projects.control, clock=clock).begin(
+        owner, kind="fold", alias="fixture"
+    )
+    Collection(projects.control, ("p", "s", RUN), "fold_calls").append(
+        {"intent_id": identity, "input_tokens": 100, "output_tokens": 10, "cost": 3.0}
+    )
+    works.interrupt("p", "s", RUN)
+    RecoveryControls(projects.control, clock=clock).resolve(
+        "p",
+        "s",
+        body("model_reservation", identity, cost=2.0, input_tokens=100, output_tokens=10),
+        operator="user",
+    )
+    state = RunState(projects.control)
+    state.set_cost_limit("p", 4)
+    assert state.model_cost("p") == pytest.approx(3.0)
+    assert state.model_reservations("p") == {"main": 2.0}
+    assert state.over_cost_limit("p", now)
+
+
+def test_fold_link_requires_reservation_covering_stored_token_estimate(projects):
+    now = datetime(2026, 10, 16, 4, tzinfo=UTC)
+    clock = FakeClock(now - timedelta(minutes=30))
+    works = WorkRecords(projects.control)
+    owner = works.admit("p", "s", RUN)
+    identity = ModelIntents(projects.control, clock=clock).begin(
+        owner, kind="fold", alias="fixture"
+    )
+    copy = {"cancelled": True, "estimated": True, "input_tokens": 154_824, "cost": None}
+    Collection(projects.control, ("p", "s", RUN), "fold_calls").append(copy)
+    works.interrupt("p", "s", RUN)
+    controls = RecoveryControls(projects.control, clock=clock)
+    controls.resolve(
+        "p",
+        "s",
+        body("model_reservation", identity, cost=2.0, input_tokens=1, output_tokens=10),
+        operator="user",
+    )
+    with pytest.raises(ControlError, match="exceeds reserved input bound"):
+        controls.resolve(
+            "p",
+            "s",
+            body(
+                "fold_estimate_link",
+                identity,
+                source="collection",
+                position=0,
+                estimate_json=json.dumps(copy),
+            ),
+            operator="user",
+        )
+    state = RunState(projects.control)
+    state.set_cost_limit("p", 10)
+    assert state.unpriced_calls("p", now - timedelta(hours=1)) == 1
+    assert state.over_cost_limit("p", now)
+
+
+def test_reserved_cancelled_fold_after_observed_folds_does_not_block(projects):
+    now = datetime(2026, 10, 16, 4, tzinfo=UTC)
+    clock = FakeClock(now - timedelta(minutes=30))
+    works = WorkRecords(projects.control)
+    owner = works.admit("p", "s", RUN)
+    intents = ModelIntents(projects.control, clock=clock)
+    collection = Collection(projects.control, ("p", "s", RUN), "fold_calls")
+    earlier = intents.begin(owner, kind="fold", alias="fixture")
+    intents.observe(
+        owner,
+        earlier,
+        ModelUsage(intent_id=earlier, input_tokens=100, output_tokens=10, cost=0.1),
+    )
+    collection.append({"intent_id": earlier, "input_tokens": 100, "output_tokens": 10, "cost": 0.1})
+    identity = intents.begin(owner, kind="fold", alias="fixture")
+    copy = {"cancelled": True, "estimated": True, "input_tokens": 154_824, "cost": None}
+    collection.append(copy)
+    works.interrupt("p", "s", RUN)
+    state = RunState(projects.control)
+    state.set_cost_limit("p", 10)
+    assert state.unpriced_calls("p", now - timedelta(hours=1)) == 1
+    RecoveryControls(projects.control, clock=clock).resolve(
+        "p",
+        "s",
+        body(
+            "model_reservation",
+            identity,
+            cost=2.0,
+            input_tokens=200_000,
+            output_tokens=10_000,
+        ),
+        operator="user",
+    )
+    assert state.unpriced_calls("p", now - timedelta(hours=1)) == 1
+    link = body(
+        "fold_estimate_link",
+        identity,
+        source="collection",
+        position=1,
+        estimate_json=json.dumps(copy),
+    )
+    controls = RecoveryControls(projects.control, clock=clock)
+    with pytest.raises(ControlError, match="copy changed"):
+        controls.resolve("p", "s", link.model_copy(update={"position": 0}), operator="user")
+    decision = controls.resolve("p", "s", link, operator="user")
+    assert controls.resolve("p", "s", link, operator="user") == decision
+    assert state.unpriced_calls("p", now - timedelta(hours=1)) == 0
+    assert state.model_cost("p") == pytest.approx(0.1)
+    assert state.model_reservations("p") == {"main": 2}
+    assert not state.over_cost_limit("p", now)
+
+
+def test_multiple_unlinked_fold_copies_remain_unpriced_with_one_reservation(projects):
+    now = datetime(2026, 10, 16, 4, tzinfo=UTC)
+    clock = FakeClock(now - timedelta(minutes=30))
+    works = WorkRecords(projects.control)
+    owner = works.admit("p", "s", RUN)
+    intents = ModelIntents(projects.control, clock=clock)
+    earlier = intents.begin(owner, kind="fold", alias="fixture")
+    intents.observe(owner, earlier, ModelUsage(intent_id=earlier, cost=0.1))
+    identity = intents.begin(owner, kind="fold", alias="fixture")
+    collection = Collection(projects.control, ("p", "s", RUN), "fold_calls")
+    copy = {"cancelled": True, "estimated": True, "input_tokens": 154_824, "cost": None}
+    for _ in range(2):
+        collection.append(copy)
+    works.interrupt("p", "s", RUN)
+    RecoveryControls(projects.control, clock=clock).resolve(
+        "p",
+        "s",
+        body("model_reservation", identity, cost=2.0, input_tokens=200_000, output_tokens=10_000),
+        operator="user",
+    )
+    state = RunState(projects.control)
+    state.set_cost_limit("p", 10)
+    assert state.unpriced_calls("p", now - timedelta(hours=1)) == 2
+    RecoveryControls(projects.control, clock=clock).resolve(
+        "p",
+        "s",
+        body(
+            "fold_estimate_link",
+            identity,
+            source="collection",
+            position=0,
+            estimate_json=json.dumps(copy),
+        ),
+        operator="user",
+    )
+    assert state.unpriced_calls("p", now - timedelta(hours=1)) == 1
+    assert state.over_cost_limit("p", now)
+
+
+@pytest.mark.parametrize("source", ["summary", "event"])
+def test_operator_link_settles_exact_legacy_fallback_copy(projects, source):
+    now = datetime(2026, 10, 16, 4, tzinfo=UTC)
+    clock = FakeClock(now - timedelta(minutes=30))
+    works = WorkRecords(projects.control)
+    owner = works.admit("p", "s", RUN)
+    identity = ModelIntents(projects.control, clock=clock).begin(
+        owner, kind="fold", alias="fixture"
+    )
+    copy = {"cancelled": True, "estimated": True, "input_tokens": 154_824, "cost": None}
+    with projects.control.write() as tx:
+        if source == "summary":
+            tx.sql.execute(
+                "INSERT INTO runs (project_id,session_id,name,run_id,started_at,record) "
+                "VALUES ('p','s',?,'fixture',?,?)",
+                (RUN, now.isoformat(), json.dumps({"summaries": {"folds": {"calls": [copy]}}})),
+            )
+        else:
+            tx.sql.execute(
+                "INSERT INTO run_events VALUES ('p','s',?,1,?,'fold',?)",
+                (RUN, now.isoformat(), json.dumps({"calls": [copy]})),
+            )
+    with projects.control.read() as tx:
+        if source == "summary":
+            (exact,) = tx.sql.execute(
+                "SELECT u.value FROM runs r,json_each(r.record,'$.summaries.folds.calls') u "
+                "WHERE r.project_id='p' AND r.session_id='s' AND r.name=? AND u.key=0",
+                (RUN,),
+            ).fetchone()
+        else:
+            (exact,) = tx.sql.execute(
+                "SELECT u.value FROM run_events e,json_each(e.data,'$.calls') u "
+                "WHERE e.project_id='p' AND e.session_id='s' AND e.run=? AND e.seq=1 AND u.key=0",
+                (RUN,),
+            ).fetchone()
+    works.interrupt("p", "s", RUN)
+    state = RunState(projects.control)
+    state.set_cost_limit("p", 10)
+    assert state.unpriced_calls("p", now - timedelta(hours=1)) == 1
+    controls = RecoveryControls(projects.control, clock=clock)
+    controls.resolve(
+        "p",
+        "s",
+        body("model_reservation", identity, cost=2.0, input_tokens=200_000, output_tokens=10_000),
+        operator="user",
+    )
+    assert state.unpriced_calls("p", now - timedelta(hours=1)) == 1
+    controls.resolve(
+        "p",
+        "s",
+        body(
+            "fold_estimate_link",
+            identity,
+            source=source,
+            position=0,
+            event_seq=1 if source == "event" else None,
+            estimate_json=exact,
+        ),
+        operator="user",
+    )
+    assert state.unpriced_calls("p", now - timedelta(hours=1)) == 0
+    assert state.model_reservations("p") == {"main": 2}
+    assert not state.over_cost_limit("p", now)
 
 
 @pytest.mark.parametrize("change", [{"cost": 3}, {"input_tokens": 21}, {"kind": "model_usage"}])

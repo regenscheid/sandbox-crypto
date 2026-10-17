@@ -131,46 +131,62 @@ def _run_usage(project: str, since: datetime | None) -> tuple[str, tuple[object,
         values += (project, after)
 
     # Fold usage is copied into collection, saved-summary and event forms. Preserve
-    # their old precedence, then suppress only an explicit observed intent identity.
-    def fold_copy(value: str, project_col: str, session: str, run: str) -> str:
+    # their old precedence. A linked intent suppresses its copy only after observation
+    # or reservation. An older copy without an intent ID needs an exact USER link.
+    def fold_copy(
+        value: str,
+        project_col: str,
+        session: str,
+        run: str,
+        source: str,
+        position: str,
+        event_seq: str = "0",
+    ) -> str:
         return (
-            "NOT EXISTS (SELECT 1 FROM research_model_calls paid "  # noqa: S608 - fixed columns
-            f"WHERE paid.project={project_col} AND paid.session={session} AND paid.run={run} "
-            f"AND paid.identity=json_extract({value},'$.intent_id') "
-            "AND paid.kind='fold' AND paid.usage IS NOT NULL)"
-            # Older cancelled copies have no intent_id. Suppress the estimate only
-            # when this run has one fold intent and its observed charge or explicit
-            # reservation has settled uncertainty. Ambiguous copies stay unpriced.
-            f" AND NOT (coalesce(json_extract({value},'$.cancelled'),0)=1 "
-            f"AND coalesce(json_extract({value},'$.estimated'),0)=1 "
-            "AND (SELECT count(*) FROM research_model_calls m "
-            f"WHERE m.project={project_col} AND m.session={session} "
-            f"AND m.run={run} AND m.kind='fold')=1 "
-            "AND EXISTS (SELECT 1 FROM research_model_calls m "
-            f"WHERE m.project={project_col} AND m.session={session} "
-            f"AND m.run={run} AND m.kind='fold' "
-            f"AND (m.usage IS NOT NULL OR NOT ({UNRESERVED}))))"
+            "NOT EXISTS (SELECT 1 FROM research_model_calls m "  # noqa: S608 - fixed columns
+            f"WHERE m.project={project_col} AND m.session={session} AND m.run={run} "
+            f"AND m.identity=json_extract({value},'$.intent_id') AND m.kind='fold' "
+            f"AND (m.usage IS NOT NULL OR (json_extract({value},'$.cost') IS NULL "
+            f"AND NOT ({UNRESERVED})))) "
+            "AND NOT EXISTS (SELECT 1 FROM research_observations link "
+            "JOIN research_model_calls m ON m.project=link.project "
+            "AND m.session=link.session "
+            "AND m.run=json_extract(link.detail,'$.resolution.run') "
+            "AND m.identity=json_extract(link.detail,'$.resolution.identity') "
+            "JOIN research_attempts a ON a.project=m.project AND a.session=m.session "
+            "AND a.work=link.work AND a.run=m.run "
+            f"WHERE link.project={project_col} AND link.session={session} "
+            "AND link.kind='resolution:fold_estimate_link' "
+            f"AND m.run={run} AND m.kind='fold' AND m.usage IS NULL "
+            f"AND json_extract(link.detail,'$.resolution.source')='{source}' "
+            f"AND json_extract(link.detail,'$.resolution.position')={position} "
+            f"AND coalesce(json_extract(link.detail,'$.resolution.event_seq'),0)={event_seq} "
+            f"AND json_extract(link.detail,'$.resolution.estimate_json')={value} "
+            f"AND NOT ({UNRESERVED}))"
         )
 
+    event_fold = fold_copy(
+        "u.value", "e.project_id", "e.session_id", "e.run", "event", "u.key", "e.seq"
+    )
     query += (
         " UNION ALL SELECT CASE WHEN EXISTS (SELECT 1 FROM archive_messages m "  # noqa: S608
         "WHERE m.project=c.project AND m.session=c.session AND m.run=c.run "
         "AND m.parent IS NOT NULL) THEN 'delegated' ELSE 'main' END,c.item "
         "FROM run_collections c WHERE c.project=? AND c.run>=? AND c.collection='fold_calls' "
-        f"AND {fold_copy('c.item', 'c.project', 'c.session', 'c.run')} "
+        f"AND {fold_copy('c.item', 'c.project', 'c.session', 'c.run', 'collection', 'c.position')} "
         "UNION ALL SELECT coalesce(json_extract(r.record,'$.role'),'main'),u.value "
         "FROM runs r,json_each(r.record,'$.summaries.folds.calls') u "
         "WHERE r.project_id=? AND r.name>=? AND NOT EXISTS (SELECT 1 FROM run_collections h "
         "WHERE h.project=r.project_id AND h.session=r.session_id AND h.run=r.name "
         "AND h.collection='fold_calls') "
-        f"AND {fold_copy('u.value', 'r.project_id', 'r.session_id', 'r.name')} "
+        f"AND {fold_copy('u.value', 'r.project_id', 'r.session_id', 'r.name', 'summary', 'u.key')} "
         "UNION ALL SELECT 'main',u.value FROM run_events e,json_each(e.data,'$.calls') u "
         "WHERE e.project_id=? AND e.run>=? AND e.kind='fold' "
         "AND NOT EXISTS (SELECT 1 FROM runs r WHERE r.project_id=e.project_id "
         "AND r.session_id=e.session_id AND r.name=e.run) "
         "AND NOT EXISTS (SELECT 1 FROM run_collections h WHERE h.project=e.project_id "
         "AND h.session=e.session_id AND h.run=e.run AND h.collection='fold_calls') "
-        f"AND {fold_copy('u.value', 'e.project_id', 'e.session_id', 'e.run')}"
+        f"AND {event_fold}"
     )
     return query, (*values, project, first, project, first, project, first)
 
