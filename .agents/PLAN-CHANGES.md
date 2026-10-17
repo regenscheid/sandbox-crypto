@@ -4,6 +4,8 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 ## 2026-10-17
 
+- **Agent context inspection (D80):** the owner requested a secondary embedded debug dialog for every agent, including the orchestrator: usage/fold timeline, cache performance, current-view provenance and searchable original history ([proposal](../docs/specs/context-inspector.md)).
+
 - **Larger research files (D79/D80):** 100 MiB uploads with 2 GiB/project and 8 GiB/store retention; larger worker writes and shared upload copies, retaining ordinary read limits. Schema 67 and worker protocol 9 require coordinated upgrades.
 
 - **UI review refinements (D80):** research pane drags continuously up to 50% of the window; Documents gets a searchable/filterable library and named tabs retaining drafts. The owner accepted the ledger's list/detail and optional board direction, requested persistent session navigation, and requested broader screen refinement. A connected [workspace browsers proposal](../docs/specs/workspace-browsers.md) prioritizes Skills and MCP services; production adaptation remains pending.

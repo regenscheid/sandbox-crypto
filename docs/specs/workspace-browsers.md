@@ -79,6 +79,11 @@ the MCP proxy, connection tests, credential entry or approval actions.
 
 ## Other screens
 
+An [agent context inspector](context-inspector.md) is available from secondary
+orchestrator/agent actions as an embedded dialog. It covers context usage and
+cache telemetry, fold provenance and searchable original conversation history.
+Its production telemetry/API integration is still pending.
+
 - **Overview:** sessions, recent documents, pending reviews and useful shortcuts
   first. Policy, environment, math macros and file capture settings get a separate
   settings area; keep their existing operations and limits reachable.
