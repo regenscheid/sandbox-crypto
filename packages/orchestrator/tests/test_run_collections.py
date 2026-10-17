@@ -199,3 +199,43 @@ async def test_tool_collection_persists_only_preview_during_live_observers(
     )
     assert result.stopped == "answered"
     assert "payload" not in result.tool_records[-1]
+
+
+@pytest.mark.parametrize("field", ["adapter_state", "tool_calls"])
+def test_archive_page_counts_all_retained_payload_fields(
+    projects: ProjectStore, field: str
+) -> None:
+    from sandbox_science.orchestrator.history import Archive, Entry
+    from sandbox_science.orchestrator.history.limits import WorkingMemoryLimitError
+
+    archive = Archive(projects.control)
+    payload = "x" * (60 * 1024 if field == "adapter_state" else 3 * 1024 * 1024)
+    for index in range(150 if field == "adapter_state" else 3):
+        fields = (
+            {"adapter_state": {"payload": payload}}
+            if field == "adapter_state"
+            else {"tool_calls": ({"id": str(index), "function": {"arguments": payload}},)}
+        )
+        row = archive.append("p", "s", RUN, Entry("assistant", "assistant", "tiny", **fields))
+        assert archive.payload_bytes("p", row.message_id) > len(payload)
+    with pytest.raises(WorkingMemoryLimitError, match="working read limit"):
+        archive.messages("p", "s", run=RUN, limit=200)
+
+
+def test_native_payloads_count_toward_active_view_ceiling(tmp_path: Path) -> None:
+    from sandbox_science.orchestrator.history.limits import WorkingMemoryLimitError
+    from sandbox_science.orchestrator.history.memory import RunMemory
+    from sandbox_science.orchestrator.loop import Transcript
+    from sandbox_science.orchestrator.model import AssistantMessage
+
+    memory = RunMemory.scratch(tmp_path / "native.sqlite3", ("p", "s", "r"))
+    try:
+        messages = memory.messages([{"role": "system", "content": "Research"}])
+        for _ in range(2):
+            messages.append(AssistantMessage("tiny", native=b"n" * (5 * 1024 * 1024)))
+        transcript = Transcript(messages=messages, memory=memory)
+        with pytest.raises(WorkingMemoryLimitError, match="active model payload"):
+            _ = transcript.sent
+        assert len(messages) == 3
+    finally:
+        memory.control.close()

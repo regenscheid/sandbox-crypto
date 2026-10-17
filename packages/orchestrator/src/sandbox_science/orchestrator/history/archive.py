@@ -438,19 +438,11 @@ class Archive:
         """A message of the project, by its ID."""
         with self.control.read() as tx:
             if max_bytes is not None:
-                fields = (
-                    "content",
-                    "native",
-                    "tool_calls",
-                    "adapter_state",
-                    "refs",
-                    "files",
-                    "prefix",
-                )
+                fields = _FIELDS
                 meta = tx.sql.execute(
-                    "SELECT rowid,typeof(content),typeof(native),typeof(tool_calls),"
-                    "typeof(adapter_state),typeof(refs),typeof(files),typeof(prefix) "
-                    "FROM archive_messages WHERE project=? AND message_id=?",
+                    "SELECT rowid,"  # noqa: S608 - fixed archive field names
+                    + ",".join(f"typeof({name})" for name in fields)
+                    + " FROM archive_messages WHERE project=? AND message_id=?",
                     (project, message_id),
                 ).fetchone()
                 if meta is not None:
@@ -474,6 +466,17 @@ class Archive:
         if row is None:
             raise ControlError(NOT_FOUND, f"the project's archive has no message {message_id}")
         return _archived(row)
+
+    def payload_bytes(self, project: str, message_id: str) -> int:
+        """Exact stored variable payload size, without reading the payload into Python."""
+        with self.control.read() as tx:
+            row = tx.sql.execute(
+                "SELECT "  # noqa: S608 - fixed archive field names
+                + "+".join(f"coalesce(length(CAST({name} AS BLOB)),0)" for name in _FIELDS)
+                + " FROM archive_messages WHERE project=? AND message_id=?",
+                (project, message_id),
+            ).fetchone()
+        return 0 if row is None else int(row[0])
 
     def tool_record(self, project: str, message_id: str, *, max_bytes: int = READ_BYTES) -> Json:
         """Full structured evidence behind one tool message, bounded before loading."""
@@ -534,11 +537,7 @@ class Archive:
         remaining = METADATA_BYTES
         for (identifier,) in rows:
             message = self.message(project, identifier, max_bytes=remaining)
-            remaining -= (
-                len(message.entry.native or b"")
-                + len((message.entry.content or "").encode())
-                + 1024
-            )
+            remaining -= self.payload_bytes(project, identifier) + 1024
             if remaining < 0:
                 raise WorkingMemoryLimitError("archive page exceeds the bounded read limit")
             found.append(message)
@@ -795,14 +794,14 @@ def _hit(
     project, message_id, path, text = db.execute(
         "SELECT project, message_id, path, text FROM archive_docs WHERE doc = ?", (doc,)
     ).fetchone()
+    fields = _FIELDS
     rowid, *kinds = db.execute(
-        "SELECT rowid,typeof(content),typeof(native),typeof(tool_calls),typeof(adapter_state),"
-        "typeof(refs),typeof(files),typeof(prefix) "
-        "FROM archive_messages WHERE project=? AND message_id=?",
+        "SELECT rowid,"  # noqa: S608 - fixed archive field names
+        + ",".join(f"typeof({name})" for name in fields)
+        + " FROM archive_messages WHERE project=? AND message_id=?",
         (project, message_id),
     ).fetchone()
     size = 0
-    fields = ("content", "native", "tool_calls", "adapter_state", "refs", "files", "prefix")
     for name, kind in zip(fields, kinds, strict=True):
         if kind != "null":
             with db.blobopen("archive_messages", name, rowid, readonly=True) as blob:

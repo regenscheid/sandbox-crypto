@@ -46,7 +46,7 @@ def active(
             "(SELECT 1 FROM merged WHERE merged.id=folds.id) ORDER BY first"
         ):
             row = archive.message(context.project_id, identifier, max_bytes=METADATA_BYTES)
-            used += len(row.entry.native or b"") + len((row.entry.content or "").encode()) + 1024
+            used += archive.payload_bytes(context.project_id, row.message_id) + 1024
             if used > METADATA_BYTES or len(records) >= METADATA_ROWS:
                 raise WorkingMemoryLimitError(
                     "current fold markers exceed the working-state ceiling; "

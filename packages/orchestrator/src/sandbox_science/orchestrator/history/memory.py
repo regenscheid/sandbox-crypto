@@ -83,12 +83,13 @@ class RunMemory:
 
     def messages(self, initial: Sequence[Message]) -> Collection[Message]:
         def decode(value: Any) -> Message:
-            if isinstance(value, dict) and set(cast(dict[str, object], value)) == {
-                "archive_message"
-            }:
+            if isinstance(value, dict) and "archive_message" in value:
                 if self.resolve_message is None:
                     raise ValueError("an archive reference requires its scoped resolver")
-                return self.resolve_message(str(cast(dict[str, object], value)["archive_message"]))
+                message = self.resolve_message(
+                    str(cast(dict[str, object], value)["archive_message"])
+                )
+                return {**message, "image": value["image"]} if "image" in value else message
             record = cast(dict[str, Any], value)
             if record.get("format") == "assistant-cache-v1":
                 chat = cast(Message, record["chat"])

@@ -645,12 +645,7 @@ def _rows(
         kinds=kinds or tuple(kind for kind in KINDS if kind != "state_block"),
         main_only=run is None,
     ):
-        used += (
-            1024
-            + len((row.entry.content or "").encode())
-            + len(row.entry.native or b"")
-            + len(dump(row.entry.tool_calls).encode())
-        )
+        used += archive.payload_bytes(context.project_id, row.message_id) + 1024
         if used > METADATA_BYTES or len(found) >= METADATA_ROWS:
             raise WorkingMemoryLimitError(
                 "the semantic history exceeds the working-state ceiling; "

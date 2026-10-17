@@ -264,7 +264,21 @@ class Transcript:
     def sent(self) -> list[Message]:
         """What the next model call sends: the system message, the view a fold rebuilt,
         if one did, and the messages added since."""
-        return list(self.working())
+        kept: list[Message] = []
+        used = 0
+        for message in self.working():
+            used += len(dump(message).encode()) + 2
+            if isinstance(message, AssistantMessage):
+                used += len(message.native or b"")
+                used += len(dump(message.adapter_state or {}).encode())
+                used += len((message.prefix or "").encode())
+            if self.memory is not None and used > VIEW_BYTES:
+                raise WorkingMemoryLimitError(
+                    "active model payload exceeds the working-state ceiling; "
+                    "original evidence remains stored"
+                )
+            kept.append(message)
+        return kept
 
     def rebuild(self, view: Sequence[Message]) -> None:
         """Send ``view`` after the system message from now on, in place of everything
@@ -325,6 +339,7 @@ def _message(notice: Notice) -> Message:
 
 async def _append(transcript: Transcript, message: Message, appended: Appended) -> None:
     """Add a message to the conversation, kept first by the run's log if it has one."""
+    image = message.get(IMAGE)
     if transcript.log is not None:
         if appended.kind == "assistant":
             appended = replace(
@@ -334,8 +349,12 @@ async def _append(transcript: Transcript, message: Message, appended: Appended) 
                 consumed=transcript.offered,
             )
         message = await transcript.log.append(message, appended)
+    if image is not None:
+        message = {**message, IMAGE: image}
     if isinstance(transcript.messages, Collection) and isinstance(transcript.log, RunArchive):
-        transcript.messages.append_encoded({"archive_message": transcript.log.last_message})
+        transcript.messages.append_encoded(
+            {"archive_message": transcript.log.last_message, **({IMAGE: image} if image else {})}
+        )
     else:
         transcript.messages.append(message)
 
@@ -803,8 +822,9 @@ async def _run_task(
         # Images go after all of the turn's results, in framed messages of their own
         # whose token each client turns into its API's image (docs/specs/figures.md, FG-37).
         for notice, token in viewed:
-            await _append(transcript, _message(notice), Appended("notice", notice=notice))
-            transcript.messages[-1] = {**transcript.messages[-1], IMAGE: token}
+            await _append(
+                transcript, {**_message(notice), IMAGE: token}, Appended("notice", notice=notice)
+            )
         viewed.clear()
         if toolbox.revision != revision:
             # Connector tools loaded: every later model call carries their schemas.
