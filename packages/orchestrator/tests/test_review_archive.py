@@ -244,6 +244,20 @@ def test_a_shift_among_calls_of_one_tool_gives_no_place(archive: Archive) -> Non
     assert results(archive, PROJECT, SESSION, RUN, [other, record]) == [None, None]
 
 
+def test_paged_tool_places_extend_after_an_earlier_review(archive: Archive) -> None:
+    from sandbox_science.orchestrator.history.collections import Collection
+
+    tools = Collection(archive.control, (PROJECT, SESSION, RUN), "tools")
+    for number in (1, 2):
+        arguments = json.dumps({"code": str(number)})
+        answer(archive, asked((f"c{number}", arguments)))
+        result(archive, f"c{number}", str(number))
+        tools.append({"tool": "sage", "arguments": arguments})
+        places = results(archive, PROJECT, SESSION, RUN, tools)
+        assert len(places) == number
+        assert all(place is not None for place in places)
+
+
 def test_held_calls_are_the_sessions_earlier_runs_only(archive: Archive) -> None:
     """The review of #462: an earlier run's call counts only when its result is in the
     session reviewed, and is not the reviewed run's own."""

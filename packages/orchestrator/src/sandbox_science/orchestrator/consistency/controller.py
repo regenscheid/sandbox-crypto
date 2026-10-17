@@ -8,7 +8,7 @@ import contextlib
 import json
 import logging
 import re
-from collections.abc import AsyncGenerator, Collection, Sequence
+from collections.abc import AsyncGenerator, Collection, MutableSequence, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
@@ -20,6 +20,8 @@ from sandbox_science.orchestrator.documents.errors import POLICY_DENIED, Documen
 from sandbox_science.orchestrator.documents.models import Author
 from sandbox_science.orchestrator.documents.store import DocumentStore
 from sandbox_science.orchestrator.history import Archive, body
+from sandbox_science.orchestrator.history.collections import Collection as RunCollection
+from sandbox_science.orchestrator.history.snapshot import inline
 from sandbox_science.orchestrator.hooks import (
     Closing,
     Effect,
@@ -321,7 +323,11 @@ class ReviewController:
         self.delivered: set[str] = set()
         self.notice_store = FindingNotices(store)
         self.findings = Findings(store)
-        self.review_ids: list[str] = []
+        self.review_ids: MutableSequence[str] = (
+            RunCollection[str](store.documents.control, (*self.scope, archived_as), "reviews")
+            if archived_as is not None
+            else []
+        )
 
     @property
     def scope(self) -> tuple[str, str]:
@@ -585,7 +591,12 @@ class ReviewController:
         label["document_ingestion"] = ingestion
         label["artifact_ingestion"] = artifact_ingestion
         config, _ = self.store.config(self.context.project_id)
-        summary: Json = {"classifier": label, "reviews": self.review_ids, "counts": counts}
+        summary: Json = {
+            "classifier": label,
+            "reviews": inline(self.review_ids) or [],
+            "reviews_total": len(self.review_ids),
+            "counts": counts,
+        }
         if label["label"] == "conversation" or not config.enabled or self.role != "main":
             return summary
         if self.off:

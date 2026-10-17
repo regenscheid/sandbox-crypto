@@ -617,16 +617,27 @@ class RunState:
             rows = tx.sql.execute(
                 f"SELECT role, sum({cost}), count({cost}) FROM ("  # noqa: S608
                 f"{runs} "
-                # A fold's enrichment calls: in its run's record, or its fold events.
+                # Paged fold usage is authoritative even when the compact final
+                # snapshot omits its historical calls; legacy records/events remain.
+                "UNION ALL SELECT CASE WHEN EXISTS (SELECT 1 FROM archive_messages m "
+                "WHERE m.project=c.project AND m.session=c.session AND m.run=c.run "
+                "AND m.parent IS NOT NULL) THEN 'delegated' ELSE 'main' END,c.item "
+                "FROM run_collections c WHERE c.project=? AND c.run>=? "
+                "AND c.collection='fold_calls' "
                 "UNION ALL SELECT coalesce(json_extract(runs.record, '$.role'), 'main'), "
                 "c.value FROM runs, json_each(runs.record, '$.summaries.folds.calls') AS c "
-                "WHERE runs.project_id = ? AND runs.name >= ? "
+                "WHERE runs.project_id = ? AND runs.name >= ? AND NOT EXISTS "
+                "(SELECT 1 FROM run_collections h WHERE h.project=runs.project_id "
+                "AND h.session=runs.session_id AND h.run=runs.name AND h.collection='fold_calls') "
                 "UNION ALL SELECT 'main', c.value FROM run_events AS e, "
                 "json_each(e.data, '$.calls') AS c WHERE e.project_id = ? AND e.run >= ? "
                 "AND e.kind = 'fold' AND NOT EXISTS (SELECT 1 FROM runs WHERE "
                 "runs.project_id = e.project_id AND runs.session_id = e.session_id "
-                "AND runs.name = e.run)) GROUP BY role",
-                (*values, project, first, project, first),
+                "AND runs.name = e.run) AND NOT EXISTS "
+                "(SELECT 1 FROM run_collections h WHERE h.project=e.project_id "
+                "AND h.session=e.session_id AND h.run=e.run AND h.collection='fold_calls')) "
+                "GROUP BY role",
+                (*values, project, first, project, first, project, first),
             ).fetchall()
             for role, table, made in (
                 ("reviewer", "review_calls", "created"),

@@ -91,6 +91,7 @@ from .history.delegated import delegated_folder
 from .history.geometry import DEFAULT_SHARES, Shares
 from .history.limits import WorkingMemoryLimitError
 from .history.receipts import Receipts
+from .history.retention import fits
 from .history.snapshot import inline
 from .hooks import TurnHook
 from .jobs import JobTools
@@ -501,6 +502,9 @@ class Finished:
             else [item.model_dump(mode="json") for item in transcript.usage]
         )
         delivered: dict[str, object] = {}
+        summaries = (
+            memory.summaries(transcript.summaries) if memory is not None else transcript.summaries
+        )
         complete = True
         for source, ids in transcript.delivered.items():
             page = inline(ids) if memory is not None else sorted(ids)
@@ -508,7 +512,7 @@ class Finished:
                 complete = False
             else:
                 delivered[source] = sorted(page)
-        return {
+        fields: dict[str, object] = {
             "stored_history": memory.reference() if memory is not None else None,
             "run_id": self.run_id,
             "role": "main" if self.parent is None else "delegated",
@@ -533,8 +537,28 @@ class Finished:
             "tools": tools or [],
             "delivered": delivered if complete else {},
             "usage": usage or [],
-            "summaries": transcript.summaries,
+            "summaries": summaries,
         }
+        if memory is not None:
+            for name in ("task", "answer", "final_text"):
+                text = fields[name]
+                if isinstance(text, str) and len(text) > 16384:
+                    fields[name] = (
+                        text[:8192]
+                        + "\n[Preview; exact text is in stored evidence.]\n"
+                        + text[-8192:]
+                    )
+            checked = {
+                **fields,
+                "started_at": self.started_at.isoformat(),
+                "ended_at": self.ended_at.isoformat(),
+            }
+            if not fits(checked, 1024 * 1024):
+                for name in ("messages", "tools", "usage"):
+                    fields[name] = []
+                fields["delivered"] = {}
+                fields["prompt_provenance"] = None
+        return fields
 
 
 class Harness:
@@ -873,8 +897,7 @@ class Harness:
         archive = Archive(stores.projects.control, clock=self.clock)
         name = run_name(admitted.started_at, admitted.run_id)
         calls = await threaded(stores.projects.usage, project, session, self.main.alias)
-        entries = await threaded(stores.projects.runs, project, session)
-        runs = [entry.name for entry in entries if entry.role == "main"]
+        runs = await threaded(stores.projects.unarchived_runs, project, session)
         earlier = functools.partial(recorded_words, stores.projects, stores.runs, project, session)
         settings = self.settings
         top = await self._ceiling()
@@ -1540,7 +1563,7 @@ class Harness:
 def _learned(projects: ProjectStore, project: str, session: str, alias: str) -> int | None:
     """The ceiling the session's last main run on ``alias`` capped after a context
     error, as its record keeps it (``summaries.folds.capped``), if it did."""
-    for entry in reversed(projects.runs(project, session)):
+    for entry in projects.iter_runs(project, session, newest_first=True):
         if entry.role != "main":
             continue
         try:
@@ -1558,7 +1581,7 @@ def _learned(projects: ProjectStore, project: str, session: str, alias: str) -> 
 def _carried(projects: ProjectStore, project: str, session: str) -> tuple[str, str] | None:
     """The session's last main run that began folding, and the fold it kept for the next
     run's start (``summaries.folds.kept``, CM-24a), if it kept one."""
-    for entry in reversed(projects.runs(project, session)):
+    for entry in projects.iter_runs(project, session, newest_first=True):
         if entry.role != "main":
             continue
         try:
@@ -1582,7 +1605,7 @@ def _switched(
     on another alias than ``alias``, as its record keeps them (CM-31); or, when that run
     refused a switch, the alias and ceiling it refused to switch from, so that every run
     names the switch until one on the new alias goes on."""
-    for entry in reversed(projects.runs(project, session)):
+    for entry in projects.iter_runs(project, session, newest_first=True):
         if entry.role != "main":
             continue
         try:

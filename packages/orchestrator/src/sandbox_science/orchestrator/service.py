@@ -77,6 +77,7 @@ from .figurechecks import FigureChecks
 from .harness import Harness, RunRequest, admit, save
 from .history import Archive, Folder
 from .history.markers import Decided, current_decisions
+from .history.receipts import Receipts
 from .hooks import TurnHook
 from .ledger import Ledger
 from .model import GATEWAY_BUDGET
@@ -87,6 +88,7 @@ from .tools import ToolOutcome
 
 _log = logging.getLogger(__name__)
 
+MAX_ACTIVE_ROOTS: Final = 4
 POLL_SECONDS: Final = 1.0
 """The percent of the project's daily MAIN budget one run may use, by default (RS-6a)."""
 BEAT_SECONDS: Final = 10.0
@@ -267,7 +269,7 @@ class RunService:
             return False
         # No await separates this final active check from assignment. Concurrent
         # runtime admissions cannot create duplicate bookkeeping tasks here.
-        if key in self.active:
+        if key in self.active or len(self.active) >= MAX_ACTIVE_ROOTS:
             return False
         active = self.active[key] = _Active(consolidate=consolidate)
         active.task = asyncio.create_task(self._run(*key, active))
@@ -316,7 +318,16 @@ class RunService:
         stopped: dict[str, JsonValue]
         if record is not None:
             # It died after saving its record, before acknowledging it.
-            await threaded(runs.deliver, project, session, record.delivered.get(SOURCE, []), run)
+            if record.stored_history is not None:
+                receipts = Receipts(self.stores.projects.control, project, session, run)
+                after = ""
+                while page := await threaded(receipts.page, SOURCE, after=after):
+                    await threaded(runs.deliver, project, session, list(page), run)
+                    after = page[-1]
+            else:
+                await threaded(
+                    runs.deliver, project, session, record.delivered.get(SOURCE, []), run
+                )
             stopped = {
                 "stopped": record.stopped,
                 "failure": record.failure,

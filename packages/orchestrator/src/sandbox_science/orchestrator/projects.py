@@ -32,6 +32,8 @@ import json
 import re
 import secrets
 import sqlite3
+from collections import deque
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -651,6 +653,45 @@ class ProjectStore:
                 f"the run list of {project_id}/{session_id} is damaged: {str(exc)[:300]}",
             ) from exc
 
+    def iter_runs(
+        self, project_id: str, session_id: str, *, newest_first: bool = False
+    ) -> Iterator[RunEntry]:
+        """Stable keyset pages, never a list proportional to session history."""
+        self._checked(project_id, session_id)
+        after = "" if not newest_first else "\uffff"
+        query = (
+            "SELECT name,run_id,started_at,role,parent FROM runs WHERE project_id=? "
+            "AND session_id=? AND name<? ORDER BY name DESC LIMIT 100"
+            if newest_first
+            else "SELECT name,run_id,started_at,role,parent FROM runs WHERE project_id=? "
+            "AND session_id=? AND name>? ORDER BY name ASC LIMIT 100"
+        )
+        while not self._unmade():
+            with self.control.read() as tx:
+                rows = tx.sql.execute(query, (project_id, session_id, after)).fetchall()
+            if not rows:
+                return
+            for name, run, started, role, parent in rows:
+                yield RunEntry(name=name, run_id=run, started_at=started, role=role, parent=parent)
+            after = rows[-1][0]
+
+    def unarchived_runs(self, project_id: str, session_id: str) -> list[str]:
+        """Only legacy main attempts need fallback words; current history stays on disk."""
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT name FROM runs r WHERE r.project_id=? AND r.session_id=? AND r.role='main' "
+                "AND NOT EXISTS (SELECT 1 FROM archive_messages m WHERE m.project=r.project_id "
+                "AND m.session=r.session_id AND m.run=r.name AND m.parent IS NULL "
+                "AND m.kind NOT IN ('state_block','spill')) ORDER BY name LIMIT 8193",
+                (project_id, session_id),
+            ).fetchall()
+        if len(rows) > 8192:
+            raise ProjectError(
+                ErrorKind.UNSUPPORTED,
+                "legacy history exceeds the bounded fallback; use stored evidence",
+            )
+        return [name for (name,) in rows]
+
     def usage(
         self, project_id: str, session_id: str, alias: str | None, *, runs: int = 10
     ) -> list[ModelUsage]:
@@ -660,21 +701,42 @@ class ProjectStore:
         self._checked(project_id, session_id)
         if self._unmade():
             return []
+        from .tokens import CALIBRATED  # bounded calibration, not full usage accounting
+
         with self.control.read() as tx:
             rows = tx.sql.execute(
-                "SELECT json_extract(record, '$.usage') FROM runs WHERE project_id = ? "
-                "AND session_id = ? AND json_extract(record, '$.alias') IS ? "
+                "SELECT name FROM runs WHERE project_id=? AND session_id=? "
+                "AND json_extract(record,'$.alias') IS ? "
                 "ORDER BY name DESC LIMIT ?",
-                (project_id, session_id, alias, runs),
+                (project_id, session_id, alias, max(0, min(runs, 100))),
             ).fetchall()
-        found: list[ModelUsage] = []
-        for (calls,) in reversed(rows):
-            for call in cast(list[object], json.loads(calls) if calls else []):
+        found: deque[ModelUsage] = deque(maxlen=CALIBRATED)
+        for (name,) in reversed(rows):
+            record = self.run(project_id, session_id, name)
+            if record.alias != alias:
+                continue
+            if record.stored_history is not None:
+                with self.control.read() as tx:
+                    calls = tx.sql.execute(
+                        "SELECT item FROM run_collections WHERE project=? AND session=? AND run=? "
+                        "AND collection='usage' ORDER BY position DESC LIMIT ?",
+                        (project_id, session_id, name, CALIBRATED),
+                    ).fetchall()
+                values = (json.loads(text) for (text,) in reversed(calls))
+            else:
+                values = (call.model_dump(mode="json") for call in record.usage)
+            for value in values:
                 try:
-                    found.append(ModelUsage.model_validate(call))
+                    call = ModelUsage.model_validate(value)
+                    if (
+                        call.characters
+                        and call.input_tokens is not None
+                        and call.output_tokens is not None
+                    ):
+                        found.append(call)
                 except ValidationError:
                     continue
-        return found
+        return list(found)
 
     def run(
         self, project_id: str, session_id: str, name: str, *, max_bytes: int | None = RUN_READ_BYTES

@@ -57,10 +57,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, MutableSequence, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, replace
-from itertools import accumulate
+from itertools import accumulate, chain
 from typing import TYPE_CHECKING, Any, Final, cast
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ExecutionContext, KernelInfo
@@ -72,14 +72,17 @@ from sandbox_science.orchestrator.tokens import chars_per_token, estimate, view_
 from sandbox_science.orchestrator.worker_client import dump
 
 from .archive import Archive, Archived, Entry, escape
+from .collections import Collection
 from .enrich import Enriched, enrich
 from .geometry import Geometry, geometry
 from .log import PATIENCE, patiently
 from .markers import Judge
+from .memory import UsageCollection
 from .overview import FIRST_SHARE, MIN_PARTS, asked, merge, verify
 from .reads import Read, Register
 from .record import FORMAT, FoldRecord, stubbed
 from .skeleton import skeleton
+from .snapshot import inline
 from .view import Earlier, Unit, View, session_view, settle, spanned
 
 if TYPE_CHECKING:
@@ -197,9 +200,10 @@ class Folder(TurnHook):
         self.specs: Callable[[], Sequence[ToolSpec]] = tuple
         self.geometry: Geometry | None = None
         self.running: _Running | None = None
-        self.folds: list[Json] = []
-        self.rebuilds: list[Json] = []
-        self.spent: list[Json] = []
+        scope = (context.project_id, context.session_id, run)
+        self.folds: MutableSequence[Json] = Collection[Json](archive.control, scope, "folds")
+        self.rebuilds: MutableSequence[Json] = Collection[Json](archive.control, scope, "rebuilds")
+        self.spent: MutableSequence[Json] = Collection[Json](archive.control, scope, "fold_calls")
         """Each enrichment call's usage, as the run's costs count it."""
         self.weak = 0
         self.overflows = 0
@@ -245,7 +249,12 @@ class Folder(TurnHook):
         return self.weak >= BREAKER
 
     def per_token(self, run: RunView) -> float:
-        return chars_per_token([*self.calls, *run.usage])
+        return chars_per_token(
+            chain(
+                self.calls,
+                run.usage.recent() if isinstance(run.usage, UsageCollection) else run.usage,
+            )
+        )
 
     def tokens(self, run: RunView) -> int:
         """The view's tokens before the next call (CM-28)."""
@@ -350,19 +359,18 @@ class Folder(TurnHook):
     def _cap(self, transcript: Transcript) -> None:
         """After a context error: the ceiling no larger than the largest input the model
         took in this run, which it is known to take (CM-43)."""
-        taken = [usage.input_tokens for usage in transcript.usage if usage.input_tokens]
-        if self.learned is not None:  # what an earlier run learned the model takes
-            taken.append(self.learned)
-        if self.geometry is None or not taken or max(taken) >= self.geometry.ceiling:
+        largest = max((usage.input_tokens or 0 for usage in transcript.usage), default=0)
+        largest = max(largest, self.learned or 0)
+        if self.geometry is None or not largest or largest >= self.geometry.ceiling:
             return
-        capped = geometry(max(taken), self.geometry.prompt, self.chunk, self.start.shares)
+        capped = geometry(largest, self.geometry.prompt, self.chunk, self.start.shares)
         if capped.refused() is not None:  # a report too small to be the model's limit
             return
-        self.geometry, self.capped = capped, max(taken)
+        self.geometry, self.capped = capped, largest
         if self.on_cap is not None:
-            self.on_cap(max(taken))
+            self.on_cap(largest)
         _log.warning(
-            "run %s caps its ceiling at %d tokens after a context error", self.run, max(taken)
+            "run %s caps its ceiling at %d tokens after a context error", self.run, largest
         )
 
     async def model_returned(self, run: RunView) -> None:
@@ -877,9 +885,11 @@ class Folder(TurnHook):
             return None
         found: Json = {
             "geometry": self.geometry.summary(),
-            "folds": self.folds,
-            "rebuilds": self.rebuilds,
-            "calls": self.spent,
+            "folds": inline(self.folds) or [],
+            "folds_total": len(self.folds),
+            "rebuilds": inline(self.rebuilds) or [],
+            "calls": inline(self.spent) or [],
+            "calls_total": len(self.spent),
             "weak_folds": self.weak,
         }
         if self.capped is not None:

@@ -13,11 +13,12 @@ so that an answer telling what an earlier run did is matched against them.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import MutableSequence, Sequence
 from typing import Any, cast
 
 from sandbox_science.orchestrator.control import ControlError
-from sandbox_science.orchestrator.history.archive import HEADER, PAGE, Archive, Archived
+from sandbox_science.orchestrator.history.archive import HEADER, Archive, Archived
+from sandbox_science.orchestrator.history.collections import Collection
 from sandbox_science.orchestrator.model import Message
 from sandbox_science.orchestrator.projects import run_id_of
 
@@ -27,17 +28,6 @@ Json = dict[str, Any]
 def place(row: Archived) -> Json:
     """A message's place in the archive, as a locator names it."""
     return {"id": row.message_id, "position": row.position}
-
-
-def _rows(archive: Archive, project: str, session: str, run: str, after: int) -> list[Archived]:
-    """The archived messages of the run named ``run`` after position ``after``."""
-    found: list[Archived] = []
-    while True:
-        page = archive.messages(project, session, start=after + 1, run=run)
-        found += page
-        if len(page) < PAGE:
-            return found
-        after = page[-1].position
 
 
 def _header(message: Message) -> str | None:
@@ -62,18 +52,27 @@ def places(
     archived answer is the message (``_same``): from the first that is not, no answer has
     a place, so that a shift gives none rather than a wrong one. A message with no header
     has none."""
-    rows = _rows(archive, project, session, run, after)
-    named = {row.message_id: row for row in rows}
-    answers = [row for row in rows if row.entry.kind == "assistant"]
+    answers = archive.scan(project, session, run=run, start=after + 1, kinds=("assistant",))
+    aligned = True
     found: dict[int, Json] = {}
     for index in range(start, len(messages)):
         message = messages[index]
+        row: Archived | None = None
         if message.get("role") == "assistant":
-            row = answers.pop(0) if answers else None
+            row = next(answers, None) if aligned else None
             if row is not None and not _same(row, message):
-                answers, row = [], None
-        else:
-            row = named.get(_header(message) or "")
+                aligned, row = False, None
+        elif identifier := _header(message):
+            try:
+                candidate = archive.message(project, identifier)
+                if (
+                    candidate.session == session
+                    and candidate.run == run
+                    and candidate.position > after
+                ):
+                    row = candidate
+            except ControlError:
+                pass
         if row is not None:
             found[index] = place(row)
     return found
@@ -113,25 +112,39 @@ def held_calls(
 
 def results(
     archive: Archive, project: str, session: str, run: str, tools: Sequence[Json | None]
-) -> list[Json | None]:
+) -> Sequence[Json | None]:
     """The place of the tool result of each of the run named ``run``'s tool records
     ``tools``: each call's result is archived in the order its records are kept, and the
     two are paired only while they agree on the tool and its arguments, as the answer
     that made the call archived them, so that a shift among calls of one tool is caught."""
-    rows = _rows(archive, project, session, run, 0)
-    asked = {
-        str(call.get("id")): cast(Json, call.get("function") or {}).get("arguments")
-        for row in rows
-        for call in row.entry.tool_calls
-    }
-    returned = [row for row in rows if row.entry.kind == "tool_result"]
-    found: list[Json | None] = [None] * len(tools)
+    asked: dict[str, object] = {}
+    returned = archive.scan(project, session, run=run, kinds=("tool_result",))
+    # Match one assistant/tool group at a time, rather than retaining all payloads.
+    answers = archive.scan(project, session, run=run, kinds=("assistant",))
+    answer = next(answers, None)
+    found: MutableSequence[Json | None] = (
+        Collection[Json | None](archive.control, (project, session, run), "review_tool_places")
+        if isinstance(tools, Collection)
+        else []
+    )
+    if len(found) == len(tools):
+        return found
+    cached = len(found)
     for index, (record, row) in enumerate(zip(tools, returned, strict=False)):
+        while answer is not None and answer.position < row.position:
+            asked = {
+                str(call.get("id")): cast(Json, call.get("function") or {}).get("arguments")
+                for call in answer.entry.tool_calls
+            }
+            answer = next(answers, None)
         if (
             record is None
             or row.entry.source != str(record.get("tool", ""))[:128]
             or asked.get(str(row.entry.call_id)) != record.get("arguments")
         ):
             break
-        found[index] = place(row)
+        if index >= cached:
+            found.append(place(row))
+    for _ in range(len(found), len(tools)):
+        found.append(None)
     return found
