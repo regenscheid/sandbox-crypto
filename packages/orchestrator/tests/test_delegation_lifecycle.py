@@ -577,7 +577,7 @@ async def test_parent_cannot_finish_when_child_outcome_was_not_saved(
             text, _ = await made.call("delegate", BRIEF)
             closing = asyncio.create_task(made.closing(Transcript(messages=[]), "Done."))
             for count, seconds in enumerate((0.5, 1.0), start=1):
-                await eventually(lambda: len(writes) == count and clock.sleepers == 1)
+                await eventually(lambda count=count: len(writes) == count and clock.sleepers == 1)
                 clock.advance(seconds)
             result = await closing
             assert (result.action, result.stopped) == ("stop", "child_outcome_unavailable")
