@@ -255,6 +255,7 @@ class DelegationRecords:
         *,
         cap: int | None = None,
         blueprint: Blueprint | None = None,
+        operation: str | None = None,
     ) -> None:
         """Write a delegation as its parent starts it. The bounds are checked in the same
         statement that writes it, so that two parents starting at once cannot pass them
@@ -302,6 +303,31 @@ class DelegationRecords:
                     reserve_child(
                         db, project, session, delegation.run, delegation.parent, blueprint
                     )
+                if operation is not None:
+                    try:
+                        db.execute(
+                            "INSERT INTO research_observations "
+                            "(project,session,work,kind,identity,observed,detail) "
+                            "SELECT project,session,work,'delegation_operation',?,?,? "
+                            "FROM research_attempts WHERE project=? AND session=? AND run=?",
+                            (
+                                operation,
+                                self.clock.now().timestamp(),
+                                _json(
+                                    {
+                                        "delegation_id": delegation.delegation_id,
+                                        "run": delegation.run,
+                                    }
+                                ),
+                                project,
+                                session,
+                                delegation.parent,
+                            ),
+                        )
+                    except sqlite3.IntegrityError:
+                        raise ControlError(
+                            CONFLICT, "this delegation operation is already admitted"
+                        ) from None
                 return
             busy = db.execute(_ON_TRACK, (project, session, track)).fetchone()
         if busy is not None:

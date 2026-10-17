@@ -293,10 +293,12 @@ class Delegations(TurnHook):
 
     # --- The tools ------------------------------------------------------------------
 
-    async def call(self, name: str, args: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    async def call(
+        self, name: str, args: dict[str, Any], *, operation: str | None = None
+    ) -> tuple[str, dict[str, Any]]:
         match name:
             case "delegate":
-                return await self._delegate(brief_of(args))
+                return await self._delegate(brief_of(args), operation=operation)
             case "wait_delegations":
                 return await self._wait(WaitRequest.model_validate(args))
             case "delegation_status":
@@ -304,7 +306,9 @@ class Delegations(TurnHook):
             case _:
                 return await self._cancel_one(Named.model_validate(args).delegation_id)
 
-    async def _delegate(self, brief: CheckBrief | TaskBrief) -> tuple[str, dict[str, Any]]:
+    async def _delegate(
+        self, brief: CheckBrief | TaskBrief, *, operation: str | None = None
+    ) -> tuple[str, dict[str, Any]]:
         if self.depth > 0 and isinstance(brief, CheckBrief):
             raise WorkerAPIError(
                 ErrorKind.POLICY_DENIED,
@@ -366,6 +370,7 @@ class Delegations(TurnHook):
                 delegation,
                 cap=self.limits.cap,
                 blueprint=self.blueprint(child) if self.blueprint is not None else None,
+                operation=operation,
             )
         except ControlError as error:
             raise WorkerAPIError(ErrorKind(error.kind), error.message) from None

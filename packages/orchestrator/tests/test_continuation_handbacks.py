@@ -5,7 +5,8 @@ from datetime import UTC, datetime
 
 import pytest
 
-from sandbox_science.orchestrator.continuity.records import WorkRecords
+from sandbox_science.orchestrator.continuity.records import WorkRecords, authority
+from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.delegation.hook import Delegations
 from sandbox_science.orchestrator.delegation.records import Delegation, DelegationRecords, Ending
 from sandbox_science.orchestrator.documents import DocumentStore
@@ -17,9 +18,10 @@ from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.runstate import RunState
 
 from .test_model_usage_journal import START, USAGE
+from .test_recovery_dispatch import blueprint
 from .test_tool_journal import CONTEXT, RUN
 from .test_tool_journal import projects as projects
-from .test_work_ownership import CONTINUATION, record
+from .test_work_ownership import CHILD, CONTINUATION, GRANDCHILD, record
 
 OTHER = "20261018T030000000000Z-other"
 
@@ -108,3 +110,51 @@ async def test_continuation_hook_offers_only_prior_attempt_children(projects: Pr
     notices = await hook.notices("start", Transcript(messages=[]))
     assert len(notices) == 1
     assert notices[0].ids == (own.delegation_id,)
+
+
+def test_child_admission_operation_is_atomic_and_cannot_admit_twice(projects: ProjectStore) -> None:
+    import json
+
+    works = WorkRecords(projects.control)
+    owner = works.admit("p", "s", RUN)
+    records = DelegationRecords(projects.control)
+    child = Delegation(
+        delegation_id="dlg-" + "a" * 24,
+        parent=RUN,
+        run=CHILD,
+        kind="check",
+        brief={"task": "Compute"},
+        started_at=START,
+    )
+    with projects.control.write() as tx:
+        tx.sql.execute(
+            "CREATE TRIGGER refuse_child_observation BEFORE INSERT "
+            "ON research_observations BEGIN SELECT RAISE(ABORT,'fixture'); END"
+        )
+    with authority(owner), pytest.raises(ControlError):
+        records.start("p", "s", child, blueprint=blueprint(), operation="original-op")
+    with pytest.raises(ControlError):
+        records.get("p", "s", child.delegation_id)
+    with pytest.raises(ControlError):
+        works.get("p", "s", CHILD)
+    with projects.control.write() as tx:
+        tx.sql.execute("DROP TRIGGER refuse_child_observation")
+    with authority(owner):
+        records.start("p", "s", child, blueprint=blueprint(), operation="original-op")
+    projects.control.close()
+    with projects.control.read() as tx:
+        (detail,) = tx.sql.execute(
+            "SELECT detail FROM research_observations WHERE project='p' "
+            "AND session='s' AND work=? AND kind='delegation_operation' "
+            "AND identity='original-op'",
+            (RUN,),
+        ).fetchone()
+    assert json.loads(detail) == {"delegation_id": child.delegation_id, "run": CHILD}
+    assert works.get("p", "s", CHILD).state == "waiting"
+    duplicate = child.model_copy(update={"delegation_id": "dlg-" + "b" * 24, "run": GRANDCHILD})
+    with authority(owner), pytest.raises(ControlError, match="already admitted"):
+        records.start("p", "s", duplicate, blueprint=blueprint(), operation="original-op")
+    with pytest.raises(ControlError):
+        records.get("p", "s", duplicate.delegation_id)
+    with pytest.raises(ControlError):
+        works.get("p", "s", GRANDCHILD)

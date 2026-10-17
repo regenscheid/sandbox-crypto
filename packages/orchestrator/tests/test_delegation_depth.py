@@ -22,6 +22,7 @@ from typing import Any, cast
 import pytest
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext
+from sandbox_science.orchestrator.continuity.records import WorkRecords
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.delegation import hook
 from sandbox_science.orchestrator.delegation.hook import (
@@ -566,6 +567,7 @@ async def test_a_leads_turn_limit_keeps_its_child_and_hands_the_unconsumed_outco
         delegating.run(
             "root",
             [Reply(calls=[LEAD]), wait(), Reply("Done.")],
+            status=3,
             routed={
                 "Lead the work.": [
                     Reply(calls=[PART]),
@@ -585,6 +587,16 @@ async def test_a_leads_turn_limit_keeps_its_child_and_hands_the_unconsumed_outco
     (child,) = children(delegating, root)
     (grandchild,) = children(delegating, child)
     assert (child.stopped, grandchild.stopped) == ("turn_limit", "answered")
+    assert root.stopped == "unfinished_children"
+    with contextlib.closing(ProjectStore(delegating.state)) as projects:
+        works = WorkRecords(projects.control)
+        assert (
+            works.get(PROJECT, SESSION, run_name(child.started_at, child.run_id)).state == "paused"
+        )
+        assert (
+            works.get(PROJECT, SESSION, run_name(grandchild.started_at, grandchild.run_id)).state
+            == "completed"
+        )
     assert grandchild.ended_at <= child.ended_at
     (part,) = started(child)
     assert (delegation(delegating, part).ended, delegation(delegating, part).acknowledged) == (

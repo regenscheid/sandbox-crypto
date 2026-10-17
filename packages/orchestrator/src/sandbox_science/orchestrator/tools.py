@@ -686,7 +686,7 @@ class Toolbox:
         if delegations is not None:
             entries += _group(
                 delegations.specs,
-                lambda name, call: delegations.call(name, call.args),
+                lambda name, call: delegations.call(name, call.args, operation=call.operation),
                 delegation_specs.EFFECTS,
             )
         self.skills = skills
