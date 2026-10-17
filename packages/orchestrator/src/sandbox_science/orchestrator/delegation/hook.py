@@ -889,6 +889,7 @@ class Delegations(TurnHook):
         if stopped not in {
             "turn_limit",
             "context_limit",
+            "memory_limit",
             "run_budget",
             "budget",
             "gateway_budget",

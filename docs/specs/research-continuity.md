@@ -312,7 +312,7 @@ with running children waits on those children in the existing session lease.
 It makes no model calls while waiting. Child completion supplies durable outcomes
 for the parent's next call; new user input wakes the parent early, and Stop cancels
 the wait through the existing subtree cancellation path. Waiting start/end events
-make this visible in chat. At a turn/context/budget limit, a finalization hook keeps
+make this visible in chat. At a turn/context/budget or active-memory limit, a finalization hook keeps
 the parent's existing session and environment leases until its children finish and
 save their outcomes. Children receive their configured role turn allowance, independent
 of the parent's remaining calls; token, spending and concurrency limits remain in force. No additional parent model calls occur. New messages remain
@@ -321,6 +321,11 @@ its limit classification; unconsumed child outcomes are not acknowledged by wait
 This covers live ownership through a limit, without implementing durable paused-work
 identity, continuation attempts, recovery after process loss or redefining a limited
 child as completed work.
+An active-memory exception during the loop first records `memory_limit`, then runs
+the same finalization hooks before releasing leases. It must not bypass child
+draining and turn a bounded parent pause into cancellation of a paid child call.
+Control protocol 2 carries a typed `memory_limit` failure from host folding and
+history readers back to the confined loop, which follows the same pause path.
 If a child process ends but its durable outcome could not be saved, closing stops
 with `child_outcome_unavailable`; an empty live-task set is not completion evidence.
 

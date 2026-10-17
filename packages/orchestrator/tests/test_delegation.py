@@ -31,7 +31,9 @@ from sandbox_science.orchestrator.delegation.records import (
 )
 from sandbox_science.orchestrator.documents import USER
 from sandbox_science.orchestrator.history import Archive, body, geometry, session_view
+from sandbox_science.orchestrator.history.limits import WorkingMemoryLimitError
 from sandbox_science.orchestrator.ledger import Ledger
+from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.memory import ProjectMemory
 from sandbox_science.orchestrator.notices import (
     DELEGATIONS,
@@ -400,6 +402,69 @@ async def test_a_limited_parent_keeps_its_check_and_the_next_run_gets_the_outcom
     assert delegation_id in str(handbacks[0]["content"])
     assert later.delivered["delegations"] == [delegation_id]
     assert delegation(delegating, delegation_id).acknowledged == name(later)
+
+
+async def test_memory_limited_parent_drains_its_paid_child_before_ending(
+    delegating: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    free, child_entered = asyncio.Event(), asyncio.Event()
+    original = Transcript.sent.fget
+    assert original is not None
+    tripped = False
+
+    def guarded(run: Transcript):
+        nonlocal tripped
+        if not tripped and any(tool.get("tool") == "delegate" for tool in run.tool_records):
+            tripped = True
+            raise WorkingMemoryLimitError("synthetic parent working-state ceiling")
+        return original(run)
+
+    monkeypatch.setattr(Transcript, "sent", property(guarded))
+
+    async def blocked() -> None:
+        child_entered.set()
+        await free.wait()
+
+    task = asyncio.create_task(
+        delegating.run(
+            "root",
+            [Reply(calls=[CHECK])],
+            delegated=[
+                Reply(calls=[call("ledger_read", entry="C-1")], before=blocked),
+                Reply(REPORT),
+            ],
+            max_turns=5,
+            status=3,
+        )
+    )
+    try:
+        await awaiting_children(delegating)
+        await asyncio.wait_for(child_entered.wait(), 5)
+        assert tripped
+        assert len(delegating.gateway.main) == 1
+        assert not task.done()
+        assert kept(delegating) == {}
+    finally:
+        free.set()
+    root = await task
+    assert root.stopped == "memory_limit"
+    assert root.final_text is None
+    assert root.failure is None
+    (child,) = children(delegating, root)
+    assert child.stopped == "answered"
+    assert child.failure is None
+    assert len(delegating.gateway.children) == 2
+    assert child.ended_at <= root.ended_at
+    (delegation_id,) = started(root)
+    assert delegation(delegating, delegation_id).ended == "returned"
+    store = ProjectStore(delegating.state)
+    try:
+        with store.control.read() as tx:
+            assert tx.sql.execute(
+                "SELECT count(*) FROM research_model_calls WHERE usage IS NULL"
+            ).fetchone() == (0,)
+    finally:
+        store.close()
 
 
 async def test_a_check_is_refused_the_tools_its_role_withholds(delegating: Harness) -> None:

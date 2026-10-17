@@ -985,25 +985,26 @@ async def run_task(
                 if on_started is not None:
                     await on_started(transcript)
                 try:
-                    await _run_task(
-                        model,
-                        toolbox,
-                        transcript,
-                        hooks,
-                        run_id=run_id,
-                        task=task,
-                        on_tool=on_tool,
-                    )
+                    try:
+                        await _run_task(
+                            model,
+                            toolbox,
+                            transcript,
+                            hooks,
+                            run_id=run_id,
+                            task=task,
+                            on_tool=on_tool,
+                        )
+                    except WorkingMemoryLimitError as error:
+                        transcript.stopped = "memory_limit"
+                        transcript.final_text = transcript.answer = None
+                        transcript.summaries["memory"] = {"blocked": str(error)}
                     for hook in hooks:
                         if (
                             reason := await hook.finishing(transcript, transcript.stopped)
                         ) is not None:
                             transcript.stopped = reason
                             transcript.final_text = transcript.answer = None
-                except WorkingMemoryLimitError as error:
-                    transcript.stopped = "memory_limit"
-                    transcript.final_text = transcript.answer = None
-                    transcript.summaries["memory"] = {"blocked": str(error)}
                 except Exception:
                     # Catch inside the leases: retain only successfully delivered claims
                     # until the caller durably saves this partial record, then ACKs them.

@@ -3,7 +3,11 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from pydantic import JsonValue
@@ -17,8 +21,12 @@ from sandbox_science.orchestrator.confinement.models import (
 from sandbox_science.orchestrator.confinement.runtime_loop import RuntimeLoops
 from sandbox_science.orchestrator.confinement.transport import Capability, Channel, TransportError
 from sandbox_science.orchestrator.harness import Role
-from sandbox_science.orchestrator.model import ModelGateway
+from sandbox_science.orchestrator.history.limits import WorkingMemoryLimitError
+from sandbox_science.orchestrator.hooks import RunView, TurnHook
+from sandbox_science.orchestrator.loop import Transcript
+from sandbox_science.orchestrator.model import ChatModel, ModelGateway
 from sandbox_science.orchestrator.projects import ProjectStore
+from sandbox_science.orchestrator.tools import Toolbox
 
 from .loop_harness import API_KEY, PROJECT, SESSION, Harness, Reply, call
 from .loop_harness import gateway as gateway
@@ -29,8 +37,9 @@ from .test_run_service import records, serving
 pytestmark = pytest.mark.slow
 
 
+@pytest.mark.parametrize("memory_pause", [False, True])
 async def test_vm_loop_commits_host_state_without_a_local_harness_fallback(
-    harness: Harness, tmp_path: Path
+    harness: Harness, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, memory_pause: bool
 ) -> None:
     async def pending_before_provider() -> None:
         store = ProjectStore(harness.state)
@@ -52,6 +61,43 @@ async def test_vm_loop_commits_host_state_without_a_local_harness_fallback(
         serve=False,
     ) as service:
         gateway_models = ModelGateway(harness.gateway.url, API_KEY)
+        finishing, release = asyncio.Event(), asyncio.Event()
+        order: list[str] = []
+        guarded_runs: set[int] = set()
+        original_sent = Transcript.sent.fget
+        assert original_sent is not None
+
+        def guarded_sent(run: Transcript):
+            if id(run) in guarded_runs:
+                guarded_runs.remove(id(run))
+                raise WorkingMemoryLimitError("synthetic host working-state ceiling")
+            return original_sent(run)
+
+        class MemoryGuard(TurnHook):
+            name = "memory_pause_fixture"
+
+            @asynccontextmanager
+            async def lease(self) -> AsyncIterator[None]:
+                try:
+                    yield
+                finally:
+                    order.append("lease_exit")
+
+            async def observe_tool(self, run: RunView, record: dict[str, Any]) -> None:
+                transcript = cast(Transcript, run)
+                guarded_runs.add(id(transcript))
+                _ = transcript.sent  # actual host property failure crosses the typed channel
+
+            async def finishing(self, run: RunView, stopped: str) -> str | None:
+                assert stopped == "memory_limit"
+                order.append("finishing")
+                finishing.set()
+                await release.wait()
+                order.append("drained")
+                return None
+
+        if memory_pause:
+            monkeypatch.setattr(Transcript, "sent", property(guarded_sent))
 
         forged = False
 
@@ -69,7 +115,11 @@ async def test_vm_loop_commits_host_state_without_a_local_harness_fallback(
                     "outcome": {"text": "FORGED", "record": {"stdout": "FORGED"}},
                 }
                 forged = True
-            return await host.capability(kind, value)
+            try:
+                return await host.capability(kind, value)
+            except WorkingMemoryLimitError:
+                order.append("host_memory_limit")
+                raise
 
         async def vm_handle(kind: Capability, value: JsonValue) -> JsonValue:
             if kind is Capability.RUN:
@@ -90,18 +140,37 @@ async def test_vm_loop_commits_host_state_without_a_local_harness_fallback(
         runtime.scratch.mkdir()
         service.harness.main = Role(CallbackModel(host_channel, "main"), "main")
         service.harness.gateway = CallbackGateway(host_channel)
-        service.harness.loop_runner = host.run
+
+        async def runner(
+            model: ChatModel, toolbox: Toolbox, task: str | None, **options: Any
+        ) -> Transcript:
+            if memory_pause:
+                options["hooks"] = (*options["hooks"], MemoryGuard())
+            return await host.run(model, toolbox, task, **options)
+
+        service.harness.loop_runner = runner
         service.harness.prepare_attempt = lambda admitted: host.model_scope()
         try:
             service.runs.post(PROJECT, SESSION, "msg-runtime", "Print confined", author="user")
             assert await service.start_selected(PROJECT, SESSION)
             task = service.active[PROJECT, SESSION].task
             assert task is not None
+            if memory_pause:
+                await asyncio.wait_for(finishing.wait(), 5)
+                assert order == ["host_memory_limit", "finishing"]
+                assert not task.done()
+                assert service.runs.lease(PROJECT, SESSION) is not None
+                assert runtime.active
+                assert host.attempts
+                release.set()
             await task
             (record,) = records(harness)
-            assert record.final_text == "Done."
+            assert record.final_text == (None if memory_pause else "Done.")
             assert record.failure is None
-            assert record.stopped == "answered"
+            assert record.stopped == ("memory_limit" if memory_pause else "answered")
+            if memory_pause:
+                assert order == ["host_memory_limit", "finishing", "drained", "lease_exit"]
+                assert "synthetic host working-state ceiling" in str(record.summaries["memory"])
             assert forged
             assert "FORGED" not in str(record.tools)
             execution = record.tools[0]["execution"]
@@ -123,13 +192,11 @@ async def test_vm_loop_commits_host_state_without_a_local_harness_fallback(
                     ).fetchone()[0]
                     == 0
                 )
-                assert (
-                    tx.sql.execute(
-                        "SELECT count(*) FROM research_model_calls WHERE kind='main'"
-                    ).fetchone()[0]
-                    == 2
-                )
+                assert tx.sql.execute(
+                    "SELECT count(*) FROM research_model_calls WHERE kind='main'"
+                ).fetchone()[0] == (1 if memory_pause else 2)
         finally:
+            release.set()
             await runtime.close()
             await host_channel.close()
             await vm_channel.close()

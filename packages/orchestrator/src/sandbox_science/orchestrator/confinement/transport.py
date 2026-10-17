@@ -19,8 +19,9 @@ from aiohttp import WSMsgType, web
 from pydantic import Field, JsonValue, TypeAdapter
 
 from sandbox_science.contracts.model import Contract, Counter
+from sandbox_science.orchestrator.history.limits import WorkingMemoryLimitError
 
-CONTROL_PROTOCOL: Final = 1
+CONTROL_PROTOCOL: Final = 2
 CONTROL_HEADER: Final = "X-Sandbox-Control-Protocol"
 MAX_FRAME_BYTES: Final = 24 * 1024 * 1024
 MAX_PENDING: Final = 128
@@ -76,7 +77,10 @@ class Reply(Contract):
     kind: Literal["reply"] = "reply"
     id: Counter
     payload: JsonValue = None
-    error: Literal["invalid_request", "unavailable", "conflict", "denied", "internal"] | None = None
+    error: (
+        Literal["invalid_request", "unavailable", "conflict", "denied", "internal", "memory_limit"]
+        | None
+    ) = None
     message: str = Field(default="", max_length=512)
 
 
@@ -154,6 +158,8 @@ class Channel:
                 return  # a late reply to a cancelled/timed-out call
             if frame.error is None:
                 pending.set_result(frame.payload)
+            elif frame.error == "memory_limit":
+                pending.set_exception(WorkingMemoryLimitError(frame.message))
             else:
                 pending.set_exception(TransportError(frame.error, frame.message))
             return
@@ -177,6 +183,8 @@ class Channel:
         try:
             result = await self._handler(frame.capability, frame.payload)
             reply = Reply(id=frame.id, payload=result)
+        except WorkingMemoryLimitError as error:
+            reply = Reply(id=frame.id, error="memory_limit", message=str(error)[:512])
         except TransportError as error:
             kind = (
                 error.kind
