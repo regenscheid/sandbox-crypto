@@ -20,7 +20,7 @@ import json
 import logging
 import sqlite3
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from contextlib import AsyncExitStack
+from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -581,6 +581,7 @@ class Harness:
         vectors: SkillVectors | None = None,
         skills_metadata: str | None = None,
         loop_runner: Callable[..., Awaitable[Transcript]] = run_task,
+        prepare_attempt: Callable[[Admitted], AbstractAsyncContextManager[None]] | None = None,
     ) -> None:
         """``checker`` is the configured math checker; without it, math checks report
         the renderer unavailable. A reviewer and a checker need stores. ``delegated`` is
@@ -595,6 +596,7 @@ class Harness:
             raise ValueError("a reviewer and a math checker need the state directory's stores")
         self.client, self.main, self.stores = client, main, stores
         self.loop_runner = loop_runner
+        self.prepare_attempt = prepare_attempt
         self.vectors = vectors
         self.derived = None if skills_metadata is None else (skills_metadata, PASS_VERSION)
         self.watcher, self.reviewer, self.checker = watcher, reviewer, checker
@@ -737,6 +739,8 @@ class Harness:
                                 clock=self.clock,
                             )
                         )
+                    if self.prepare_attempt is not None:
+                        await stack.enter_async_context(self.prepare_attempt(admitted))
                     memory = await self.memory(admitted)
                     folder = await self._folder(admitted)
                     view = folder.view if folder is not None else None

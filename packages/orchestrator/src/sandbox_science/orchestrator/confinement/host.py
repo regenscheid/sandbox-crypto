@@ -5,13 +5,19 @@ from __future__ import annotations
 
 import asyncio
 import secrets
-from collections.abc import Awaitable, Callable, Sequence
-from contextlib import AbstractAsyncContextManager
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any, cast
 
 from pydantic import JsonValue, TypeAdapter
 
 from sandbox_science.orchestrator.aio import owned
+from sandbox_science.orchestrator.continuity.records import (
+    CURRENT,
+    Ownership,
+    authority,
+    check_owner,
+)
 from sandbox_science.orchestrator.history.log import RunArchive
 from sandbox_science.orchestrator.hooks import Appended, Closing, MessageLog, Notice, TurnHook
 from sandbox_science.orchestrator.loop import Folds, Transcript
@@ -25,6 +31,7 @@ from .wire import (
     AppendReply,
     Attempt,
     CancelRequest,
+    Consumed,
     FoldReply,
     FoldRequest,
     HookGiven,
@@ -50,6 +57,7 @@ class Prepared:
     def __init__(
         self,
         given: RunGiven,
+        owner: Ownership,
         toolbox: Toolbox,
         hooks: Sequence[TurnHook],
         log: MessageLog,
@@ -57,6 +65,7 @@ class Prepared:
         on_tool: Callable[[str, str, ToolOutcome], Awaitable[None]] | None,
     ) -> None:
         self.given, self.toolbox, self.hooks = given, toolbox, tuple(hooks)
+        self.owner = owner
         self.log, self.folds, self.on_tool = log, folds, on_tool
         self.leases: dict[int, AbstractAsyncContextManager[None]] = {}
         self.shadow: Transcript | None = None
@@ -103,7 +112,15 @@ class Prepared:
         return run
 
     async def call(self, kind: Capability, value: JsonValue) -> JsonValue:
-        """Serialize mutations of one attempt; reverse model callbacks use another channel call."""
+        """Restore captured epoch authority; a caller supplies neither scope nor epoch."""
+        with authority(self.owner):
+            if not isinstance(self.log, RunArchive):
+                raise TransportError("internal", "missing canonical attempt archive")
+            with self.log.archive.control.read() as tx:
+                check_owner(tx.sql, self.owner)
+            return await self._call(kind, value)
+
+    async def _call(self, kind: Capability, value: JsonValue) -> JsonValue:
         async with self._lock:
             if kind is Capability.LOG_INIT:
                 self.sync(typed(FoldRequest, value).state)
@@ -164,6 +181,8 @@ class Prepared:
                     raise TransportError("invalid_request", "gate requires an effect")
                 refusal = await hook.gate(request.effect)
                 return json_value(TypeAdapter(type(refusal)).dump_python(refusal, mode="json"))
+            if kind is Capability.CONSUMPTION:
+                return payload(Consumed(ids=tuple(await hook.consumption())))
             if request.state is None:
                 raise TransportError("invalid_request", "hook requires committed loop state")
             run = self.sync(request.state)
@@ -208,6 +227,9 @@ class Prepared:
             call=request.call,
             outcome=request.outcome,
             operation_id=request.operation_id,
+            consumed={key: set(ids) for key, ids in request.consumed.items()}
+            if request.consumed is not None
+            else None,
             usage=request.usage,
             usage_index=request.usage_index,
         )
@@ -258,6 +280,31 @@ class HostLoops:
     def __init__(self, channel: Channel, projects: frozenset[str]) -> None:
         self.channel, self.projects = channel, projects
         self.attempts: dict[str, Prepared] = {}
+        self.owners: dict[str, Ownership] = {}
+        self.tokens: dict[tuple[str, str, str], str] = {}
+
+    @asynccontextmanager
+    async def model_scope(self) -> AsyncGenerator[None]:
+        owner = CURRENT.get()
+        if owner is None or owner.project not in self.projects:
+            raise TransportError("denied", "no durable attempt ownership in this scope")
+        key = owner.project, owner.session, owner.run
+        if key in self.tokens or len(self.tokens) >= 128:
+            raise TransportError("conflict", "attempt model capability is already bound or full")
+        identity = "cap-" + secrets.token_hex(24)
+        self.tokens[key], self.owners[identity] = identity, owner
+        try:
+            yield
+        finally:
+            self.tokens.pop(key, None)
+            self.owners.pop(identity, None)
+
+    def model_capability(self) -> str:
+        owner = CURRENT.get()
+        key = (owner.project, owner.session, owner.run) if owner is not None else None
+        if key is None or key not in self.tokens:
+            raise TransportError("denied", "attempt model capability is absent or revoked")
+        return self.tokens[key]
 
     async def capability(self, kind: Capability, value: JsonValue) -> JsonValue:
         # Only the connection's random opaque IDs select an existing authority object.
@@ -280,7 +327,7 @@ class HostLoops:
         log = cast(MessageLog | None, options.get("log"))
         if log is None:
             raise TransportError("denied", "confined attempts require durable archive logging")
-        identity = "cap-" + secrets.token_hex(24)
+        identity = self.model_capability()
         hooks = tuple(cast(Sequence[TurnHook], options.get("hooks") or toolbox.turn_hooks()))
         given = RunGiven(
             attempt=identity,
@@ -288,7 +335,7 @@ class HostLoops:
             task=task,
             history=tuple(WireMessage.of(message) for message in options.get("history", ())),
             max_turns=options["max_turns"],
-            max_input_chars=options["max_input_chars"],
+            max_input_chars=min(options["max_input_chars"], 8 * 1024 * 1024),
             system=options["system"],
             research_template=options.get("research_template"),
             role=options["role"],
@@ -301,9 +348,14 @@ class HostLoops:
             logged=True,
             folding=options.get("folds") is not None,
             model=model.model,
+            cache_key=model.cache_identity,
+            max_output=model.max_output,
         )
+        owner = CURRENT.get()
+        if owner is None:
+            raise TransportError("denied", "confined attempt has no durable ownership")
         prepared = Prepared(
-            given, toolbox, hooks, log, options.get("folds"), options.get("on_tool")
+            given, owner, toolbox, hooks, log, options.get("folds"), options.get("on_tool")
         )
         self.attempts[identity] = prepared
         try:

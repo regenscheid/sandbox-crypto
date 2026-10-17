@@ -34,6 +34,7 @@ from .transport import Capability, Channel, TransportError
 from .wire import (
     AppendReply,
     CancelRequest,
+    Consumed,
     FoldReply,
     FoldRequest,
     HookGiven,
@@ -116,6 +117,9 @@ class RemoteHook(TurnHook):
 
     async def last_call(self, run: RunView) -> str | None:
         return TypeAdapter(str | None).validate_python(await self.ask(Capability.LAST_CALL, run))
+
+    async def consumption(self) -> Sequence[str]:
+        return typed(Consumed, await self.ask(Capability.CONSUMPTION)).ids
 
     async def model_returned(self, run: RunView) -> None:
         await self.ask(Capability.MODEL_RETURNED, run)
@@ -223,6 +227,9 @@ class RemoteLog(MessageLog):
                         outcome=appended.outcome,
                         call=appended.call,
                         operation_id=appended.operation_id,
+                        consumed={key: tuple(ids) for key, ids in appended.consumed.items()}
+                        if appended.consumed is not None
+                        else None,
                         usage=appended.usage,
                         usage_index=appended.usage_index,
                     )
@@ -287,9 +294,12 @@ class RuntimeLoops:
             (RemotePlans if hook.planning else RemoteHook)(self.channel, given.attempt, slot, hook)
             for slot, hook in enumerate(given.hooks)
         )
+        model = self.gateway.model(given.model).limited(max_output=given.max_output)
+        if given.cache_key is not None:
+            model = model.cached_as(given.cache_key)
         task = asyncio.create_task(
             run_task(
-                self.gateway.model(given.model),
+                model,
                 RemoteToolbox(self.channel, given),
                 given.task,
                 run_id=given.run_id,

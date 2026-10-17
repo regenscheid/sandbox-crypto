@@ -62,6 +62,7 @@ async def test_vm_loop_commits_host_state_without_a_local_harness_fallback(
         service.harness.main = Role(CallbackModel(host_channel, "main"), "main")
         service.harness.gateway = CallbackGateway(host_channel)
         service.harness.loop_runner = host.run
+        service.harness.prepare_attempt = lambda admitted: host.model_scope()
         try:
             service.runs.post(PROJECT, SESSION, "msg-runtime", "Print confined", author="user")
             assert await service.start_selected(PROJECT, SESSION)

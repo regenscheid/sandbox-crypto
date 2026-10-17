@@ -32,11 +32,23 @@ class CallbackModel(GatewayModel):
     session. An unavailable runtime fails the call, including reviewer and fold calls.
     """
 
-    def __init__(self, channel: Channel, alias: str, *, max_output: int | None = None) -> None:
+    def __init__(
+        self,
+        channel: Channel,
+        alias: str,
+        *,
+        max_output: int | None = None,
+        max_response_bytes: int = 16 * 1024 * 1024,
+    ) -> None:
         # Deliberately do not initialize GatewayModel's key, session or PriceList.
         self.channel, self.model = channel, alias
         self._max_tokens = max_output
+        self._max_response_bytes = max_response_bytes
         self._tool_choice, self._cache_key = "auto", None
+
+    @property
+    def cache_identity(self) -> str | None:
+        return self._cache_key
 
     def choosing(self, tool_choice: str) -> Self:
         if tool_choice not in ("auto", "none", "required"):
@@ -61,6 +73,8 @@ class CallbackModel(GatewayModel):
                 "tools": TypeAdapter(tuple[ToolSpec, ...]).dump_python(tuple(tools), mode="json"),
                 "cache_key": self._cache_key,
                 "tool_choice": self._tool_choice,
+                "max_output": self.max_output,
+                "max_response_bytes": self._max_response_bytes,
             }
         )
         try:
@@ -125,7 +139,9 @@ class RuntimeModels:
         request = typed(ModelRequest, value)
         if request.model not in self.aliases:
             raise TransportError("denied", "model alias is outside this runtime's configuration")
-        model = self.gateway.model(request.model)
+        model = self.gateway.model(request.model).limited(
+            max_output=request.max_output, max_response_bytes=request.max_response_bytes
+        )
         if request.cache_key is not None:
             model = model.cached_as(request.cache_key)
         model = model.choosing(request.tool_choice)

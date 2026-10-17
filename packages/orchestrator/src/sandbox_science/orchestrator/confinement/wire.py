@@ -13,7 +13,7 @@ import base64
 from dataclasses import asdict
 from typing import Annotated, Any, Literal, cast
 
-from pydantic import Field, JsonValue, TypeAdapter
+from pydantic import Field, JsonValue, StringConstraints, TypeAdapter
 
 from sandbox_science.contracts.model import Contract, Counter, Identifier
 from sandbox_science.orchestrator.hooks import Effect, Notice, Point
@@ -33,6 +33,9 @@ from sandbox_science.orchestrator.tools import ToolOutcome
 
 from .transport import CONTROL_PROTOCOL
 
+ModelAlias = Annotated[
+    str, StringConstraints(min_length=1, max_length=200, pattern=r"^[^\x00-\x1f\x7f]+$")
+]
 AttemptId = Annotated[str, Field(pattern=r"^cap-[0-9a-f]{48}$")]
 MAX_VIEW_BYTES = 8 * 1024 * 1024
 
@@ -178,7 +181,9 @@ class RunGiven(Attempt):
     hooks: tuple[HookGiven, ...] = Field(max_length=128)
     logged: bool
     folding: bool
-    model: Identifier
+    model: ModelAlias
+    cache_key: str | None = Field(default=None, max_length=256)
+    max_output: int | None = Field(default=None, ge=1, le=1_000_000)
 
 
 class LoopState(Contract):
@@ -228,7 +233,9 @@ class ToolRequest(Attempt):
 
 
 class ModelRequest(Contract):
-    model: Identifier
+    model: ModelAlias
+    max_output: int | None = Field(default=None, ge=1, le=1_000_000)
+    max_response_bytes: int = Field(default=16 * 1024 * 1024, ge=1, le=64 * 1024 * 1024)
     tool_choice: Literal["auto", "none", "required"] = "auto"
     cache_key: str | None = Field(default=None, max_length=256)
     messages: tuple[WireMessage, ...]
@@ -258,6 +265,7 @@ class LogAppend(Attempt):
     outcome: ToolOutcome | None = None
     call: ToolCall | None = None
     operation_id: str | None = Field(default=None, max_length=256)
+    consumed: dict[str, tuple[str, ...]] | None = None
     usage: ModelUsage | None = None
     usage_index: Counter | None = None
 
@@ -306,3 +314,23 @@ class RunReply(Attempt):
 
 class CancelRequest(Attempt):
     explicit: bool
+
+
+class Consumed(Contract):
+    ids: tuple[Identifier, ...] = Field(max_length=8192)
+
+
+class EmbeddingRequest(Contract):
+    alias: ModelAlias
+    texts: tuple[Annotated[str, Field(max_length=100_000)], ...] = Field(
+        min_length=1, max_length=64
+    )
+
+
+class EmbeddingReply(Contract):
+    model: ModelAlias | None = None
+    dimensions: int = Field(default=0, ge=0, le=16384)
+    vectors: tuple[tuple[float, ...], ...] = Field(default=(), max_length=64)
+    cost: float | None = None
+    paid: tuple[tuple[str, int, float | None], ...] = Field(default=(), max_length=64)
+    error: str | None = Field(default=None, max_length=512)

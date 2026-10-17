@@ -320,6 +320,22 @@ class GatewayModel(ABC):
         self._tool_choice = "auto"
         self._cache_key: str | None = None
 
+    def limited(
+        self, *, max_output: int | None = None, max_response_bytes: int | None = None
+    ) -> Self:
+        """A client copy with explicit response bounds, sharing its owning gateway."""
+        if (max_output is not None and max_output < 1) or (
+            max_response_bytes is not None and max_response_bytes < 1
+        ):
+            raise ValueError("model response limits must be positive")
+        other = copy.copy(self)
+        if max_output is not None:
+            other._max_tokens = max_output
+        if max_response_bytes is not None:
+            other._max_response_bytes = max_response_bytes
+        other._owns_session = False
+        return other
+
     def choosing(self, tool_choice: str) -> Self:
         """This model, sending ``tool_choice`` with its tools: ``none`` for a call that
         may not call them, as a fold's enrichment retry (docs/specs/context-management.md,

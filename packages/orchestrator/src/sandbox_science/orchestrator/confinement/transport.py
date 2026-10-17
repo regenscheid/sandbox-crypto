@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from contextvars import Context
 from enum import StrEnum
 from typing import Annotated, Final, Literal
 
@@ -36,6 +37,7 @@ class Capability(StrEnum):
     CANCEL = "cancel"
     MODEL = "model"
     MODEL_INFO = "model_info"
+    EMBEDDING = "embedding"
     TOOL = "tool"
     HOOK_ENTER = "hook_enter"
     HOOK_EXIT = "hook_exit"
@@ -43,6 +45,7 @@ class Capability(StrEnum):
     HALT = "halt"
     LAST_CALL = "last_call"
     MODEL_RETURNED = "model_returned"
+    CONSUMPTION = "consumption"
     GATE = "gate"
     OBSERVE_TOOL = "observe_tool"
     CLOSING = "closing"
@@ -161,7 +164,7 @@ class Channel:
         if self._received and frame.id <= next(iter(self._received)):
             raise TransportError("conflict", "control request identity moved backwards")
         self._received = {frame.id}
-        task = asyncio.create_task(self._handle(frame))
+        task = asyncio.create_task(self._handle(frame), context=Context())
         self._handling.add(task)
         task.add_done_callback(self._handling.discard)
 
