@@ -42,8 +42,9 @@ disposable-runtime teardown are recorded below.
   a ledger change clears the prerequisite but never restarts unfinished paid work.
 
 Worker protocol 8, executor protocol 3, control schema 65 and private runtime
-protocol 1 are pinned. The orchestrator image and host control source revision must
-match; upgrades are lockstep and there is no host research-loop fallback.
+protocol 1 are pinned. The orchestrator image's embedded runtime revision must
+match the host's configured `[orchestrator].revision`; upgrades are lockstep and
+there is no host research-loop fallback.
 
 ## Deterministic evidence
 
@@ -162,10 +163,18 @@ The final product revision covered by combined validation is
 `be62e57b`. The live scenario remains qualified at `49f5fde0`; these later paths have
 deterministic regression and independent review evidence.
 
-The final checkout's image is built after the documentation commit so its source
-stamp matches that exact HEAD. Its tag, digest, inspection result and build-log hash
-are retained in `/home/andy/.cache/pt/foundations-final-image.json`. This is build
-verification, not another live scenario or deployment to the personal instance.
+The final product image was built from checkout `34902773`. The unchanged build
+recipe embeds the last runtime-input revision,
+`be62e57b8006620c7aca74ce6856a39f2ce358c0`; `[orchestrator].revision` must match
+that embedded value. The image tag is `sandbox-science/orchestrator:34902773`,
+with the default recipe tag `sandbox-science/orchestrator:be62e57b` as an alias;
+its independently inspected digest is
+`sha256:f0e4db6fe2ea11e88adf30358a6e22a14d4dba7663871b4611cc2c253b094cc6`.
+The checkout, runtime revision, tag, digest, inspection result and build-log hash
+are retained in `/home/andy/.cache/pt/foundations-final-image.json` (SHA-256
+`dd8f38868880e8a0217aa391e85ad05acf068817ba11f00af4f7bc65b1fb17d4`).
+Later report-only changes do not change build inputs. This is build verification,
+not another live scenario or deployment to the personal instance.
 
 ## Review and limits
 
