@@ -25,6 +25,7 @@ from sandbox_science.orchestrator.history.limits import WorkingMemoryLimitError
 from sandbox_science.orchestrator.hooks import RunView, TurnHook
 from sandbox_science.orchestrator.loop import Transcript
 from sandbox_science.orchestrator.model import ChatModel, ModelGateway
+from sandbox_science.orchestrator.model_profiles import ModelProfile
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.tools import Toolbox
 
@@ -100,9 +101,12 @@ async def test_vm_loop_commits_host_state_without_a_local_harness_fallback(
             monkeypatch.setattr(Transcript, "sent", property(guarded_sent))
 
         forged = False
+        requested_profiles: list[object] = []
 
         async def host_handle(kind: Capability, value: JsonValue) -> JsonValue:
             nonlocal forged
+            if kind is Capability.MODEL_INTENT and isinstance(value, dict):
+                requested_profiles.append(value.get("profile"))
             if (
                 kind is Capability.LOG_APPEND
                 and isinstance(value, dict)
@@ -138,7 +142,15 @@ async def test_vm_loop_commits_host_state_without_a_local_harness_fallback(
         host = HostLoops(host_channel, frozenset({PROJECT}))
         runtime = RuntimeLoops(vm_channel, gateway_models, tmp_path / "scratch")
         runtime.scratch.mkdir()
-        service.harness.main = Role(CallbackModel(host_channel, "main"), "main")
+        service.harness.main = Role(
+            CallbackModel(
+                host_channel,
+                "main",
+                role="main",
+                profile=ModelProfile(alias="main", reasoning_effort="max"),
+            ),
+            "main",
+        )
         service.harness.gateway = CallbackGateway(host_channel)
 
         async def runner(
@@ -165,6 +177,12 @@ async def test_vm_loop_commits_host_state_without_a_local_harness_fallback(
                 release.set()
             await task
             (record,) = records(harness)
+            assert record.model_profiles["main"].reasoning_effort == "max"
+            assert requested_profiles
+            assert all(
+                profile == {"alias": "main", "api": "chat", "reasoning_effort": "max"}
+                for profile in requested_profiles
+            )
             assert record.final_text == (None if memory_pause else "Done.")
             assert record.failure is None
             assert record.stopped == ("memory_limit" if memory_pause else "answered")

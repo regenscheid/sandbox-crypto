@@ -19,7 +19,8 @@ from typing import Any, cast
 from .control import ControlError
 from .control.errors import INVALID_REQUEST
 from .documents import USER
-from .model import OpenAICompatibleModel
+from .model import gateway_model
+from .model_profiles import requested
 from .pricing import GATEWAY
 from .projects import ProjectError, ProjectStore
 from .skills import SkillSettings, SkillStore, allow, from_archive, from_git, snapshot
@@ -163,7 +164,12 @@ async def _derive(
     alias = cast(str, args.metadata_model)
     if (kept := store.metadata(snap.sha256, alias, VERSION)) is not None:
         return Derived(kept["derived"], kept["dropped"], kept["model"], cached=True)
-    model = OpenAICompatibleModel(args.model_url, alias, key, max_tokens=ANSWER_TOKENS)
+    apis = dict(getattr(args, "api", None) or [])
+    efforts = dict(getattr(args, "reasoning_effort", None) or [])
+    api = apis.get(alias, "chat")
+    model = gateway_model(args.model_url, alias, key, api=api, max_tokens=ANSWER_TOKENS).for_role(
+        "skills_metadata", requested(alias, api, efforts.get("skills_metadata"))
+    )
     try:
         made = await derive(model, snap, alias)
     except PassError as error:
@@ -349,6 +355,10 @@ def add_parser(commands: Any) -> None:
         help="the gateway's model alias for the pass that derives topics, entry skills, "
         "short descriptions and bindings from the catalog",
     )
+    from .cli import api_setting, effort_setting
+
+    imported.add_argument("--api", type=api_setting, action="append", default=[])
+    imported.add_argument("--reasoning-effort", type=effort_setting, action="append", default=[])
     imported.add_argument(
         "--model-url", help="--embedding-model, --metadata-model: the gateway's base URL"
     )

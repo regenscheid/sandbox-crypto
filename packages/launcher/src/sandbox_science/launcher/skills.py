@@ -52,6 +52,12 @@ def import_argv(
             argv += [flag, model]
     if any(model is not None for model in model_options.values()):
         argv += ["--model-url", config.model.url, "--api-key-file", str(config.model.api_key_file)]
+        if config.skills.metadata_model is not None:
+            alias = config.skills.metadata_model
+            if alias in config.model.api:
+                argv += ["--api", f"{alias}={config.model.api[alias]}"]
+            if (effort := config.model.reasoning_effort.get("skills_metadata")) is not None:
+                argv += ["--reasoning-effort", f"skills_metadata={effort}"]
         users = [project.id for project in config.projects if name in project.skills]
         argv += ["--project", users[0]] if users else []
     return argv

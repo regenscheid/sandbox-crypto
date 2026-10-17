@@ -260,6 +260,11 @@ def harness_argv(config: LauncherConfig, layout: Layout) -> list[str]:
         watcher += ["--watcher-interval", f"{model.watcher_interval:g}"]
     delegated = ["--delegated-model", model.delegated] if model.delegated else []
     # Each alias's gateway API (CM-41); an alias left out takes chat completions.
+    efforts = [
+        option
+        for role, effort in model.reasoning_effort.items()
+        for option in ("--reasoning-effort", f"{role}={effort}")
+    ]
     apis = [option for alias, kind in model.api.items() for option in ("--api", f"{alias}={kind}")]
     # The aliases the deployment declares accept images (figures, FG-33).
     apis += [option for alias in model.images for option in ("--images", alias)]
@@ -291,7 +296,7 @@ def harness_argv(config: LauncherConfig, layout: Layout) -> list[str]:
         "--worker", worker_url(config),
         "--token-file", str(layout.token("harness-worker")),
         "--model-url", model.url, "--model", model.name,
-        "--api-key-file", str(model.api_key_file), *reviewer, *watcher, *delegated, *apis,
+        "--api-key-file", str(model.api_key_file), *reviewer, *watcher, *delegated, *apis, *efforts,
         *shared, *math,
         *mcp.harness_options(config, layout),
     ]  # fmt: skip
@@ -306,6 +311,11 @@ def workspace_argv(config: LauncherConfig, layout: Layout) -> list[str]:
         if model.reviewer
         else []
     )  # fmt: skip
+    if model.reviewer:
+        if model.reviewer in model.api:
+            repairs += ["--reviewer-api", model.api[model.reviewer]]
+        if (effort := model.reasoning_effort.get("reviewer")) is not None:
+            repairs += ["--reviewer-effort", effort]
     # The skills page shows what the pass runs are given derived.
     derived = config.skills.metadata_model
     page = [] if derived is None else ["--skills-metadata-model", derived]

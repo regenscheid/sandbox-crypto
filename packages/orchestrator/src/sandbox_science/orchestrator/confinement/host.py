@@ -33,6 +33,7 @@ from sandbox_science.orchestrator.loop import (
     notice_message,
 )
 from sandbox_science.orchestrator.model import AssistantMessage, ChatModel, ToolCall
+from sandbox_science.orchestrator.model_profiles import PROFILES, ModelProfile, ModelRole
 from sandbox_science.orchestrator.notices import DELEGATIONS, REPORT
 from sandbox_science.orchestrator.plan_tools import Plans
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome, operation_id
@@ -460,6 +461,7 @@ class HostLoops:
         self.control, self.model_roles = control, model_roles or {}
         self.attempts: dict[str, Prepared] = {}
         self.owners: dict[str, Ownership] = {}
+        self.profiles: dict[str, dict[ModelRole, ModelProfile]] = {}
         self.tokens: dict[tuple[str, str, str], str] = {}
 
     @asynccontextmanager
@@ -472,11 +474,13 @@ class HostLoops:
             raise TransportError("conflict", "attempt model capability is already bound or full")
         identity = "cap-" + secrets.token_hex(24)
         self.tokens[key], self.owners[identity] = identity, owner
+        self.profiles[identity] = dict(PROFILES.get() or {})
         try:
             yield
         finally:
             self.tokens.pop(key, None)
             self.owners.pop(identity, None)
+            self.profiles.pop(identity, None)
 
     def model_capability(self) -> str:
         owner = CURRENT.get()
@@ -499,6 +503,34 @@ class HostLoops:
                 intents = ModelIntents(self.control)
                 if kind is Capability.MODEL_INTENT:
                     request = typed(ModelIntent, value)
+                    pinned = self.profiles.get(identity.attempt, {})
+                    roles: dict[str, tuple[ModelRole, ...]] = {
+                        "main": ("main",),
+                        "delegated": ("delegated",),
+                        "reviewer": ("reviewer",),
+                        "watcher": ("watcher",),
+                        "fold": ("fold", "overview"),
+                        "skills": ("skills_metadata",),
+                    }
+                    if request.role is not None and request.role not in roles.get(request.kind, ()):
+                        raise TransportError("denied", "model role differs from its paid kind")
+                    if request.kind == "embedding":
+                        if request.profile is not None:
+                            raise TransportError("denied", "embeddings have no reasoning profile")
+                    elif pinned and (
+                        request.profile is None
+                        or request.profile
+                        not in (
+                            pinned[role]
+                            for role in (
+                                (request.role,)
+                                if request.role is not None
+                                else roles.get(request.kind, ())
+                            )
+                            if role in pinned
+                        )
+                    ):
+                        raise TransportError("denied", "model profile is outside the admitted role")
                     if request.kind in ("main", "delegated"):
                         expected = (
                             "delegated"
@@ -509,6 +541,7 @@ class HostLoops:
                             prepared is None
                             or request.kind != expected
                             or request.alias != prepared.given.model
+                            or request.profile != prepared.given.profile
                         ):
                             raise TransportError(
                                 "denied", "model dispatch is outside the admitted role"
@@ -519,7 +552,12 @@ class HostLoops:
                         )
                     try:
                         ticket = await threaded(
-                            intents.begin, owner, kind=request.kind, alias=request.alias
+                            intents.begin,
+                            owner,
+                            kind=request.kind,
+                            alias=request.alias,
+                            profile=request.profile,
+                            role=request.role,
                         )
                     except ControlError as exc:
                         if exc.message.startswith("model_budget:"):
@@ -577,6 +615,7 @@ class HostLoops:
             logged=True,
             folding=options.get("folds") is not None,
             model=model.model,
+            profile=model.requested_profile,
             cache_key=model.cache_identity,
             max_output=model.max_output,
         )

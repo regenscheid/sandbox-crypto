@@ -52,6 +52,7 @@ launcher never reads it, and gives its path to the run service. Nor does it open
 from __future__ import annotations
 
 import ipaddress
+import re
 import tomllib
 from datetime import date
 from pathlib import Path
@@ -189,6 +190,18 @@ class ModelConfig(_Strict):
     CM-40) or ``messages`` (``/v1/messages``, Claude's Messages API with its progress
     notes, CM-38). An alias it leaves out takes ``chat``, as every alias does by default,
     until the labs confirm the others."""
+    reasoning_effort: dict[str, str] = Field(default_factory=dict[str, str], max_length=7)
+    """Requested effort by caller role. Omitted roles retain provider defaults."""
+
+    @field_validator("reasoning_effort")
+    @classmethod
+    def _efforts(cls, values: dict[str, str]) -> dict[str, str]:
+        roles = {"main", "delegated", "reviewer", "watcher", "fold", "overview", "skills_metadata"}
+        for role, value in values.items():
+            if role not in roles or re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", value) is None:
+                raise ValueError("reasoning_effort requires a known role and bounded effort name")
+        return values
+
     images: list[Annotated[str, StringConstraints(min_length=1)]] = Field(
         default_factory=list[str], max_length=64
     )

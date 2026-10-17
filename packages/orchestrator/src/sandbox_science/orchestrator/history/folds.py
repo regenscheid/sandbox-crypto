@@ -530,6 +530,10 @@ class Folder(TurnHook):
             self.spent.append(usage.model_dump(mode="json"))
 
         parts = running.parts
+        from sandbox_science.orchestrator.model import GatewayModel
+
+        if isinstance(model, GatewayModel):
+            model = model.for_role("overview" if parts else "fold")
         framing, shown = (
             (FOLD_OVERVIEW, asked(running.record, parts)) if parts else (FOLD_ENRICH, None)
         )

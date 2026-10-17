@@ -128,6 +128,7 @@ from .model import (
     ModelGateway,
     cached_for,
 )
+from .model_profiles import PROFILES, ModelProfile, ModelRole, profiles
 from .notices import DIGEST, TASK_CONSTRAINTS
 from .plan_tools import PlanTools
 from .projects import (
@@ -328,6 +329,7 @@ class RunRequest:
     alias: str | None = None
     """For a delegated run, the model alias its delegation chose (PD-28, PD-30);
     ``None`` for the delegated role's."""
+    model_profiles: dict[ModelRole, ModelProfile] | None = None
     track: tuple[PlanRef, str] | None = None
     """For a task on a track, the plan version it works under and the track (PD-9)."""
     root: str | None = None
@@ -484,6 +486,7 @@ class Finished:
     ended_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     parent: str | None = None
     delegation: str | None = None
+    model_profiles: dict[ModelRole, ModelProfile] | None = None
     alias: str | None = None
     limits: dict[str, JsonValue] | None = None
 
@@ -522,6 +525,10 @@ class Finished:
             "parent": self.parent,
             "delegation": self.delegation,
             "alias": self.alias,
+            "model_profiles": {
+                key: value.model_dump(mode="json")
+                for key, value in (self.model_profiles or {}).items()
+            },
             "limits": self.limits,
             "context": self.context.model_dump(mode="json"),
             "task": self.task,
@@ -606,12 +613,67 @@ class Harness:
         """The time the run's messages and leases are read in."""
         self.mcp = mcp
         """The MCP proxy and the servers behind it whose tools runs are offered."""
-        self.delegated = delegated or main
+        self.delegated = delegated or (
+            Role(
+                main.model.cached_as("unassigned").for_role(
+                    "delegated", gateway.profile(main.alias, role="delegated") if gateway else None
+                ),
+                main.alias,
+            )
+            if isinstance(main.model, GatewayModel)
+            else main
+        )
         self.gateway = gateway
         self._limits_seen: dict[str, Limits] | None = None
         """The limits the gateway's model information gave, once it gave them."""
         self._learned: dict[str, int] = {}
         """Each alias's ceiling a context error capped, for later runs (CM-43)."""
+
+    def model_profiles(
+        self, request: RunRequest, *, legacy: bool = False
+    ) -> dict[ModelRole, ModelProfile]:
+        """Snapshot callers before work admission, including explicit default absence."""
+        if request.model_profiles is not None:
+            return dict(request.model_profiles)
+        inherited = PROFILES.get()
+        if inherited is not None and not legacy:
+            result = dict(inherited)
+        else:
+            result: dict[ModelRole, ModelProfile] = {}
+            for name, role in (
+                ("main", self.main),
+                ("delegated", self.delegated),
+                ("reviewer", self.reviewer),
+                ("watcher", self.watcher),
+            ):
+                if role is not None and isinstance(role.model, GatewayModel):
+                    result[cast(ModelRole, name)] = role.model.requested_profile
+            for name in ("fold", "overview", "skills_metadata"):
+                alias = (
+                    (self.derived[0] if self.derived else None)
+                    if name == "skills_metadata"
+                    else self.settings.fold_alias or self.main.alias
+                )
+                if alias is not None and self.gateway is not None:
+                    result[cast(ModelRole, name)] = self.gateway.profile(
+                        alias, role=cast(ModelRole, name)
+                    )
+        if request.parent is not None and request.alias is not None and self.gateway is not None:
+            result["delegated"] = ModelProfile.model_validate(
+                {
+                    "alias": request.alias,
+                    "api": self.gateway.apis.get(request.alias, "chat"),
+                    "reasoning_effort": result["delegated"].reasoning_effort
+                    if "delegated" in result
+                    else None,
+                }
+            )
+        if legacy:
+            result = {
+                key: value.model_copy(update={"reasoning_effort": None})
+                for key, value in result.items()
+            }
+        return result
 
     def role(self, request: RunRequest) -> Role:
         """The model a run calls: the delegated role's for a delegated run, or the one
@@ -622,7 +684,7 @@ class Harness:
             return self.delegated
         if self.gateway is None:
             raise ModelError(f"no model gateway serves {request.alias!r}")
-        return Role(self.gateway.model(request.alias), request.alias)
+        return Role(self.gateway.model(request.alias, role="delegated"), request.alias)
 
     def _model(self, admitted: Admitted) -> ChatModel:
         """The model a run calls (``role``), calling as its session, so that all of the
@@ -670,6 +732,12 @@ class Harness:
         user's, which ends the run ``cancelled``, or, once its loop has ended, leaves the
         run's own outcome.
         """
+        admitted = dataclasses.replace(
+            admitted,
+            request=dataclasses.replace(
+                admitted.request, model_profiles=self.model_profiles(admitted.request)
+            ),
+        )
         if self.stores is None:
             return await self._start(admitted, sink, stop=stop)
         request = admitted.request
@@ -726,6 +794,7 @@ class Harness:
         interruption = Interruption()
         try:
             async with AsyncExitStack() as stack:
+                stack.enter_context(profiles(admitted.request.model_profiles or {}))
                 with interruption.protect():
                     if (
                         admitted.stateful
@@ -889,6 +958,7 @@ class Harness:
             admitted.started_at,
             transcript,
             hooks,
+            model_profiles=admitted.request.model_profiles,
             parent=admitted.request.parent,
             delegation=admitted.request.delegation,
             alias=self.role(admitted.request).alias,
@@ -971,7 +1041,9 @@ class Harness:
         switched = await threaded(_switched, stores.projects, project, session, self.main.alias)
         former = None
         if switched is not None and self.gateway is not None and not settings.skeleton_only:
-            former = cached_for(self.gateway.model(switched[0]), project, session)
+            former = cached_for(
+                self.gateway.model(switched[0], role="fold").for_former(), project, session
+            )
         made = Folder(
             archive,
             context,
@@ -1039,9 +1111,11 @@ class Harness:
         if self.settings.skeleton_only:
             return None
         if self.settings.fold_alias is not None and self.gateway is not None:
-            return cached_for(self.gateway.model(self.settings.fold_alias), project, session)
+            return cached_for(
+                self.gateway.model(self.settings.fold_alias, role="fold"), project, session
+            )
         if isinstance(self.main.model, GatewayModel):
-            return cached_for(self.main.model, project, session)
+            return cached_for(self.main.model.for_role("fold"), project, session)
         return None
 
     def _input_chars(self, *, folding: bool) -> int:
@@ -1230,6 +1304,7 @@ class Harness:
             may_delegate=child.delegate,
             stop_by=child.deadline,
         )
+        request = dataclasses.replace(request, model_profiles=self.model_profiles(request))
         return dataclasses.replace(
             parent, request=request, run_id=child.run_id, started_at=child.started_at
         )

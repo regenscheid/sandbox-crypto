@@ -25,6 +25,7 @@ import aiohttp
 from sandbox_science.contracts.clock import SYSTEM_CLOCK, Clock
 
 from . import images
+from .model_profiles import PROFILES, ModelProfile, ModelRole, requested
 from .pricing import GATEWAY, MODEL_INFO, CostSource, PriceList, Tokens, chat_tokens
 from .pricing import cost as priced_cost
 from .tokens import total_input
@@ -344,6 +345,47 @@ class GatewayModel(ABC):
         self._prices = prices or PriceList(self.base_url, api_key, clock=clock)
         self._tool_choice = "auto"
         self._cache_key: str | None = None
+        self._model_role: ModelRole = "main"
+        self._requested_profile: ModelProfile | None = None
+        self._former_profile = False
+
+    def for_role(self, role: ModelRole, profile: ModelProfile | None = None) -> Self:
+        """An immutable caller profile; copies share the owning connection."""
+        other = copy.copy(self)
+        other._model_role = role
+        if profile is not None:
+            other._requested_profile = profile
+        return other
+
+    def for_former(self) -> Self:
+        """A prior alias writing the model-switch refit, retaining its own adapter."""
+        other = copy.copy(self)
+        other._former_profile = True
+        return other
+
+    @property
+    def requested_profile(self) -> ModelProfile:
+        pinned = PROFILES.get()
+        profile = pinned.get(self._model_role) if pinned is not None else self._requested_profile
+        if self._former_profile and profile is not None:
+            own = self._requested_profile or requested(
+                alias=self.model, api="chat" if self.FORMAT == CHAT_COMPLETIONS else self.FORMAT
+            )
+            return own.model_copy(update={"reasoning_effort": profile.reasoning_effort})
+        return profile or requested(
+            alias=self.model, api="chat" if self.FORMAT == CHAT_COMPLETIONS else self.FORMAT
+        )
+
+    def validate_profile(self) -> ModelProfile:
+        """Refuse an unsupported or changed caller before a paid intent is created."""
+        profile = self.requested_profile
+        format = getattr(self, "FORMAT", profile.api)
+        api = "chat" if format == CHAT_COMPLETIONS else format
+        if profile.alias != self.model or profile.api != api:
+            raise ModelError("pinned model alias/API differs from the configured caller")
+        if profile.reasoning_effort is not None and api == "messages":
+            raise ModelError("reasoning effort is unsupported by the Messages adapter")
+        return profile
 
     def limited(
         self, *, max_output: int | None = None, max_response_bytes: int | None = None
@@ -433,6 +475,16 @@ class GatewayModel(ABC):
     ) -> ModelTurn:
         """Send ``body``, trying again as the class says; ``parse`` reads the answer's
         text, with its cost header if it has one."""
+        profile = self.validate_profile()
+        api = profile.api
+        if profile.reasoning_effort is not None:
+            if api == "messages":
+                raise ModelError("reasoning effort is unsupported by the Messages adapter")
+            body["reasoning" if api == "responses" else "reasoning_effort"] = (
+                {"effort": profile.reasoning_effort}
+                if api == "responses"
+                else profile.reasoning_effort
+            )
         prefix = prefix_digest({name: body[name] for name in self.PREFIX if name in body})
         wait = self._backoff
         retried: list[str] = []
@@ -641,6 +693,7 @@ class ModelGateway:
         timeout: float = 30,
         apis: Mapping[str, str] | None = None,
         options: Mapping[str, Mapping[str, Any]] | None = None,
+        reasoning_effort: Mapping[ModelRole, str] | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self._api_key = api_key
@@ -649,6 +702,7 @@ class ModelGateway:
         self.apis = dict(apis or {})
         """The adapter of each alias the deployment names one for (``API_KINDS``); any
         other alias's is ``chat``."""
+        self.reasoning_effort = dict(reasoning_effort or {})
         self.options = dict(options or {})
         """Each adapter's own options, by its kind, such as Claude's thinking replay."""
         self.prices = PriceList(self.base_url, api_key, timeout=timeout)
@@ -659,7 +713,15 @@ class ModelGateway:
             self._session = aiohttp.ClientSession()
         return self._session
 
-    def model(self, alias: str) -> GatewayModel:
+    def profile(self, alias: str, *, role: ModelRole = "delegated") -> ModelProfile:
+        """Resolve deployment settings without opening an HTTP connection."""
+        return requested(
+            alias=alias,
+            api=self.apis.get(alias, "chat"),
+            reasoning_effort=self.reasoning_effort.get(role),
+        )
+
+    def model(self, alias: str, *, role: ModelRole = "delegated") -> GatewayModel:
         """A model that calls ``alias``, through its adapter and the gateway's session."""
         api = self.apis.get(alias, "chat")
         return gateway_model(
@@ -670,6 +732,9 @@ class ModelGateway:
             options=self.options.get(api),
             session=self._shared(),
             prices=self.prices,
+        ).for_role(
+            role,
+            self.profile(alias, role=role),
         )
 
     async def aliases(self) -> frozenset[str] | None:

@@ -30,6 +30,7 @@ from sandbox_science.orchestrator.harness import (
 )
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.mathcheck import MathChecker
+from sandbox_science.orchestrator.model_profiles import Effort, ModelRole
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.service import RunService
@@ -90,6 +91,8 @@ class ControlSettings(Contract):
     generation: Identifier
     generation_file: Path | None = None
     projects: tuple[Identifier, ...] = Field(min_length=1, max_length=128)
+    apis: dict[str, str] = Field(default_factory=dict)
+    reasoning_effort: dict[ModelRole, Effort] = Field(default_factory=dict[ModelRole, Effort])
     main: ModelAlias
     reviewer: ModelAlias | None = None
     watcher: ModelAlias | None = None
@@ -244,7 +247,9 @@ def create_app(settings: ControlSettings) -> web.Application:
                     model_roles=roles,
                 )
                 scope = loops.model_capability
-                gateway = CallbackGateway(channel, scope)
+                gateway = CallbackGateway(
+                    channel, scope, apis=settings.apis, reasoning_effort=settings.reasoning_effort
+                )
                 stores = Stores(
                     projects,
                     documents,
@@ -266,6 +271,10 @@ def create_app(settings: ControlSettings) -> web.Application:
                             settings.metadata,
                             scope=scope,
                             kind="skills",
+                            role="skills_metadata",
+                            profile=gateway.model(
+                                settings.metadata, role="skills_metadata"
+                            ).requested_profile,
                             max_output=ANSWER_TOKENS,
                         ),
                         settings.metadata,
@@ -296,7 +305,7 @@ def create_app(settings: ControlSettings) -> web.Application:
                 )
                 harness = Harness(
                     worker,
-                    Role(CallbackModel(channel, settings.main, scope=scope), settings.main),
+                    Role(gateway.model(settings.main, role="main"), settings.main),
                     stores=stores,
                     gateway=gateway,
                     settings=settings.settings,
@@ -307,6 +316,10 @@ def create_app(settings: ControlSettings) -> web.Application:
                             settings.watcher,
                             scope=scope,
                             kind="watcher",
+                            role="watcher",
+                            profile=gateway.model(
+                                settings.watcher, role="watcher"
+                            ).requested_profile,
                             max_output=300,
                             max_response_bytes=16384,
                         ),
@@ -320,6 +333,10 @@ def create_app(settings: ControlSettings) -> web.Application:
                             settings.reviewer,
                             scope=scope,
                             kind="reviewer",
+                            role="reviewer",
+                            profile=gateway.model(
+                                settings.reviewer, role="reviewer"
+                            ).requested_profile,
                             max_output=2048,
                             max_response_bytes=65536,
                         ),
@@ -328,7 +345,7 @@ def create_app(settings: ControlSettings) -> web.Application:
                     if settings.reviewer
                     else None,
                     delegated=Role(
-                        CallbackModel(channel, settings.delegated, scope=scope), settings.delegated
+                        gateway.model(settings.delegated, role="delegated"), settings.delegated
                     )
                     if settings.delegated
                     else None,

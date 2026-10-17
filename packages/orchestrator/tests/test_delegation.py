@@ -961,3 +961,33 @@ async def test_a_checks_brief_names_the_entrys_open_flags(delegating: Harness) -
     (delegation_id,) = started(root)
     written = cast(dict[str, Any], delegation(delegating, delegation_id).brief["check"])
     assert written["flags"] == [flag.flag_id]
+
+
+async def test_same_alias_parent_child_pin_distinct_requested_effort(delegating: Harness) -> None:
+    root = await delegating.run(
+        "effort-parent",
+        [Reply(calls=[CHECK]), wait(), Reply("Checked.")],
+        delegated=[Reply(REPORT)],
+        options=["--reasoning-effort", "main=max", "--reasoning-effort", "delegated=low"],
+    )
+    (child,) = children(delegating, root)
+    assert root.alias == child.alias == "main"
+    for run in (root, child):
+        assert run.model_profiles["main"].reasoning_effort == "max"
+        assert run.model_profiles["delegated"].reasoning_effort == "low"
+    store = ProjectStore(delegating.state)
+    try:
+        for run, expected in ((root, "max"), (child, "low")):
+            events = RunState(store.control).events(PROJECT, SESSION, name(run))
+            requested = [
+                event.data["profile"]
+                for event in events
+                if event.data.get("source") == "model_profile"
+            ]
+            assert requested
+            assert all(
+                isinstance(profile, dict) and profile["reasoning_effort"] == expected
+                for profile in requested
+            )
+    finally:
+        store.close()

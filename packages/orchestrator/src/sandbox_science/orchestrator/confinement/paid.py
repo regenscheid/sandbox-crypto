@@ -7,23 +7,34 @@ from dataclasses import replace
 from sandbox_science.orchestrator.model import (
     ChatModel,
     GatewayBudgetError,
+    GatewayModel,
     Message,
     ModelTurn,
     ToolSpec,
 )
+from sandbox_science.orchestrator.model_profiles import ModelProfile, ModelRole
 from sandbox_science.orchestrator.projects import ModelUsage
 
 from .transport import Capability, Channel, TransportError
 from .wire import ModelIntent, ModelKind, ModelObserved, ModelTicket, payload, typed
 
 
-async def begin(channel: Channel, attempt: str, alias: str, kind: ModelKind) -> str:
+async def begin(
+    channel: Channel,
+    attempt: str,
+    alias: str,
+    kind: ModelKind,
+    profile: ModelProfile | None = None,
+    role: ModelRole | None = None,
+) -> str:
     try:
         ticket = typed(
             ModelTicket,
             await channel.request(
                 Capability.MODEL_INTENT,
-                payload(ModelIntent(attempt=attempt, alias=alias, kind=kind)),
+                payload(
+                    ModelIntent(attempt=attempt, alias=alias, kind=kind, profile=profile, role=role)
+                ),
             ),
         )
     except TransportError as exc:
@@ -64,6 +75,15 @@ class PaidModel:
         self.kind: ModelKind = kind
 
     async def complete(self, messages: Sequence[Message], tools: Sequence[ToolSpec]) -> ModelTurn:
-        identity = await begin(self.channel, self.attempt, self.alias, self.kind)
+        if isinstance(self.model, GatewayModel):
+            self.model.validate_profile()
+        identity = await begin(
+            self.channel,
+            self.attempt,
+            self.alias,
+            self.kind,
+            getattr(self.model, "requested_profile", None),
+            "delegated" if self.kind == "delegated" else "main",
+        )
         turn = await self.model.complete(messages, tools)
         return replace(turn, intent_id=identity)

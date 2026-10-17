@@ -172,3 +172,6 @@ Queue admission independently reconciles committed message and annotation receip
 a consumed input cannot start another root if its transient lease has disappeared.
 Unconsumed annotation offers remain associated with their unfinished durable work,
 so explicit Resume can continue them while a new user request may start separate work.
+
+Private control protocol 3 additionally carries attempt-pinned requested model profiles
+for role-specific reasoning effort. Older control/runtime peers are refused.

@@ -16,6 +16,7 @@ from sandbox_science.contracts.model import Contract, Identifier
 from sandbox_science.orchestrator.control.migrations import VERSION
 from sandbox_science.orchestrator.messages import ThinkingReplay
 from sandbox_science.orchestrator.model import ModelGateway
+from sandbox_science.orchestrator.model_profiles import Effort, ModelRole
 from sandbox_science.orchestrator.skills.embeddings import Embedder
 
 from .embeddings import RuntimeEmbeddings
@@ -40,6 +41,7 @@ class RuntimeSettings(Contract):
     model_url: str = Field(min_length=1, max_length=2048)
     model_key_file: Path
     models: tuple[ModelAlias, ...] = Field(min_length=1, max_length=128)
+    reasoning_effort: dict[ModelRole, Effort] = Field(default_factory=dict[ModelRole, Effort])
     apis: dict[str, str] = Field(default_factory=dict[str, str])
     options: dict[str, dict[str, JsonValue]] = Field(
         default_factory=dict[str, dict[str, JsonValue]]
@@ -74,6 +76,7 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
         settings.model_url,
         private_credential(settings.model_key_file),
         apis=settings.apis,
+        reasoning_effort=settings.reasoning_effort,
         options={
             **settings.options,
             **(

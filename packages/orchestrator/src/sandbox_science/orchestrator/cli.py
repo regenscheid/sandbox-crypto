@@ -96,6 +96,7 @@ from .model import (
     ScriptedModel,
     gateway_model,
 )
+from .model_profiles import Effort, ModelRole, requested
 from .projects import ProjectError, ProjectStore, run_name
 from .runstate import RunState
 from .service import POLL_SECONDS, RunService
@@ -126,6 +127,8 @@ def _gateway(
     alias: str,
     max_tokens: int | None = None,
     max_response_bytes: int = MAX_RESPONSE_BYTES,
+    *,
+    role: ModelRole = "main",
 ) -> ChatModel:
     """The client for ``alias``, through the adapter ``--api`` names for it (CM-41)."""
     key = read_secret(args.api_key_file)
@@ -138,7 +141,21 @@ def _gateway(
         options=_options(args).get(api),
         max_tokens=max_tokens,
         max_response_bytes=max_response_bytes,
-    )
+    ).for_role(role, requested(alias=alias, api=api, reasoning_effort=_efforts(args).get(role)))
+
+
+def _efforts(args: argparse.Namespace) -> dict[ModelRole, str]:
+    return dict(getattr(args, "reasoning_effort", None) or [])
+
+
+def effort_setting(value: str) -> tuple[ModelRole, str]:
+    try:
+        role, effort = value.split("=", 1)
+        return TypeAdapter(ModelRole).validate_python(role), TypeAdapter(Effort).validate_python(
+            effort
+        )
+    except (ValueError, ValidationError) as exc:
+        raise argparse.ArgumentTypeError("reasoning effort requires ROLE=EFFORT") from exc
 
 
 def _options(args: argparse.Namespace) -> dict[str, dict[str, object]]:
@@ -159,7 +176,7 @@ def _apis(args: argparse.Namespace) -> dict[str, str]:
     return dict(cast(list[tuple[str, str]], getattr(args, "api", None) or []))
 
 
-def _api(value: str) -> tuple[str, str]:
+def api_setting(value: str) -> tuple[str, str]:
     """An ``--api`` setting, ``ALIAS=KIND``."""
     alias, equals, kind = value.partition("=")
     if not equals or not alias.strip() or kind not in API_KINDS:
@@ -296,7 +313,9 @@ def _harness(
             args.watcher_script,
             "--watcher-script",
             args.watcher_model,
-            lambda: _gateway(args, args.watcher_model, max_tokens=300, max_response_bytes=16384),
+            lambda: _gateway(
+                args, args.watcher_model, role="watcher", max_tokens=300, max_response_bytes=16384
+            ),
         )
         closing(stack, interruption, lambda: _close(watcher.model))
     if args.reviewer_model is not None:
@@ -304,7 +323,13 @@ def _harness(
             args.reviewer_script,
             "--reviewer-script",
             args.reviewer_model,
-            lambda: _gateway(args, args.reviewer_model, max_tokens=2048, max_response_bytes=65536),
+            lambda: _gateway(
+                args,
+                args.reviewer_model,
+                role="reviewer",
+                max_tokens=2048,
+                max_response_bytes=65536,
+            ),
         )
         closing(stack, interruption, lambda: _close(reviewer.model))
     delegated = None
@@ -313,7 +338,7 @@ def _harness(
             getattr(args, "delegated_script", None),
             "--delegated-script",
             alias,
-            lambda: _gateway(args, alias),
+            lambda: _gateway(args, alias, role="delegated"),
         )
         closing(stack, interruption, lambda: _close(delegated.model))
     gateway = None
@@ -324,6 +349,7 @@ def _harness(
             read_secret(args.api_key_file),
             apis=_apis(args),
             options=_options(args),
+            reasoning_effort=_efforts(args),
         )
         closing(stack, interruption, gateway.close)
     vectors = None
@@ -453,7 +479,7 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
     command.add_argument(
         "--api",
         action="append",
-        type=_api,
+        type=api_setting,
         default=[],
         metavar="ALIAS=KIND",
         help="the gateway API a model alias is called through, in any role: chat "
@@ -480,6 +506,7 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
         help="the alias of the imports' model pass whose topics, entry skills and short "
         "descriptions runs are given; none without it",
     )
+    command.add_argument("--reasoning-effort", type=effort_setting, action="append", default=[])
     command.add_argument("--api-key-file", type=Path)
     command.add_argument("--min-isolation-tier", type=int, default=3)
     command.add_argument("--allow-unisolated", action="store_true")
@@ -692,6 +719,11 @@ def _check_agent(parser: argparse.ArgumentParser, args: argparse.Namespace) -> N
         parser.error("--delegated-script needs --delegated-model")
     if args.model_url is not None and args.api_key_file is None:
         parser.error("--model-url needs --api-key-file")
+    efforts = getattr(args, "reasoning_effort", [])
+    if efforts and args.model_url is None:
+        parser.error("--reasoning-effort needs --model-url")
+    if len({role for role, _ in efforts}) != len(efforts):
+        parser.error("--reasoning-effort repeats a role")
     if args.api and args.model_url is None:
         parser.error("--api needs --model-url")
     if len({alias for alias, _ in args.api}) < len(set(args.api)):
