@@ -61,6 +61,25 @@ No token, TLS private key, cookie or project database was retained. SHA-256:
 | `auth-observations.jsonl` | `b298ce767eff12baa0f7ebb2dc515b4f29e183e3aa0c896dc05f7e05b28c06ed` |
 | `sha256.json` manifest | `596aad0f70d064b088ea6ff7b1b653072cf3df06e41e7aed51f733672335804a` |
 
+## Later archive repair and final image build
+
+After the qualified revision, the full repository suite exposed host archive
+preflight memory retention. A separately reviewed repair changed modern metadata
+sizing and bounded legacy read connections. Product source
+`372a48e07bbb20af853326d929905056102e15dd` includes that repair; this report does
+not claim a new live qualification for it.
+
+The image was rebuilt successfully from that exact source as
+`sandbox-science/orchestrator:372a48e0`, digest
+`sha256:c11a124cd4a2a1a152a51f104fb8dfdd72235e851445706a903c873ca5e0486e`
+(130 MB, 6 seconds). Docker inspection independently matched the build digest.
+Build log `image-build-372a48e0.log` is retained beside the earlier evidence,
+SHA-256 `ee14d98ccf985584d04a4affeb6b0d859303a4f8147b47ac9cd8ea6739be7bf7`.
+The earlier manifest above remains the unchanged runtime-evidence snapshot.
+No new gateway, sandbox, service or pytest run was started for this build. Both
+images remain inert cached artifacts; verified runtime cleanup is unchanged.
+Repository-wide testing of the repaired source is coordinated separately.
+
 ## Scope
 
 This establishes actual OpenShell placement, denial, worker-effect lifetime,
