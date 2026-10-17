@@ -127,7 +127,7 @@ GOLDEN = {
     "sandbox-notice-skills-words-2": (
         "95abbf47b2ed323a776ad1ed94e791530e2fc9352cdea710406c22a3aa572063"
     ),
-    "sandbox-skills-index-3": ("2daecc293895a53af16ac5cab4ebeb65dd527199da04a86f569cda0d89962601"),
+    "sandbox-skills-index-4": ("3b46d2a21cd57e15bc9ef583284bffd33f0ec72e5c33e8adb456e345c2cf8ef5"),
     "sandbox-skills-pass-1": ("c1959f76747a1361f5e9ebe5b97c4b675c3fe45037c28e3dc1513a8fc56ff0b6"),
     "sandbox-state-block-2": "c32d80a06a317c3faa60cc2a997fa4040b1f75479f4e00995dce3afcdf6c27c1",
     "sandbox-digest-2": "6e3a9bb129ea96671d73d6fd7e5f066451184232ae2278bc78b3e4d3f6a082ca",
