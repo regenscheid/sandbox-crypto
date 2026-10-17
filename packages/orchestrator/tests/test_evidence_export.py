@@ -183,3 +183,53 @@ def test_verifier_still_accepts_v1_and_checks_the_versions_table_set(
                 b"".join(encoded).replace(b"sandbox-run-evidence-v1", b"sandbox-run-evidence-v2")
             )
         )
+
+
+@pytest.mark.parametrize("version", ["v1", "v2"])
+@pytest.mark.parametrize("fault", ["empty", "missing", "unknown", "duplicate"])
+def test_verifier_rejects_malformed_rows_even_with_valid_checksums(
+    projects: ProjectStore, version: str, fault: str
+) -> None:
+    Archive(projects.control).append("p", "s", RUN, Entry("user", "task", "Evidence"))
+    items = [json.loads(line) for line in EvidenceExport(projects.control, "p", "s", RUN).lines()]
+    if version == "v1":
+        items[0]["format"] = "sandbox-run-evidence-v1"
+        del items[0]["tables"]["run_inputs"]
+    row = next(i for i, item in enumerate(items) if item["kind"] == "row")
+    end = next(i for i, item in enumerate(items) if item["kind"] == "row_end")
+    position = next(i for i, item in enumerate(items) if item.get("field") == "position")
+    match fault:
+        case "empty":
+            del items[row + 1 : end]
+            error = "incomplete evidence row fields"
+        case "missing":
+            del items[position]
+            error = "incomplete evidence row fields"
+        case "unknown":
+            items.insert(
+                end, {"kind": "value", "field": "unexpected", "storage": "null", "value": None}
+            )
+            error = "unknown evidence field"
+        case _:
+            items.insert(end, items[position])
+            error = "duplicate"
+    raw = b"".join(json.dumps(item).encode() + b"\n" for item in items[:-1])
+    raw += (
+        json.dumps(
+            {"kind": "complete", "lines": len(items) - 1, "sha256": hashlib.sha256(raw).hexdigest()}
+        ).encode()
+        + b"\n"
+    )
+    with pytest.raises(ValueError, match=error):
+        verify(io.BytesIO(raw))
+
+
+def test_verifier_rejects_unknown_fields_before_accumulating_more(projects: ProjectStore) -> None:
+    Archive(projects.control).append("p", "s", RUN, Entry("user", "task", "Evidence"))
+    lines = iter(EvidenceExport(projects.control, "p", "s", RUN).lines())
+    prefix = next(lines) + next(lines)  # manifest and row
+    unknown = b'{"kind":"value","field":"extra_a","storage":"null","value":null}\n'
+    stream = io.BytesIO(prefix + unknown + unknown.replace(b"extra_a", b"extra_b") * 10_000)
+    with pytest.raises(ValueError, match="unknown evidence field"):
+        verify(stream)
+    assert stream.tell() == len(prefix) + len(unknown)

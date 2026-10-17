@@ -15,88 +15,42 @@ from sandbox_science.orchestrator.control import ControlError, ControlStore
 from sandbox_science.orchestrator.control.errors import INTERNAL, NOT_FOUND
 from sandbox_science.orchestrator.documents.store import DocumentStore
 
-from .export_format import LINE
+from .export_format import LINE, TABLE_FIELDS, Format, Table
 from .operations import CHUNK_BYTES
 
-FORMAT: Final = "sandbox-run-evidence-v2"
+FORMAT: Final[Format] = "sandbox-run-evidence-v2"
 PAGE: Final = 100
 
 
 @dataclass(frozen=True)
 class _Table:
-    name: str
-    fields: tuple[str, ...]
+    name: Table
     where: str
+
+    @property
+    def fields(self) -> tuple[str, ...]:
+        return TABLE_FIELDS[FORMAT][self.name]
 
 
 _RUN: Final = "project=? AND session=? AND run=?"
 _TABLES: Final = (
-    _Table("run_inputs", ("project", "session", "run", "snapshot"), _RUN),
-    _Table("runs", ("record",), "project_id=? AND session_id=? AND name=?"),
+    _Table("run_inputs", _RUN),
+    _Table("runs", "project_id=? AND session_id=? AND name=?"),
     _Table(
         "archive_messages",
-        (
-            "project",
-            "message_id",
-            "session",
-            "position",
-            "run",
-            "parent",
-            "created",
-            "role",
-            "kind",
-            "content",
-            "source",
-            "refs",
-            "call_id",
-            "tool_calls",
-            "files",
-            "model",
-            "gateway_version",
-            "native_format",
-            "native",
-            "alias",
-            "prefix",
-            "adapter_state",
-        ),
         _RUN,
     ),
     _Table(
         "archive_docs",
-        (
-            "doc",
-            "project",
-            "message_id",
-            "path",
-            "size",
-            "text",
-            "left_out",
-            "artifact_id",
-            "revision",
-        ),
         "EXISTS (SELECT 1 FROM archive_messages m WHERE m.project=archive_docs.project "
         "AND m.message_id=archive_docs.message_id AND m.project=? AND m.session=? AND m.run=?)",
     ),
     _Table(
         "tool_intents",
-        (
-            "seq",
-            "project",
-            "session",
-            "run",
-            "operation_id",
-            "call_id",
-            "tool",
-            "arguments",
-            "context",
-            "created",
-            "body_bytes",
-        ),
         _RUN,
     ),
     _Table(
         "archive_tool_records",
-        ("project", "message_id", "session", "run", "operation_id", "record_bytes", "record"),
         _RUN,
     ),
 )

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 """Versioned, bounded NDJSON line shapes for the stored-evidence interchange."""
 
-from typing import Annotated, Literal, Self
+from typing import Annotated, Final, Literal, Self
 
 from pydantic import Field, StringConstraints, TypeAdapter, model_validator
 
@@ -16,6 +16,77 @@ Table = Literal[
 ]
 Name = Annotated[str, StringConstraints(pattern=r"^[a-z_]{1,64}$")]
 
+Format = Literal["sandbox-run-evidence-v1", "sandbox-run-evidence-v2"]
+# Versioned wire fields, independent of later database migrations. The exporter and
+# verifier share these so missing/unknown fields cannot pass a checksummed download.
+_V1_FIELDS: Final[dict[Table, tuple[str, ...]]] = {
+    "runs": ("record",),
+    "archive_messages": (
+        "project",
+        "message_id",
+        "session",
+        "position",
+        "run",
+        "parent",
+        "created",
+        "role",
+        "kind",
+        "content",
+        "source",
+        "refs",
+        "call_id",
+        "tool_calls",
+        "files",
+        "model",
+        "gateway_version",
+        "native_format",
+        "native",
+        "alias",
+        "prefix",
+        "adapter_state",
+    ),
+    "archive_docs": (
+        "doc",
+        "project",
+        "message_id",
+        "path",
+        "size",
+        "text",
+        "left_out",
+        "artifact_id",
+        "revision",
+    ),
+    "tool_intents": (
+        "seq",
+        "project",
+        "session",
+        "run",
+        "operation_id",
+        "call_id",
+        "tool",
+        "arguments",
+        "context",
+        "created",
+        "body_bytes",
+    ),
+    "archive_tool_records": (
+        "project",
+        "message_id",
+        "session",
+        "run",
+        "operation_id",
+        "record_bytes",
+        "record",
+    ),
+}
+TABLE_FIELDS: Final[dict[Format, dict[Table, tuple[str, ...]]]] = {
+    "sandbox-run-evidence-v1": _V1_FIELDS,
+    "sandbox-run-evidence-v2": {
+        "run_inputs": ("project", "session", "run", "snapshot"),
+        **_V1_FIELDS,
+    },
+}
+
 
 class Selection(Contract):
     through_rowid: Counter
@@ -24,7 +95,7 @@ class Selection(Contract):
 
 class Manifest(Contract):
     kind: Literal["manifest"]
-    format: Literal["sandbox-run-evidence-v1", "sandbox-run-evidence-v2"]
+    format: Format
     project: Identifier
     session: Identifier
     run: RunName
@@ -35,16 +106,7 @@ class Manifest(Contract):
 
     @model_validator(mode="after")
     def _tables(self) -> Self:
-        expected = {
-            "runs",
-            "archive_messages",
-            "archive_docs",
-            "tool_intents",
-            "archive_tool_records",
-        }
-        if self.format == "sandbox-run-evidence-v2":
-            expected.add("run_inputs")
-        if set(self.tables) != expected:
+        if set(self.tables) != TABLE_FIELDS[self.format].keys():
             raise ValueError("the manifest must name its version's complete table set")
         return self
 

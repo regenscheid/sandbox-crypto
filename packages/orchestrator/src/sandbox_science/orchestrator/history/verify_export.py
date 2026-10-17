@@ -14,6 +14,7 @@ from typing import BinaryIO
 
 from .export_format import (
     LINE,
+    TABLE_FIELDS,
     Chunk,
     Complete,
     FieldStart,
@@ -80,10 +81,14 @@ def verify(stream: BinaryIO) -> Manifest:
         elif isinstance(item, RowEnd):
             if field is not None:
                 raise ValueError("unfinished evidence field")
+            if names != set(TABLE_FIELDS[manifest.format][current.table]):
+                raise ValueError("incomplete evidence row fields")
             current = None
         elif isinstance(item, (FieldStart, Value)):
             if field is not None or item.field in names:
                 raise ValueError("duplicate or unfinished evidence field")
+            if item.field not in TABLE_FIELDS[manifest.format][current.table]:
+                raise ValueError("unknown evidence field")
             names.add(item.field)
             if isinstance(item, FieldStart):
                 field, offset, field_digest = item, 0, hashlib.sha256()

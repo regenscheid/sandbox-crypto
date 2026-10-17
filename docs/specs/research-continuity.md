@@ -281,7 +281,9 @@ base64 chunks, field checksums, and a final stream checksum. The manifest record
 the immutable row cutoffs captured together before export. Later appends are not
 included. Every field retains its SQLite storage type, so JSON text, Unicode,
 NUL bytes and native provider payloads can be recovered exactly. A download without
-its verified final line is incomplete.
+its verified final line is incomplete. The offline verifier requires each version's
+complete table field set and rejects unknown or duplicate fields before retaining
+their names, so malformed rows cannot grow its working memory without bound.
 
 This bundle contains the final run JSON when present, archive messages and saved
 text samples, tool intents, and full structured tool records. It does not claim to
