@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import configparser
 import dataclasses
+import os
 import re
 import sys
 import tomllib
@@ -64,6 +65,8 @@ import sys
 args = sys.argv[1:]
 if args[:2] == ["sandbox", "upload"]:
     shutil.copy(args[-2], args[-1])
+elif args[:2] == ["sandbox", "ssh-config"]:
+    print("Host openshell-test.default")
 elif args[:2] == ["sandbox", "exec"] and "--" in args:
     command = args[args.index("--") + 1 :]
     os.execvp(command[0], command)
@@ -398,15 +401,26 @@ def openshell_settings(tmp_path: Path, **changes: Any) -> OpenShellBackendSettin
     cli.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{script}" "$@"\n')
     cli.chmod(0o755)
     sandbox = tmp_path / "sandbox"
+    ssh = tmp_path / "ssh"
+    ssh.write_text(
+        f"#!/bin/sh\nexec '{sys.executable}' -I -c "
+        '\'import os,shlex,stat,sys; args=sys.argv; p=args[args.index("-F")+1]; '
+        "assert stat.S_IMODE(os.stat(p).st_mode)==0o600; "
+        "assert stat.S_IMODE(os.stat(os.path.dirname(p)).st_mode)==0o700; "
+        'assert "SetEnv=OPENSHELL_NO_LOGIN_SHELL=1" in args; '
+        'assert "ClearAllForwardings=yes" in args; cmd=shlex.split(args[-1]); '
+        'assert "--framed" in cmd; os.execvp(cmd[0],cmd)\' "$@"\n'
+    )
+    ssh.chmod(0o755)
     return OpenShellBackendSettings(
         cli=str(cli),
-        daemon=False,  # This stand-in exercises the original stdio transport.
+        daemon=True,  # Exercise the production framed daemon bridge through a fake SSH.
         python=sys.executable,
         project_root=str(sandbox / "project"),
         executor_dir=str(sandbox / ".sandbox-science"),
         isolation_tier=3,  # the probe lowers it: the stand-in runs everything here
         sched_shim=False,
-        env={"HOME": str(sandbox)},
+        env={"HOME": str(sandbox), "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"]},
         sandboxes={"env1": "research-1"},
         **changes,
     )
@@ -426,10 +440,19 @@ async def run(manager: ExecutionManager, request: ShellRequest | CellRequest) ->
 async def with_manager(
     tmp_path: Path, settings: OpenShellBackendSettings, *requests: ShellRequest | CellRequest
 ) -> list[Execution]:
+    channels: list[Any] = []
+
+    class TrackedBackend(OpenShellBackend):
+        async def open(self, *args: Any, **kwargs: Any) -> Any:
+            channel = await super().open(*args, **kwargs)
+            channels.append(channel)
+            return channel
+
     store = Store(tmp_path / "worker.sqlite3")
+    backend = TrackedBackend(settings, tmp_path / "state")
     manager = ExecutionManager(
         store,
-        OpenShellBackend(settings, tmp_path / "state"),
+        backend,
         Blobs(tmp_path / "artifacts"),
         pool_id="test-pool",
         max_artifact_size=1 << 20,
@@ -439,8 +462,11 @@ async def with_manager(
     try:
         return [await run(manager, request) for request in requests]
     finally:
+        for channel in channels:
+            await channel.shutdown()
         await manager.close()
         store.close()
+        assert not list((tmp_path / "state").glob("worker-ssh-*"))
 
 
 def stdout(execution: Execution) -> str:

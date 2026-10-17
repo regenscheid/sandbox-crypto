@@ -11,6 +11,8 @@ import logging
 import os
 import re
 import secrets
+import shlex
+import tempfile
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Literal, Protocol
@@ -24,6 +26,7 @@ from . import (
     executor,
     pdfhelper,
     provisioning,
+    request_frames,
     sandbox_files,
     sandbox_processes,
     sandbox_setup,
@@ -47,6 +50,7 @@ SANDBOX_FILES: tuple[Path, ...] = (
     PROVISIONING_SOURCE,
     PDF_HELPER_SOURCE,
     DAEMON_SOURCE,
+    Path(request_frames.__file__),
     CAPTURE_SOURCE,
     Path(sandbox_files.__file__),
     Path(sandbox_processes.__file__),
@@ -180,7 +184,7 @@ class LocalBackend:
 
 
 class OpenShellBackend:
-    """Copies the executor into a configured sandbox and runs it with ``openshell sandbox exec``."""
+    """Copies the executor into a sandbox and opens a bounded, isolated SSH daemon bridge."""
 
     name: Literal["openshell"] = "openshell"
 
@@ -261,6 +265,8 @@ class OpenShellBackend:
     async def open(
         self, environment_id: str, on_event: EventHandler, on_closed: ClosedHandler
     ) -> ExecutorChannel:
+        if not self.settings.daemon:
+            raise WorkerError(ErrorKind.UNSUPPORTED, "OpenShell streaming requires daemon=true")
         sandbox = self._sandbox(environment_id)
         settings = self.settings
         await self._run(
@@ -275,25 +281,64 @@ class OpenShellBackend:
                 "sandbox", "upload", "--no-git-ignore", sandbox, str(path),
                 f"{settings.executor_dir}/",
             )  # fmt: skip
-        argv = [settings.cli, "sandbox", "exec", "-n", sandbox, "--no-tty", "--no-login-shell"]
+        remote = [
+            settings.python,
+            "-I",
+            f"{settings.executor_dir}/{DAEMON_SOURCE.name}",
+            "--framed",
+            "--root",
+            settings.project_root,
+            *self.executor_args,
+        ]
         if settings.sched_shim:
-            argv += ["--env", f"LD_PRELOAD={settings.executor_dir}/{SCHED_SHIM_NAME}"]
-        argv += [
-            "--", settings.python, "-I", f"{settings.executor_dir}/{EXECUTOR_SOURCE.name}",
-            "--stdio", "--root", settings.project_root, *self.executor_args,
-        ]  # fmt: skip
-        token = None
-        if settings.daemon:
-            argv = [argument for argument in argv if argument != "--stdio"]
-            argv = [
-                f"{settings.executor_dir}/{DAEMON_SOURCE.name}"
-                if argument == f"{settings.executor_dir}/{EXECUTOR_SOURCE.name}"
-                else argument
-                for argument in argv
-            ]
-            token = daemon_token(self.state_dir, environment_id)
-        channel = ExecutorChannel(argv, on_event, on_closed, env=self._env(), daemon_token=token)
-        await channel.start()
+            remote = ["env", f"LD_PRELOAD={settings.executor_dir}/{SCHED_SHIM_NAME}", *remote]
+        code, config = await _command(
+            settings.cli, "sandbox", "ssh-config", sandbox, env=self._env()
+        )
+        hosts = re.findall(rb"^Host ([A-Za-z0-9._-]+)$", config, re.MULTILINE)
+        if code != 0 or len(config) > 65536 or len(hosts) != 1:
+            raise WorkerError(
+                ErrorKind.UNAVAILABLE, "OpenShell returned no usable SSH configuration"
+            )
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        private = tempfile.TemporaryDirectory(prefix="worker-ssh-", dir=self.state_dir)
+        config_path = Path(private.name) / "config"
+        config_path.write_bytes(config)
+        config_path.chmod(0o600)
+        argv = [
+            "ssh",
+            "-T",
+            "-F",
+            str(config_path),
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ClearAllForwardings=yes",
+            "-o",
+            "SetEnv=OPENSHELL_NO_LOGIN_SHELL=1",
+            hosts[0].decode("ascii"),
+            shlex.join(remote),
+        ]
+
+        async def closed(channel: ExecutorChannel) -> None:
+            try:
+                await on_closed(channel)
+            finally:
+                private.cleanup()
+
+        channel = ExecutorChannel(
+            argv,
+            on_event,
+            closed,
+            env=self._env(),
+            daemon_token=daemon_token(self.state_dir, environment_id),
+            framed=True,
+        )
+        try:
+            await channel.start()
+        except BaseException:
+            private.cleanup()
+            raise
         if self._clients is not None:
             try:
                 await configure_package_clients(channel, self._clients, environment_id)

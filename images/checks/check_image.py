@@ -62,6 +62,7 @@ WORKER_FILES = (
     "provisioning.py",
     "pdfhelper.py",
     "daemon.py",
+    "request_frames.py",
     "capture.py",
     "sandbox_files.py",
     "sandbox_processes.py",

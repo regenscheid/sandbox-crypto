@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, cast
 
 if __package__:
-    from . import executor
+    from . import executor, request_frames
 else:
     import importlib.util
 
@@ -38,6 +38,9 @@ else:
     executor = importlib.util.module_from_spec(_spec)
     sys.modules[_spec.name] = executor
     _spec.loader.exec_module(executor)
+    # Reuse the executor's standalone payload loader.
+    request_frames = executor._sibling("request_frames")
+
 
 Message = dict[str, Any]
 JOURNAL_BYTES = 64 * 1024 * 1024
@@ -560,11 +563,30 @@ async def connect(token: str, root: Path) -> tuple[asyncio.StreamReader, asyncio
     return reader, writer
 
 
-async def bridge(root: Path, kernel_idle: float | None) -> None:
+async def bridge(root: Path, kernel_idle: float | None, *, framed: bool = False) -> None:
     loop = asyncio.get_running_loop()
-    incoming = asyncio.StreamReader(limit=executor.MAX_REQUEST)
+    incoming = asyncio.StreamReader(
+        limit=request_frames.MAX_FRAME if framed else executor.MAX_REQUEST
+    )
+    output_lock = asyncio.Lock()
+
+    async def stdout(line: bytes) -> None:
+        async with output_lock:
+            await asyncio.to_thread(executor.write_log, 1, line)
+
+    receiver = request_frames.Receiver(executor.MAX_REQUEST)
+
+    async def incoming_request() -> tuple[bytes, bytes] | None:
+        if framed:
+            return await request_frames.receive(incoming, receiver, stdout)
+        line = await incoming.readline()
+        return (line, b"") if line else None
+
     await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(incoming), sys.stdin)
-    first = await incoming.readline()
+    initial = await incoming_request()
+    if initial is None:
+        return
+    first, first_ack = initial
     request = json.loads(first)
     token = request.pop("daemon_token", "")
     if not isinstance(token, str) or len(token) != 64:
@@ -603,15 +625,20 @@ async def bridge(root: Path, kernel_idle: float | None) -> None:
     reader, writer = connection
     writer.write(executor.encode_line(request))
     await writer.drain()
+    if first_ack:
+        await stdout(first_ack)
 
     async def to_daemon() -> None:
-        while line := await incoming.readline():
+        while received := await incoming_request():
+            line, ack = received
             writer.write(line)
             await writer.drain()
+            if ack:
+                await stdout(ack)
 
     async def to_worker() -> None:
         while line := await reader.readline():
-            await asyncio.to_thread(executor.write_log, 1, line)
+            await stdout(line)
 
     tasks = [asyncio.create_task(to_daemon()), asyncio.create_task(to_worker())]
     try:
@@ -626,6 +653,7 @@ async def bridge(root: Path, kernel_idle: float | None) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--serve", action="store_true")
+    parser.add_argument("--framed", action="store_true")
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--kernel-idle", type=float)
     args = parser.parse_args()
@@ -643,7 +671,7 @@ def main() -> None:
         os.environ.setdefault("IPYTHONDIR", str(state / "ipython"))
         asyncio.run(Daemon(root, token, args.kernel_idle).serve())
     else:
-        asyncio.run(bridge(root, args.kernel_idle))
+        asyncio.run(bridge(root, args.kernel_idle, framed=args.framed))
 
 
 if __name__ == "__main__":

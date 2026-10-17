@@ -475,3 +475,5 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [ ] Approvals, after D-04: source rules for answers (approvals and denials from `operator`, withdrawals from `worker`) when a second answer writer exists (the GUI path); listing and answering requests through the worker API with re-authentication (W4, D54); whether the MCP proxy's requests join that store
 - [x] Refactoring plan Phase 3, D-09: identical escalations at the same time record one permission request (middleware and MCP proxy); both prime the approvals at startup and read only the approval kinds; the proxy reads the store off its event loop
 - [ ] Event store retention, designed before M3: the approvals fold reads every permission request ever recorded
+
+- [x] Implement bounded stop-and-wait OpenShell worker request framing over isolated SSH; retain daemon incarnation/replay and explicit unsupported stdio configuration ([contract](../docs/specs/worker-stream-transport.md)). Deterministic validation is recorded with the change; actual bulk OpenShell qualification remains separate.

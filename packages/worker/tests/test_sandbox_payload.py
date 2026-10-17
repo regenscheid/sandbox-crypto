@@ -34,7 +34,7 @@ LOADS: dict[str, frozenset[str]] = {
             "pdfhelper",
         }
     ),
-    "daemon.py": frozenset({"executor"}),
+    "daemon.py": frozenset({"executor", "request_frames"}),
 }
 """The siblings each file loads or runs by path; the others load none."""
 NAMES = {path.name for path in SANDBOX_FILES}

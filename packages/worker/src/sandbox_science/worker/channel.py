@@ -15,12 +15,15 @@ import json
 import logging
 import math
 import re
+import secrets
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Final, cast
 
 from sandbox_science.contracts import ErrorKind, new_id
 
+from . import request_frames
 from .errors import ExecutorRefusalError, WorkerError
 from .recovery_fence import check_dispatch
 from .timeouts import seconds
@@ -66,6 +69,11 @@ _SURROGATE = re.compile("[\ud800-\udfff]")
 
 Message = dict[str, Any]
 EventHandler = Callable[[Message], Awaitable[None]]
+
+
+@dataclass
+class _EventScope:
+    active: bool = True
 
 
 class ProtocolError(ValueError):
@@ -133,8 +141,22 @@ class ExecutorChannel:
         *,
         env: Mapping[str, str] | None = None,
         daemon_token: str | None = None,
+        framed: bool = False,
         timeouts: ChannelTimeouts = CHANNEL_TIMEOUTS,
     ) -> None:
+        self.framed = framed
+        self._ack: tuple[str, int, int, asyncio.Future[None]] | None = None
+        self._events: asyncio.Queue[tuple[Message, int]] = asyncio.Queue(maxsize=128)
+        self._event_bytes = 0
+        self._event_received = 0
+        self._event_delivered = 0
+        self._event_progress = asyncio.Event()
+        self._reply_barriers: dict[int, int] = {}
+        self._in_event: ContextVar[_EventScope | None] = ContextVar(
+            "executor_event_callback", default=None
+        )
+        self._event_active = False
+        self._event_task: asyncio.Task[None] | None = None
         self.daemon_token = daemon_token
         self.timeouts = timeouts
         self.detaching = False
@@ -173,6 +195,9 @@ class ExecutorChannel:
             asyncio.ensure_future(self._read_stdout()),
             asyncio.ensure_future(self._read_stderr()),
         ]
+        if self.framed:
+            self._event_task = asyncio.create_task(self._deliver_events())
+            self._tasks.append(self._event_task)
         try:
             fields = {"daemon_token": self.daemon_token} if self.daemon_token else {}
             self.hello = await self.request("hello", reply_timeout=REPLY_TIMEOUT, **fields)
@@ -217,20 +242,34 @@ class ExecutorChannel:
             ).encode()
 
         line = await offload(encode) if large_write else encode()
+        if self.framed:
+            capacity = self.hello.get(
+                "max_request_bytes", 64 * 1024 * 1024 if self.hello else 65536
+            )
+            if type(capacity) is not int or len(line) > capacity:
+                raise WorkerError(
+                    ErrorKind.INVALID_REQUEST, "executor request exceeds its byte limit"
+                )
         future: asyncio.Future[Message] = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
         writing_started = False
         try:
             try:
                 async with asyncio.timeout(write_timeout), self._write_lock:
+                    if self.closed:
+                        raise WorkerError(ErrorKind.UNAVAILABLE, "the executor transport is closed")
                     check_dispatch(op)
                     writing_started = True
-                    process.stdin.write(line)
-                    await process.stdin.drain()
+                    if self.framed:
+                        await self._write_frames(request_id, op, line)
+                    else:
+                        process.stdin.write(line)
+                        await process.stdin.drain()
             except TimeoutError as exc:
                 # Waiting behind a large frame has written nothing and must not kill
                 # its sender's healthy executor. Only a partial frame makes it unusable.
                 if writing_started:
+                    self.closed = True
                     self._abandoned = asyncio.ensure_future(self.close())
                 else:
                     raise WorkerError(
@@ -239,13 +278,32 @@ class ExecutorChannel:
                 raise WorkerError(
                     ErrorKind.UNAVAILABLE, "the executor stopped reading its requests"
                 ) from exc
-            reply = await asyncio.wait_for(future, reply_timeout)
+            except asyncio.CancelledError:
+                if writing_started:
+                    self.closed = True
+                    self._abandoned = asyncio.ensure_future(self.close())
+                raise
+            except BaseException:
+                if self.framed and writing_started:
+                    self.closed = True
+                    self._abandoned = asyncio.ensure_future(self.close())
+                raise
+            async with asyncio.timeout(reply_timeout):
+                reply = await future
+                scope = self._in_event.get()
+                if self.framed and not (scope is not None and scope.active):
+                    await self._wait_events(self._reply_barriers.get(request_id, 0))
         except (ConnectionError, BrokenPipeError) as exc:
             raise WorkerError(ErrorKind.UNAVAILABLE, "the executor went away") from exc
         except TimeoutError as exc:
             raise WorkerError(ErrorKind.UNAVAILABLE, f"the executor did not answer {op!r}") from exc
         finally:
             self._pending.pop(request_id, None)
+            self._reply_barriers.pop(request_id, None)
+            if not future.done():
+                future.cancel()
+            elif not future.cancelled():
+                future.exception()  # a failed transfer may never reach its reply await
         if reply.get("ok") is not True:
             raw = reply.get("error")
             error = cast(dict[str, Any], raw) if isinstance(raw, dict) else {}
@@ -256,6 +314,86 @@ class ExecutorChannel:
             message = str(error.get("message", "the executor refused the request"))
             raise ExecutorRefusalError(kind, message[:MAX_ERROR_MESSAGE])
         return reply
+
+    async def _write_frames(self, request_id: int, op: str, line: bytes) -> None:
+        process = self._process
+        if process is None or process.stdin is None:
+            raise ConnectionError("executor disappeared")
+        transfer = secrets.token_hex(16)
+        for seq, offset in enumerate(range(0, len(line), request_frames.CHUNK_BYTES)):
+            chunk = line[offset : offset + request_frames.CHUNK_BYTES]
+            final = offset + len(chunk) == len(line)
+            # The final frame is the first point at which the bridge may dispatch.
+            # Recheck authority after every ACK wait, including before that frame.
+            await asyncio.sleep(0)  # observe cancellation before admitting another frame
+            check_dispatch(op)
+            ack: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+            self._ack = transfer, request_id, seq, ack
+            try:
+                process.stdin.write(request_frames.frame(transfer, request_id, seq, final, chunk))
+                await process.stdin.drain()
+                await ack
+            finally:
+                self._ack = None
+
+    async def _deliver_events(self) -> None:
+        while True:
+            message, size = await self._events.get()
+            scope = _EventScope()
+            token = self._in_event.set(scope)
+            self._event_active = True
+            processed = False
+            try:
+                await self._on_event(message)
+                processed = True
+            except Exception:
+                processed = True  # preserve the existing logged-handler-failure behavior
+                _log.exception("handling an executor event failed")
+            finally:
+                scope.active = False
+                self._in_event.reset(token)
+                self._event_active = False
+                self._event_bytes -= size
+                if processed:
+                    self._event_delivered += 1
+                self._event_progress.set()
+                self._events.task_done()
+            if self.closed:
+                return
+
+    async def _wait_events(self, target: int) -> None:
+        # Normal replay replies retain the old ordering: preceding event callbacks
+        # have committed before the RPC returns. Callback-issued RPCs must bypass
+        # their own barrier or they would wait for themselves.
+        while self._event_delivered < target:
+            if self.closed:
+                raise WorkerError(ErrorKind.UNAVAILABLE, "executor event delivery interrupted")
+            self._event_progress.clear()
+            await self._event_progress.wait()
+
+    async def _stop_events(self) -> None:
+        while not self._events.empty():
+            _message, size = self._events.get_nowait()
+            self._event_bytes -= size
+            self._events.task_done()
+        self._event_progress.set()
+        task = self._event_task
+        if task is None or task is asyncio.current_task():
+            return
+        # The current callback may own a package offload/SQL continuation. Drain
+        # it before recovery can install a replacement bridge; only idle gets
+        # cancelled. Closed request futures already unblock nested RPCs.
+        if not self._event_active:
+            task.cancel()
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                pass  # joining remains owned even under repeated shutdown cancellation
+            except Exception:
+                break
+        with contextlib.suppress(asyncio.CancelledError):
+            task.result()
 
     async def detach(self) -> None:
         """Close only the stdio bridge; a daemon keeps its research processes alive."""
@@ -274,6 +412,9 @@ class ExecutorChannel:
         """Stop the executor: close its stdin, and kill it if it does not exit in time."""
         self.closed = True
         await self._stop()
+        await self._stop_events()
+        if asyncio.current_task() is self._event_task:
+            return  # stdout's close path joins this callback after it returns
         if self._tasks:
             # Orphaned kernels could hold stderr open: do not wait for them.
             _, pending = await asyncio.wait(self._tasks, timeout=5)
@@ -320,15 +461,21 @@ class ExecutorChannel:
             _log.exception("reading from the executor failed")
         finally:
             self.closed = True
+            self._event_progress.set()
+            if self._ack is not None and not self._ack[3].done():
+                self._ack[3].set_exception(
+                    WorkerError(ErrorKind.UNAVAILABLE, "executor transport closed")
+                )
             for future in self._pending.values():
                 if not future.done():
                     future.set_exception(
                         WorkerError(ErrorKind.UNAVAILABLE, "the executor went away")
                     )
             try:
-                await self._on_closed(self)
-            finally:
+                await self._stop_events()
                 await self._stop()
+            finally:
+                await self._on_closed(self)
 
     async def _receive(self, line: bytes) -> None:
         try:
@@ -337,15 +484,36 @@ class ExecutorChannel:
             self._drop(str(exc), line)
             return
         kind = message.get("type")
-        if kind == "reply":
+        if kind == "transport_ack" and self.framed:
+            ack = self._ack
+            if (
+                ack is None
+                or set(message) != {"type", "transfer", "id", "seq"}
+                or type(message.get("id")) is not int
+                or type(message.get("seq")) is not int
+                or (message.get("transfer"), message.get("id"), message.get("seq")) != ack[:3]
+                or ack[3].done()
+            ):
+                raise ProtocolError("invalid request transport acknowledgement")
+            ack[3].set_result(None)
+        elif kind == "reply":
             request_id = message.get("id")
             if not isinstance(request_id, int) or isinstance(request_id, bool):
                 self._drop("a reply without an integer id", line)
                 return
             future = self._pending.get(request_id)
             if future is not None and not future.done():
+                if self.framed:
+                    self._reply_barriers[request_id] = self._event_received
                 future.set_result(message)
         elif kind == "event":
+            if self.framed:
+                if self._event_bytes + len(line) > 32 * 1024 * 1024:
+                    raise ProtocolError("executor event callback backlog exceeds its byte bound")
+                self._events.put_nowait(({**message, "_bridge": self.bridge_id}, len(line)))
+                self._event_bytes += len(line)
+                self._event_received += 1
+                return
             try:
                 await self._on_event({**message, "_bridge": self.bridge_id})
             except Exception:
