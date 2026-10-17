@@ -4,7 +4,7 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 ## 2026-10-17
 
-- The owner requires configurable model reasoning effort by role and normally uses `max` for research; the live trial had inherited `medium`. Pin requested profiles across Resume, and audit explicit operator effort overrides without rewriting original inputs.
+- The owner requires configurable model reasoning effort by role and normally uses `max` for research; the live trial had inherited `medium`. Requested profiles are now pinned across Resume, with explicit operator effort overrides audited without rewriting original inputs (`43889b45`); live provider verification remains pending.
 - Extended cryptanalysis must iterate beyond initial pilots/checklists. MAIN/planning/stock guidance now distinguishes bounded tasks from extended exploration; requested skill workflows also require reading applicable supporting references and applying their procedures, not just declaring Discover mode.
 
 - The owner wants renewable research allowances: resource warnings go to the calling agent, which can grant extensions within policy and hard outer budgets. [Adaptive resource policy](../docs/specs/adaptive-research-resources.md) records the direction; implementation remains planned.

@@ -47,6 +47,6 @@ The owner's ledger rule: weakening a settled state needs no authority; strengthe
 
 ## What is next
 
-1. Finish/review per-role effort and explicit Resume override, deploy together at the saved checkpoint, confirm actual max effort, and obtain the requested deep SNOVA research plan.
+1. Per-role effort and explicit Resume override are signed in `43889b45`, independently reviewed and tested (215 integration plus focused gates). Deploy the frozen checkout/image at the saved checkpoint, confirm actual max effort, and obtain the requested deep SNOVA research plan.
 2. Continue meaningful research/fold/Sage/recovery acceptance within the remaining shared $200 budget. Preserve artifacts and exact evidence, then verify complete disposable-lab teardown.
 3. Keep signed local work unpushed/unmerged for review. Continue remaining UI/context-inspector and BACKLOG work after foundations acceptance.
