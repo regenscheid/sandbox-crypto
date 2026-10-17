@@ -232,6 +232,33 @@ async def test_a_check_gets_the_projects_turns_and_tokens(delegating: Harness) -
     assert {"max_turns", "max_input_chars"} <= set(root.limits)
 
 
+async def test_new_child_uses_settings_changed_while_parent_runs(delegating: Harness) -> None:
+    configure(delegating, check_turns=20, check_tokens=300_000)
+
+    async def increase() -> None:
+        configure(delegating, check_turns=100, check_tokens=2_000_000)
+
+    root = await delegating.run(
+        "root",
+        [Reply(calls=[CHECK], before=increase), wait(), Reply("Done.")],
+        delegated=[Reply(REPORT)],
+    )
+    assert json.loads(results(root)[0])["limits"] == {"turns": 100, "tokens": 2_000_000}
+    (child,) = children(delegating, root)
+    assert child.limits is not None
+    assert (child.limits["max_turns"], child.limits["tokens"]) == (100, 2_000_000)
+
+
+async def test_reduced_depth_refuses_new_child_in_existing_parent(delegating: Harness) -> None:
+    async def disable() -> None:
+        configure(delegating, depth=0)
+
+    root = await delegating.run("root", [Reply(calls=[CHECK], before=disable), Reply("Done.")])
+    result = json.loads(results(root)[0])
+    assert "delegation depth was reduced" in str(result)
+    assert children(delegating, root) == []
+
+
 async def test_delegated_runs_call_the_delegated_model(delegating: Harness) -> None:
     """PD-27, PD-29: with its own alias set, a child calls it and its record and its
     delegation's outcome name it; the root keeps MAIN's."""

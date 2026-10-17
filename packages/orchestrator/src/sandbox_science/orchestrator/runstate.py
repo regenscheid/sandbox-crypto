@@ -97,6 +97,7 @@ def _response_usage(project: str, since: datetime | None) -> tuple[str, tuple[ob
 def _run_usage(project: str, since: datetime | None) -> tuple[str, tuple[object, ...]]:
     """Canonical observations, exactly linked legacy copies, then unlinked history."""
     from .continuity.materializations import Table, fallback
+    from .continuity.reservations import UNRESERVED
 
     query, values = _response_usage(project, since)
     after = 0.0 if since is None else since.timestamp()
@@ -137,6 +138,18 @@ def _run_usage(project: str, since: datetime | None) -> tuple[str, tuple[object,
             f"WHERE paid.project={project_col} AND paid.session={session} AND paid.run={run} "
             f"AND paid.identity=json_extract({value},'$.intent_id') "
             "AND paid.kind='fold' AND paid.usage IS NOT NULL)"
+            # Older cancelled copies have no intent_id. Suppress the estimate only
+            # when this run has one fold intent and its observed charge or explicit
+            # reservation has settled uncertainty. Ambiguous copies stay unpriced.
+            f" AND NOT (coalesce(json_extract({value},'$.cancelled'),0)=1 "
+            f"AND coalesce(json_extract({value},'$.estimated'),0)=1 "
+            "AND (SELECT count(*) FROM research_model_calls m "
+            f"WHERE m.project={project_col} AND m.session={session} "
+            f"AND m.run={run} AND m.kind='fold')=1 "
+            "AND EXISTS (SELECT 1 FROM research_model_calls m "
+            f"WHERE m.project={project_col} AND m.session={session} "
+            f"AND m.run={run} AND m.kind='fold' "
+            f"AND (m.usage IS NOT NULL OR NOT ({UNRESERVED}))))"
         )
 
     query += (

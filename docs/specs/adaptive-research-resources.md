@@ -11,6 +11,9 @@ turn, token or storage allowance was conservative. A child warns its calling age
 checkpoints its work and requests an extension. Policy decides which allowances the
 parent may extend and the hard ceiling within which it may do so. This applies to
 the orchestrator and every level of delegated work, including resumed attempts.
+The routine check-in's purpose is to catch stuck loops, repeated errors and
+unproductive spending; a healthy investigation should normally continue under its
+orchestrator, even after an initial allowance is used.
 
 ## Resource classes
 
@@ -34,7 +37,8 @@ the orchestrator and every level of delegated work, including resumed attempts.
    remaining uncertainty, proposed next experiment, and requested resources.
 3. The parent can extend, redirect, ask for a report, or stop the line with a reason.
    It judges progress from evidence, not just the child's assertion that it is
-   productive. A negative research result can still be effective progress.
+   productive. A negative research result can still be effective progress. A check-in
+   is not a scientific-completion signal and must not close an active plan by itself.
 4. The trusted control service validates the decision against policy, ancestor
    grants, aggregate reservations and capacity. It atomically records a new grant
    revision and an auditable reason. A child cannot grant itself more resources.

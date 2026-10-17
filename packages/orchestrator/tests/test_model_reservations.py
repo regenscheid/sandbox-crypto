@@ -20,6 +20,7 @@ from sandbox_science.orchestrator.continuity.status import RecoveryStatus
 from sandbox_science.orchestrator.control import ControlError
 from sandbox_science.orchestrator.delegation.records import DelegationRecords
 from sandbox_science.orchestrator.history import Archive
+from sandbox_science.orchestrator.history.collections import Collection
 from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.worker_client import WorkerClient
 from sandbox_science.testing import FakeClock
@@ -95,6 +96,52 @@ def test_reservation_is_exact_once_visible_and_separate_from_observed_spend(proj
             "SELECT usage FROM research_model_calls WHERE identity=?", (identity,)
         ).fetchone() == (None,)
         assert tx.sql.execute("SELECT count(*) FROM archive_model_usage").fetchone() == (0,)
+
+
+def test_cancelled_fold_copy_is_settled_by_its_durable_intent_reservation(projects):
+    now = datetime(2026, 10, 16, 4, tzinfo=UTC)
+    clock = FakeClock(now - timedelta(minutes=30))
+    works = WorkRecords(projects.control)
+    owner = works.admit("p", "s", RUN)
+    identity = ModelIntents(projects.control, clock=clock).begin(
+        owner, kind="fold", alias="fixture"
+    )
+    Collection(projects.control, ("p", "s", RUN), "fold_calls").append(
+        {"cancelled": True, "estimated": True, "input_tokens": 154_824, "cost": None}
+    )
+    works.interrupt("p", "s", RUN)
+    state = RunState(projects.control)
+    state.set_cost_limit("p", 10)
+    assert state.unpriced_calls("p", now - timedelta(hours=1)) == 1
+    assert ModelIntents(projects.control).pending("p", "s", RUN) == (identity,)
+    assert state.over_cost_limit("p", now)
+    RecoveryControls(projects.control, clock=clock).resolve(
+        "p",
+        "s",
+        body(
+            "model_reservation",
+            identity,
+            cost=2.0,
+            input_tokens=200_000,
+            output_tokens=10_000,
+        ),
+        operator="user",
+    )
+    assert state.unpriced_calls("p", now - timedelta(hours=1)) == 0
+    assert state.model_cost("p") is None
+    assert state.model_reservations("p") == {"main": 2}
+    assert not state.over_cost_limit("p", now)
+
+
+def test_legacy_cancelled_fold_without_durable_intent_stays_unpriced(projects):
+    now = datetime(2026, 10, 16, 4, tzinfo=UTC)
+    Collection(projects.control, ("p", "s", RUN), "fold_calls").append(
+        {"cancelled": True, "estimated": True, "input_tokens": 100, "cost": None}
+    )
+    state = RunState(projects.control)
+    state.set_cost_limit("p", 10)
+    assert state.unpriced_calls("p", now - timedelta(hours=1)) == 1
+    assert state.over_cost_limit("p", now)
 
 
 @pytest.mark.parametrize("change", [{"cost": 3}, {"input_tokens": 21}, {"kind": "model_usage"}])

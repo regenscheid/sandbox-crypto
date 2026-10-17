@@ -107,6 +107,8 @@ The same inactive-work, original-attempt, current-epoch, exact-identity and
 idempotency checks as other recovery resolutions apply; changing the decision or
 switching between observed usage and reservation conflicts.
 
+A cancelled fold can leave an estimated usage copy in its run collection. When the same run has a sole durable fold intent with observed usage or an exact reservation, this copy is diagnostic rather than a second unpriced charge. An unsettled or ambiguous copy retains its unpriced status.
+
 The reservation permits reconciliation to continue, but does not issue Resume or
 widen the original grants. Its cost counts against the project's daily admission
 budget using the original dispatch time, separately from observed-spend reporting.

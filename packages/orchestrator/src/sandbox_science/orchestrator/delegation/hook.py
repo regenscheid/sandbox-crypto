@@ -230,6 +230,7 @@ class Delegations(TurnHook):
         waiting: Callable[[Sequence[str] | None], Awaitable[None]] | None = None,
         over_budget: Callable[[], Awaitable[bool]] | None = None,
         limits: DelegationSettings | None = None,
+        refresh_settings: Callable[[], Awaitable[DelegationSettings]] | None = None,
         models: ModelChoice | None = None,
         track_grant: Callable[[str], Awaitable[PlanRef]] | None = None,
         depth: int = 0,
@@ -255,6 +256,7 @@ class Delegations(TurnHook):
         self.waiting = waiting
         self.limits = limits or DelegationSettings()
         """The project's cap and a check's tokens and turns (PD-38)."""
+        self.refresh_settings = refresh_settings
         self.models = models
         """The model each child calls (PD-28, PD-30); without it, the harness's."""
         self.depth = depth
@@ -327,6 +329,17 @@ class Delegations(TurnHook):
                 ErrorKind.UNAVAILABLE,
                 "limit_reached: this run has no tokens left to give a delegated run",
             )
+        # The parent can run for hours. Apply current project grants at each child
+        # admission so an operator's increased runaway bounds reach later children.
+        if self.refresh_settings is not None:
+            self.limits = await self.refresh_settings()
+            if self.models is not None:
+                self.models.settings = self.limits
+            if self.limits.depth < self.depth + 1:
+                raise WorkerAPIError(
+                    ErrorKind.POLICY_DENIED,
+                    "not_permitted_for_role: project delegation depth was reduced",
+                )
         await self._prune()
         if len(self.children) >= self.limits.cap:
             raise WorkerAPIError(

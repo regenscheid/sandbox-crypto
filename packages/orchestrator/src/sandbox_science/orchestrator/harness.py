@@ -1253,6 +1253,7 @@ class Harness:
             waiting=waiting,
             over_budget=over_budget,
             limits=limits,
+            refresh_settings=lambda: threaded(records.settings, context.project_id),
             models=ModelChoice(
                 self.delegated.alias,
                 limits,
