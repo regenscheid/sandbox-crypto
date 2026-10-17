@@ -9,6 +9,7 @@ import secrets
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlsplit, urlunsplit
+from urllib.request import urlopen
 
 from sandbox_science.policy.openshell import (
     OrchestratorTarget,
@@ -142,6 +143,7 @@ def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
         ),
     )
     write_private(directory / "policy.yaml", compile_orchestrator(target).to_yaml())
+    write_private(directory / "generation", generation + "\n")
     model, service = config.model, config.run_service
     settings: dict[str, Any] = {"cost_limits": True, "image_aliases": list(model.images)}
     if service.max_turns:
@@ -164,6 +166,7 @@ def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
         "worker_token_file": str(layout.token("harness-worker")),
         "runtime_token_file": str(token),
         "generation": generation,
+        "generation_file": str(directory / "generation"),
         "projects": [project.id for project in config.projects],
         "main": model.name,
         "reviewer": model.reviewer,
@@ -226,7 +229,7 @@ def prepare(config: LauncherConfig, layout: Layout) -> tuple[Path, Path]:
 
 async def start(config: LauncherConfig, layout: Layout, supervisor: Supervisor) -> None:
     """Start the trusted capabilities, then the VM agent service; never execute a host loop."""
-    runtime = configured(config)
+    configured(config)
     await delete_recorded(config, layout)
     directory, upload = prepare(config, layout)
     await supervisor.start(
@@ -243,12 +246,46 @@ async def start(config: LauncherConfig, layout: Layout, supervisor: Supervisor) 
         ),
         config.start_timeout,
     )
+    supervisor.on_stop("delete the orchestrator sandbox", lambda: delete_recorded(config, layout))
+    await _agent(config, layout, supervisor, directory, upload)
+
+
+async def replace(config: LauncherConfig, layout: Layout, supervisor: Supervisor) -> None:
+    """Explicit runtime replacement preserves control/UI and never creates Resume intent."""
+    await supervisor.stop_part("agent-runtime")
+    await delete_recorded(config, layout)
+    runtime = configured(config)
+    deadline = asyncio.get_running_loop().time() + config.stop_timeout
+    while await asyncio.to_thread(_connected, f"http://{runtime.control_listen}/health"):
+        if asyncio.get_running_loop().time() >= deadline:
+            raise LauncherError(
+                "old runtime control connection did not settle; replacement refused"
+            )
+        await asyncio.sleep(0.1)
+    directory, upload = prepare(config, layout)
+    await _agent(config, layout, supervisor, directory, upload)
+
+
+def _connected(url: str) -> bool:
+    with urlopen(url, timeout=2) as response:  # noqa: S310 - fixed loopback configuration
+        body = response.read(4097)
+    if len(body) > 4096:
+        raise LauncherError("control readiness exceeded its byte bound")
+    value = cast(dict[str, Any], json.loads(body))
+    if value.get("ready") is not True or not isinstance(value.get("runtime_connected"), bool):
+        raise LauncherError("control readiness is incompatible with runtime replacement")
+    return value["runtime_connected"]
+
+
+async def _agent(
+    config: LauncherConfig, layout: Layout, supervisor: Supervisor, directory: Path, upload: Path
+) -> None:
+    runtime = configured(config)
     cli = mcp.OpenShell(config)
     name = "ss-orch-" + secrets.token_hex(5)
     if await cli.sandbox(name) is not None:
         raise LauncherError("orchestrator random sandbox name is already in use")
     _record(layout, name, None)
-    supervisor.on_stop("delete the orchestrator sandbox", lambda: delete_recorded(config, layout))
     await cli.run(
         "sandbox",
         "create",
@@ -305,6 +342,7 @@ async def start(config: LauncherConfig, layout: Layout, supervisor: Supervisor) 
             ],
             directory,
             ready_line="confined agent runtime ready",
+            required=False,
             env=mcp.tooling(config),
         ),
         config.start_timeout,

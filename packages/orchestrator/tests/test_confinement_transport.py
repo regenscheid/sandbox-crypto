@@ -137,3 +137,12 @@ async def test_oversized_reply_returns_a_bounded_error_instead_of_timing_out() -
     finally:
         await left.close()
         await right.close()
+
+
+def test_paid_model_response_ceiling_cannot_exceed_transport_envelope() -> None:
+    from sandbox_science.orchestrator.confinement.wire import MAX_MODEL_RESPONSE_BYTES, ModelRequest
+
+    given = {"attempt": "cap-" + "a" * 48, "model": "main", "messages": [], "tools": []}
+    assert ModelRequest.model_validate(given).max_response_bytes == 6 * 1024 * 1024
+    with pytest.raises(ValidationError, match="max_response_bytes"):
+        ModelRequest.model_validate({**given, "max_response_bytes": MAX_MODEL_RESPONSE_BYTES + 1})

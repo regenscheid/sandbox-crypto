@@ -24,6 +24,7 @@ from sandbox_science.orchestrator.model import (
 from .paid import begin, observe, usage
 from .transport import Capability, Channel, TransportError
 from .wire import (
+    MAX_MODEL_RESPONSE_BYTES,
     ModelInfo,
     ModelKind,
     ModelReply,
@@ -50,7 +51,7 @@ class CallbackModel(GatewayModel):
         scope: Callable[[], str] | None = None,
         kind: ModelKind = "fold",
         max_output: int | None = None,
-        max_response_bytes: int = 16 * 1024 * 1024,
+        max_response_bytes: int = MAX_MODEL_RESPONSE_BYTES,
     ) -> None:
         # Deliberately do not initialize GatewayModel's key, session or PriceList.
         self.channel, self.model = channel, alias

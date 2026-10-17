@@ -379,3 +379,66 @@ def test_a_recorded_process_from_another_boot_or_time_is_left_alone(
     finally:
         stranger.kill()
         stranger.wait()
+
+
+def test_runtime_loss_preserves_ui_and_explicit_replacement_rotates_only_agent(
+    site: dict[str, Any],
+) -> None:
+    launcher = site["launch"]()
+    launcher.expect("Stop:")
+    layout = Layout(load_config(launcher.config).state_dir)
+    prior = read(layout)
+    assert prior is not None
+    identities = {part.name: part.pid for part in prior.parts}
+    original = json.loads((layout.root / "orchestrator/sandbox.json").read_text())
+    generation = (layout.root / "orchestrator/generation").read_text()
+    token = layout.token("runtime-control").read_text()
+    os.kill(identities["agent-runtime"], signal.SIGTERM)
+    launcher.expect("Control and workspace remain available")
+    assert launcher.command("status").returncode == 4
+    assert launcher.process.poll() is None
+    for part in prior.parts:
+        if part.name != "agent-runtime":
+            assert alive(part, prior)
+    replaced = launcher.command("replace-orchestrator")
+    assert replaced.returncode == 0, replaced.stdout + replaced.stderr
+    assert "explicitly Resume" in replaced.stdout
+    current = read(layout)
+    assert current is not None
+    now = {part.name: part.pid for part in current.parts}
+    assert now["agent-runtime"] != identities["agent-runtime"]
+    for name in ("worker", "workspace", "control-service"):
+        assert now[name] == identities[name]
+    replacement = json.loads((layout.root / "orchestrator/sandbox.json").read_text())
+    assert replacement["name"] != original["name"]
+    assert replacement["id"] != original["id"]
+    assert layout.token("runtime-control").read_text() != token
+    assert (layout.root / "orchestrator/generation").read_text() != generation
+    assert f"openshell sandbox delete {original['name']}" in site["journal"].read_text()
+    assert launcher.command("status").returncode == 0
+    launcher.process.send_signal(signal.SIGINT)
+    assert launcher.finish() == 0
+
+
+def test_replacement_request_for_another_launcher_cannot_stop_the_runtime(
+    site: dict[str, Any],
+) -> None:
+    launcher = site["launch"]()
+    launcher.expect("Stop:")
+    layout = Layout(load_config(launcher.config).state_dir)
+    prior = read(layout)
+    assert prior is not None
+    original = (layout.root / "orchestrator/sandbox.json").read_text()
+    request = layout.root / "orchestrator/replacement-request"
+    request.write_text(
+        json.dumps({"nonce": "replacement-" + "a" * 32, "pid": 0, "started": 0, "boot": prior.boot})
+    )
+    request.chmod(0o600)
+    os.kill(prior.pid, signal.SIGUSR2)
+    launcher.expect("runtime replacement belongs to another launcher generation")
+    assert (layout.root / "orchestrator/sandbox.json").read_text() == original
+    assert launcher.command("status").returncode == 0
+    for part in prior.parts:
+        assert alive(part, prior)
+    launcher.process.send_signal(signal.SIGINT)
+    assert launcher.finish() == 0

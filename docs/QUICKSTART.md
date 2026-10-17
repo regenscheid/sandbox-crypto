@@ -74,6 +74,13 @@ Sandbox Science is running.
   Stop:     Ctrl-C, or sandbox-science down --config /…/examples/sandbox-science.toml
 ```
 
+If the agent VM exits after startup, the launcher keeps the control service, GUI and
+worker available and `status` reports degraded. Replace only that VM with
+`sandbox-science replace-orchestrator --config ...`. The launcher confirms original
+sandbox deletion and rotates its scoped token before the replacement handshake.
+Then explicitly Resume unfinished work in the GUI; replacement does not restart
+research automatically.
+
 ## Logging in
 
 The workspace makes a new login address each time it starts. The launcher puts it in `workspace-login` in the state directory (mode 600), never on the screen or in a log. Open that address in your browser. It takes you to the GUI and sets your session's cookie, and it works until Sandbox Science stops.

@@ -88,6 +88,7 @@ class ControlSettings(Contract):
     worker_token_file: Path
     runtime_token_file: Path
     generation: Identifier
+    generation_file: Path | None = None
     projects: tuple[Identifier, ...] = Field(min_length=1, max_length=128)
     main: ModelAlias
     reviewer: ModelAlias | None = None
@@ -124,7 +125,7 @@ def create_app(settings: ControlSettings) -> web.Application:
 
     async def health(request: web.Request) -> web.Response:
         return web.json_response(
-            {"ready": True, "protocol": CONTROL_PROTOCOL},
+            {"ready": True, "protocol": CONTROL_PROTOCOL, "runtime_connected": connected},
             headers={CONTROL_HEADER: str(CONTROL_PROTOCOL)},
         )
 
@@ -170,7 +171,9 @@ def create_app(settings: ControlSettings) -> web.Application:
                         hello = True
                         return payload(
                             Ready(
-                                generation=settings.generation,
+                                generation=private_credential(settings.generation_file, maximum=128)
+                                if settings.generation_file is not None
+                                else settings.generation,
                                 projects=settings.projects,
                                 control_schema=VERSION,
                             )

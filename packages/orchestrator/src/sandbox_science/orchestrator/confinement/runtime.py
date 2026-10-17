@@ -31,7 +31,7 @@ from .transport import (
     Channel,
     TransportError,
 )
-from .wire import Hello, ModelAlias, Ready, payload, typed
+from .wire import MAX_MODEL_RESPONSE_BYTES, Hello, ModelAlias, Ready, payload, typed
 
 
 class RuntimeSettings(Contract):
@@ -62,7 +62,10 @@ async def serve(settings: RuntimeSettings, *, clock: Clock = SYSTEM_CLOCK) -> No
     settings.scratch.mkdir(parents=True, exist_ok=True)
     embedder = (
         Embedder(
-            settings.model_url, settings.embedding, private_credential(settings.model_key_file)
+            settings.model_url,
+            settings.embedding,
+            private_credential(settings.model_key_file),
+            max_response_bytes=MAX_MODEL_RESPONSE_BYTES,
         )
         if settings.embedding
         else None

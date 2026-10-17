@@ -55,6 +55,8 @@ class Record:
     gui: str | None
     parts: tuple[RecordedPart, ...]
     purpose: str = "up"
+    replacement: bool = False
+    """Whether this launcher advertises the explicit runtime replacement control signal."""
     """``up``, or ``down`` while it runs the worker alone to suspend the sandboxes."""
 
     def dumps(self) -> str:
@@ -127,6 +129,7 @@ def read(layout: Layout) -> Record | None:
                 for part in cast(list[dict[str, Any]], raw["parts"])
             ),
             purpose=str(raw.get("purpose", "up")),
+            replacement=raw.get("replacement") is True,
         )
     except (OSError, ValueError, KeyError, TypeError):
         return None

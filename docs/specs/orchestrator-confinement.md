@@ -138,3 +138,20 @@ reconciliation and the session lease. It never selects and runs the next agent l
 itself. A branch RPC has no arbitrary wall-clock lifetime; disconnect, explicit Stop
 and the attempt's own limits govern termination. Paid gateway dispatch first commits
 an intent, and an unobserved result remains unknown across replacement.
+
+When only the agent runtime exits after startup, the normal launcher stays alive in
+degraded status. Control, the GUI and the worker retain their process identities.
+`sandbox-science replace-orchestrator --config ...` asks the identified owning
+launcher to replace only its agent VM. A private bounded nonce request/receipt and
+an advertised control capability prevent signalling an incompatible launcher. The
+launcher confirms deletion of the original immutable sandbox ID, waits for the old
+control connection to drain, rotates the runtime token/generation and admits a fresh
+image handshake. Failure retains ownership and degraded status. Replacement creates
+no research Resume request; the user must explicitly Resume unfinished work.
+
+Confined paid model and embedding responses have a 6 MiB body ceiling, including auxiliary calls.
+This keeps native base64 plus decoded message fields within the 24 MiB transport
+frame ceiling. A larger response is explicitly refused; its pre-dispatch intent
+remains unknown and blocks claiming the work complete or silently charging zero.
+The 8 MiB active-view ceiling independently accounts for decoded and native data.
+The launcher never widens these limits or retries an unknown paid call automatically.

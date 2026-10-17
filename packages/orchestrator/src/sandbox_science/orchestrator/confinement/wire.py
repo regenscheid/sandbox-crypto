@@ -38,6 +38,7 @@ ModelAlias = Annotated[
 ]
 AttemptId = Annotated[str, Field(pattern=r"^cap-[0-9a-f]{48}$")]
 MAX_VIEW_BYTES = 8 * 1024 * 1024
+MAX_MODEL_RESPONSE_BYTES = 6 * 1024 * 1024
 
 
 class Hello(Contract):
@@ -266,7 +267,9 @@ class ModelRequest(Attempt):
     kind: ModelKind = "fold"
     model: ModelAlias
     max_output: int | None = Field(default=None, ge=1, le=1_000_000)
-    max_response_bytes: int = Field(default=16 * 1024 * 1024, ge=1, le=64 * 1024 * 1024)
+    max_response_bytes: int = Field(
+        default=MAX_MODEL_RESPONSE_BYTES, ge=1, le=MAX_MODEL_RESPONSE_BYTES
+    )
     tool_choice: Literal["auto", "none", "required"] = "auto"
     cache_key: str | None = Field(default=None, max_length=256)
     messages: tuple[WireMessage, ...]

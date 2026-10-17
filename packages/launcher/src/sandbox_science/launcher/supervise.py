@@ -118,6 +118,8 @@ class Part:
     private: tuple[re.Pattern[str], Path] | None = None
     """Lines that match go to this file, mode 600, instead of the log."""
     env: Mapping[str, str] = field(default_factory=dict[str, str])
+    required: bool = True
+    """An optional part exits into degraded status until explicit operator replacement."""
     restart: bool = False
     """Started again when it exits, rather than stopping the launcher."""
 
@@ -134,6 +136,7 @@ class Running:
     ready: asyncio.Event = field(default_factory=asyncio.Event)
     pump: asyncio.Task[None] | None = None
     since: float = field(default_factory=time.monotonic)
+    reported: bool = False
     restarts: int = 0
     """Times in a row it was started again, for a part that is."""
 
@@ -283,7 +286,9 @@ class Supervisor:
         """Wait until the launcher is asked to stop (None) or a part stops by itself."""
         while True:
             exits = {
-                asyncio.ensure_future(running.process.wait()): running for running in self.running
+                asyncio.ensure_future(running.process.wait()): running
+                for running in self.running
+                if not (running.reported and running.process.returncode is not None)
             }
             stopped = asyncio.ensure_future(self.stop_requested.wait())
             try:
@@ -296,6 +301,16 @@ class Supervisor:
             running = next(exits[waiting] for waiting in exits if waiting in done)
             if running.pump is not None:
                 await running.pump
+            if not running.part.required and not running.part.restart:
+                running.reported = True
+                self.changed()
+                print(
+                    f"the {running.part.title} stopped; research is interrupted. "
+                    "Control and workspace remain available; use sandbox-science "
+                    "replace-orchestrator, then explicitly Resume unfinished work.",
+                    flush=True,
+                )
+                continue
             if not running.part.restart:
                 return (
                     f"the {running.part.title} stopped by itself, with status "
@@ -332,6 +347,17 @@ class Supervisor:
             self.running[self.running.index(running)] = again
             self._stack[self._stack.index(running)] = again
             self.changed()
+
+    async def stop_part(self, name: str) -> bool:
+        """Stop one owned part for explicit replacement; preserve all other services."""
+        running = next((item for item in self.running if item.part.name == name), None)
+        if running is None:
+            return False
+        await self._stop(running, lambda: False)
+        self.running.remove(running)
+        self._stack.remove(running)
+        self.changed()
+        return True
 
     async def stop(self, *, now: Callable[[], bool] = lambda: False) -> None:
         """Stop every part and take every action, the last first. ``now`` cuts each part's

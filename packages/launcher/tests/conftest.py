@@ -267,6 +267,7 @@ def site(
 ) -> Iterator[dict[str, Any]]:
     """Launch ``sandbox-science up`` with the stand-ins, on free loopback ports."""
     worker, workspace = free_ports()
+    control = free_port({worker, workspace, workspace + 1})
     journal = tmp_path / "journal"
     journal.touch()
 
@@ -289,6 +290,7 @@ def site(
                     "pass_env": [*fakes, *extra.get("worker", [])],
                 },
                 "run_service": {"pass_env": [*fakes, *extra.get("run_service", [])]},
+                "orchestrator": {"control_listen": f"127.0.0.1:{control}"},
                 "workspace": {
                     "listen": f"127.0.0.1:{workspace}",
                     "pass_env": [*fakes, *extra.get("workspace", [])],
@@ -324,7 +326,7 @@ def site(
         "worker": worker,
         "workspace": workspace,
         # The workspace's next port is its own too (``free_ports``).
-        "taken": frozenset({worker, workspace, workspace + 1}),
+        "taken": frozenset({worker, workspace, workspace + 1, control}),
     }
     for launcher in started:
         if launcher.process.poll() is None:

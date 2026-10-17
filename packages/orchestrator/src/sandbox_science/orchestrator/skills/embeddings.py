@@ -75,8 +75,19 @@ class Embedded:
 class Embedder:
     """The gateway's OpenAI-compatible ``/embeddings`` for one model alias."""
 
-    def __init__(self, base_url: str, alias: str, api_key: str, *, timeout: float = 60.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        alias: str,
+        api_key: str,
+        *,
+        timeout: float = 60.0,
+        max_response_bytes: int = MAX_ANSWER_BYTES,
+    ) -> None:
         self.base_url, self.alias, self._key = base_url.rstrip("/"), alias, api_key
+        if not 1 <= max_response_bytes <= MAX_ANSWER_BYTES:
+            raise ValueError("embedding response ceiling is outside its supported bound")
+        self.max_response_bytes = max_response_bytes
         self._timeout = aiohttp.ClientTimeout(total=timeout)
         self._session: aiohttp.ClientSession | None = None
 
@@ -117,12 +128,12 @@ class Embedder:
             ) as response:
                 cost = _cost(response.headers.get(COST_HEADER))
                 try:  # to its end: a single read returns only what has arrived (lab 42, B1)
-                    raw = await read_limited(response, MAX_ANSWER_BYTES)
+                    raw = await read_limited(response, self.max_response_bytes)
                 except ModelError:
                     if response.status == 200 and paid is not None:  # charged all the same
                         paid.append((self.alias, len(texts), cost))
                     raise EmbeddingError(
-                        f"the gateway's answer is larger than {MAX_ANSWER_BYTES:,} bytes"
+                        f"the gateway's answer is larger than {self.max_response_bytes:,} bytes"
                     ) from None
                 if response.status != 200:
                     said = raw.decode(errors="replace")

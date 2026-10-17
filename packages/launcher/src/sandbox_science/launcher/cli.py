@@ -39,7 +39,7 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import instance, mcp, orchestrator, parts, sandboxes, skills
+from . import instance, mcp, orchestrator, parts, replacement, sandboxes, skills
 from .config import LauncherConfig, LauncherError, load_config
 from .instance import Record, RecordedPart
 from .state import Layout, check_private, write_private
@@ -61,6 +61,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ("up", "start everything, and stop it all on Ctrl-C"),
         ("down", "stop the instance running from the config's state directory"),
         ("status", "show what runs"),
+        ("replace-orchestrator", "replace the agent VM while keeping control and workspace alive"),
         ("skills", "fetch the skill packs again and move the projects' pins"),
     ):
         command = commands.add_parser(name, help=text)
@@ -100,6 +101,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             case "down":
                 return down(config, args.config.absolute(), keep=args.keep_sandboxes)
+            case "replace-orchestrator":
+                return replacement.request(config)
             case "skills":
                 return update_skills(config, args.pack)
             case _:
@@ -161,6 +164,7 @@ def _recorder(
                     for r in running
                 ),
                 purpose=purpose,
+                replacement=True,
             ),
         )
 
@@ -178,6 +182,7 @@ async def _up(
 ) -> int:
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
+    replacing = asyncio.Event()
     asked = 0
     outcome = sandboxes.Outcome()
     hurry = asyncio.Event()
@@ -196,6 +201,7 @@ async def _up(
     for number in STOP_SIGNALS:
         loop.add_signal_handler(number, ask, False)
     loop.add_signal_handler(signal.SIGUSR1, ask, True)  # down --keep-sandboxes
+    loop.add_signal_handler(signal.SIGUSR2, replacing.set)
     layout.stopped.unlink(missing_ok=True)
     supervisor = Supervisor(
         layout,
@@ -210,7 +216,7 @@ async def _up(
             config, layout, supervisor, outcome, hurry, refresh=refresh, update=update_skills
         )
         _announce(config, path, layout)
-        reason = await supervisor.watch()
+        reason = await replacement.watch(config, layout, supervisor, replacing)
         if reason is not None:
             print(f"error: {reason}", file=sys.stderr, flush=True)
             status = 1
@@ -223,7 +229,7 @@ async def _up(
         await supervisor.stop(now=hurry.is_set)
         for leftover in (layout.login, layout.record):
             leftover.unlink(missing_ok=True)
-        for number in (*STOP_SIGNALS, signal.SIGUSR1):
+        for number in (*STOP_SIGNALS, signal.SIGUSR1, signal.SIGUSR2):
             loop.remove_signal_handler(number)
     print("Sandbox Science stopped", flush=True)
     write_private(layout.stopped, outcome.dumps() + "\n")
